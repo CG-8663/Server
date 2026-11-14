@@ -45,9 +45,13 @@ leftovers() {
 }
 
 # True when podman and libvirt (whichever are installed) can say what they hold. --purge deletes data, so it
-# must not treat "could not ask" as "nothing there".
+# must not treat "could not ask" as "nothing there". Reading podman's answer takes node, so that counts too:
+# node installed through mise or nvm is not on the PATH of every shell.
 can_ask() {
-	if command -v podman >/dev/null 2>&1; then podman ps -a --format json >/dev/null 2>&1 || return 1; fi
+	if command -v podman >/dev/null 2>&1; then
+		command -v node >/dev/null 2>&1 || return 1
+		podman ps -a --format json >/dev/null 2>&1 || return 1
+	fi
 	if command -v virsh >/dev/null 2>&1; then virsh -c qemu:///session list --all --name >/dev/null 2>&1 || return 1; fi
 	return 0
 }
@@ -55,7 +59,7 @@ can_ask() {
 do_uninstall() {
 	local purge=$1 yes=$2 left word answer link
 	if [ "$purge" = 1 ] && ! can_ask; then
-		echo "Couldn't ask podman and libvirt what Omarchy Server still has, so nothing was deleted. Nothing was changed."
+		echo "Couldn't ask podman and libvirt what Omarchy Server still has, so nothing was deleted. That takes podman, virsh and node on this shell's PATH. Nothing was changed."
 		exit 1
 	fi
 	left=$(leftovers)
@@ -91,12 +95,19 @@ do_uninstall() {
 	link="$HOME/.local/bin/omarchy-server"
 	[ "$(readlink "$link" 2>/dev/null)" = "$BASE/app/bin/omarchy-server" ] && rm -f "$link"
 
-	echo "Removing the storage helper and firewall rules (sudo needed)"
-	if command -v ufw >/dev/null 2>&1; then
-		for rule in "$PORT/tcp" 40000:49999/tcp 40000:49999/udp 7800:7899/tcp; do sudo ufw delete allow "$rule" >/dev/null 2>&1 || true; done
+	# The root steps need sudo. With -y and no terminal there may be nobody to type a password.
+	rules="$PORT/tcp 40000:49999/tcp 40000:49999/udp 7800:7899/tcp"
+	failed=
+	if sudo -n true >/dev/null 2>&1 || ( : </dev/tty ) 2>/dev/null; then
+		echo "Removing the storage helper and firewall rules (sudo needed)"
+		if command -v ufw >/dev/null 2>&1; then
+			for rule in $rules; do sudo ufw delete allow "$rule" >/dev/null 2>&1 || true; done
+		fi
+		sudo rm -f /etc/sudoers.d/omarchy-server || failed=1
+		sudo rm -rf /usr/local/libexec/omarchy-server || failed=1
+	else
+		failed=1
 	fi
-	sudo rm -f /etc/sudoers.d/omarchy-server
-	sudo rm -rf /usr/local/libexec/omarchy-server
 
 	rm -rf "$BASE/app" "$BASE/install.log" "$BASE/.widget-offered"
 	if [ "$purge" = 1 ]; then
@@ -104,10 +115,16 @@ do_uninstall() {
 		podman unshare rm -rf "$BASE/omarchyd/apps" >/dev/null 2>&1
 		rm -rf "$BASE"
 		echo "Omarchy Server and its data are gone."
+		echo "Firewall rules for individual app ports and any SMB shares you set up are not removed: see 'sudo ufw status' and your Samba settings."
 	else
 		echo "Omarchy Server is removed. Your data is still in $BASE."
 	fi
 	echo "Left as they were: the installed packages, the 'run while logged out' setting, and ~/Pools."
+	if [ -n "$failed" ]; then
+		printf '\nThe steps that need sudo could not be done here. Run these yourself:\n  sudo rm -f /etc/sudoers.d/omarchy-server\n  sudo rm -rf /usr/local/libexec/omarchy-server\n'
+		command -v ufw >/dev/null 2>&1 && for rule in $rules; do printf '  sudo ufw delete allow %s\n' "$rule"; done
+		exit 1
+	fi
 	exit 0
 }
 

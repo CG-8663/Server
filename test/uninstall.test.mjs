@@ -12,6 +12,16 @@ const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'omarc
 const root = await mkdtemp(join(os.tmpdir(), 'uninstall-'))
 after(() => rm(root, {recursive: true, force: true}))
 
+// The few ordinary tools the script uses, so a test can build a PATH that has no node on it.
+const core = join(root, 'core')
+await mkdir(core)
+for (const tool of ['bash', 'cat', 'cut', 'du', 'grep', 'head', 'readlink', 'rm', 'sed', 'sort', 'tr']) {
+	const found = spawnSync('sh', ['-c', `command -v ${tool}`], {encoding: 'utf8'}).stdout.trim()
+	if (found) await symlink(found, join(core, tool))
+}
+// node can live anywhere (mise, nvm, /opt/...), so it is added by where this test run found it.
+const withNode = (bin) => `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`
+
 const exists = (p) => readFile(p).then(() => true, () => false)
 const write = async (file, text = 'x') => {
 	await mkdir(dirname(file), {recursive: true})
@@ -45,7 +55,7 @@ async function install(name) {
 	await mkdir(bin, {recursive: true})
 	const fakes = {
 		// sudo never runs anything: it only writes down the command it was given.
-		sudo: 'echo "sudo $*" >>"$FAKE_LOG"',
+		sudo: '[ -z "${FAKE_SUDO_FAILS:-}" ] || exit 1; echo "sudo $*" >>"$FAKE_LOG"',
 		systemctl: 'echo "systemctl $*" >>"$FAKE_LOG"',
 		ufw: 'echo "ufw $*" >>"$FAKE_LOG"',
 		// podman ps answers in JSON like the real one: FAKE_APPS is a list of compose project names.
@@ -63,7 +73,7 @@ async function install(name) {
 // detached: true puts the script in its own session, so it has no terminal even when the tests run in one.
 function run(box, args, extra = {}) {
 	const r = spawnSync('bash', [join(box.home, '.local/bin/omarchy-server'), 'uninstall', ...args], {
-		env: {HOME: box.home, PATH: `${box.bin}:/usr/bin:/bin`, FAKE_LOG: box.log, ...extra},
+		env: {HOME: box.home, PATH: withNode(box.bin), FAKE_LOG: box.log, ...extra},
 		encoding: 'utf8',
 		detached: true,
 		timeout: 20000,
@@ -119,7 +129,7 @@ test('uninstall leaves a command that is not ours alone, and says what keeps run
 	await write(join(box.home, 'elsewhere/omarchy-server'), '#!/bin/sh\n')
 	await symlink(join(box.home, 'elsewhere/omarchy-server'), join(box.home, '.local/bin/omarchy-server'))
 	const r = spawnSync('bash', [join(box.base, 'app/bin/omarchy-server'), 'uninstall', '-y'], {
-		env: {HOME: box.home, PATH: `${box.bin}:/usr/bin:/bin`, FAKE_LOG: box.log, FAKE_APPS: 'omarchy-nextcloud someone-elses', FAKE_VMS: 'omarchy-3\nother-vm\n'},
+		env: {HOME: box.home, PATH: withNode(box.bin), FAKE_LOG: box.log, FAKE_APPS: 'omarchy-nextcloud someone-elses', FAKE_VMS: 'omarchy-3\nother-vm\n'},
 		encoding: 'utf8',
 		detached: true,
 	})
@@ -150,6 +160,28 @@ test('--purge will not guess when podman or libvirt cannot answer, and changes n
 		assert.equal(await exists(join(box.base, 'omarchyd/accounts.json')), true)
 		assert.equal(await calls(box), '', 'no command ran, not even sudo')
 	}
+})
+
+test('--purge will not run when node is missing from the PATH, because it could not see the apps', async () => {
+	const box = await install('nonode')
+	const r = run(box, ['--purge', '-y'], {FAKE_APPS: 'omarchy-demo', PATH: `${box.bin}:${core}`})
+	assert.equal(r.status, 1, r.out)
+	assert.match(r.out, /Couldn't ask podman and libvirt[\s\S]*node/)
+	assert.ok(!r.out.includes('are gone'), 'it must not go ahead')
+	assert.equal(await exists(join(box.base, 'omarchyd/accounts.json')), true)
+	assert.equal(await exists(join(box.base, 'omarchyd/apps/installed/demo/data/notes.txt')), true)
+	assert.equal(await calls(box), '', 'no command ran, not even sudo')
+})
+
+test('when sudo cannot run, the user-level parts are still removed and the rest is listed to run by hand', async () => {
+	const box = await install('nosudo')
+	const r = run(box, ['-y'], {FAKE_SUDO_FAILS: '1'})
+	assert.equal(r.status, 1, r.out)
+	assert.match(r.out, /steps that need sudo could not be done here[\s\S]*sudo rm -f \/etc\/sudoers\.d\/omarchy-server[\s\S]*sudo rm -rf \/usr\/local\/libexec\/omarchy-server[\s\S]*sudo ufw delete allow 7780\/tcp/)
+	assert.ok(!r.out.includes('Removing the storage helper'), 'it does not claim to be doing a step it cannot do')
+	await programGone(box)
+	assert.equal(await exists(join(box.base, 'omarchyd/accounts.json')), true, 'data is kept')
+	assert.ok(!(await calls(box)).includes('sudo '), 'sudo was never run')
 })
 
 test('--purge deletes everything Omarchy Server keeps, but never your files', async () => {
