@@ -41,15 +41,17 @@ export function parseThemeColors(text) {
 
 const exists = (p) => access(p).then(() => true, () => false)
 
-export function createOmarchyTheme({home, run = null, env = process.env}) {
+// systemShare / systemBin: where a packaged Omarchy lives. Tests pass null / [] so the machine
+// running them (which may have Omarchy installed) doesn't leak in.
+export function createOmarchyTheme({home, run = null, env = process.env, systemShare = '/usr/share/omarchy', systemBin = ['/usr/local/bin', '/usr/bin']}) {
 	const config = join(home, '.config', 'omarchy')
 	const omarchyPath = env.OMARCHY_PATH || null
 	// Where Omarchy keeps "what's on now": ~/.local/state (current releases) or ~/.config (older).
 	const STATE = [join(home, '.local', 'state', 'omarchy', 'current'), join(config, 'current')]
 	// Built-in themes: the packaged install, or the older git checkout in ~/.local/share.
-	const BUILTIN = [...new Set([omarchyPath && join(omarchyPath, 'themes'), '/usr/share/omarchy/themes', join(home, '.local', 'share', 'omarchy', 'themes')].filter(Boolean))]
+	const BUILTIN = [...new Set([omarchyPath && join(omarchyPath, 'themes'), systemShare && join(systemShare, 'themes'), join(home, '.local', 'share', 'omarchy', 'themes')].filter(Boolean))]
 	const USER_THEMES = join(config, 'themes')
-	const BIN = [...new Set([omarchyPath && join(omarchyPath, 'bin'), '/usr/share/omarchy/bin', join(home, '.local', 'share', 'omarchy', 'bin'), join(home, '.local', 'bin'), '/usr/local/bin', '/usr/bin'].filter(Boolean))]
+	const BIN = [...new Set([omarchyPath && join(omarchyPath, 'bin'), systemShare && join(systemShare, 'bin'), join(home, '.local', 'share', 'omarchy', 'bin'), join(home, '.local', 'bin'), ...systemBin].filter(Boolean))]
 	let index = new Map() // background id -> path, refreshed by list()
 	const jobs = new Map() // slug -> {state: 'installing'|'switching'|'removing'|'error', error?}
 
@@ -182,6 +184,14 @@ export function createOmarchyTheme({home, run = null, env = process.env}) {
 		}
 		return exec(cmd, args)
 	}
+	// Omarchy's theme commands change the same files, so they run one at a time, in the order asked
+	// (switching while an install is still running could leave a mixed theme).
+	let queue = Promise.resolve()
+	const inTurn = (cmd, args) => {
+		const p = queue.then(() => omarchy(cmd, args))
+		queue = p.catch(() => {})
+		return p
+	}
 	const job = (slug, state, work) => {
 		jobs.set(slug, {state})
 		work.then(
@@ -196,7 +206,7 @@ export function createOmarchyTheme({home, run = null, env = process.env}) {
 	async function setTheme(slug) {
 		if (!SLUG.test(String(slug)) || !(await themeDirs()).has(slug)) throw Object.assign(new Error('That theme isn’t installed'), {code: 'NOT_FOUND'})
 		if (jobs.get(slug)?.state === 'switching') return true
-		job(slug, 'switching', omarchy('omarchy-theme-set', [slug]))
+		job(slug, 'switching', inTurn('omarchy-theme-set', [slug]))
 		return true
 	}
 	// Only themes from the Omarchy manual's list are installed from here.
@@ -204,14 +214,14 @@ export function createOmarchyTheme({home, run = null, env = process.env}) {
 		const t = EXTRA.themes.find((x) => x.slug === slug)
 		if (!t) throw Object.assign(new Error('That theme isn’t in the Omarchy theme list'), {code: 'NOT_FOUND'})
 		if (jobs.has(slug) && jobs.get(slug).state !== 'error') return true
-		job(slug, 'installing', omarchy('omarchy-theme-install', [t.url])) // installs, then switches to it
+		job(slug, 'installing', inTurn('omarchy-theme-install', [t.url])) // installs, then switches to it
 		return true
 	}
 	async function removeTheme(slug) {
 		const d = (await themeDirs()).get(String(slug))
 		if (!d?.user) throw Object.assign(new Error('Only themes you added can be removed'), {code: 'PRECONDITION_FAILED'})
 		if ((await currentName()) === slug) throw Object.assign(new Error('Switch to another theme before removing this one'), {code: 'PRECONDITION_FAILED'})
-		await omarchy('omarchy-theme-remove', [slug])
+		await inTurn('omarchy-theme-remove', [slug])
 		return true
 	}
 

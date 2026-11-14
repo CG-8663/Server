@@ -6,9 +6,10 @@
 // restart both services from a detached systemd unit (so this process can be replaced). If a step
 // fails, the previous version is restored and rebuilt. Parts that need root (system packages and the
 // storage helper) aren't touched; when a new version changes them, the check says to run the installer.
+import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {createHash} from 'node:crypto'
-import {readFile, rename, writeFile} from 'node:fs/promises'
+import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 
 import {RpcError} from './rpc.mjs'
@@ -60,8 +61,7 @@ export function createUpdater({autoCheck = true, appDir, dataDir, currentVersion
 	let busy = false
 
 	const save = async () => {
-		await writeFile(`${statusFile}.tmp`, JSON.stringify(status), {mode: 0o600})
-		await rename(`${statusFile}.tmp`, statusFile)
+		await writeAtomic(statusFile, JSON.stringify(status))
 	}
 	const ready = (async () => {
 		try {

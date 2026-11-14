@@ -10,6 +10,7 @@
 // a bundled copy as fallback). Images are cloud images: downloaded from the publisher, checked
 // against the publisher's checksum file, then copied per machine. cloud-init sets up the account
 // on first boot; only a SHA-512 crypt hash of the password is written, never the password.
+import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {createHash, randomBytes} from 'node:crypto'
 import {constants, createWriteStream} from 'node:fs'
@@ -107,11 +108,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		startSampler()
 		autostart()
 	})()
-	const save = async () => {
-		const tmp = `${stateFile}.${process.pid}.tmp`
-		await writeFile(tmp, JSON.stringify({machines}, null, 2), {mode: 0o600})
-		await rename(tmp, stateFile)
-	}
+	const save = () => writeAtomic(stateFile, () => JSON.stringify({machines}, null, 2))
 	const find = (id) => {
 		const m = typeof id === 'string' && ID.test(id) ? machines.find((x) => x.id === id) : null
 		if (!m) throw new RpcError('NOT_FOUND', 'That machine doesn’t exist')

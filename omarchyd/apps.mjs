@@ -14,9 +14,10 @@
 // the app (published on 127.0.0.1 only). A browser proves it's signed in with an app-session cookie
 // (HMAC-signed, HttpOnly). It gets one at sign-in, or by a one-time hand-over from the web app when it
 // first opens an app. Cookies belong to a host, not a port, so one sign-in covers every app.
+import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
-import {access, cp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile} from 'node:fs/promises'
+import {access, cp, mkdir, readFile, readdir, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
@@ -331,11 +332,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 		for (const a of state.apps) if (a.port && a.state !== 'error') await openGateways(a).catch((e) => console.error('[omarchyd] gateway', a.id, e.message))
 	})()
-	const save = async () => {
-		const tmp = `${stateFile}.${process.pid}.tmp`
-		await writeFile(tmp, JSON.stringify(state, null, 2), {mode: 0o600})
-		await rename(tmp, stateFile)
-	}
+	const save = () => writeAtomic(stateFile, () => JSON.stringify(state, null, 2))
 	const appDir = (id) => join(installedDir, id)
 	const project = (id) => `omarchy-${id}`
 

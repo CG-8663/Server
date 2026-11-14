@@ -12,6 +12,7 @@
 // server's own name) and private addresses. So even if this server were ever broken into, its key
 // couldn't be used to impersonate a real website on your devices. Servers set up earlier keep the
 // authority your devices already trust until the owner chooses to replace it (rotateAuthority).
+import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {mkdir, readFile, rename, rm, stat, writeFile} from 'node:fs/promises'
 import net from 'node:net'
@@ -150,8 +151,7 @@ export async function readPolicy(dir = defaultTlsDir()) {
 export async function writePolicy(dir = defaultTlsDir(), patch = {}) {
 	await mkdir(dir, {recursive: true, mode: 0o700})
 	const next = {...(await readPolicy(dir)), ...patch}
-	await writeFile(join(dir, 'policy.json.tmp'), JSON.stringify(next), {mode: 0o600})
-	await rename(join(dir, 'policy.json.tmp'), join(dir, 'policy.json'))
+	await writeAtomic(join(dir, 'policy.json'), JSON.stringify(next))
 	return next
 }
 

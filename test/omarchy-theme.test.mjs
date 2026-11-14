@@ -5,7 +5,11 @@ import os from 'node:os'
 import {join} from 'node:path'
 import {after, test} from 'node:test'
 
-import {createOmarchyTheme, parseThemeColors, themeLabel} from '../omarchyd/omarchy-theme.mjs'
+import {createOmarchyTheme as realCreate, parseThemeColors, themeLabel} from '../omarchyd/omarchy-theme.mjs'
+
+// Only the folders each test sets up: never this machine's own Omarchy (its /usr/share/omarchy,
+// /usr/bin or $OMARCHY_PATH), so the tests pass the same on an Omarchy machine as on a CI runner.
+const createOmarchyTheme = (opts) => realCreate({systemShare: null, systemBin: [], env: {}, ...opts})
 
 const root = await mkdtemp(join(os.tmpdir(), 'omarchy-theme-'))
 after(() => rm(root, {recursive: true, force: true}))

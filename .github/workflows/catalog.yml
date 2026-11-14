@@ -1,0 +1,24 @@
+name: Machine catalog links
+
+# Every Monday, and by hand from the Actions tab: does every image and checksum link in
+# omarchyd/machine-catalog.json still answer? Nothing is downloaded.
+on:
+  schedule:
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+  pull_request:
+    paths: ['omarchyd/machine-catalog.json', 'scripts/check-catalog.mjs']
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check-catalog.mjs

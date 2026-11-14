@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.12',
+		date: '2026-11-14',
+		title: 'Steadier under the hood',
+		fixed: [
+			'Two changes saved at the same moment (installing an app while another finished, say) could lose one of them. Saves now happen one at a time and always land.',
+			'Restoring from the Trash only ever puts things back inside your home folder, even if the Trash’s notes say otherwise.',
+			'Switching and installing Omarchy themes now run one after another instead of at the same time.',
+			'The installer stops with a clear message on computers that aren’t x86-64.',
+		],
+	},
+	{
 		version: '0.9.11',
 		date: '2026-11-14',
 		title: 'Use a bigger drive in one tap',

@@ -33,6 +33,9 @@ if ! command -v pacman >/dev/null; then
 	die "This installer is for Omarchy (Arch Linux), but this machine runs $found. Run it on your Omarchy machine."
 fi
 command -v systemctl >/dev/null || die "systemd is required."
+# Omarchy, its packages and the machine images are x86-64 only.
+arch=$(uname -m)
+[ "$arch" = x86_64 ] || die "Omarchy Server needs an x86-64 (Intel or AMD 64-bit) computer; this one is $arch."
 
 # 1. Packages. Machines: QEMU + libvirt (per-user session), passt for their networking, xorriso
 #    (libisoburn) for cloud-init seeds. Apps: rootless Podman driven by docker-compose. NAS: Btrfs,

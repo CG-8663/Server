@@ -1,0 +1,14 @@
+name: An idea
+description: Something Omarchy Server should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to do, and why?
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How you picture it working (optional)

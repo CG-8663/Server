@@ -77,7 +77,9 @@ describe('omarchyd apps', () => {
 		const sock = join(root, 'podman.sock')
 		await writeFile(sock, '')
 		process.env.DOCKER_HOST = `unix://${sock}`
-		appPort = 38000 + Math.floor(Math.random() * 1500)
+		// Below Linux's ephemeral range (32768+), so an outgoing connection elsewhere can never take
+		// it mid-test; above the internal ports apps get (20000-28999). Tests use up to appPort + 15.
+		appPort = 30000 + Math.floor(Math.random() * 2700)
 		// A store: one good app, one folder with a mismatched id (ignored).
 		const store = join(root, 'store')
 		await mkdir(join(store, 'demo-app'), {recursive: true})

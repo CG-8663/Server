@@ -2,9 +2,10 @@
 // Reading drive layout needs no privileges (lsblk, /etc/fstab). Anything that needs root goes through
 // the Omarchy Server helper (helper/helper.mjs, installed root-owned, allowed by one sudoers rule),
 // which re-checks every request itself.
+import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {randomBytes} from 'node:crypto'
-import {readFile, rename, statfs, writeFile} from 'node:fs/promises'
+import {readFile, statfs, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 
@@ -46,10 +47,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 		}
 	}
 	const readJson = async (file, fallback) => JSON.parse(await readFile(file, 'utf8').catch(() => JSON.stringify(fallback)))
-	const writeJson = async (file, value) => {
-		await writeFile(`${file}.tmp`, JSON.stringify(value, null, 2), {mode: 0o600})
-		await rename(`${file}.tmp`, file)
-	}
+	const writeJson = (file, value) => writeAtomic(file, JSON.stringify(value, null, 2))
 
 	async function blockDevices() {
 		const j = JSON.parse(await run('lsblk', ['-J', '-b', '-o', 'NAME,PATH,TYPE,SIZE,ROTA,TRAN,MODEL,SERIAL,FSTYPE,LABEL,UUID,MOUNTPOINTS,RM,HOTPLUG']))

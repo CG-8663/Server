@@ -3,7 +3,7 @@
 // Every path is resolved and checked to stay inside those folders, symlinks included.
 import {createReadStream, createWriteStream} from 'node:fs'
 import {cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises'
-import {basename, dirname, extname, join, sep} from 'node:path'
+import {basename, dirname, extname, join, resolve as pathResolve, sep} from 'node:path'
 import {pipeline} from 'node:stream/promises'
 import {randomBytes} from 'node:crypto'
 
@@ -172,9 +172,22 @@ export function createFiles({home, dataDir}) {
 		if (top !== 'Trash') throw new RpcError('BAD_REQUEST', '[not-in-trash]')
 		const infoFile = join(trashInfo, `${basename(real)}.trashinfo`)
 		const original = /^Path=(.*)$/m.exec(await readFile(infoFile, 'utf8').catch(() => ''))?.[1]
-		let dest = original ? decodeURI(original) : join(await roots(), basename(real))
 		const h = await roots()
-		if (!dest.startsWith(h + sep)) dest = join(h, basename(real))
+		// The .trashinfo can be written by anything that can write to the Trash, so where it says the
+		// item came from is only trusted inside Home: normalised (no "../" tricks) and, once its folder
+		// exists, checked again with symlinks followed.
+		let dest = null
+		try {
+			dest = original ? pathResolve(decodeURI(original)) : null
+		} catch {
+			dest = null
+		}
+		const inside = (p) => p === h || p.startsWith(h + sep)
+		if (!dest || !inside(dest) || dest === h) dest = join(h, basename(real))
+		// Its nearest existing folder must really be inside Home (a symlinked folder could point out).
+		let near = dirname(dest)
+		while (near !== h && !(await lstat(near).then(() => true, () => false))) near = dirname(near)
+		if (!inside(await realpath(near).catch(() => ''))) dest = join(h, basename(real))
 		await mkdir(dirname(dest), {recursive: true})
 		if (await lstat(dest).then(() => true, () => false)) dest = await freeName(dirname(dest), basename(dest))
 		await rename(real, dest)
