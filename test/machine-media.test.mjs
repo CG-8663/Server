@@ -26,6 +26,9 @@ test('a machine’s hostname is made from its name, or from its id when nothing 
 	assert.equal(hostnameFor('!!!', 7), 'machine-7')
 	assert.equal(hostnameFor('', 7), 'machine-7')
 	assert.equal(hostnameFor('a'.repeat(100), 1), 'a'.repeat(63), 'at most 63 characters')
+	// A machine name can be 64 characters. Cutting it to 63 must not leave a hostname that ends in a hyphen.
+	assert.equal(hostnameFor(`${'a'.repeat(62)} b`, 1), 'a'.repeat(62), 'no hyphen at the end after the cut')
+	assert.equal(hostnameFor(`${'a'.repeat(60)} - - b`, 1), 'a'.repeat(60))
 })
 
 test('SSH keys: public keys of the usual types are accepted, anything else is not', () => {

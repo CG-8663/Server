@@ -2,7 +2,7 @@
 // unattended-install files, and a Windows Setup answer file. Pure functions, so they're easy to test.
 import {randomUUID} from 'node:crypto'
 
-export const hostnameFor = (name, id) => name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63) || `machine-${id}`
+export const hostnameFor = (name, id) => name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63).replace(/-+$/, '') || `machine-${id}`
 
 // cloud-init user-data. `hash` is a SHA-512 crypt hash; the password itself is never written.
 // Public SSH keys only (never private ones): one per line, in OpenSSH's authorized_keys format.
