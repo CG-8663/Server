@@ -27,7 +27,7 @@ export function cloudUserData({host, username, hash, cloudInit = {}, sshKeys = [
 	const packages = Array.isArray(cloudInit.packages) ? cloudInit.packages.filter((p) => /^@?[A-Za-z0-9][\w.+-]*$/.test(p)) : []
 	if (packages.length) lines.push('package_update: true', 'packages:', ...packages.map((p) => `  - '${p}'`))
 	// Extra setup commands from the catalog, as argument lists (no shell).
-	const commands = (cloudInit.commands ?? []).filter((c) => Array.isArray(c) && c.length && c.every((a) => typeof a === 'string'))
+	const commands = (Array.isArray(cloudInit.commands) ? cloudInit.commands : []).filter((c) => Array.isArray(c) && c.length && c.every((a) => typeof a === 'string'))
 	if (commands.length) lines.push('runcmd:', ...commands.map((c) => `  - ${JSON.stringify(c)}`))
 	// A desktop comes up after one restart, once its packages are in.
 	if (cloudInit.graphical) lines.push('power_state:', '  mode: reboot', '  message: Desktop installed, restarting', '  condition: true')

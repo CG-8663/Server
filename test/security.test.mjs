@@ -167,3 +167,35 @@ describe('omarchyd security settings', () => {
 		await call('system.setSecurity', {alwaysHttps: false})
 	})
 })
+
+describe('one certificate folder for omarchyd and the web server', () => {
+	test('settings and certificate replacement land in the shared folder; an older https choice is carried over', async () => {
+		const data = join(root, 'shared-d')
+		const shared = join(root, 'shared-tls')
+		// What a 0.9.4–0.9.12 server had: its own folder with "always https" turned on.
+		await writePolicy(join(data, 'tls'), {alwaysHttps: true})
+		const accounts = await openAccounts(data)
+		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+		const d = await startOmarchyd({port: 0, dataDir: data, home: root, tlsDir: shared, machineOptions: {run: async () => ''}})
+		try {
+			const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
+			const h = {authorization: `Bearer ${login.result.data.accessToken}`, 'content-type': 'application/json'}
+			assert.equal((await readPolicy(shared)).alwaysHttps, true, 'carried over')
+			await fetch(`${d.url}/trpc/system.setSecurity`, {method: 'POST', headers: h, body: JSON.stringify({alwaysHttps: false})})
+			assert.equal((await readPolicy(shared)).alwaysHttps, false, 'the web server reads this folder')
+			await ensureTls({dir: shared, names})
+			const r = await (await fetch(`${d.url}/trpc/system.replaceCertificate`, {method: 'POST', headers: h, body: 'null'})).json()
+			assert.equal(r.result.data.restricted, true)
+			assert.ok((await readdir(shared)).some((f) => f.startsWith('retired-')), 'replaced in the shared folder')
+		} finally {
+			await d.close()
+		}
+	})
+
+	test('the omarchyd command uses the same folder as the web server', async () => {
+		const cli = await readFile(new URL('../omarchyd/cli.mjs', import.meta.url), 'utf8')
+		const web = await readFile(new URL('../server/cli.mjs', import.meta.url), 'utf8')
+		assert.match(cli, /tlsDir: defaultTlsDir\(\)/)
+		assert.match(web, /tlsContext\(\{dir: defaultTlsDir\(\)\}\)/)
+	})
+})

@@ -153,3 +153,8 @@ test('Windows answer file: names are cleaned, text is escaped and the password i
 	assert.equal(xml.match(/<component /g).length, xml.match(/<\/component>/g).length, 'every component is closed')
 	assert.equal(xml.match(/<settings /g).length, 3)
 })
+
+test('a catalog entry whose commands isn’t a list is ignored, not a crash', () => {
+	const ud = cloudUserData({host: 'h', username: 'u', hash: 'x', cloudInit: {commands: 'rm -rf /'}})
+	assert.doesNotMatch(ud, /runcmd|rm -rf/)
+})

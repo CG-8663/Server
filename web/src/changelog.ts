@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.13',
+		date: '2026-11-14',
+		title: 'One certificate for everything',
+		fixed: [
+			'Apps opened over https:// used a different certificate from the one you trust on your devices, so they could show a warning. Apps and the web app now share one certificate, and the Security settings (always use the secure address, replace the certificate) apply to both. If you accepted a warning for an app before, you may see it once more.',
+			'Pasting your password (with its Enter) into the installer’s account step works now instead of waiting forever.',
+			'A machine name of 64 characters no longer gives the machine an invalid name on its network (thanks, nixfred).',
+		],
+	},
+	{
 		version: '0.9.12',
 		date: '2026-11-14',
 		title: 'Steadier under the hood',
