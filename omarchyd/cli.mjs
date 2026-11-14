@@ -7,7 +7,9 @@ import {join} from 'node:path'
 import {parseArgs} from 'node:util'
 
 import {openAccounts} from './accounts.mjs'
+import {takeLine} from './prompt.mjs'
 import {startOmarchyd} from './server.mjs'
+import {defaultTlsDir} from './tls.mjs'
 
 const {values, positionals} = parseArgs({
 	allowPositionals: true,
@@ -17,32 +19,39 @@ const dataDir = values.data ?? join(process.env.XDG_DATA_HOME ?? join(os.homedir
 const command = positionals[0] ?? 'serve'
 
 // Read a password from the terminal without echoing it.
+// Typed input that came after an Enter, kept for the next question (a paste of both passwords).
+let pending = ''
 function askHidden(prompt) {
 	return new Promise((resolve, reject) => {
 		const stdin = process.stdin
 		if (!stdin.isTTY) return reject(new Error('Run this in a terminal so the password can be typed privately'))
 		process.stdout.write(prompt)
 		stdin.setRawMode(true)
-		stdin.resume()
 		stdin.setEncoding('utf8')
 		let value = ''
-		const onData = (ch) => {
-			if (ch === '\u0003') {
-				stdin.setRawMode(false)
-				process.stdout.write('\n')
-				process.exit(130)
-			}
-			if (ch === '\r' || ch === '\n') {
-				stdin.setRawMode(false)
-				stdin.pause()
-				stdin.off('data', onData)
-				process.stdout.write('\n')
-				return resolve(value)
-			}
-			if (ch === '\u007f') value = value.slice(0, -1)
-			else value += ch
+		const finish = (r) => {
+			stdin.setRawMode(false)
+			stdin.pause()
+			stdin.off('data', onData)
+			process.stdout.write('\n')
+			if (r.interrupted) process.exit(130)
+			pending = r.rest
+			resolve(r.value)
 		}
+		const onData = (chunk) => {
+			const r = takeLine(value, chunk)
+			if (r.interrupted || r.done) return finish(r)
+			value = r.value
+		}
+		const first = takeLine('', pending)
+		pending = ''
+		if (first.done || first.interrupted) {
+			stdin.on('data', onData)
+			return finish(first)
+		}
+		value = first.value
 		stdin.on('data', onData)
+		stdin.resume()
 	})
 }
 
@@ -51,7 +60,8 @@ if (command === 'serve') {
 		console.error('omarchyd runs as your own user, not root. Start it without sudo.')
 		process.exit(1)
 	}
-	const server = await startOmarchyd({port: Number(values.port), webPort: Number(values['web-port']), dataDir})
+	// The same certificate folder as the web server (server/cli.mjs), so both use one certificate.
+	const server = await startOmarchyd({port: Number(values.port), webPort: Number(values['web-port']), dataDir, tlsDir: defaultTlsDir()})
 	console.log(`omarchyd listening on ${server.url} (data in ${dataDir})`)
 	if (!server.accounts.hasOwner()) console.log('No owner yet. Create one with: omarchyd create-owner')
 } else if (command === 'has-owner') {
