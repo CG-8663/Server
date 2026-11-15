@@ -143,14 +143,31 @@ await until('phone daemon', async () => tryCmd('/tmp/tsbin/tailscale', ['--socke
 log(tryCmd('/tmp/tsbin/tailscale', ['--socket=/tmp/phone/sock', 'up', `--login-server=${LOGIN}`, `--authkey=${KEY}`, '--hostname=phone', '--timeout=90s']).out || '(phone up)')
 ok(true, 'the phone joined the tailnet')
 
+let lastTry = null
 const web = await until(
 	'phone reaches Omarchy Server',
 	async () => {
 		const r = viaPhone(`http://${serverIP}:7780/`)
+		lastTry = r
 		return r.ok && r.out.startsWith('omarchy-web') && r
 	},
-	120_000,
-)
+	60_000,
+).catch((error) => {
+	log(`last curl: ${JSON.stringify(lastTry)}`)
+	for (const [cmd, args] of [
+		['/tmp/tsbin/tailscale', ['--socket=/tmp/phone/sock', 'status']],
+		['/tmp/tsbin/tailscale', ['--socket=/tmp/phone/sock', 'ping', '--c=3', '--tsmp', serverIP]],
+		['/tmp/tsbin/tailscale', ['--socket=/tmp/phone/sock', 'netcheck']],
+		['tailscale', ['status']],
+		['tailscale', ['debug', 'prefs']],
+		['ip', ['addr', 'show', 'tailscale0']],
+		['sudo', ['iptables', '-S']],
+		['sudo', ['ss', '-ltnp']],
+		['curl', ['-sS', '--max-time', '5', '-o', '/dev/null', '-w', '%{http_code}', `http://${serverIP}:7780/`]],
+		['curl', ['-sS', '--max-time', '8', '-v', '--socks5-hostname', '127.0.0.1:1055', `http://${serverIP}:7780/`]],
+	]) { const r = tryCmd(cmd, args); log(`$ ${cmd} ${args.join(' ')}\n${r.out}${r.err ?? ''}`) }
+	throw error
+})
 ok(true, `phone → ${serverIP}:7780 reaches Omarchy Server (${web.out.split('\n').pop()})`)
 const gate = viaPhone(`http://${serverIP}:8240/`)
 ok(gate.ok && / 302 .*7790/.test(gate.out), `phone → an app’s port: sent to sign in first (${gate.out.split('\n').pop()})`)
