@@ -57,6 +57,9 @@ where you left off; add `--purge` to delete those too.
 - **App Store:** about 580 self-hosted apps (Jellyfin, Immich, Nextcloud, Home Assistant, Vaultwarden,
   Paperless-ngx and many more), in categories, with search. Add other stores, including Umbrel-format
   ones.
+- **Tailscale built in:** install it from the App Store and reach your server from anywhere on your
+  tailnet. It's Omarchy's own Tailscale, set up on the server; its page sits behind your sign-in, and
+  private services stay private.
 - **One tap to install.** Apps that need other apps get them too. Each app opens in a window, full
   screen, or its own tab, with its default sign-in shown when it has one.
 - **Safe by default:** apps run in **rootless Podman** as you — no root, no Docker socket on the

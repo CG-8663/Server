@@ -90,7 +90,7 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 		? [all.logs, all.copy]
 		: update
 			? [all.open, all.restart, all.stop, all.logs]
-			: [all.restart, all.stop, all.logs, ...(onTerminal ? [all.shell] : [all.copy])]
+			: [all.restart, all.stop, all.logs, ...(onTerminal && !app.system ? [all.shell] : [all.copy])]
 
 	const uninstall = async () => {
 		const ok = await confirm({

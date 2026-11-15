@@ -77,7 +77,7 @@ function cssVar(name: string, fallback: string) {
 	return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback
 }
 
-export function TerminalScreen({app, onClose, embedded}: {app?: {id: string; name?: string; icon?: string}; onClose: () => void; embedded?: boolean}) {
+export function TerminalScreen({app, onClose, embedded, input}: {app?: {id: string; name?: string; icon?: string}; onClose: () => void; embedded?: boolean; input?: string}) {
 	const portalRoot = usePortalRoot()
 	const root = useRef<HTMLDivElement>(null)
 	const host = useRef<HTMLDivElement>(null)
@@ -93,6 +93,8 @@ export function TerminalScreen({app, onClose, embedded}: {app?: {id: string; nam
 	const [pasteBox, setPasteBox] = useState(false)
 	const [pasteText, setPasteText] = useState('')
 	const mods = useRef({ctrl: false, alt: false})
+	// A command to have ready at the prompt (typed, never run: you press Enter). Only once.
+	const pending = useRef(input)
 	mods.current = {ctrl, alt}
 	const toast = useToast()
 	useVisualViewport(root, !embedded)
@@ -225,6 +227,11 @@ export function TerminalScreen({app, onClose, embedded}: {app?: {id: string; nam
 			ws.onopen = () => {
 				setState('connected')
 				haptic(8)
+				if (pending.current) {
+					const text = pending.current
+					pending.current = undefined
+					setTimeout(() => ws.readyState === WebSocket.OPEN && ws.send(text), 400)
+				}
 				term.focus() // types straight away with a hardware keyboard; phones may still need the keyboard button
 			}
 			ws.onmessage = (e) => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data))

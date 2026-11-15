@@ -94,7 +94,7 @@ describe('omarchyd apps', () => {
 		storeUrl = `file://${store}`
 		const accounts = await openAccounts(data)
 		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
-		d = await startOmarchyd({port: 0, dataDir: data, home: join(root, 'home'), webPort: 7799, appOptions: {run: (...a) => runImpl.current(...a), allowFileStores: true, gatewayHost: '127.0.0.1', defaultStores: []}})
+		d = await startOmarchyd({port: 0, dataDir: data, home: join(root, 'home'), webPort: 7799, appOptions: {run: (...a) => runImpl.current(...a), allowFileStores: true, gatewayHost: '127.0.0.1', defaultStores: [], systemApps: null}})
 		const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
 		auth = {authorization: `Bearer ${login.result.data.accessToken}`}
 	})

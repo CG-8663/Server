@@ -57,6 +57,8 @@ export const useInstallReview = (appId: string | null) =>
 		queryFn: () => query<InstallReview>('apps.installReview', {appId}),
 		enabled: !!appId,
 		retry: false,
+		// Waiting for a one-time setup you run in a terminal: notice as soon as it's done.
+		refetchInterval: (q) => (q.state.data?.setup?.length ? 3000 : false),
 	})
 
 // Run an omarchyd mutation with optimistic state, a toast, and a refresh.

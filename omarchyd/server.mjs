@@ -16,12 +16,13 @@ import {createOmarchyTheme} from './omarchy-theme.mjs'
 import {createStorage} from './storage.mjs'
 import {bridge, openShell} from './terminal.mjs'
 import {createUpdater} from './updater.mjs'
+import {createSystemApps} from './system-apps.mjs'
 import {authorityInfo, readPolicy, rotateAuthority, tlsContext, writePolicy} from './tls.mjs'
 import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.16'
+export const OMARCHYD_VERSION = '0.9.17'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const accounts = await openAccounts(dataDir)
@@ -36,7 +37,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const tlsDir = appOptions.tlsDir ?? sharedTlsDir ?? join(dataDir, 'tls')
 	if (tlsDir !== join(dataDir, 'tls')) await carryOverTls(join(dataDir, 'tls'), tlsDir)
 	const secure = appOptions.secure ?? tlsContext({dir: tlsDir, lazy: true})
-	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions, tlsDir, secure})
+	// Apps that are part of the server itself (Tailscale), installed through the root helper.
+	const systemApps = appOptions.systemApps !== undefined ? appOptions.systemApps || null : createSystemApps({helper: storage.helper})
+	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions, systemApps, tlsDir, secure})
 	// Security settings kept by omarchyd itself (the https setting lives with the certificates,
 	// where the web server reads it too).
 	const securityFile = join(dataDir, 'security.json')

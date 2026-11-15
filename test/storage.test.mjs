@@ -347,6 +347,50 @@ errors: No known data errors
 		assert.ok(!log.some((l) => l[0] === 'cryptsetup'))
 	})
 
+	test('Tailscale: installed the way Omarchy does it, the owner made its operator; removed only as asked', async () => {
+		const log = []
+		let installed = false
+		let socketReady = 2 // tailscaled answers on the third try
+		const run = fakeRun(log, {
+			pacman: (a) => {
+				if (a[0] === '-Q') {
+					if (!installed) throw new Error('error: package \'tailscale\' was not found')
+					return 'tailscale 1.104.7-1\n'
+				}
+				if (a[0] === '-S') installed = true
+				if (a[0] === '-Rns') installed = false
+				return ''
+			},
+			tailscale: (a) => {
+				if (a[0] === 'set' && socketReady-- > 0) throw new Error('failed to connect to local tailscaled')
+				return ''
+			},
+		})
+		const h = createHelper({user, fs: fakeFs(), run})
+		assert.deepEqual(JSON.parse(await h.handle('tailscale-setup', [])), {installedPackage: true})
+		const cmds = log.map((l) => l.join(' '))
+		assert.ok(cmds.includes('pacman -S --needed --noconfirm tailscale'))
+		assert.ok(cmds.includes('systemctl enable --now tailscaled.service'))
+		assert.ok(cmds.includes('tailscale set --operator=chris'), 'the owner, from the sudo caller, never from an argument')
+		assert.ok(!cmds.some((c) => /tailscale up|accept-routes|--ssh|exit-node/.test(c)), 'no other Tailscale settings')
+
+		// Already there (installed from Omarchy's menu, say): not reinstalled, and reported as not ours.
+		log.length = 0
+		socketReady = 0
+		assert.deepEqual(JSON.parse(await h.handle('tailscale-setup', ['--ignored', 'x'])), {installedPackage: false})
+		assert.ok(!log.some((l) => l[0] === 'pacman' && l[1] === '-S'))
+
+		log.length = 0
+		assert.equal(await h.handle('tailscale-remove', []), 'ok')
+		assert.deepEqual(
+			log.filter((l) => l[0] !== 'pacman' || l[1] !== '-Q').map((l) => l.join(' ')),
+			['tailscale logout', 'systemctl disable --now tailscaled.service', 'pacman -Rns --noconfirm tailscale'],
+		)
+		log.length = 0
+		assert.equal(await h.handle('tailscale-remove', []), 'ok', 'nothing to remove')
+		assert.deepEqual(log.map((l) => l.join(' ')), ['pacman -Q tailscale'])
+	})
+
 	test('low ports: only ever lowers the limit, and remembers it', async () => {
 		const log = []
 		let now = 1024
