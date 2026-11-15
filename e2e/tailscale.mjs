@@ -2,7 +2,7 @@
 // service, real omarchyd, Tailscale's real web page, and a tailnet (Headscale) with a second node
 // standing in for your phone.
 import assert from 'node:assert/strict'
-import {execFileSync, spawn} from 'node:child_process'
+import {execFile, execFileSync, spawn} from 'node:child_process'
 import {mkdirSync, mkdtempSync} from 'node:fs'
 import http from 'node:http'
 import {join} from 'node:path'
@@ -40,7 +40,10 @@ const until = async (what, fn, ms = 60_000) => {
 	}
 }
 // Through the "phone" node's SOCKS proxy, to the server's Tailscale address.
-const viaPhone = (url) => tryCmd('curl', ['-sS', '--max-time', '8', '-o', '-', '-w', '\n%{http_code} %{redirect_url}', '--socks5-hostname', '127.0.0.1:1055', url])
+// Asynchronous on purpose: the test servers live in this same process, so a blocking curl would stop
+// them answering.
+const tryAsync = (cmd, args) => new Promise((resolve) => execFile(cmd, args, {encoding: 'utf8'}, (e, out, err) => resolve(e ? {ok: false, out: String(out || '') + String(err || e.message)} : {ok: true, out})))
+const viaPhone = (url) => tryAsync('curl', ['-sS', '--max-time', '8', '-o', '-', '-w', '\n%{http_code} %{redirect_url}', '--socks5-hostname', '127.0.0.1:1055', url])
 
 const KEY = process.env.HS_KEY
 const LOGIN = 'http://127.0.0.1:8080'
@@ -147,7 +150,7 @@ let lastTry = null
 const web = await until(
 	'phone reaches Omarchy Server',
 	async () => {
-		const r = viaPhone(`http://${serverIP}:7780/`)
+		const r = (await viaPhone(`http://${serverIP}:7780/`))
 		lastTry = r
 		return r.ok && r.out.startsWith('omarchy-web') && r
 	},
@@ -163,17 +166,16 @@ const web = await until(
 		['ip', ['addr', 'show', 'tailscale0']],
 		['sudo', ['iptables', '-S']],
 		['sudo', ['ss', '-ltnp']],
-		['curl', ['-sS', '--max-time', '5', '-o', '/dev/null', '-w', '%{http_code}', `http://${serverIP}:7780/`]],
-		['curl', ['-sS', '--max-time', '8', '-v', '--socks5-hostname', '127.0.0.1:1055', `http://${serverIP}:7780/`]],
+				['curl', ['-sS', '--max-time', '8', '-v', '--socks5-hostname', '127.0.0.1:1055', `http://${serverIP}:7780/`]],
 	]) { const r = tryCmd(cmd, args); log(`$ ${cmd} ${args.join(' ')}\n${r.out}${r.err ?? ''}`) }
 	throw error
 })
 ok(true, `phone → ${serverIP}:7780 reaches Omarchy Server (${web.out.split('\n').pop()})`)
-const gate = viaPhone(`http://${serverIP}:8240/`)
+const gate = (await viaPhone(`http://${serverIP}:8240/`))
 ok(gate.ok && / 302 .*7790/.test(gate.out), `phone → an app’s port: sent to sign in first (${gate.out.split('\n').pop()})`)
-const priv = viaPhone(`http://${serverIP}:7781/`)
+const priv = (await viaPhone(`http://${serverIP}:7781/`))
 ok(!priv.out.includes('private'), `phone can’t reach a service kept on localhost (${priv.out.trim().split('\n').pop()})`)
-const page = viaPhone(`http://${serverIP}:${app.internalPort}/`)
+const page = (await viaPhone(`http://${serverIP}:${app.internalPort}/`))
 ok(!/Tailscale/.test(page.out), `phone can’t reach Tailscale’s private page directly (${page.out.trim().split('\n').pop()})`)
 log(sh('/tmp/tsbin/tailscale', ['--socket=/tmp/phone/sock', 'status']).trim())
 
@@ -181,11 +183,11 @@ log(sh('/tmp/tsbin/tailscale', ['--socket=/tmp/phone/sock', 'status']).trim())
 await call('apps.stop', {appId: 'tailscale'})
 ok((await tailscaleApp()).state === 'stopped', 'Stop: shown as stopped')
 ok(JSON.parse(sh('tailscale', ['status', '--json'])).BackendState === 'Stopped', 'Stop: Tailscale is disconnected')
-await until('phone loses the server', async () => !viaPhone(`http://${serverIP}:7780/`).out.startsWith('omarchy-web'), 60_000)
+await until('phone loses the server', async () => !(await viaPhone(`http://${serverIP}:7780/`)).out.startsWith('omarchy-web'), 60_000)
 ok(true, 'Stop: the phone can’t reach the server')
 await call('apps.start', {appId: 'tailscale'})
 ok((await tailscaleApp()).state === 'running', 'Start: running')
-await until('phone reaches the server again', async () => viaPhone(`http://${serverIP}:7780/`).out.startsWith('omarchy-web'), 120_000)
+await until('phone reaches the server again', async () => (await viaPhone(`http://${serverIP}:7780/`)).out.startsWith('omarchy-web'), 120_000)
 ok(sh('tailscale', ['ip', '-4']).trim() === serverIP, 'Start: same Tailscale address, no new log in')
 
 // 7. omarchyd restarts: its page comes back.
