@@ -11,7 +11,7 @@ export const CHANGELOG: Release[] = [
 			'Tailscale is in the App Store, first in the list. It installs Omarchy’s own Tailscale on the server (the same way the Omarchy menu does), and Open shows Tailscale’s page behind your Omarchy Server sign-in. Press Log In there to join your tailnet, then reach Omarchy Server from your phone or laptop anywhere at its Tailscale address.',
 			'Stop and Start disconnect and reconnect the server from your tailnet without logging in again. Uninstall logs out and removes Tailscale, unless it was already installed before.',
 			'Your tailnet devices can reach what the server shares on its network, like the server’s own Wi-Fi or wired neighbours can. Everything kept private on the server itself (Omarchy Server’s internals and each app’s inner port) stays private, and apps still ask you to sign in.',
-			'Run the Omarchy Server installer once more after this update, so the server is allowed to set up Tailscale.',
+			'No need to run the installer again. If Tailscale is already set up (for example from the Omarchy menu), it’s used as it is. Otherwise, on servers installed before this version, the App Store shows one command to run once, with an Open Terminal button, and carries on by itself when it’s done.',
 		],
 	},
 	{

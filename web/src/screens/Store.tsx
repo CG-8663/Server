@@ -30,7 +30,7 @@ const catIcon = (c: string) => (hasIcon(c) ? c : 'category')
 // Shown first in "Featured" when present in the catalog; otherwise any app with screenshots.
 const FEATURED = ['immich', 'nextcloud', 'home-assistant', 'jellyfin', 'plex', 'bitcoin', 'ollama', 'vaultwarden', 'pi-hole', 'tailscale']
 
-export function Store({onOpenInstalled, onBack}: {onOpenInstalled: (app: UserApp) => void; onOpenApp?: (app: UserApp) => void; onBack?: () => void}) {
+export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (app: UserApp) => void; onOpenApp?: (app: UserApp) => void; onBack?: () => void; onTerminal?: (input: string) => void}) {
 	const registry = useRegistry()
 	const apps = useApps()
 	const [q, setQ] = useState('')
@@ -207,6 +207,7 @@ export function Store({onOpenInstalled, onBack}: {onOpenInstalled: (app: UserApp
 					installed={installed}
 					onSelect={(a) => setSelected({app: a})}
 					onClose={() => setSelected(null)}
+					onTerminal={onTerminal}
 				/>
 			)}
 		</div>
@@ -362,6 +363,7 @@ function StoreSheet({
 	installed,
 	onSelect,
 	onClose,
+	onTerminal,
 }: {
 	app: StoreApp
 	startInstall?: boolean
@@ -370,9 +372,11 @@ function StoreSheet({
 	onSelect: (a: StoreApp) => void
 	onClose: () => void
 	onOpenApp?: (app: UserApp) => void
+	onTerminal?: (input: string) => void
 }) {
 	const boot = useBootstrap()
 	const desk = useDesktop()
+	const openTerminal = desk ? (input: string) => desk.openTerminal(undefined, input) : onTerminal
 	const toast = useToast()
 	const action = useAction()
 	const [reviewing, setReviewing] = useState(!!startInstall)
@@ -390,6 +394,12 @@ function StoreSheet({
 	const [allowed, setAllowed] = useState(false)
 	useEffect(() => setAllowed(false), [reviewing, app.id])
 	const access = review.data?.permissions ?? []
+	const setup = review.data?.setup ?? []
+	const copy = (text: string) =>
+		navigator.clipboard?.writeText(text).then(
+			() => toast('Copied'),
+			() => toast('Couldn’t copy here: select the command and copy it', true),
+		)
 
 	const install = () => {
 		haptic(12)
@@ -495,7 +505,34 @@ function StoreSheet({
 							)}
 						</div>
 					)}
-					{review.data && !review.data.requiredFolders.length && !review.data.gpuAccess && !access.length && (
+					{setup.map((s) => (
+						<div key={s.appId} className="glass card" style={{marginBottom: 16, borderRadius: 18}}>
+							<div style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8}}>
+								<span className="row-ico" style={{'--c': 'var(--yellow)'} as React.CSSProperties}>
+									<Icon name="terminal" size={18} />
+								</span>
+								<b style={{fontSize: 15}}>One-time setup for {s.appName}</b>
+							</div>
+							<p className="prose" style={{margin: '0 0 10px', fontSize: 14}}>
+								Run this once in a terminal on the server. It installs {s.appName} the way Omarchy’s menu does, and asks for your password itself. This page notices when it’s done.
+							</p>
+							<pre style={{whiteSpace: 'pre-wrap', wordBreak: 'break-all', userSelect: 'all', fontSize: 12.5, padding: 10, borderRadius: 10, background: 'rgba(0,0,0,.25)', margin: '0 0 10px'}}>{s.command}</pre>
+							<div style={{display: 'flex', gap: 8}}>
+								{openTerminal && (
+									<button className="btn" onClick={() => openTerminal(s.command)}>
+										<Icon name="terminal" size={18} /> Open Terminal
+									</button>
+								)}
+								<button className="btn ghost" onClick={() => copy(s.command)}>
+									Copy
+								</button>
+							</div>
+							<p className="muted" style={{display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, margin: '10px 0 0'}}>
+								<span className="spinner" /> Waiting for the setup…
+							</p>
+						</div>
+					))}
+					{review.data && !review.data.requiredFolders.length && !review.data.gpuAccess && !access.length && !setup.length && (
 						<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, borderRadius: 18}}>
 							<span className="row-ico" style={{'--c': 'var(--green)'} as React.CSSProperties}>
 								<Icon name="shield" size={18} />
@@ -504,7 +541,7 @@ function StoreSheet({
 						</div>
 					)}
 					<div className="stack">
-						<button className="btn primary block" onClick={install} disabled={!review.data || action.isPending || (access.length > 0 && !allowed) || access.some((p) => p.id === 'refused')}>
+						<button className="btn primary block" onClick={install} disabled={!review.data || action.isPending || setup.length > 0 || (access.length > 0 && !allowed) || access.some((p) => p.id === 'refused')}>
 							<Icon name="download" size={20} />
 							{review.data?.alsoInstalls?.length ? `Install all ${review.data.alsoInstalls.length + 1}` : `Install ${app.name}`}
 						</button>

@@ -27,7 +27,7 @@ if (cmd === 'web') {
 `
 
 describe('Tailscale on the system', () => {
-	let root, data, d, auth, port, helperCalls, helperAnswer, prefs, apiRequests, socketPath, api, composeCalls, bin
+	let root, data, d, auth, port, helperCalls, helperAnswer, operator, helperFile, prefs, apiRequests, socketPath, api, composeCalls, bin
 	const call = async (path, input, kind = 'mutation') => {
 		const url = new URL(`${d.url}/trpc/${path}`)
 		const init = {method: kind === 'mutation' ? 'POST' : 'GET', headers: {...auth}}
@@ -52,11 +52,15 @@ describe('Tailscale on the system', () => {
 	const helper = async (verb) => {
 		helperCalls.push(verb)
 		if (helperAnswer[verb] instanceof Error) throw helperAnswer[verb]
+		// What the real verbs leave behind: you as Tailscale's operator, or no Tailscale at all.
+		if (verb === 'tailscale-setup') operator = true
+		if (verb === 'tailscale-remove') operator = false
 		return helperAnswer[verb] ?? 'ok'
 	}
 	const systemApps = () =>
 		createSystemApps({
 			helper,
+			helperFile,
 			socketPath,
 			tailscaleBin: bin,
 			restartDelayMs: 150,
@@ -95,6 +99,9 @@ describe('Tailscale on the system', () => {
 		port = 29300 + Math.floor(Math.random() * 600) // below the ephemeral range, clear of the other app tests
 		helperCalls = []
 		helperAnswer = {'tailscale-setup': JSON.stringify({installedPackage: true})}
+		operator = false
+		helperFile = join(root, 'helper.mjs')
+		await writeFile(helperFile, "const verbs = {\n\t'tailscale-setup': async () => {},\n\t'tailscale-remove': async () => {},\n}\n")
 		composeCalls = []
 		bin = join(root, 'tailscale')
 		await writeFile(bin, FAKE_TAILSCALE)
@@ -111,6 +118,8 @@ describe('Tailscale on the system', () => {
 				apiRequests.push(`${req.method} ${req.url}`)
 				if (req.headers.host !== 'local-tailscaled.sock' || req.headers.origin || req.headers.referer) return res.writeHead(403).end('invalid localapi request')
 				if (req.method === 'PATCH' && req.url === '/localapi/v0/prefs') {
+					// Like the real one: changing settings is for its operator (or root) only.
+					if (!operator) return res.writeHead(403).end('Access denied: prefs write access denied')
 					const p = JSON.parse(body)
 					if (p.WantRunningSet) prefs.WantRunning = p.WantRunning
 					return res.end(JSON.stringify(prefs))
@@ -155,15 +164,29 @@ describe('Tailscale on the system', () => {
 		assert.deepEqual(helperCalls, [])
 	})
 
-	test('an old helper: says to run the installer again', async () => {
-		helperAnswer['tailscale-setup'] = new Error('Unknown action: tailscale-setup')
+	test('a helper older than Tailscale support: no installer needed, just a one-time command you run yourself', async () => {
+		const current = await readFile(helperFile, 'utf8')
+		await writeFile(helperFile, "const verbs = {\n\t'ping': async () => 'ok',\n}\n")
+		const review = await q('apps.installReview', {appId: 'tailscale'})
+		assert.equal(review.setup.length, 1)
+		assert.match(review.setup[0].command, /^sudo pacman -S --needed tailscale && sudo systemctl enable --now tailscaled && sudo tailscale set --operator=/)
+		helperCalls.length = 0
 		await call('apps.install', {appId: 'tailscale', grant: ['system-software']})
 		const app = await until(async () => {
 			const a = await tailscale()
 			return a?.state === 'unknown' && a
 		})
-		assert.match(app.error, /Run the Omarchy Server installer again/)
-		helperAnswer['tailscale-setup'] = JSON.stringify({installedPackage: true})
+		assert.match(app.error, /one-time setup/)
+		assert.ok(app.error.includes(review.setup[0].command))
+		assert.deepEqual(helperCalls, [], 'the old helper isn’t even asked')
+		assert.doesNotMatch(app.error, /installer/)
+		await call('apps.uninstall', {appId: 'tailscale'})
+		// You ran the command: the review sees it at once, with nothing left to do.
+		operator = true
+		assert.deepEqual((await q('apps.installReview', {appId: 'tailscale'})).setup, [])
+		operator = false
+		await writeFile(helperFile, current)
+		assert.deepEqual((await q('apps.installReview', {appId: 'tailscale'})).setup, [], 'a current helper does it for you')
 	})
 
 	test('install: through the helper, no containers; its page runs as you on a private port, behind the sign-in', async () => {
@@ -242,12 +265,13 @@ describe('Tailscale on the system', () => {
 		await until(async () => !(await fetch(`http://127.0.0.1:${internal}/`).then(() => true, () => false)))
 		await assert.rejects(fetch(`http://127.0.0.1:${port}/`), 'its port is closed')
 
-		// Installed before (from Omarchy's menu): adopted, and left in place on uninstall.
-		helperAnswer['tailscale-setup'] = JSON.stringify({installedPackage: false})
+		// Already set up (from Omarchy's menu, or the one-time command): used as it is, without root,
+		// and left in place on uninstall.
+		operator = true
 		helperCalls.length = 0
 		await call('apps.install', {appId: 'tailscale', grant: ['system-software']})
 		await until(async () => (await tailscale())?.state === 'running')
 		await call('apps.uninstall', {appId: 'tailscale'})
-		assert.deepEqual(helperCalls, ['tailscale-setup'], 'not removed')
+		assert.deepEqual(helperCalls, [], 'no root needed, and nothing removed')
 	})
 })

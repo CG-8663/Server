@@ -94,13 +94,13 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 	const [tab, setTab] = useState<Tab>(tabFromHash)
 	const [appId, setAppId] = useState<string | null>(null)
 	const [bellOpen, setBellOpen] = useState(false)
-	const [terminal, setTerminal] = useState<{app?: {id: string; name?: string; icon?: string}} | null>(null)
+	const [terminal, setTerminal] = useState<{app?: {id: string; name?: string; icon?: string}; input?: string} | null>(null)
 	const user = useUser()
 	// omarchyd only gives the owner a shell.
-	const openTerminal = user.data?.role === 'member' ? undefined : (app?: {id: string; name?: string; icon?: string}) => {
+	const openTerminal = user.data?.role === 'member' ? undefined : (app?: {id: string; name?: string; icon?: string}, input?: string) => {
 		haptic(8)
 		setAppId(null)
-		setTerminal({app})
+		setTerminal({app, input})
 	}
 	const apps = useApps()
 	const updates = useUpdates()
@@ -167,7 +167,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 					{tab === 'home' && <Home onOpenApp={(a) => setAppId(a.id)} go={go} onTerminal={openTerminal} />}
 					{tab === 'apps' && <Apps onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} onStore={() => go('store')} />}
 					{tab === 'files' && <Files />}
-					{tab === 'store' && <Store onOpenInstalled={(a) => setAppId(a.id)} onBack={() => history.back()} />}
+					{tab === 'store' && <Store onOpenInstalled={(a) => setAppId(a.id)} onBack={() => history.back()} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
 					{tab === 'machines' && <Machines />}
 					{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} />}
 					{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={() => history.back()} />}
@@ -185,7 +185,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 			</nav>
 			<AppSheet app={app} update={update} onClose={() => setAppId(null)} onTerminal={openTerminal} />
 
-			{terminal && <TerminalScreen app={terminal.app} onClose={() => setTerminal(null)} />}
+			{terminal && <TerminalScreen app={terminal.app} input={terminal.input} onClose={() => setTerminal(null)} />}
 			<NotificationsSheet
 				open={bellOpen}
 				notes={notes}

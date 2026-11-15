@@ -11,11 +11,16 @@
 // reaches only what the server offers to the network anyway (Omarchy Server and your apps'
 // ports, behind their sign-in).
 import {execFile, spawn as nodeSpawn} from 'node:child_process'
+import {readFile} from 'node:fs/promises'
 import http from 'node:http'
 
 import {RpcError} from './rpc.mjs'
 
 export const TAILSCALE_SOCKET = '/run/tailscale/tailscaled.sock'
+const HELPER_FILE = '/usr/local/libexec/omarchy-server/helper.mjs'
+// The one-time setup, for a server whose helper is older than Tailscale support: the same steps as
+// Omarchy's own menu, typed by you in a terminal (so you give sudo your password, not us).
+export const TAILSCALE_SETUP_COMMAND = 'sudo pacman -S --needed tailscale && sudo systemctl enable --now tailscaled && sudo tailscale set --operator="$(id -un)"'
 
 const execRun = (cmd, args) =>
 	new Promise((resolve, reject) => execFile(cmd, args, {timeout: 30_000, maxBuffer: 4 * 1024 * 1024}, (error, stdout, stderr) => (error ? reject(new Error(String(stderr || error.message).trim())) : resolve(String(stdout)))))
@@ -50,7 +55,7 @@ const TAILSCALE_LISTING = {
 	system: true,
 }
 
-export function createSystemApps({helper, run = execRun, spawn = nodeSpawn, socketPath = TAILSCALE_SOCKET, tailscaleBin = 'tailscale', restartDelayMs = 3000, ports = {}}) {
+export function createSystemApps({helper, helperFile = HELPER_FILE, run = execRun, spawn = nodeSpawn, socketPath = TAILSCALE_SOCKET, tailscaleBin = 'tailscale', restartDelayMs = 3000, ports = {}}) {
 	const listing = {...TAILSCALE_LISTING, ...(ports.tailscale ? {port: ports.tailscale} : {})}
 	const webs = new Map()
 
@@ -73,9 +78,25 @@ export function createSystemApps({helper, run = execRun, spawn = nodeSpawn, sock
 		try {
 			return await helper(verb, [])
 		} catch (e) {
-			if (/Unknown action/i.test(e.message)) throw new RpcError('PRECONDITION_FAILED', 'Run the Omarchy Server installer again once to add this (its helper for system changes changed).')
+			if (/Unknown action/i.test(e.message)) throw needsSetup()
 			throw e
 		}
+	}
+	// Already usable without root: Tailscale is installed, running, and you're its operator (an empty
+	// change to its settings is accepted only from its operator or root).
+	const canDrive = () => localApi('PATCH', 'prefs', {}).then(() => true, () => false)
+	// Whether the installed helper knows a verb, without running it. An older helper simply lacks it.
+	// If the file can't be read, assume it does and let the helper answer.
+	const helperCan = (verb) => readFile(helperFile, 'utf8').then((t) => t.includes(`'${verb}'`), () => true)
+	const needsSetup = () => new RpcError('PRECONDITION_FAILED', `Tailscale needs a one-time setup on the server first. In a terminal, run:\n${TAILSCALE_SETUP_COMMAND}\nThen install it again.`)
+	// Make sure Tailscale is installed, running and yours to drive: nothing to do if it already is,
+	// else the helper sets it up, else (older helper) you're asked to run the setup once yourself.
+	async function ensure(app) {
+		if (await canDrive()) return
+		if (!(await helperCan('tailscale-setup'))) throw needsSetup()
+		const r = JSON.parse(await helperSays('tailscale-setup'))
+		// Only what Omarchy Server installed is removed again; a Tailscale you set up yourself stays.
+		if (r.installedPackage) app.installedPackage = true
 	}
 	async function version() {
 		return (await run(tailscaleBin, ['version'])).split('\n')[0].trim() || undefined
@@ -122,10 +143,14 @@ export function createSystemApps({helper, run = execRun, spawn = nodeSpawn, sock
 		isSystem: (id) => id === listing.id,
 		permissions: (id) => (id === listing.id ? [{id: 'system-software', ...SYSTEM_PERMISSIONS['system-software'], what: ['the “tailscale” package from Arch’s repositories', 'the tailscaled system service']}] : []),
 
+		// For the install review: null when nothing is needed from you, else the command to run once.
+		async setup(id) {
+			if (id !== listing.id) return null
+			if ((await canDrive()) || (await helperCan('tailscale-setup'))) return null
+			return {command: TAILSCALE_SETUP_COMMAND}
+		},
 		async install(app) {
-			const r = JSON.parse(await helperSays('tailscale-setup'))
-			// Only what Omarchy Server installed is removed again; a Tailscale you set up yourself stays.
-			if (r.installedPackage) app.installedPackage = true
+			await ensure(app)
 			app.version = (await version().catch(() => null)) ?? app.version
 			startWeb(app)
 		},
@@ -148,8 +173,7 @@ export function createSystemApps({helper, run = execRun, spawn = nodeSpawn, sock
 				await setRunning(true)
 			} catch {
 				// Its service isn't running (stopped, or the package was removed): set it up again.
-				const r = JSON.parse(await helperSays('tailscale-setup'))
-				if (r.installedPackage) app.installedPackage = true
+				await ensure(app)
 				await setRunning(true)
 			}
 			if (!webs.has(app.id)) startWeb(app)

@@ -26,7 +26,7 @@ import {Personalize} from './Personalize'
 
 // ---- model ---------------------------------------------------------------------------------
 type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'console' | 'app'
-type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; term?: {id: string; name?: string; icon?: string}}
+type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; term?: {id: string; name?: string; icon?: string}; input?: string}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
 type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number}
@@ -164,7 +164,7 @@ type DesktopApi = {
 	open: (kind: Kind, payload?: Payload, opts?: {newWindow?: boolean}) => void
 	launch: (app: UserApp) => void
 	openConsole: (machineId: string) => void
-	openTerminal: (app?: {id: string; name?: string; icon?: string}) => void
+	openTerminal: (app?: {id: string; name?: string; icon?: string}, input?: string) => void
 	openItem: (key: string) => void
 	close: (id: string) => void
 	addIcon: (key: string, at?: {x: number; y: number}) => void
@@ -349,7 +349,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			open,
 			launch,
 			openConsole,
-			openTerminal: (term) => open('terminal', term ? {term} : undefined, {newWindow: true}),
+			openTerminal: (term, input) => open('terminal', term || input ? {...(term ? {term} : {}), ...(input ? {input} : {})} : undefined, {newWindow: true}),
 			close,
 			openItem: (key) => {
 				if (isSys(key)) return key === 'terminal' ? open('terminal', undefined, {newWindow: !winsRef.current.some((w) => w.kind === 'terminal')}) : open(key)
@@ -1994,7 +1994,7 @@ const WindowContent = memo(
 				case 'personalize':
 					return <Personalize tab={win.payload?.tab} prefs={prefs} setPrefs={setPrefs} />
 				case 'terminal':
-					return owner ? <TerminalScreen embedded app={win.payload?.term} onClose={close} /> : <div className="win-empty">Only the server’s owner can open a terminal.</div>
+					return owner ? <TerminalScreen embedded app={win.payload?.term} input={win.payload?.input} onClose={close} /> : <div className="win-empty">Only the server’s owner can open a terminal.</div>
 				case 'console':
 					return <ConsoleWindow machineId={win.payload!.machineId!} onClose={close} />
 				default:

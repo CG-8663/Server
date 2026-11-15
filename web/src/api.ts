@@ -176,6 +176,8 @@ export type InstallReview = {
 	alsoInstalls?: {id: string; name: string; icon?: string}[]
 	/** Extra access the apps ask for; each must be allowed explicitly. */
 	permissions?: {id: string; label: string; detail: string; what: string[]; appId: string; appName: string}[]
+	/** Apps installed on the server itself that need a one-time command from you first. */
+	setup?: {appId: string; appName: string; command: string}[]
 }
 
 export type OsImage = {

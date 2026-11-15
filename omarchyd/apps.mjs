@@ -1408,7 +1408,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					// Extra access, per app in the plan (shown for you to allow before installing).
 					const access = []
 					for (const a of plan) for (const p of await permissionsOf(a)) access.push({...p, appId: a.id, appName: a.name})
-					return {requiredFolders: [], gpuAccess: false, alsoInstalls: also, permissions: access}
+					// System apps that need a one-time step from you first (see system-apps.mjs).
+					const setup = []
+					for (const a of plan) if (a.system && systemApps?.setup) { const s = await systemApps.setup(a.id); if (s) setup.push({...s, appId: a.id, appName: a.name}) }
+					return {requiredFolders: [], gpuAccess: false, alsoInstalls: also, permissions: access, setup}
 				},
 			},
 			'apps.uninstall': {kind: 'mutation', run: uninstall},
