@@ -272,7 +272,26 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 	return {text: YAML.stringify(doc), internalPort}
 }
 
-export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true})}) {
+// Can a browser use this app's web page right now? One answer for every screen:
+//   ready         its page answers (a sign-in page or a "not found" counts: the app is there)
+//   starting      not answering yet, and it was started only a moment ago
+//   unreachable   its containers run, but nothing answers on its web port (see `result`/`error`)
+//   stopped       its containers aren't running
+//   gateway-down  the app answers, but Omarchy Server's own port for it isn't open
+//   no-web        it has no web page
+// `probe` is what asking the app gave: {result: 'answered' | 'refused' | 'timeout' | 'error' | 'no-web', status}.
+export function readinessOf({probe, container = 'running', runningForMs = Infinity, graceMs = 120_000, gatewayOpen = true}) {
+	if (probe.result === 'no-web') return 'no-web'
+	const answered = probe.result === 'answered'
+	if (answered && (probe.status ?? 500) < 500) return gatewayOpen ? 'ready' : 'gateway-down'
+	if (container === 'stopped') return 'stopped'
+	if (runningForMs < graceMs) return 'starting'
+	// Still a server error after it has had time to start: open it, its own page says what's wrong.
+	if (answered) return gatewayOpen ? 'ready' : 'gateway-down'
+	return 'unreachable'
+}
+
+export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000}) {
 	const base = join(dataDir, 'apps')
 	const storesDir = join(base, 'stores')
 	const installedDir = join(base, 'installed')
@@ -859,23 +878,56 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		return ok && (await exists(sock))
 	}
 
+	async function liveState(a) {
+		try {
+			const text = (await compose(a, 'ps', '-a', '--format', 'json')).trim()
+			const rows = text.startsWith('[') ? JSON.parse(text) : text.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+			const states = rows.map((r) => String(r.State ?? r.state ?? '').toLowerCase())
+			return states.length && states.some((s) => s === 'running') ? 'running' : 'stopped'
+		} catch {
+			return 'unknown'
+		}
+	}
 	async function liveStates() {
 		const out = new Map()
-		await Promise.all(
-			state.apps
-				.filter((a) => !busy.has(a.id) && a.state !== 'error')
-				.map(async (a) => {
-					try {
-						const text = (await compose(a, 'ps', '-a', '--format', 'json')).trim()
-						const rows = text.startsWith('[') ? JSON.parse(text) : text.split('\n').filter(Boolean).map((l) => JSON.parse(l))
-						const states = rows.map((r) => String(r.State ?? r.state ?? '').toLowerCase())
-						out.set(a.id, states.length && states.some((s) => s === 'running') ? 'running' : 'stopped')
-					} catch {
-						out.set(a.id, 'unknown')
-					}
-				}),
-		)
+		await Promise.all(state.apps.filter((a) => !busy.has(a.id) && a.state !== 'error').map(async (a) => out.set(a.id, await liveState(a))))
 		return out
+	}
+
+	// When each app was last started, as far as this process knows (apps already running when
+	// omarchyd started count from then). Tells "still starting" from "running but not answering".
+	const bootedAt = Date.now()
+	const startedAt = new Map()
+	const markStarted = (id) => startedAt.set(id, Date.now())
+
+	// Ask the app's web port directly (not through its gateway), the way the gateway reaches it:
+	// https when the listing says the app itself speaks https.
+	function askWeb(app) {
+		const target = app.internalPort ?? app.port
+		if (!target) return Promise.resolve({result: 'no-web'})
+		const secureUpstream = !!app.internalPort && !!app.internalHttps
+		return new Promise((resolve) => {
+			const opts = {host: '127.0.0.1', port: target, path: app.path || '/', method: 'GET', timeout: 6000, headers: {accept: 'text/html'}, ...(secureUpstream ? {rejectUnauthorized: false} : {})}
+			const req = (secureUpstream ? https : http).request(opts, (r) => {
+				r.resume()
+				resolve({result: 'answered', status: r.statusCode, location: r.headers.location ?? null})
+			})
+			req.on('timeout', () => (req.destroy(), resolve({result: 'timeout'})))
+			req.on('error', (e) => resolve({result: e.code === 'ECONNREFUSED' ? 'refused' : 'error', error: e.code ?? e.message}))
+			req.end()
+		})
+	}
+	async function probe(app) {
+		const asked = await askWeb(app)
+		if (asked.result === 'no-web') return {...asked, readiness: 'no-web'}
+		const gatewayUp = () => gateways.has(app.id) || gateways.has(gatewayKey(app.id, true))
+		// The gateway should be open whenever the app is installed; if it isn't, open it again.
+		if (!gatewayUp() && app.port && !busy.has(app.id)) await openGateways(app).catch(() => {})
+		const answeredOk = asked.result === 'answered' && asked.status < 500
+		const container = answeredOk ? 'running' : busy.has(app.id) ? 'running' : await liveState(app)
+		const runningForMs = busy.has(app.id) ? 0 : Date.now() - (startedAt.get(app.id) ?? bootedAt)
+		const readiness = readinessOf({probe: asked, container, runningForMs, graceMs: startGraceMs, gatewayOpen: gatewayUp()})
+		return {...asked, gateway: gatewayUp(), container, runningFor: Math.round(runningForMs / 1000), readiness}
 	}
 
 	// ---- procedures -----------------------------------------------------------------------------
@@ -1102,6 +1154,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					await compose(app, 'pull')
 					busy.set(app.id, {state: 'installing', progress: 85})
 					await compose(app, 'up', '-d', '--remove-orphans')
+					markStarted(app.id)
 					await openGateways(app)
 					delete app.state
 					delete app.error
@@ -1142,6 +1195,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			closeGateway(app.id)
 			app.internalPort = internalPort
 			await compose(app, 'up', '-d', '--remove-orphans')
+			markStarted(app.id)
 			app.permissions = [...new Set([...app.permissions, ...wants])]
 			Object.assign(app, {version: src.version, name: src.name, icon: src.icon, path: src.path, requiresHttps: src.requiresHttps || undefined, internalHttps: src.web?.https || undefined})
 			delete app.state
@@ -1167,6 +1221,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		busy.set(app.id, {state: pending})
 		try {
 			await compose(app, ...args)
+			if (args[0] === 'up' || args[0] === 'restart') markStarted(app.id)
 		} finally {
 			busy.delete(app.id)
 		}
@@ -1334,24 +1389,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			},
 			'apps.recentlyOpened': {kind: 'query', run: async () => (await ready, state.recent.filter((id) => state.apps.some((a) => a.id === id)))},
 			// A one-time hand-over for a browser that opens an app before it has an app session.
-			// Does the app answer behind its gateway? Used when its window is slow, to say why.
-			'apps.probe': {
-				kind: 'query',
-				run: async (input) => {
-					const app = findInstalled(String(input?.appId ?? ''))
-					const target = app.internalPort ?? app.port
-					if (!target) return {result: 'no-web'}
-					return await new Promise((resolve) => {
-						const req = http.request({host: '127.0.0.1', port: target, path: app.path || '/', method: 'GET', timeout: 6000, headers: {accept: 'text/html'}}, (r) => {
-							r.resume()
-							resolve({result: 'answered', status: r.statusCode, location: r.headers.location ?? null, gateway: gateways.has(app.id) || gateways.has(gatewayKey(app.id, true))})
-						})
-						req.on('timeout', () => (req.destroy(), resolve({result: 'timeout'})))
-						req.on('error', (e) => resolve({result: e.code === 'ECONNREFUSED' ? 'refused' : 'error', error: e.code ?? e.message}))
-						req.end()
-					})
-				},
-			},
+			// Is the app's web page usable right now? (See readinessOf.) Open buttons wait on this.
+			'apps.probe': {kind: 'query', run: async (input) => (await ready, probe(findInstalled(String(input?.appId ?? ''))))},
 			'apps.accessTicket': {
 				kind: 'mutation',
 				run: async (input, {auth}) => {

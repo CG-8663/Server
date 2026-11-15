@@ -7315,3 +7315,17 @@ html.page-locked body {
 .unused-err {
 	color: var(--red) !important;
 }
+
+/* An app that's running but whose page doesn't answer (AppSheet). */
+.open-problem {
+	display: grid;
+	gap: 10px;
+	margin-bottom: 12px;
+	border-radius: 16px;
+	font-size: 14.5px;
+	background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+.open-problem-actions {
+	display: flex;
+	gap: 8px;
+}
