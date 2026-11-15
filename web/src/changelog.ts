@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.15',
+		date: '2026-11-15',
+		title: 'A clean way out',
+		added: [
+			'“omarchy-server uninstall” in a terminal removes Omarchy Server and keeps your account, apps, machines and their data, so installing again picks up where you left off. Add --purge to delete those too: it asks you to type “delete”, and refuses while any app or machine still exists. Your files, ~/Pools and installed packages are never touched (thanks, nixfred).',
+		],
+	},
+	{
 		version: '0.9.14',
 		date: '2026-11-15',
 		title: 'App updates that work',
