@@ -111,7 +111,14 @@ const node = await (await fetch('http://127.0.0.1:8240/api/data', {headers: {coo
 ok(node.Status === 'NeedsLogin', `it waits for you to log in (${node.Status})`)
 // The Log in button, through the gateway (Tailscale's CSRF check compares Origin and Host).
 const up = await fetch('http://127.0.0.1:8240/api/up', {method: 'POST', headers: {cookie, origin: 'http://127.0.0.1:8240', 'content-type': 'application/json'}, body: '{}'})
-const upBody = await up.json()
+const upText = await up.text()
+log('POST /api/up through the gateway:', up.status, upText.slice(0, 300))
+if (up.status !== 200) {
+	const direct = await fetch(`http://127.0.0.1:${app.internalPort}/api/up`, {method: 'POST', headers: {origin: `http://127.0.0.1:${app.internalPort}`, 'content-type': 'application/json'}, body: '{}'}).then(async (r) => `${r.status} ${(await r.text()).slice(0, 300)}`, (e) => `error ${e.message}`)
+	log('POST /api/up straight to its private port:', direct)
+	log('app logs:\n' + (await q('apps.logs', {appId: 'tailscale'})))
+}
+const upBody = JSON.parse(upText)
 ok(up.status === 200 && /^https:\/\/login\.tailscale\.com\//.test(upBody.url ?? ''), `Log in gives a real Tailscale sign-in link (${upBody.url})`)
 const csrf = await fetch('http://127.0.0.1:8240/api/up', {method: 'POST', headers: {cookie, origin: 'http://evil.example', 'content-type': 'application/json'}, body: '{}'})
 ok(csrf.status === 403, 'another site can’t press Log in for you')
