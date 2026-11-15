@@ -1512,6 +1512,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				},
 			},
 			'appStore.registry': {kind: 'query', run: async () => (await registry()).map(({url, meta, apps}) => ({url, meta, apps: apps.map(({folder, ...a}) => a)}))},
+			// "Check for new apps": download every store's latest listings now instead of waiting for the hourly check.
+			'appStore.refresh': {kind: 'mutation', run: async () => ((await registry({refresh: true})).reduce((n, s) => n + s.apps.length, 0))},
 			'appStore.repositories': {kind: 'query', run: async () => (await ready, state.stores.map(({url, meta, name}) => ({url, meta: meta ?? {id: url, name: name ?? url.split('/').pop()}})))},
 			'appStore.addRepository': {
 				kind: 'mutation',

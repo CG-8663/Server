@@ -37,6 +37,14 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 	const [category, setCategory] = useState('all')
 	const [selected, setSelected] = useState<{app: StoreApp; install?: boolean} | null>(null)
 	const [stores, setStores] = useState(false)
+	const qc = useQueryClient()
+	const toast = useToast()
+	// Stores are checked for new apps every hour; this checks now.
+	const refresh = useMutation({
+		mutationFn: () => mutate<number>('appStore.refresh'),
+		onSuccess: async () => (await qc.invalidateQueries({queryKey: ['appStore.registry']}), toast('Up to date')),
+		onError: (e) => toast((e as Error).message, true),
+	})
 
 	const all = useMemo(() => {
 		const seen = new Map<string, StoreApp>()
@@ -103,7 +111,10 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 					<h1 className="title">App Store</h1>
 					<p className="subtitle">{registry.isLoading ? 'Loading the catalog…' : `${all.length} apps for your server`}</p>
 				</div>
-				<button className="btn small stores-btn" style={{marginLeft: 'auto'}} aria-label="Community app stores" title="Community app stores" onClick={() => (haptic(5), setStores(true))}>
+				<button className="btn small stores-btn" style={{marginLeft: 'auto'}} aria-label="Check for new apps" title="Check for new apps" disabled={refresh.isPending} onClick={() => (haptic(5), refresh.mutate())}>
+					{refresh.isPending ? <span className="spinner" /> : <Icon name="restart" size={17} />}
+				</button>
+				<button className="btn small stores-btn" aria-label="Community app stores" title="Community app stores" onClick={() => (haptic(5), setStores(true))}>
 					<Icon name="store" size={17} />
 					Stores
 				</button>

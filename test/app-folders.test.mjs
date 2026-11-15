@@ -25,7 +25,7 @@ test('folder declarations: only sensible ids and names; FOLDER_ variables count 
 })
 
 describe('placing an app’s folders', () => {
-	let root, home, data, d, auth, appPort, calls, upstream
+	let root, home, data, d, auth, appPort, calls, upstream, store
 	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
 	const run = async (cmd, args, opts = {}) => {
 		if (cmd === 'git') return git(args, opts.cwd)
@@ -78,7 +78,7 @@ describe('placing an app’s folders', () => {
 		await writeFile(sock, '')
 		process.env.DOCKER_HOST = `unix://${sock}`
 		appPort = 30000 + Math.floor(Math.random() * 2700)
-		const store = join(root, 'store')
+		store = join(root, 'store')
 		await mkdir(join(store, 'devbox'), {recursive: true})
 		await writeFile(join(store, 'devbox/omarchy-app.yml'), `manifestVersion: 1\nid: devbox\nname: Devbox\nversion: "1"\nport: ${appPort}\nweb:\n  service: web\n  port: 8787\nfolders:\n  - id: projects\n    label: Your projects\n    detail: Where it keeps your projects.\n    suggest: Projects\n`)
 		await writeFile(join(store, 'devbox/docker-compose.yml'), 'services:\n  web:\n    image: example/devbox:1\n    environment:\n      GATEWAY_KEY: ${APP_GATEWAY_KEY}\n    volumes:\n      - ${APP_DATA_DIR:-.}/data/home:/data/home\n      - ${FOLDER_PROJECTS:-./data/projects}:/data/home/Projects\n    ports:\n      - "8787:8787"\n')
@@ -150,5 +150,17 @@ describe('placing an app’s folders', () => {
 
 		await uninstall()
 		assert.ok((await stat(join(mine, 'keep.txt'))).isFile(), 'your folder and its files stay')
+	})
+
+	test('“Check for new apps” picks up a listing added to a store just now', async () => {
+		await mkdir(join(store, 'newbie'), {recursive: true})
+		await writeFile(join(store, 'newbie/omarchy-app.yml'), 'manifestVersion: 1\nid: newbie\nname: Newbie\nport: 31999\n')
+		await writeFile(join(store, 'newbie/docker-compose.yml'), 'services:\n  web:\n    image: x\n')
+		git(['add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'newbie'], store)
+		const ids = async () => (await q('appStore.registry'))[0].apps.map((a) => a.id)
+		assert.ok(!(await ids()).includes('newbie'), 'the hourly check hasn’t run yet')
+		assert.equal(await call('appStore.refresh'), 2)
+		assert.deepEqual((await ids()).sort(), ['devbox', 'newbie'])
 	})
 })
