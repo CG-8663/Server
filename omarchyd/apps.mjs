@@ -17,7 +17,7 @@
 import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
-import {access, cp, mkdir, readFile, readdir, rm, stat, symlink, writeFile} from 'node:fs/promises'
+import {access, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
@@ -942,14 +942,46 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		await run('docker-compose', ['-p', 'omarchy-tor', '-f', file, 'up', '-d'], {env: engineEnv, cwd: dir})
 	}
 
+	// The store's files for an app, into its folder. On an update the folder already holds the app's
+	// data, owned by its container user: files the app keeps in those data folders are left as they
+	// are (an update never resets your app's settings), and the rest is copied from inside Podman's
+	// user namespace when your own user may not write there.
+	async function copyListing(src, app) {
+		const dir = appDir(app.id)
+		const fresh = !(await exists(dir))
+		const filter = (p) => !p.split('/').includes('.git')
+		if (fresh) return cp(src.folder, dir, {recursive: true, filter})
+		const stage = await mkdtemp(join(base, `.update-${app.id}-`))
+		try {
+			await cp(src.folder, stage, {recursive: true, filter})
+			const data = (app.dataDirs ?? []).filter((d) => d.startsWith(`${dir}/`))
+			for (const rel of await readdir(stage, {recursive: true})) {
+				const target = join(dir, rel)
+				const inData = data.some((d) => target === d || target.startsWith(`${d}/`))
+				if (!inData) continue
+				const isFile = await stat(join(stage, rel)).then((st) => !st.isDirectory(), () => false)
+				if (isFile && (await lstat(target).then(() => true, () => false))) await rm(join(stage, rel), {force: true})
+			}
+			try {
+				await cp(stage, dir, {recursive: true, force: true})
+			} catch (error) {
+				if (!['EACCES', 'EPERM'].includes(error.code)) throw error
+				await run('podman', ['unshare', 'cp', '-rT', '--no-preserve=ownership', stage, dir], {env: engineEnv})
+			}
+		} finally {
+			await rm(stage, {recursive: true, force: true}).catch(() => {})
+		}
+	}
+
 	async function placeApp(src, app) {
 		const dir = appDir(app.id)
-		await cp(src.folder, dir, {recursive: true, filter: (p) => !p.split('/').includes('.git'), force: true})
+		await copyListing(src, app)
 		// Its variables first: the compose file's web address and port can depend on them.
 		app.exports = await runExports(app)
 		const c = await readYaml(dir, COMPOSE_FILES)
 		const text = await readFile(join(dir, c.name), 'utf8')
-		const used = new Set(state.apps.map((a) => a.internalPort))
+		// Other apps' ports (an update keeps the app's own).
+		const used = new Set(state.apps.filter((a) => a.id !== app.id).map((a) => a.internalPort))
 		const prepared = prepareCompose(app.id, text, () => {
 			let p = 20_000 + (parseInt(createHash('sha256').update(app.id).digest('hex').slice(0, 4), 16) % 9000)
 			while (used.has(p)) p++
@@ -1088,6 +1120,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	async function update(input) {
 		await ready
 		const app = findInstalled(String(input?.appId ?? ''))
+		if (busy.has(app.id)) throw new RpcError('CONFLICT', `${app.name} is busy`)
 		const src = await findInRegistry(app.id)
 		if (!src) throw new RpcError('NOT_FOUND', 'That app is no longer in your stores')
 		// An update never adds access you didn't allow. (Apps installed before permissions existed keep what they run with.)
@@ -1095,20 +1128,34 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		app.permissions ??= wants
 		const extra = wants.filter((p) => !app.permissions.includes(p) && !(Array.isArray(input?.grant) && input.grant.includes(p)))
 		if (extra.length) throw new RpcError('PRECONDITION_FAILED', `This update asks for more access (${extra.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}). Uninstall and install it again to allow that.`)
-		app.permissions = [...new Set([...app.permissions, ...wants])]
 		busy.set(app.id, {state: 'updating', progress: 10})
+		let step = 'getting its files ready'
 		try {
-			app.internalPort = await placeApp(src, app)
-			closeGateway(app.id)
+			const internalPort = await placeApp(src, app)
+			await prepareOwnership(app)
+			step = 'downloading the new version'
+			busy.set(app.id, {state: 'updating', progress: 25})
+			// The old version keeps running (and stays reachable) while the new one downloads.
 			await compose(app, 'pull')
+			step = 'starting the new version'
+			busy.set(app.id, {state: 'updating', progress: 85})
+			closeGateway(app.id)
+			app.internalPort = internalPort
 			await compose(app, 'up', '-d', '--remove-orphans')
+			app.permissions = [...new Set([...app.permissions, ...wants])]
 			Object.assign(app, {version: src.version, name: src.name, icon: src.icon, path: src.path, requiresHttps: src.requiresHttps || undefined, internalHttps: src.web?.https || undefined})
-			await openGateways(app)
 			delete app.state
 			delete app.error
+		} catch (error) {
+			if (error instanceof RpcError) throw error
+			console.error(`[omarchyd] updating ${app.id}:`, error)
+			const detail = String(error.message ?? error).replace(/\s+/g, ' ').trim().slice(-300)
+			throw new RpcError('BAD_GATEWAY', `Couldn’t update ${app.name} while ${step}: ${detail}`)
 		} finally {
+			// Reachable again whatever happened: the new version, or the old one still running.
+			await openGateways(app).catch((e) => console.error(`[omarchyd] reopening ${app.id}:`, e.message))
 			busy.delete(app.id)
-			await save()
+			await save().catch(() => {})
 		}
 		return true
 	}

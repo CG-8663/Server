@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.14',
+		date: '2026-11-15',
+		title: 'App updates that work',
+		fixed: [
+			'Updating some apps failed with “Internal error”: the update couldn’t write into the app’s data folders, which belong to the app’s container. Updates now get past that, and never overwrite settings an app keeps in its data folders.',
+			'If an update does fail, it says why (for example, the new version couldn’t be downloaded), and the app keeps running and stays reachable on its old version. Before, it could be left unreachable.',
+			'The old version keeps running while the new one downloads, so an app is only down for the moment it restarts.',
+			'An update no longer moves the app to a different internal port, and new data folders from an update are set up for the app’s container.',
+		],
+	},
+	{
 		version: '0.9.13',
 		date: '2026-11-14',
 		title: 'One certificate for everything',

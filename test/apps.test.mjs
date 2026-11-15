@@ -2,7 +2,7 @@
 // simulated docker-compose, and the sign-in gateway in front of the app (HTTP and WebSocket).
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
 import os from 'node:os'
@@ -465,6 +465,58 @@ describe('omarchyd apps', () => {
 			await assert.rejects(call('apps.install', {appId: id, grant: ['refused', 'host-files', 'system']}), /never gives an app/)
 		}
 		await call('appStore.removeRepository', {url: `file://${store}`})
+	})
+
+	test('update: keeps the app’s data, adds new files, stays reachable, and explains a failure', async () => {
+		const store = join(root, 'store')
+		const dir = join(data, 'apps/installed/demo-app')
+		await call('apps.start', {appId: 'demo-app'}).catch(() => {})
+		// The app has written its own settings into its data folder.
+		await mkdir(join(dir, 'data'), {recursive: true})
+		await writeFile(join(dir, 'data/settings.json'), '{"mine":true}')
+		// Version 2 in the store: a new default for that file, and a new data folder.
+		await mkdir(join(store, 'demo-app/data'), {recursive: true})
+		await writeFile(join(store, 'demo-app/data/settings.json'), '{"default":true}')
+		await writeFile(join(store, 'demo-app/data/new-default.txt'), 'new')
+		await writeFile(join(store, 'demo-app/omarchy-app.yml'), (await readFile(join(store, 'demo-app/omarchy-app.yml'), 'utf8')).replace('version: "1.0"', 'version: "2.0"'))
+		await writeFile(join(store, 'demo-app/docker-compose.yml'), (await readFile(join(store, 'demo-app/docker-compose.yml'), 'utf8')).replace('      - ${APP_DATA_DIR}/data:/data\n', '      - ${APP_DATA_DIR}/data:/data\n      - ${APP_DATA_DIR}/cache:/cache\n'))
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'v2'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'v2 files'], store)
+		await call('appStore.removeRepository', {url: storeUrl})
+		await call('appStore.addRepository', {url: storeUrl})
+		assert.deepEqual(await q('apps.updates'), [{id: 'demo-app', version: '2.0'}])
+		const before = (await q('apps.list')).find((a) => a.id === 'demo-app')
+
+		// A failed download: a readable reason, still on 1.0, and still reachable.
+		const original = runImpl.current
+		runImpl.current = async (cmd, args, opts) => {
+			if (cmd === 'docker-compose' && args[4] === 'pull') throw new Error('docker-compose: manifest unknown: example/demo:2 not found')
+			return original(cmd, args, opts)
+		}
+		await assert.rejects(call('apps.update', {appId: 'demo-app'}), /Couldn’t update Demo App while downloading the new version: .*manifest unknown/)
+		runImpl.current = original
+		let app = (await q('apps.list')).find((a) => a.id === 'demo-app')
+		assert.equal(app.version, '1.0')
+		assert.equal((await fetch(`http://127.0.0.1:${appPort}/`, {redirect: 'manual'})).status !== 0, true)
+		assert.ok(app.state !== 'updating', 'not left busy')
+
+		// The real update.
+		calls.length = 0
+		await call('apps.update', {appId: 'demo-app'})
+		app = (await q('apps.list')).find((a) => a.id === 'demo-app')
+		assert.equal(app.version, '2.0')
+		assert.equal(app.internalPort, before.internalPort)
+		assert.equal(await readFile(join(dir, 'data/settings.json'), 'utf8'), '{"mine":true}', 'your settings are kept')
+		assert.equal(await readFile(join(dir, 'data/new-default.txt'), 'utf8'), 'new', 'new files are added')
+		assert.ok(calls.some((c) => c.podman?.join(' ').startsWith('unshare chown -R 1000:1000') && c.podman.includes(join(dir, 'cache'))), 'a new data folder is handed to the container user')
+		const pull = calls.findIndex((c) => c.args?.[4] === 'pull')
+		const upCall = calls.findIndex((c) => c.args?.[4] === 'up')
+		assert.ok(pull >= 0 && upCall > pull)
+		const res = await fetch(`http://127.0.0.1:${appPort}/`, {redirect: 'manual'})
+		assert.ok(res.status > 0, 'reachable after the update')
+		assert.deepEqual(await q('apps.updates'), [])
+		assert.deepEqual((await readdir(join(data, 'apps'))).filter((f) => f.startsWith('.update-')), [], 'no staging folders left behind')
 	})
 
 	test('logs, stop, uninstall', async () => {
