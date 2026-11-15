@@ -35,6 +35,9 @@ and files are kept. Logs: `journalctl --user -u omarchyd -u omarchy-server-web -
 
 Want ZFS pools too? Add `--zfs` (see [Storage](#storage-and-nas)).
 
+To remove it, run `omarchy-server uninstall`. Your account, apps and machines stay, so installing again picks up
+where you left off; add `--purge` to delete those too.
+
 ## What you get
 
 ### A web app for every screen
@@ -148,7 +151,7 @@ pastes. On a phone there's a key row with Esc, Tab, Ctrl, Alt and arrows.
 | `omarchy-server-web` (`server/`, `web/`) | you | `7780` (http and https) | The web app you open in a browser |
 | `helper/helper.mjs` | root, via one sudoers rule | — | Storage pools, shares, firewall ports, power |
 
-On the server itself: `omarchy-server` (status, open, restart, logs), "Omarchy Server" in the
+On the server itself: `omarchy-server` (status, open, restart, logs, uninstall), "Omarchy Server" in the
 launcher, and a top-bar icon (`omarchy-server widget off` removes it).
 
 ## Requirements

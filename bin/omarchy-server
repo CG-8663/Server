@@ -5,6 +5,7 @@
 #   omarchy-server restart      restart both services (also: start, stop)
 #   omarchy-server logs [-f]    recent log lines (follow with -f)
 #   omarchy-server widget on    add the status icon to the top bar (off to remove)
+#   omarchy-server uninstall    remove Omarchy Server, keeping your data (--purge deletes that too)
 set -u
 UNITS=(omarchyd.service omarchy-server-web.service)
 DESKTOP_UNIT=omarchy-server-desktop.service
@@ -18,6 +19,114 @@ ip_addr() { ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++
 running() { systemctl --user is-active --quiet omarchyd.service 2>/dev/null && systemctl --user is-active --quiet omarchy-server-web.service 2>/dev/null; }
 notify() { command -v notify-send >/dev/null 2>&1 && notify-send -a "Omarchy Server" "Omarchy Server" "$1"; printf '%s\n' "$1"; }
 reload_bar() { if command -v omarchy-restart-waybar >/dev/null 2>&1; then omarchy-restart-waybar >/dev/null 2>&1; else pkill -SIGUSR2 waybar 2>/dev/null; fi; }
+
+# uninstall: take Omarchy Server off this machine. By default your data stays (account, apps and their
+# data, machines and their disks), so installing again picks up where you left off. --purge deletes it.
+# Packages, your files and ~/Pools are never touched.
+BASE="${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-server"
+LAUNCHERS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+
+# Apps and machines Omarchy Server made that still exist (one per line). Apps are compose projects named
+# omarchy-<id>; podman's JSON output is read because its --format text differs between versions.
+leftovers() {
+	podman ps -a --filter label=com.docker.compose.project --format json 2>/dev/null | node -e '
+		let s = ""
+		process.stdin.on("data", (d) => (s += d)).on("end", () => {
+			try {
+				const names = new Set()
+				for (const c of JSON.parse(s || "[]")) {
+					const p = c.Labels?.["com.docker.compose.project"]
+					if (typeof p === "string" && p.startsWith("omarchy-")) names.add(p.slice(8))
+				}
+				for (const n of [...names].sort()) console.log("app: " + n)
+			} catch {}
+		})'
+	virsh -c qemu:///session list --all --name 2>/dev/null | grep '^omarchy-' | sed 's/^omarchy-/machine: /'
+}
+
+# True when podman and libvirt (whichever are installed) can say what they hold. --purge deletes data, so it
+# must not treat "could not ask" as "nothing there". Reading podman's answer takes node, so that counts too:
+# node installed through mise or nvm is not on the PATH of every shell.
+can_ask() {
+	if command -v podman >/dev/null 2>&1; then
+		command -v node >/dev/null 2>&1 || return 1
+		podman ps -a --format json >/dev/null 2>&1 || return 1
+	fi
+	if command -v virsh >/dev/null 2>&1; then virsh -c qemu:///session list --all --name >/dev/null 2>&1 || return 1; fi
+	return 0
+}
+
+do_uninstall() {
+	local purge=$1 yes=$2 left word answer link
+	if [ "$purge" = 1 ] && ! can_ask; then
+		echo "Couldn't ask podman and libvirt what Omarchy Server still has, so nothing was deleted. That takes podman, virsh and node on this shell's PATH. Nothing was changed."
+		exit 1
+	fi
+	left=$(leftovers)
+	if [ "$purge" = 1 ] && [ -n "$left" ]; then
+		printf 'These apps and machines were made by Omarchy Server and still exist:\n%s\n\n' "$left"
+		echo "Remove them first (Apps, then Uninstall; Machines, then Delete), then run this again. Nothing was changed."
+		exit 1
+	fi
+	if [ "$purge" = 1 ]; then
+		printf 'This removes Omarchy Server AND everything it keeps (%s, %s):\n' "$BASE" "$(du -sh "$BASE" 2>/dev/null | cut -f1)"
+		echo "  your account, installed apps and their data, machines and their disks."
+	else
+		echo "This removes Omarchy Server's program, services, launcher entries, top-bar icon, storage helper and firewall rules."
+		echo "It keeps your account, apps and their data, and machines and their disks ($BASE),"
+		echo "so installing again picks up where you left off. Add --purge to delete those too."
+		[ -n "$left" ] && printf '\nThese keep running, because their data stays:\n%s\n' "$left"
+	fi
+	printf '\nYour files, ~/Pools and the installed packages are not touched.\n'
+	if [ "$yes" != 1 ]; then
+		if ! ( : </dev/tty ) 2>/dev/null; then echo "There is no terminal to ask in. Add -y to go ahead without asking."; exit 1; fi
+		word=uninstall; [ "$purge" = 1 ] && word=delete
+		printf '\nType "%s" to continue: ' "$word" >/dev/tty
+		read -r answer </dev/tty
+		[ "$answer" = "$word" ] || { echo "Nothing was changed."; exit 1; }
+	fi
+
+	"$0" widget off >/dev/null 2>&1 || true
+	systemctl --user disable --now "${UNITS[@]}" "$DESKTOP_UNIT" >/dev/null 2>&1
+	rm -f "$UNIT_DIR/omarchyd.service" "$UNIT_DIR/omarchy-server-web.service" "$UNIT_DIR/$DESKTOP_UNIT"
+	systemctl --user daemon-reload
+	systemctl --user reset-failed >/dev/null 2>&1
+	rm -f "$LAUNCHERS/omarchy-server.desktop" "$LAUNCHERS/omarchy-server-restart.desktop"
+	link="$HOME/.local/bin/omarchy-server"
+	[ "$(readlink "$link" 2>/dev/null)" = "$BASE/app/bin/omarchy-server" ] && rm -f "$link"
+
+	# The root steps need sudo. With -y and no terminal there may be nobody to type a password.
+	rules="$PORT/tcp 40000:49999/tcp 40000:49999/udp 7800:7899/tcp"
+	failed=
+	if sudo -n true >/dev/null 2>&1 || ( : </dev/tty ) 2>/dev/null; then
+		echo "Removing the storage helper and firewall rules (sudo needed)"
+		if command -v ufw >/dev/null 2>&1; then
+			for rule in $rules; do sudo ufw delete allow "$rule" >/dev/null 2>&1 || true; done
+		fi
+		sudo rm -f /etc/sudoers.d/omarchy-server || failed=1
+		sudo rm -rf /usr/local/libexec/omarchy-server || failed=1
+	else
+		failed=1
+	fi
+
+	rm -rf "$BASE/app" "$BASE/install.log" "$BASE/.widget-offered"
+	if [ "$purge" = 1 ]; then
+		# App folders can belong to the apps' own user ids, so they go through podman, as the server does.
+		podman unshare rm -rf "$BASE/omarchyd/apps" >/dev/null 2>&1
+		rm -rf "$BASE"
+		echo "Omarchy Server and its data are gone."
+		echo "Firewall rules for individual app ports and any SMB shares you set up are not removed: see 'sudo ufw status' and your Samba settings."
+	else
+		echo "Omarchy Server is removed. Your data is still in $BASE."
+	fi
+	echo "Left as they were: the installed packages, the 'run while logged out' setting, and ~/Pools."
+	if [ -n "$failed" ]; then
+		printf '\nThe steps that need sudo could not be done here. Run these yourself:\n  sudo rm -f /etc/sudoers.d/omarchy-server\n  sudo rm -rf /usr/local/libexec/omarchy-server\n'
+		command -v ufw >/dev/null 2>&1 && for rule in $rules; do printf '  sudo ufw delete allow %s\n' "$rule"; done
+		exit 1
+	fi
+	exit 0
+}
 
 case "${1:-status}" in
 	status)
@@ -105,6 +214,18 @@ EOF
 			*) echo "Use: omarchy-server widget on|off"; exit 2 ;;
 		esac
 		;;
-	-h | --help | help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' ;;
+	uninstall)
+		shift
+		purge=0 yes=0
+		for a in "$@"; do
+			case "$a" in
+				--purge) purge=1 ;;
+				-y | --yes) yes=1 ;;
+				*) echo "Use: omarchy-server uninstall [--purge] [-y]"; exit 2 ;;
+			esac
+		done
+		do_uninstall "$purge" "$yes"
+		;;
+	-h | --help | help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' ;;
 	*) echo "Unknown command: $1 (try: omarchy-server help)"; exit 2 ;;
 esac
