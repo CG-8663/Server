@@ -172,7 +172,7 @@ const web = await until(
 })
 ok(true, `phone → ${serverIP}:7780 reaches Omarchy Server (${web.out.split('\n').pop()})`)
 const gate = (await viaPhone(`http://${serverIP}:8240/`))
-ok(gate.ok && / 302 .*7790/.test(gate.out), `phone → an app’s port: sent to sign in first (${gate.out.split('\n').pop()})`)
+ok(gate.ok && /(^|\s)302 .*7790/.test(gate.out), `phone → an app’s port: sent to sign in first (${gate.out.split('\n').pop()})`)
 const priv = (await viaPhone(`http://${serverIP}:7781/`))
 ok(!priv.out.includes('private'), `phone can’t reach a service kept on localhost (${priv.out.trim().split('\n').pop()})`)
 const page = (await viaPhone(`http://${serverIP}:${app.internalPort}/`))
