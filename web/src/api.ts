@@ -178,6 +178,9 @@ export type InstallReview = {
 	permissions?: {id: string; label: string; detail: string; what: string[]; appId: string; appName: string}[]
 	/** Apps installed on the server itself that need a one-time command from you first. */
 	setup?: {appId: string; appName: string; command: string}[]
+	/** Folders you choose a place for: inside the app, or a folder of yours (suggested under your home). */
+	folders?: {appId: string; appName: string; id: string; label: string; detail: string; suggest: string | null}[]
+	home?: string
 }
 
 export type OsImage = {

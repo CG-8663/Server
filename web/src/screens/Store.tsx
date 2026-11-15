@@ -395,6 +395,14 @@ function StoreSheet({
 	useEffect(() => setAllowed(false), [reviewing, app.id])
 	const access = review.data?.permissions ?? []
 	const setup = review.data?.setup ?? []
+	const folders = review.data?.folders ?? []
+	// Where each of those folders goes: null = inside the app (the default), else a path you typed.
+	const [placed, setPlaced] = useState<Record<string, string | null>>({})
+	useEffect(() => setPlaced({}), [reviewing, app.id])
+	const fkey = (f: {appId: string; id: string}) => `${f.appId}/${f.id}`
+	const home = review.data?.home ?? ''
+	const folderOk = (p: string | null | undefined) => p == null || (p.startsWith(`${home}/`) && !p.slice(home.length).split('/').some((x) => x.startsWith('.')) && !p.includes('..'))
+	const foldersReady = folders.every((f) => folderOk(placed[fkey(f)]) && placed[fkey(f)] !== '')
 	const copy = (text: string) =>
 		navigator.clipboard?.writeText(text).then(
 			() => toast('Copied'),
@@ -405,7 +413,8 @@ function StoreSheet({
 		haptic(12)
 		const folderAccess = review.data?.requiredFolders.map((f) => ({id: f.id, sourcePath: f.defaultSourcePath}))
 		const grant = [...new Set((review.data?.permissions ?? []).map((p) => p.id))]
-		action.mutate({path: 'apps.install', input: {appId: app.id, ...(folderAccess?.length ? {folderAccess} : {}), ...(grant.length ? {grant} : {})}, done: `${app.name} installed`})
+		const chosen = folders.filter((f) => placed[fkey(f)]).map((f) => ({appId: f.appId, id: f.id, path: placed[fkey(f)]!.trim()}))
+		action.mutate({path: 'apps.install', input: {appId: app.id, ...(folderAccess?.length ? {folderAccess} : {}), ...(grant.length ? {grant} : {}), ...(chosen.length ? {folders: chosen} : {})}, done: `${app.name} installed`})
 		setReviewing(false)
 	}
 	const liveUrl = live ? appUrl(live, boot.server!.host) : null
@@ -505,6 +514,41 @@ function StoreSheet({
 							)}
 						</div>
 					)}
+					{folders.map((f) => {
+						const k = fkey(f)
+						const value = placed[k]
+						return (
+							<div key={k} className="glass card" style={{marginBottom: 16, borderRadius: 18}}>
+								<div style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 6}}>
+									<span className="row-ico" style={{'--c': 'var(--blue)'} as React.CSSProperties}>
+										<Icon name="folder" size={18} />
+									</span>
+									<b style={{fontSize: 15}}>{f.label}</b>
+								</div>
+								{f.detail && <p className="prose" style={{margin: '0 0 10px', fontSize: 14}}>{f.detail}</p>}
+								<label style={{display: 'flex', gap: 10, alignItems: 'flex-start', padding: '6px 0', fontSize: 14.5}}>
+									<input type="radio" name={`folder-${k}`} checked={value == null} onChange={() => setPlaced((p) => ({...p, [k]: null}))} />
+									<span>
+										Inside {f.appName}
+										<small className="muted" style={{display: 'block'}}>Only {f.appName} sees them. Uninstalling with its data deletes them.</small>
+									</span>
+								</label>
+								<label style={{display: 'flex', gap: 10, alignItems: 'flex-start', padding: '6px 0', fontSize: 14.5}}>
+									<input type="radio" name={`folder-${k}`} checked={value != null} onChange={() => setPlaced((p) => ({...p, [k]: f.suggest ?? `${home}/`}))} />
+									<span>
+										A folder in your home
+										<small className="muted" style={{display: 'block'}}>You can open them from Files and the desktop too, and they stay if you uninstall.</small>
+									</span>
+								</label>
+								{value != null && (
+									<>
+										<div className="field" style={{marginTop: 6}}><input value={value} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setPlaced((p) => ({...p, [k]: e.target.value}))} aria-label={`Folder for ${f.label}`} /></div>
+										{!folderOk(value) && <p className="muted" style={{fontSize: 13, margin: '6px 0 0', color: 'var(--red)'}}>Pick a folder inside {home} (not a hidden one).</p>}
+									</>
+								)}
+							</div>
+						)
+					})}
 					{setup.map((s) => (
 						<div key={s.appId} className="glass card" style={{marginBottom: 16, borderRadius: 18}}>
 							<div style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8}}>
@@ -532,7 +576,7 @@ function StoreSheet({
 							</p>
 						</div>
 					))}
-					{review.data && !review.data.requiredFolders.length && !review.data.gpuAccess && !access.length && !setup.length && (
+					{review.data && !review.data.requiredFolders.length && !review.data.gpuAccess && !access.length && !setup.length && !folders.length && (
 						<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, borderRadius: 18}}>
 							<span className="row-ico" style={{'--c': 'var(--green)'} as React.CSSProperties}>
 								<Icon name="shield" size={18} />
@@ -541,7 +585,7 @@ function StoreSheet({
 						</div>
 					)}
 					<div className="stack">
-						<button className="btn primary block" onClick={install} disabled={!review.data || action.isPending || setup.length > 0 || (access.length > 0 && !allowed) || access.some((p) => p.id === 'refused')}>
+						<button className="btn primary block" onClick={install} disabled={!review.data || action.isPending || setup.length > 0 || !foldersReady || (access.length > 0 && !allowed) || access.some((p) => p.id === 'refused')}>
 							<Icon name="download" size={20} />
 							{review.data?.alsoInstalls?.length ? `Install all ${review.data.alsoInstalls.length + 1}` : `Install ${app.name}`}
 						</button>
