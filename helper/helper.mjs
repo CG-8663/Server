@@ -29,6 +29,9 @@
 //   harden-pools                      add nosuid,nodev to pools set up by earlier versions
 //   grow-system                       after the system drive was made bigger: grow its last partition,
 //                                     encryption (disk password on stdin) and filesystem into the space
+//   tailscale-setup                   install Tailscale as Omarchy's menu does (official package, the
+//                                     tailscaled service) and make the owner its operator
+//   tailscale-remove                  sign this server out of Tailscale, stop it and remove the package
 //
 // Drives that hold anything (partitions or filesystem signatures) are never erased by this helper.
 // Wiping one is left to a person at a terminal (`sudo wipefs -a /dev/sdX`).
@@ -391,6 +394,37 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			else fail(`Growing a ${fstype} filesystem isn’t supported`)
 			done.push('filesystem')
 			return JSON.stringify({grown: done, disk: disk.path, partition: part.path})
+		},
+
+		// Tailscale on the system itself, the way Omarchy's own menu installs it (omarchy-install-service-
+		// tailscale): the "tailscale" package from Arch's repositories, the tailscaled service, and the
+		// owner as its operator, so omarchyd (running as the owner) can sign it in and out without root.
+		// Nothing else changes: no routes accepted, no exit node, no Tailscale SSH.
+		'tailscale-setup': async () => {
+			const had = await run('pacman', ['-Q', 'tailscale']).then(() => true, () => false)
+			if (!had) await run('pacman', ['-S', '--needed', '--noconfirm', 'tailscale'])
+			await run('systemctl', ['enable', '--now', 'tailscaled.service'])
+			// tailscaled takes a moment to open its socket after starting.
+			let lastError = null
+			for (let i = 0; i < 30; i++) {
+				try {
+					await run('tailscale', ['set', `--operator=${user.name}`])
+					return JSON.stringify({installedPackage: !had})
+				} catch (error) {
+					lastError = error
+					await new Promise((r) => setTimeout(r, 500))
+				}
+			}
+			throw lastError
+		},
+		// Only called for a Tailscale that Omarchy Server installed (one you set up yourself stays).
+		'tailscale-remove': async () => {
+			if (!(await run('pacman', ['-Q', 'tailscale']).then(() => true, () => false))) return 'ok'
+			// Signed out first, so this server leaves your tailnet instead of lingering there as offline.
+			await run('tailscale', ['logout']).catch(() => {})
+			await run('systemctl', ['disable', '--now', 'tailscaled.service']).catch(() => {})
+			await run('pacman', ['-Rns', '--noconfirm', 'tailscale'])
+			return 'ok'
 		},
 
 		'pool-scrub': async ([name]) => {
