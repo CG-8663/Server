@@ -9,7 +9,7 @@ export const CHANGELOG: Release[] = [
 		title: 'You choose where an app keeps your files',
 		added: [
 			'Apps can ask where to keep your files when you install them: inside the app, or in a folder in your home that you can also open from Files and the desktop. A folder of yours stays when you uninstall the app. Hidden folders and anything outside your home are refused.',
-			'TouchWorkstation is coming to the App Store: your projects, GitHub and AI coding agents with live previews. It asks where your projects should live.',
+			'Dev-Space is coming to the App Store: your projects, GitHub and AI coding agents with live previews. It asks where your projects should live.',
 		],
 		fixed: [
 			'Apps that leave sign-in to Omarchy Server can now tell that a request really came through its sign-in, so nothing else that reaches them gets in.',
