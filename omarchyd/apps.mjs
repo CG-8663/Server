@@ -17,7 +17,7 @@
 import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
-import {access, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile} from 'node:fs/promises'
+import {access, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
@@ -48,7 +48,7 @@ export const DEFAULT_STORES = [{url: 'https://github.com/TouchWorkStation/app-st
 const GALLERIES = {}
 // Variables omarchyd provides to every app (anything else a compose file needs without a default
 // means the app relies on something Omarchy Server doesn't offer yet).
-const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'APP_SEED_32', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID', 'DOCKER_SOCKET'])
+const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'APP_SEED_32', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID', 'DOCKER_SOCKET', 'APP_GATEWAY_KEY'])
 // Apps that talk to each other (an app and the apps it needs, or apps with fixed internal
 // addresses) share one container network, laid out the way their store expects (10.21.0.0/16).
 // Apps that don't stay on a private network of their own.
@@ -166,13 +166,38 @@ export function expandVars(text, env) {
 	})
 }
 
+// Folders an app lets you place yourself (its listing's `folders:`): kept inside the app, or a folder
+// of yours under your home that you pick when installing. The compose file uses ${FOLDER_<ID>}.
+export function folderChoices(list) {
+	if (!Array.isArray(list)) return []
+	return list
+		.filter((f) => f && typeof f.id === 'string' && /^[a-z][a-z0-9_]{0,30}$/.test(f.id))
+		.slice(0, 4)
+		.map((f) => ({
+			id: f.id,
+			label: String(f.label ?? f.id).slice(0, 80),
+			detail: typeof f.detail === 'string' ? f.detail.slice(0, 400) : '',
+			// A suggested folder name under your home (one plain name, no paths).
+			suggest: typeof f.suggest === 'string' && /^[A-Za-z0-9][\w .-]{0,60}$/.test(f.suggest) ? f.suggest : null,
+		}))
+}
+export const folderVar = (id) => `FOLDER_${id.toUpperCase()}`
+// Where you may put an app's folder: under your home, not hidden, not one Omarchy Server never gives an app.
+export function folderAllowed(path, home) {
+	if (typeof path !== 'string' || !path.startsWith('/') || path.includes('\0')) return false
+	const p = resolve(path)
+	if (p !== path.replace(/\/+$/, '') || !p.startsWith(`${home}/`)) return false
+	if (p.slice(home.length).split('/').some((part) => part.startsWith('.'))) return false
+	return !refusedMount(p, home)
+}
+
 export function missingVars(text, alsoProvided = []) {
 	const out = new Set()
 	for (const m of String(text).replace(/\$\$/g, '').matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) {
 		const name = m[1] ?? m[3]
 		const rest = m[2] ?? ''
 		if (/^:?[-=]/.test(rest)) continue // has a default
-		if (!PROVIDED.has(name) && !alsoProvided.includes(name)) out.add(name)
+		if (!PROVIDED.has(name) && !alsoProvided.includes(name) && !/^FOLDER_[A-Z0-9_]+$/.test(name)) out.add(name)
 	}
 	return [...out]
 }
@@ -439,7 +464,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const target = view ? app.port : app.internalPort
 		const headersFor = (req) => {
 			const h = forwardHeaders(req)
-			if (view) for (const k of Object.keys(h)) if (k.startsWith('x-forwarded-')) delete h[k]
+			// Never pass on a proof someone typed themselves; add the real one for its own app.
+			delete h['x-omarchy-gateway']
+			if (view) {
+				for (const k of Object.keys(h)) if (k.startsWith('x-forwarded-')) delete h[k]
+			} else h['x-omarchy-gateway'] = deriveEntropy(`app-${app.id}-gateway`)
 			return h
 		}
 		const server = http.createServer((req, res) => {
@@ -628,8 +657,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				deterministicPassword: a.deterministicPassword === true,
 				// Needs a secure (https://) page in the browser, e.g. for WebCodecs or the Web Crypto API.
 				...(a.requiresHttps === true ? {requiresHttps: true} : {}),
-				permissions: appPermissions(compose, whereFor({id: a.id, port: a.port, version: a.version})).map((p) => p.id),
+				permissions: appPermissions(compose, whereFor({id: a.id, port: a.port, version: a.version, folders: folderChoices(a.folders)})).map((p) => p.id),
 				...(Array.isArray(a.openPorts) ? {openPorts: a.openPorts.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535 && n !== 22).slice(0, 16)} : {}),
+				...(folderChoices(a.folders).length ? {folders: folderChoices(a.folders)} : {}),
 				...(a.web && typeof a.web.service === 'string' && Number.isInteger(Number(a.web.port)) ? {web: {service: a.web.service, port: Number(a.web.port), ...(a.web.https === true ? {https: true} : {})}} : {}),
 				...(unsupported ? {unsupported} : {}),
 				...(caution ? {caution} : {}),
@@ -760,6 +790,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			DOCKER_SOCKET: engineEnv.DOCKER_HOST.replace(/^unix:\/\//, ''),
 			PUID: String(APP_UID),
 			PGID: String(APP_UID),
+			// Sent by its sign-in gateway with every request (x-omarchy-gateway), so an app that
+			// leaves sign-in to Omarchy Server can tell requests that came through it.
+			APP_GATEWAY_KEY: deriveEntropy(`app-${app.id}-gateway`),
+			// Folders you placed when installing (its listing's `folders:`); otherwise inside the app.
+			...Object.fromEntries((app.folderIds ?? []).map((id) => [folderVar(id), app.folders?.[id] ?? join(dir, 'folders', id)])),
 		}
 	}
 	async function sharedRoot() {
@@ -1088,7 +1123,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// The extra access a listing's compose file asks for.
 	// The folders an app may use without asking, and how its variables expand, for appPermissions.
 	function whereFor(app) {
-		const env = composeEnv({id: app.id, port: app.port, version: app.version})
+		// Before you place them, an app's folders count as its own (inside the app's folder).
+		const env = composeEnv({id: app.id, port: app.port, version: app.version, folderIds: (app.folders ?? []).map((f) => f.id)})
 		return {
 			home,
 			expand: (v) => expandVars(String(v), env).replace(/^\.(?=\/|$)/, appDir(app.id)).replace(/^~(?=\/|$)/, home),
@@ -1150,11 +1186,27 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			if (ports.has(src.port) || state.apps.some((a) => a.port === src.port) || !(await portFree(src.port))) throw new RpcError('CONFLICT', `Port ${src.port} is already in use, so ${src.name} can’t be installed`)
 			ports.add(src.port)
 		}
+		// Folders you placed yourself (see folderChoices): checked, and made, before anything installs.
+		const placed = new Map()
+		for (const f of Array.isArray(input?.folders) ? input.folders : []) {
+			const src = plan.find((p) => p.id === f?.appId)
+			if (!src || !(src.folders ?? []).some((c) => c.id === f.id) || !f.path) continue
+			const path = String(f.path).replace(/\/+$/, '')
+			if (!folderAllowed(path, home)) throw new RpcError('BAD_REQUEST', `${src.name} can’t use ${path}: pick a folder inside your home folder (not a hidden one).`)
+			// The deepest part that already exists must really be there, not a link to somewhere else.
+			let probe = path
+			while (!(await exists(probe))) probe = probe.slice(0, probe.lastIndexOf('/')) || '/'
+			const real = await realpath(probe)
+			if (real !== probe && !folderAllowed(join(real, path.slice(probe.length)), home)) throw new RpcError('BAD_REQUEST', `${path} leads outside your home folder, so ${src.name} can’t use it.`)
+			if ((await exists(path)) && !(await stat(path)).isDirectory()) throw new RpcError('BAD_REQUEST', `${path} isn’t a folder.`)
+			placed.set(`${src.id}/${f.id}`, path)
+		}
+		for (const path of placed.values()) await mkdir(path, {recursive: true})
 		// Every app in the plan shows as installing right away; they then install one after another.
 		const queued = plan.map((src) => {
 			const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
 			if (leftover) state.apps = state.apps.filter((a) => a !== leftover)
-			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.requiresHttps ? {requiresHttps: true} : {}), ...(src.web?.https ? {internalHttps: true} : {}), ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? [], ownSecretsOnly: true}
+			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.requiresHttps ? {requiresHttps: true} : {}), ...(src.web?.https ? {internalHttps: true} : {}), ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), ...(src.folders?.length ? {folderIds: src.folders.map((f) => f.id), folders: Object.fromEntries(src.folders.filter((f) => placed.has(`${src.id}/${f.id}`)).map((f) => [f.id, placed.get(`${src.id}/${f.id}`)]))} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? [], ownSecretsOnly: true}
 			state.apps.push(app)
 			busy.set(app.id, {state: 'installing', progress: 0})
 			return {src, app}
@@ -1225,6 +1277,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		app.permissions ??= wants
 		const extra = wants.filter((p) => !app.permissions.includes(p) && !(Array.isArray(input?.grant) && input.grant.includes(p)))
 		if (extra.length) throw new RpcError('PRECONDITION_FAILED', `This update asks for more access (${extra.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}). Uninstall and install it again to allow that.`)
+		// Folders a newer listing lets you place start inside the app; the ones you placed stay put.
+		if (src.folders?.length) app.folderIds = [...new Set([...(app.folderIds ?? []), ...src.folders.map((f) => f.id)])]
 		busy.set(app.id, {state: 'updating', progress: 10})
 		let step = 'getting its files ready'
 		try {
@@ -1411,7 +1465,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					// System apps that need a one-time step from you first (see system-apps.mjs).
 					const setup = []
 					for (const a of plan) if (a.system && systemApps?.setup) { const s = await systemApps.setup(a.id); if (s) setup.push({...s, appId: a.id, appName: a.name}) }
-					return {requiredFolders: [], gpuAccess: false, alsoInstalls: also, permissions: access, setup}
+					// Folders it lets you place: inside the app, or a folder of yours (suggested under your home).
+					const folders = plan.flatMap((a) => (a.folders ?? []).map((f) => ({...f, appId: a.id, appName: a.name, suggest: f.suggest ? join(home, f.suggest) : null})))
+					return {requiredFolders: [], gpuAccess: false, alsoInstalls: also, permissions: access, setup, folders, home}
 				},
 			},
 			'apps.uninstall': {kind: 'mutation', run: uninstall},
