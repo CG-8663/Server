@@ -1,7 +1,7 @@
 import {useEffect, useRef, useState} from 'react'
 import {useQuery} from '@tanstack/react-query'
 
-import {openApp} from './openApp'
+import {askApp, explainProbe, openApp, webStatus} from './openApp'
 import {query, type UserApp} from './api'
 import {appUrl, useAction, useBootstrap} from './data'
 import {useDesktop} from './desktop/Desktop'
@@ -19,9 +19,18 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	const toast = useToast()
 	const [logsOpen, setLogsOpen] = useState(false)
 	const [waiting, setWaiting] = useState<number | null>(null)
+	const [problem, setProblem] = useState<string | null>(null)
 	const waitCtrl = useRef<AbortController | null>(null)
 	useEffect(() => () => waitCtrl.current?.abort(), [])
-	useEffect(() => (waitCtrl.current?.abort(), setWaiting(null)), [app?.id])
+	useEffect(() => (waitCtrl.current?.abort(), setWaiting(null), setProblem(null)), [app?.id, app?.state])
+	// "Running" only says its containers run. Whether its web page answers is asked separately.
+	const web = useQuery({
+		queryKey: ['apps.probe', app?.id],
+		queryFn: () => askApp(app!),
+		enabled: !!app && app.state === 'running' && !!app.port,
+		refetchInterval: (q) => (q.state.data?.readiness === 'ready' ? 30_000 : 4000),
+		retry: false,
+	})
 	useEffect(() => setLogsOpen(false), [app?.id])
 
 	if (!app) return null
@@ -48,7 +57,13 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 		const ctrl = new AbortController()
 		waitCtrl.current?.abort()
 		waitCtrl.current = ctrl
-		openApp(app, url, {signal: ctrl.signal, onWaiting: (s) => setWaiting(s)}).finally(() => waitCtrl.current === ctrl && setWaiting(null))
+		setProblem(null)
+		openApp(app, url, {signal: ctrl.signal, onWaiting: (s) => setWaiting(s)})
+			.then((r) => {
+				if (waitCtrl.current !== ctrl || r.opened || ctrl.signal.aborted) return
+				setProblem(explainProbe(name, r.probe) ?? `${name} didn’t answer in time.`)
+			})
+			.finally(() => waitCtrl.current === ctrl && setWaiting(null))
 	}
 	const copy = async () => {
 		if (!url) return
@@ -96,6 +111,8 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	if (creds?.defaultUsername) rows.push(['Username', creds.defaultUsername])
 	if (creds?.defaultPassword) rows.push(['Password', creds.defaultPassword])
 	rows.push(['Version', update ? `${app.version} → ${update.version}` : (app.version ?? '–')])
+	const webNow = app.state === 'running' ? webStatus(web.data) : null
+	if (webNow) rows.push(['Web page', <span key="web" style={{color: webNow.tone === 'bad' ? 'var(--red)' : webNow.tone === 'wait' ? 'var(--yellow)' : undefined}}>{webNow.label}</span>])
 	if (url) rows.push(['Address', <a key="addr" href={url} style={{color: 'var(--accent-text)'}}>{new URL(url).host}</a>])
 
 	return (
@@ -109,6 +126,21 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 				}}
 				label={`${name} actions`}
 			>
+				{problem && waiting === null && (
+					<div className="glass card open-problem" role="alert">
+						<span>{problem}</span>
+						<div className="open-problem-actions">
+							<button className="btn small" onClick={open}>
+								Try again
+							</button>
+							{url && (
+								<a className="btn small" href={url}>
+									Open anyway
+								</a>
+							)}
+						</div>
+					</div>
+				)}
 				{waiting !== null && (
 					<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12, borderRadius: 16}}>
 						<span className="spinner" />

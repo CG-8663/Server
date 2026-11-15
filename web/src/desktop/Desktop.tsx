@@ -6,9 +6,10 @@ import {createContext, memo, useCallback, useContext, useEffect, useMemo, useRef
 import {createPortal} from 'react-dom'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {SERVER_DESKTOP, logout, mutate, query, type Bootstrap, type Machine, type UserApp} from '../api'
+import {SERVER_DESKTOP, logout, mutate, type Bootstrap, type Machine, type UserApp} from '../api'
 import {AppSheet} from '../AppSheet'
 import {Console} from '../Console'
+import {askApp, explainProbe} from '../openApp'
 import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory, useNotifications, useUpdates, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
@@ -1696,13 +1697,15 @@ function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetr
 	// Ask the server whether the app answers at all, so the message can say what's going on.
 	const probe = useQuery({
 		queryKey: ['apps.probe', app.id],
-		queryFn: () => query<{result: string; status?: number; location?: string | null; error?: string}>('apps.probe', {appId: app.id}),
+		queryFn: () => askApp(app),
 		enabled: slow,
 		staleTime: 0,
 	})
 	const why = !probe.data
 		? null
-		: probe.data.result === 'refused'
+		: explainProbe(name, probe.data)
+			? explainProbe(name, probe.data)
+			: probe.data.result === 'refused'
 			? `${name} isn’t listening yet. It may still be starting up (some apps take several minutes the first time), or it stopped: check its logs on the app’s page.`
 			: probe.data.result === 'timeout'
 				? `${name} accepted the connection but hasn’t answered in 6 seconds. It’s probably still starting.`

@@ -4,6 +4,18 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.16',
+		date: '2026-11-15',
+		title: 'Apps open when they should',
+		fixed: [
+			'An app could say Running while Open said “still starting” for three minutes. Open now waits only while an app really is starting up. If an app is running but its web page doesn’t answer, it says so at once, with Try again and Open anyway.',
+			'The app’s page shows “Web page: Ready / Starting up / Not answering” next to Running, so you can tell the two apart.',
+			'AdGuard Home no longer disappears after its setup (it was moving its page to another port). Update AdGuard Home from the App Store to get the fix.',
+			'Brave and Chrome (the streamed ones) now open their video ports in the server’s firewall. Update them from the App Store.',
+			'Apps that use their own port, like Home Assistant, now open correctly when you use Omarchy Server over https://.',
+		],
+	},
+	{
 		version: '0.9.15',
 		date: '2026-11-15',
 		title: 'A clean way out',

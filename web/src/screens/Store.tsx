@@ -4,7 +4,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query, type RegistryApp, type UserApp} from '../api'
 import {appUrl, useAction, useApps, useBootstrap, useInstallReview, useRegistry} from '../data'
 import {useDesktop} from '../desktop/Desktop'
-import {openApp} from '../openApp'
+import {explainProbe, openApp} from '../openApp'
 import {Icon, hasIcon} from '../icons'
 import {AppIcon, Sheet, SheetHeader, StatusPill, appStatus, bytes, haptic, isAppBusy, useToast} from '../ui'
 import {SearchField} from './Apps'
@@ -535,7 +535,9 @@ function StoreSheet({
 											if (desk) desk.launch(live)
 											else if (liveUrl) {
 												toast(`Opening ${live.name ?? app.name}…`)
-												openApp(live, liveUrl, {onWaiting: (sec) => sec % 10 === 0 && toast(`${live.name ?? app.name} is still starting (${sec}s)…`)})
+												openApp(live, liveUrl, {onWaiting: (sec) => sec % 10 === 0 && toast(`${live.name ?? app.name} is still starting (${sec}s)…`)}).then(
+													(r) => !r.opened && toast(explainProbe(live.name ?? app.name, r.probe) ?? `${live.name ?? app.name} didn’t answer in time.`, true),
+												)
 											}
 										}}
 									>
