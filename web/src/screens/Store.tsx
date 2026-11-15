@@ -482,7 +482,7 @@ function StoreSheet({
 										{access.some((x) => x.appId !== app.id) ? ` · ${p.appName}` : ''}
 									</b>
 									<span>{p.detail}</span>
-									{['low-ports', 'devices', 'host-files', 'system', 'refused'].includes(p.id) && p.what?.length ? <span className="access-what">{p.what.join(', ')}</span> : null}
+									{['low-ports', 'devices', 'host-files', 'system', 'system-software', 'refused'].includes(p.id) && p.what?.length ? <span className="access-what">{p.what.join(', ')}</span> : null}
 								</div>
 							))}
 							{access.some((p) => p.id === 'refused') ? (

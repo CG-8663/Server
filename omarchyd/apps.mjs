@@ -27,6 +27,7 @@ import tls from 'node:tls'
 import YAML from 'yaml'
 
 import {RpcError} from './rpc.mjs'
+import {SYSTEM_PERMISSIONS} from './system-apps.mjs'
 import {dualProtocolServer, tlsContext, wantsUpgrade} from './tls.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
@@ -69,6 +70,9 @@ const APP_UID = 1000
 // ---- extra access an app asks for -------------------------------------------------------------
 // Worked out from the compose file itself (a listing can't leave anything out). Each needs your
 // explicit permission when installing; plain apps need none.
+// Where apps that are part of the server itself (system-apps.mjs) are listed.
+const BUILTIN_STORE = 'builtin:omarchy-server'
+
 export const PERMISSIONS = {
 	containers: {label: 'Control your containers', detail: 'It can start, stop, create and delete every container you run (and see their settings and data). Container managers need this.'},
 	'low-ports': {label: 'Use network ports below 1024', detail: 'It listens on system ports such as 53 (DNS), 80 or 443. To allow it, Omarchy Server lets programs running as you use ports from that number up, for the whole server, and keeps that after this app is removed.'},
@@ -78,6 +82,7 @@ export const PERMISSIONS = {
 	'host-network': {label: 'Share the server’s own network', detail: 'It uses the server’s network directly instead of its own: it can reach services that listen only on this server, and other devices see it as the server. Home Assistant and similar apps need this to find devices.'},
 	'host-files': {label: 'Read and change folders on the server', detail: 'It can read and change these folders on your server, with your rights (containers here run as you).'},
 	system: {label: 'Reach into the server’s system', detail: 'It can see or talk to parts of the server outside its container (other programs, system services or kernel features). Monitoring tools and smart-home hubs sometimes need this.'},
+	...SYSTEM_PERMISSIONS,
 }
 // Bind mounts no app may have, whatever it asks: your whole home folder, its hidden folders (SSH keys,
 // settings, Omarchy Server's own data and keys), and the system's own folders.
@@ -291,7 +296,7 @@ export function readinessOf({probe, container = 'running', runningForMs = Infini
 	return 'unreachable'
 }
 
-export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000}) {
+export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000, systemApps = null}) {
 	const base = join(dataDir, 'apps')
 	const storesDir = join(base, 'stores')
 	const installedDir = join(base, 'installed')
@@ -349,6 +354,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			state.permissionsVersion = 2
 			await save()
 		}
+		for (const a of state.apps) if (a.system && a.state !== 'error') systemApps?.resume(a)
 		for (const a of state.apps) if (a.port && a.state !== 'error') await openGateways(a).catch((e) => console.error('[omarchyd] gateway', a.id, e.message))
 	})()
 	const save = () => writeAtomic(stateFile, () => JSON.stringify(state, null, 2))
@@ -667,9 +673,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				list.push(loaded)
 			} catch {}
 		}
+		// Apps that are part of the server itself (Tailscale) come first, so a store can't stand in for them.
+		if (systemApps) list.unshift({url: BUILTIN_STORE, meta: {id: 'omarchy-server', name: 'Omarchy Server'}, apps: systemApps.listings()})
 		// Installed apps pick up how their listing says to open them (https, an https app inside),
 		// so an app installed before its listing changed doesn't need reinstalling.
 		for (const app of state.apps) {
+			if (app.system) continue
 			const src = list.find((l) => !app.store || l.url === app.store)?.apps.find((x) => x.id === app.id) ?? list.flatMap((l) => l.apps).find((x) => x.id === app.id)
 			if (!src) continue
 			if (src.requiresHttps) app.requiresHttps = true
@@ -813,7 +822,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		return Number.isInteger(start) ? start : null
 	}
 	// App folders end up owned by container users, so remove them from inside the user namespace.
-	const removeAppDir = (id) => run('podman', ['unshare', 'rm', '-rf', appDir(id)], {env: engineEnv}).catch(() => rm(appDir(id), {recursive: true, force: true}))
+	const removeAppDir = async (id) => {
+		if (!(await exists(appDir(id)))) return
+		await run('podman', ['unshare', 'rm', '-rf', appDir(id)], {env: engineEnv}).catch(() => rm(appDir(id), {recursive: true, force: true}))
+	}
 
 	// An app's exports.sh (bash from its store) sets extra variables, such as ports or derived
 	// passwords. It runs in a bubblewrap sandbox: no network, read-only system, only its own app folder
@@ -879,6 +891,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 
 	async function liveState(a) {
+		if (a.system) return systemApps ? systemApps.liveState(a) : 'unknown'
 		try {
 			const text = (await compose(a, 'ps', '-a', '--format', 'json')).trim()
 			const rows = text.startsWith('[') ? JSON.parse(text) : text.split('\n').filter(Boolean).map((l) => JSON.parse(l))
@@ -948,6 +961,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				...(a.viewPort ? {viewPort: a.viewPort} : {}),
 				path: a.path ?? '',
 				...(a.requiresHttps ? {requiresHttps: true} : {}),
+				...(a.system ? {system: true} : {}),
 				state: b?.state ?? (a.state === 'error' ? 'unknown' : (live.get(a.id) ?? 'unknown')),
 				...(b?.progress !== undefined ? {progress: b.progress} : {}),
 				...(a.state === 'error' ? {error: a.error} : {}),
@@ -1025,6 +1039,13 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 	}
 
+	function systemPortFor(app) {
+		const used = new Set(state.apps.filter((a) => a.id !== app.id).map((a) => a.internalPort))
+		let p = 20_000 + (parseInt(createHash('sha256').update(app.id).digest('hex').slice(0, 4), 16) % 9000)
+		while (used.has(p)) p++
+		return p
+	}
+
 	async function placeApp(src, app) {
 		const dir = appDir(app.id)
 		await copyListing(src, app)
@@ -1075,6 +1096,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 	}
 	async function permissionsOf(src) {
+		if (src.system) return systemApps?.permissions(src.id) ?? []
 		const c = await readYaml(src.folder, COMPOSE_FILES).catch(() => null)
 		return c ? appPermissions(await readFile(join(src.folder, c.name), 'utf8'), whereFor(src)) : []
 	}
@@ -1118,7 +1140,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 		const missing = [...new Set([...needs.values()].flat())].filter((p) => !granted.has(p))
 		if (missing.length) throw new RpcError('PRECONDITION_FAILED', `Installing needs your permission: ${missing.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}.`)
-		if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
+		if (plan.some((src) => !src.system) && !(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
+		if (plan.some((src) => src.system) && !systemApps) throw new RpcError('PRECONDITION_FAILED', 'This server can’t install system apps')
 		// Check every port first, so nothing starts installing if one of them can't.
 		const ports = new Set()
 		for (const src of plan) {
@@ -1146,6 +1169,26 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					continue
 				}
 				busy.set(app.id, {state: 'installing', progress: 5})
+				if (src.system) {
+					try {
+						app.system = true
+						app.store = BUILTIN_STORE
+						app.internalPort = systemPortFor(app)
+						busy.set(app.id, {state: 'installing', progress: 20})
+						await systemApps.install(app)
+						markStarted(app.id)
+						await openGateways(app)
+						delete app.state
+						delete app.error
+					} catch (error) {
+						Object.assign(app, {state: 'error', error: error.message})
+						broken = app.name
+					} finally {
+						busy.delete(app.id)
+						await save().catch(() => {})
+					}
+					continue
+				}
 				try {
 					await sharedRoot()
 					app.internalPort = await placeApp(src, app)
@@ -1173,6 +1216,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	async function update(input) {
 		await ready
 		const app = findInstalled(String(input?.appId ?? ''))
+		if (app.system) throw new RpcError('PRECONDITION_FAILED', `${app.name} is updated with the rest of the system (Omarchy’s updates).`)
 		if (busy.has(app.id)) throw new RpcError('CONFLICT', `${app.name} is busy`)
 		const src = await findInRegistry(app.id)
 		if (!src) throw new RpcError('NOT_FOUND', 'That app is no longer in your stores')
@@ -1220,7 +1264,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (busy.has(app.id)) throw new RpcError('CONFLICT', `${app.name} is busy`)
 		busy.set(app.id, {state: pending})
 		try {
-			await compose(app, ...args)
+			if (app.system) await systemApps[{up: 'start', stop: 'stop', restart: 'restart'}[args[0]]](app)
+			else await compose(app, ...args)
 			if (args[0] === 'up' || args[0] === 'restart') markStarted(app.id)
 		} finally {
 			busy.delete(app.id)
@@ -1247,6 +1292,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			if (app.port) await firewall?.close(app.port)
 			if (app.viewPort) await firewall?.close(app.viewPort)
 			for (const p of app.openPorts ?? []) await firewall?.close(p)
+			if (app.system) await systemApps?.uninstall(app)
 			if (await exists(join(appDir(app.id), 'compose.omarchy.yml'))) await compose(app, 'down', '--volumes', '--remove-orphans').catch(() => {})
 			await removeAppDir(app.id)
 			state.apps = state.apps.filter((a) => a.id !== app.id)
@@ -1261,6 +1307,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	async function updates() {
 		const out = []
 		for (const a of state.apps) {
+			if (a.system) continue
 			const src = await findInRegistry(a.id).catch(() => null)
 			if (src?.version && a.version && src.version !== a.version) out.push({id: a.id, version: src.version})
 		}
@@ -1271,6 +1318,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	async function shellFor(appId) {
 		await ready
 		const app = findInstalled(String(appId))
+		if (app.system) throw new RpcError('PRECONDITION_FAILED', `${app.name} runs on the server itself, not in a container. Use the Terminal.`)
 		const doc = YAML.parse(await readFile(join(appDir(app.id), 'compose.omarchy.yml'), 'utf8')) ?? {}
 		const names = Object.keys(doc.services ?? {})
 		const main = names.find((n) => (doc.services[n].ports ?? []).some((p) => String(p).startsWith(`127.0.0.1:${app.internalPort}:`))) ?? names[0]
@@ -1345,6 +1393,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			return state.apps.length
 		},
 		close: () => {
+			systemApps?.close()
 			secure.close()
 			for (const id of [...gateways.keys()]) closeGateway(id)
 		},
@@ -1372,7 +1421,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				kind: 'query',
 				run: async (input) => {
 					const app = findInstalled(String(input?.appId ?? ''))
-					const text = await compose(app, 'logs', '--no-color', '--tail', '500')
+					const text = app.system ? await systemApps.logs(app) : await compose(app, 'logs', '--no-color', '--tail', '500')
 					const max = Math.min(Number(input?.maxOutputBytes) || 200_000, 1_000_000)
 					return text.length > max ? text.slice(-max) : text
 				},

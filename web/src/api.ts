@@ -97,6 +97,8 @@ export type UserApp = {
 	credentials?: {defaultUsername?: string; defaultPassword?: string; showBeforeOpen?: boolean}
 	dependencies?: string[]
 	error?: string
+	/** Runs on the server itself (Tailscale), not in a container: no container terminal. */
+	system?: boolean
 }
 
 export type UsageItem = {id: string; used: number; name?: string}
