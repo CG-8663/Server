@@ -110,7 +110,8 @@ ok(/Tailscale/.test(html), 'signed in: Tailscale’s page')
 const node = await (await fetch('http://127.0.0.1:8240/api/data', {headers: {cookie}})).json()
 ok(node.Status === 'NeedsLogin', `it waits for you to log in (${node.Status})`)
 // The Log in button, through the gateway (Tailscale's CSRF check compares Origin and Host).
-const up = await fetch('http://127.0.0.1:8240/api/up', {method: 'POST', headers: {cookie, origin: 'http://127.0.0.1:8240', 'content-type': 'application/json'}, body: '{}'})
+// What the page's Log in button sends (client/web/src/components/views/login-view.tsx).
+const up = await fetch('http://127.0.0.1:8240/api/up', {method: 'POST', headers: {cookie, origin: 'http://127.0.0.1:8240', 'content-type': 'application/json'}, body: JSON.stringify({Reauthenticate: true})})
 const upText = await up.text()
 log('POST /api/up through the gateway:', up.status, upText.slice(0, 300))
 if (up.status !== 200) {
