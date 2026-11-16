@@ -4,11 +4,24 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.31',
+		date: '2026-11-16',
+		title: 'Local swarm: your other Linux computers',
+		added: [
+			'Machines → Local swarm: join your other Linux computers (Omarchy, Ubuntu, Debian, Fedora, Arch, openSUSE and their relatives) with one command, and see them here with their CPU, memory, disks, temperature and updates waiting.',
+			'Open a terminal on any of them, or see and use its desktop (Hyprland, Sway and other X11 or wlroots desktops), right from Omarchy Server.',
+			'Manage them: install verified Omarchy plugins at the exact version the registry checked, change the Omarchy theme, run updates in a terminal you can watch, or restart.',
+			'Add a computer walks you through it: choose what it may do, copy the command, paste it on that computer. It checks it’s talking to your server before it sends anything, the code works once, and the computer opens no ports.',
+			'Each computer only allows what you chose when it joined. You can switch things off later, rename it, or remove it, and a removed computer’s connector forgets your server and stops.',
+			'Omarchy Server now updates from the repository it was installed from, so a server installed from the development copy (omarchy-server-dev) gets development updates, and one installed from here gets these.',
+		],
+	},
+	{
 		version: '0.9.30',
 		date: '2026-11-16',
 		title: 'Your terminal keeps running',
 		added: [
-			'Closing the terminal no longer ends your shell. Open it again, on this device or another, and you’re right where you left off, with what was on screen and anything you left running still going. App shells work the same way, one per app.',
+			'Closing the terminal no longer ends your shell. Open it again, on this device or another, and you’re right where you left off, with what was on screen and anything you left running still going. App shells work the same way, one per app. (A Local swarm computer’s terminal still ends when you close it.)',
 			'If the connection drops, Reconnect picks up the same shell. Open it on two devices at once and both show the same session.',
 			'New session (the circular arrow at the top) ends the running shell and starts a fresh one. Typing exit ends it too.',
 			'Restarting the server, or installing an Omarchy Server update, still ends running shells.',

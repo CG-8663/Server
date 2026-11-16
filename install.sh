@@ -69,6 +69,12 @@ node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)
 mkdir -p "$BASE"
 if [ -d "$APP/.git" ]; then
 	say "Updating Omarchy Server"
+	# Installed from somewhere else before (e.g. omarchy-server, now the dev copy, or back): follow this
+	# installer's repository from now on, for this update and the in-app updates after it.
+	if [ "$(git -C "$APP" remote get-url origin 2>/dev/null)" != "$REPO" ]; then
+		say "Switching to $REPO"
+		git -C "$APP" remote set-url origin "$REPO"
+	fi
 	git -C "$APP" fetch --depth 1 origin "$BRANCH"
 	git -C "$APP" reset --hard "origin/$BRANCH"
 else
