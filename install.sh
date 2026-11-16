@@ -43,6 +43,13 @@ arch=$(uname -m)
 need=()
 for pkg in nodejs npm git openssl wayvnc bubblewrap qemu-base libvirt passt libisoburn edk2-ovmf podman docker-compose btrfs-progs smartmontools hdparm samba; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
 if [ ${#need[@]} -gt 0 ]; then
+	# Arch doesn't support installing packages from a newer package list without updating the rest
+	# ("partial upgrade"): the new package can need newer libraries than the ones installed (that's how
+	# Samba ended up half-updated). If updates are waiting, update the whole system first.
+	if [ -n "$(pacman -Qu 2>/dev/null)" ]; then
+		say "This system has updates waiting. Installing ${need[*]} now could leave it half-updated."
+		die "Update the system first (Omarchy menu → Update → Omarchy, or: sudo pacman -Syu), then run this installer again."
+	fi
 	say "Installing ${need[*]} (sudo needed)"
 	sudo pacman -S --needed --noconfirm "${need[@]}"
 fi

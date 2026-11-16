@@ -365,6 +365,29 @@ errors: No known data errors
 		assert.ok(!log.some((l) => l[0] === 'cryptsetup'))
 	})
 
+	test('a half-updated Samba (programs and libraries of different versions) gets a message that says how to fix it', async () => {
+		const broken = () => {
+			throw new Error("smbpasswd: /usr/lib/samba/libsamba3-util-private-samba.so: version `SAMBA_4.25.0_PRIVATE_SAMBA' not found (required by smbpasswd)")
+		}
+		const h = createHelper({user, fs: fakeFs({}), run: fakeRun([], {smbpasswd: broken, smbd: broken})})
+		await assert.rejects(h.handle('smb-password', [], 'long enough pw\n'), /half-updated[\s\S]*Update the whole system once/)
+		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]})), /half-updated/)
+		// Other failures still say what they are.
+		const h2 = createHelper({user, fs: fakeFs({}), run: fakeRun([], {smbpasswd: () => { throw new Error('Failed to add entry for user chris.') }})})
+		await assert.rejects(h2.handle('smb-password', [], 'long enough pw\n'), /Failed to add entry/)
+	})
+
+	test('Tailscale isn’t installed on top of waiting system updates (no partial update)', async () => {
+		const log = []
+		const h = createHelper({user, fs: fakeFs(), run: fakeRun(log, {pacman: (a) => {
+			if (a[0] === '-Q') throw new Error('not found')
+			if (a[0] === '-Qu') return 'samba 4.24.3-1 -> 4.25.0-1\n'
+			return ''
+		}})})
+		await assert.rejects(h.handle('tailscale-setup', []), /updates waiting/)
+		assert.ok(!log.some((l) => l[0] === 'pacman' && l[1] === '-S'))
+	})
+
 	test('Tailscale: installed the way Omarchy does it, the owner made its operator; removed only as asked', async () => {
 		const log = []
 		let installed = false
