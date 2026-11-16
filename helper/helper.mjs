@@ -203,6 +203,19 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 	}
 	const exists = (p) => fs.readFile(p).then(() => true, () => false)
 
+	// Samba's programs and libraries come from different packages. After a partial update (one package
+	// installed from a newer package list without updating the rest, which Arch doesn't support) they
+	// no longer match, and every Samba program fails with "version … not found". Say what fixes it.
+	const samba = async (fn) => {
+		try {
+			return await fn()
+		} catch (error) {
+			if (/version [`'"]?SAMBA_[^ ]+ not found|cannot open shared object file|undefined symbol/i.test(String(error?.message ?? error)))
+				fail('Samba on this server is half-updated (its programs and libraries are different versions). Update the whole system once (Omarchy menu → Update → Omarchy, or sudo pacman -Syu in a terminal), then try again.')
+			throw error
+		}
+	}
+
 	const verbs = {
 		ping: async () => 'ok',
 		// Sign the owner in to the Omarchy desktop when it's sitting at the sign-in screen (or after
@@ -402,7 +415,12 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		// Nothing else changes: no routes accepted, no exit node, no Tailscale SSH.
 		'tailscale-setup': async () => {
 			const had = await run('pacman', ['-Q', 'tailscale']).then(() => true, () => false)
-			if (!had) await run('pacman', ['-S', '--needed', '--noconfirm', 'tailscale'])
+			if (!had) {
+				// Never a partial update (see install.sh): with updates waiting, the whole system goes first.
+				const waiting = await run('pacman', ['-Qu']).then((t) => String(t).trim(), () => '')
+				if (waiting) fail('This server has system updates waiting. Update it first (Omarchy menu → Update → Omarchy), then install Tailscale.')
+				await run('pacman', ['-S', '--needed', '--noconfirm', 'tailscale'])
+			}
 			await run('systemctl', ['enable', '--now', 'tailscaled.service'])
 			// tailscaled takes a moment to open its socket after starting.
 			let lastError = null
@@ -587,6 +605,8 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 				if (!current.includes(`include = ${SMB_INCLUDE}`)) await writeAtomic(SMB_CONF, `${current.replace(/\n*$/, '\n')}\n# Added by Omarchy Server\n   include = ${SMB_INCLUDE}\n`)
 			}
 			if (blocks.length) {
+				// Samba's own check first: a half-updated Samba can't start, and says so here.
+				await samba(() => run('smbd', ['-b']))
 				await run('systemctl', ['enable', '--now', 'smb.service'])
 				await run('smbcontrol', ['smbd', 'reload-config']).catch(() => run('systemctl', ['restart', 'smb.service']))
 				if (await ufwActive()) await run('ufw', ['allow', '445/tcp', 'comment', 'Omarchy Server shares'])
@@ -600,7 +620,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		'smb-password': async (_args, stdin) => {
 			const pw = String(stdin ?? '').replace(/\n$/, '')
 			if (pw.length < 8 || pw.length > 128 || /[\r\n]/.test(pw)) fail('Bad password')
-			await run('smbpasswd', ['-s', '-a', user.name], {input: `${pw}\n${pw}\n`})
+			await samba(() => run('smbpasswd', ['-s', '-a', user.name], {input: `${pw}\n${pw}\n`}))
 			return 'ok'
 		},
 

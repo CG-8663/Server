@@ -169,7 +169,7 @@ describe('Tailscale on the system', () => {
 		await writeFile(helperFile, "const verbs = {\n\t'ping': async () => 'ok',\n}\n")
 		const review = await q('apps.installReview', {appId: 'tailscale'})
 		assert.equal(review.setup.length, 1)
-		assert.match(review.setup[0].command, /^sudo pacman -S --needed tailscale && sudo systemctl enable --now tailscaled && sudo tailscale set --operator=/)
+		assert.match(review.setup[0].command, /^sudo pacman -Syu --needed tailscale && sudo systemctl enable --now tailscaled && sudo tailscale set --operator=/)
 		helperCalls.length = 0
 		await call('apps.install', {appId: 'tailscale', grant: ['system-software']})
 		const app = await until(async () => {

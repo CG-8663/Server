@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.22',
+		date: '2026-11-15',
+		title: 'No more half-updated system packages',
+		fixed: [
+			'Sharing a folder could fail with a long “version … not found” error from Samba. That happens when Samba was installed without updating the rest of the system, so its parts didn’t match. Omarchy Server now explains it and how to fix it (update the whole system once), and its installer no longer installs packages on top of waiting updates. Tailscale is set up the same careful way.',
+		],
+	},
+	{
 		version: '0.9.21',
 		date: '2026-11-15',
 		title: 'Omarchy plugins, network shares, and the Omarchy Desktop on your desktop',
