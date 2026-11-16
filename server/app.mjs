@@ -20,7 +20,7 @@ import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.25'
+export const VERSION = '0.9.26'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -684,8 +684,12 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	api.post('/prefs', async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		const {theme, accent, customBrandHsl, omarchyBackground} = req.body ?? {}
+		const {theme, accent, customBrandHsl, omarchyBackground, solidColor} = req.body ?? {}
 		const patch = {}
+		if (solidColor !== undefined) {
+			if (solidColor !== null && !/^#[0-9a-f]{6}$/i.test(String(solidColor))) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad colour'}})
+			patch.solidColor = solidColor === null ? null : String(solidColor).toLowerCase()
+		}
 		if (omarchyBackground !== undefined) {
 			if (omarchyBackground !== null && !/^[0-9a-f]{16}$/.test(String(omarchyBackground))) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown background'}})
 			patch.omarchyBackground = omarchyBackground

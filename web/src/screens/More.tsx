@@ -5,7 +5,7 @@ import {diskPct, logout, mutate, query, type DiskUsage, type UsageItem, type Wal
 import {useApps, useBootstrap, useCpu, useDisk, useMemory, useTemp, useUptime, useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
-import {ACCENTS, AppIcon, KV, Segmented, THEMES, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, useOmarchyThemes, preparePhoto, useConfirm, useToast, type Prefs} from '../ui'
+import {ACCENTS, AppIcon, SOLID_COLORS, KV, Segmented, THEMES, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, useOmarchyThemes, preparePhoto, useConfirm, useToast, type Prefs} from '../ui'
 
 // One point per successful poll (keyed on fetch time, so flat values still plot).
 function useHistory(value: number | undefined, stamp: number, size = 40) {
@@ -191,6 +191,24 @@ function Live() {
 	)
 }
 
+// Plain colours instead of a picture: a few to tap, any other with the colour picker, or the picture.
+export function SolidColors({value, onChange}: {value: string | null; onChange: (c: string | null) => void}) {
+	return (
+		<div className="solid-colors" role="radiogroup" aria-label="Solid colour">
+			<button role="radio" aria-checked={!value} className={`solid-swatch picture${!value ? ' on' : ''}`} onClick={() => onChange(null)} title="A picture (no solid colour)">
+				<Icon name="wallpaper" size={16} />
+			</button>
+			{SOLID_COLORS.map((c) => (
+				<button key={c} role="radio" aria-checked={value === c} aria-label={c} className={`solid-swatch${value === c ? ' on' : ''}`} style={{background: c}} onClick={() => onChange(c)} />
+			))}
+			<label className={`solid-swatch custom${value && !(SOLID_COLORS as readonly string[]).includes(value) ? ' on' : ''}`} title="Any colour" style={value && !(SOLID_COLORS as readonly string[]).includes(value) ? {background: value} : undefined}>
+				<Icon name="palette" size={16} />
+				<input type="color" value={value ?? '#1a1b26'} onChange={(e) => onChange(e.target.value.toLowerCase())} aria-label="Pick any colour" />
+			</label>
+		</div>
+	)
+}
+
 export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs: (p: Prefs) => void; wallpaper?: Wallpaper | null}) {
 	const toast = useToast()
 	const fileRef = useRef<HTMLInputElement>(null)
@@ -284,9 +302,13 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 				selected={prefs.theme === 'omarchy' || prefs.theme === 'horizon' ? (prefs.omarchyBackground ?? null) : undefined}
 				onChoose={(id) =>
 					// A wallpaper needs a theme that shows one: Horizon keeps its look, anything else becomes Omarchy.
-					setPrefs({...prefs, theme: prefs.theme === 'horizon' ? 'horizon' : 'omarchy', omarchyBackground: id})
+					setPrefs({...prefs, theme: prefs.theme === 'horizon' ? 'horizon' : 'omarchy', omarchyBackground: id, solidColor: null})
 				}
 			/>
+			<div className="section-head" style={{margin: '18px 0 6px'}}>
+				<h2>Solid colour</h2>
+			</div>
+			<SolidColors value={prefs.solidColor ?? null} onChange={(c) => (haptic(6), setPrefs({...prefs, solidColor: c}))} />
 						{photo && (
 				<div className="photo-actions">
 					<button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading}>

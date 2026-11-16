@@ -107,7 +107,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.25', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.26', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -203,6 +203,13 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		// Changing one thing keeps the rest, and counts up so other devices notice.
 		r = await touch.req('POST', '/api/prefs', {accent: 'pink'})
 		assert.deepEqual([r.body.prefs.theme, r.body.prefs.accent, r.body.prefs.rev], ['tokyo', 'pink', rev + 1])
+		// A solid colour instead of a picture (and back), checked.
+		r = await touch.req('POST', '/api/prefs', {solidColor: '#1A1B26'})
+		assert.equal(r.body.prefs.solidColor, '#1a1b26')
+		assert.equal((await touch.req('POST', '/api/prefs', {solidColor: 'red; background:url(x)'})).status, 400)
+		r = await touch.req('POST', '/api/prefs', {solidColor: null})
+		assert.equal(r.body.prefs.solidColor, null)
+		assert.equal(r.body.prefs.theme, 'tokyo', 'the rest is untouched')
 		assert.equal((await touch.req('POST', '/api/prefs', {theme: '<script>'})).status, 400)
 		assert.equal((await touch.req('POST', '/api/prefs', {customBrandHsl: 'red; x'})).status, 400)
 		const anon = await fetch(`${touch.base}/api/prefs`)

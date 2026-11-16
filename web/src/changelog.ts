@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.26',
+		date: '2026-11-15',
+		title: 'Omarchy look by default, and solid colours',
+		added: [
+			'Solid colours: choose a plain colour instead of a picture, for the phone’s background (Appearance → Solid colour) and the desktop’s wallpaper (Personalize → Background → Solid colour). Pick one of the swatches or any colour you like.',
+			'New installs start on the Omarchy theme, with the Omarchy desktop’s own colours and background. If you already chose a theme, nothing changes.',
+		],
+	},
+	{
 		version: '0.9.25',
 		date: '2026-11-15',
 		title: 'System updates the Omarchy way',

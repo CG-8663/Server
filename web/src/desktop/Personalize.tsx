@@ -7,7 +7,8 @@ import {Icon} from '../icons'
 import {Switch} from '../screens/Settings'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {Segmented, customBackgroundUrl, haptic, preparePhoto, useToast, wallpaperUrl, type Prefs} from '../ui'
-import {PRESETS, STYLES, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
+import {PRESETS, STYLES, solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
+import {SolidColors} from '../screens/More'
 import {DESKTOP_KEY, useDesktop, useItems, type ItemInfo} from './Desktop'
 
 type Tab = 'themes' | 'background' | 'dock' | 'desktop'
@@ -177,6 +178,9 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 						</button>
 					))}
 				</div>
+			</Section>
+			<Section title="Solid colour" note="A plain colour instead of a picture.">
+				<SolidColors value={solidOf(cfg.wallpaper)} onChange={(c) => (haptic(6), setCfg((x) => ({...x, preset: null, wallpaper: (c ? `color:${c}` : 'omarchy') as DeskConfig['wallpaper']})))} />
 			</Section>
 			<Section title="Your own">
 				<div className="pz-grid walls">
