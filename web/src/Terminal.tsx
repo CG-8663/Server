@@ -78,7 +78,20 @@ function cssVar(name: string, fallback: string) {
 	return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback
 }
 
-export function TerminalScreen({app, onClose, embedded, input}: {app?: {id: string; name?: string; icon?: string}; onClose: () => void; embedded?: boolean; input?: string}) {
+export function TerminalScreen({
+	app,
+	agent,
+	onClose,
+	embedded,
+	input,
+}: {
+	app?: {id: string; name?: string; icon?: string}
+	// A computer in the local swarm (through its connector), instead of this server.
+	agent?: {id: string; name: string}
+	onClose: () => void
+	embedded?: boolean
+	input?: string
+}) {
 	const portalRoot = usePortalRoot()
 	const root = useRef<HTMLDivElement>(null)
 	const host = useRef<HTMLDivElement>(null)
@@ -225,7 +238,7 @@ export function TerminalScreen({app, onClose, embedded, input}: {app?: {id: stri
 			term.resize(s.cols, s.rows)
 			term.reset()
 			const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
-			const qs = new URLSearchParams({...(app ? {appId: app.id} : {}), cols: String(s.cols), rows: String(s.rows), ...(fresh.current ? {fresh: '1'} : {})})
+			const qs = new URLSearchParams({...(app ? {appId: app.id} : {}), ...(agent ? {agentId: agent.id} : {}), cols: String(s.cols), rows: String(s.rows), ...(fresh.current ? {fresh: '1'} : {})})
 			fresh.current = false
 			const ws = new WebSocket(`${scheme}//${location.host}/api/terminal?${qs}`)
 			ws.binaryType = 'arraybuffer'
@@ -268,7 +281,8 @@ export function TerminalScreen({app, onClose, embedded, input}: {app?: {id: stri
 					setMessage('The shell has ended.')
 				} else {
 					setState((st) => (st === 'connecting' ? 'error' : 'lost'))
-					setMessage('Your shell is still running on the server. Reconnect to pick up where you left off.')
+					// A swarm computer's shell goes through its connector and isn't kept (yet): it ended.
+					setMessage(agent ? 'The connection to it dropped. Reconnect for a new shell.' : 'Your shell is still running on the server. Reconnect to pick up where you left off.')
 				}
 			}
 		}
@@ -326,7 +340,7 @@ export function TerminalScreen({app, onClose, embedded, input}: {app?: {id: stri
 			el.removeEventListener('contextmenu', onContextMenu)
 			term.dispose()
 		}
-	}, [app, attempt])
+	}, [app, agent?.id, attempt])
 
 	const sendSeq = (s: string) => {
 		haptic(5)
@@ -384,7 +398,7 @@ export function TerminalScreen({app, onClose, embedded, input}: {app?: {id: stri
 		setResumed(false)
 		setAttempt((a) => a + 1)
 	}
-	const title = app ? (app.name ?? app.id) : 'Terminal'
+	const title = app ? (app.name ?? app.id) : agent ? agent.name : 'Terminal'
 
 	const keys: {label: string; onClick: () => void; on?: boolean}[] = [
 		{label: 'esc', onClick: () => sendSeq(SEQ.esc)},
@@ -421,12 +435,14 @@ export function TerminalScreen({app, onClose, embedded, input}: {app?: {id: stri
 					<b>{title}</b>
 					<span>
 						<i className={`dot ${live ? 'live' : state === 'connecting' ? '' : 'down'}`} />
-						{live ? `${app ? 'App shell' : 'Omarchy Server shell'}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? 'Connecting…' : 'Disconnected'}
+						{live ? `${app ? 'App shell' : agent ? 'Shell through its connector' : 'Omarchy Server shell'}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? 'Connecting…' : 'Disconnected'}
 					</span>
 				</div>
-				<button className="round-btn" aria-label="New session" title="New session" onClick={newSession} disabled={!live}>
-					<Icon name="reset" size={19} />
-				</button>
+				{!agent && (
+					<button className="round-btn" aria-label="New session" title="New session" onClick={newSession} disabled={!live}>
+						<Icon name="reset" size={19} />
+					</button>
+				)}
 				<button className="round-btn" aria-label="Paste" onClick={paste} disabled={!live}>
 					<Icon name="clipboard" size={19} />
 				</button>
