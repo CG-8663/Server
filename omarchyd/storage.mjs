@@ -5,7 +5,7 @@
 import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {randomBytes} from 'node:crypto'
-import {readFile, statfs, writeFile} from 'node:fs/promises'
+import {access, readFile, statfs, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 
@@ -32,7 +32,7 @@ function execP(cmd, args, {input, timeout = 10 * 60_000} = {}) {
 const flat = (d) => [d, ...(d.children ?? []).flatMap(flat)]
 const truthy = (v) => v === true || v === 1 || v === '1'
 
-export function createStorage({dataDir, home = os.homedir(), files, run = execP, fstabPath = '/etc/fstab', user = os.userInfo().username, helperFile = HELPER}) {
+export function createStorage({dataDir, home = os.homedir(), files, run = execP, fstabPath = '/etc/fstab', user = os.userInfo().username, helperFile = HELPER, smbConf = '/etc/samba/smb.conf'}) {
 	const sharesFile = join(dataDir, 'shares.json')
 	const sleepFile = join(dataDir, 'drive-sleep.json')
 	const passwordFile = join(dataDir, 'share-password')
@@ -246,6 +246,12 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 		if (out.guest && !(await helperKnowsGuests())) throw new RpcError('PRECONDITION_FAILED', 'Sharing without a password needs Omarchy Server’s installer to run once more on this server. Shares with a password work now.')
 		return out
 	}
+	// Samba's password tool won't run until /etc/samba/smb.conf exists, and Arch's samba package doesn't
+	// create one. Writing the current share list first (what the helper does anyway) creates it.
+	async function ensureSambaConfig(shares) {
+		if (await access(smbConf).then(() => true, () => false)) return
+		await applyShares(shares)
+	}
 	async function sharePassword() {
 		try {
 			return (await readFile(passwordFile, 'utf8')).trim()
@@ -313,6 +319,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					const pw = String(input?.password ?? '')
 					if (pw.length < 8 || pw.length > 128 || /[\r\n]/.test(pw)) throw new RpcError('BAD_REQUEST', 'Use 8 to 128 characters, on one line.')
 					await requireSamba()
+					await ensureSambaConfig(await readJson(sharesFile, []))
 					await helper('smb-password', [], `${pw}\n`)
 					await writeFile(passwordFile, pw, {mode: 0o600})
 					return true
@@ -330,7 +337,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					const settings = await shareSettings(input)
 					const {guest, readOnly, ...rest} = {...shares[i], ...settings}
 					const next = shares.map((s, j) => (j === i ? {...rest, ...(guest ? {guest: true} : {}), ...(readOnly ? {readOnly: true} : {})} : s))
-					if (!guest) await sharePassword()
+					if (!guest) await ensureSambaConfig(shares), await sharePassword()
 					await applyShares(next)
 					await writeJson(sharesFile, next)
 					return true
@@ -350,7 +357,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					await requireSamba()
 					const settings = await shareSettings(input)
 					const next = [...shares, {name, path, ...(settings.guest ? {guest: true} : {}), ...(settings.readOnly ? {readOnly: true} : {})}]
-					if (!settings.guest) await sharePassword()
+					if (!settings.guest) await ensureSambaConfig(shares), await sharePassword()
 					await applyShares(next)
 					await writeJson(sharesFile, next)
 					return true

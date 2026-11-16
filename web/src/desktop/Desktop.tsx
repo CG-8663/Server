@@ -1202,7 +1202,7 @@ function TopBar(p: {
 					const serverUpdate = notes.includes('update-available')
 					return (
 						<button
-							className={`top-bell${count ? ' lit' : ''}${serverUpdate ? ' ring' : ''}${p.menu === 'clock' ? ' on' : ''}`}
+							className={`top-bell${count ? ' lit' : ''}${serverUpdate ? ' ringing' : ''}${p.menu === 'clock' ? ' on' : ''}`}
 							onClick={() => p.setMenu(p.menu === 'clock' ? null : 'clock')}
 							aria-label={count ? `${count} notification${count > 1 ? 's' : ''}${serverUpdate ? ', an Omarchy Server update is ready' : ''}` : 'Notifications'}
 							title={serverUpdate ? 'An Omarchy Server update is ready' : 'Notifications'}

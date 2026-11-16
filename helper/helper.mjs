@@ -620,6 +620,10 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		'smb-password': async (_args, stdin) => {
 			const pw = String(stdin ?? '').replace(/\n$/, '')
 			if (pw.length < 8 || pw.length > 128 || /[\r\n]/.test(pw)) fail('Bad password')
+			// smbpasswd won't run without an smb.conf, and Arch's samba package doesn't ship one: start
+			// with Omarchy Server's own (no shares yet; shares-apply fills it in).
+			if ((await fs.readFile(SMB_CONF, 'utf8').catch(() => null)) === null)
+				await writeAtomic(SMB_CONF, `${SMB_MARK}\n[global]\n   server string = Omarchy Server\n   server min protocol = SMB2_10\n   map to guest = never\n   restrict anonymous = 2\n   disable netbios = yes\n   smb ports = 445\n`)
 			await samba(() => run('smbpasswd', ['-s', '-a', user.name], {input: `${pw}\n${pw}\n`}))
 			return 'ok'
 		},

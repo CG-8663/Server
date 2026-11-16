@@ -162,7 +162,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 						<Icon name="settings" size={20} />
 					</button>
 					<button
-						className={`round-btn bell${notes.length ? ' lit' : ''}${notes.includes('update-available') ? ' ring' : ''}`}
+						className={`round-btn bell${notes.length ? ' lit' : ''}${notes.includes('update-available') ? ' ringing' : ''}`}
 						aria-label={notes.length ? `${notes.length} notifications` : 'Notifications'}
 						onClick={() => {
 							haptic(6)

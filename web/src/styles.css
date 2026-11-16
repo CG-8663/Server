@@ -7432,11 +7432,11 @@ html.page-locked body {
 	color: #fff;
 	font: 700 10px/16px var(--sans);
 }
-.top-bell.ring svg {
+.top-bell.ringing svg {
 	transform-origin: 50% 10%;
 	animation: bell-ring 3.2s ease-in-out infinite;
 }
-.round-btn.bell.ring svg {
+.round-btn.bell.ringing svg {
 	transform-origin: 50% 10%;
 	animation: bell-ring 3.2s ease-in-out infinite;
 }
@@ -7449,8 +7449,8 @@ html.page-locked body {
 	90% { transform: rotate(3deg); }
 }
 @media (prefers-reduced-motion: reduce) {
-	.top-bell.ring svg,
-	.round-btn.bell.ring svg,
+	.top-bell.ringing svg,
+	.round-btn.bell.ringing svg,
 	.round-btn.bell.lit {
 		animation: none;
 	}
