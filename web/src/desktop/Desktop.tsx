@@ -463,7 +463,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		const machine = key.startsWith('machine:') ? machineList.find((m) => m.id === key.slice(8)) : undefined
 		const mine = winsOf(key)
 		const items: MenuItem[] = [{label: mine.length && where === 'dock' && !key.startsWith('folder:') ? 'Show' : 'Open', icon: 'open', onClick: () => (mine.length && where === 'dock' ? dockClick(key) : api.openItem(key))}]
-		if (key.startsWith('folder:/Home/') && owner) items.push({label: 'Share on network…', icon: 'folder-share', onClick: () => setShareFor({path: key.slice(7), name: it.label})})
+		if (key.startsWith('folder:/Home/') && owner) items.push({label: 'Share on your home LAN…', icon: 'folder-share', onClick: () => setShareFor({path: key.slice(7), name: it.label})})
 		if (key === 'files' || key === 'terminal') items.push({label: 'New window', icon: 'plus', onClick: () => (key === 'terminal' ? api.openTerminal() : open('files', undefined, {newWindow: true}))})
 		if (app && appUrl(app, boot.server!.host)) items.push({label: 'Open in a browser tab', icon: 'open', onClick: () => window.open(appUrl(app, boot.server!.host)!, '_blank', 'noopener')})
 		if (machine && machine.state === 'running')

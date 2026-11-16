@@ -77,7 +77,9 @@ where you left off; add `--purge` to delete those too.
 - Browse, upload (files and folders, drag and drop), download, rename, copy, move, search, favorites,
   recents, and the same Trash as Omarchy's file manager.
 - View photos, videos, music, PDFs, documents, spreadsheets and code in the browser.
-- Photo sync from your phone, and SMB network shares for any folder.
+- Photo sync from your phone, and SMB network shares for any folder. Shares are opened on your home
+  LAN only (the usual 10., 172.16. and 192.168. addresses); Tailscale is a second network and does
+  not get port 445.
 
 ### Machines (virtual machines)
 

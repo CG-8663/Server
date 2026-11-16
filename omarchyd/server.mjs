@@ -309,7 +309,13 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'wifi.networks': {kind: 'query', run: () => wifi.networks()},
 
 		...files.procedures,
-		...storage.procedures,
+		...Object.fromEntries(
+			Object.entries(storage.procedures).map(([name, p]) =>
+				['files.shares', 'files.sharePassword', 'files.shareOptions', 'files.addShare', 'files.updateShare', 'files.removeShare', 'files.setSharePassword'].includes(name)
+					? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage network shares'), p.run(input))}]
+					: [name, p],
+			),
+		),
 		...machines.procedures,
 		...apps.procedures,
 		...updater.procedures,
