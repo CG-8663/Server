@@ -7329,3 +7329,73 @@ html.page-locked body {
 	display: flex;
 	gap: 8px;
 }
+
+/* Omarchy plugins in the App Store */
+.plugin-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+	gap: 14px;
+	margin-top: 10px;
+}
+.plugin-card {
+	border-radius: 18px;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+}
+.plugin-card > img,
+.plugin-card > .plugin-art {
+	width: 100%;
+	aspect-ratio: 16 / 9;
+	object-fit: cover;
+	background: var(--glass-2);
+	display: grid;
+	place-items: center;
+	color: var(--muted);
+}
+.plugin-body {
+	padding: 12px 14px 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	flex: 1;
+}
+.plugin-title {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	justify-content: space-between;
+}
+.plugin-title b {
+	font-size: 15px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.plugin-verified {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 11.5px;
+	color: var(--green);
+	flex: none;
+}
+.plugin-body p {
+	margin: 4px 0 0;
+	font-size: 13.5px;
+	color: var(--fg-2);
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+.plugin-body .plugin-error {
+	color: var(--red);
+	-webkit-line-clamp: 4;
+}
+.plugin-actions {
+	display: flex;
+	gap: 8px;
+	margin-top: auto;
+	padding-top: 10px;
+}
