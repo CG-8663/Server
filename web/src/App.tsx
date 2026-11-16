@@ -5,6 +5,7 @@ import {getBootstrap, query, type Bootstrap, type User, type UserApp} from './ap
 import {AppSheet} from './AppSheet'
 import {AppViewer} from './AppViewer'
 import {VIEW_APP} from './openApp'
+import {OPEN_TERMINAL} from './terminalEvent'
 import {BootstrapContext, useAction, useApps, useNotifications, useUpdates, useUser} from './data'
 import {Icon, type IconName} from './icons'
 import {Apps} from './screens/Apps'
@@ -111,6 +112,12 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 		setAppId(null)
 		setTerminal({app, input})
 	}
+	// "Open Terminal" buttons elsewhere (e.g. a one-time fix for network shares).
+	useEffect(() => {
+		const onOpen = (e: Event) => openTerminal?.(undefined, (e as CustomEvent<string>).detail)
+		window.addEventListener(OPEN_TERMINAL, onOpen)
+		return () => window.removeEventListener(OPEN_TERMINAL, onOpen)
+	})
 	const apps = useApps()
 	const updates = useUpdates()
 	const notifications = useNotifications()

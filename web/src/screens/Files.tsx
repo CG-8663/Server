@@ -25,6 +25,7 @@ import { Sheet, SheetHeader, bytes, haptic, useConfirm, usePortalRoot, useToast 
 import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { FileViewer } from "./viewer/FileViewer";
+import { openTerminalWith } from "../terminalEvent";
 
 // ---- helpers --------------------------------------------------------------------
 const isDir = (f: FileEntry) => f.type === "directory";
@@ -1871,7 +1872,15 @@ export function ShareSheet({
   const qc = useQueryClient();
   const confirm = useConfirm();
   const shares = useQuery({ queryKey: ["files.shares"], queryFn: () => query<SmbShare[]>("files.shares") });
-  const options = useQuery({ queryKey: ["files.shareOptions"], queryFn: () => query<{ noPassword: boolean }>("files.shareOptions"), retry: false });
+  const options = useQuery({
+    queryKey: ["files.shareOptions"],
+    queryFn: () =>
+      query<{ noPassword: boolean; samba?: { ok: boolean; problem?: "missing" | "mismatch"; command?: string; versions?: Record<string, string | null> } }>("files.shareOptions"),
+    retry: false,
+    // Waiting for the one-time Samba fix: notice as soon as it's done.
+    refetchInterval: (q) => (q.state.data?.samba && !q.state.data.samba.ok ? 3000 : false),
+  });
+  const samba = options.data?.samba;
   const share = shares.data?.find((s) => s.path === path) ?? null;
   const [needPassword, setNeedPassword] = useState(true);
   const [readOnly, setReadOnly] = useState(false);
@@ -1948,6 +1957,31 @@ export function ShareSheet({
         subtitle={share ? "Shared on your network" : "Share this folder with computers on your network"}
         onClose={onClose}
       />
+      {samba && !samba.ok && (
+        <div className="glass card" style={{ borderRadius: 18, marginBottom: 12 }}>
+          <b style={{ fontSize: 14.5, display: "block", marginBottom: 4 }}>
+            {samba.problem === "missing" ? "Samba needs installing first" : "Samba needs a system update first"}
+          </b>
+          <p className="prose" style={{ margin: "0 0 10px", fontSize: 14 }}>
+            {samba.problem === "missing"
+              ? "Network shares use Samba, which isn’t installed on this server yet."
+              : `Samba (${samba.versions?.samba}) and its libraries (${samba.versions?.smbclient}) are different versions, after a partial update. Updating the system once brings them back in step.`}{" "}
+            Run this in a terminal on the server; it asks for your password itself.
+          </p>
+          <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", userSelect: "all", fontSize: 12.5, padding: 10, borderRadius: 10, background: "rgba(0,0,0,.25)", margin: "0 0 10px" }}>{samba.command}</pre>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn" onClick={() => (onClose(), openTerminalWith(samba.command!))}>
+              <Icon name="terminal" size={17} /> Open Terminal
+            </button>
+            <button className="btn ghost" onClick={() => copy(samba.command!, "Command")}>
+              Copy
+            </button>
+          </div>
+          <p className="muted" style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, margin: "10px 0 0" }}>
+            <span className="spinner" /> This updates by itself once it’s done.
+          </p>
+        </div>
+      )}
       {shares.isLoading ? (
         <p className="muted">Loading…</p>
       ) : !share ? (
@@ -1957,7 +1991,7 @@ export function ShareSheet({
           <button
             className="btn primary"
             style={{ width: "100%" }}
-            disabled={run.isPending}
+            disabled={run.isPending || (!!samba && !samba.ok)}
             onClick={() => run.mutate({ path: "files.addShare", input: { path, password: needPassword, readOnly }, done: "Shared on your network" })}
           >
             {run.isPending ? <span className="spinner" /> : <Icon name="folder-share" size={18} />} Share on network

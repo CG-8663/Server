@@ -42,16 +42,20 @@ arch=$(uname -m)
 #    drive health (smartmontools), drive sleep (hdparm) and network shares (samba).
 need=()
 for pkg in nodejs npm git openssl wayvnc bubblewrap qemu-base libvirt passt libisoburn edk2-ovmf podman docker-compose btrfs-progs smartmontools hdparm samba; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
-if [ ${#need[@]} -gt 0 ]; then
-	# Arch doesn't support installing packages from a newer package list without updating the rest
-	# ("partial upgrade"): the new package can need newer libraries than the ones installed (that's how
-	# Samba ended up half-updated). If updates are waiting, update the whole system first.
-	if [ -n "$(pacman -Qu 2>/dev/null)" ]; then
-		say "This system has updates waiting. Installing ${need[*]} now could leave it half-updated."
-		die "Update the system first (Omarchy menu → Update → Omarchy, or: sudo pacman -Syu), then run this installer again."
+# Arch doesn't support installing packages from a newer package list without updating the rest
+# ("partial upgrade"): a new package can need newer libraries than the ones installed. That's how
+# Samba ended up half-updated (samba 4.25 with its libraries, smbclient and libwbclient, at 4.24).
+# So packages are always installed together with the system's updates (pacman -Syu), the way Arch
+# and Omarchy's own updater do it, and a Samba whose parts don't match is brought back in step.
+samba_in_step() { [ "$(pacman -Q samba smbclient libwbclient 2>/dev/null | awk '{print $2}' | sort -u | wc -l)" -le 1 ]; }
+if [ ${#need[@]} -gt 0 ] || ! samba_in_step; then
+	if [ ${#need[@]} -gt 0 ]; then
+		say "Installing ${need[*]}, together with any waiting system updates (sudo needed)"
+	else
+		say "Samba's parts are different versions (a partial update); updating the system to bring them in step (sudo needed)"
 	fi
-	say "Installing ${need[*]} (sudo needed)"
-	sudo pacman -S --needed --noconfirm "${need[@]}"
+	sudo pacman -Syu --needed --noconfirm "${need[@]}"
+	samba_in_step || die "Samba's parts are still different versions. Check with: pacman -Q samba smbclient libwbclient"
 fi
 node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' || die "Node.js 20 or newer is required."
 
