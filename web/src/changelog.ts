@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.25',
+		date: '2026-11-15',
+		title: 'System updates the Omarchy way',
+		fixed: [
+			'The fix for a half-updated Samba now uses omarchy update, which Omarchy requires (it stops a direct pacman -Syu, because its own update also takes a snapshot and runs migrations and hooks). The installer updates the system the same way before adding anything.',
+		],
+	},
+	{
 		version: '0.9.24',
 		date: '2026-11-15',
 		title: 'Network shares fix themselves up',

@@ -211,7 +211,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			return await fn()
 		} catch (error) {
 			if (/version [`'"]?SAMBA_[^ ]+ not found|cannot open shared object file|undefined symbol/i.test(String(error?.message ?? error)))
-				fail('Samba on this server is half-updated (its programs and libraries are different versions). Update the whole system once (Omarchy menu → Update → Omarchy, or sudo pacman -Syu in a terminal), then try again.')
+				fail('Samba on this server is half-updated (its programs and libraries are different versions). Update the whole system once (Omarchy menu → Update, or omarchy update in a terminal), then try again.')
 			throw error
 		}
 	}
@@ -418,7 +418,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			if (!had) {
 				// Never a partial update (see install.sh): with updates waiting, the whole system goes first.
 				const waiting = await run('pacman', ['-Qu']).then((t) => String(t).trim(), () => '')
-				if (waiting) fail('This server has system updates waiting. Update it first (Omarchy menu → Update → Omarchy), then install Tailscale.')
+				if (waiting) fail('This server has system updates waiting. Update it first (Omarchy menu → Update, or omarchy update in a terminal), then install Tailscale.')
 				await run('pacman', ['-S', '--needed', '--noconfirm', 'tailscale'])
 			}
 			await run('systemctl', ['enable', '--now', 'tailscaled.service'])
