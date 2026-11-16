@@ -219,7 +219,7 @@ export type FileEntry = {
 	thumbnail?: string
 }
 export type Listing = FileEntry & {files: FileEntry[]; hasMore?: boolean; totalFiles?: number; truncatedAt?: number}
-export type SmbShare = {name: string; path: string; available: boolean; sharename: string}
+export type SmbShare = {name: string; path: string; available: boolean; sharename: string; password: boolean; readOnly: boolean}
 
 // ---- storage (hardware.internalStorage / hardware.raid) -------------------------------
 export type StorageDevice = {

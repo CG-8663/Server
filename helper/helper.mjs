@@ -563,19 +563,26 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			if (!Array.isArray(body?.shares) || body.shares.length > 64) fail('Bad share list')
 			const seen = new Set()
 			const blocks = []
+			// A share can be open to anyone on your network, without a password (guest ok). Files are
+			// still written as you. Only when at least one such share exists does Samba accept guests at all.
+			const anyGuest = body.shares.some((s) => s?.guest === true)
 			for (const s of body.shares) {
 				const name = String(s?.name ?? '')
 				if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}$/.test(name) || seen.has(name.toLowerCase())) fail(`Bad share name: ${name}`)
 				seen.add(name.toLowerCase())
 				const path = await inHome(String(s?.path ?? ''))
 				if (/[\n\r]/.test(path)) fail('Bad folder')
-				blocks.push(`[${name}]\n   path = ${path}\n   valid users = ${user.name}\n   force user = ${user.name}\n   read only = ${s.readOnly ? 'yes' : 'no'}\n   browseable = yes\n`)
+				const who = s.guest === true ? `   guest ok = yes\n` : `   valid users = ${user.name}\n`
+				blocks.push(`[${name}]\n   path = ${path}\n${who}   force user = ${user.name}\n   read only = ${s.readOnly ? 'yes' : 'no'}\n   browseable = yes\n`)
 			}
 			const shares = `${SMB_MARK}. Edit shares in the Omarchy Server web app.\n\n${blocks.join('\n')}`
 			const current = await fs.readFile(SMB_CONF, 'utf8').catch(() => null)
-			const globalSection = `[global]\n   server string = Omarchy Server\n   server min protocol = SMB2_10\n   map to guest = never\n   restrict anonymous = 2\n   disable netbios = yes\n   smb ports = 445\n`
+			const guests = anyGuest ? `   map to guest = bad user\n   guest account = nobody\n   restrict anonymous = 0\n` : `   map to guest = never\n   restrict anonymous = 2\n`
+			const globalSection = `[global]\n   server string = Omarchy Server\n   server min protocol = SMB2_10\n${guests}   disable netbios = yes\n   smb ports = 445\n`
 			if (current === null || current.startsWith(SMB_MARK)) await writeAtomic(SMB_CONF, `${SMB_MARK}\n${globalSection}\n${blocks.join('\n')}`)
 			else {
+				// Your own Samba setup: its [global] section is yours, so guests stay as you set them.
+				if (anyGuest) fail('This server has its own Samba settings, so shares without a password aren’t available. Use a password instead.')
 				await writeAtomic(SMB_INCLUDE, shares)
 				if (!current.includes(`include = ${SMB_INCLUDE}`)) await writeAtomic(SMB_CONF, `${current.replace(/\n*$/, '\n')}\n# Added by Omarchy Server\n   include = ${SMB_INCLUDE}\n`)
 			}

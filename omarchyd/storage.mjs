@@ -32,7 +32,7 @@ function execP(cmd, args, {input, timeout = 10 * 60_000} = {}) {
 const flat = (d) => [d, ...(d.children ?? []).flatMap(flat)]
 const truthy = (v) => v === true || v === 1 || v === '1'
 
-export function createStorage({dataDir, home = os.homedir(), files, run = execP, fstabPath = '/etc/fstab', user = os.userInfo().username}) {
+export function createStorage({dataDir, home = os.homedir(), files, run = execP, fstabPath = '/etc/fstab', user = os.userInfo().username, helperFile = HELPER}) {
 	const sharesFile = join(dataDir, 'shares.json')
 	const sleepFile = join(dataDir, 'drive-sleep.json')
 	const passwordFile = join(dataDir, 'share-password')
@@ -191,6 +191,9 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 				name: s.name,
 				path: s.path,
 				sharename: s.name,
+				// No password: anyone on your network can open it. Otherwise your share password.
+				password: !s.guest,
+				readOnly: !!s.readOnly,
 				available: await files.resolve(s.path).then(() => true, () => false),
 			})),
 		)
@@ -199,9 +202,20 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 		const out = []
 		for (const s of shares) {
 			const r = await files.resolve(s.path).catch(() => null)
-			if (r && r.top === 'Home') out.push({name: s.name, path: r.real, readOnly: !!s.readOnly})
+			if (r && r.top === 'Home') out.push({name: s.name, path: r.real, readOnly: !!s.readOnly, ...(s.guest ? {guest: true} : {})})
 		}
 		await helper('shares-apply', [], JSON.stringify({shares: out}))
+	}
+	// Shares without a password need a helper that knows them (installed with Omarchy Server 0.9.21 or
+	// later). Read the installed helper rather than guess, so an older one is never asked (it would
+	// quietly keep the password, while the page said there was none).
+	const helperKnowsGuests = () => readFile(helperFile, 'utf8').then((t) => t.includes('guest ok = yes'), () => false)
+	async function shareSettings(input) {
+		const out = {}
+		if (input?.password !== undefined) out.guest = input.password === false
+		if (input?.readOnly !== undefined) out.readOnly = input.readOnly === true
+		if (out.guest && !(await helperKnowsGuests())) throw new RpcError('PRECONDITION_FAILED', 'Sharing without a password needs Omarchy Server’s installer to run once more on this server. Shares with a password work now.')
+		return out
 	}
 	async function sharePassword() {
 		try {
@@ -262,6 +276,35 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			},
 			'files.shares': {kind: 'query', run: shareList},
 			'files.sharePassword': {kind: 'query', run: sharePassword},
+			'files.shareOptions': {kind: 'query', run: async () => ({noPassword: await helperKnowsGuests()})},
+			// Your own password for network shares (the user name is your server account's).
+			'files.setSharePassword': {
+				kind: 'mutation',
+				run: async (input) => {
+					const pw = String(input?.password ?? '')
+					if (pw.length < 8 || pw.length > 128 || /[\r\n]/.test(pw)) throw new RpcError('BAD_REQUEST', 'Use 8 to 128 characters, on one line.')
+					await helper('smb-password', [], `${pw}\n`)
+					await writeFile(passwordFile, pw, {mode: 0o600})
+					return true
+				},
+			},
+			// Change how a folder is shared: with or without a password, read-only or not.
+			'files.updateShare': {
+				kind: 'mutation',
+				run: async (input) => {
+					const path = String(input?.path ?? '')
+					const shares = await readJson(sharesFile, [])
+					const i = shares.findIndex((s) => s.path === path)
+					if (i < 0) throw new RpcError('NOT_FOUND', 'That folder isn’t shared')
+					const settings = await shareSettings(input)
+					const {guest, readOnly, ...rest} = {...shares[i], ...settings}
+					const next = shares.map((s, j) => (j === i ? {...rest, ...(guest ? {guest: true} : {}), ...(readOnly ? {readOnly: true} : {})} : s))
+					if (!guest) await sharePassword()
+					await applyShares(next)
+					await writeJson(sharesFile, next)
+					return true
+				},
+			},
 			'files.addShare': {
 				kind: 'mutation',
 				run: async (input) => {
@@ -273,8 +316,9 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					const base = (path.split('/').pop() || 'Share').replace(/[^A-Za-z0-9 _.-]/g, '').slice(0, 28) || 'Share'
 					let name = base
 					for (let n = 2; shares.some((s) => s.name.toLowerCase() === name.toLowerCase()); n++) name = `${base} ${n}`
-					const next = [...shares, {name, path}]
-					await sharePassword()
+					const settings = await shareSettings(input)
+					const next = [...shares, {name, path, ...(settings.guest ? {guest: true} : {}), ...(settings.readOnly ? {readOnly: true} : {})}]
+					if (!settings.guest) await sharePassword()
 					await applyShares(next)
 					await writeJson(sharesFile, next)
 					return true

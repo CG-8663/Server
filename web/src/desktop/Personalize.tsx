@@ -8,7 +8,7 @@ import {Switch} from '../screens/Settings'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {Segmented, customBackgroundUrl, haptic, preparePhoto, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {PRESETS, STYLES, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
-import {useDesktop, useItems, type ItemInfo} from './Desktop'
+import {DESKTOP_KEY, useDesktop, useItems, type ItemInfo} from './Desktop'
 
 type Tab = 'themes' | 'background' | 'dock' | 'desktop'
 const ACCENT_CHOICES: {id: DeskAccent; label: string; swatch: string}[] = [
@@ -336,6 +336,7 @@ function DesktopSettings({cfg, setCfg}: P) {
 	const onDesk = new Set(cfg.icons.map((i) => i.key))
 	const running = [
 		...appList.filter((a) => a.state === 'ready' || a.state === 'running').map((a) => `app:${a.id}`),
+		...(owner ? [DESKTOP_KEY] : []),
 		...machineList.filter((m) => m.state === 'running').map((m) => `machine:${m.id}`),
 	].filter((k) => !onDesk.has(k))
 	return (
@@ -390,6 +391,7 @@ function allKeys(appList: {id: string; name?: string}[], machineList: {id: strin
 		...SYSTEM_DOCK.filter((k) => k !== 'terminal' || owner),
 		'personalize',
 		...[...appList].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)).map((a) => `app:${a.id}`),
+		...(owner ? [DESKTOP_KEY] : []),
 		...machineList.map((m) => `machine:${m.id}`),
 	]
 }
