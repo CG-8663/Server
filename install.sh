@@ -45,16 +45,22 @@ for pkg in nodejs npm git openssl wayvnc bubblewrap qemu-base libvirt passt libi
 # Arch doesn't support installing packages from a newer package list without updating the rest
 # ("partial upgrade"): a new package can need newer libraries than the ones installed. That's how
 # Samba ended up half-updated (samba 4.25 with its libraries, smbclient and libwbclient, at 4.24).
-# So packages are always installed together with the system's updates (pacman -Syu), the way Arch
-# and Omarchy's own updater do it, and a Samba whose parts don't match is brought back in step.
+# So the system is brought up to date first: on Omarchy with `omarchy update` (Omarchy blocks a direct
+# `pacman -Syu`, because its update also runs snapshots, migrations and hooks), elsewhere with
+# pacman -Syu. A Samba whose parts don't match is brought back in step the same way.
 samba_in_step() { [ "$(pacman -Q samba smbclient libwbclient 2>/dev/null | awk '{print $2}' | sort -u | wc -l)" -le 1 ]; }
 if [ ${#need[@]} -gt 0 ] || ! samba_in_step; then
 	if [ ${#need[@]} -gt 0 ]; then
-		say "Installing ${need[*]}, together with any waiting system updates (sudo needed)"
+		say "Installing ${need[*]}. Updating the system first, so everything stays in step (sudo needed)"
 	else
 		say "Samba's parts are different versions (a partial update); updating the system to bring them in step (sudo needed)"
 	fi
-	sudo pacman -Syu --needed --noconfirm "${need[@]}"
+	if command -v omarchy >/dev/null 2>&1; then
+		omarchy update || die "The system update didn't finish. Run 'omarchy update' (or Omarchy menu → Update), then run this installer again."
+		[ ${#need[@]} -eq 0 ] || sudo pacman -S --needed --noconfirm "${need[@]}"
+	else
+		sudo pacman -Syu --needed --noconfirm "${need[@]}"
+	fi
 	samba_in_step || die "Samba's parts are still different versions. Check with: pacman -Q samba smbclient libwbclient"
 fi
 node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' || die "Node.js 20 or newer is required."

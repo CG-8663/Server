@@ -458,8 +458,10 @@ describe('omarchyd storage', () => {
 	test('drives get roles and health; shares go through the helper with real paths', async () => {
 		const calls = []
 		let sambaVersions = {samba: '2:4.25.0-1', smbclient: '2:4.25.0-1', libwbclient: '2:4.25.0-1'}
+		let onOmarchy = true
 		const run = async (cmd, args, opts) => {
 			if (cmd === 'lsblk') return JSON.stringify(lsblk)
+			if (cmd === 'sh') return onOmarchy ? '/usr/bin/omarchy\n' : ''
 			if (cmd === 'pacman' && args[0] === '-Q') {
 				if (!sambaVersions[args[1]]) throw new Error(`error: package '${args[1]}' was not found`)
 				return `${args[1]} ${sambaVersions[args[1]]}\n`
@@ -523,13 +525,18 @@ describe('omarchyd storage', () => {
 		const health = (await s2.procedures['files.shareOptions'].run()).samba
 		assert.equal(health.ok, false)
 		assert.equal(health.problem, 'mismatch')
-		assert.equal(health.command, 'sudo pacman -Syu --needed samba')
+		// On Omarchy the system is updated its own way (it blocks a direct pacman -Syu).
+		assert.equal(health.command, 'omarchy update')
 		const before = calls.length
-		await assert.rejects(s2.procedures['files.addShare'].run({path: '/Home/Pictures'}), /half-updated \(samba 2:4.25.0-1, its libraries 2:4.24.6-1\)[\s\S]*sudo pacman -Syu --needed samba/)
+		await assert.rejects(s2.procedures['files.addShare'].run({path: '/Home/Pictures'}), /half-updated \(samba 2:4.25.0-1, its libraries 2:4.24.6-1\)[\s\S]*omarchy update/)
+		onOmarchy = false
+		assert.equal((await s2.procedures['files.shareOptions'].run()).samba.command, 'sudo pacman -Syu --needed samba')
+		onOmarchy = true
 		await assert.rejects(s2.procedures['files.setSharePassword'].run({password: 'another one'}), /half-updated/)
 		assert.equal(calls.length, before, 'the helper isn’t asked')
 		sambaVersions = {smbclient: '2:4.24.6-1'}
 		assert.equal((await s2.procedures['files.shareOptions'].run()).samba.problem, 'missing')
+		assert.equal((await s2.procedures['files.shareOptions'].run()).samba.command, 'omarchy update && omarchy pkg add samba')
 		await assert.rejects(s2.procedures['files.addShare'].run({path: '/Home/Pictures'}), /isn’t installed/)
 	})
 })

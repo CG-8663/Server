@@ -20,7 +20,7 @@ export const TAILSCALE_SOCKET = '/run/tailscale/tailscaled.sock'
 const HELPER_FILE = '/usr/local/libexec/omarchy-server/helper.mjs'
 // The one-time setup, for a server whose helper is older than Tailscale support: the same steps as
 // Omarchy's own menu, typed by you in a terminal (so you give sudo your password, not us).
-export const TAILSCALE_SETUP_COMMAND = 'sudo pacman -Syu --needed tailscale && sudo systemctl enable --now tailscaled && sudo tailscale set --operator="$(id -un)"'
+export const TAILSCALE_SETUP_COMMAND = 'sudo pacman -S --needed tailscale && sudo systemctl enable --now tailscaled && sudo tailscale set --operator="$(id -un)"'
 
 const execRun = (cmd, args) =>
 	new Promise((resolve, reject) => execFile(cmd, args, {timeout: 30_000, maxBuffer: 4 * 1024 * 1024}, (error, stdout, stderr) => (error ? reject(new Error(String(stderr || error.message).trim())) : resolve(String(stdout)))))

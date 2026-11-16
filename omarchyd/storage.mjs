@@ -213,14 +213,20 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	// Samba and the libraries it uses (smbclient, libwbclient) must be one version. After a partial
 	// update (one package installed from a newer package list without updating the rest) they aren't,
 	// and every Samba program fails. pacman -Q needs no root, so this is checked here, with any helper.
-	const SAMBA_FIX = 'sudo pacman -Syu --needed samba'
+	// The fix: bring the whole system up to date. On Omarchy that's `omarchy update` (it blocks a
+	// direct pacman -Syu, since its update also runs snapshots, migrations and hooks).
+	const onOmarchy = () => run('sh', ['-c', 'command -v omarchy']).then((t) => !!String(t).trim(), () => false)
+	async function sambaFix(missing) {
+		if (await onOmarchy()) return missing ? 'omarchy update && omarchy pkg add samba' : 'omarchy update'
+		return 'sudo pacman -Syu --needed samba'
+	}
 	async function sambaHealth() {
 		const version = (pkg) => run('pacman', ['-Q', pkg]).then((t) => String(t).trim().split(/\s+/)[1] ?? null, () => null)
 		const [samba, smbclient, libwbclient] = await Promise.all(['samba', 'smbclient', 'libwbclient'].map(version))
-		if (!samba) return {ok: false, problem: 'missing', command: SAMBA_FIX}
+		if (!samba) return {ok: false, problem: 'missing', command: await sambaFix(true)}
 		const parts = {samba, smbclient, libwbclient}
 		const off = Object.entries(parts).filter(([, v]) => v && v !== samba)
-		if (off.length) return {ok: false, problem: 'mismatch', command: SAMBA_FIX, versions: parts}
+		if (off.length) return {ok: false, problem: 'mismatch', command: await sambaFix(false), versions: parts}
 		return {ok: true}
 	}
 	async function requireSamba() {
