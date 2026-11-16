@@ -4,6 +4,12 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.27',
+		date: '2026-11-15',
+		title: 'Bell back to size',
+		fixed: ['The notification bell no longer grows huge while an update is waiting.'],
+	},
+	{
 		version: '0.9.26',
 		date: '2026-11-15',
 		title: 'Omarchy look by default, and solid colours',
