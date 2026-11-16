@@ -65,3 +65,26 @@ test('a relative bind is resolved from the app folder, so ../.ssh is refused', (
 	assert.ok(ids(compose('../.ssh:/keys')).includes('refused'))
 	assert.ok(what(compose('../.ssh:/keys'), 'refused').includes(resolve(appDir, '../.ssh')))
 })
+
+test('long-syntax type: bind and a relative source without a leading dot are resolved, not skipped', () => {
+	const climb = 'foo/../../../../../../../.ssh'
+	assert.equal(resolve(appDir, climb), join(home, '.ssh'))
+	const long = `services:\n  web:\n    image: x\n    volumes:\n      - type: bind\n        source: ${climb}\n        target: /keys\n`
+	assert.ok(ids(long).includes('refused'), 'type: bind')
+	assert.ok(what(long, 'refused').includes(join(home, '.ssh')), 'type: bind')
+	assert.ok(ids(compose(`${climb}:/keys`)).includes('refused'), 'short syntax with /')
+	assert.ok(what(compose(`${climb}:/keys`), 'refused').includes(join(home, '.ssh')))
+})
+
+test('a placed FOLDER_ path is what Compose will bind, so climbing out of it is refused', () => {
+	const projects = join(home, 'Projects')
+	const folderWhere = {
+		...where,
+		expand: (v) => expandVars(String(v), {...env, FOLDER_PROJECTS: projects}).replace(/^\.(?=\/|$)/, appDir).replace(/^~(?=\/|$)/, home),
+		allowed: [...where.allowed, projects],
+	}
+	const text = compose('${FOLDER_PROJECTS}/../.ssh:/keys')
+	const perms = appPermissions(text, folderWhere)
+	assert.ok(perms.some((p) => p.id === 'refused'))
+	assert.ok((perms.find((p) => p.id === 'refused')?.what ?? []).includes(join(home, '.ssh')))
+})

@@ -108,7 +108,7 @@ function bindHostPath(raw, where = {}) {
 	}
 	const cwd = where.cwd ?? where.allowed?.[0]
 	if (path.startsWith('/')) path = resolve(path)
-	else if (cwd && path.startsWith('.')) path = resolve(cwd, path)
+	else if (cwd && !path.startsWith('$')) path = resolve(cwd, path)
 	return path.replace(/\/+$/, '') || '/'
 }
 // What a compose file asks of the server beyond an ordinary container. `where` (when known) says
@@ -141,16 +141,20 @@ export function appPermissions(text, where = {}) {
 			if (typeof v === 'string' && !v.includes(':')) continue
 			const raw = typeof v === 'string' ? (where.expand ? where.expand(v) : v).split(':')[0] : String(where.expand ? where.expand(v?.source ?? '') : (v?.source ?? ''))
 			if (SOCKET.test(raw)) add('containers', name)
-			else if (/^\/dev(\/|$)/.test(raw) && !/^\/dev\/shm/.test(raw)) add('devices', raw)
-			else if (/^\/run\/(dbus|systemd|udev)(\/|$)|^\/var\/run\/dbus(\/|$)|^\/(sys|lib\/modules)(\/|$)/.test(raw)) add('system', raw)
-			else if (raw.startsWith('/') || raw.startsWith('$') || raw.startsWith('~') || raw.startsWith('.')) {
+			else if (type === 'bind' || raw.startsWith('/') || raw.startsWith('$') || raw.startsWith('~') || raw.startsWith('.') || raw.includes('/')) {
 				// Host paths (after expanding): resolve `..` and `~` the way Compose will, so an allowed
-				// prefix can't hide a hidden folder. The app's own folders are fine; anything else asks.
+				// prefix can't hide a hidden folder. Long-syntax `type: bind` and relative sources
+				// with a slash are binds too. Classify the resolved path (devices, system, own, refused).
 				const path = bindHostPath(raw, where)
-				const own = (where.allowed ?? []).some((d) => path === d || path.startsWith(`${d}/`))
-				if (own || ['/etc/localtime', '/etc/timezone'].includes(path)) continue
-				if (refusedMount(path, where.home)) add('refused', path)
-				else add('host-files', path)
+				if (SOCKET.test(path)) add('containers', name)
+				else if (/^\/dev(\/|$)/.test(path) && !/^\/dev\/shm/.test(path)) add('devices', path)
+				else if (/^\/run\/(dbus|systemd|udev)(\/|$)|^\/var\/run\/dbus(\/|$)|^\/(sys|lib\/modules)(\/|$)/.test(path)) add('system', path)
+				else {
+					const own = (where.allowed ?? []).some((d) => path === d || path.startsWith(`${d}/`))
+					if (own || ['/etc/localtime', '/etc/timezone'].includes(path)) continue
+					if (refusedMount(path, where.home)) add('refused', path)
+					else add('host-files', path)
+				}
 			}
 		}
 		for (const d of s.devices ?? []) add('devices', String(typeof d === 'string' ? d.split(':')[0] : d?.source ?? 'device'))
@@ -842,8 +846,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			for (const v of s?.volumes ?? []) {
 				// Expand first: a source like ${APP_DATA_DIR:-.}/data has a colon of its own.
 				const src = typeof v === 'string' ? expandVars(v, env).split(':')[0] : v?.source && expandVars(v.source, env)
-				if (!src || !/^[/.]/.test(src)) continue
-				const path = resolve(appDir(app.id), src)
+				if (!src) continue
+				const path = bindHostPath(src, {home, cwd: appDir(app.id)})
+				if (!path.startsWith('/') || (refusedMount(path, home) && !['/etc/localtime', '/etc/timezone'].includes(path))) continue
 				// A listing that slipped a symlink into the app folder: drop it if it leads outside
 				// the folders this app may use, so Compose and chown can't follow it to ~/.ssh.
 				if (await lstat(path).then((st) => st.isSymbolicLink(), () => false)) {
@@ -1198,12 +1203,15 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// The folders an app may use without asking, and how its variables expand, for appPermissions.
 	function whereFor(app) {
 		// Before you place them, an app's folders count as its own (inside the app's folder).
-		const env = composeEnv({id: app.id, port: app.port, version: app.version, folderIds: (app.folders ?? []).map((f) => f.id)})
+		// After placing, `folders` is id → path and Compose will expand FOLDER_* to those paths.
+		const folderIds = app.folderIds ?? (Array.isArray(app.folders) ? app.folders.map((f) => f.id) : [])
+		const folders = app.folders && !Array.isArray(app.folders) ? app.folders : undefined
+		const env = composeEnv({id: app.id, port: app.port, version: app.version, folderIds, folders})
 		return {
 			home,
 			cwd: appDir(app.id),
-			expand: (v) => expandVars(String(v), env).replace(/^\.(?=\/|$)/, appDir(app.id)).replace(/^~(?=\/|$)/, home),
-			allowed: [appDir(app.id), join(base, 'shared-root'), ...Object.values(USER_DIRS).map((d) => join(home, d))],
+			expand: (v) => expandVars(String(v), {...process.env, ...env}).replace(/^\.(?=\/|$)/, appDir(app.id)).replace(/^~(?=\/|$)/, home),
+			allowed: [appDir(app.id), join(base, 'shared-root'), ...Object.values(USER_DIRS).map((d) => join(home, d)), ...Object.values(folders ?? {})],
 		}
 	}
 	async function permissionsOf(src) {
@@ -1240,17 +1248,6 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 		if (state.apps.some((a) => a.id === id)) throw new RpcError('CONFLICT', 'That app is already installed')
 		const plan = await installPlan(id)
-		// Every extra access the apps ask for must be allowed explicitly, for this install.
-		const granted = new Set(Array.isArray(input?.grant) ? input.grant.map(String) : [])
-		const needs = new Map()
-		for (const src of plan) {
-			const perms = await permissionsOf(src)
-			const refused = perms.find((p) => p.id === 'refused')
-			if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
-			needs.set(src.id, perms.map((p) => p.id))
-		}
-		const missing = [...new Set([...needs.values()].flat())].filter((p) => !granted.has(p))
-		if (missing.length) throw new RpcError('PRECONDITION_FAILED', `Installing needs your permission: ${missing.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}.`)
 		if (plan.some((src) => !src.system) && !(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
 		if (plan.some((src) => src.system) && !systemApps) throw new RpcError('PRECONDITION_FAILED', 'This server can’t install system apps')
 		// Check every port first, so nothing starts installing if one of them can't.
@@ -1277,6 +1274,19 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			placed.set(`${src.id}/${f.id}`, path)
 		}
 		for (const path of placed.values()) await mkdir(path, {recursive: true})
+		// Extra access: after folders are placed, so FOLDER_* is the path Compose will expand.
+		const granted = new Set(Array.isArray(input?.grant) ? input.grant.map(String) : [])
+		const needs = new Map()
+		for (const src of plan) {
+			const folderIds = (src.folders ?? []).map((f) => f.id)
+			const folders = Object.fromEntries(folderIds.filter((fid) => placed.has(`${src.id}/${fid}`)).map((fid) => [fid, placed.get(`${src.id}/${fid}`)]))
+			const perms = await permissionsOf({...src, folderIds, folders})
+			const refused = perms.find((p) => p.id === 'refused')
+			if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
+			needs.set(src.id, perms.map((p) => p.id))
+		}
+		const missing = [...new Set([...needs.values()].flat())].filter((p) => !granted.has(p))
+		if (missing.length) throw new RpcError('PRECONDITION_FAILED', `Installing needs your permission: ${missing.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}.`)
 		// Every app in the plan shows as installing right away; they then install one after another.
 		const queued = plan.map((src) => {
 			const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
