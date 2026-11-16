@@ -365,6 +365,14 @@ errors: No known data errors
 		assert.ok(!log.some((l) => l[0] === 'cryptsetup'))
 	})
 
+	test('setting the share password works on a fresh Samba with no smb.conf', async () => {
+		const fs = fakeFs({})
+		const log = []
+		await createHelper({user, fs, run: fakeRun(log)}).handle('smb-password', [], 'long enough pw\n')
+		assert.match(fs.files.get('/etc/samba/smb.conf'), /^# Managed by Omarchy Server[\s\S]*\[global\][\s\S]*map to guest = never/)
+		assert.ok(log.some((l) => l[0] === 'smbpasswd'))
+	})
+
 	test('a half-updated Samba (programs and libraries of different versions) gets a message that says how to fix it', async () => {
 		const broken = () => {
 			throw new Error("smbpasswd: /usr/lib/samba/libsamba3-util-private-samba.so: version `SAMBA_4.25.0_PRIVATE_SAMBA' not found (required by smbpasswd)")
@@ -475,7 +483,9 @@ describe('omarchyd storage', () => {
 		const files = {resolve: async (p) => ({real: p.replace('/Home', '/home/chris'), top: p.startsWith('/Home') ? 'Home' : 'Trash'})}
 		const data = join(root, 'data')
 		await mkdir(data)
-		const s = createStorage({dataDir: data, home: '/home/chris', files, run, fstabPath: fstab})
+		// No smb.conf yet (Arch's samba doesn't ship one): it's written before the password is set.
+		const smbConf = join(root, 'smb.conf')
+		const s = createStorage({dataDir: data, home: '/home/chris', files, run, fstabPath: fstab, smbConf})
 		const disks = await s.procedures['storage.disks'].run()
 		const role = Object.fromEntries(disks.map((d) => [d.name, d.role]))
 		assert.deepEqual(role, {nvme0n1: 'system', sda: 'blank', sdb: 'blank', sdc: 'data', sdd: 'pool'})
@@ -487,6 +497,8 @@ describe('omarchyd storage', () => {
 		await s.procedures['files.addShare'].run({path: '/Home/Other/Music'})
 		const shares = await s.procedures['files.shares'].run()
 		assert.deepEqual(shares.map((x) => x.name), ['Music', 'Music 2'])
+		const verbs = calls.map((c) => c.args[2]).filter((v) => v === 'shares-apply' || v === 'smb-password')
+		assert.deepEqual(verbs.slice(0, 2), ['shares-apply', 'smb-password'], 'smb.conf is written before smbpasswd runs')
 		const pw = await s.procedures['files.sharePassword'].run()
 		assert.match(pw, /^[a-z0-9x]{4}(-[a-z0-9x]{4}){3}$/)
 		assert.equal(calls.filter((c) => c.args[2] === 'smb-password').length, 1, 'password set once')

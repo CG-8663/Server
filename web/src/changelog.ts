@@ -6,8 +6,11 @@ export const CHANGELOG: Release[] = [
 	{
 		version: '0.9.27',
 		date: '2026-11-15',
-		title: 'Bell back to size',
-		fixed: ['The notification bell no longer grows huge while an update is waiting.'],
+		title: 'Bell back to size; sharing on a fresh Samba',
+		fixed: [
+			'The notification bell no longer grows huge while an update is waiting.',
+			'Sharing a folder failed with “Can’t load /etc/samba/smb.conf” on a server where Samba had never been set up (Arch doesn’t create that file). Omarchy Server now writes it before setting the share password.',
+		],
 	},
 	{
 		version: '0.9.26',
