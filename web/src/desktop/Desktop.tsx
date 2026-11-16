@@ -1190,6 +1190,21 @@ function TopBar(p: {
 						{memPct}%
 					</span>
 				)}
+				{(() => {
+					const count = notes.length + (updates.length > 0 ? 1 : 0)
+					const serverUpdate = notes.includes('update-available')
+					return (
+						<button
+							className={`top-bell${count ? ' lit' : ''}${serverUpdate ? ' ring' : ''}${p.menu === 'clock' ? ' on' : ''}`}
+							onClick={() => p.setMenu(p.menu === 'clock' ? null : 'clock')}
+							aria-label={count ? `${count} notification${count > 1 ? 's' : ''}${serverUpdate ? ', an Omarchy Server update is ready' : ''}` : 'Notifications'}
+							title={serverUpdate ? 'An Omarchy Server update is ready' : 'Notifications'}
+						>
+							<Icon name="bell" size={16} />
+							{count > 0 && <span className="badge-n">{count}</span>}
+						</button>
+					)
+				})()}
 				<button className={`top-sys${p.menu === 'system' ? ' on' : ''}`} onClick={() => p.setMenu(p.menu === 'system' ? null : 'system')} aria-label="System menu">
 					<span className="dot live" />
 					<Icon name="power" size={16} />
@@ -1218,9 +1233,16 @@ function TopBar(p: {
 									</div>
 								)}
 								{notes.map((n) => (
-									<div key={n} className="pop-note">
-										<Icon name="bell" size={18} />
-										<span>{noteText(n)}</span>
+									<div key={n} className={`pop-note${n === 'update-available' ? ' update' : ''}`}>
+										<Icon name={n === 'update-available' ? 'download' : 'bell'} size={18} />
+										{n === 'update-available' ? (
+											<button className="pop-note-go" onClick={() => (p.setMenu(null), p.onSettings())}>
+												<b>{noteText(n)}</b>
+												<small>See what’s new and update in Settings</small>
+											</button>
+										) : (
+											<span>{noteText(n)}</span>
+										)}
 										<button className="icon-btn" aria-label="Dismiss" onClick={() => action.mutate({path: 'notifications.clear', input: n})}>
 											<Icon name="close" size={14} stroke={2.2} />
 										</button>

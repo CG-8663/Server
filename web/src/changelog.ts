@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.23',
+		date: '2026-11-15',
+		title: 'New icon, and a bell that rings for updates',
+		added: [
+			'Omarchy Server has a new icon, in the browser tab and when added to a home screen.',
+			'When an Omarchy Server update is ready, the bell rings and shows a badge: on the desktop’s top bar (new) and in the phone layout. Tap the update to see what’s new and install it. Updates are now checked every 30 minutes instead of every 6 hours.',
+		],
+	},
+	{
 		version: '0.9.22',
 		date: '2026-11-15',
 		title: 'No more half-updated system packages',
