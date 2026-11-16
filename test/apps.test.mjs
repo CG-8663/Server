@@ -2,11 +2,11 @@
 // simulated docker-compose, and the sign-in gateway in front of the app (HTTP and WebSocket).
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
+import {lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
 import os from 'node:os'
-import {join} from 'node:path'
+import {join, relative} from 'node:path'
 import {after, before, describe, test} from 'node:test'
 import WebSocket, {WebSocketServer} from 'ws'
 import YAML from 'yaml'
@@ -78,7 +78,7 @@ describe('omarchyd apps', () => {
 		await writeFile(sock, '')
 		process.env.DOCKER_HOST = `unix://${sock}`
 		// Below Linux's ephemeral range (32768+), so an outgoing connection elsewhere can never take
-		// it mid-test; above the internal ports apps get (20000-28999). Tests use up to appPort + 15.
+		// it mid-test; above the internal ports apps get (20000-28999). Tests use up to appPort + 18.
 		appPort = 30000 + Math.floor(Math.random() * 2700)
 		// A store: one good app, one folder with a mismatched id (ignored).
 		const store = join(root, 'store')
@@ -450,6 +450,9 @@ describe('omarchyd apps', () => {
 		await listing('peek', appPort + 13, `services:\n  web:\n    image: x\n    volumes:\n      - \${APP_DATA_DIR}/data:/data\n      - \${VIDEOS_DIR}:/videos\n      - /etc/localtime:/etc/localtime:ro\n      - /srv/media:/media\n      - /run/dbus:/run/dbus:ro\n    pid: host\n    cap_add: [SYS_PTRACE, CHOWN]\n`)
 		await listing('thief', appPort + 14, `services:\n  web:\n    image: x\n    volumes:\n      - ${root}/home/.ssh:/keys\n`)
 		await listing('wholehome', appPort + 15, `services:\n  web:\n    image: x\n    volumes:\n      - ~:/home\n      - /etc:/host-etc\n`)
+		await listing('sneak', appPort + 16, `services:\n  web:\n    image: x\n    volumes:\n      - \${DOWNLOADS_DIR}/../.ssh:/keys\n`)
+		await listing('homevar', appPort + 17, `services:\n  web:\n    image: x\n    volumes:\n      - \${HOME}:/host\n      - \${HOME}/.ssh:/keys\n`)
+		await listing('relpath', appPort + 18, `services:\n  web:\n    image: x\n    volumes:\n      - ${relative(join(data, 'apps', 'installed', 'relpath'), join(root, 'home', '.ssh'))}:/keys\n`)
 		git(['init', '-q', '-b', 'main'], store)
 		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
 		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
@@ -459,11 +462,37 @@ describe('omarchyd apps', () => {
 		assert.deepEqual(peek.find((p) => p.id === 'host-files').what, ['/srv/media'], 'its own data, your Videos and the time zone are fine')
 		assert.deepEqual(peek.find((p) => p.id === 'system').what.sort(), ['/run/dbus', 'SYS_PTRACE', 'pid: host'])
 		await assert.rejects(call('apps.install', {appId: 'peek', grant: ['system']}), /needs your permission: read and change folders on the server/)
-		for (const id of ['thief', 'wholehome']) {
+		for (const id of ['thief', 'wholehome', 'sneak', 'homevar', 'relpath']) {
 			const r = (await q('apps.installReview', {appId: id})).permissions
 			assert.ok(r.some((p) => p.id === 'refused'), `${id} refused`)
 			await assert.rejects(call('apps.install', {appId: id, grant: ['refused', 'host-files', 'system']}), /never gives an app/)
 		}
+		await call('appStore.removeRepository', {url: `file://${store}`})
+	})
+
+	test('a listing-dir symlink cannot pull ~/.ssh into the app folder or hand it to the container user', async () => {
+		const store = join(root, 'link-apps')
+		const home = join(root, 'home')
+		const ssh = join(home, '.ssh')
+		await mkdir(ssh, {recursive: true})
+		await writeFile(join(ssh, 'id_test'), 'secret-key', {mode: 0o600})
+		await mkdir(join(store, 'linker'), {recursive: true})
+		await writeFile(join(store, 'linker', 'omarchy-app.yml'), `manifestVersion: 1\nid: linker\nname: Linker\nport: ${appPort + 12}\nweb:\n  service: web\n  port: 9000\n`)
+		await writeFile(join(store, 'linker', 'docker-compose.yml'), 'services:\n  web:\n    image: x\n    volumes:\n      - ${APP_DATA_DIR}/keys:/keys\n')
+		await symlink(ssh, join(store, 'linker', 'keys'))
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		calls.length = 0
+		await call('apps.install', {appId: 'linker'})
+		await until(async () => (await q('apps.list')).find((a) => a.id === 'linker' && a.state === 'running'))
+		const installed = join(data, 'apps', 'installed', 'linker', 'keys')
+		assert.equal((await lstat(installed)).isSymbolicLink(), false, 'the listing’s symlink is not copied into the app folder')
+		assert.ok((await stat(installed)).isDirectory(), 'a real folder is created for the bind instead')
+		assert.equal(await readFile(join(ssh, 'id_test'), 'utf8'), 'secret-key')
+		assert.ok(!calls.some((c) => c.podman?.includes(ssh) || c.podman?.some((a) => String(a).includes(ssh))), 'podman never chowns ~/.ssh')
+		await call('apps.uninstall', {appId: 'linker'})
 		await call('appStore.removeRepository', {url: `file://${store}`})
 	})
 

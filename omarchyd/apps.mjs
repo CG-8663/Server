@@ -48,7 +48,7 @@ export const DEFAULT_STORES = [{url: 'https://github.com/TouchWorkStation/app-st
 const GALLERIES = {}
 // Variables omarchyd provides to every app (anything else a compose file needs without a default
 // means the app relies on something Omarchy Server doesn't offer yet).
-const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'APP_SEED_32', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID', 'DOCKER_SOCKET', 'APP_GATEWAY_KEY'])
+const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'APP_SEED_32', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'HOME', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID', 'DOCKER_SOCKET', 'APP_GATEWAY_KEY'])
 // Apps that talk to each other (an app and the apps it needs, or apps with fixed internal
 // addresses) share one container network, laid out the way their store expects (10.21.0.0/16).
 // Apps that don't stay on a private network of their own.
@@ -95,6 +95,22 @@ function refusedMount(path, home) {
 	return false
 }
 const SOCKET = /(?:^|\/)(?:docker|podman)\.sock$|\$\{?DOCKER_SOCKET/
+// The host folder a bind will actually use: expand is already done; collapse `..`, turn `~` and
+// leftover $HOME into the home folder Compose will see, and resolve relative sources from the app.
+function bindHostPath(raw, where = {}) {
+	let path = String(raw ?? '')
+	if (!path) return path
+	const home = where.home
+	if (home) {
+		if (path === '~' || path.startsWith('~/')) path = `${home}${path.slice(1)}`
+		else if (path === '${HOME}' || path.startsWith('${HOME}/')) path = `${home}${path.slice('${HOME}'.length)}`
+		else if (path === '$HOME' || path.startsWith('$HOME/')) path = `${home}${path.slice('$HOME'.length)}`
+	}
+	const cwd = where.cwd ?? where.allowed?.[0]
+	if (path.startsWith('/')) path = resolve(path)
+	else if (cwd && path.startsWith('.')) path = resolve(cwd, path)
+	return path.replace(/\/+$/, '') || '/'
+}
 // What a compose file asks of the server beyond an ordinary container. `where` (when known) says
 // which folders are the app's own: its data folder, the shared folders and your media folders
 // (Videos, Music…), which apps may use without asking; `expand` resolves its variables.
@@ -127,9 +143,10 @@ export function appPermissions(text, where = {}) {
 			if (SOCKET.test(raw)) add('containers', name)
 			else if (/^\/dev(\/|$)/.test(raw) && !/^\/dev\/shm/.test(raw)) add('devices', raw)
 			else if (/^\/run\/(dbus|systemd|udev)(\/|$)|^\/var\/run\/dbus(\/|$)|^\/(sys|lib\/modules)(\/|$)/.test(raw)) add('system', raw)
-			else if (raw.startsWith('/') || raw.startsWith('$') || raw.startsWith('~')) {
-				// Absolute paths (after expanding): the app's own folders are fine; anything else asks.
-				const path = raw.replace(/\/+$/, '') || '/'
+			else if (raw.startsWith('/') || raw.startsWith('$') || raw.startsWith('~') || raw.startsWith('.')) {
+				// Host paths (after expanding): resolve `..` and `~` the way Compose will, so an allowed
+				// prefix can't hide a hidden folder. The app's own folders are fine; anything else asks.
+				const path = bindHostPath(raw, where)
 				const own = (where.allowed ?? []).some((d) => path === d || path.startsWith(`${d}/`))
 				if (own || ['/etc/localtime', '/etc/timezone'].includes(path)) continue
 				if (refusedMount(path, where.home)) add('refused', path)
@@ -770,6 +787,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			TOR_PROXY_PORT,
 			TOR_PASSWORD,
 			TOR_DATA_DIR: join(base, 'shared-root', 'tor', 'data'),
+			HOME: home,
 			APP_DATA_DIR: dir,
 			APP_DATA_ROOT: dir,
 			APP_ID: app.id,
@@ -826,6 +844,14 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				const src = typeof v === 'string' ? expandVars(v, env).split(':')[0] : v?.source && expandVars(v.source, env)
 				if (!src || !/^[/.]/.test(src)) continue
 				const path = resolve(appDir(app.id), src)
+				// A listing that slipped a symlink into the app folder: drop it if it leads outside
+				// the folders this app may use, so Compose and chown can't follow it to ~/.ssh.
+				if (await lstat(path).then((st) => st.isSymbolicLink(), () => false)) {
+					const target = await realpath(path).catch(() => '')
+					const allowed = [appDir(app.id), shared, ...Object.values(USER_DIRS).map((d) => join(home, d))]
+					const ok = target && allowed.some((d) => target === d || target.startsWith(`${d}/`)) && !refusedMount(target, home)
+					if (!ok) await rm(path, {force: true})
+				}
 				// One of your folders (Videos, Music…): make sure it exists and let the app's user in.
 				const mine = Object.values(USER_DIRS).map((d) => join(home, d)).find((d) => path === d || path.startsWith(`${d}/`))
 				if (mine) {
@@ -837,7 +863,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				if (!path.startsWith(appDir(app.id)) && !path.startsWith(shared)) continue
 				if (!(await exists(path))) await mkdir(path, {recursive: true})
 				// Folders inside the app's own folder are its data: they get handed to its container user.
-				if (path.startsWith(`${appDir(app.id)}/`) && (await stat(path).then((st) => st.isDirectory(), () => false))) app.dataDirs.push(path)
+				if (path.startsWith(`${appDir(app.id)}/`) && (await lstat(path).then((st) => st.isDirectory(), () => false))) app.dataDirs.push(path)
 			}
 		}
 	}
@@ -1089,7 +1115,16 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	async function copyListing(src, app) {
 		const dir = appDir(app.id)
 		const fresh = !(await exists(dir))
-		const filter = (p) => !p.split('/').includes('.git')
+		// Listing-dir symlinks that point outside the listing (for example keys → ~/.ssh) must not
+		// be copied: Compose would bind the target, and chown would follow it.
+		const filter = async (p) => {
+			if (p.split('/').includes('.git')) return false
+			const st = await lstat(p).catch(() => null)
+			if (!st?.isSymbolicLink()) return true
+			const target = await realpath(p).catch(() => null)
+			const root = await realpath(src.folder).catch(() => src.folder)
+			return !!(target && (target === root || target.startsWith(`${root}/`)))
+		}
 		if (fresh) return cp(src.folder, dir, {recursive: true, filter})
 		const stage = await mkdtemp(join(base, `.update-${app.id}-`))
 		try {
@@ -1166,6 +1201,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const env = composeEnv({id: app.id, port: app.port, version: app.version, folderIds: (app.folders ?? []).map((f) => f.id)})
 		return {
 			home,
+			cwd: appDir(app.id),
 			expand: (v) => expandVars(String(v), env).replace(/^\.(?=\/|$)/, appDir(app.id)).replace(/^~(?=\/|$)/, home),
 			allowed: [appDir(app.id), join(base, 'shared-root'), ...Object.values(USER_DIRS).map((d) => join(home, d))],
 		}
