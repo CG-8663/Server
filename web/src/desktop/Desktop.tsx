@@ -22,7 +22,7 @@ import {Settings} from '../screens/Settings'
 import {Store} from '../screens/Store'
 import {TerminalScreen} from '../Terminal'
 import {AppIcon, InWindow, PortalRoot, StoreIcon, TerminalIcon, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
-import {SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
+import {SYSTEM_DOCK, WALLPAPERS, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {Personalize} from './Personalize'
 
 // ---- model ---------------------------------------------------------------------------------
@@ -569,7 +569,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 				className={`desk style-${cfg.style} dock-${cfg.dock.position}${cfg.dock.floating ? ' dock-floating' : ''}${cfg.dock.autohide ? ' dock-autohide' : ''} dock-hover-${cfg.dock.hover}${dragging ? ' dragging' : ''}${overview ? ` overview-on ov-${overview}` : ''}`}
 				style={deskStyle as CSSProperties}
 			>
-				{wallUrl && <Wall url={wallUrl} />}
+				{solidOf(cfg.wallpaper) ? <div className="desk-wall" aria-hidden="true" style={{background: solidOf(cfg.wallpaper)!}} /> : wallUrl && <Wall url={wallUrl} />}
 				<TopBar
 					boot={boot}
 					activeTitle={active ? winTitle(active, appList, machineList) : null}

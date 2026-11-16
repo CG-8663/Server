@@ -418,15 +418,22 @@ export type Prefs = {
 	backgroundVersion?: number | null
 	/** Omarchy theme: which Omarchy background (null: whatever the desktop shows right now). */
 	omarchyBackground?: string | null
+	/** A plain colour behind everything instead of a picture (#rrggbb), or null for the picture. */
+	solidColor?: string | null
 }
-const DEFAULT_PREFS: Prefs = {theme: 'horizon', accent: 'wallpaper'}
+// New installs start on the Omarchy theme (the Omarchy desktop's own colours and background). Anyone
+// who already chose a theme keeps it: their choice is saved on the server and wins over this default.
+const DEFAULT_PREFS: Prefs = {theme: 'omarchy', accent: 'wallpaper'}
+// Plain colours to choose instead of a picture (the phone's background and the desktop's wallpaper).
+export const SOLID_COLORS = ['#1a1b26', '#11111b', '#000000', '#2e3440', '#1f2335', '#283618', '#3b2f2f', '#4a1942', '#0f3b57', '#7aa2f7', '#9ece6a', '#e0af68'] as const
+export const isSolidColor = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v)
 const LOCAL_KEY = 'omarchy-server:prefs'
 
 function clean(p: Partial<Prefs> | null | undefined): Prefs {
 	const theme = THEMES.some((t) => t.id === p?.theme) ? p!.theme! : DEFAULT_PREFS.theme
 	const accent = (ACCENTS as readonly string[]).includes(p?.accent as string) ? p!.accent! : DEFAULT_PREFS.accent
 	const omarchyBackground = typeof p?.omarchyBackground === 'string' && /^[0-9a-f]{16}$/.test(p.omarchyBackground) ? p.omarchyBackground : null
-	return {theme, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground}
+	return {theme, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null}
 }
 export function readPrefs(): Prefs {
 	try {
@@ -595,7 +602,7 @@ export function usePrefs(brandHsl: string | null | undefined, signedIn: boolean)
 			const before = now.current
 			setLocal(next)
 			if (!signedIn) return
-			const patch = Object.fromEntries((['theme', 'accent', 'customBrandHsl', 'omarchyBackground'] as const).filter((k) => (next[k] ?? null) !== (before[k] ?? null)).map((k) => [k, next[k] ?? null])) as Partial<Prefs>
+			const patch = Object.fromEntries((['theme', 'accent', 'customBrandHsl', 'omarchyBackground', 'solidColor'] as const).filter((k) => (next[k] ?? null) !== (before[k] ?? null)).map((k) => [k, next[k] ?? null])) as Partial<Prefs>
 			if (!Object.keys(patch).length) return
 			saving.current++
 			savePrefs(patch)
@@ -608,7 +615,7 @@ export function usePrefs(brandHsl: string | null | undefined, signedIn: boolean)
 }
 function savePrefs(p: Partial<Prefs>): Promise<(Prefs & {rev?: number}) | null> {
 	const body: Record<string, unknown> = {}
-	for (const k of ['theme', 'accent', 'customBrandHsl', 'omarchyBackground'] as const) if (k in p) body[k] = p[k] ?? null
+	for (const k of ['theme', 'accent', 'customBrandHsl', 'omarchyBackground', 'solidColor'] as const) if (k in p) body[k] = p[k] ?? null
 	return fetch('/api/prefs', {
 		method: 'POST',
 		credentials: 'same-origin',
@@ -693,6 +700,7 @@ export function Backdrop({wallpaper, prefs}: {wallpaper?: Wallpaper | null; pref
 		img.onerror = () => setFailed(url)
 		img.src = url
 	}, [url])
+	if (prefs.solidColor) return <div className="backdrop" aria-hidden="true" style={{background: prefs.solidColor}} />
 	return (
 		<div className="backdrop" aria-hidden="true">
 			{url && failed !== url ? (

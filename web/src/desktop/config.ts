@@ -19,7 +19,9 @@ export const WALLPAPERS = [
 export type BuiltinWallpaper = (typeof WALLPAPERS)[number]['id']
 // 'server' = your Omarchy Server wallpaper (what the phone shows); 'photo' = the photo you uploaded;
 // 'omarchy' = an Omarchy desktop background (which one: prefs.omarchyBackground, or the desktop's own).
-export type WallpaperId = BuiltinWallpaper | 'server' | 'photo' | 'omarchy'
+// 'color:#rrggbb' = a plain colour instead of a picture.
+export type WallpaperId = BuiltinWallpaper | 'server' | 'photo' | 'omarchy' | `color:#${string}`
+export const solidOf = (w: string) => (/^color:#[0-9a-f]{6}$/i.test(w) ? w.slice(6).toLowerCase() : null)
 export const wallpaperSrc = (id: string, thumb = false) => `/wallpapers/${id}${thumb ? '-thumb' : ''}.jpg`
 
 export type DeskStyle = 'yaru' | 'glass' | 'graphite' | 'daylight'
@@ -87,7 +89,7 @@ function clean(raw: unknown): DeskConfig {
 	const c = (raw && typeof raw === 'object' ? raw : {}) as Partial<DeskConfig>
 	const d = DEFAULT_CONFIG
 	const dock = {...d.dock, ...(c.dock ?? {})} as DeskConfig['dock'] & {size?: string}
-	const okWall = (w: unknown): w is WallpaperId => w === 'server' || w === 'photo' || w === 'omarchy' || WALLPAPERS.some((x) => x.id === w)
+	const okWall = (w: unknown): w is WallpaperId => w === 'server' || w === 'photo' || w === 'omarchy' || WALLPAPERS.some((x) => x.id === w) || (typeof w === 'string' && !!solidOf(w))
 	// Pins from the first desktop release move into the dock.
 	let legacyPins: string[] = []
 	try {
