@@ -281,6 +281,32 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal((await open('cols=5000&rows=24')).status, 400)
 	})
 
+	test('a member cannot open the host terminal or a swarm computer through the web server', async () => {
+		const member = await startTouch({backendUrl: fake.url})
+		try {
+			const login = await member.req('POST', '/api/auth/login', {username: 'Sam', password: 'correct horse'})
+			assert.equal(login.status, 200)
+			const open = (path) =>
+				new Promise((resolve) => {
+					const ws = new WebSocket(`${member.base.replace('http', 'ws')}${path}`, {headers: {cookie: member.getCookie(), origin: member.base}})
+					ws.once('open', () => {
+						ws.close()
+						resolve({ok: true})
+					})
+					ws.once('unexpected-response', (_q, res) => resolve({ok: false, status: res.statusCode}))
+				})
+			assert.equal((await open('/api/terminal?cols=80&rows=24')).status, 403)
+			assert.equal((await open('/api/terminal?agentId=0123456789ab&cols=80&rows=24')).status, 403)
+			assert.equal((await open('/api/console?machineId=agent-0123456789ab')).status, 403)
+			assert.equal((await member.req('GET', '/api/console/check?target=terminal')).status, 403)
+			assert.equal((await member.req('GET', '/api/console/check?machineId=agent-0123456789ab')).status, 403)
+			const vm = await open('/api/console?machineId=ubuntu-1')
+			assert.equal(vm.ok, true, 'a member can still open a VM screen')
+		} finally {
+			await member.close()
+		}
+	})
+
 	test('files: list, upload, download and preview through the server', async () => {
 		const list = await touch.req('GET', `/api/rpc/files.list?input=${encodeURIComponent(JSON.stringify({path: '/Home/Documents'}))}`)
 		assert.equal(list.status, 200)

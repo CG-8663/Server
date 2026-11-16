@@ -141,7 +141,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 				const now = Date.now()
 				for (const [t, v] of tickets) if (v.expires < now) tickets.delete(t)
 				const ticket = randomBytes(24).toString('base64url')
-				tickets.set(ticket, {userId: auth.userId, target: input.target, expires: now + 30_000})
+				tickets.set(ticket, {userId: auth.userId, role: accounts.getUser(auth.userId)?.role, target: input.target, expires: now + 30_000})
 				return ticket
 			},
 		},
@@ -592,8 +592,12 @@ WantedBy=graphical-session.target
 			const t = tickets.get(url.searchParams.get('ticket') ?? '')
 			tickets.delete(url.searchParams.get('ticket') ?? '')
 			if (!t || t.expires < Date.now() || t.target !== route) return refuse('401 Unauthorized')
+			const owner = (t.role ?? accounts.getUser(t.userId)?.role) === 'owner'
 			// A shell: your own, or one inside an installed app's container.
 			if (route === 'terminal') {
+				// This process runs as the owner’s user, and a swarm computer’s terminal is the
+				// same as managing the swarm (owner-only). Members can’t be given a different OS user.
+				if (!owner) return refuse('403 Forbidden')
 				const cols = Number(url.searchParams.get('cols'))
 				const rows = Number(url.searchParams.get('rows'))
 				if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || cols > 500 || rows < 4 || rows > 300) return refuse('400 Bad Request')
@@ -615,8 +619,11 @@ WantedBy=graphical-session.target
 			}
 			// "desktop" is this server's own Omarchy desktop, shared by wayvnc on 127.0.0.1 only.
 			const machineId = url.searchParams.get('machineId') ?? ''
-			// A computer in the local swarm: its connector shares its screen.
-			if (connector.isAgentMachine(machineId)) return wss.handleUpgrade(req, socket, head, (ws) => connector.openChannel(machineId.slice(6), 'vnc', ws))
+			// A computer in the local swarm: its connector shares its screen. Owner-only, like managing the swarm.
+			if (connector.isAgentMachine(machineId)) {
+				if (!owner) return refuse('403 Forbidden')
+				return wss.handleUpgrade(req, socket, head, (ws) => connector.openChannel(machineId.slice(6), 'vnc', ws))
+			}
 			const target = machineId === 'desktop' ? await desktopTarget() : await machines.vncSocket(machineId).then((path) => ({path}), () => null)
 			if (!target) return refuse('409 Conflict')
 			const vnc = net.connect(target)

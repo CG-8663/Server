@@ -1,6 +1,6 @@
 // omarchyd terminal: a single-use ticket opens your shell in a real pty over a WebSocket.
 import assert from 'node:assert/strict'
-import {mkdtemp, rm} from 'node:fs/promises'
+import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -12,25 +12,45 @@ import {openAccounts} from '../omarchyd/accounts.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 import {createTerminalSessions} from '../omarchyd/terminal.mjs'
 
-let root, d, auth, vnc
+let root, d, auth, memberAuth, vnc
 before(async () => {
 	root = await mkdtemp(join(os.tmpdir(), 'omarchyd-t-'))
-	const accounts = await openAccounts(join(root, 'data'))
+	const data = join(root, 'data')
+	const accounts = await openAccounts(data)
 	await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+	const file = join(data, 'accounts.json')
+	const state = JSON.parse(await readFile(file, 'utf8'))
+	const owner = state.users[0]
+	state.users.push({userId: 'sam', name: 'Sam', role: 'member', language: 'en', salt: owner.salt, hash: owner.hash, createdAt: Date.now()})
+	await writeFile(file, JSON.stringify(state, null, '\t'))
 	// Stand-in for wayvnc on 127.0.0.1.
 	vnc = net.createServer((sock) => sock.end('RFB 003.008\n'))
 	await new Promise((r) => vnc.listen(0, '127.0.0.1', r))
-	d = await startOmarchyd({port: 0, dataDir: join(root, 'data'), home: root, desktopVncPort: vnc.address().port})
+	d = await startOmarchyd({port: 0, dataDir: data, home: root, desktopVncPort: vnc.address().port})
 	const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
 	auth = {authorization: `Bearer ${login.result.data.accessToken}`, 'content-type': 'application/json'}
+	const memberLogin = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'sam', password: 'correct horse', client: {id: 'm'}})})).json()
+	memberAuth = {authorization: `Bearer ${memberLogin.result.data.accessToken}`, 'content-type': 'application/json'}
 })
 after(async () => {
 	vnc.close()
 	await d.close()
 	await rm(root, {recursive: true, force: true})
 })
-const ticket = async (target) => (await (await fetch(`${d.url}/trpc/user.createWebSocketTicket`, {method: 'POST', headers: auth, body: JSON.stringify({target})})).json()).result.data
+const ticket = async (target, headers = auth) => (await (await fetch(`${d.url}/trpc/user.createWebSocketTicket`, {method: 'POST', headers, body: JSON.stringify({target})})).json()).result.data
 const refused = (url) => new Promise((resolve) => new WebSocket(url).once('error', () => resolve(true)).once('open', () => resolve(false)))
+const handshake = (url, protocols) =>
+	new Promise((resolve) => {
+		const ws = new WebSocket(url, protocols)
+		ws.once('unexpected-response', (_req, res) => {
+			res.resume()
+			resolve(res.statusCode)
+		})
+		ws.once('open', () => {
+			ws.close()
+			resolve(101)
+		})
+	})
 
 test('a terminal ticket opens a sized shell in a pty; it works once', async () => {
 	const t = await ticket('terminal')
@@ -152,4 +172,17 @@ test('the desktop is shared on a private socket when there is one (not on a port
 		unix.close()
 		await d2.close()
 	}
+})
+
+test('a member’s ticket cannot open this server’s shell or a swarm computer’s', async () => {
+	const ws = d.url.replace('http', 'ws')
+	const term = await ticket('terminal', memberAuth)
+	assert.equal(typeof term, 'string')
+	assert.equal(await handshake(`${ws}/terminal?cols=80&rows=24&ticket=${term}`), 403, 'host shell runs as the owner’s user')
+	const agentTerm = await ticket('terminal', memberAuth)
+	assert.equal(await handshake(`${ws}/terminal?agentId=0123456789ab&cols=80&rows=24&ticket=${agentTerm}`), 403, 'swarm shells are owner-only, same as swarm.*')
+	const agentScreen = await ticket('machines', memberAuth)
+	assert.equal(await handshake(`${ws}/machines/console?machineId=agent-0123456789ab&ticket=${agentScreen}`, ['binary']), 403)
+	assert.equal(await handshake(`${ws}/machines/console?machineId=desktop&ticket=${await ticket('machines', memberAuth)}`, ['binary']), 101, 'a member can still open this desktop or a VM')
+	assert.equal(await handshake(`${ws}/terminal?cols=80&rows=24&ticket=${await ticket('terminal')}`), 101, 'the owner can still open a shell')
 })

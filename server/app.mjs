@@ -832,6 +832,14 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			throw await lostBrowserSession(sid, error)
 		}
 	}
+	async function sessionIsOwner(sid) {
+		try {
+			const me = await authedCall({sid}, 'user.get', 'query')
+			return me?.role === 'owner'
+		} catch {
+			return false
+		}
+	}
 
 	// ---- Files: downloads, previews, thumbnails and uploads ---------------------
 	// omarchyd serves file bytes over plain HTTP, authorised by the browser cookie plus
@@ -1358,12 +1366,16 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	// Asked before the socket opens so the app can show a clear reason when it can't.
 	api.get('/console/check', async (req, res) => {
 		try {
-			await consoleTicket(req.sid, req.query.target === 'terminal' ? 'terminal' : 'machines') // single-use, 30s; discarded
+			const terminal = req.query.target === 'terminal'
+			const agent = /^agent-([0-9a-f]{12})$/.exec(String(req.query.machineId ?? ''))
+			if ((terminal || agent) && !(await sessionIsOwner(req.sid))) {
+				throw new BackendError(terminal ? 'Only the server’s owner can open a shell' : 'Only the server’s owner can manage the local swarm', {code: 'FORBIDDEN', status: 403})
+			}
+			await consoleTicket(req.sid, terminal ? 'terminal' : 'machines') // single-use, 30s; discarded
 			// The server's own desktop: make sure its screen sharing is running (starts it if not),
 			// or say plainly why it can't be.
 			if (req.query.machineId === 'desktop') await authedCall(req, 'system.desktopShare', 'mutation')
 			// A computer in the local swarm: is its desktop there to show (and allowed)?
-			const agent = /^agent-([0-9a-f]{12})$/.exec(String(req.query.machineId ?? ''))
 			if (agent) await authedCall(req, 'swarm.desktopCheck', 'query', {id: agent[1]})
 			res.json({ok: true})
 		} catch (error) {
@@ -1435,9 +1447,16 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					target.pathname = '/terminal'
 					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
 				}
+				const needsOwner = route === 'terminal' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
+				if (needsOwner && !(await sessionIsOwner(sid))) return refuse('403 Forbidden')
 				const ticket = await consoleTicket(sid, route)
 				target.search = new URLSearchParams({...params, ticket}).toString()
 				const upstream = new WebSocket(target, route === 'machines' ? ['binary'] : [], {handshakeTimeout: 10_000})
+				upstream.once('unexpected-response', (_q, r) => {
+					r.resume()
+					upstream.removeAllListeners('error')
+					refuse(r.statusCode === 403 ? '403 Forbidden' : r.statusCode === 401 ? '401 Unauthorized' : '502 Bad Gateway')
+				})
 				upstream.once('error', () => refuse('502 Bad Gateway'))
 				upstream.once('open', () => {
 					upstream.removeAllListeners('error')
