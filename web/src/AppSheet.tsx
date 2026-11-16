@@ -52,8 +52,8 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 			desk.launch(app)
 			return
 		}
-		// Straight to the app's own address and port, in this tab (like a container's link in Docker),
-		// once it answers. The browser's back button returns to Omarchy Server.
+		// Inside Omarchy Server, full screen, once it answers (see openApp). The back button, on screen
+		// or the browser's own, returns here.
 		const ctrl = new AbortController()
 		waitCtrl.current?.abort()
 		waitCtrl.current = ctrl

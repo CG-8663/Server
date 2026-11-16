@@ -1,6 +1,5 @@
 // Desktop customization: wallpaper, desktop theme (chrome style + accent), dock layout and the
-// icons on the desktop. Saved per device: a PC and a laptop can be set up differently, and the
-// phone layout isn't affected at all.
+// icons on the desktop. Saved on the server for your account, so every browser shows the same desktop.
 import {useCallback, useEffect, useState} from 'react'
 
 export const WALLPAPERS = [
@@ -132,37 +131,53 @@ export function loadConfig(): DeskConfig {
 
 // One shared, live config for the whole desktop (dock, icons and the settings window). It's kept
 // in this browser for an instant start and saved on the server for your account, so every browser
-// you sign in on gets the same desktop: the newest change wins, and a browser that comes back to the
-// front picks up changes made elsewhere.
+// you sign in on gets the same desktop. The server counts each save (rev), so a browser knows it
+// has the latest without trusting its own clock: it takes the server's copy unless it has changes
+// of its own not saved yet, and checks again when it comes back to the front (and every 20 s).
 let current: DeskConfig | null = null
 const listeners = new Set<(c: DeskConfig) => void>()
-const AT_KEY = `${KEY}:at`
-const localAt = () => {
+const REV_KEY = `${KEY}:rev`
+const DIRTY_KEY = `${KEY}:dirty`
+const stored = (k: string) => {
 	try {
-		return Number(localStorage.getItem(AT_KEY)) || 0
+		return localStorage.getItem(k)
 	} catch {
-		return 0
+		return null
 	}
 }
-function keepLocal(c: DeskConfig, at: number) {
+const store = (k: string, v: string | null) => {
 	try {
-		localStorage.setItem(KEY, JSON.stringify(c))
-		localStorage.setItem(AT_KEY, String(at))
+		if (v === null) localStorage.removeItem(k)
+		else localStorage.setItem(k, v)
 	} catch {
 		/* private mode: this visit only */
 	}
 }
+const knownRev = () => Number(stored(REV_KEY)) || 0
+const keepLocal = (c: DeskConfig) => store(KEY, JSON.stringify(c))
+// Changes made here that the server doesn't have yet (counted, so a save that was already on its way
+// doesn't clear a change made after it left).
+let edits = stored(DIRTY_KEY) ? 1 : 0
 let pushTimer: number | undefined
 function push() {
 	window.clearTimeout(pushTimer)
-	pushTimer = window.setTimeout(() => {
+	pushTimer = window.setTimeout(async () => {
 		if (!current) return
-		fetch('/api/desktop', {
-			method: 'POST',
-			credentials: 'same-origin',
-			headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
-			body: JSON.stringify({config: current, updatedAt: localAt()}),
-		}).catch(() => {})
+		const sent = edits
+		try {
+			const r = await fetch('/api/desktop', {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
+				body: JSON.stringify({config: current}),
+			})
+			if (!r.ok) return
+			const saved = (await r.json())?.desktop as {rev?: number} | null
+			if (saved?.rev) store(REV_KEY, String(saved.rev))
+			if (edits === sent) (edits = 0), store(DIRTY_KEY, null)
+		} catch {
+			/* offline: saved next time */
+		}
 	}, 600)
 }
 let lastPull = 0
@@ -174,15 +189,19 @@ async function pull() {
 	try {
 		const r = await fetch('/api/desktop', {credentials: 'same-origin'})
 		if (!r.ok) return
-		const saved = (await r.json())?.desktop as {config: unknown; updatedAt: number} | null
-		const mine = localAt()
-		if (saved && saved.updatedAt > mine) {
+		const saved = (await r.json())?.desktop as {config: unknown; rev?: number; updatedAt?: number} | null
+		const rev = saved ? Number(saved.rev) || 1 : 0
+		if (edits) {
+			// This browser has the newest changes: save them for the others.
+			current ??= loadConfig()
+			push()
+		} else if (saved && rev !== knownRev()) {
 			current = clean(saved.config)
-			keepLocal(current, saved.updatedAt)
+			keepLocal(current)
+			store(REV_KEY, String(rev))
 			listeners.forEach((l) => l(current!))
-		} else if (!saved || saved.updatedAt < mine || (!mine && localStorage.getItem(KEY))) {
-			// Nothing saved yet, or this browser has newer changes: save them for the others.
-			if (!mine) keepLocal(current ?? loadConfig(), Date.now())
+		} else if (!saved) {
+			// Nothing saved for this account yet: this browser's desktop becomes the saved one.
 			current ??= loadConfig()
 			push()
 		}
@@ -196,9 +215,12 @@ let started = false
 function startSync() {
 	if (started) return
 	started = true
+	// Saved by an earlier version, which went by each browser's clock: take the server's copy.
+	store(`${KEY}:at`, null)
 	pull()
 	window.addEventListener('focus', () => pull())
 	document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && pull())
+	window.setInterval(() => document.visibilityState === 'visible' && pull(), 20_000)
 }
 export function useDeskConfig() {
 	const [cfg, setCfg] = useState<DeskConfig>(() => (current ??= loadConfig()))
@@ -209,7 +231,9 @@ export function useDeskConfig() {
 	}, [])
 	const update = useCallback((fn: (c: DeskConfig) => DeskConfig) => {
 		current = fn(current ?? loadConfig())
-		keepLocal(current, Date.now())
+		keepLocal(current)
+		edits++
+		store(DIRTY_KEY, '1')
 		listeners.forEach((l) => l(current!))
 		push()
 	}, [])

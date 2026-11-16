@@ -527,11 +527,29 @@ export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 	meta?.setAttribute('content', THEMES.find((t) => t.id === p.theme)?.bg ?? '#111')
 }
 
-// Appearance is cached on the phone for an instant first paint, and saved on the
-// Touch server per Omarchy Server account so every phone you sign in on gets it.
+// Appearance is cached in the browser for an instant first paint, and saved on the server per
+// Omarchy Server account so every device you sign in on gets it. The server counts each save (rev):
+// a device takes the server's copy whenever it changed, checking again when it comes back to the
+// front (and every 20 s), and a change sends only what changed, so it never puts back another
+// device's older choice.
+const PREFS_REV_KEY = `${LOCAL_KEY}:rev`
+const prefsRev = () => {
+	try {
+		return Number(localStorage.getItem(PREFS_REV_KEY)) || 0
+	} catch {
+		return 0
+	}
+}
+const keepPrefsRev = (rev: unknown) => {
+	try {
+		if (Number(rev)) localStorage.setItem(PREFS_REV_KEY, String(rev))
+	} catch {}
+}
 export function usePrefs(brandHsl: string | null | undefined, signedIn: boolean) {
 	const [prefs, setLocal] = useState<Prefs>(readPrefs)
-	const loaded = useRef(false)
+	const now = useRef(prefs)
+	now.current = prefs
+	const saving = useRef(0)
 	useLayoutEffect(() => {
 		applyPrefs(prefs, brandHsl)
 		try {
@@ -541,36 +559,65 @@ export function usePrefs(brandHsl: string | null | undefined, signedIn: boolean)
 		}
 	}, [prefs, brandHsl])
 	useEffect(() => {
-		if (!signedIn) {
-			loaded.current = false
-			return
+		if (!signedIn) return
+		let last = 0
+		const pull = () => {
+			if (saving.current || Date.now() - last < 3000) return
+			last = Date.now()
+			fetch('/api/prefs', {credentials: 'same-origin'})
+				.then((r) => (r.ok ? r.json() : null))
+				.then((body) => {
+					if (saving.current || !body) return
+					if (body.prefs) {
+						if (Number(body.prefs.rev) !== prefsRev() || JSON.stringify(clean(body.prefs)) !== JSON.stringify(now.current)) {
+							setLocal(clean(body.prefs))
+							keepPrefsRev(body.prefs.rev)
+						}
+					}
+					// First sign-in on the server: keep what this device already had.
+					else savePrefs(now.current).then((p) => keepPrefsRev(p?.rev))
+				})
+				.catch(() => {})
 		}
-		fetch('/api/prefs', {credentials: 'same-origin'})
-			.then((r) => (r.ok ? r.json() : null))
-			.then((body) => {
-				loaded.current = true
-				if (body?.prefs) setLocal(clean(body.prefs))
-				// First sign-in on the server: keep what this phone already had.
-				else savePrefs(readPrefs())
-			})
-			.catch(() => {})
+		pull()
+		const onVisible = () => document.visibilityState === 'visible' && pull()
+		window.addEventListener('focus', pull)
+		document.addEventListener('visibilitychange', onVisible)
+		const timer = window.setInterval(onVisible, 20_000)
+		return () => {
+			window.removeEventListener('focus', pull)
+			document.removeEventListener('visibilitychange', onVisible)
+			window.clearInterval(timer)
+		}
 	}, [signedIn])
 	const setPrefs = useCallback(
 		(next: Prefs) => {
+			const before = now.current
 			setLocal(next)
-			if (signedIn) savePrefs(next)
+			if (!signedIn) return
+			const patch = Object.fromEntries((['theme', 'accent', 'customBrandHsl', 'omarchyBackground'] as const).filter((k) => (next[k] ?? null) !== (before[k] ?? null)).map((k) => [k, next[k] ?? null])) as Partial<Prefs>
+			if (!Object.keys(patch).length) return
+			saving.current++
+			savePrefs(patch)
+				.then((p) => keepPrefsRev(p?.rev))
+				.finally(() => saving.current--)
 		},
 		[signedIn],
 	)
 	return [prefs, setPrefs, setLocal] as const
 }
-function savePrefs(p: Prefs) {
+function savePrefs(p: Partial<Prefs>): Promise<(Prefs & {rev?: number}) | null> {
+	const body: Record<string, unknown> = {}
+	for (const k of ['theme', 'accent', 'customBrandHsl', 'omarchyBackground'] as const) if (k in p) body[k] = p[k] ?? null
 	return fetch('/api/prefs', {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
-		body: JSON.stringify({theme: p.theme, accent: p.accent, customBrandHsl: p.customBrandHsl ?? null, omarchyBackground: p.omarchyBackground ?? null}),
-	}).catch(() => {})
+		body: JSON.stringify(body),
+	})
+		.then((r) => (r.ok ? r.json() : null))
+		.then((b) => b?.prefs ?? null)
+		.catch(() => null)
 }
 
 // Resize a photo on the phone (keeps upload small, fixes rotation) and find its dominant colour.

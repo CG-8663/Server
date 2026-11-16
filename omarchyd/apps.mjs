@@ -331,6 +331,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	let state = {stores: [], apps: [], recent: []}
 	let secret
 	const busy = new Map() // appId -> {state, progress}
+	let statesCache = new Map(), statesAt = 0, statesInFlight = null
+	// When an app stops being busy (installed, started, stopped…), look at it afresh next time.
+	const busyDelete = busy.delete.bind(busy)
+	busy.delete = (id) => (statesAt = 0, busyDelete(id))
 	const gateways = new Map() // appId -> {server, port}
 	const tickets = new Map() // one-time hand-overs from the web app
 	let registryCache = null
@@ -936,10 +940,45 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			return 'unknown'
 		}
 	}
-	async function liveStates() {
+	// Every app's live state, for the app list (polled every few seconds by each open page). One
+	// `podman ps` for all apps instead of a `docker-compose ps` per app; polls that arrive together
+	// share one check; and the list never waits more than a moment on it. While podman is busy (a
+	// big image downloading for an install), the last known states are used, so the list keeps
+	// answering and a new install shows up straight away instead of after the download.
+	async function readStates() {
+		const apps = state.apps.filter((a) => !busy.has(a.id) && a.state !== 'error')
 		const out = new Map()
-		await Promise.all(state.apps.filter((a) => !busy.has(a.id) && a.state !== 'error').map(async (a) => out.set(a.id, await liveState(a))))
+		let rows = null
+		// Only container apps need the engine (Tailscale and other system apps don't).
+		if (!apps.some((a) => !a.system)) rows = []
+		else try {
+			const text = await run('podman', ['ps', '-a', '--format', 'json'], {env: engineEnv, timeout: 15_000})
+			const parsed = JSON.parse(text || 'null')
+			if (Array.isArray(parsed)) rows = parsed
+		} catch {}
+		if (rows) {
+			const byProject = new Map()
+			for (const r of rows) {
+				const p = r.Labels?.['com.docker.compose.project']
+				if (p) byProject.set(p, [...(byProject.get(p) ?? []), String(r.State ?? '').toLowerCase()])
+			}
+			await Promise.all(
+				apps.map(async (a) => {
+					if (a.system) return out.set(a.id, await liveState(a))
+					const states = byProject.get(project(a.id)) ?? []
+					out.set(a.id, states.some((x) => x === 'running') ? 'running' : 'stopped')
+				}),
+			)
+		} else await Promise.all(apps.map(async (a) => out.set(a.id, await liveState(a))))
 		return out
+	}
+	async function liveStates() {
+		if (Date.now() - statesAt < 1500) return statesCache
+		statesInFlight ??= readStates()
+			.then((m) => ((statesCache = m), (statesAt = Date.now()), m))
+			.finally(() => (statesInFlight = null))
+		// Don't hold the list up: after 3 s, answer with what we last knew (the check carries on).
+		return Promise.race([statesInFlight, new Promise((r) => setTimeout(() => r(statesCache), 3000).unref?.())])
 	}
 
 	// When each app was last started, as far as this process knows (apps already running when

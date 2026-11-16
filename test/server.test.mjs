@@ -107,7 +107,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.19', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.20', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -199,25 +199,32 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		r = await touch.req('GET', '/api/prefs')
 		assert.equal(r.body.prefs.theme, 'tokyo')
 		assert.equal(r.body.prefs.accent, 'teal')
+		const rev = r.body.prefs.rev
+		// Changing one thing keeps the rest, and counts up so other devices notice.
+		r = await touch.req('POST', '/api/prefs', {accent: 'pink'})
+		assert.deepEqual([r.body.prefs.theme, r.body.prefs.accent, r.body.prefs.rev], ['tokyo', 'pink', rev + 1])
 		assert.equal((await touch.req('POST', '/api/prefs', {theme: '<script>'})).status, 400)
 		assert.equal((await touch.req('POST', '/api/prefs', {customBrandHsl: 'red; x'})).status, 400)
 		const anon = await fetch(`${touch.base}/api/prefs`)
 		assert.equal(anon.status, 401)
 	})
 
-	test('desktop settings are saved per account; the newest change wins', async () => {
+	test('desktop settings are saved per account; the latest save wins, counted by the server', async () => {
 		assert.equal((await touch.req('GET', '/api/desktop')).body.desktop, null)
 		const cfg = {wallpaper: 'photo', style: 'graphite', dock: {position: 'top', iconSize: 60}}
-		let r = await touch.req('POST', '/api/desktop', {config: cfg, updatedAt: 2000})
+		let r = await touch.req('POST', '/api/desktop', {config: cfg})
 		assert.equal(r.status, 200)
+		assert.equal(r.body.desktop.rev, 1)
 		r = await touch.req('GET', '/api/desktop')
-		assert.deepEqual(r.body.desktop, {config: cfg, updatedAt: 2000})
-		// An older save from another browser arriving late doesn't undo it.
-		r = await touch.req('POST', '/api/desktop', {config: {wallpaper: 'valley'}, updatedAt: 1000})
-		assert.equal(r.body.stale, true)
-		assert.equal((await touch.req('GET', '/api/desktop')).body.desktop.config.wallpaper, 'photo')
-		assert.equal((await touch.req('POST', '/api/desktop', {config: [1], updatedAt: 3000})).status, 400)
-		assert.equal((await touch.req('POST', '/api/desktop', {config: {x: 'y'.repeat(61_000)}, updatedAt: 3000})).status, 413)
+		assert.deepEqual(r.body.desktop.config, cfg)
+		assert.equal(r.body.desktop.rev, 1)
+		// Another device saves next: it wins, whatever that device's clock says.
+		r = await touch.req('POST', '/api/desktop', {config: {wallpaper: 'valley'}, updatedAt: 1})
+		assert.equal(r.body.desktop.rev, 2)
+		assert.equal((await touch.req('GET', '/api/desktop')).body.desktop.config.wallpaper, 'valley')
+		assert.ok(Math.abs((await touch.req('GET', '/api/desktop')).body.desktop.updatedAt - Date.now()) < 5000)
+		assert.equal((await touch.req('POST', '/api/desktop', {config: [1]})).status, 400)
+		assert.equal((await touch.req('POST', '/api/desktop', {config: {x: 'y'.repeat(61_000)}})).status, 413)
 		assert.equal((await fetch(`${touch.base}/api/desktop`)).status, 401)
 	})
 

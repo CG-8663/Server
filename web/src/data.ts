@@ -66,7 +66,7 @@ export function useAction() {
 	const qc = useQueryClient()
 	const toast = useToast()
 	return useMutation({
-		mutationFn: async (a: {path: string; input?: unknown; optimistic?: {appId: string; state: UserApp['state']}; done?: string}) =>
+		mutationFn: async (a: {path: string; input?: unknown; optimistic?: {appId: string; state: UserApp['state']}; adding?: Pick<UserApp, 'id' | 'name' | 'icon'>[]; done?: string}) =>
 			mutate(a.path, a.input),
 		onMutate: (a) => {
 			if (a.optimistic) {
@@ -76,6 +76,13 @@ export function useAction() {
 			}
 		},
 		onSuccess: (_, a) => {
+			// A new install shows (installing) right away, everywhere the app list is shown, even
+			// before the list is fetched again.
+			if (a.adding?.length)
+				qc.setQueryData<UserApp[]>(['apps.list'], (apps = []) => [
+					...apps,
+					...a.adding!.filter((n) => !apps.some((x) => x.id === n.id)).map((n) => ({path: '', ...n, state: 'installing', progress: 0}) as UserApp),
+				])
 			if (a.done) toast(a.done)
 		},
 		onError: (error: Error) => toast(error.message, true),
