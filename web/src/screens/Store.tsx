@@ -1,5 +1,6 @@
 import {useEffect, useMemo, useState, type CSSProperties} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
+import {PluginBrowser} from './Plugins'
 
 import {mutate, query, type RegistryApp, type UserApp} from '../api'
 import {appUrl, useAction, useApps, useBootstrap, useInstallReview, useRegistry} from '../data'
@@ -29,6 +30,9 @@ const label = (c: string) => CATEGORY_LABEL[c] ?? c.charAt(0).toUpperCase() + c.
 const catIcon = (c: string) => (hasIcon(c) ? c : 'category')
 // Shown first in "Featured" when present in the catalog; otherwise any app with screenshots.
 const FEATURED = ['immich', 'nextcloud', 'home-assistant', 'jellyfin', 'plex', 'bitcoin', 'ollama', 'vaultwarden', 'pi-hole', 'tailscale']
+
+// The Omarchy plugins view (its own catalog, next to the app categories).
+const PLUGINS = '::omarchy-plugins'
 
 export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (app: UserApp) => void; onOpenApp?: (app: UserApp) => void; onBack?: () => void; onTerminal?: (input: string) => void}) {
 	const registry = useRegistry()
@@ -121,7 +125,7 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 			</div>
 			<SearchField value={q} onChange={setQ} placeholder="Search apps" />
 			<div className="chips" role="tablist" aria-label="Categories">
-				{['all', ...categories].map((c) => (
+				{['all', PLUGINS, ...categories].map((c) => (
 					<button
 						key={c}
 						role="tab"
@@ -132,8 +136,8 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 							setCategory(c)
 						}}
 					>
-						<Icon name={c === 'all' ? 'all' : catIcon(c)} size={17} />
-						{c === 'all' ? 'Discover' : label(c)}
+						<Icon name={c === 'all' ? 'all' : c === PLUGINS ? 'puzzle' : catIcon(c)} size={17} />
+						{c === 'all' ? 'Discover' : c === PLUGINS ? 'Omarchy plugins' : label(c)}
 					</button>
 				))}
 			</div>
@@ -143,7 +147,8 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 					{(registry.error as Error).message}
 				</div>
 			)}
-			{registry.isLoading && (
+			{category === PLUGINS && <PluginBrowser q={q} />}
+			{category !== PLUGINS && registry.isLoading && (
 				<>
 					<div className="skeleton" style={{height: 220, borderRadius: 26, marginBottom: 20}} />
 					{Array.from({length: 4}, (_, i) => (
@@ -171,7 +176,9 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 				</div>
 			)}
 
-			{browsing
+			{category === PLUGINS
+				? null
+				: browsing
 				? categories.slice(0, 8).map((c) => {
 						const items = all.filter((a) => a.category === c).slice(0, 9)
 						return (

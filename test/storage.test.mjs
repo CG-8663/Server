@@ -157,6 +157,24 @@ describe('helper', () => {
 		await createHelper({user, run: fakeRun([]), fs: fs2}).handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]}))
 		assert.match(fs2.files.get('/etc/samba/smb.conf'), /^\[global\]\n {3}workgroup = HOME\n[\s\S]*include = \/etc\/samba\/omarchy-server-shares.conf/)
 		assert.match(fs2.files.get('/etc/samba/omarchy-server-shares.conf'), /\[Music\]/)
+		// …but there Samba's guest settings are yours, so no-password shares are refused.
+		await assert.rejects(createHelper({user, run: fakeRun([]), fs: fs2}).handle('shares-apply', [], JSON.stringify({shares: [{name: 'Open', path: '/home/chris/Open', guest: true}]})), /own Samba settings/)
+	})
+
+	test('shares without a password: guests only for those shares, files still written as you; off again when none are left', async () => {
+		const fs = fakeFs({})
+		const h = createHelper({user, run: fakeRun([]), fs})
+		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}, {name: 'Open', path: '/home/chris/Open', guest: true, readOnly: true}]}))
+		let conf = fs.files.get('/etc/samba/smb.conf')
+		assert.match(conf, /map to guest = bad user/)
+		assert.match(conf, /\[Music\]\n {3}path = \/home\/chris\/Music\n {3}valid users = chris\n {3}force user = chris/)
+		assert.match(conf, /\[Open\]\n {3}path = \/home\/chris\/Open\n {3}guest ok = yes\n {3}force user = chris\n {3}read only = yes/)
+		assert.doesNotMatch(conf.split('[Music]')[1].split('[Open]')[0], /guest ok/)
+		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]}))
+		conf = fs.files.get('/etc/samba/smb.conf')
+		assert.match(conf, /map to guest = never/)
+		assert.match(conf, /restrict anonymous = 2/)
+		assert.doesNotMatch(conf, /guest ok/)
 	})
 
 	test('sleep: hard drives only, valid times only, kept by serial', async () => {
@@ -446,5 +464,29 @@ describe('omarchyd storage', () => {
 		assert.deepEqual(JSON.parse(last.input).shares.map((x) => x.path), ['/home/chris/Music', '/home/chris/Other/Music'])
 		assert.equal((await readFile(join(data, 'share-password'), 'utf8')).trim(), pw)
 		await assert.rejects(s.procedures['files.addShare'].run({path: '/Home'}), /inside Home/)
+
+		// Without a password: only once the installed helper knows how (an older one is never asked).
+		assert.deepEqual(await s.procedures['files.shareOptions'].run(), {noPassword: false})
+		await assert.rejects(s.procedures['files.addShare'].run({path: '/Home/Open', password: false}), /installer to run once more/)
+		await assert.rejects(s.procedures['files.updateShare'].run({path: '/Home/Music', password: false}), /installer to run once more/)
+		const helperFile = join(root, 'helper.mjs')
+		await writeFile(helperFile, "const who = s.guest === true ? `   guest ok = yes\\n` : ''")
+		const s2 = createStorage({dataDir: data, home: '/home/chris', files, run, fstabPath: fstab, helperFile})
+		assert.deepEqual(await s2.procedures['files.shareOptions'].run(), {noPassword: true})
+		await s2.procedures['files.addShare'].run({path: '/Home/Open', password: false, readOnly: true})
+		await s2.procedures['files.updateShare'].run({path: '/Home/Music', readOnly: true})
+		let listed = await s2.procedures['files.shares'].run()
+		assert.deepEqual(listed.map((x) => [x.name, x.password, x.readOnly]), [['Music', true, true], ['Music 2', true, false], ['Open', false, true]])
+		let sent = JSON.parse(calls.filter((c) => c.args[2] === 'shares-apply').at(-1).input).shares
+		assert.deepEqual(sent.find((x) => x.name === 'Open'), {name: 'Open', path: '/home/chris/Open', readOnly: true, guest: true})
+		await s2.procedures['files.updateShare'].run({path: '/Home/Open', password: true})
+		sent = JSON.parse(calls.filter((c) => c.args[2] === 'shares-apply').at(-1).input).shares
+		assert.equal(sent.find((x) => x.name === 'Open').guest, undefined)
+		await assert.rejects(s2.procedures['files.updateShare'].run({path: '/Home/Nope', readOnly: true}), /isn’t shared/)
+		// Your own password.
+		await assert.rejects(s2.procedures['files.setSharePassword'].run({password: 'short'}), /8 to 128/)
+		await s2.procedures['files.setSharePassword'].run({password: 'my own words'})
+		assert.equal(calls.filter((c) => c.args[2] === 'smb-password').at(-1).input, 'my own words\n')
+		assert.equal(await s2.procedures['files.sharePassword'].run(), 'my own words')
 	})
 })

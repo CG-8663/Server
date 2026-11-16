@@ -13,7 +13,7 @@ import {askApp, explainProbe} from '../openApp'
 import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory, useNotifications, useUpdates, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
-import {Files} from '../screens/Files'
+import {Files, ShareSheet} from '../screens/Files'
 import {osLook} from '../screens/Machines'
 import {MachinesDesktop} from '../machines/Desktop'
 import {More} from '../screens/More'
@@ -88,6 +88,7 @@ function FolderIcon({path, size}: {path: string; size: number}) {
 		</span>
 	)
 }
+export const DESKTOP_KEY = 'machine:desktop'
 export function MachineIcon({m, size}: {m?: Machine; size: number}) {
 	const look = osLook(m?.osId)
 	return (
@@ -120,6 +121,8 @@ export function useItems() {
 					missing: apps.isSuccess && !a,
 				}
 			}
+			// The server's own Omarchy desktop (Machines → Consoles), for a quick icon or dock slot.
+			if (key === DESKTOP_KEY) return {key, label: 'Omarchy Desktop', icon: (s) => <MachineIcon m={SERVER_DESKTOP} size={s} />, status: 'running', missing: !owner}
 			if (key.startsWith('machine:')) {
 				const m = machineList.find((x) => x.id === key.slice(8))
 				return {
@@ -240,6 +243,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	const [overview, setOverview] = useState<null | 'windows' | 'apps'>(null)
 	const [topMenu, setTopMenu] = useState<null | 'clock' | 'system'>(null)
 	const [menu, setMenu] = useState<Menu | null>(null)
+	// A desktop folder's network sharing (right-click → Share on network).
+	const [shareFor, setShareFor] = useState<{path: string; name: string} | null>(null)
 	const [preview, setPreview] = useState<Rect | null>(null)
 	const [dragging, setDragging] = useState(false)
 	const [starting, setStarting] = useState<string[]>([])
@@ -360,6 +365,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 					else toast('That app is no longer installed', true)
 					return
 				}
+				if (key === DESKTOP_KEY) return openConsole('desktop')
 				if (key.startsWith('machine:')) {
 					const id = key.slice(8)
 					const m = machineList.find((x) => x.id === id)
@@ -450,6 +456,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		const machine = key.startsWith('machine:') ? machineList.find((m) => m.id === key.slice(8)) : undefined
 		const mine = winsOf(key)
 		const items: MenuItem[] = [{label: mine.length && where === 'dock' && !key.startsWith('folder:') ? 'Show' : 'Open', icon: 'open', onClick: () => (mine.length && where === 'dock' ? dockClick(key) : api.openItem(key))}]
+		if (key.startsWith('folder:/Home/') && owner) items.push({label: 'Share on network…', icon: 'folder-share', onClick: () => setShareFor({path: key.slice(7), name: it.label})})
 		if (key === 'files' || key === 'terminal') items.push({label: 'New window', icon: 'plus', onClick: () => (key === 'terminal' ? api.openTerminal() : open('files', undefined, {newWindow: true}))})
 		if (app && appUrl(app, boot.server!.host)) items.push({label: 'Open in a browser tab', icon: 'open', onClick: () => window.open(appUrl(app, boot.server!.host)!, '_blank', 'noopener')})
 		if (machine && machine.state === 'running')
@@ -652,6 +659,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 				)}
 
 				{menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
+				{shareFor && <ShareSheet path={shareFor.path} name={shareFor.name} host={boot.server?.host ?? ''} username={user.data?.sambaUsername} onClose={() => setShareFor(null)} />}
 			</div>
 		</DesktopContext.Provider>
 	)
@@ -1355,6 +1363,7 @@ function Overview({
 		...SYSTEM_DOCK.filter((k) => k !== 'terminal' || owner),
 		'personalize',
 		...[...appList].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)).map((a) => `app:${a.id}`),
+		...(owner ? [DESKTOP_KEY] : []),
 		...machineList.map((m) => `machine:${m.id}`),
 	]
 	const items = keys.map(info).filter((x) => !q.trim() || x.label.toLowerCase().includes(q.trim().toLowerCase()))

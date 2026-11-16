@@ -255,7 +255,8 @@ export function createOmarchyTheme({home, run = null, env = process.env, systemS
 		res.end(data)
 	}
 
-	return {list, serve, servePreview, colors, themes, setTheme, installTheme, removeTheme, currentBackground: async () => {
+	// For the plugin store: find and run Omarchy's own commands the same way (in the desktop session).
+	return {list, serve, servePreview, colors, themes, setTheme, installTheme, removeTheme, findCommand: bin, runCommand: omarchy, currentBackground: async () => {
 		const f = await stateFile('background')
 		return f ? realpath(f).catch(() => null) : null
 	}}

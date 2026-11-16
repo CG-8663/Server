@@ -158,6 +158,11 @@ function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreat
 								<small>This server’s own desktop, live.</small>
 							</span>
 						</button>
+						{desk && (
+							<button type="button" className="btn small" style={{marginTop: 8}} onClick={() => desk.addIcon('machine:desktop')}>
+								<Icon name="plus" size={15} /> Add to desktop
+							</button>
+						)}
 					</div>
 				</div>
 				<h4 className="mx-h">Virtual machines</h4>

@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.21',
+		date: '2026-11-15',
+		title: 'Omarchy plugins, network shares, and the Omarchy Desktop on your desktop',
+		added: [
+			'Omarchy plugins in the App Store: browse widgets, panels and tools from the Omarchy plugin registry and install them in one tap. Only plugins the registry has verified are shown, and each is installed at exactly the version it verified.',
+			'Share a folder on your network from Files: right-click it (or open a folder and tap the share button on a phone), choose whether a password is needed and whether others can change files, and mount it from any computer. You can also pick your own share password.',
+			'The Omarchy Desktop can be an icon on your desktop or in the dock (Machines → Add to desktop, or Personalize → Desktop icons).',
+		],
+		fixed: ['The “Check for new apps” button now works (the server wasn’t letting its request through).'],
+	},
+	{
 		version: '0.9.20',
 		date: '2026-11-15',
 		title: 'Installs show up right away, one theme everywhere, apps open inside',

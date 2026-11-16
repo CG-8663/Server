@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   mutate,
@@ -380,7 +380,8 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
     kind: "folder" | "rename";
     entry?: FileEntry;
   } | null>(null);
-  const [shareInfo, setShareInfo] = useState<SmbShare | null>(null);
+  // The folder whose network sharing is open (share it, or see and change how it's shared).
+  const [shareFor, setShareFor] = useState<{ path: string; name: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const photoInput = useRef<HTMLInputElement>(null);
@@ -587,34 +588,9 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
       { path: p },
       favSet.has(p) ? "Removed from Favorites" : "Added to Favorites",
     );
-  const toggleShare = async (f: FileEntry) => {
-    const existing = shareMap.get(f.path);
-    if (existing) {
-      if (
-        await confirm({
-          title: `Stop sharing “${f.name}”?`,
-          body: "Computers on your network will no longer see this folder.",
-          confirm: "Stop sharing",
-        })
-      )
-        await act(
-          "files.removeShare",
-          { path: f.path },
-          "No longer shared",
-        ).catch(() => {});
-    } else {
-      await act(
-        "files.addShare",
-        { path: f.path },
-        "Shared on your network",
-      ).catch(() => {});
-      const fresh = await query<SmbShare[]>("files.shares").catch(() => []);
-      const s = fresh.find((x) => x.path === f.path);
-      if (s) {
-        setOpen(null);
-        setShareInfo(s);
-      }
-    }
+  const toggleShare = (f: FileEntry) => {
+    setOpen(null);
+    setShareFor({ path: f.path, name: f.name });
   };
   const used = disk.data ? diskPct(disk.data) / 100 : 0;
 
@@ -657,6 +633,17 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
           </div>
         )}
       </div>
+      {path && path.startsWith("/Home/") && (
+        <button
+          className="round-btn"
+          aria-label="Share this folder on your network"
+          title="Share on network"
+          aria-pressed={shareMap.has(path)}
+          onClick={() => (haptic(5), setShareFor({ path, name: titleOf(path) }))}
+        >
+          <Icon name="folder-share" size={19} />
+        </button>
+      )}
       {path && !path.startsWith("::") && (
         <>
           <button
@@ -694,11 +681,15 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
     </div>
   );
 
-  const longPress = useLongPress((f) => {
-    if (!f.operations.length) return;
-    haptic(15);
-    setSelected((s) => new Set(s).add(f.path));
-  });
+  const longPress = useLongPress(
+    (f) => {
+      if (!f.operations.length) return;
+      haptic(15);
+      setSelected((s) => new Set(s).add(f.path));
+    },
+    // Right-click: the same actions as tapping a file (for a folder: open, share on network, …).
+    (f) => setOpen(f),
+  );
   const Row = ({ f }: { f: FileEntry }) => {
     const press = longPress(f);
     const sel = selected.has(f.path);
@@ -949,7 +940,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
                   <button
                     key={s.path}
                     className="row"
-                    onClick={() => setShareInfo(s)}
+                    onClick={() => setShareFor({ path: s.path, name: s.name })}
                   >
                     <span
                       className="file-icon"
@@ -1198,7 +1189,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
           onCopy={() => setPicker({ mode: "copy", paths: [open.path] })}
           onFavorite={() => toggleFavorite(open.path)}
           onShare={() => toggleShare(open)}
-          onShareInfo={(s) => (setOpen(null), setShareInfo(s))}
+          onShareInfo={(s) => (setOpen(null), setShareFor({ path: s.path, name: s.name }))}
           onTrash={() => trashItems([open.path])}
           onRestore={() => restore([open.path])}
           onDelete={() => deleteForever([open.path])}
@@ -1264,12 +1255,13 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
         />
       )}
 
-      {shareInfo && (
-        <ShareInfo
-          share={shareInfo}
+      {shareFor && (
+        <ShareSheet
+          path={shareFor.path}
+          name={shareFor.name}
           host={boot.server?.host ?? ""}
           username={user.data?.sambaUsername}
-          onClose={() => setShareInfo(null)}
+          onClose={() => setShareFor(null)}
         />
       )}
     </div>
@@ -1277,8 +1269,10 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
 }
 
 // ---- long press -----------------------------------------------------------------------
-function useLongPress(onLong: (f: FileEntry) => void) {
+function useLongPress(onLong: (f: FileEntry) => void, onMenu?: (f: FileEntry) => void) {
   const t = useRef<number>();
+  const menu = useRef(onMenu);
+  menu.current = onMenu;
   const start = useRef<{ x: number; y: number } | null>(null);
   const fired = useRef(false);
   const cb = useRef(onLong);
@@ -1310,7 +1304,12 @@ function useLongPress(onLong: (f: FileEntry) => void) {
         fired.current = false;
       }
     },
-    onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+    // Right-click (or a long press the browser reports as one): this item's actions.
+    onContextMenu: (e: React.MouseEvent) => {
+      e.preventDefault();
+      window.clearTimeout(t.current);
+      if (menu.current && !fired.current) menu.current(f);
+    },
   });
 }
 
@@ -1852,92 +1851,180 @@ function UploadPanel({
 }
 
 // ---- SMB share info ----------------------------------------------------------------------------------
-function ShareInfo({
-  share,
+// Share a folder on your network (Samba), or see and change how it's shared. Other computers open
+// it at smb://<server>/<name>; with a password, they sign in with your server account's user name
+// and your share password.
+export function ShareSheet({
+  path,
+  name,
   host,
   username,
   onClose,
 }: {
-  share: SmbShare;
+  path: string;
+  name: string;
   host: string;
   username?: string;
   onClose: () => void;
 }) {
   const toast = useToast();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const shares = useQuery({ queryKey: ["files.shares"], queryFn: () => query<SmbShare[]>("files.shares") });
+  const options = useQuery({ queryKey: ["files.shareOptions"], queryFn: () => query<{ noPassword: boolean }>("files.shareOptions"), retry: false });
+  const share = shares.data?.find((s) => s.path === path) ?? null;
+  const [needPassword, setNeedPassword] = useState(true);
+  const [readOnly, setReadOnly] = useState(false);
   const [reveal, setReveal] = useState(false);
+  const [changing, setChanging] = useState(false);
+  const [newPw, setNewPw] = useState("");
   const pw = useQuery({
     queryKey: ["files.sharePassword"],
     queryFn: () => query<string>("files.sharePassword"),
     enabled: reveal,
     retry: false,
   });
+  const run = useMutation({
+    mutationFn: (a: { path: string; input: unknown; done: string }) => mutate(a.path, a.input).then(() => a.done),
+    onSuccess: (done) => {
+      toast(done);
+      qc.invalidateQueries({ queryKey: ["files.shares"] });
+      qc.invalidateQueries({ queryKey: ["files.sharePassword"] });
+    },
+    onError: (e) => toast((e as Error).message, true),
+  });
   const copy = (v: string, what: string) =>
     navigator.clipboard?.writeText(v).then(
       () => toast(`${what} copied`),
       () => toast(v),
     );
-  const rows: [string, string, string][] = [
-    ["Mac / Linux / iPhone", `smb://${host}/${share.sharename}`, "Address"],
-    ["Windows", `\\\\${host}\\${share.sharename}`, "Address"],
-  ];
+  const noPasswordOk = options.data?.noPassword === true;
+  const Choice = ({ on, title, note, onPick, disabled }: { on: boolean; title: string; note: string; onPick: () => void; disabled?: boolean }) => (
+    <label style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 2px", fontSize: 14.5, opacity: disabled ? 0.55 : 1 }}>
+      <input type="radio" checked={on} disabled={disabled} onChange={onPick} />
+      <span>
+        {title}
+        <small className="muted" style={{ display: "block" }}>{note}</small>
+      </span>
+    </label>
+  );
+  const passwordChoices = (current: boolean, pick: (v: boolean) => void) => (
+    <div className="glass card" style={{ borderRadius: 18, marginBottom: 12 }}>
+      <b style={{ fontSize: 14 }}>Who can open it</b>
+      <Choice on={current} title="Password needed" note={`Sign in as ${username ?? "your server user"} with your share password.`} onPick={() => pick(true)} />
+      <Choice
+        on={!current}
+        title="No password"
+        note={noPasswordOk ? "Anyone on your network can open it. Only for folders you don’t mind anyone at home seeing." : "Needs Omarchy Server’s installer to run once more on this server."}
+        onPick={() => pick(false)}
+        disabled={!noPasswordOk}
+      />
+    </div>
+  );
+  const readOnlyToggle = (current: boolean, set: (v: boolean) => void) => (
+    <label className="glass card" style={{ display: "flex", gap: 10, alignItems: "center", borderRadius: 18, marginBottom: 12, fontSize: 14.5 }}>
+      <input type="checkbox" checked={current} onChange={(e) => set(e.target.checked)} />
+      <span>
+        Read only
+        <small className="muted" style={{ display: "block" }}>Other computers can open and copy files, but not change or delete them.</small>
+      </span>
+    </label>
+  );
+  const rows: [string, string, string][] = share
+    ? [
+        ["Mac / Linux / iPhone", `smb://${host}/${share.sharename}`, "Address"],
+        ["Windows", `\\\\${host}\\${share.sharename}`, "Address"],
+      ]
+    : [];
   return (
     <Sheet open onClose={onClose} label="Network share">
       <SheetHeader
         icon={
-          <span
-            className="file-icon"
-            style={{ width: 52, height: 52, "--c": "#0ea5e9" } as CSSProperties}
-          >
+          <span className="file-icon" style={{ width: 52, height: 52, "--c": "#0ea5e9" } as CSSProperties}>
             <Icon name="folder-share" size={28} />
           </span>
         }
-        title={share.name}
-        subtitle="Open it from any computer or phone on your network"
+        title={share?.name ?? name}
+        subtitle={share ? "Shared on your network" : "Share this folder with computers on your network"}
         onClose={onClose}
       />
-      <div
-        className="kv glass group"
-        style={{ borderRadius: 18, marginTop: 0 }}
-      >
-        {rows.map(([k, v, what]) => (
+      {shares.isLoading ? (
+        <p className="muted">Loading…</p>
+      ) : !share ? (
+        <>
+          {passwordChoices(needPassword, setNeedPassword)}
+          {readOnlyToggle(readOnly, setReadOnly)}
           <button
-            key={k}
-            className="row"
-            style={{ minHeight: 56 }}
-            onClick={() => copy(v, what)}
+            className="btn primary"
+            style={{ width: "100%" }}
+            disabled={run.isPending}
+            onClick={() => run.mutate({ path: "files.addShare", input: { path, password: needPassword, readOnly }, done: "Shared on your network" })}
           >
-            <span className="k">{k}</span>
-            <span className="v mono" style={{ fontSize: 12.5 }}>
-              {v}
-            </span>
+            {run.isPending ? <span className="spinner" /> : <Icon name="folder-share" size={18} />} Share on network
           </button>
-        ))}
-        {username && (
+        </>
+      ) : (
+        <>
+          <div className="kv glass group" style={{ borderRadius: 18, marginTop: 0 }}>
+            {rows.map(([k, v, what]) => (
+              <button key={k} className="row" style={{ minHeight: 56 }} onClick={() => copy(v, what)}>
+                <span className="k">{k}</span>
+                <span className="v mono" style={{ fontSize: 12.5 }}>{v}</span>
+              </button>
+            ))}
+            {share.password && username && (
+              <button className="row" style={{ minHeight: 56 }} onClick={() => copy(username, "Username")}>
+                <span className="k">Username</span>
+                <span className="v mono">{username}</span>
+              </button>
+            )}
+            {share.password && (
+              <button className="row" style={{ minHeight: 56 }} onClick={() => (pw.data ? copy(pw.data, "Password") : setReveal(true))}>
+                <span className="k">Password</span>
+                <span className="v mono" style={{ fontSize: 12.5 }}>{pw.data ?? (pw.isFetching ? "…" : "Tap to show")}</span>
+              </button>
+            )}
+          </div>
+          <p className="footer-note" style={{ textAlign: "left", margin: "0 4px 14px" }}>
+            Tap any line to copy it. On iPhone, open Files → ⋯ → Connect to Server.
+          </p>
+          {passwordChoices(share.password, (v) => v !== share.password && run.mutate({ path: "files.updateShare", input: { path, password: v }, done: v ? "Now needs a password" : "Open to your network without a password" }))}
+          {readOnlyToggle(share.readOnly, (v) => run.mutate({ path: "files.updateShare", input: { path, readOnly: v }, done: v ? "Now read only" : "Can be changed from other computers" }))}
+          {share.password && (
+            <div className="glass card" style={{ borderRadius: 18, marginBottom: 12 }}>
+              {!changing ? (
+                <button className="btn ghost" onClick={() => setChanging(true)}>
+                  <Icon name="key" size={17} /> Choose your own share password
+                </button>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    run.mutate({ path: "files.setSharePassword", input: { password: newPw }, done: "Share password changed" }, { onSuccess: () => (setChanging(false), setNewPw(""), setReveal(true)) });
+                  }}
+                >
+                  <div className="field">
+                    <input type="password" autoComplete="new-password" placeholder="At least 8 characters" value={newPw} onChange={(e) => setNewPw(e.target.value)} aria-label="New share password" />
+                  </div>
+                  <small className="muted" style={{ display: "block", margin: "6px 2px 10px" }}>It’s for every folder you share with a password. Computers that saved the old one will ask again.</small>
+                  <button className="btn primary" disabled={newPw.length < 8 || run.isPending}>Save password</button>
+                </form>
+              )}
+            </div>
+          )}
           <button
-            className="row"
-            style={{ minHeight: 56 }}
-            onClick={() => copy(username, "Username")}
+            className="btn danger"
+            style={{ width: "100%" }}
+            disabled={run.isPending}
+            onClick={async () => {
+              if (await confirm({ title: `Stop sharing “${share.name}”?`, body: "Computers on your network will no longer see this folder. Its files stay where they are.", confirm: "Stop sharing" }))
+                run.mutate({ path: "files.removeShare", input: { path }, done: "No longer shared" }, { onSuccess: onClose });
+            }}
           >
-            <span className="k">Username</span>
-            <span className="v mono">{username}</span>
+            Stop sharing
           </button>
-        )}
-        <button
-          className="row"
-          style={{ minHeight: 56 }}
-          onClick={() =>
-            pw.data ? copy(pw.data, "Password") : setReveal(true)
-          }
-        >
-          <span className="k">Password</span>
-          <span className="v mono" style={{ fontSize: 12.5 }}>
-            {pw.data ?? (pw.isFetching ? "…" : "Tap to show")}
-          </span>
-        </button>
-      </div>
-      <p className="footer-note" style={{ textAlign: "left", margin: "0 4px" }}>
-        Tap any line to copy it. On iPhone, open Files → ⋯ → Connect to Server.
-      </p>
+        </>
+      )}
     </Sheet>
   );
 }
