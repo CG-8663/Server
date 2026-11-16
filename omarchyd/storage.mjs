@@ -210,6 +210,29 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	// later). Read the installed helper rather than guess, so an older one is never asked (it would
 	// quietly keep the password, while the page said there was none).
 	const helperKnowsGuests = () => readFile(helperFile, 'utf8').then((t) => t.includes('guest ok = yes'), () => false)
+	// Samba and the libraries it uses (smbclient, libwbclient) must be one version. After a partial
+	// update (one package installed from a newer package list without updating the rest) they aren't,
+	// and every Samba program fails. pacman -Q needs no root, so this is checked here, with any helper.
+	const SAMBA_FIX = 'sudo pacman -Syu --needed samba'
+	async function sambaHealth() {
+		const version = (pkg) => run('pacman', ['-Q', pkg]).then((t) => String(t).trim().split(/\s+/)[1] ?? null, () => null)
+		const [samba, smbclient, libwbclient] = await Promise.all(['samba', 'smbclient', 'libwbclient'].map(version))
+		if (!samba) return {ok: false, problem: 'missing', command: SAMBA_FIX}
+		const parts = {samba, smbclient, libwbclient}
+		const off = Object.entries(parts).filter(([, v]) => v && v !== samba)
+		if (off.length) return {ok: false, problem: 'mismatch', command: SAMBA_FIX, versions: parts}
+		return {ok: true}
+	}
+	async function requireSamba() {
+		const h = await sambaHealth()
+		if (h.ok) return
+		throw new RpcError(
+			'PRECONDITION_FAILED',
+			h.problem === 'missing'
+				? `Samba (for network shares) isn’t installed. Run this once in a terminal on the server: ${h.command}`
+				: `Samba on this server is half-updated (samba ${h.versions.samba}, its libraries ${h.versions.smbclient}). Update the system once in a terminal on the server: ${h.command}`,
+		)
+	}
 	async function shareSettings(input) {
 		const out = {}
 		if (input?.password !== undefined) out.guest = input.password === false
@@ -276,13 +299,14 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			},
 			'files.shares': {kind: 'query', run: shareList},
 			'files.sharePassword': {kind: 'query', run: sharePassword},
-			'files.shareOptions': {kind: 'query', run: async () => ({noPassword: await helperKnowsGuests()})},
+			'files.shareOptions': {kind: 'query', run: async () => ({noPassword: await helperKnowsGuests(), samba: await sambaHealth()})},
 			// Your own password for network shares (the user name is your server account's).
 			'files.setSharePassword': {
 				kind: 'mutation',
 				run: async (input) => {
 					const pw = String(input?.password ?? '')
 					if (pw.length < 8 || pw.length > 128 || /[\r\n]/.test(pw)) throw new RpcError('BAD_REQUEST', 'Use 8 to 128 characters, on one line.')
+					await requireSamba()
 					await helper('smb-password', [], `${pw}\n`)
 					await writeFile(passwordFile, pw, {mode: 0o600})
 					return true
@@ -296,6 +320,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					const shares = await readJson(sharesFile, [])
 					const i = shares.findIndex((s) => s.path === path)
 					if (i < 0) throw new RpcError('NOT_FOUND', 'That folder isn’t shared')
+					await requireSamba()
 					const settings = await shareSettings(input)
 					const {guest, readOnly, ...rest} = {...shares[i], ...settings}
 					const next = shares.map((s, j) => (j === i ? {...rest, ...(guest ? {guest: true} : {}), ...(readOnly ? {readOnly: true} : {})} : s))
@@ -316,6 +341,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					const base = (path.split('/').pop() || 'Share').replace(/[^A-Za-z0-9 _.-]/g, '').slice(0, 28) || 'Share'
 					let name = base
 					for (let n = 2; shares.some((s) => s.name.toLowerCase() === name.toLowerCase()); n++) name = `${base} ${n}`
+					await requireSamba()
 					const settings = await shareSettings(input)
 					const next = [...shares, {name, path, ...(settings.guest ? {guest: true} : {}), ...(settings.readOnly ? {readOnly: true} : {})}]
 					if (!settings.guest) await sharePassword()

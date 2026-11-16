@@ -14,6 +14,7 @@ import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory
 import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
 import {Files, ShareSheet} from '../screens/Files'
+import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../screens/Machines'
 import {MachinesDesktop} from '../machines/Desktop'
 import {More} from '../screens/More'
@@ -394,6 +395,12 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			unpin: (key) => setCfg((c) => ({...c, dock: {...c.dock, items: c.dock.items.filter((k) => k !== key)}})),
 		}
 	}, [open, close, appList, machineList, setCfg, toast, boot.server])
+	// "Open Terminal" buttons elsewhere (e.g. a one-time fix for network shares): a new terminal window.
+	useEffect(() => {
+		const onOpen = (e: Event) => api.openTerminal(undefined, (e as CustomEvent<string>).detail)
+		window.addEventListener(OPEN_TERMINAL, onOpen)
+		return () => window.removeEventListener(OPEN_TERMINAL, onOpen)
+	}, [api])
 
 	// Clicking into an app's iframe doesn't reach our handlers; notice the focus moving to it.
 	useEffect(() => {

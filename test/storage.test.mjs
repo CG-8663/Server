@@ -457,8 +457,13 @@ describe('omarchyd storage', () => {
 
 	test('drives get roles and health; shares go through the helper with real paths', async () => {
 		const calls = []
+		let sambaVersions = {samba: '2:4.25.0-1', smbclient: '2:4.25.0-1', libwbclient: '2:4.25.0-1'}
 		const run = async (cmd, args, opts) => {
 			if (cmd === 'lsblk') return JSON.stringify(lsblk)
+			if (cmd === 'pacman' && args[0] === '-Q') {
+				if (!sambaVersions[args[1]]) throw new Error(`error: package '${args[1]}' was not found`)
+				return `${args[1]} ${sambaVersions[args[1]]}\n`
+			}
 			calls.push({args, input: opts?.input})
 			const verb = args[2]
 			if (verb === 'ping') return 'ok\n'
@@ -489,13 +494,13 @@ describe('omarchyd storage', () => {
 		await assert.rejects(s.procedures['files.addShare'].run({path: '/Home'}), /inside Home/)
 
 		// Without a password: only once the installed helper knows how (an older one is never asked).
-		assert.deepEqual(await s.procedures['files.shareOptions'].run(), {noPassword: false})
+		assert.deepEqual(await s.procedures['files.shareOptions'].run(), {noPassword: false, samba: {ok: true}})
 		await assert.rejects(s.procedures['files.addShare'].run({path: '/Home/Open', password: false}), /installer to run once more/)
 		await assert.rejects(s.procedures['files.updateShare'].run({path: '/Home/Music', password: false}), /installer to run once more/)
 		const helperFile = join(root, 'helper.mjs')
 		await writeFile(helperFile, "const who = s.guest === true ? `   guest ok = yes\\n` : ''")
 		const s2 = createStorage({dataDir: data, home: '/home/chris', files, run, fstabPath: fstab, helperFile})
-		assert.deepEqual(await s2.procedures['files.shareOptions'].run(), {noPassword: true})
+		assert.deepEqual(await s2.procedures['files.shareOptions'].run(), {noPassword: true, samba: {ok: true}})
 		await s2.procedures['files.addShare'].run({path: '/Home/Open', password: false, readOnly: true})
 		await s2.procedures['files.updateShare'].run({path: '/Home/Music', readOnly: true})
 		let listed = await s2.procedures['files.shares'].run()
@@ -511,5 +516,20 @@ describe('omarchyd storage', () => {
 		await s2.procedures['files.setSharePassword'].run({password: 'my own words'})
 		assert.equal(calls.filter((c) => c.args[2] === 'smb-password').at(-1).input, 'my own words\n')
 		assert.equal(await s2.procedures['files.sharePassword'].run(), 'my own words')
+
+		// Samba's parts out of step (a partial update): said plainly, with the fix, before the helper is asked.
+		assert.deepEqual((await s2.procedures['files.shareOptions'].run()).samba, {ok: true})
+		sambaVersions = {samba: '2:4.25.0-1', smbclient: '2:4.24.6-1', libwbclient: '2:4.24.6-1'}
+		const health = (await s2.procedures['files.shareOptions'].run()).samba
+		assert.equal(health.ok, false)
+		assert.equal(health.problem, 'mismatch')
+		assert.equal(health.command, 'sudo pacman -Syu --needed samba')
+		const before = calls.length
+		await assert.rejects(s2.procedures['files.addShare'].run({path: '/Home/Pictures'}), /half-updated \(samba 2:4.25.0-1, its libraries 2:4.24.6-1\)[\s\S]*sudo pacman -Syu --needed samba/)
+		await assert.rejects(s2.procedures['files.setSharePassword'].run({password: 'another one'}), /half-updated/)
+		assert.equal(calls.length, before, 'the helper isn’t asked')
+		sambaVersions = {smbclient: '2:4.24.6-1'}
+		assert.equal((await s2.procedures['files.shareOptions'].run()).samba.problem, 'missing')
+		await assert.rejects(s2.procedures['files.addShare'].run({path: '/Home/Pictures'}), /isn’t installed/)
 	})
 })

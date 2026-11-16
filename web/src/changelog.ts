@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.24',
+		date: '2026-11-15',
+		title: 'Network shares fix themselves up',
+		fixed: [
+			'If Samba is half-updated (Samba and its libraries at different versions, which stopped sharing from working), the share screen now says so and gives one command to fix it, with an Open Terminal button, and carries on by itself once it’s done.',
+			'The installer now installs what it needs together with the system’s waiting updates, the way Arch and Omarchy update, so this can’t happen on new installs. Running it again also repairs a Samba that’s already out of step.',
+		],
+	},
+	{
 		version: '0.9.23',
 		date: '2026-11-15',
 		title: 'New icon, and a bell that rings for updates',
