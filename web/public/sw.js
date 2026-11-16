@@ -1,7 +1,7 @@
 // Offline shell only. API calls are never cached: they always go to your server.
-const CACHE = 'omarchy-server-v1'
+const CACHE = 'omarchy-server-v2'
 self.addEventListener('install', (e) => {
-	e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/', '/manifest.webmanifest', '/icon.svg'])).then(() => self.skipWaiting()))
+	e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/', '/manifest.webmanifest', '/favicon.ico', '/favicon-32.png', '/icon-192.png'])).then(() => self.skipWaiting()))
 })
 self.addEventListener('activate', (e) => {
 	e.waitUntil(

@@ -175,7 +175,9 @@ export function createUpdater({autoCheck = true, appDir, dataDir, currentVersion
 			known = v.available ? v.version : null
 		} catch {}
 	}
-	const timers = autoCheck ? [setTimeout(background, 60_000), setInterval(background, 6 * 60 * 60_000)] : []
+	// Check soon after starting, then every 30 minutes (a small file from GitHub), so the bell lights up
+	// soon after an update is published.
+	const timers = autoCheck ? [setTimeout(background, 60_000), setInterval(background, 30 * 60_000)] : []
 	for (const t of timers) t.unref?.()
 
 	return {
