@@ -20,7 +20,7 @@ import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.19'
+export const VERSION = '0.9.20'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -657,7 +657,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	const prefsOf = (accountId) => store.getConfig().prefs?.[accountKey(accountId)] ?? null
 	const savePrefs = async (accountId, patch) => {
 		const all = {...(store.getConfig().prefs ?? {})}
-		all[accountKey(accountId)] = {...(all[accountKey(accountId)] ?? {}), ...patch}
+		const prev = all[accountKey(accountId)] ?? {}
+		// rev: counted here, on the server, so every browser can tell it has the latest without
+		// trusting its own clock.
+		all[accountKey(accountId)] = {...prev, ...patch, rev: (Number(prev.rev) || 0) + 1}
 		await store.setConfig({prefs: all})
 		return all[accountKey(accountId)]
 	}
@@ -707,15 +710,15 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const session = requireSession(req, res)
 		if (!session) return
 		const config = req.body?.config
-		const updatedAt = Number(req.body?.updatedAt)
-		if (!config || typeof config !== 'object' || Array.isArray(config) || !Number.isFinite(updatedAt)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad desktop settings'}})
+		if (!config || typeof config !== 'object' || Array.isArray(config)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad desktop settings'}})
 		const text = JSON.stringify(config)
 		if (text.length > 60_000) return res.status(413).json({error: {code: 'PAYLOAD_TOO_LARGE', message: 'Desktop settings are too large'}})
 		const all = {...(store.getConfig().desktops ?? {})}
 		const key = accountKey(session.accountId)
-		// Last change wins; an older save arriving late doesn't undo a newer one.
-		if (all[key] && all[key].updatedAt > updatedAt) return res.json({desktop: all[key], stale: true})
-		all[key] = {config: JSON.parse(text), updatedAt: Math.min(updatedAt, Date.now() + 60_000)}
+		// The latest change saved wins. rev and updatedAt come from the server (not a browser's clock,
+		// which can be off between devices), so every browser can tell it has the newest.
+		const prevRev = Number(all[key]?.rev) || (all[key] ? 1 : 0)
+		all[key] = {config: JSON.parse(text), rev: prevRev + 1, updatedAt: Date.now()}
 		await store.setConfig({desktops: all})
 		res.json({desktop: all[key]})
 	})

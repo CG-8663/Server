@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.20',
+		date: '2026-11-15',
+		title: 'Installs show up right away, one theme everywhere, apps open inside',
+		fixed: [
+			'A new app shows up as installing straight away, in the App Store and with your installed apps, instead of only after reloading the page. The app list also stays quick while a big app downloads.',
+			'Your theme, accent and desktop look are saved on the server and followed by every device: change them on one, and the others switch when you go back to them, without being put back by an older copy.',
+		],
+		added: ['Opening an app on a phone or tablet shows it inside Omarchy Server, full screen with a back button, instead of leaving Omarchy Server. Apps that need https still open on their own when you’re on plain http.'],
+	},
+	{
 		version: '0.9.19',
 		date: '2026-11-15',
 		title: 'Check for new apps',

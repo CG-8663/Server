@@ -425,7 +425,13 @@ function StoreSheet({
 		const folderAccess = review.data?.requiredFolders.map((f) => ({id: f.id, sourcePath: f.defaultSourcePath}))
 		const grant = [...new Set((review.data?.permissions ?? []).map((p) => p.id))]
 		const chosen = folders.filter((f) => placed[fkey(f)]).map((f) => ({appId: f.appId, id: f.id, path: placed[fkey(f)]!.trim()}))
-		action.mutate({path: 'apps.install', input: {appId: app.id, ...(folderAccess?.length ? {folderAccess} : {}), ...(grant.length ? {grant} : {}), ...(chosen.length ? {folders: chosen} : {})}, done: `${app.name} installed`})
+		action.mutate({
+			path: 'apps.install',
+			input: {appId: app.id, ...(folderAccess?.length ? {folderAccess} : {}), ...(grant.length ? {grant} : {}), ...(chosen.length ? {folders: chosen} : {})},
+			// It and anything it needs that isn't installed yet.
+			adding: [...missingDeps.map((d) => all.find((a) => a.id === d)).filter((a): a is StoreApp => !!a), app].map((a) => ({id: a.id, name: a.name, icon: a.icon})),
+			done: `Installing ${app.name}…`,
+		})
 		setReviewing(false)
 	}
 	const liveUrl = live ? appUrl(live, boot.server!.host) : null

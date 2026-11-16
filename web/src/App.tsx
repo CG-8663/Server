@@ -1,8 +1,10 @@
 import {useCallback, useEffect, useState, type CSSProperties} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {getBootstrap, query, type Bootstrap, type User} from './api'
+import {getBootstrap, query, type Bootstrap, type User, type UserApp} from './api'
 import {AppSheet} from './AppSheet'
+import {AppViewer} from './AppViewer'
+import {VIEW_APP} from './openApp'
 import {BootstrapContext, useAction, useApps, useNotifications, useUpdates, useUser} from './data'
 import {Icon, type IconName} from './icons'
 import {Apps} from './screens/Apps'
@@ -93,6 +95,13 @@ export function App() {
 function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void}) {
 	const [tab, setTab] = useState<Tab>(tabFromHash)
 	const [appId, setAppId] = useState<string | null>(null)
+	// An app open inside Omarchy Server (full screen, back button returns here).
+	const [viewing, setViewing] = useState<UserApp | null>(null)
+	useEffect(() => {
+		const onView = (e: Event) => (setAppId(null), setViewing((e as CustomEvent<UserApp>).detail))
+		window.addEventListener(VIEW_APP, onView)
+		return () => window.removeEventListener(VIEW_APP, onView)
+	}, [])
 	const [bellOpen, setBellOpen] = useState(false)
 	const [terminal, setTerminal] = useState<{app?: {id: string; name?: string; icon?: string}; input?: string} | null>(null)
 	const user = useUser()
@@ -184,6 +193,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 				))}
 			</nav>
 			<AppSheet app={app} update={update} onClose={() => setAppId(null)} onTerminal={openTerminal} />
+			{viewing && <AppViewer app={viewing} onClose={() => setViewing(null)} />}
 
 			{terminal && <TerminalScreen app={terminal.app} input={terminal.input} onClose={() => setTerminal(null)} />}
 			<NotificationsSheet
