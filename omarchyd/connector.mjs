@@ -30,9 +30,30 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null)
 
 // Only the facts the page shows, checked and trimmed (a connector is another computer: don't
 // trust its numbers to be well-formed).
-function cleanMetrics(m = {}) {
+const BATTERY_STATUS = new Set(['charging', 'discharging', 'full', 'not-charging', 'unknown'])
+
+export function cleanMetrics(m = {}) {
 	const disks = Array.isArray(m.disks)
 		? m.disks.slice(0, 12).map((d) => ({mount: clip(d?.mount, 200), total: num(d?.total), used: num(d?.used)})).filter((d) => d.total > 0)
+		: []
+	const gpus = Array.isArray(m.gpus)
+		? m.gpus.slice(0, 8).map((g) => ({id: clip(g?.id, 80), index: num(g?.index) ?? 0, name: clip(g?.name, 80), used: num(g?.used)})).filter((g) => g.id)
+		: []
+	const batteries = Array.isArray(m.batteries)
+		? m.batteries
+				.slice(0, 4)
+				.map((b) => ({
+					id: clip(b?.id, 32),
+					index: num(b?.index) ?? 0,
+					name: clip(b?.name, 80),
+					percent: num(b?.percent),
+					status: BATTERY_STATUS.has(b?.status) ? b.status : 'unknown',
+					secondsRemaining: num(b?.secondsRemaining),
+					power: num(b?.power),
+					energyNow: num(b?.energyNow),
+					energyFull: num(b?.energyFull),
+				}))
+				.filter((b) => b.id)
 		: []
 	return {
 		at: Date.now(),
@@ -42,6 +63,8 @@ function cleanMetrics(m = {}) {
 		mem: {total: num(m.mem?.total), used: num(m.mem?.used)},
 		swap: {total: num(m.swap?.total), used: num(m.swap?.used)},
 		disks,
+		gpus,
+		batteries,
 		temp: num(m.temp),
 		uptime: num(m.uptime),
 		updates: num(m.updates),
