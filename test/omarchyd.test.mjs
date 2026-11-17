@@ -43,7 +43,7 @@ describe('omarchyd', () => {
 		const r = await call('query', 'system.version')
 		assert.equal(r.status, 200)
 		const v = r.body.result.data
-		assert.equal(v.version, '0.9.37')
+		assert.equal(v.version, '0.9.38')
 		assert.equal(typeof v.startedAt, 'number')
 		assert.ok(v.startedAt <= Date.now() && Date.now() - v.startedAt < 60_000)
 		assert.match(String(v.revision ?? ''), /^[0-9a-f]{7,40}$/)
@@ -142,7 +142,7 @@ describe('network shares are owner-only', () => {
 		const state = JSON.parse(await readFile(join(data, 'accounts.json'), 'utf8'))
 		state.users.push({...state.users[0], userId: 'member', name: 'Pat', role: 'member'})
 		await writeFile(join(data, 'accounts.json'), JSON.stringify(state, null, '\t'))
-		d = await startOmarchyd({port: 0, dataDir: data, home})
+		d = await startOmarchyd({port: 0, dataDir: data, home, updaterOptions: {autoCheck: false, installerCheck: true}})
 		const login = async (userId) => {
 			const r = await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId, password: 'correct horse', client: {id: 't'}})})
 			const body = await r.json()
@@ -165,6 +165,13 @@ describe('network shares are owner-only', () => {
 		const r = await fetch(url, init)
 		return {status: r.status, body: await r.json()}
 	}
+	test('only the owner is asked to run the installer (it needs sudo on the server)', async () => {
+		const o = (await call('query', 'system.installerStatus', undefined, owner)).body.result.data
+		assert.equal(o.needed, true, 'this data folder has no installer stamp yet')
+		assert.match(o.command, /\| OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=7780 bash$/)
+		assert.deepEqual((await call('query', 'system.installerStatus', undefined, member)).body.result.data, {needed: false, reasons: []})
+	})
+
 	test('a member is refused every files.*Share* RPC; the owner may still list shares', async () => {
 		const rpcs = [
 			['query', 'files.shares'],

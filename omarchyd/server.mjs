@@ -25,7 +25,7 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.37'
+export const OMARCHYD_VERSION = '0.9.38'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
@@ -40,7 +40,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const files = createFiles({home, dataDir})
 	const machines = createMachines({dataDir, files, ...machineOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
-	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, ...updaterOptions})
+	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, webPort, ...updaterOptions})
 	// One certificate context for the app gateways and the Security settings. On a server this is
 	// the folder the web server uses too (omarchyd/cli.mjs passes it), so apps are served with the
 	// certificate your devices trust and the Security settings reach both. Before 0.9.13 omarchyd kept
@@ -330,6 +330,11 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		...machines.procedures,
 		...apps.procedures,
 		...updater.procedures,
+		// Running the installer needs sudo on the server: only the owner is asked.
+		'system.installerStatus': {
+			kind: 'query',
+			run: (input, {auth}) => (accounts.getUser(auth?.userId)?.role !== 'owner' ? {needed: false, reasons: []} : updater.procedures['system.installerStatus'].run(input)),
+		},
 		'apps.getTorEnabled': {kind: 'query', run: () => false},
 	}
 

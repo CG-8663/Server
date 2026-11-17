@@ -17,6 +17,13 @@ for arg in "$@"; do
 	esac
 done
 
+# Raise this when a change needs the installer run again (packages, the storage helper, services,
+# firewall rules). While Omarchy Server is in beta, the app asks the owner to run it at their next sign-in.
+INSTALLER_REVISION=1
+# Started from the app's "run the installer" prompt, in its own terminal: that terminal runs inside
+# omarchyd, so restarting omarchyd here would stop this script partway. Restart once it's done instead.
+FROM_APP="${OMARCHY_SERVER_FROM_APP:-0}"
+
 REPO="${OMARCHY_SERVER_REPO:-https://github.com/TouchWorkStation/omarchy-server.git}"
 BRANCH="${OMARCHY_SERVER_BRANCH:-main}"
 PORT="${OMARCHY_SERVER_PORT:-7780}"
@@ -293,7 +300,7 @@ WantedBy=graphical-session.target
 EOF
 systemctl --user daemon-reload
 systemctl --user enable omarchyd.service omarchy-server-web.service omarchy-server-desktop.service >/dev/null
-systemctl --user restart omarchyd.service omarchy-server-web.service
+[ "$FROM_APP" = 1 ] || systemctl --user restart omarchyd.service omarchy-server-web.service
 # Start sharing now if a desktop session is running (otherwise it starts at the next sign-in).
 systemctl --user is-active --quiet graphical-session.target && systemctl --user restart omarchy-server-desktop.service >/dev/null 2>&1 || true
 
@@ -316,6 +323,19 @@ fi
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]; then
 	say "Letting Omarchy Server run while you're logged out (sudo needed)"
 	sudo loginctl enable-linger "$USER" || say "Couldn't enable that; the server will run only while you're logged in."
+fi
+
+# Everything above succeeded (the script stops at the first error): note which installer ran, so the
+# app knows it's up to date.
+mkdir -p "$BASE/omarchyd"
+printf '%s\n' "$INSTALLER_REVISION" >"$BASE/omarchyd/installer-revision"
+
+if [ "$FROM_APP" = 1 ]; then
+	# A separate, short-lived unit restarts both services after this script has finished.
+	systemd-run --user --collect --on-active=5s --unit="omarchy-server-installer-restart-$(date +%s)" \
+		systemctl --user restart omarchyd.service omarchy-server-web.service >/dev/null
+	say "Done. Omarchy Server restarts in a few seconds; the page reconnects by itself."
+	exit 0
 fi
 
 sleep 2

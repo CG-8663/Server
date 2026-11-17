@@ -7835,3 +7835,30 @@ html.page-locked body {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+
+/* ---- Finish the update (installer prompt) ---------------------------------- */
+.installer-prompt {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+.installer-reasons {
+	margin: 0;
+	padding-left: 1.2em;
+	line-height: 1.5;
+}
+.installer-manual summary {
+	cursor: pointer;
+	color: var(--muted, inherit);
+	font-size: 0.9em;
+}
+.installer-command {
+	display: block;
+	margin-top: 8px;
+	padding: 10px 12px;
+	border: 1px solid var(--line);
+	font-size: 0.8em;
+	word-break: break-all;
+	cursor: copy;
+	user-select: all;
+}

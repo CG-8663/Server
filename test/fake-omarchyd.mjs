@@ -320,6 +320,7 @@ export async function startFakeserverd({
 			}),
 		},
 		'system.batteryUsage': {kind: 'query', run: () => ({batteries: []})},
+		'system.installerStatus': {kind: 'query', run: () => ({needed: false, reasons: []})},
 		'apps.list': {kind: 'query', run: () => apps},
 		'apps.state': {kind: 'query', run: ({appId}) => apps.find((a) => a.id === appId) ?? {state: 'not-installed', progress: 0}},
 		'apps.updates': {kind: 'query', run: () => [{id: 'nextcloud', version: '30.0.4'}]},
