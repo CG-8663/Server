@@ -108,6 +108,7 @@ export async function startFakeserverd({
 	const settings = {twoFactor: false, channel: 'stable', hostname: 'omarchy', externalDns: true, tor: false}
 	let lastCreate = null
 	const keys = [] // keysyms typed into the fake VM console
+	const assistantKeys = [] // Settings → Assistant; public rows never include apiKey
 	const terminals = []
 	const gb = 1024 ** 3
 	const apps = [
@@ -220,6 +221,20 @@ export async function startFakeserverd({
 		return {accessToken, accessExpiresAt}
 	}
 	const accountOf = (userId) => (userId === 'sam' ? {userId: 'sam', name: 'Sam', role: 'member'} : {userId: 'owner', name: 'Chris', role: 'owner'})
+	const SPACEXAI = 'https://api.x.ai/v1'
+	const assistantPublic = (k, userId) => ({
+		id: k.id,
+		name: k.name,
+		provider: k.provider,
+		baseUrl: k.baseUrl,
+		model: k.model,
+		last4: k.last4,
+		ownerUserId: k.ownerUserId,
+		sharedWith: k.sharedWith,
+		systemDefault: !!k.systemDefault,
+		mine: k.ownerUserId === userId,
+	})
+	const assistantCanUse = (k, userId) => k.ownerUserId === userId || k.sharedWith.includes(userId) || k.systemDefault
 
 	const procedures = {
 		'system.version': {kind: 'query', public: true, run: () => ({version: '2.0.0', name: 'Omarchy Server 2.0', startedAt: 1_700_000_000_000, revision: 'abc1234'})},
@@ -582,6 +597,80 @@ export async function startFakeserverd({
 		'hardware.raid.addMirror': {kind: 'mutation', run: () => true},
 		'hardware.raid.addAccelerator': {kind: 'mutation', run: () => true},
 		'system.logs': {kind: 'query', run: ({type}) => `${type} log line 1\n${type} log line 2\n`},
+		'assistant.keys': {
+			kind: 'query',
+			run: (_i, auth) => assistantKeys.filter((k) => assistantCanUse(k, auth.userId)).map((k) => assistantPublic(k, auth.userId)),
+		},
+		'assistant.addKey': {
+			kind: 'mutation',
+			run: (input, auth) => {
+				const provider = input?.provider === 'openai-compatible' ? 'openai-compatible' : input?.provider === 'spacexai' ? 'spacexai' : null
+				if (!provider) return {error: ['BAD_REQUEST', 'Choose SpaceXAI or an OpenAI-compatible endpoint']}
+				const apiKey = String(input?.apiKey ?? '').trim()
+				if (apiKey.length < 4 || apiKey.length > 512) return {error: ['BAD_REQUEST', 'Enter an API key']}
+				const model = String(input?.model ?? '').trim()
+				if (!model || model.length > 80) return {error: ['BAD_REQUEST', 'Enter a model id']}
+				const name = String(input?.name ?? '').trim().slice(0, 48) || (provider === 'spacexai' ? 'SpaceXAI' : 'API')
+				let baseUrl = provider === 'spacexai' ? SPACEXAI : String(input?.baseUrl ?? '').trim().replace(/\/+$/, '')
+				if (provider === 'openai-compatible') {
+					if (!/^https?:\/\/[^\s]+/i.test(baseUrl) || baseUrl.length > 200) return {error: ['BAD_REQUEST', 'Enter the API base URL']}
+				}
+				const row = {
+					id: 'k_' + randomBytes(6).toString('hex'),
+					ownerUserId: auth.userId,
+					name,
+					provider,
+					baseUrl,
+					model,
+					apiKey,
+					last4: apiKey.slice(-4),
+					sharedWith: [],
+					systemDefault: false,
+				}
+				assistantKeys.push(row)
+				return assistantPublic(row, auth.userId)
+			},
+		},
+		'assistant.updateKey': {
+			kind: 'mutation',
+			run: (input, auth) => {
+				const k = assistantKeys.find((x) => x.id === String(input?.id ?? ''))
+				if (!k) return {error: ['NOT_FOUND', 'That key isn’t here']}
+				const role = accountOf(auth.userId).role
+				if (input?.systemDefault === true) {
+					if (role === 'member') return {error: ['FORBIDDEN', 'Only the server’s owner can set the default key']}
+					if (k.ownerUserId !== auth.userId) return {error: ['FORBIDDEN', 'You can only make a key you own the default']}
+					for (const x of assistantKeys) x.systemDefault = x.id === k.id
+				} else if (input?.systemDefault === false && k.ownerUserId === auth.userId && role !== 'member') {
+					k.systemDefault = false
+				}
+				if (k.ownerUserId !== auth.userId && (input?.sharedWith || input?.name || input?.model || input?.apiKey || input?.baseUrl)) {
+					return {error: ['FORBIDDEN', 'Only the person who added this key can change it']}
+				}
+				if (k.ownerUserId === auth.userId) {
+					if (typeof input?.name === 'string') k.name = input.name.trim().slice(0, 48) || k.name
+					if (typeof input?.model === 'string' && input.model.trim()) k.model = input.model.trim().slice(0, 80)
+					if (typeof input?.apiKey === 'string' && input.apiKey.trim().length >= 4) {
+						k.apiKey = input.apiKey.trim()
+						k.last4 = k.apiKey.slice(-4)
+					}
+					if (k.provider === 'openai-compatible' && typeof input?.baseUrl === 'string') k.baseUrl = input.baseUrl.trim().replace(/\/+$/, '')
+					if (Array.isArray(input?.sharedWith)) k.sharedWith = [...new Set(input.sharedWith.map((id) => String(id)).filter((id) => id && id !== k.ownerUserId))].slice(0, 32)
+				}
+				return assistantPublic(k, auth.userId)
+			},
+		},
+		'assistant.removeKey': {
+			kind: 'mutation',
+			run: (input, auth) => {
+				const id = String(input?.id ?? '')
+				const i = assistantKeys.findIndex((x) => x.id === id)
+				if (i < 0) return {error: ['NOT_FOUND', 'That key isn’t here']}
+				if (assistantKeys[i].ownerUserId !== auth.userId) return {error: ['FORBIDDEN', 'Only the person who added this key can delete it']}
+				assistantKeys.splice(i, 1)
+				return true
+			},
+		},
 	}
 
 	// Storage hardware. Default: a single-drive server (no pool) with two spare disks attached.

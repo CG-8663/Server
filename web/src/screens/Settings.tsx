@@ -2,7 +2,7 @@
 import {useContext, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {logout, mutate, query, type ActiveSession} from '../api'
+import {logout, mutate, query, type ActiveSession, type AssistantKey, type AssistantProvider} from '../api'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
@@ -90,7 +90,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const [sheet, setSheet] = useState<SheetId>(null)
 	const inWindow = useContext(InWindow)
 	const layout = useLayout()
-	type Page = 'main' | 'appearance' | 'storage' | 'omarchy-themes'
+	type Page = 'main' | 'appearance' | 'storage' | 'omarchy-themes' | 'assistant'
 	const [page, setPage] = useState<Page>(() => (sessionStorage.getItem('omarchy-server:settings-page') as Page) || 'main')
 	const openPage = (p: Page) => {
 		haptic(5)
@@ -163,6 +163,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 
 
 	if (page === 'storage') return <StoragePage onBack={() => openPage('main')} />
+	if (page === 'assistant') return <AssistantPage onBack={() => openPage('main')} />
 	if (page === 'omarchy-themes')
 		return (
 			<div className="stagger">
@@ -256,6 +257,13 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					<Row icon="palette" color="var(--pink, #ec4899)" label="Appearance" onClick={() => openPage('appearance')} />
 					{owner && <Row icon="disk" color="var(--teal)" label="Storage" onClick={() => openPage('storage')} />}
+				</div>
+			</div>
+
+			<div>
+				<div className="section-head" style={{marginTop: 18}} />
+				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+					<Row icon="sparkle" color="var(--accent)" label="Assistant" onClick={() => openPage('assistant')} />
 				</div>
 			</div>
 
@@ -414,6 +422,268 @@ function Field({id, label, hint, ...input}: {id: string; label: string; hint?: s
 			<input id={id} {...input} />
 			{hint && <span className="hint">{hint}</span>}
 		</div>
+	)
+}
+
+const PROVIDER_LABEL: Record<AssistantProvider, string> = {
+	spacexai: 'SpaceXAI',
+	'openai-compatible': 'OpenAI-compatible',
+}
+
+function AssistantPage({onBack}: {onBack: () => void}) {
+	const boot = useBootstrap()
+	const user = useUser()
+	const confirm = useConfirm()
+	const save = useSave()
+	const owner = user.data?.role !== 'member'
+	const self = user.data?.userId
+	const keys = useQ<AssistantKey[]>('assistant.keys')
+	const [add, setAdd] = useState(false)
+	const [share, setShare] = useState<AssistantKey | null>(null)
+	const list = keys.data ?? []
+	const remove = async (k: AssistantKey) => {
+		const ok = await confirm({
+			title: `Delete ${k.name}?`,
+			body: 'The assistant won’t use this key. Anyone you shared it with loses access.',
+			confirm: 'Delete',
+			danger: true,
+			icon: 'trash',
+		})
+		if (ok) save.mutate({path: 'assistant.removeKey', input: {id: k.id}, done: `${k.name} deleted`, refresh: ['assistant.keys']})
+	}
+	return (
+		<div className="stagger">
+			<div className="page-head" style={{margin: '6px 0 14px'}}>
+				<button className="round-btn" aria-label="Back" onClick={onBack}>
+					<Icon name="back" size={20} />
+				</button>
+				<h1 className="title" style={{flex: 1}}>
+					Assistant
+				</h1>
+				<button className="btn small" onClick={() => (haptic(6), setAdd(true))}>
+					<Icon name="plus" size={16} stroke={2.4} />
+					Add
+				</button>
+			</div>
+
+			{keys.isLoading && (
+				<div className="glass group">
+					<div className="row static">
+						<span className="spinner" />
+					</div>
+				</div>
+			)}
+			{keys.error && (
+				<div className="error">
+					<Icon name="alert" size={18} />
+					{(keys.error as Error).message}
+				</div>
+			)}
+			{keys.isSuccess && list.length === 0 && (
+				<div className="glass empty">
+					<span className="big">
+						<Icon name="sparkle" size={30} />
+					</span>
+					<b>Add a provider and API key to talk to the assistant.</b>
+					<button className="btn primary small" onClick={() => setAdd(true)}>
+						Add
+					</button>
+				</div>
+			)}
+			{list.map((k) => (
+				<Group
+					key={k.id}
+					title={k.name}
+					footer={k.systemDefault ? 'System default' : k.mine ? undefined : 'Shared with you'}
+				>
+					<div className="row static" style={{minHeight: 62}}>
+						<span className="row-ico" style={{'--c': 'var(--accent)'} as CSSProperties}>
+							<Icon name="sparkle" size={19} />
+						</span>
+						<span className="main">
+							<b style={{fontWeight: 550}}>{PROVIDER_LABEL[k.provider]}</b>
+							<span>
+								{k.model} · …{k.last4}
+							</span>
+						</span>
+					</div>
+					{k.mine && (
+						<Row
+							icon="share"
+							color="var(--blue)"
+							label="Share"
+							value={k.sharedWith.length ? String(k.sharedWith.length) : undefined}
+							onClick={() => setShare(k)}
+						/>
+					)}
+					{owner && k.mine && (
+						<Row
+							icon="star"
+							color="var(--peach)"
+							label="Use as system default"
+							trailing={
+								<Switch
+									on={k.systemDefault}
+									label="Use as system default"
+									disabled={save.isPending}
+									onChange={(v) =>
+										save.mutate({
+											path: 'assistant.updateKey',
+											input: {id: k.id, systemDefault: v},
+											done: v ? 'This key is the system default' : 'No longer the system default',
+											refresh: ['assistant.keys'],
+										})
+									}
+								/>
+							}
+						/>
+					)}
+					{k.mine && <Row icon="trash" color="var(--red)" label="Delete" onClick={() => remove(k)} />}
+				</Group>
+			))}
+			{!owner && list.length === 0 && keys.isSuccess && (
+				<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
+					Ask the owner to share a key, or add your own.
+				</p>
+			)}
+
+			<AddKeySheet open={add} onClose={() => setAdd(false)} />
+			<ShareKeySheet open={!!share} keyRow={share} accounts={boot.accounts} self={self} onClose={() => setShare(null)} />
+		</div>
+	)
+}
+
+function AddKeySheet({open, onClose}: {open: boolean; onClose: () => void}) {
+	const save = useSave()
+	const [provider, setProvider] = useState<AssistantProvider>('spacexai')
+	const [name, setName] = useState('')
+	const [model, setModel] = useState('')
+	const [apiKey, setApiKey] = useState('')
+	const [baseUrl, setBaseUrl] = useState('')
+	useEffect(() => {
+		setProvider('spacexai')
+		setName('')
+		setModel('')
+		setApiKey('')
+		setBaseUrl('')
+	}, [open])
+	const ready = apiKey.trim().length >= 4 && !!model.trim() && (provider === 'spacexai' || /^https?:\/\/[^\s]+/i.test(baseUrl.trim()))
+	return (
+		<FormSheet
+			open={open}
+			title="Add provider"
+			onClose={onClose}
+			submit="Add"
+			busy={save.isPending}
+			disabled={!ready}
+			onSubmit={() =>
+				save.mutate(
+					{
+						path: 'assistant.addKey',
+						input: {
+							provider,
+							name: name.trim(),
+							model: model.trim(),
+							apiKey: apiKey.trim(),
+							...(provider === 'openai-compatible' ? {baseUrl: baseUrl.trim()} : {}),
+						},
+						done: 'Provider added',
+						refresh: ['assistant.keys'],
+					},
+					{onSuccess: onClose},
+				)
+			}
+		>
+			<Segmented
+				label="Provider"
+				value={provider}
+				onChange={setProvider}
+				options={[
+					{id: 'spacexai', label: 'SpaceXAI'},
+					{id: 'openai-compatible', label: 'OpenAI-compatible'},
+				]}
+			/>
+			<Field id="ask-name" label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+			<Field
+				id="ask-model"
+				label="Model"
+				value={model}
+				onChange={(e) => setModel(e.target.value)}
+				placeholder={provider === 'spacexai' ? 'grok-4.7' : undefined}
+				autoCapitalize="off"
+				autoCorrect="off"
+				spellCheck={false}
+			/>
+			<Field id="ask-key" label="API key" type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+			{provider === 'openai-compatible' && (
+				<Field
+					id="ask-url"
+					label="Base URL"
+					value={baseUrl}
+					onChange={(e) => setBaseUrl(e.target.value)}
+					placeholder="http://127.0.0.1:11434/v1"
+					autoCapitalize="off"
+					autoCorrect="off"
+					spellCheck={false}
+				/>
+			)}
+		</FormSheet>
+	)
+}
+
+function ShareKeySheet({
+	open,
+	keyRow,
+	accounts,
+	self,
+	onClose,
+}: {
+	open: boolean
+	keyRow: AssistantKey | null
+	accounts: {userId: string; name: string}[]
+	self?: string
+	onClose: () => void
+}) {
+	const save = useSave()
+	const others = accounts.filter((a) => a.userId !== self)
+	const [picked, setPicked] = useState<string[]>([])
+	useEffect(() => setPicked(keyRow ? [...keyRow.sharedWith] : []), [keyRow, open])
+	const toggle = (id: string) => setPicked((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]))
+	return (
+		<FormSheet
+			open={open}
+			title="Share"
+			subtitle={keyRow?.name}
+			onClose={onClose}
+			submit="Save"
+			busy={save.isPending}
+			onSubmit={() =>
+				save.mutate(
+					{path: 'assistant.updateKey', input: {id: keyRow?.id, sharedWith: picked}, done: 'Sharing updated', refresh: ['assistant.keys']},
+					{onSuccess: onClose},
+				)
+			}
+		>
+			{others.length === 0 ? (
+				<p className="prose" style={{margin: '0 0 8px'}}>
+					No other accounts on this server.
+				</p>
+			) : (
+				<div className="glass group" style={{borderRadius: 18, marginBottom: 12, '--inset': '62px'} as CSSProperties}>
+					{others.map((a) => (
+						<button type="button" key={a.userId} className="row" style={{minHeight: 56}} onClick={() => toggle(a.userId)}>
+							<span className="row-ico" style={{'--c': 'var(--blue)'} as CSSProperties}>
+								<Icon name="user" size={19} />
+							</span>
+							<span className="main">
+								<b style={{fontWeight: 550}}>{a.name}</b>
+							</span>
+							<Icon name={picked.includes(a.userId) ? 'checked' : 'unchecked'} size={22} />
+						</button>
+					))}
+				</div>
+			)}
+		</FormSheet>
 	)
 }
 

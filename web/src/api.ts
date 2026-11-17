@@ -237,6 +237,20 @@ export type ActiveSession = {
 	client: {type: 'native'; id?: string; platform?: string; deviceClass?: string; appVersion?: string} | {type: 'browser'; userAgent?: string}
 }
 
+export type AssistantProvider = 'spacexai' | 'openai-compatible'
+export type AssistantKey = {
+	id: string
+	name: string
+	provider: AssistantProvider
+	baseUrl: string
+	model: string
+	last4: string
+	ownerUserId: string
+	sharedWith: string[]
+	systemDefault: boolean
+	mine: boolean
+}
+
 export type FileEntry = {
 	name: string
 	path: string
