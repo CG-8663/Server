@@ -3588,11 +3588,19 @@ html.desk-mode body {
 	border-radius: 50%;
 	background: var(--green);
 }
+.sys-head > span {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
 .sys-head b {
 	display: block;
 	font-size: 14.5px;
 }
 .sys-head .mono {
+	font-size: 12px;
+}
+.sys-head .muted {
 	font-size: 12px;
 }
 .sys-user {

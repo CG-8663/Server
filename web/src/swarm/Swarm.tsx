@@ -7,7 +7,7 @@ import {lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type R
 import {mutate, query} from '../api'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
-import {Sheet, SheetHeader, StatusPill, Switch, bytes, duration, haptic, useConfirm, useToast} from '../ui'
+import {Row, Sheet, SheetHeader, StatusPill, Switch, bytes, duration, haptic, useConfirm, useToast} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
@@ -219,30 +219,6 @@ function Group({title, children}: {title: string; children: ReactNode}) {
 				{children}
 			</div>
 		</>
-	)
-}
-
-function Row({icon, color = 'var(--accent)', label, sub, trailing, onClick, disabled}: {icon: IconName; color?: string; label: string; sub?: ReactNode; trailing?: ReactNode; onClick?: () => void; disabled?: boolean}) {
-	const inner = (
-		<>
-			<span className="row-ico" style={{'--c': color} as CSSProperties}>
-				<Icon name={icon} size={19} />
-			</span>
-			<span className="main">
-				<b style={{fontWeight: 550}}>{label}</b>
-				{sub && <span>{sub}</span>}
-			</span>
-			{trailing ?? (onClick ? <Icon name="chevron" size={18} className="chev" /> : null)}
-		</>
-	)
-	return onClick ? (
-		<button className="row" onClick={onClick} disabled={disabled} style={{minHeight: 56}}>
-			{inner}
-		</button>
-	) : (
-		<div className="row static" style={{minHeight: 56}}>
-			{inner}
-		</div>
 	)
 }
 

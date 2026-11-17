@@ -12,7 +12,7 @@ import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
 import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../osLook'
-import {AppIcon, InWindow, PortalRoot, StoreIcon, TerminalIcon, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
+import {AppIcon, InWindow, PortalRoot, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
 import {Cheatsheet} from './hyprland/Cheatsheet'
@@ -1660,6 +1660,9 @@ function TopBar(p: {
 						<span>
 							<b>{p.boot.server?.device ?? 'server'}</b>
 							<span className="mono muted">{p.boot.server?.host}</span>
+							<span className="muted">
+								<VersionTag prefix="Omarchy Server " version={p.boot.touch.version} info={p.boot.server} />
+							</span>
 						</span>
 					</div>
 					<div className="sys-user muted">Signed in as {user.data?.name ?? 'you'}</div>
