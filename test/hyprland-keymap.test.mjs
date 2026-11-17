@@ -22,6 +22,7 @@ describe('hyprland keymap', () => {
 		assert.deepEqual(actionOf(superE('KeyT')), {type: 'float'})
 		assert.deepEqual(actionOf(superE('KeyJ')), {type: 'split'})
 		assert.deepEqual(actionOf(superE('KeyM')), {type: 'minimize'})
+		assert.deepEqual(actionOf(superE('KeyM', {shift: true})), {type: 'restore'})
 		assert.deepEqual(actionOf(superE('ArrowLeft')), {type: 'focus', dir: 'left'})
 		assert.deepEqual(actionOf(superE('ArrowRight', {shift: true})), {type: 'swap', dir: 'right'})
 		assert.deepEqual(actionOf(superE('Digit1')), {type: 'workspace', n: 1})

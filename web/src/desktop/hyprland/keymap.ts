@@ -18,6 +18,7 @@ export type Action =
 	| {type: 'workspace-next'}
 	| {type: 'workspace-prev'}
 	| {type: 'minimize'}
+	| {type: 'restore'}
 
 export type KeyLike = {
 	code: string
@@ -51,7 +52,7 @@ export function actionOf(e: KeyLike, opts: {consoleFocused: boolean} = {consoleF
 	if (e.code === 'KeyF' && !e.shiftKey && !e.altKey) return {type: 'fullscreen'}
 	if (e.code === 'KeyT' && !e.shiftKey && !e.altKey) return {type: 'float'}
 	if (e.code === 'KeyJ' && !e.shiftKey && !e.altKey) return {type: 'split'}
-	if (e.code === 'KeyM' && !e.shiftKey && !e.altKey) return {type: 'minimize'}
+	if (e.code === 'KeyM' && !e.altKey) return {type: e.shiftKey ? 'restore' : 'minimize'}
 	if (e.code === 'Tab') return {type: e.shiftKey ? 'workspace-prev' : 'workspace-next'}
 
 	const dir = ARROW[e.code]

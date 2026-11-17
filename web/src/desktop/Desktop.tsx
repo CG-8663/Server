@@ -46,7 +46,7 @@ type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 's
 type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; term?: {id: string; name?: string; icon?: string}; input?: string}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
-type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number; workspace?: number; float?: boolean}
+type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number; workspace?: number; float?: boolean; minAt?: number}
 type SysKind = Exclude<Kind, 'app' | 'console'>
 
 const TOP = 34 // top bar height
@@ -307,6 +307,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		}
 	})
 	const zTop = useRef(Math.max(10, ...wins.map((w) => w.z)))
+	const minSeq = useRef(Math.max(0, ...wins.map((w) => w.minAt ?? 0)))
 	const winsRef = useRef(wins)
 	winsRef.current = wins
 	const hyprWsRef = useRef(hyprWs)
@@ -390,7 +391,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			const top = ws.every((x) => x.id === id || x.min || x.z < w.z)
 			if (top && !w.min) return ws
 			zTop.current += 1
-			return ws.map((x) => (x.id === id ? {...x, z: zTop.current, min: false} : x))
+			return ws.map((x) => (x.id === id ? {...x, z: zTop.current, min: false, minAt: undefined} : x))
 		})
 	}, [])
 	const update = useCallback((id: string, patch: Partial<Win>) => setWins((ws) => ws.map((w) => (w.id === id ? {...w, ...patch} : w))), [])
@@ -400,7 +401,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	}, [])
 	const minimize = useCallback((id: string) => {
 		dropFromTrees(id)
-		update(id, {min: true})
+		minSeq.current += 1
+		update(id, {min: true, minAt: minSeq.current})
 	}, [update])
 
 	const open = useCallback<DesktopApi['open']>(
@@ -554,6 +556,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		if (act.type === 'fullscreen' && focused) return void update(focused.id, {snap: focused.snap === 'max' ? null : 'max'})
 		if (act.type === 'minimize') {
 			if (focused) return void minimize(focused.id)
+			const minned = lastMinimizedOn(winsRef.current, ws)
+			if (minned) return void focus(minned.id)
+			return
+		}
+		if (act.type === 'restore') {
 			const minned = lastMinimizedOn(winsRef.current, ws)
 			if (minned) return void focus(minned.id)
 			return
