@@ -4,6 +4,12 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.35',
+		date: '2026-11-17',
+		title: 'Hyprland layout: minimize and restore',
+		added: ['In the Hyprland layout, Super+M minimizes the window and Super+Shift+M brings back the last one you minimized, to the same place in the tiles.'],
+	},
+	{
 		version: '0.9.34',
 		date: '2026-11-17',
 		title: 'A Hyprland layout for the desktop',

@@ -16,7 +16,8 @@ const ROWS: [string, string][] = [
 	['Super+Shift+1–9', 'Move to workspace'],
 	['Super+Tab', 'Next workspace'],
 	['Super+Shift+Tab', 'Previous workspace'],
-	['Super+M', 'Minimize / restore'],
+	['Super+M', 'Minimize'],
+	['Super+Shift+M', 'Restore last minimized'],
 ]
 
 export function Cheatsheet({onClose}: {onClose: () => void}) {

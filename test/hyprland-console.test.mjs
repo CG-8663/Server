@@ -55,4 +55,12 @@ describe('hyprland console inject', () => {
 		]
 		assert.equal(lastMinimizedOn(wins, 1)?.id, 'b')
 	})
+
+	test('lastMinimizedOn prefers later minimize time over z-order', () => {
+		const wins = [
+			{id: 'first', kind: 'terminal', min: true, z: 9, workspace: 1, minAt: 1},
+			{id: 'second', kind: 'terminal', min: true, z: 1, workspace: 1, minAt: 2},
+		]
+		assert.equal(lastMinimizedOn(wins, 1)?.id, 'second')
+	})
 })
