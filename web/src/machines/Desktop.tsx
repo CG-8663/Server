@@ -4,7 +4,7 @@ import {useEffect, useRef, useState} from 'react'
 
 import {SERVER_DESKTOP, type Machine} from '../api'
 import {CreateMachine} from '../CreateMachine'
-import {useMachines} from '../data'
+import {useMachines, useUser} from '../data'
 import {useDesktop} from '../desktop/Desktop'
 import {Icon, type IconName} from '../icons'
 import {PortForwarding, osLook} from '../screens/Machines'
@@ -126,6 +126,7 @@ function RecentTasks() {
 
 // ---- the server ("node") ----------------------------------------------------------------------
 function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreate: () => void}) {
+	const owner = useUser().data?.role !== 'member'
 	const node = useNode()
 	const machines = useMachines()
 	const backups = useBackups(null)
@@ -166,21 +167,24 @@ function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreat
 							<dd>{n ? `${n.counts.running} of ${n.counts.total} running` : '–'}</dd>
 						</dl>
 					</div>
-					<div className="mx-card">
-						<h4>Consoles</h4>
-						<button type="button" className="pve-desktop" onClick={() => (desk ? desk.openConsole('desktop') : null)}>
-							<Icon name="terminal" size={20} />
-							<span>
-								<b>{SERVER_DESKTOP.name}</b>
-								<small>This server’s own desktop, live.</small>
-							</span>
-						</button>
-						{desk && (
-							<button type="button" className="btn small" style={{marginTop: 8}} onClick={() => desk.addIcon('machine:desktop')}>
-								<Icon name="plus" size={15} /> Add to desktop
+					{/* This server’s own desktop is the owner’s signed-in session: owner-only. */}
+					{owner && (
+						<div className="mx-card">
+							<h4>Consoles</h4>
+							<button type="button" className="pve-desktop" onClick={() => (desk ? desk.openConsole('desktop') : null)}>
+								<Icon name="terminal" size={20} />
+								<span>
+									<b>{SERVER_DESKTOP.name}</b>
+									<small>This server’s own desktop, live.</small>
+								</span>
 							</button>
-						)}
-					</div>
+							{desk && (
+								<button type="button" className="btn small" style={{marginTop: 8}} onClick={() => desk.addIcon('machine:desktop')}>
+									<Icon name="plus" size={15} /> Add to desktop
+								</button>
+							)}
+						</div>
+					)}
 				</div>
 				<h4 className="mx-h">Virtual machines</h4>
 				<div className="mx-table vms" role="table">

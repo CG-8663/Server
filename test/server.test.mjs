@@ -300,6 +300,8 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 			assert.equal((await open('/api/console?machineId=agent-0123456789ab')).status, 403)
 			assert.equal((await member.req('GET', '/api/console/check?target=terminal')).status, 403)
 			assert.equal((await member.req('GET', '/api/console/check?machineId=agent-0123456789ab')).status, 403)
+			assert.equal((await open('/api/console?machineId=desktop')).status, 403, 'this server’s desktop is the owner’s session')
+			assert.equal((await member.req('GET', '/api/console/check?machineId=desktop')).status, 403)
 			const vm = await open('/api/console?machineId=ubuntu-1')
 			assert.equal(vm.ok, true, 'a member can still open a VM screen')
 		} finally {

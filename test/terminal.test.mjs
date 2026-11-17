@@ -183,6 +183,7 @@ test('a member’s ticket cannot open this server’s shell or a swarm computer�
 	assert.equal(await handshake(`${ws}/terminal?agentId=0123456789ab&cols=80&rows=24&ticket=${agentTerm}`), 403, 'swarm shells are owner-only, same as swarm.*')
 	const agentScreen = await ticket('machines', memberAuth)
 	assert.equal(await handshake(`${ws}/machines/console?machineId=agent-0123456789ab&ticket=${agentScreen}`, ['binary']), 403)
-	assert.equal(await handshake(`${ws}/machines/console?machineId=desktop&ticket=${await ticket('machines', memberAuth)}`, ['binary']), 101, 'a member can still open this desktop or a VM')
+	assert.equal(await handshake(`${ws}/machines/console?machineId=desktop&ticket=${await ticket('machines', memberAuth)}`, ['binary']), 403, 'this server’s desktop is the owner’s session')
+	assert.equal(await handshake(`${ws}/machines/console?machineId=desktop&ticket=${await ticket('machines')}`, ['binary']), 101, 'the owner can still open it')
 	assert.equal(await handshake(`${ws}/terminal?cols=80&rows=24&ticket=${await ticket('terminal')}`), 101, 'the owner can still open a shell')
 })

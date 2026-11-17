@@ -4,7 +4,7 @@ import {SERVER_DESKTOP, type Machine, type PortForward} from '../api'
 import {Console} from '../Console'
 import {useDesktop} from '../desktop/Desktop'
 import {CreateMachine} from '../CreateMachine'
-import {useAction, useMachines} from '../data'
+import {useAction, useMachines, useUser} from '../data'
 import {useMachineDetails} from '../machines/api'
 import {BackupsPanel, CloudInitPanel, HardwarePanel, HistoryPanel, MonitorPanel, OptionsPanel, PANELS, SnapshotsPanel, SummaryPanel, usePowerActions, type PanelId} from '../machines/panels'
 import {Icon, type IconName} from '../icons'
@@ -27,6 +27,7 @@ export function osLook(osId = ''): {icon: IconName; bg: string; name: string} {
 export function Machines() {
 	const desk = useDesktop()
 	const machines = useMachines()
+	const owner = useUser().data?.role !== 'member'
 	const [selectedId, setSelectedId] = useState<string | null>(null)
 	const [consoleId, setConsoleId] = useState<string | null>(null)
 	const [creating, setCreating] = useState(false)
@@ -51,23 +52,26 @@ export function Machines() {
 				<h1 className="title">Machines</h1>
 				<p className="subtitle">{machines.isLoading ? 'Loading…' : list.length ? `${running} of ${list.length} running` : 'Virtual machines on your server'}</p>
 			</div>
-			<button
-				className="glass vm-card desktop-card"
-				onClick={() => {
-					haptic(8)
-					if (desk) desk.openConsole('desktop')
-					else setConsoleId('desktop')
-				}}
-			>
-				<span className="vm-ico" style={{background: 'linear-gradient(140deg,#2b2b2b,#0b0b0b)', width: 52, height: 52, borderRadius: 15, display: 'grid', placeItems: 'center', color: '#fff'}}>
-					<Icon name="terminal" size={26} />
-				</span>
-				<span className="main" style={{display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'left', flex: 1, minWidth: 0}}>
-					<b style={{fontSize: 17}}>Omarchy desktop</b>
-					<span className="muted" style={{fontSize: 13}}>This server’s own desktop, live. Needs someone signed in to Omarchy on the server.</span>
-				</span>
-				<Icon name="chevron" size={18} className="chev" />
-			</button>
+			{/* This server’s own desktop is the owner’s signed-in session: owner-only. */}
+			{owner && (
+				<button
+					className="glass vm-card desktop-card"
+					onClick={() => {
+						haptic(8)
+						if (desk) desk.openConsole('desktop')
+						else setConsoleId('desktop')
+					}}
+				>
+					<span className="vm-ico" style={{background: 'linear-gradient(140deg,#2b2b2b,#0b0b0b)', width: 52, height: 52, borderRadius: 15, display: 'grid', placeItems: 'center', color: '#fff'}}>
+						<Icon name="terminal" size={26} />
+					</span>
+					<span className="main" style={{display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'left', flex: 1, minWidth: 0}}>
+						<b style={{fontSize: 17}}>Omarchy desktop</b>
+						<span className="muted" style={{fontSize: 13}}>This server’s own desktop, live. Needs someone signed in to Omarchy on the server.</span>
+					</span>
+					<Icon name="chevron" size={18} className="chev" />
+				</button>
+			)}
 			{machines.error && (
 				<div className="error">
 					<Icon name="alert" size={18} />

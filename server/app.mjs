@@ -1368,8 +1368,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		try {
 			const terminal = req.query.target === 'terminal'
 			const agent = /^agent-([0-9a-f]{12})$/.exec(String(req.query.machineId ?? ''))
-			if ((terminal || agent) && !(await sessionIsOwner(req.sid))) {
-				throw new BackendError(terminal ? 'Only the server’s owner can open a shell' : 'Only the server’s owner can manage the local swarm', {code: 'FORBIDDEN', status: 403})
+			const ownDesktop = req.query.machineId === 'desktop'
+			if ((terminal || agent || ownDesktop) && !(await sessionIsOwner(req.sid))) {
+				throw new BackendError(terminal ? 'Only the server’s owner can open a shell' : ownDesktop ? 'Only the server’s owner can open this server’s desktop' : 'Only the server’s owner can manage the local swarm', {code: 'FORBIDDEN', status: 403})
 			}
 			await consoleTicket(req.sid, terminal ? 'terminal' : 'machines') // single-use, 30s; discarded
 			// The server's own desktop: make sure its screen sharing is running (starts it if not),
@@ -1447,7 +1448,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					target.pathname = '/terminal'
 					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
 				}
-				const needsOwner = route === 'terminal' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
+				const needsOwner = route === 'terminal' || params.machineId === 'desktop' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
 				if (needsOwner && !(await sessionIsOwner(sid))) return refuse('403 Forbidden')
 				const ticket = await consoleTicket(sid, route)
 				target.search = new URLSearchParams({...params, ticket}).toString()
