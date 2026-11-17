@@ -45,6 +45,16 @@ async function reloadIfUpdated() {
 		location.reload()
 	} catch {}
 }
+// Screens load when first opened. If the server was updated while this page stayed open, the old
+// build's files are gone: reload once to pick up the new build instead of showing a blank page.
+window.addEventListener('vite:preloadError', (e) => {
+	const key = 'touch.reloadedForStaleChunk'
+	const last = Number(sessionStorage.getItem(key) ?? 0)
+	if (Date.now() - last < 30_000) return // just reloaded for this: let the error show, don't loop
+	e.preventDefault()
+	sessionStorage.setItem(key, String(Date.now()))
+	location.reload()
+})
 document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && void reloadIfUpdated())
 window.addEventListener('pageshow', (e) => e.persisted && void reloadIfUpdated())
 void reloadIfUpdated()

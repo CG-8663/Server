@@ -7,7 +7,7 @@ import {Terminal as XTerm} from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 
 import {Icon} from './icons'
-import {AppIcon, haptic, lockPageScroll, useConfirm, usePortalRoot, useToast} from './ui'
+import {AppIcon, haptic, useConfirm, usePortalRoot, useScreenLock, useToast} from './ui'
 
 // closed: the shell ended. lost: the connection dropped (the shell is still running on the server).
 type State = 'connecting' | 'connected' | 'closed' | 'lost' | 'error'
@@ -36,42 +36,6 @@ export function useVisualViewport(ref: React.RefObject<HTMLElement>, enabled = t
 			vv.removeEventListener('scroll', apply)
 		}
 	}, [ref, enabled])
-}
-
-// Make a full-screen overlay behave like its own window on iPhone: freeze the page underneath
-// (iOS ignores overflow:hidden on body and will scroll it to "reveal" a focused input), and
-// stop drags outside the real scroll areas from panning the page while the keyboard is up.
-export function useScreenLock(ref: React.RefObject<HTMLElement>, guardTouch = true, enabled = true) {
-	useEffect(() => {
-		if (!enabled) return
-		const html = document.documentElement
-		const b = document.body.style
-		const y = window.scrollY
-		Object.assign(b, {position: 'fixed', top: `-${y}px`, left: '0', right: '0', width: '100%'})
-		const release = lockPageScroll()
-		html.classList.add('screen-locked')
-		const el = ref.current
-		const scrollers = '.xterm-viewport, .console-keys, .term-paste textarea'
-		const onMove = (e: TouchEvent) => {
-			if (e.touches.length > 1) return void e.preventDefault() // no pinch-zoom of the page
-			const t = e.target as Element | null
-			if (t?.closest?.(scrollers)) return
-			e.preventDefault()
-		}
-		if (guardTouch) el?.addEventListener('touchmove', onMove, {passive: false})
-		// iOS can still pan the page after the keyboard opens; pull it back.
-		const onScroll = () => window.scrollY && window.scrollTo(0, 0)
-		window.addEventListener('scroll', onScroll)
-		return () => {
-			if (guardTouch) el?.removeEventListener('touchmove', onMove)
-			window.removeEventListener('scroll', onScroll)
-			// Back to the page's normal layout (not a saved copy, which another overlay may have changed).
-			Object.assign(b, {position: '', top: '', left: '', right: '', width: ''})
-			release()
-			html.classList.remove('screen-locked')
-			window.scrollTo(0, y)
-		}
-	}, [ref, guardTouch, enabled])
 }
 
 function cssVar(name: string, fallback: string) {

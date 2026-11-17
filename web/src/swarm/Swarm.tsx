@@ -2,15 +2,15 @@
 // Watch them, open a terminal or their desktop, and manage them (Omarchy plugins and themes, updates,
 // restart), each only as far as that computer allowed when it joined.
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {useEffect, useMemo, useState, type CSSProperties, type ReactNode} from 'react'
+import {lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {mutate, query} from '../api'
-import {Console} from '../Console'
 import {Icon, type IconName} from '../icons'
-import {osLook} from '../screens/Machines'
-import {Switch} from '../screens/Settings'
-import {TerminalScreen} from '../Terminal'
-import {Sheet, SheetHeader, StatusPill, bytes, duration, haptic, useConfirm, useToast} from '../ui'
+import {osLook} from '../osLook'
+import {Sheet, SheetHeader, StatusPill, Switch, bytes, duration, haptic, useConfirm, useToast} from '../ui'
+
+const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
+const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 
 type Abilities = {terminal: boolean; desktop: boolean; manage: boolean}
 type Ability = keyof Abilities
@@ -135,8 +135,28 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 				/>
 			)}
 			{adding && <AddComputer before={list.map((a) => a.id)} onClose={() => setAdding(false)} onJoined={(id) => (setAdding(false), setSelectedId(id))} />}
-			{terminal && <TerminalScreen agent={{id: terminal.agent.id, name: terminal.agent.name}} input={terminal.input} onClose={() => setTerminal(null)} />}
-			{screen && <Console machine={{id: `agent-${screen.id}`, name: screen.name, state: 'running'}} onClose={() => setScreen(null)} />}
+			{terminal && (
+				<Suspense
+					fallback={
+						<main className="screen center">
+							<span className="spinner" aria-label="Loading" />
+						</main>
+					}
+				>
+					<TerminalScreen agent={{id: terminal.agent.id, name: terminal.agent.name}} input={terminal.input} onClose={() => setTerminal(null)} />
+				</Suspense>
+			)}
+			{screen && (
+				<Suspense
+					fallback={
+						<main className="screen center">
+							<span className="spinner" aria-label="Loading" />
+						</main>
+					}
+				>
+					<Console machine={{id: `agent-${screen.id}`, name: screen.name, state: 'running'}} onClose={() => setScreen(null)} />
+				</Suspense>
+			)}
 		</section>
 	)
 }

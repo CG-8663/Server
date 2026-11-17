@@ -1,6 +1,8 @@
 // Files: the server as a NAS. Browse, preview, upload, download, organise, share on the network.
 import {
   Fragment,
+  lazy,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -24,8 +26,11 @@ import { Icon, type IconName } from "../icons";
 import { Sheet, SheetHeader, bytes, haptic, useConfirm, usePortalRoot, useToast } from "../ui";
 import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
-import { FileViewer } from "./viewer/FileViewer";
 import { openTerminalWith } from "../terminalEvent";
+
+const FileViewer = lazy(() =>
+  import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
+);
 
 // ---- helpers --------------------------------------------------------------------
 const isDir = (f: FileEntry) => f.type === "directory";
@@ -1164,17 +1169,25 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
 
 
       {viewing && (
-        <FileViewer
-          files={viewing.files}
-          index={viewing.index}
-          onClose={() => setViewing(null)}
-          onInfo={(f) => setOpen(f)}
-          onDownload={(f) => download([f.path])}
-          onChanged={() => {
-            qc.invalidateQueries({ queryKey: ["files.list"] });
-            qc.invalidateQueries({ queryKey: ["files.recents"] });
-          }}
-        />
+        <Suspense
+          fallback={
+            <main className="screen center">
+              <span className="spinner" aria-label="Loading" />
+            </main>
+          }
+        >
+          <FileViewer
+            files={viewing.files}
+            index={viewing.index}
+            onClose={() => setViewing(null)}
+            onInfo={(f) => setOpen(f)}
+            onDownload={(f) => download([f.path])}
+            onChanged={() => {
+              qc.invalidateQueries({ queryKey: ["files.list"] });
+              qc.invalidateQueries({ queryKey: ["files.recents"] });
+            }}
+          />
+        </Suspense>
       )}
 
       {open && (
