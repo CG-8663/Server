@@ -281,6 +281,20 @@ export function folderChoices(list) {
 			suggest: typeof f.suggest === 'string' && /^[A-Za-z0-9][\w .-]{0,60}$/.test(f.suggest) ? f.suggest : null,
 		}))
 }
+
+// Optional catalog MCP endpoint. Junk is ignored; the port is never opened to the network.
+export function parseMcp(raw) {
+	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+	const service = raw.service
+	const port = typeof raw.port === 'string' && raw.port.trim() ? Number(raw.port) : raw.port
+	const path = raw.path
+	const transport = raw.transport
+	if (typeof service !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(service)) return null
+	if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) return null
+	if (typeof path !== 'string' || !/^\/[^\s?#]{0,200}$/.test(path)) return null
+	if (transport !== 'http' && transport !== 'sse') return null
+	return {service, port, path, transport}
+}
 export const folderVar = (id) => `FOLDER_${id.toUpperCase()}`
 // Where you may put an app's folder: under your home, not hidden, not one Omarchy Server never gives an app.
 export function folderAllowed(path, home) {
@@ -396,7 +410,7 @@ function orderNeeds(id, byId, seen = new Set(), out = []) {
 	return out
 }
 const varName = (v) => /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(String(v ?? '').trim())?.[1] ?? null
-export function prepareCompose(appId, text, allocatePort, {shared = false, vars = {}, web = null} = {}) {
+export function prepareCompose(appId, text, allocatePort, {shared = false, vars = {}, web = null, mcp = null} = {}) {
 	const doc = YAML.parse(text) ?? {}
 	const services = doc.services ?? {}
 	const proxy = services.app_proxy?.environment ?? {}
@@ -418,7 +432,10 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 	const appPort = Number(resolved(proxy.APP_PORT))
 	const host = String(proxy.APP_HOST ?? '').trim()
 	let internalPort = null
+	let webContainerPort = null
+	const containerPort = (p) => Number(String(typeof p === 'object' ? p.target : p).split('/')[0].split(':').pop())
 	if (Number.isInteger(appPort) && appPort > 0) {
+		webContainerPort = appPort
 		if (/^\$\{?GATEWAY_IP\}?$/.test(host) || host === '127.0.0.1') {
 			internalPort = appPort // the app is on the host network, bound to 127.0.0.1 (GATEWAY_IP)
 		} else {
@@ -438,17 +455,29 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 	// with `docker compose up`) gives way to Omarchy Server's private one behind the sign-in.
 	if (!internalPort && web && services[web.service] && Number.isInteger(web.port)) {
 		const svc = services[web.service]
+		webContainerPort = web.port
 		if (svc.network_mode === 'host') {
 			internalPort = null // holds its own port, like Home Assistant
 		} else {
-			const containerPort = (p) => Number(String(typeof p === 'object' ? p.target : p).split('/')[0].split(':').pop())
 			svc.ports = (svc.ports ?? []).filter((p) => containerPort(p) !== web.port)
 			internalPort = allocatePort()
 			svc.ports.push(`127.0.0.1:${internalPort}:${web.port}`)
 		}
 	}
+	// MCP is published on 127.0.0.1 only. The web container port is not published a second time.
+	const mcpPort = typeof mcp?.port === 'string' && mcp.port.trim() ? Number(mcp.port) : mcp?.port
+	const mcpSvc = mcp?.service ? services[mcp.service] : null
+	let mcpInternalPort = null
+	if (mcpSvc && typeof mcpPort === 'number' && Number.isInteger(mcpPort) && mcpPort >= 1 && mcpPort <= 65535) {
+		if (webContainerPort !== null && mcpPort === webContainerPort) mcpInternalPort = internalPort
+		else if (mcpSvc.network_mode !== 'host') {
+			mcpSvc.ports = (mcpSvc.ports ?? []).filter((p) => containerPort(p) !== mcpPort)
+			mcpInternalPort = allocatePort()
+			mcpSvc.ports.push(`127.0.0.1:${mcpInternalPort}:${mcpPort}`)
+		}
+	}
 	doc.services = services
-	return {text: YAML.stringify(doc), internalPort}
+	return {text: YAML.stringify(doc), internalPort, mcpInternalPort}
 }
 
 // Can a browser use this app's web page right now? One answer for every screen:
@@ -784,6 +813,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					? `Some features may not work here: it expects settings Omarchy Server doesn’t have (${unknown.slice(0, 3).join(', ')}).`
 					: null
 			const media = (f) => (typeof f === 'string' && /^https:\/\//.test(f) ? f : gallery && typeof f === 'string' && /^[\w.-]+$/.test(f) ? `${gallery}/${a.id}/${f}` : null)
+			const mcp = parseMcp(a.mcp)
 			apps.push({
 				id: a.id,
 				name: String(a.name ?? a.id),
@@ -808,9 +838,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				deterministicPassword: a.deterministicPassword === true,
 				// Needs a secure (https://) page in the browser, e.g. for WebCodecs or the Web Crypto API.
 				...(a.requiresHttps === true ? {requiresHttps: true} : {}),
-				...(Array.isArray(a.openPorts) ? {openPorts: a.openPorts.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535 && n !== 22).slice(0, 16)} : {}),
+				...(Array.isArray(a.openPorts) ? {openPorts: a.openPorts.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535 && n !== 22 && n !== mcp?.port).slice(0, 16)} : {}),
 				...(folderChoices(a.folders).length ? {folders: folderChoices(a.folders)} : {}),
 				...(a.web && typeof a.web.service === 'string' && Number.isInteger(Number(a.web.port)) ? {web: {service: a.web.service, port: Number(a.web.port), ...(a.web.https === true ? {https: true} : {})}} : {}),
+				...(mcp ? {mcp} : {}),
 				...(unsupported ? {unsupported} : {}),
 				...(caution ? {caution} : {}),
 				folder: join(dir, entry.name),
@@ -1304,13 +1335,19 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		app.exports = await runExports(app)
 		const c = await readYaml(dir, COMPOSE_FILES)
 		const text = await readFile(join(dir, c.name), 'utf8')
-		// Other apps' ports (an update keeps the app's own).
-		const used = new Set(state.apps.filter((a) => a.id !== app.id).map((a) => a.internalPort))
+		// Other apps' ports (an update keeps the app's own). A second call is the MCP loopback port.
+		const used = new Set()
+		for (const other of state.apps) {
+			if (other.id === app.id) continue
+			if (other.internalPort) used.add(other.internalPort)
+			if (other.mcpInternalPort) used.add(other.mcpInternalPort)
+		}
 		const prepared = prepareCompose(app.id, text, () => {
 			let p = 20_000 + (parseInt(createHash('sha256').update(app.id).digest('hex').slice(0, 4), 16) % 9000)
 			while (used.has(p)) p++
+			used.add(p)
 			return p
-		}, {shared: !!src.shared, vars: composeEnv(app), web: src.web ?? null})
+		}, {shared: !!src.shared, vars: composeEnv(app), web: src.web ?? null, mcp: src.mcp ?? null})
 		app.shared = !!src.shared
 		if (app.shared) await ensureSharedNetwork()
 		if (/\$\{?TOR_PROXY_IP\b/.test(text)) await ensureTor()
@@ -1329,6 +1366,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		prepared.text = finalText
 		await writeFile(join(dir, 'compose.omarchy.yml'), prepared.text, {mode: 0o600})
 		await createBindSources(app, prepared.text)
+		if (prepared.mcpInternalPort) app.mcpInternalPort = prepared.mcpInternalPort
+		else delete app.mcpInternalPort
 		return prepared.internalPort
 	}
 
@@ -1431,7 +1470,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const queued = plan.map((src) => {
 			const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
 			if (leftover) state.apps = state.apps.filter((a) => a !== leftover)
-			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.requiresHttps ? {requiresHttps: true} : {}), ...(src.web?.https ? {internalHttps: true} : {}), ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), ...(src.folders?.length ? {folderIds: src.folders.map((f) => f.id), folders: Object.fromEntries(src.folders.filter((f) => placed.has(`${src.id}/${f.id}`)).map((f) => [f.id, placed.get(`${src.id}/${f.id}`)]))} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? [], ownSecretsOnly: true}
+			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.requiresHttps ? {requiresHttps: true} : {}), ...(src.web?.https ? {internalHttps: true} : {}), ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.mcp ? {mcp: src.mcp} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), ...(src.folders?.length ? {folderIds: src.folders.map((f) => f.id), folders: Object.fromEntries(src.folders.filter((f) => placed.has(`${src.id}/${f.id}`)).map((f) => [f.id, placed.get(`${src.id}/${f.id}`)]))} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? [], ownSecretsOnly: true}
 			state.apps.push(app)
 			busy.set(app.id, {state: 'installing', progress: 0})
 			return {src, app}
@@ -1509,6 +1548,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (src.folders?.length) app.folderIds = [...new Set([...(app.folderIds ?? []), ...src.folders.map((f) => f.id)])]
 		busy.set(app.id, {state: 'updating', progress: 10})
 		let step = 'getting its files ready'
+		// placeApp records the new loopback port before the new containers are up. Keep the old one if that fails.
+		const previousMcpPort = app.mcpInternalPort
+		let switched = false
 		try {
 			const internalPort = await placeApp(src, app)
 			await prepareOwnership(app)
@@ -1520,13 +1562,20 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			busy.set(app.id, {state: 'updating', progress: 85})
 			closeGateway(app.id)
 			app.internalPort = internalPort
+			switched = true
 			await compose(app, 'up', '-d', '--remove-orphans')
 			markStarted(app.id)
 			app.permissions = [...new Set([...app.permissions, ...wants])]
 			Object.assign(app, {version: src.version, name: src.name, icon: src.icon, path: src.path, requiresHttps: src.requiresHttps || undefined, internalHttps: src.web?.https || undefined})
+			if (src.mcp) app.mcp = src.mcp
+			else delete app.mcp
 			delete app.state
 			delete app.error
 		} catch (error) {
+			if (!switched) {
+				if (previousMcpPort) app.mcpInternalPort = previousMcpPort
+				else delete app.mcpInternalPort
+			}
 			if (error instanceof RpcError) throw error
 			console.error(`[omarchyd] updating ${app.id}:`, error)
 			const detail = String(error.message ?? error).replace(/\s+/g, ' ').trim().slice(-300)
@@ -1665,9 +1714,26 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		return appUsage.list
 	}
 
+	// Running installed apps that declared mcp:. Loopback only; never an openPort.
+	async function mcpTargets() {
+		await ready
+		const live = await liveStates()
+		const out = []
+		for (const a of state.apps) {
+			if (!a.mcp || !a.mcpInternalPort) continue
+			const b = busy.get(a.id)
+			const shown = b?.state ?? (a.state === 'error' ? 'unknown' : (live.get(a.id) ?? 'unknown'))
+			if (shown !== 'running' && shown !== 'ready') continue
+			const path = typeof a.mcp.path === 'string' && a.mcp.path.startsWith('/') ? a.mcp.path : `/${a.mcp.path ?? ''}`
+			out.push({appId: a.id, name: a.name, url: `http://127.0.0.1:${a.mcpInternalPort}${path}`, transport: a.mcp.transport, running: true})
+		}
+		return out
+	}
+
 	return {
 		ready,
 		usage,
+		mcpTargets,
 		shellFor,
 		checkSession,
 		issueSession,
