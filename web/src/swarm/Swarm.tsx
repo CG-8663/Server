@@ -7,7 +7,7 @@ import {lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type R
 import {mutate, query} from '../api'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
-import {Sheet, SheetHeader, StatusPill, Switch, bytes, duration, haptic, useConfirm, useToast} from '../ui'
+import {Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, useConfirm, useToast} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
@@ -164,9 +164,9 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 function Meter({icon, label, value}: {icon: IconName; label: string; value: number | null}) {
 	if (value === null) return null
 	return (
-		<span className="spec" title={label}>
-			<Icon name={icon} size={14} /> {value}%
-		</span>
+		<StatChip icon={icon} label={label}>
+			{value}%
+		</StatChip>
 	)
 }
 
@@ -194,14 +194,14 @@ function AgentCard({a, onClick}: {a: Agent; onClick: () => void}) {
 					<Meter icon="memory" label="Memory" value={pct(m.mem)} />
 					<Meter icon="disk" label="Disk" value={pct(rootDisk(a))} />
 					{typeof m.temp === 'number' && (
-						<span className="spec">
-							<Icon name="thermo" size={14} /> {Math.round(m.temp)}°C
-						</span>
+						<StatChip icon="thermo" label="Temperature">
+							{Math.round(m.temp)}°C
+						</StatChip>
 					)}
 					{!!m.updates && (
-						<span className="spec">
-							<Icon name="update" size={14} /> {m.updates} update{m.updates === 1 ? '' : 's'}
-						</span>
+						<StatChip icon="update" label="Updates">
+							{m.updates} update{m.updates === 1 ? '' : 's'}
+						</StatChip>
 					)}
 				</span>
 			)}

@@ -1,9 +1,10 @@
 import {createPortal} from 'react-dom'
-import {createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject} from 'react'
+import {createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject} from 'react'
 
 import {useQuery} from '@tanstack/react-query'
 import type {AppState, Machine, Wallpaper} from './api'
-import {Icon} from './icons'
+import {Icon, type IconName} from './icons'
+import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
 
 // ---- portals --------------------------------------------------------------------------
 // Sheets, the terminal and the console portal out of their screen. On the phone that's <body>;
@@ -177,6 +178,120 @@ export function Ring({value, color, children, size = 84, label}: {value: number;
 			</svg>
 			<div className="center">{children}</div>
 		</div>
+	)
+}
+
+// Last-N poll points for a sparkline. Keyed on fetch time so a flat value still plots.
+export function useHistory(value: number | undefined, stamp: number, size = 40) {
+	const [series, setSeries] = useState<number[]>([])
+	useEffect(() => {
+		if (value === undefined || !stamp) return
+		setSeries((s) => [...s.slice(-(size - 1)), value])
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [stamp])
+	return series
+}
+
+export function Spark({series, max = 100, color, label}: {series: number[]; max?: number; color: string; label: string}) {
+	const id = `spark${useId().replace(/:/g, '')}`
+	const d = sparkPath(series, {max})
+	if (!d) return <svg className="spark" viewBox={`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`} aria-hidden="true" />
+	return (
+		<svg className="spark" viewBox={`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`} preserveAspectRatio="none" role="img" aria-label={label}>
+			<defs>
+				<linearGradient id={id} x1="0" x2="0" y1="0" y2="1">
+					<stop offset="0" stopColor={color} stopOpacity="0.35" />
+					<stop offset="1" stopColor={color} stopOpacity="0" />
+				</linearGradient>
+			</defs>
+			<path d={`${d} L${SPARK_WIDTH},${SPARK_HEIGHT} L0,${SPARK_HEIGHT} Z`} fill={`url(#${id})`} />
+			<path d={d} fill="none" stroke={color} strokeWidth="2.2" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+		</svg>
+	)
+}
+
+export function StatCard({
+	icon,
+	label,
+	value,
+	unit,
+	sub,
+	subStyle,
+	spark,
+	ariaLabel,
+}: {
+	icon: IconName
+	label: string
+	value: ReactNode
+	unit?: ReactNode
+	sub?: ReactNode
+	subStyle?: CSSProperties
+	spark?: {series: number[]; color: string; label: string; max?: number}
+	ariaLabel?: string
+}) {
+	return (
+		<section className="glass stat" aria-label={ariaLabel ?? label}>
+			<div className="k">
+				<Icon name={icon} size={16} /> {label}
+			</div>
+			<div className="v">
+				{value}
+				{unit ? <small>{unit}</small> : null}
+			</div>
+			{sub !== undefined && (
+				<div className="sub" style={subStyle}>
+					{sub}
+				</div>
+			)}
+			{spark ? <Spark series={spark.series} color={spark.color} label={spark.label} max={spark.max} /> : null}
+		</section>
+	)
+}
+
+export function Card({
+	children,
+	className,
+	style,
+	label,
+}: {
+	children: ReactNode
+	className?: string
+	style?: CSSProperties
+	label?: string
+}) {
+	return (
+		<section className={['glass', 'card', className].filter(Boolean).join(' ')} style={style} aria-label={label}>
+			{children}
+		</section>
+	)
+}
+
+export function CardHead({title, extra, style}: {title: ReactNode; extra?: ReactNode; style?: CSSProperties}) {
+	return (
+		<div className="card-head" style={style}>
+			<strong>{title}</strong>
+			{extra ? <span>{extra}</span> : null}
+		</div>
+	)
+}
+
+export function StatChip({
+	icon,
+	label,
+	children,
+	className = 'spec',
+	size = 14,
+}: {
+	icon: IconName
+	label: string
+	children: ReactNode
+	className?: string
+	size?: number
+}) {
+	return (
+		<span className={className} title={label}>
+			<Icon name={icon} size={size} /> {children}
+		</span>
 	)
 }
 

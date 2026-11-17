@@ -9,7 +9,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from '../api'
 import {Icon} from '../icons'
-import {KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
+import {Card, KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
 
 type Health = {passed: boolean | null; temperature: number | null; powerOnHours: number | null; lifetimeUsed: number | null; reallocated: number | null; pending: number | null}
 export type Drive = {
@@ -182,12 +182,12 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 			</div>
 
 			{ready === false && (
-				<div className="glass card" style={{marginBottom: 18}}>
+				<Card style={{marginBottom: 18}}>
 					<b>Storage tools aren’t set up</b>
 					<p className="muted" style={{margin: '6px 0 0', fontSize: 14}}>
 						Run the Omarchy Server installer again on the server. It adds the small helper that manages drives, pools and network shares, then come back here.
 					</p>
-				</div>
+				</Card>
 			)}
 
 			<Section
@@ -367,7 +367,7 @@ function DriveSheet({d, onClose, onChanged}: {d: Drive | null; onClose: () => vo
 						</div>
 					)}
 					{d.role === 'data' && !d.btrfs && (
-						<div className="glass card" style={{marginTop: 18}}>
+						<Card style={{marginTop: 18}}>
 							<b style={{fontSize: 14}}>Use this drive for a pool</b>
 							<p className="muted" style={{fontSize: 13, margin: '6px 0 8px'}}>
 								It has data on it. Omarchy Server never erases a drive by itself. If you’re sure nothing on it is needed, erase it in a terminal on the server:
@@ -375,7 +375,7 @@ function DriveSheet({d, onClose, onChanged}: {d: Drive | null; onClose: () => vo
 							<code className="mono" style={{display: 'block', fontSize: 13, userSelect: 'all'}}>
 								sudo wipefs -a {d.path}
 							</code>
-						</div>
+						</Card>
 					)}
 				</>
 			)}
