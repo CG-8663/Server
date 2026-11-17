@@ -284,15 +284,23 @@ test('an unknown tool is not executed', async () => {
 	}
 })
 
-test('a write tool is not run yet', async () => {
+test('a write tool is not run until Approve', async () => {
 	const {calls, runProcedure} = factsProcedure()
 	const {seen, fetchImpl} = scripted([toolSse('call_w', 'apps_install', '{"appId":"jellyfin"}'), textSse('cannot')])
 	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
 	try {
-		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'install jellyfin', emit: () => {}})
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'install jellyfin', emit: (e) => events.push(e)})
 		assert.equal(calls.some((c) => c.name === 'apps.install'), false)
-		const tool = seen[1].body.messages.find((m) => m.role === 'tool')
-		assert.equal(tool.content, 'writes are not enabled yet')
+		assert.equal(seen.length, 1)
+		const card = events.find((e) => e.event === 'action')
+		assert.equal(card.data.status, 'pending')
+		assert.equal(card.data.toolName, 'apps_install')
+		assert.equal(card.data.rpc.input.appId, 'jellyfin')
+		assert.equal(events.at(-1).event, 'done')
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		assert.equal(saved.actions[0].status, 'pending')
+		assert.equal(saved.messages.some((m) => m.role === 'tool'), false)
 	} finally {
 		await box.close()
 	}
@@ -619,6 +627,168 @@ test('omarchyd streams a turn as server-sent events', async () => {
 	} finally {
 		await new Promise((r) => srv.close(r))
 		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 40})
+	}
+})
+
+function streamPair(body) {
+	const chunks = []
+	const req = {
+		socket: {on() {}, off() {}, setNoDelay() {}},
+		async *[Symbol.asyncIterator]() {
+			yield Buffer.from(JSON.stringify(body))
+		},
+	}
+	const res = {
+		writableEnded: false,
+		destroyed: false,
+		writeHead() {},
+		write(chunk) {
+			chunks.push(String(chunk))
+			return true
+		},
+		end() {
+			this.writableEnded = true
+		},
+		on() {},
+		chunks,
+	}
+	return {req, res, chunks}
+}
+
+test('a write tool becomes pending and Approve runs the RPC once', async () => {
+	const calls = []
+	const runProcedure = async (name, input, auth) => {
+		calls.push({name, input, auth})
+		if (name === 'system.getHostname') return 'box'
+		if (name === 'system.device') return {device: 'ThinkPad', os: 'Omarchy'}
+		if (name === 'apps.list') return []
+		if (name === 'swarm.list') return []
+		if (name === 'machines.create') return {id: 'vm1'}
+		return null
+	}
+	const args = {name: 'ubuntu', osId: 'ubuntu-2404', cores: 2, memoryGb: 4, diskSizeGb: 32, username: 'chris'}
+	const {seen, fetchImpl} = scripted([
+		toolSse('call_vm', 'machines_create', JSON.stringify(args)),
+		textSse('Created.'),
+	])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'add ubuntu vm', emit: (e) => events.push(e)})
+		const actionEv = events.find((e) => e.event === 'action')
+		assert.equal(actionEv.data.status, 'pending')
+		assert.equal(actionEv.data.kind, 'rpc')
+		assert.equal(actionEv.data.toolName, 'machines_create')
+		assert.match(actionEv.data.detail, /Password will be set when you approve/)
+		assert.equal(JSON.stringify(actionEv.data).includes('password'), false)
+		assert.equal(events.at(-1).event, 'done')
+		assert.equal(calls.some((c) => c.name === 'machines.create'), false)
+		assert.equal(seen.length, 1)
+		const schema = seen[0].body.tools.find((t) => t.function.name === 'machines_create')
+		assert.equal(schema.function.parameters.properties.password, undefined)
+		assert.equal(seen[0].body.tools.some((t) => t.function.name === 'swarm_action'), true)
+		await box.asst.procedures['assistant.approve'].run({actionId: actionEv.data.id}, {auth: {userId: 'owner'}})
+		const created = calls.filter((c) => c.name === 'machines.create')
+		assert.equal(created.length, 1)
+		assert.equal(created[0].input.name, 'ubuntu')
+		assert.equal(created[0].input.osId, 'ubuntu-2404')
+		assert.equal(created[0].input.cores, 2)
+		assert.equal(created[0].input.memoryGb, 4)
+		assert.equal(created[0].input.diskSizeGb, 32)
+		assert.equal(created[0].input.username, 'chris')
+		assert.equal(created[0].input.password.length, 16)
+		assert.match(created[0].input.password, /^[A-Za-z0-9_-]+$/)
+		assert.equal(created[0].auth.role, 'owner')
+		const password = created[0].input.password
+		assert.equal(JSON.stringify(events).includes(password), false)
+		const raw = await readFile(join(box.dataDir, 'assistant', 'conversations', `${out.conversationId}.json`), 'utf8')
+		assert.equal(raw.includes(password), false)
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		assert.equal(saved.actions[0].status, 'done')
+		const toolMsg = saved.messages.find((m) => m.role === 'tool' && m.toolCallId === 'call_vm')
+		assert.match(toolMsg.content, /vm1/)
+		assert.equal(toolMsg.content.includes(password), false)
+		const {req, res, chunks} = streamPair({conversationId: out.conversationId, continue: true})
+		await box.asst.handleStream(req, res, {userId: 'owner'})
+		const follow = chunks.join('')
+		assert.match(follow, /event: text\ndata: \{"text":"Created\."\}/)
+		assert.match(follow, /event: done\ndata: \{"conversationId":/)
+		assert.equal(follow.includes(password), false)
+		const after = await box.asst.conversations.get('owner', out.conversationId)
+		assert.equal(after.messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n'), 'add ubuntu vm')
+		assert.equal(calls.filter((c) => c.name === 'machines.create').length, 1)
+		assert.equal(JSON.stringify(seen.at(-1).body).includes(password), false)
+		await box.asst.procedures['assistant.approve'].run({actionId: actionEv.data.id}, {auth: {userId: 'owner'}}).then(
+			() => assert.fail('second approve'),
+			(e) => {
+				assert.equal(e.code, 'CONFLICT')
+				assert.equal(e.message, 'That step was already handled')
+			},
+		)
+		assert.equal(calls.filter((c) => c.name === 'machines.create').length, 1)
+	} finally {
+		await box.close()
+	}
+})
+
+test('Reject does not run the RPC', async () => {
+	const calls = []
+	const runProcedure = async (name, input) => {
+		calls.push({name, input})
+		if (name === 'system.getHostname') return 'box'
+		if (name === 'system.device') return {device: 'ThinkPad', os: 'Omarchy'}
+		if (name === 'apps.list') return []
+		if (name === 'swarm.list') return [{id: 'abc', name: 'nas'}]
+		return true
+	}
+	const {fetchImpl} = scripted([toolSse('call_s', 'swarm_action', JSON.stringify({id: 'abc', name: 'reboot'}))])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'reboot the swarm box', emit: (e) => events.push(e)})
+		assert.equal(events.find((e) => e.event === 'action').data.status, 'pending')
+		assert.equal(calls.some((c) => c.name === 'swarm.action'), false)
+		await box.asst.procedures['assistant.reject'].run({actionId: events.find((e) => e.event === 'action').data.id}, {auth: {userId: 'owner'}})
+		assert.equal(calls.some((c) => c.name === 'swarm.action'), false)
+		const again = await box.asst.procedures['assistant.getConversation'].run({id: out.conversationId}, {auth: {userId: 'owner'}})
+		assert.equal(again.actions[0].status, 'rejected')
+		assert.equal(again.messages.some((m) => m.role === 'tool' && m.content === 'user rejected this step'), true)
+		assert.equal(ALLOWED['assistant.reject'], 'mutation')
+	} finally {
+		await box.close()
+	}
+})
+
+test('a member cannot approve swarm.action', async () => {
+	const calls = []
+	const runProcedure = async (name, input) => (calls.push({name, input}), true)
+	const dataDir = await mkdtemp(join(os.tmpdir(), 'al-'))
+	try {
+		const asst = createAssistant({dataDir, accounts: fakeAccounts(), now: () => 1, runProcedure, fetchImpl: fetch})
+		assert.equal(WRITE_TOOLS.every((t) => t.kind === 'mutation'), true)
+		assert.equal(toolsFor('member').some((t) => t.name === 'swarm_action'), false)
+		assert.equal(toolsFor('member').some((t) => t.name === 'system_restart' || t.name === 'system_shutdown'), false)
+		assert.equal(toolsFor('member').some((t) => t.ownerOnly), false)
+		assert.equal(toolsFor('owner').some((t) => t.name === 'swarm_action'), true)
+		assert.equal(toolsFor('member').some((t) => t.name === 'machines_create'), true)
+		const conv = await asst.conversations.create('sam', {title: 'x'})
+		const action = await asst.conversations.putAction('sam', conv.id, {
+			kind: 'rpc',
+			toolName: 'swarm_action',
+			title: 'Reboot',
+			detail: '',
+			rpc: {path: 'swarm.action', input: {id: 'abc', name: 'reboot'}},
+			ownerOnly: true,
+		})
+		await assert.rejects(
+			asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'sam'}}),
+			/owner|Forbidden|swarm/i,
+		)
+		assert.equal(calls.length, 0)
+		assert.equal((await asst.conversations.get('sam', conv.id)).actions[0].status, 'error')
+		assert.equal(ALLOWED['assistant.approve'], 'mutation')
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
 	}
 })
 

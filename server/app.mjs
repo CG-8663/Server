@@ -88,6 +88,8 @@ export const ALLOWED = {
 	'assistant.conversations': 'query',
 	'assistant.getConversation': 'query',
 	'assistant.deleteConversation': 'mutation',
+	'assistant.approve': 'mutation',
+	'assistant.reject': 'mutation',
 	'omarchy.installPlugin': 'mutation',
 	'omarchy.removePlugin': 'mutation',
 	'apps.uninstall': 'mutation',

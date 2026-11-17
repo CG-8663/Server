@@ -6,6 +6,8 @@ const tool = (name, rpc, description, properties = {}, ownerOnly = false) => ({
 	ownerOnly,
 })
 
+const mutation = (name, rpc, description, properties = {}, ownerOnly = false) => ({...tool(name, rpc, description, properties, ownerOnly), kind: 'mutation'})
+
 export const READ_TOOLS = [
 	tool('system_diskUsage', 'system.diskUsage', 'Disk used and free on this server'),
 	tool('system_cpuUsage', 'system.cpuUsage', 'CPU used on this server'),
@@ -35,15 +37,14 @@ export const READ_TOOLS = [
 	tool('notifications_get', 'notifications.get', 'Notifications waiting on this server'),
 ]
 
-// Declared so a model call is recognized. The loop does not run these until Approve exists.
 export const WRITE_TOOLS = [
-	tool('apps_install', 'apps.install', 'Install an app', {appId: {type: 'string'}}),
-	tool('apps_start', 'apps.start', 'Start an app', {appId: {type: 'string'}}),
-	tool('apps_stop', 'apps.stop', 'Stop an app', {appId: {type: 'string'}}),
-	tool('apps_restart', 'apps.restart', 'Restart an app', {appId: {type: 'string'}}),
-	tool('apps_uninstall', 'apps.uninstall', 'Uninstall an app', {appId: {type: 'string'}}),
-	tool('apps_update', 'apps.update', 'Update an app', {appId: {type: 'string'}}),
-	tool('machines_create', 'machines.create', 'Create a virtual machine', {
+	mutation('apps_install', 'apps.install', 'Install an app', {appId: {type: 'string'}}),
+	mutation('apps_start', 'apps.start', 'Start an app', {appId: {type: 'string'}}),
+	mutation('apps_stop', 'apps.stop', 'Stop an app', {appId: {type: 'string'}}),
+	mutation('apps_restart', 'apps.restart', 'Restart an app', {appId: {type: 'string'}}),
+	mutation('apps_uninstall', 'apps.uninstall', 'Uninstall an app', {appId: {type: 'string'}}),
+	mutation('apps_update', 'apps.update', 'Update an app', {appId: {type: 'string'}}),
+	mutation('machines_create', 'machines.create', 'Create a virtual machine', {
 		name: {type: 'string'},
 		osId: {type: 'string'},
 		cores: {type: 'integer'},
@@ -51,23 +52,37 @@ export const WRITE_TOOLS = [
 		diskSizeGb: {type: 'integer'},
 		username: {type: 'string'},
 	}),
-	tool('machines_start', 'machines.start', 'Start a virtual machine', {id: {type: 'string'}}),
-	tool('machines_stop', 'machines.stop', 'Stop a virtual machine', {id: {type: 'string'}}),
-	tool('machines_restart', 'machines.restart', 'Restart a virtual machine', {id: {type: 'string'}}),
-	tool('machines_uninstall', 'machines.uninstall', 'Remove a virtual machine', {id: {type: 'string'}}),
-	tool('machines_updateSettings', 'machines.updateSettings', 'Change a virtual machine’s settings', {id: {type: 'string'}}),
-	tool('swarm_action', 'swarm.action', 'Install a plugin, set a theme, or reboot a swarm computer', {
+	mutation('machines_start', 'machines.start', 'Start a virtual machine', {id: {type: 'string'}}),
+	mutation('machines_stop', 'machines.stop', 'Stop a virtual machine', {id: {type: 'string'}}),
+	mutation('machines_restart', 'machines.restart', 'Restart a virtual machine', {id: {type: 'string'}}),
+	mutation('machines_uninstall', 'machines.uninstall', 'Remove a virtual machine', {id: {type: 'string'}}),
+	mutation('machines_updateSettings', 'machines.updateSettings', 'Change a virtual machine’s port forwards', {
+		id: {type: 'string'},
+		portForwards: {
+			type: 'array',
+			items: {
+				type: 'object',
+				properties: {
+					id: {type: 'string'},
+					protocol: {type: 'string', enum: ['tcp', 'udp']},
+					hostPort: {type: 'integer'},
+					guestPort: {type: 'integer'},
+				},
+			},
+		},
+	}),
+	mutation('swarm_action', 'swarm.action', 'Install a plugin, set a theme, or reboot a swarm computer', {
 		id: {type: 'string'},
 		name: {type: 'string', enum: ['plugin-install', 'plugin-remove', 'theme-set', 'reboot']},
 		pluginId: {type: 'string'},
 		theme: {type: 'string'},
 	}, true),
-	tool('swarm_rename', 'swarm.rename', 'Rename a swarm computer', {id: {type: 'string'}, name: {type: 'string'}}, true),
-	tool('omarchy_setTheme', 'omarchy.setTheme', 'Set the Omarchy theme', {slug: {type: 'string'}}, true),
-	tool('omarchy_installPlugin', 'omarchy.installPlugin', 'Install an Omarchy plugin', {id: {type: 'string'}}, true),
-	tool('omarchy_removePlugin', 'omarchy.removePlugin', 'Remove an Omarchy plugin', {id: {type: 'string'}}, true),
-	tool('system_restart', 'system.restart', 'Restart this server', {}, true),
-	tool('system_shutdown', 'system.shutdown', 'Shut down this server', {}, true),
+	mutation('swarm_rename', 'swarm.rename', 'Rename a swarm computer', {id: {type: 'string'}, name: {type: 'string'}}, true),
+	mutation('omarchy_setTheme', 'omarchy.setTheme', 'Set the Omarchy theme', {slug: {type: 'string'}}, true),
+	mutation('omarchy_installPlugin', 'omarchy.installPlugin', 'Install an Omarchy plugin', {id: {type: 'string'}}, true),
+	mutation('omarchy_removePlugin', 'omarchy.removePlugin', 'Remove an Omarchy plugin', {id: {type: 'string'}}, true),
+	mutation('system_restart', 'system.restart', 'Restart this server', {}, true),
+	mutation('system_shutdown', 'system.shutdown', 'Shut down this server', {}, true),
 ]
 
 const readByName = new Map(READ_TOOLS.map((t) => [t.name, t]))
@@ -75,7 +90,7 @@ const writeByName = new Map(WRITE_TOOLS.map((t) => [t.name, t]))
 
 export function toolsFor(role) {
 	const owner = role === 'owner'
-	return READ_TOOLS.filter((t) => owner || !t.ownerOnly)
+	return [...READ_TOOLS, ...WRITE_TOOLS].filter((t) => owner || !t.ownerOnly)
 }
 
 export function openAiTools(role) {
@@ -109,6 +124,10 @@ export function filterAppStore(registry, input = {}) {
 
 export function lookupTool(name) {
 	return readByName.get(name) ?? null
+}
+
+export function writeTool(name) {
+	return writeByName.get(name) ?? null
 }
 
 export function isWriteTool(name) {

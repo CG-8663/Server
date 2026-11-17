@@ -1,7 +1,7 @@
 import {streamChat} from './providers.mjs'
-import {filterAppStore, isWriteTool, lookupTool, openAiTools} from './tools.mjs'
+import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
-export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. You cannot change anything yet. Stay on this host.'
+export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Stay on this host.'
 
 const LIMIT = 'I hit the lookup limit for this turn.'
 const KEY_REJECTED = 'That API key was rejected. Replace it in Settings → Assistant.'
@@ -10,16 +10,87 @@ const MAX_MESSAGES = 40
 
 const textOf = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
 
-const withoutSecrets = (row) => {
-	if (!row || typeof row !== 'object' || Array.isArray(row)) return row
-	const {credentials, defaultPassword, ...rest} = row
-	return rest
+function stripSecrets(value) {
+	if (Array.isArray(value)) return value.map(stripSecrets)
+	if (!value || typeof value !== 'object') return value
+	const out = {}
+	for (const [k, v] of Object.entries(value)) {
+		if (k === 'password' || k === 'apiKey' || k === 'credentials' || k === 'defaultPassword') continue
+		out[k] = stripSecrets(v)
+	}
+	return out
+}
+
+function plainInput(args) {
+	const input = stripSecrets(args)
+	return input && typeof input === 'object' && !Array.isArray(input) ? input : {}
 }
 
 function redactToolResult(name, result) {
 	if (name !== 'apps_list' && name !== 'appStore_app') return result
-	if (Array.isArray(result)) return result.map(withoutSecrets)
-	return withoutSecrets(result)
+	if (Array.isArray(result)) return result.map(stripSecrets)
+	return stripSecrets(result)
+}
+
+export function publicAction(action) {
+	if (!action || typeof action !== 'object') return action
+	const copy = {...action}
+	delete copy.password
+	if (action.rpc && typeof action.rpc === 'object') copy.rpc = {path: action.rpc.path, input: plainInput(action.rpc.input)}
+	if (action.mcp && typeof action.mcp === 'object') copy.mcp = {...action.mcp, arguments: stripSecrets(action.mcp.arguments)}
+	return copy
+}
+
+function storedArguments(name, raw) {
+	const text = raw || '{}'
+	if (name !== 'machines_create') return text
+	try {
+		return JSON.stringify(plainInput(parseArgs(text)))
+	} catch {
+		return text
+	}
+}
+
+function cardFor(name, args) {
+	const a = args && typeof args === 'object' ? args : {}
+	const appId = String(a.appId ?? '').trim()
+	const apps = {apps_install: 'Install', apps_start: 'Start', apps_stop: 'Stop', apps_restart: 'Restart', apps_uninstall: 'Uninstall', apps_update: 'Update'}
+	if (apps[name]) return {title: appId ? `${apps[name]} ${appId}` : `${apps[name]} an app`, detail: appId || name}
+	if (name === 'machines_create') {
+		const vm = String(a.name ?? '').trim()
+		const bits = []
+		if (a.osId) bits.push(String(a.osId))
+		if (a.cores != null && a.cores !== '') bits.push(`${a.cores} cores`)
+		if (a.memoryGb != null && a.memoryGb !== '') bits.push(`${a.memoryGb} GB memory`)
+		if (a.diskSizeGb != null && a.diskSizeGb !== '') bits.push(`${a.diskSizeGb} GB disk`)
+		if (a.username) bits.push(`user ${a.username}`)
+		bits.push('Password will be set when you approve')
+		return {title: vm ? `Create VM “${vm}”` : 'Create a virtual machine', detail: bits.join(' · ')}
+	}
+	const id = String(a.id ?? '').trim()
+	const vmVerb = {machines_start: 'Start', machines_stop: 'Stop', machines_restart: 'Restart', machines_uninstall: 'Remove'}[name]
+	if (vmVerb) return {title: id ? `${vmVerb} VM ${id}` : `${vmVerb} a virtual machine`, detail: id || name}
+	if (name === 'machines_updateSettings') {
+		const n = Array.isArray(a.portForwards) ? a.portForwards.length : 0
+		return {title: id ? `Update settings for ${id}` : 'Update virtual machine settings', detail: n ? `${n} port forward${n === 1 ? '' : 's'}` : 'Settings'}
+	}
+	if (name === 'swarm_action') {
+		const labels = {'plugin-install': 'Install a swarm plugin', 'plugin-remove': 'Remove a swarm plugin', 'theme-set': 'Set a swarm theme', reboot: 'Reboot a swarm computer'}
+		return {title: labels[a.name] || 'Swarm action', detail: [a.id, a.name, a.pluginId, a.theme].filter((v) => v != null && v !== '').map(String).join(' · ')}
+	}
+	if (name === 'swarm_rename') return {title: a.name ? `Rename swarm computer to ${a.name}` : 'Rename a swarm computer', detail: [a.id, a.name].filter(Boolean).join(' · ')}
+	if (name === 'omarchy_setTheme') return {title: a.slug ? `Set theme ${a.slug}` : 'Set the Omarchy theme', detail: String(a.slug ?? '')}
+	if (name === 'omarchy_installPlugin') return {title: a.id ? `Install plugin ${a.id}` : 'Install an Omarchy plugin', detail: String(a.id ?? '')}
+	if (name === 'omarchy_removePlugin') return {title: a.id ? `Remove plugin ${a.id}` : 'Remove an Omarchy plugin', detail: String(a.id ?? '')}
+	if (name === 'system_restart') return {title: 'Restart this server', detail: 'The server restarts when you approve'}
+	if (name === 'system_shutdown') return {title: 'Shut down this server', detail: 'The server shuts down when you approve'}
+	return {title: name, detail: ''}
+}
+
+function pendingNote(actions) {
+	const open = (actions ?? []).filter((a) => a.status === 'pending')
+	if (!open.length) return ''
+	return open.map((a) => `Pending approval: ${a.title}. ${a.detail}`).join('\n')
 }
 
 function toOpenAI(m) {
@@ -74,9 +145,30 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 		return lines.join('\n')
 	}
 
+	async function propose(tool, auth, conversationId) {
+		let args
+		try {
+			args = parseArgs(tool.arguments)
+		} catch {
+			return {content: 'invalid arguments', state: 'error'}
+		}
+		const spec = writeTool(tool.name)
+		if (!spec || (spec.ownerOnly && auth.role !== 'owner')) return {content: 'unknown tool', state: 'done'}
+		const card = cardFor(spec.name, args)
+		const action = await conversations.putAction(auth.userId, conversationId, {
+			kind: 'rpc',
+			toolName: spec.name,
+			toolCallId: tool.id,
+			title: card.title,
+			detail: card.detail,
+			rpc: {path: spec.rpc, input: plainInput(args)},
+			mcp: null,
+			ownerOnly: !!spec.ownerOnly,
+		})
+		return {action}
+	}
+
 	async function runTool(tool, auth) {
-		// Writes stay pending until Approve exists. Do not call the procedure.
-		if (isWriteTool(tool.name)) return {content: 'writes are not enabled yet', state: 'done'}
 		const read = lookupTool(tool.name)
 		if (!read) return {content: 'unknown tool', state: 'done'}
 		let args
@@ -94,7 +186,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 		}
 	}
 
-	async function runTurn({userId, role, message, conversationId, keyId, signal, emit}) {
+	async function runTurn({userId, role, message, conversationId, keyId, signal, emit, continue: resume}) {
 		const say = (event, data) => {
 			if (typeof emit === 'function') emit({event, data})
 		}
@@ -109,6 +201,10 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 				say('error', {message: e?.message || 'Add an API key in Settings → Assistant, or ask the owner to share one'})
 				return finish(row?.id)
 			}
+			if (resume && !row) {
+				say('error', {message: 'That chat isn’t here'})
+				return finish(null)
+			}
 			if (!row) {
 				const title = String(message ?? '').split(/\r?\n/)[0].trim().slice(0, 48) || 'Chat'
 				row = await conversations.create(userId, {keyId: key.id, title})
@@ -116,7 +212,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 				row = await conversations.setKey(userId, row.id, key.id)
 			}
 			const auth = {userId, role}
-			row = await conversations.append(userId, row.id, {role: 'user', content: String(message ?? ''), at: stamp()})
+			if (!resume) row = await conversations.append(userId, row.id, {role: 'user', content: String(message ?? ''), at: stamp()})
 			const system = await facts(role, auth)
 			const tools = openAiTools(role)
 			let used = 0
@@ -129,7 +225,8 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 				if (signal?.aborted) return finish(row.id)
 				const history = row.messages.map(toOpenAI).filter(Boolean).slice(-MAX_MESSAGES)
 				while (history[0]?.role === 'tool') history.shift()
-				const messages = [{role: 'system', content: system}, ...history]
+				const note = pendingNote(row.actions)
+				const messages = [{role: 'system', content: note ? `${system}\n\n${note}` : system}, ...history]
 				let text = ''
 				const toolCalls = []
 				let providerError = null
@@ -173,18 +270,50 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 					say('done', {conversationId: row.id})
 					return finish(row.id)
 				}
+				let end = toolCalls.length
+				for (let i = 0; i < toolCalls.length; i++) {
+					if (isWriteTool(toolCalls[i].name)) {
+						end = i + 1
+						break
+					}
+				}
+				const batch = toolCalls.slice(0, end)
 				row = await conversations.append(userId, row.id, {
 					role: 'assistant',
 					content: text,
-					toolCalls: toolCalls.map((t) => ({id: t.id, name: t.name, arguments: t.arguments})),
+					toolCalls: batch.map((t) => ({id: t.id, name: t.name, arguments: storedArguments(t.name, t.arguments)})),
 					at: stamp(),
 				})
 				let hit = false
-				const leftover = []
-				for (const tool of toolCalls) {
+				for (const tool of batch) {
+					if (isWriteTool(tool.name)) {
+						const outcome = await propose(tool, auth, row.id)
+						if (outcome.action) {
+							say('action', publicAction(outcome.action))
+							say('done', {conversationId: row.id})
+							return finish(row.id)
+						}
+						row = await conversations.append(userId, row.id, {
+							role: 'tool',
+							toolCallId: tool.id,
+							name: tool.name,
+							content: outcome.content,
+							at: stamp(),
+						})
+						say('tool', {name: tool.name, state: outcome.state})
+						used++
+						if (used >= MAX_CALLS) hit = true
+						continue
+					}
 					if (used >= MAX_CALLS) {
-						leftover.push(tool)
 						hit = true
+						row = await conversations.append(userId, row.id, {
+							role: 'tool',
+							toolCallId: tool.id,
+							name: tool.name,
+							content: LIMIT,
+							at: stamp(),
+						})
 						continue
 					}
 					const outcome = await runTool(tool, auth)
@@ -200,15 +329,6 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 					if (used >= MAX_CALLS) hit = true
 				}
 				if (!hit) continue
-				for (const tool of leftover) {
-					row = await conversations.append(userId, row.id, {
-						role: 'tool',
-						toolCallId: tool.id,
-						name: tool.name,
-						content: LIMIT,
-						at: stamp(),
-					})
-				}
 				row = await conversations.append(userId, row.id, {role: 'assistant', content: LIMIT, at: stamp()})
 				say('text', {text: LIMIT})
 				say('done', {conversationId: row.id})
@@ -220,5 +340,9 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 		}
 	}
 
-	return {runTurn}
+	function runTurnContinue(opts) {
+		return runTurn({...opts, continue: true})
+	}
+
+	return {runTurn, runTurnContinue}
 }
