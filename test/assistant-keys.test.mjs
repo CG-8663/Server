@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
-import {mkdir, mkdtemp, readFile, rm, stat} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {test} from 'node:test'
 
+import {openAccounts} from '../omarchyd/accounts.mjs'
 import {createKeyStore} from '../omarchyd/assistant/keys.mjs'
+import {startOmarchyd} from '../omarchyd/server.mjs'
 
 const tmp = async () => mkdtemp(join(os.tmpdir(), 'ask-'))
 
@@ -64,5 +66,37 @@ test('only the server owner can set systemDefault, and only on a key they own', 
 		assert.equal((await keys.resolveForUser('lee')).id, second.id)
 	} finally {
 		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
+test('assistant key RPCs: member cannot set default; secret stays off the wire', async () => {
+	const root = await tmp()
+	const data = join(root, 'data')
+	try {
+		const accounts = await openAccounts(data)
+		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+		const file = join(data, 'accounts.json')
+		const state = JSON.parse(await readFile(file, 'utf8'))
+		state.users.push({userId: 'sam', name: 'Sam', role: 'member', language: 'en', salt: state.users[0].salt, hash: state.users[0].hash, createdAt: Date.now()})
+		await writeFile(file, JSON.stringify(state, null, '\t'))
+		const d = await startOmarchyd({port: 0, dataDir: data, home: root})
+		try {
+			const login = async (userId) => {
+				const r = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId, password: 'correct horse', client: {id: 't'}})})).json()
+				return {authorization: `Bearer ${r.result.data.accessToken}`, 'content-type': 'application/json'}
+			}
+			const owner = await login('owner')
+			const member = await login('sam')
+			const added = await (await fetch(`${d.url}/trpc/assistant.addKey`, {method: 'POST', headers: owner, body: JSON.stringify({name: 'x', provider: 'spacexai', apiKey: 'sk-live-9999', model: 'grok-4.7'})})).json()
+			assert.equal(added.result.data.last4, '9999')
+			assert.equal(added.result.data.apiKey, undefined)
+			assert.match(JSON.stringify(added), /^(?!.*sk-live-9999).*$/)
+			const def = await fetch(`${d.url}/trpc/assistant.updateKey`, {method: 'POST', headers: member, body: JSON.stringify({id: added.result.data.id, systemDefault: true})})
+			assert.equal(def.status, 403)
+		} finally {
+			await d.close()
+		}
+	} finally {
+		await rm(root, {recursive: true, force: true})
 	}
 })

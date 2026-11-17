@@ -10,6 +10,7 @@ import os from 'node:os'
 import {dirname, extname, join} from 'node:path'
 
 import {openAccounts} from './accounts.mjs'
+import {createAssistant} from './assistant.mjs'
 import {APP_COOKIE, createApps} from './apps.mjs'
 import {createFiles} from './files.mjs'
 import {createMachines} from './machines.mjs'
@@ -37,6 +38,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		})
 	})
 	const accounts = await openAccounts(dataDir)
+	const assistant = createAssistant({dataDir, accounts})
 	const files = createFiles({home, dataDir})
 	const machines = createMachines({dataDir, files, ...machineOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
@@ -337,6 +339,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		},
 		'apps.getTorEnabled': {kind: 'query', run: () => false},
 	}
+	Object.assign(procedures, assistant.procedures)
 
 	const omarchyTheme = createOmarchyTheme({home, ...themeOptions})
 	const omarchyPlugins = createOmarchyPlugins({home, theme: omarchyTheme, ...pluginOptions})
