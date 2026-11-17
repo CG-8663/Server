@@ -433,6 +433,7 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 	const host = String(proxy.APP_HOST ?? '').trim()
 	let internalPort = null
 	let webContainerPort = null
+	let boundService = null // the service that received the web loopback publish
 	const containerPort = (p) => Number(String(typeof p === 'object' ? p.target : p).split('/')[0].split(':').pop())
 	if (Number.isInteger(appPort) && appPort > 0) {
 		webContainerPort = appPort
@@ -448,6 +449,7 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 			if (!key) throw new Error(`Can’t tell which service is the web interface (${host || 'none named'})`)
 			internalPort = allocatePort()
 			services[key].ports = [...(services[key].ports ?? []), `127.0.0.1:${internalPort}:${appPort}`]
+			boundService = key
 		}
 	}
 	// TouchWorkStation listings are plain Docker Compose files: the listing names its web service and
@@ -462,18 +464,23 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 			svc.ports = (svc.ports ?? []).filter((p) => containerPort(p) !== web.port)
 			internalPort = allocatePort()
 			svc.ports.push(`127.0.0.1:${internalPort}:${web.port}`)
+			boundService = web.service
 		}
 	}
-	// MCP is published on 127.0.0.1 only. The web container port is not published a second time.
+	// MCP is published on 127.0.0.1 only. The web loopback is reused only for the service that got it.
 	const mcpPort = typeof mcp?.port === 'string' && mcp.port.trim() ? Number(mcp.port) : mcp?.port
 	const mcpSvc = mcp?.service ? services[mcp.service] : null
 	let mcpInternalPort = null
+	const sameBinding = boundService !== null && mcp?.service === boundService && webContainerPort !== null && mcpPort === webContainerPort
 	if (mcpSvc && typeof mcpPort === 'number' && Number.isInteger(mcpPort) && mcpPort >= 1 && mcpPort <= 65535) {
-		if (webContainerPort !== null && mcpPort === webContainerPort) mcpInternalPort = internalPort
+		if (sameBinding) mcpInternalPort = internalPort
 		else if (mcpSvc.network_mode !== 'host') {
 			mcpSvc.ports = (mcpSvc.ports ?? []).filter((p) => containerPort(p) !== mcpPort)
 			mcpInternalPort = allocatePort()
 			mcpSvc.ports.push(`127.0.0.1:${mcpInternalPort}:${mcpPort}`)
+		} else if (boundService === null && internalPort && webContainerPort !== null && mcpPort === webContainerPort) {
+			// The app binds this port on 127.0.0.1 itself. Nothing else can publish it.
+			mcpInternalPort = internalPort
 		}
 	}
 	doc.services = services
@@ -1321,8 +1328,19 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 	}
 
+	// Loopback ports already given to other apps (web gateway target and MCP).
+	function takenLoopbacks(exceptId) {
+		const used = new Set()
+		for (const other of state.apps) {
+			if (other.id === exceptId) continue
+			if (other.internalPort) used.add(other.internalPort)
+			if (other.mcpInternalPort) used.add(other.mcpInternalPort)
+		}
+		return used
+	}
+
 	function systemPortFor(app) {
-		const used = new Set(state.apps.filter((a) => a.id !== app.id).map((a) => a.internalPort))
+		const used = takenLoopbacks(app.id)
 		let p = 20_000 + (parseInt(createHash('sha256').update(app.id).digest('hex').slice(0, 4), 16) % 9000)
 		while (used.has(p)) p++
 		return p
@@ -1336,12 +1354,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const c = await readYaml(dir, COMPOSE_FILES)
 		const text = await readFile(join(dir, c.name), 'utf8')
 		// Other apps' ports (an update keeps the app's own). A second call is the MCP loopback port.
-		const used = new Set()
-		for (const other of state.apps) {
-			if (other.id === app.id) continue
-			if (other.internalPort) used.add(other.internalPort)
-			if (other.mcpInternalPort) used.add(other.mcpInternalPort)
-		}
+		const used = takenLoopbacks(app.id)
 		const prepared = prepareCompose(app.id, text, () => {
 			let p = 20_000 + (parseInt(createHash('sha256').update(app.id).digest('hex').slice(0, 4), 16) % 9000)
 			while (used.has(p)) p++

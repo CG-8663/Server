@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
+import {createHash} from 'node:crypto'
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -40,6 +41,19 @@ test('prepareCompose reuses the web loopback when mcp uses that container port',
 	assert.equal(internalPort, 19001)
 	assert.equal(mcpInternalPort, 19001)
 	assert.deepEqual(YAML.parse(text).services.web.ports, ['127.0.0.1:19001:8080'])
+})
+
+test('prepareCompose gives a sidecar its own loopback when it shares the web container port', () => {
+	const compose = 'services:\n  web:\n    image: x\n    ports: ["8080:8080"]\n  sidecar:\n    image: y\n    ports: ["8080:8080"]\n'
+	let n = 0
+	const {text, internalPort, mcpInternalPort} = prepareCompose('demo', compose, () => 19001 + n++, {web: {service: 'web', port: 8080}, mcp: {service: 'sidecar', port: 8080, path: '/mcp', transport: 'http'}})
+	const doc = YAML.parse(text)
+	assert.equal(internalPort, 19001)
+	assert.equal(mcpInternalPort, 19002)
+	assert.notEqual(mcpInternalPort, internalPort)
+	assert.deepEqual(doc.services.web.ports, ['127.0.0.1:19001:8080'])
+	assert.deepEqual(doc.services.sidecar.ports, ['127.0.0.1:19002:8080'])
+	assert.doesNotMatch(text, /0\.0\.0\.0/)
 })
 
 test('prepareCompose replaces a public mcp publish with loopback', () => {
@@ -111,7 +125,10 @@ test('install keeps mcp on the app, publishes it on loopback, and mcpTargets ski
 		await until(async () => (await call('apps.list')).find((a) => a.id === 'mcpapp' && a.state === 'running'))
 		await call('apps.install', {appId: 'plain'})
 		await until(async () => (await call('apps.list')).find((a) => a.id === 'plain' && a.state === 'running'))
-		const saved = JSON.parse(await readFile(join(data, 'apps', 'apps.json'), 'utf8')).apps.find((a) => a.id === 'mcpapp')
+		const saved = await until(async () => {
+			const row = JSON.parse(await readFile(join(data, 'apps', 'apps.json'), 'utf8')).apps.find((a) => a.id === 'mcpapp')
+			return row?.mcpInternalPort ? row : null
+		})
 		assert.deepEqual(saved.mcp, {service: 'web', port: 8090, path: '/mcp', transport: 'http'})
 		assert.equal(typeof saved.mcpInternalPort, 'number')
 		assert.notEqual(saved.mcpInternalPort, saved.internalPort)
@@ -127,6 +144,101 @@ test('install keeps mcp on the app, publishes it on loopback, and mcpTargets ski
 		await call('apps.stop', {appId: 'mcpapp'})
 		await new Promise((r) => setTimeout(r, 1700))
 		assert.deepEqual(await apps.mcpTargets(), [])
+	} finally {
+		await apps?.close()
+		if (prevDocker === undefined) delete process.env.DOCKER_HOST
+		else process.env.DOCKER_HOST = prevDocker
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+const loopbackPort = (id) => 20_000 + (parseInt(createHash('sha256').update(id).digest('hex').slice(0, 4), 16) % 9000)
+
+// A container app whose second loopback (the MCP port) is the port a system app would otherwise take.
+function collidingIds() {
+	const byPort = new Map()
+	for (let i = 0; i < 20000; i++) byPort.set(loopbackPort(`m${i.toString(36)}`), `m${i.toString(36)}`)
+	for (let i = 0; i < 20000; i++) {
+		const sys = `s${i.toString(36)}`
+		const mcp = byPort.get(loopbackPort(sys) - 1)
+		if (mcp) return {mcp, sys}
+	}
+	throw new Error('no ids')
+}
+
+test('a system app does not take an installed app’s mcp loopback port', async () => {
+	const {mcp, sys} = collidingIds()
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-mcp-sys-'))
+	const data = join(root, 'data')
+	const home = join(root, 'home')
+	const store = join(root, 'store')
+	const sock = join(root, 'podman.sock')
+	const gateway = 36000 + Math.floor(Math.random() * 2000)
+	const up = new Set()
+	const prevDocker = process.env.DOCKER_HOST
+	process.env.DOCKER_HOST = `unix://${sock}`
+	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'})
+	const run = async (cmd, args) => {
+		if (cmd === 'git') return execFileSync('git', args, {stdio: 'pipe'}).toString()
+		if (cmd === 'docker-compose') {
+			if (args[0] === 'version') return 'Docker Compose version v2.30.0'
+			const verb = args[4]
+			if (verb === 'up' || verb === 'restart') up.add(args[1])
+			if (verb === 'stop' || verb === 'down') up.delete(args[1])
+			return ''
+		}
+		if (cmd === 'podman') {
+			if (args[0] === 'ps') return JSON.stringify([...up].map((project) => ({Labels: {'com.docker.compose.project': project}, State: 'running'})))
+			return ''
+		}
+		if (cmd === 'setfacl') return ''
+		throw new Error(`${cmd} not simulated`)
+	}
+	const until = async (fn, ms = 8000) => {
+		const end = Date.now() + ms
+		for (;;) {
+			const v = await fn()
+			if (v) return v
+			if (Date.now() > end) throw new Error('timed out')
+			await new Promise((r) => setTimeout(r, 30))
+		}
+	}
+	const systemApps = {
+		listings: () => [{id: sys, name: 'Sys', system: true, version: '1'}],
+		permissions: () => [],
+		install: async () => {},
+		liveState: async () => 'running',
+		uninstall: async () => {},
+		close: () => {},
+	}
+	let apps
+	try {
+		await writeFile(sock, '')
+		await mkdir(join(store, mcp), {recursive: true})
+		await writeFile(join(store, 'omarchy-app-store.yml'), 'id: demo\nname: Demo\n')
+		await writeFile(join(store, mcp, 'omarchy-app.yml'), `manifestVersion: 1\nid: ${mcp}\nname: Mcp\nversion: "1"\nport: ${gateway}\nweb:\n  service: web\n  port: 8080\nmcp:\n  service: web\n  port: 8090\n  path: /mcp\n  transport: http\n`)
+		await writeFile(join(store, mcp, 'docker-compose.yml'), 'services:\n  web:\n    image: x\n    ports: ["8080:8080"]\n')
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		apps = createApps({dataDir: data, home, allowFileStores: true, gatewayHost: '127.0.0.1', defaultStores: [], systemApps, run})
+		const call = (name, input) => apps.procedures[name].run(input)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		await call('apps.install', {appId: mcp})
+		await until(async () => (await call('apps.list')).find((a) => a.id === mcp && a.state === 'running'))
+		await call('apps.install', {appId: sys})
+		await until(async () => (await call('apps.list')).find((a) => a.id === sys && a.state === 'running'))
+		const {mcpApp, sysApp} = await until(async () => {
+			const rows = JSON.parse(await readFile(join(data, 'apps', 'apps.json'), 'utf8')).apps
+			const mcpApp = rows.find((a) => a.id === mcp)
+			const sysApp = rows.find((a) => a.id === sys)
+			return mcpApp?.mcpInternalPort && sysApp?.internalPort ? {mcpApp, sysApp} : null
+		})
+		assert.equal(mcpApp.mcpInternalPort, loopbackPort(mcp) + 1)
+		assert.equal(loopbackPort(sys), mcpApp.mcpInternalPort)
+		assert.notEqual(sysApp.internalPort, mcpApp.mcpInternalPort)
+		assert.notEqual(sysApp.internalPort, mcpApp.internalPort)
+		assert.equal(sysApp.internalPort, mcpApp.mcpInternalPort + 1)
 	} finally {
 		await apps?.close()
 		if (prevDocker === undefined) delete process.env.DOCKER_HOST
