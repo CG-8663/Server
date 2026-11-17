@@ -152,6 +152,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'system.memoryUsage': {kind: 'query', run: () => withUsage(system.memoryUsage(), 'memory')},
 		'system.diskUsage': {kind: 'query', run: () => system.diskUsage(home, {dataDir})},
 		'system.cpuTemperature': {kind: 'query', run: () => system.cpuTemperature()},
+		'system.gpuUsage': {kind: 'query', run: () => system.gpuUsage()},
 		'system.getHostname': {kind: 'query', run: () => settings.hostname},
 		'system.getIpAddresses': {kind: 'query', run: () => system.ipAddresses()},
 		'system.device': {kind: 'query', run: async () => ({device: await system.deviceName(), os: release.pretty})},

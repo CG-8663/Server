@@ -118,6 +118,16 @@ export type DiskUsage = {
 	drive?: {name: string; size: number; notInUse: number; steps: ('partition' | 'partition-not-last' | 'encryption' | 'filesystem')[]; partition: string | null; partitionNumber: number | null; encrypted: string | null; filesystem: string | null} | null
 }
 export type Temperature = {temperature: number | null; warning: string; reason?: 'virtual' | 'no-sensor'}
+export type GpuInfo = {
+	id: string
+	index: number
+	name: string
+	used: number | null
+	memoryUsed: number | null
+	memoryTotal: number | null
+	temperature: number | null
+}
+export type GpuUsage = {gpus: GpuInfo[]}
 /** Share of the space you can use that's in use (like df: space kept back for the system isn't counted). */
 export const diskPct = (d: DiskUsage) => (d.totalUsed + d.available > 0 ? (100 * d.totalUsed) / (d.totalUsed + d.available) : 0)
 
