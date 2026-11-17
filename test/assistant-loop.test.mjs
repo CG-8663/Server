@@ -94,6 +94,47 @@ const sse = (text) => ({
 const toolSse = (id, name, args = '{}') => sse(`data: ${JSON.stringify({choices: [{delta: {tool_calls: [{index: 0, id, function: {name, arguments: args}}]}}]})}\n\ndata: [DONE]\n\n`)
 const textSse = (text) => sse(`data: ${JSON.stringify({choices: [{delta: {content: text}}]})}\n\ndata: [DONE]\n\n`)
 
+test('streamChat treats Qwen XML content as a tool call', async () => {
+	const xml = '<function=system_diskUsage>\n</function>\n</tool_call>'
+	const out = []
+	for await (const ev of streamChat({baseUrl: 'http://127.0.0.1/v1', apiKey: 'k', model: 'm', messages: [], tools: [], fetchImpl: async () => textSse(xml)})) out.push(ev)
+	assert.deepEqual(out.map((e) => e.type), ['tool'])
+	assert.equal(out[0].name, 'system_diskUsage')
+	assert.equal(out[0].arguments, '{}')
+})
+
+test('streamChat parses Qwen XML parameters and hides the markup', async () => {
+	const xml = 'Looking.\n<function=appStore_app>\n<parameter=appId>\nhome-assistant\n</parameter>\n</function>\n</tool_call>'
+	const out = []
+	for await (const ev of streamChat({baseUrl: 'http://127.0.0.1/v1', apiKey: 'k', model: 'm', messages: [], tools: [], fetchImpl: async () => textSse(xml)})) out.push(ev)
+	assert.equal(out[0].type, 'text')
+	assert.equal(out[0].text.trim(), 'Looking.')
+	assert.equal(out[1].type, 'tool')
+	assert.equal(out[1].name, 'appStore_app')
+	assert.equal(JSON.parse(out[1].arguments).appId, 'home-assistant')
+	assert.equal(out.some((e) => e.type === 'text' && /function=|tool_call/.test(e.text)), false)
+})
+
+test('runTurn runs a Qwen XML read tool then streams the reply', async () => {
+	const xml = '<function=system_diskUsage>\n</function>\n</tool_call>'
+	const {calls, runProcedure} = factsProcedure(async (name) => {
+		if (name === 'system.diskUsage') return {free: '12 GB'}
+	})
+	const {fetchImpl} = scripted([textSse(xml), textSse('12 GB free')])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'how much disk', emit: (e) => events.push(e)})
+		assert.equal(calls.some((c) => c.name === 'system.diskUsage'), true)
+		const visible = events.filter((e) => e.event === 'text' || e.event === 'done')
+		assert.deepEqual(visible.map((e) => e.event), ['text', 'done'])
+		assert.equal(visible[0].data.text, '12 GB free')
+		assert.equal(JSON.stringify(events).includes('function='), false)
+	} finally {
+		await box.close()
+	}
+})
+
 function scripted(responses) {
 	const seen = []
 	const fetchImpl = async (url, opts) => {
