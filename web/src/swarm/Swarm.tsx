@@ -7,8 +7,7 @@ import {lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type R
 import {mutate, query} from '../api'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
-import {Switch} from '../screens/Settings'
-import {Sheet, SheetHeader, StatusPill, bytes, duration, haptic, useConfirm, useToast} from '../ui'
+import {Sheet, SheetHeader, StatusPill, Switch, bytes, duration, haptic, useConfirm, useToast} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))

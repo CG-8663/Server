@@ -677,7 +677,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 
 				{menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
 				{shareFor && (
-					<Suspense fallback={null}>
+					<Suspense fallback={<WinFallback />}>
 						<ShareSheet path={shareFor.path} name={shareFor.name} host={boot.server?.host ?? ''} username={user.data?.sambaUsername} onClose={() => setShareFor(null)} />
 					</Suspense>
 				)}

@@ -7,10 +7,10 @@ import {useMachines} from '../data'
 import {useDesktop} from '../desktop/Desktop'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
-import {PortForwarding} from '../screens/Machines'
 import {LocalSwarm, useSwarm} from '../swarm/Swarm'
 import {bytes, duration, haptic, useConfirm} from '../ui'
 import {mib, useAllTasks, useBackups, useMachineAction, useMachineDetails, useNode, when} from './api'
+import {PortForwarding} from './PortForwarding'
 import {
 	BackupsPanel,
 	CloudInitPanel,
@@ -113,7 +113,13 @@ export function MachinesDesktop() {
 				{tasksOpen && <RecentTasks />}
 			</footer>
 			{creating && (
-				<Suspense fallback={null}>
+				<Suspense
+					fallback={
+						<div className="win-empty">
+							<span className="spinner" aria-label="Loading" />
+						</div>
+					}
+				>
 					<CreateMachine open={creating} onClose={() => setCreating(false)} />
 				</Suspense>
 			)}

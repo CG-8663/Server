@@ -5,7 +5,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {logout, mutate, query, type ActiveSession} from '../api'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
-import {InWindow, Segmented, Sheet, SheetHeader, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
+import {InWindow, Segmented, Sheet, SheetHeader, Switch, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
 import {Appearance} from './More'
 import {OmarchyThemes} from '../OmarchyThemes'
 import {StoragePage} from './Storage'
@@ -61,22 +61,6 @@ function Row({icon, color, label, value, onClick, href, trailing}: {icon: IconNa
 		<div className="row static" style={{minHeight: 56}}>
 			{inner}
 		</div>
-	)
-}
-
-export function Switch({on, onChange, label, disabled}: {on: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean}) {
-	return (
-		<button
-			className="switch"
-			role="switch"
-			aria-checked={on}
-			aria-label={label}
-			disabled={disabled}
-			onClick={() => {
-				haptic(6)
-				onChange(!on)
-			}}
-		/>
 	)
 }
 
