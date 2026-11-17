@@ -1,8 +1,9 @@
 import {useEffect, useMemo, useRef, useState, type CSSProperties} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {diskPct, logout, mutate, query, type DiskUsage, type GpuInfo, type UsageItem, type Wallpaper} from '../api'
-import {useApps, useBootstrap, useCpu, useDisk, useGpus, useMemory, useTemp, useUptime, useUser} from '../data'
+import {diskPct, logout, mutate, query, type BatteryInfo, type DiskUsage, type GpuInfo, type UsageItem, type Wallpaper} from '../api'
+import {batteryPackSub} from '../battery'
+import {useApps, useBattery, useBootstrap, useCpu, useDisk, useGpus, useMemory, useTemp, useUptime, useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {ACCENTS, AppIcon, KV, Segmented, SolidColors, THEMES, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, useOmarchyThemes, preparePhoto, useConfirm, useToast, type Prefs} from '../ui'
@@ -50,9 +51,27 @@ function Spark({series, max = 100, color, label}: {series: number[]; max?: numbe
 
 const BAR = ['var(--blue)', 'var(--mauve)', 'var(--teal)', 'var(--peach)', 'var(--pink)', 'var(--green)']
 const GPU_COLORS = ['var(--green)', 'var(--teal)', 'var(--peach)', 'var(--pink)']
+const BATTERY_COLORS = ['var(--green)', 'var(--teal)']
 
 function shortGpuName(name: string) {
 	return name.replace(/^NVIDIA GeForce /, '').replace(/^NVIDIA /, '').replace(/^AMD Radeon /, '').replace(/^Intel\(R\) /, '').replace(/^Intel /, '')
+}
+
+function BatteryCard({bat, stamp, color, title}: {bat: BatteryInfo; stamp: number; color: string; title: string}) {
+	const series = useHistory(bat.percent ?? undefined, stamp)
+	return (
+		<section className="glass stat" aria-label={`${bat.name} battery`}>
+			<div className="k">
+				<Icon name="battery" size={16} /> {title}
+			</div>
+			<div className="v">
+				{bat.percent != null ? bat.percent.toFixed(0) : '–'}
+				{bat.percent != null && <small>%</small>}
+			</div>
+			<div className="sub">{batteryPackSub(bat) || ' '}</div>
+			<Spark series={series} color={color} label={`${bat.name} charge over the last two minutes`} />
+		</section>
+	)
 }
 
 function GpuCard({gpu, stamp, color, title}: {gpu: GpuInfo; stamp: number; color: string; title: string}) {
@@ -138,6 +157,8 @@ function Live() {
 	const uptime = useUptime()
 	const gpus = useGpus()
 	const gpuList = gpus.data?.gpus ?? []
+	const battery = useBattery()
+	const batteryList = battery.data?.batteries ?? []
 	const cpuSeries = useHistory(cpu.data?.totalUsed, cpu.dataUpdatedAt)
 	const memSeries = useHistory(mem.data ? (mem.data.totalUsed / mem.data.size) * 100 : undefined, mem.dataUpdatedAt)
 	const parts = disk.data
@@ -204,6 +225,19 @@ function Live() {
 							stamp={gpus.dataUpdatedAt}
 							color={GPU_COLORS[i % GPU_COLORS.length]}
 							title={gpuList.length > 1 ? `GPU ${gpu.index}` : 'GPU'}
+						/>
+					))}
+				</div>
+			)}
+			{batteryList.length > 0 && (
+				<div className="split" style={{marginTop: 12}}>
+					{batteryList.map((bat, i) => (
+						<BatteryCard
+							key={bat.id}
+							bat={bat}
+							stamp={battery.dataUpdatedAt}
+							color={BATTERY_COLORS[i % BATTERY_COLORS.length]}
+							title={batteryList.length > 1 ? `Battery ${bat.index}` : 'Battery'}
 						/>
 					))}
 				</div>

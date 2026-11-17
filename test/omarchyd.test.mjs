@@ -90,6 +90,8 @@ describe('omarchyd', () => {
 		assert.ok(mem.size > 0 && mem.totalUsed > 0)
 		const gpus = (await call('query', 'system.gpuUsage', undefined, native)).body.result.data
 		assert.ok(Array.isArray(gpus.gpus))
+		const battery = (await call('query', 'system.batteryUsage', undefined, native)).body.result.data
+		assert.ok(Array.isArray(battery.batteries))
 	})
 	test('files: nothing outside Home, not via .. nor via a symlink', async () => {
 		assert.equal((await call('query', 'files.list', {path: '/Home/../..'}, native)).status, 400)
