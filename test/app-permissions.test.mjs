@@ -1,6 +1,8 @@
 // Bind sources in a listing's compose file: classified after the same expansion Compose uses,
 // then resolved (so `..` and `${HOME}` can't slip past the "own folder" prefix check).
 import assert from 'node:assert/strict'
+import {mkdir, mkdtemp, rm, symlink} from 'node:fs/promises'
+import os from 'node:os'
 import {join, resolve} from 'node:path'
 import {test} from 'node:test'
 
@@ -87,4 +89,54 @@ test('a placed FOLDER_ path is what Compose will bind, so climbing out of it is 
 	const perms = appPermissions(text, folderWhere)
 	assert.ok(perms.some((p) => p.id === 'refused'))
 	assert.ok((perms.find((p) => p.id === 'refused')?.what ?? []).includes(join(home, '.ssh')))
+})
+
+test('a leftover ${VAR} bind is not classified from the process working directory', () => {
+	const perms = appPermissions(compose('${SECRET_DIR}:/keys'), {
+		...where,
+		expand: (v) => expandVars(String(v), {...env, SECRET_DIR: '${DOWNLOADS_DIR}/../.ssh'}),
+	})
+	assert.ok(perms.some((p) => p.id === 'refused'), 'unresolved $ in a bind source is refused')
+	assert.ok((perms.find((p) => p.id === 'refused')?.what ?? []).includes('invalid path'))
+	const cwdish = (perms.find((p) => p.id === 'refused')?.what ?? []).some((w) => String(w).includes('{DOWNLOADS_DIR}'))
+	assert.equal(cwdish, false, 'realpath of "." must not glue a leftover $ path onto cwd')
+	assert.ok(!perms.some((p) => (p.what ?? []).some((w) => String(w).startsWith(process.cwd()))), 'cwd is not a bind source')
+})
+
+test('an empty bind source after expansion is refused, not skipped', () => {
+	assert.ok(ids(compose('${SECRET_DIR}:/keys')).includes('refused'))
+	assert.ok(what(compose('${SECRET_DIR}:/keys'), 'refused').includes('invalid path'))
+	const long = 'services:\n  web:\n    image: x\n    volumes:\n      - type: bind\n        source: ${SECRET_DIR}\n        target: /keys\n'
+	assert.ok(ids(long).includes('refused'), 'type: bind with an empty source')
+})
+
+test('a symlink under an allowed folder is classified as the folder it really is', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-bind-'))
+	try {
+		const h = join(root, 'home')
+		const dl = join(h, 'Downloads')
+		const ssh = join(h, '.ssh')
+		const app = join(root, 'app')
+		await mkdir(dl, {recursive: true})
+		await mkdir(ssh, {recursive: true})
+		await mkdir(app, {recursive: true})
+		await symlink(ssh, join(dl, 'keys'))
+		const w = {
+			home: h,
+			cwd: app,
+			expand: (v) => expandVars(String(v), {DOWNLOADS_DIR: dl, HOME: h}),
+			allowed: [app, dl],
+		}
+		const perms = appPermissions(compose('${DOWNLOADS_DIR}/keys:/keys'), w)
+		assert.ok(perms.some((p) => p.id === 'refused'))
+		assert.ok((perms.find((p) => p.id === 'refused')?.what ?? []).includes(ssh))
+		const dangling = join(h, '.missing-ssh')
+		await rm(join(dl, 'keys'), {force: true})
+		await symlink(dangling, join(dl, 'keys'))
+		const gone = appPermissions(compose('${DOWNLOADS_DIR}/keys:/keys'), w)
+		assert.ok(gone.some((p) => p.id === 'refused'), 'a dangling symlink is the folder it names, not the parent')
+		assert.ok((gone.find((p) => p.id === 'refused')?.what ?? []).includes(dangling))
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
 })

@@ -17,12 +17,13 @@
 import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
+import {lstatSync, readlinkSync, realpathSync} from 'node:fs'
 import {access, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
 import os from 'node:os'
-import {join, resolve} from 'node:path'
+import {dirname, join, resolve} from 'node:path'
 import tls from 'node:tls'
 import YAML from 'yaml'
 
@@ -86,20 +87,82 @@ export const PERMISSIONS = {
 }
 // Bind mounts no app may have, whatever it asks: your whole home folder, its hidden folders (SSH keys,
 // settings, Omarchy Server's own data and keys), and the system's own folders.
+const under = (p, base) => Boolean(base) && (p === base || p.startsWith(`${base}/`))
+const CLOCK_FILES = ['/etc/localtime', '/etc/timezone']
 function refusedMount(path, home) {
-	const under = (p, base) => p === base || p.startsWith(`${base}/`)
 	if (path === '/' || path === home || path === '/home' || under(path, '/root') || under(path, '/boot') || under(path, '/proc') || under(path, '/run/user') || under(path, '/var/lib') || under(path, '/usr') || under(path, '/bin') || under(path, '/sbin')) return true
-	if (under(path, '/etc') && !['/etc/localtime', '/etc/timezone'].includes(path)) return true
+	if (under(path, '/etc') && !CLOCK_FILES.includes(path)) return true
 	if (home && path.startsWith(`${home}/.`)) return true
 	if (/^\/home\/[^/]+$/.test(path) || (path.startsWith('/home/') && home && !under(path, home))) return true
 	return false
 }
 const SOCKET = /(?:^|\/)(?:docker|podman)\.sock$|\$\{?DOCKER_SOCKET/
+// Follow the longest prefix that exists, the way the folder picker does, so a symlink under an
+// allowed folder can't hide a refused one. Missing paths stay as resolved (Compose will create them).
+// lstat, not exists: a dangling symlink is the folder it names, not "missing so use the parent".
+// Only absolute paths: a leftover `$VAR` must not walk dirname to `.` and glue onto the process cwd.
+function realpathExisting(path, seen) {
+	if (!path || path.includes('\0') || !path.startsWith('/')) return path
+	seen ??= new Set()
+	if (seen.has(path) || seen.size > 32) return path
+	seen.add(path)
+	let st
+	try {
+		st = lstatSync(path)
+	} catch {
+		st = null
+	}
+	if (st?.isSymbolicLink()) {
+		let dest = ''
+		try {
+			dest = readlinkSync(path)
+		} catch {
+			return path
+		}
+		const abs = dest.startsWith('/') ? dest : resolve(dirname(path), dest)
+		return realpathExisting(resolve(abs), seen)
+	}
+	if (st) {
+		try {
+			return realpathSync(path)
+		} catch {
+			return path
+		}
+	}
+	const parent = dirname(path)
+	if (parent === path) return path
+	const realParent = realpathExisting(parent, seen)
+	return realParent === parent ? path : realParent + path.slice(parent.length)
+}
+// KEY=value lines Compose reads from a listing's .env (shell env still wins).
+function parseDotEnv(text) {
+	const env = {}
+	for (const line of String(text).split('\n')) {
+		const t = line.trim()
+		if (!t || t.startsWith('#')) continue
+		const m = t.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
+		if (!m) continue
+		let v = m[2]
+		if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
+		else {
+			const cut = v.search(/\s+#/)
+			if (cut >= 0) v = v.slice(0, cut).trimEnd()
+		}
+		env[m[1]] = v
+	}
+	return env
+}
+// Compose interpolates ${VAR} inside .env values from earlier keys and the process environment.
+function expandDotEnv(dotenv, overlay = {}) {
+	const out = {}
+	for (const [k, v] of Object.entries(dotenv ?? {})) out[k] = expandVars(String(v), {...dotenv, ...out, ...overlay})
+	return out
+}
 // The host folder a bind will actually use: expand is already done; collapse `..`, turn `~` and
 // leftover $HOME into the home folder Compose will see, and resolve relative sources from the app.
 function bindHostPath(raw, where = {}) {
 	let path = String(raw ?? '')
-	if (!path) return path
+	if (!path || path.includes('\0')) return path
 	const home = where.home
 	if (home) {
 		if (path === '~' || path.startsWith('~/')) path = `${home}${path.slice(1)}`
@@ -139,21 +202,34 @@ export function appPermissions(text, where = {}) {
 			if (type === 'volume' || type === 'tmpfs') continue
 			// A bare "/path" is an anonymous volume (inside the container), not a server folder.
 			if (typeof v === 'string' && !v.includes(':')) continue
+			const orig = typeof v === 'string' ? v.trim() : String(v?.source ?? '').trim()
 			const raw = typeof v === 'string' ? (where.expand ? where.expand(v) : v).split(':')[0] : String(where.expand ? where.expand(v?.source ?? '') : (v?.source ?? ''))
+			const looksBind = type === 'bind' || raw.startsWith('/') || raw.startsWith('$') || raw.startsWith('~') || raw.startsWith('.') || raw.includes('/') || (!raw && (type === 'bind' || orig.startsWith('$') || orig.startsWith('~') || orig.startsWith('/') || orig.startsWith('.')))
 			if (SOCKET.test(raw)) add('containers', name)
-			else if (type === 'bind' || raw.startsWith('/') || raw.startsWith('$') || raw.startsWith('~') || raw.startsWith('.') || raw.includes('/')) {
+			else if (looksBind) {
 				// Host paths (after expanding): resolve `..` and `~` the way Compose will, so an allowed
 				// prefix can't hide a hidden folder. Long-syntax `type: bind` and relative sources
-				// with a slash are binds too. Classify the resolved path (devices, system, own, refused).
+				// with a slash are binds too. Classify the real path (devices, system, own, refused).
 				const path = bindHostPath(raw, where)
-				if (SOCKET.test(path)) add('containers', name)
-				else if (/^\/dev(\/|$)/.test(path) && !/^\/dev\/shm/.test(path)) add('devices', path)
-				else if (/^\/run\/(dbus|systemd|udev)(\/|$)|^\/var\/run\/dbus(\/|$)|^\/(sys|lib\/modules)(\/|$)/.test(path)) add('system', path)
+				if (!path || path.includes('\0') || path.startsWith('$')) {
+					add('refused', 'invalid path')
+					continue
+				}
+				// /etc/localtime is often a link into /usr/share/zoneinfo; allow the bind, don't follow it.
+				if (CLOCK_FILES.includes(path)) continue
+				const real = realpathExisting(path)
+				if (SOCKET.test(path) || SOCKET.test(real)) add('containers', name)
+				else if (/^\/dev(\/|$)/.test(real) && !/^\/dev\/shm/.test(real)) add('devices', real)
+				else if (/^\/run\/(dbus|systemd|udev)(\/|$)|^\/var\/run\/dbus(\/|$)|^\/(sys|lib\/modules)(\/|$)/.test(real)) add('system', real)
 				else {
-					const own = (where.allowed ?? []).some((d) => path === d || path.startsWith(`${d}/`))
-					if (own || ['/etc/localtime', '/etc/timezone'].includes(path)) continue
-					if (refusedMount(path, where.home)) add('refused', path)
-					else add('host-files', path)
+					const own = (where.allowed ?? []).some((d) => {
+						if (!d) return false
+						const base = realpathExisting(d)
+						return under(real, base) || under(real, d)
+					})
+					if (own) continue
+					if (refusedMount(real, where.home) || refusedMount(path, where.home)) add('refused', real)
+					else add('host-files', real)
 				}
 			}
 		}
@@ -837,38 +913,43 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// Bind-mount sources that don't exist yet are folders the app expects to own (Podman won't
 	// create them the way Docker does).
 	async function createBindSources(app, text) {
-		const env = composeEnv(app)
+		const overlay = {...process.env, ...composeEnv(app)}
+		const dotenv = expandDotEnv(parseDotEnv(await readFile(join(appDir(app.id), '.env'), 'utf8').catch(() => '')), overlay)
+		const env = {...dotenv, ...overlay}
 		const shared = join(base, 'shared-root')
 		const doc = YAML.parse(text) ?? {}
 		app.dataDirs = []
 		app.userDirs = []
+		const dir = appDir(app.id)
+		const allowed = [dir, shared, ...Object.values(USER_DIRS).map((d) => join(home, d)), ...Object.values(app.folders ?? {}).filter((p) => typeof p === 'string')]
 		for (const s of Object.values(doc.services ?? {})) {
 			for (const v of s?.volumes ?? []) {
 				// Expand first: a source like ${APP_DATA_DIR:-.}/data has a colon of its own.
 				const src = typeof v === 'string' ? expandVars(v, env).split(':')[0] : v?.source && expandVars(v.source, env)
 				if (!src) continue
-				const path = bindHostPath(src, {home, cwd: appDir(app.id)})
-				if (!path.startsWith('/') || (refusedMount(path, home) && !['/etc/localtime', '/etc/timezone'].includes(path))) continue
-				// A listing that slipped a symlink into the app folder: drop it if it leads outside
-				// the folders this app may use, so Compose and chown can't follow it to ~/.ssh.
-				if (await lstat(path).then((st) => st.isSymbolicLink(), () => false)) {
+				const path = bindHostPath(src, {home, cwd: dir})
+				if (!path.startsWith('/') || path.includes('\0') || CLOCK_FILES.includes(path)) continue
+				const real = realpathExisting(path)
+				// Drop escaped app-dir symlinks even when the target is refused, so Compose cannot follow them.
+				// Never touch host files such as /etc/localtime (those are not under the app folder).
+				if (under(path, dir) && (await lstat(path).then((st) => st.isSymbolicLink(), () => false))) {
 					const target = await realpath(path).catch(() => '')
-					const allowed = [appDir(app.id), shared, ...Object.values(USER_DIRS).map((d) => join(home, d))]
-					const ok = target && allowed.some((d) => target === d || target.startsWith(`${d}/`)) && !refusedMount(target, home)
+					const ok = target && allowed.some((d) => under(target, d)) && !refusedMount(target, home)
 					if (!ok) await rm(path, {force: true})
 				}
+				if (refusedMount(real, home) || refusedMount(path, home)) continue
 				// One of your folders (Videos, Music…): make sure it exists and let the app's user in.
-				const mine = Object.values(USER_DIRS).map((d) => join(home, d)).find((d) => path === d || path.startsWith(`${d}/`))
+				const mine = Object.values(USER_DIRS).map((d) => join(home, d)).find((d) => under(path, d) || under(real, d))
 				if (mine) {
 					if (!(await exists(path))) await mkdir(path, {recursive: true})
 					app.userDirs = [...new Set([...(app.userDirs ?? []), mine])]
 					continue
 				}
 				// Only inside the app's own folder, or the shared folders (e.g. a Downloads subfolder).
-				if (!path.startsWith(appDir(app.id)) && !path.startsWith(shared)) continue
+				if (!under(path, dir) && !under(path, shared) && !under(real, dir) && !under(real, shared)) continue
 				if (!(await exists(path))) await mkdir(path, {recursive: true})
 				// Folders inside the app's own folder are its data: they get handed to its container user.
-				if (path.startsWith(`${appDir(app.id)}/`) && (await lstat(path).then((st) => st.isDirectory(), () => false))) app.dataDirs.push(path)
+				if (under(path, dir) && path !== dir && (await lstat(path).then((st) => st.isDirectory(), () => false))) app.dataDirs.push(path)
 			}
 		}
 	}
@@ -1128,7 +1209,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			if (!st?.isSymbolicLink()) return true
 			const target = await realpath(p).catch(() => null)
 			const root = await realpath(src.folder).catch(() => src.folder)
-			return !!(target && (target === root || target.startsWith(`${root}/`)))
+			return !!(target && under(target, root))
 		}
 		if (fresh) return cp(src.folder, dir, {recursive: true, filter})
 		const stage = await mkdtemp(join(base, `.update-${app.id}-`))
@@ -1201,23 +1282,26 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 
 	// The extra access a listing's compose file asks for.
 	// The folders an app may use without asking, and how its variables expand, for appPermissions.
-	function whereFor(app) {
+	function whereFor(app, dotenv = {}) {
 		// Before you place them, an app's folders count as its own (inside the app's folder).
 		// After placing, `folders` is id → path and Compose will expand FOLDER_* to those paths.
 		const folderIds = app.folderIds ?? (Array.isArray(app.folders) ? app.folders.map((f) => f.id) : [])
 		const folders = app.folders && !Array.isArray(app.folders) ? app.folders : undefined
 		const env = composeEnv({id: app.id, port: app.port, version: app.version, folderIds, folders})
+		const merged = {...expandDotEnv(dotenv, {...process.env, ...env}), ...process.env, ...env}
 		return {
 			home,
 			cwd: appDir(app.id),
-			expand: (v) => expandVars(String(v), {...process.env, ...env}).replace(/^\.(?=\/|$)/, appDir(app.id)).replace(/^~(?=\/|$)/, home),
+			expand: (v) => expandVars(String(v), merged).replace(/^\.(?=\/|$)/, appDir(app.id)).replace(/^~(?=\/|$)/, home),
 			allowed: [appDir(app.id), join(base, 'shared-root'), ...Object.values(USER_DIRS).map((d) => join(home, d)), ...Object.values(folders ?? {})],
 		}
 	}
 	async function permissionsOf(src) {
 		if (src.system) return systemApps?.permissions(src.id) ?? []
 		const c = await readYaml(src.folder, COMPOSE_FILES).catch(() => null)
-		return c ? appPermissions(await readFile(join(src.folder, c.name), 'utf8'), whereFor(src)) : []
+		if (!c) return []
+		const dotenv = parseDotEnv(await readFile(join(src.folder, '.env'), 'utf8').catch(() => ''))
+		return appPermissions(await readFile(join(src.folder, c.name), 'utf8'), whereFor(src, dotenv))
 	}
 
 	// What installing `id` involves: the apps it needs that aren't installed yet, then the app.
@@ -1358,7 +1442,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const src = await findInRegistry(app.id)
 		if (!src) throw new RpcError('NOT_FOUND', 'That app is no longer in your stores')
 		// An update never adds access you didn't allow. (Apps installed before permissions existed keep what they run with.)
-		const wants = (await permissionsOf(src)).map((p) => p.id)
+		const wantsPerms = await permissionsOf({...src, folderIds: app.folderIds, folders: app.folders && !Array.isArray(app.folders) ? app.folders : undefined})
+		const refused = wantsPerms.find((p) => p.id === 'refused')
+		if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
+		const wants = wantsPerms.map((p) => p.id)
 		app.permissions ??= wants
 		const extra = wants.filter((p) => !app.permissions.includes(p) && !(Array.isArray(input?.grant) && input.grant.includes(p)))
 		if (extra.length) throw new RpcError('PRECONDITION_FAILED', `This update asks for more access (${extra.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}). Uninstall and install it again to allow that.`)
@@ -1546,7 +1633,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					const also = plan.slice(0, -1).map((a) => ({id: a.id, name: a.name, icon: a.icon}))
 					// Extra access, per app in the plan (shown for you to allow before installing).
 					const access = []
-					for (const a of plan) for (const p of await permissionsOf(a)) access.push({...p, appId: a.id, appName: a.name})
+					for (const a of plan) {
+						const chosen = folderChoices(a.folders)
+						const folderIds = chosen.map((f) => f.id)
+						const folders = Object.fromEntries(chosen.map((f) => [f.id, join(home, f.suggest || f.id)]))
+						for (const p of await permissionsOf({...a, folderIds, folders})) access.push({...p, appId: a.id, appName: a.name})
+					}
 					// System apps that need a one-time step from you first (see system-apps.mjs).
 					const setup = []
 					for (const a of plan) if (a.system && systemApps?.setup) { const s = await systemApps.setup(a.id); if (s) setup.push({...s, appId: a.id, appName: a.name}) }

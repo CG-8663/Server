@@ -125,6 +125,8 @@ describe('placing an app’s folders', () => {
 		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'store'], store2)
 		await call('appStore.addRepository', {url: `file://${store2}`})
 		const mine = join(home, 'Projects')
+		const review = await q('apps.installReview', {appId: 'climber'})
+		assert.ok(review.permissions.some((p) => p.id === 'refused'), 'review uses the suggested folder, not the in-app default')
 		await assert.rejects(call('apps.install', {appId: 'climber', folders: [{appId: 'climber', id: 'projects', path: mine}]}), /never gives an app/)
 		assert.equal((await q('apps.list')).find((a) => a.id === 'climber'), undefined)
 		await call('appStore.removeRepository', {url: `file://${store2}`})
