@@ -1,3 +1,4 @@
+import {callMcpTool, listMcpTools} from './mcp.mjs'
 import {streamChat} from './providers.mjs'
 import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
@@ -51,6 +52,14 @@ function storedArguments(name, raw) {
 	}
 }
 
+function storedMcpArguments(raw) {
+	try {
+		return JSON.stringify(plainInput(parseArgs(raw)))
+	} catch {
+		return raw || '{}'
+	}
+}
+
 function cardFor(name, args) {
 	const a = args && typeof args === 'object' ? args : {}
 	const appId = String(a.appId ?? '').trim()
@@ -85,6 +94,13 @@ function cardFor(name, args) {
 	if (name === 'system_restart') return {title: 'Restart this server', detail: 'The server restarts when you approve'}
 	if (name === 'system_shutdown') return {title: 'Shut down this server', detail: 'The server shuts down when you approve'}
 	return {title: name, detail: ''}
+}
+
+function cardForMcp(spec, args) {
+	const shown = plainInput(args)
+	const bits = []
+	for (const [k, v] of Object.entries(shown)) bits.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v ?? null)}`)
+	return {title: `${spec.appName}: ${spec.mcpName}`, detail: bits.join(' · ') || spec.description || ''}
 }
 
 function pendingNote(actions) {
@@ -150,7 +166,7 @@ function parseArgs(raw) {
 	return args
 }
 
-export function createLoop({keys, conversations, runProcedure, fetchImpl, now = () => Date.now()}) {
+export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now = () => Date.now()}) {
 	const stamp = () => now()
 
 	async function grab(name, auth, input = {}) {
@@ -178,6 +194,49 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 		return lines.join('\n')
 	}
 
+	// Built-in writes live in WRITE_TOOLS. An MCP tool is a write unless readOnlyHint is true.
+	async function mcpCatalog(signal) {
+		if (typeof mcpTargets !== 'function') return []
+		let targets
+		try {
+			targets = await mcpTargets()
+		} catch (e) {
+			if (e?.name === 'AbortError' || signal?.aborted) throw e
+			return []
+		}
+		if (!Array.isArray(targets)) return []
+		const out = []
+		const seen = new Set()
+		for (const target of targets) {
+			if (!target || target.running === false) continue
+			if (typeof target.appId !== 'string' || !target.appId || typeof target.url !== 'string' || !target.url) continue
+			let listed = []
+			try {
+				listed = await listMcpTools({url: target.url, transport: target.transport, fetchImpl, signal})
+			} catch (e) {
+				if (e?.name === 'AbortError' || signal?.aborted) throw e
+				continue
+			}
+			for (const tool of listed ?? []) {
+				if (!tool?.name) continue
+				const name = `app__${target.appId}__${tool.name}`
+				if (!/^[a-zA-Z0-9_-]+$/.test(name) || seen.has(name)) continue
+				seen.add(name)
+				out.push({
+					name,
+					appId: target.appId,
+					appName: String(target.name || target.appId),
+					mcpName: tool.name,
+					description: tool.description || tool.name,
+					parameters: tool.inputSchema && typeof tool.inputSchema === 'object' ? tool.inputSchema : {type: 'object', properties: {}},
+					readOnly: tool.readOnly === true,
+					url: target.url,
+				})
+			}
+		}
+		return out
+	}
+
 	async function propose(tool, auth, conversationId) {
 		let args
 		try {
@@ -199,6 +258,43 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 			ownerOnly: !!spec.ownerOnly,
 		})
 		return {action}
+	}
+
+	async function proposeMcp(tool, auth, conversationId, spec) {
+		let args
+		try {
+			args = parseArgs(tool.arguments)
+		} catch {
+			return {content: 'invalid arguments', state: 'error'}
+		}
+		const card = cardForMcp(spec, args)
+		const action = await conversations.putAction(auth.userId, conversationId, {
+			kind: 'mcp',
+			toolName: spec.name,
+			toolCallId: tool.id,
+			title: card.title,
+			detail: card.detail,
+			rpc: null,
+			mcp: {appId: spec.appId, tool: spec.mcpName, arguments: plainInput(args)},
+			ownerOnly: false,
+		})
+		return {action}
+	}
+
+	async function runMcp(tool, spec, signal) {
+		let args
+		try {
+			args = parseArgs(tool.arguments)
+		} catch {
+			return {content: 'invalid arguments', state: 'error'}
+		}
+		try {
+			const result = await callMcpTool({url: spec.url, name: spec.mcpName, arguments: args, fetchImpl, signal})
+			return {content: textOf(result), state: 'done'}
+		} catch (e) {
+			if (e?.name === 'AbortError' || signal?.aborted) throw e
+			return {content: e?.message || 'tool failed', state: 'error'}
+		}
 	}
 
 	async function runTool(tool, auth) {
@@ -247,7 +343,26 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 			const auth = {userId, role}
 			if (!resume) row = await conversations.append(userId, row.id, {role: 'user', content: String(message ?? ''), at: stamp()})
 			const system = await facts(role, auth)
-			const tools = openAiTools(role)
+			let catalog = []
+			try {
+				catalog = await mcpCatalog(signal)
+			} catch (e) {
+				if (signal?.aborted || e?.name === 'AbortError') return finish(row.id)
+				catalog = []
+			}
+			if (signal?.aborted) return finish(row.id)
+			const mcpByName = new Map(catalog.map((t) => [t.name, t]))
+			const mcpWrite = (name) => {
+				const spec = mcpByName.get(name)
+				return !!spec && spec.readOnly !== true
+			}
+			const tools = [
+				...openAiTools(role),
+				...catalog.map((t) => ({
+					type: 'function',
+					function: {name: t.name, description: t.description, parameters: t.parameters},
+				})),
+			]
 			let used = 0
 
 			const stopped = async (text) => {
@@ -304,7 +419,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 				}
 				let end = toolCalls.length
 				for (let i = 0; i < toolCalls.length; i++) {
-					if (isWriteTool(toolCalls[i].name)) {
+					if (isWriteTool(toolCalls[i].name) || mcpWrite(toolCalls[i].name)) {
 						end = i + 1
 						break
 					}
@@ -313,13 +428,32 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 				row = await conversations.append(userId, row.id, {
 					role: 'assistant',
 					content: text,
-					toolCalls: batch.map((t) => ({id: t.id, name: t.name, arguments: storedArguments(t.name, t.arguments)})),
+					toolCalls: batch.map((t) => ({id: t.id, name: t.name, arguments: mcpByName.has(t.name) ? storedMcpArguments(t.arguments) : storedArguments(t.name, t.arguments)})),
 					at: stamp(),
 				})
 				let hit = false
 				for (const tool of batch) {
 					if (isWriteTool(tool.name)) {
 						const outcome = await propose(tool, auth, row.id)
+						if (outcome.action) {
+							say('action', publicAction(outcome.action))
+							say('done', {conversationId: row.id})
+							return finish(row.id)
+						}
+						row = await conversations.append(userId, row.id, {
+							role: 'tool',
+							toolCallId: tool.id,
+							name: tool.name,
+							content: outcome.content,
+							at: stamp(),
+						})
+						say('tool', {name: tool.name, state: outcome.state})
+						used++
+						if (used >= MAX_CALLS) hit = true
+						continue
+					}
+					if (mcpWrite(tool.name)) {
+						const outcome = await proposeMcp(tool, auth, row.id, mcpByName.get(tool.name))
 						if (outcome.action) {
 							say('action', publicAction(outcome.action))
 							say('done', {conversationId: row.id})
@@ -348,7 +482,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 						})
 						continue
 					}
-					const outcome = await runTool(tool, auth)
+					const outcome = mcpByName.has(tool.name) ? await runMcp(tool, mcpByName.get(tool.name), signal) : await runTool(tool, auth)
 					used++
 					row = await conversations.append(userId, row.id, {
 						role: 'tool',
@@ -367,6 +501,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 				return finish(row.id)
 			}
 		} catch (e) {
+			if (signal?.aborted || e?.name === 'AbortError') return finish(row?.id)
 			say('error', {message: e?.message || 'The assistant did not answer'})
 			return finish(row?.id)
 		}

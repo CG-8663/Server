@@ -2,12 +2,16 @@ import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises'
+import http from 'node:http'
 import os from 'node:os'
 import {join} from 'node:path'
 import {test} from 'node:test'
 import YAML from 'yaml'
 
 import {createApps, parseMcp, prepareCompose} from '../omarchyd/apps.mjs'
+import {createAssistant} from '../omarchyd/assistant.mjs'
+import {callMcpTool, listMcpTools} from '../omarchyd/assistant/mcp.mjs'
+import {openAiTools} from '../omarchyd/assistant/tools.mjs'
 
 test('parseMcp accepts a listing block and rejects junk', () => {
 	assert.deepEqual(parseMcp({service: 'web', port: 8080, path: '/mcp', transport: 'http'}), {service: 'web', port: 8080, path: '/mcp', transport: 'http'})
@@ -244,5 +248,388 @@ test('a system app does not take an installed app’s mcp loopback port', async 
 		if (prevDocker === undefined) delete process.env.DOCKER_HOST
 		else process.env.DOCKER_HOST = prevDocker
 		await rm(root, {recursive: true, force: true})
+	}
+})
+
+const sse = (text) => ({
+	ok: true,
+	status: 200,
+	text: async () => text,
+	body: (async function* () {
+		yield text
+	})(),
+})
+const toolSse = (id, name, args = '{}') => sse(`data: ${JSON.stringify({choices: [{delta: {tool_calls: [{index: 0, id, function: {name, arguments: args}}]}}]})}\n\ndata: [DONE]\n\n`)
+const textSse = (text) => sse(`data: ${JSON.stringify({choices: [{delta: {content: text}}]})}\n\ndata: [DONE]\n\n`)
+
+function scripted(responses) {
+	const seen = []
+	const fetchImpl = async (url, opts) => {
+		if (new URL(url).hostname === '127.0.0.1') return fetch(url, opts)
+		const body = JSON.parse(opts.body)
+		seen.push({url, opts, body})
+		const step = responses[Math.min(seen.length - 1, responses.length - 1)]
+		return typeof step === 'function' ? step(body) : step
+	}
+	return {seen, fetchImpl}
+}
+
+const fakeAccounts = () => ({
+	getUser(userId) {
+		if (userId === 'owner') return {userId, role: 'owner'}
+		return null
+	},
+})
+
+async function withAssistant(opts = {}) {
+	const dataDir = await mkdtemp(join(os.tmpdir(), 'mcp-loop-'))
+	const calls = []
+	const runProcedure = async (name, input, auth) => {
+		calls.push({name, input, auth})
+		if (opts.runProcedure) return opts.runProcedure(name, input, auth)
+		if (name === 'system.getHostname') return 'box'
+		if (name === 'system.device') return {device: 'ThinkPad', os: 'Omarchy'}
+		if (name === 'apps.list') return []
+		if (name === 'swarm.list') return []
+		return null
+	}
+	const asst = createAssistant({dataDir, accounts: fakeAccounts(), now: () => 50, runProcedure, fetchImpl: opts.fetchImpl, mcpTargets: opts.mcpTargets})
+	await asst.keys.add('owner', {name: 'k', provider: 'spacexai', apiKey: 'test-key-1234', model: 'grok-4.7'})
+	return {
+		dataDir,
+		asst,
+		calls,
+		async close() {
+			await rm(dataDir, {recursive: true, force: true})
+		},
+	}
+}
+
+function startMcp({tools, fail = false, onCall, frame = 'json'} = {}) {
+	const seen = []
+	const srv = http.createServer(async (req, res) => {
+		const chunks = []
+		for await (const c of req) chunks.push(c)
+		let msg = {}
+		try {
+			msg = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+		} catch {
+			msg = {}
+		}
+		seen.push({reqMethod: req.method, url: req.url, ...msg})
+		if (fail) {
+			res.writeHead(500, {'content-type': 'application/json'})
+			res.end(JSON.stringify({jsonrpc: '2.0', id: msg.id ?? null, error: {code: -32000, message: 'nope'}}))
+			return
+		}
+		if (msg.method === 'notifications/initialized') {
+			res.writeHead(202)
+			res.end()
+			return
+		}
+		const send = (result) => {
+			const payload = {jsonrpc: '2.0', id: msg.id, result}
+			if (frame === 'sse') {
+				res.writeHead(200, {'content-type': 'text/event-stream'})
+				res.end(`event: message\ndata: ${JSON.stringify(payload)}\n\n`)
+				return
+			}
+			res.writeHead(200, {'content-type': 'application/json'})
+			res.end(JSON.stringify(payload))
+		}
+		if (msg.method === 'initialize') return send({protocolVersion: '2024-11-05', capabilities: {tools: {}}, serverInfo: {name: 'fake', version: '1'}})
+		if (msg.method === 'tools/list') return send({tools})
+		if (msg.method === 'tools/call') {
+			if (onCall) await onCall(msg)
+			const name = msg.params?.name
+			return send({content: [{type: 'text', text: name === 'status' ? 'ok-status' : 'renamed'}], isError: false})
+		}
+		res.writeHead(400, {'content-type': 'application/json'})
+		res.end(JSON.stringify({jsonrpc: '2.0', id: msg.id ?? null, error: {code: -32601, message: 'Method not found'}}))
+	})
+	return {
+		seen,
+		listen: () => new Promise((resolve) => srv.listen(0, '127.0.0.1', () => {
+			const port = srv.address().port
+			const path = `/mcp/${port}/${Math.random().toString(16).slice(2)}`
+			resolve({port, path, url: `http://127.0.0.1:${port}${path}`})
+		})),
+		close: () => new Promise((resolve) => srv.close(resolve)),
+	}
+}
+
+const builtinNames = () => openAiTools('owner').map((t) => t.function.name)
+
+test('readOnly MCP tools auto-run; others become pending', async () => {
+	const mcp = startMcp({tools: [
+		{name: 'status', description: 'Read the status', inputSchema: {type: 'object', properties: {verbose: {type: 'boolean'}}}, annotations: {readOnlyHint: true}},
+		{name: 'rename', description: 'Rename something', inputSchema: {type: 'object', properties: {title: {type: 'string'}}, required: ['title']}, annotations: {readOnlyHint: false}},
+		{name: 'bad.name', description: 'nope', inputSchema: {type: 'object', properties: {}}, annotations: {readOnlyHint: true}},
+	]})
+	const addr = await mcp.listen()
+	const {seen, fetchImpl} = scripted([
+		toolSse('call_status', 'app__demo__status', JSON.stringify({verbose: true})),
+		toolSse('call_rename', 'app__demo__rename', JSON.stringify({title: 'Cabinet'})),
+		textSse('Renamed.'),
+	])
+	const box = await withAssistant({
+		fetchImpl,
+		mcpTargets: async () => [{appId: 'demo', name: 'Demo', url: addr.url, transport: 'sse', running: true}],
+	})
+	const events = []
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'rename the shelf', emit: (e) => events.push(e)})
+		const names = seen[0].body.tools.map((t) => t.function.name)
+		assert.deepEqual(names.slice(0, builtinNames().length), builtinNames())
+		assert.ok(names.includes('app__demo__status'))
+		assert.ok(names.includes('app__demo__rename'))
+		assert.equal(names.some((n) => n.includes('bad')), false)
+		const statusTool = seen[0].body.tools.find((t) => t.function.name === 'app__demo__status')
+		const renameTool = seen[0].body.tools.find((t) => t.function.name === 'app__demo__rename')
+		assert.equal(statusTool.function.description, 'Read the status')
+		assert.deepEqual(statusTool.function.parameters, {type: 'object', properties: {verbose: {type: 'boolean'}}})
+		assert.equal(renameTool.function.description, 'Rename something')
+		assert.deepEqual(renameTool.function.parameters, {type: 'object', properties: {title: {type: 'string'}}, required: ['title']})
+		const init = mcp.seen.find((m) => m.method === 'initialize')
+		assert.equal(init.jsonrpc, '2.0')
+		assert.equal(init.params.protocolVersion, '2024-11-05')
+		assert.equal(init.params.clientInfo.name, 'Omarchy Server')
+		assert.ok(mcp.seen.every((m) => m.reqMethod === 'POST' && m.url === addr.path && m.jsonrpc === '2.0'))
+		const statusCall = mcp.seen.filter((m) => m.method === 'tools/call' && m.params?.name === 'status')
+		assert.equal(statusCall.length, 1)
+		assert.deepEqual(statusCall[0].params.arguments, {verbose: true})
+		assert.equal(mcp.seen.some((m) => m.method === 'tools/call' && m.params?.name === 'rename'), false)
+		const toolMsg = seen[1].body.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'call_status')
+		assert.match(toolMsg.content, /ok-status/)
+		assert.deepEqual(events.map((e) => e.event), ['tool', 'action', 'done'])
+		assert.equal(events[0].data.name, 'app__demo__status')
+		assert.equal(events[0].data.state, 'done')
+		const action = events[1].data
+		assert.equal(action.kind, 'mcp')
+		assert.equal(action.status, 'pending')
+		assert.equal(action.toolName, 'app__demo__rename')
+		assert.equal(action.title, 'Demo: rename')
+		assert.equal(action.detail, 'title: Cabinet')
+		assert.equal(action.rpc, null)
+		assert.deepEqual(action.mcp, {appId: 'demo', tool: 'rename', arguments: {title: 'Cabinet'}})
+		assert.equal(JSON.stringify(action).includes('bad.name'), false)
+		const before = box.calls.length
+		await box.asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}})
+		assert.equal(box.calls.length, before)
+		const renameCall = mcp.seen.filter((m) => m.method === 'tools/call' && m.params?.name === 'rename')
+		assert.equal(renameCall.length, 1)
+		assert.deepEqual(renameCall[0].params.arguments, {title: 'Cabinet'})
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		assert.equal(saved.actions[0].status, 'done')
+		assert.match(saved.messages.find((m) => m.role === 'tool' && m.toolCallId === 'call_rename').content, /renamed/)
+		const follow = []
+		await box.asst.runTurn({userId: 'owner', role: 'owner', conversationId: out.conversationId, continue: true, emit: (e) => follow.push(e)})
+		assert.equal(follow.find((e) => e.event === 'text').data.text, 'Renamed.')
+		assert.equal(follow.at(-1).event, 'done')
+		const posted = seen.at(-1).body.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'call_rename')
+		assert.match(posted.content, /renamed/)
+		await box.asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}}).then(
+			() => assert.fail('second approve'),
+			(e) => assert.equal(e.code, 'CONFLICT'),
+		)
+		assert.equal(mcp.seen.filter((m) => m.method === 'tools/call' && m.params?.name === 'rename').length, 1)
+	} finally {
+		await box.close()
+		await mcp.close()
+	}
+})
+
+test('listing without mcp contributes no tools', async () => {
+	const {seen, fetchImpl} = scripted([textSse('Hello.')])
+	const guarded = async (url, opts) => {
+		if (new URL(url).hostname === '127.0.0.1' || new URL(url).hostname === 'localhost') throw new Error(`unexpected fetch ${url}`)
+		return fetchImpl(url, opts)
+	}
+	const box = await withAssistant({fetchImpl: guarded, mcpTargets: async () => []})
+	const events = []
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: (e) => events.push(e)})
+		assert.deepEqual(seen[0].body.tools.map((t) => t.function.name), builtinNames())
+		assert.equal(events.some((e) => e.event === 'error'), false)
+		assert.equal(events.find((e) => e.event === 'text').data.text, 'Hello.')
+	} finally {
+		await box.close()
+	}
+})
+
+test('stopped app contributes no tools', async () => {
+	const paused = startMcp({tools: [{name: 'secret', description: 'Secret', inputSchema: {type: 'object', properties: {}}, annotations: {readOnlyHint: true}}]})
+	const rejected = startMcp({fail: true, tools: [{name: 'streamed', description: 'Streamed', inputSchema: {type: 'object', properties: {}}}]})
+	const pausedAddr = await paused.listen()
+	const rejectedAddr = await rejected.listen()
+	const {seen, fetchImpl} = scripted([textSse('Hello.')])
+	const box = await withAssistant({
+		fetchImpl,
+		mcpTargets: async () => [
+			{appId: 'paused', name: 'Paused', url: pausedAddr.url, transport: 'http', running: false},
+			{appId: 'stream', name: 'Stream', url: rejectedAddr.url, transport: 'sse', running: true},
+			{appId: 'down', name: 'Down', url: 'http://127.0.0.1:1/mcp', transport: 'http', running: true},
+		],
+	})
+	const events = []
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: (e) => events.push(e)})
+		assert.equal(paused.seen.length, 0)
+		assert.deepEqual(seen[0].body.tools.map((t) => t.function.name), builtinNames())
+		assert.equal(events.some((e) => e.event === 'error'), false)
+		assert.equal(events.at(-1).event, 'done')
+	} finally {
+		await box.close()
+		await paused.close()
+		await rejected.close()
+	}
+})
+
+test('callMcpTool refuses a non-loopback URL', async () => {
+	let fetched = false
+	const fetchImpl = async () => {
+		fetched = true
+		throw new Error('fetched')
+	}
+	await assert.rejects(() => callMcpTool({url: 'http://example.com/mcp', name: 'x', arguments: {}, fetchImpl}), /loopback/)
+	await assert.rejects(() => callMcpTool({url: 'https://127.0.0.1/mcp', name: 'x', arguments: {}, fetchImpl}), /loopback/)
+	await assert.rejects(() => callMcpTool({url: 'http://localhost/mcp', name: 'x', arguments: {}, fetchImpl}), /loopback/)
+	await assert.rejects(() => callMcpTool({url: 'http://[::1]/mcp', name: 'x', arguments: {}, fetchImpl}), /loopback/)
+	assert.equal(fetched, false)
+	assert.deepEqual(await listMcpTools({url: 'http://example.com/mcp', transport: 'http', fetchImpl}), [])
+	assert.deepEqual(await listMcpTools({url: 'http://127.0.0.1:9/mcp', transport: 'stdio', fetchImpl}), [])
+	assert.equal(fetched, false)
+})
+
+test('listMcpTools caches a URL until the TTL', async () => {
+	const mcp = startMcp({tools: [
+		{name: 'status', description: 'Read the status', inputSchema: {type: 'object', properties: {verbose: {type: 'boolean'}}}, annotations: {readOnlyHint: true}},
+		{name: 'rename', description: 'Rename something', inputSchema: {type: 'object', properties: {title: {type: 'string'}}}},
+		{name: 'peek', description: 'Peek', inputSchema: {type: 'object', properties: {}}, readOnlyHint: true},
+	]})
+	const addr = await mcp.listen()
+	let now = 10_000
+	try {
+		const listed = await listMcpTools({url: addr.url, transport: 'http', fetchImpl: fetch, now: () => now})
+		assert.deepEqual(listed.map((t) => ({name: t.name, readOnly: t.readOnly})), [
+			{name: 'status', readOnly: true},
+			{name: 'rename', readOnly: false},
+			{name: 'peek', readOnly: true},
+		])
+		assert.deepEqual(listed[0].inputSchema, {type: 'object', properties: {verbose: {type: 'boolean'}}})
+		const n = mcp.seen.length
+		assert.ok(n >= 1)
+		const again = await listMcpTools({url: addr.url, transport: 'http', fetchImpl: fetch, now: () => now})
+		assert.deepEqual(again, listed)
+		assert.equal(mcp.seen.length, n)
+		now += 59_999
+		await listMcpTools({url: addr.url, transport: 'http', fetchImpl: fetch, now: () => now})
+		assert.equal(mcp.seen.length, n)
+		now += 1
+		await listMcpTools({url: addr.url, transport: 'http', fetchImpl: fetch, now: () => now})
+		assert.ok(mcp.seen.length > n)
+	} finally {
+		await mcp.close()
+	}
+})
+
+test('approving an MCP action errors when the app is gone', async () => {
+	const mcp = startMcp({tools: [
+		{name: 'rename', description: 'Rename something', inputSchema: {type: 'object', properties: {title: {type: 'string'}}}, annotations: {readOnlyHint: false}},
+	]})
+	const addr = await mcp.listen()
+	let live = true
+	const {fetchImpl} = scripted([
+		toolSse('call_rename', 'app__demo__rename', JSON.stringify({title: 'Cabinet'})),
+		textSse('stopped'),
+	])
+	const box = await withAssistant({
+		fetchImpl,
+		mcpTargets: async () => (live ? [{appId: 'demo', name: 'Demo', url: addr.url, transport: 'http', running: true}] : []),
+	})
+	const events = []
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'rename it', emit: (e) => events.push(e)})
+		const action = events.find((e) => e.event === 'action').data
+		assert.equal(action.kind, 'mcp')
+		assert.equal(action.status, 'pending')
+		live = false
+		const before = mcp.seen.filter((m) => m.method === 'tools/call').length
+		await assert.rejects(
+			() => box.asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}}),
+			/not running/,
+		)
+		assert.equal(mcp.seen.filter((m) => m.method === 'tools/call').length, before)
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		assert.equal(saved.actions[0].status, 'error')
+		assert.match(saved.actions[0].error, /not running/)
+		assert.match(saved.messages.find((m) => m.role === 'tool' && m.toolCallId === 'call_rename').content, /not running/)
+	} finally {
+		await box.close()
+		await mcp.close()
+	}
+})
+
+test('overlapping MCP Approves call the tool once', async () => {
+	let release = () => {}
+	const hold = new Promise((r) => {
+		release = r
+	})
+	let entered = () => {}
+	const inside = new Promise((r) => {
+		entered = r
+	})
+	const mcp = startMcp({
+		tools: [{name: 'rename', description: 'Rename something', inputSchema: {type: 'object', properties: {title: {type: 'string'}}}, annotations: {readOnlyHint: false}}],
+		onCall: async () => {
+			entered()
+			await hold
+		},
+	})
+	const addr = await mcp.listen()
+	const {fetchImpl} = scripted([
+		toolSse('call_rename', 'app__demo__rename', JSON.stringify({title: 'Cabinet'})),
+		textSse('stopped'),
+	])
+	const box = await withAssistant({
+		fetchImpl,
+		mcpTargets: async () => [{appId: 'demo', name: 'Demo', url: addr.url, transport: 'http', running: true}],
+	})
+	try {
+		const events = []
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'rename it', emit: (e) => events.push(e)})
+		const id = events.find((e) => e.event === 'action').data.id
+		const approve = () => box.asst.procedures['assistant.approve'].run({actionId: id}, {auth: {userId: 'owner'}})
+		const first = approve()
+		await inside
+		const second = approve()
+		const settled = Promise.allSettled([first, second])
+		release()
+		const done = await settled
+		assert.equal(mcp.seen.filter((m) => m.method === 'tools/call').length, 1)
+		assert.equal(done.filter((s) => s.status === 'fulfilled').length, 1)
+		const rejected = done.find((s) => s.status === 'rejected')
+		assert.equal(rejected.reason.code, 'CONFLICT')
+		assert.equal(rejected.reason.message, 'That step was already handled')
+	} finally {
+		release()
+		await box.close()
+		await mcp.close()
+	}
+})
+
+test('an sse transport that answers the POST with an event still lists tools', async () => {
+	const mcp = startMcp({
+		frame: 'sse',
+		tools: [{name: 'status', description: 'Read the status', inputSchema: {type: 'object', properties: {}}, annotations: {readOnlyHint: true}}],
+	})
+	const addr = await mcp.listen()
+	try {
+		const listed = await listMcpTools({url: addr.url, transport: 'sse', fetchImpl: fetch, ttlMs: 0})
+		assert.deepEqual(listed.map((t) => t.name), ['status'])
+		assert.equal(listed[0].readOnly, true)
+		assert.ok(mcp.seen.every((m) => m.reqMethod === 'POST'))
+	} finally {
+		await mcp.close()
 	}
 })

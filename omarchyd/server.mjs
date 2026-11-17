@@ -342,6 +342,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		dataDir,
 		accounts,
 		fetchImpl: assistantOptions.fetchImpl,
+		mcpTargets: () => apps.mcpTargets(),
 		runProcedure: (name, input, auth) => {
 			const p = procedures[name]
 			if (!p) throw new RpcError('NOT_FOUND', 'Unknown tool')

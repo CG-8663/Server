@@ -3,6 +3,7 @@ import {randomBytes} from 'node:crypto'
 import {createConversations} from './assistant/conversations.mjs'
 import {createKeyStore} from './assistant/keys.mjs'
 import {createLoop, publicAction} from './assistant/loop.mjs'
+import {callMcpTool} from './assistant/mcp.mjs'
 import {writeTool} from './assistant/tools.mjs'
 import {RpcError} from './rpc.mjs'
 
@@ -58,7 +59,7 @@ function ownerMessage(toolName) {
 	return 'Only the server’s owner can change the desktop’s theme'
 }
 
-export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl}) {
+export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl, mcpTargets}) {
 	const keys = createKeyStore({dataDir, now})
 	const conversations = createConversations({dataDir, now})
 	const stamp = () => (now ? now() : Date.now())
@@ -71,7 +72,7 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		if (!auth?.userId) throw new RpcError('UNAUTHORIZED', 'Invalid token')
 		return auth.userId
 	}
-	const {runTurn, runTurnContinue} = createLoop({keys, conversations, runProcedure, fetchImpl, now})
+	const {runTurn, runTurnContinue} = createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now})
 	const inflight = new Set()
 	const claim = (id) => {
 		if (inflight.has(id)) throw new RpcError('CONFLICT', 'That step was already handled')
@@ -92,6 +93,37 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			at: stamp(),
 		})
 	}
+	async function approveMcp(who, action, running) {
+		const spec = action.mcp
+		const tool = typeof spec?.tool === 'string' ? spec.tool : ''
+		const args = spec?.arguments && typeof spec.arguments === 'object' && !Array.isArray(spec.arguments) ? spec.arguments : {}
+		const fail = async (error, code) => {
+			await conversations.saveAction(who.userId, {...running, status: 'error', error, resolvedAt: stamp()})
+			await appendOutcome(who, action, error)
+			throw new RpcError(code, error)
+		}
+		if (!spec || typeof spec !== 'object' || !spec.appId || !tool) return fail('That step is not available', 'PRECONDITION_FAILED')
+		let targets = []
+		try {
+			targets = typeof mcpTargets === 'function' ? await mcpTargets() : []
+		} catch {
+			targets = []
+		}
+		const target = Array.isArray(targets) ? targets.find((t) => t && t.appId === spec.appId && t.running !== false && typeof t.url === 'string' && t.url) : null
+		if (!target) return fail('That app is not running', 'PRECONDITION_FAILED')
+		let result
+		try {
+			result = await callMcpTool({url: target.url, name: tool, arguments: args, fetchImpl})
+		} catch (e) {
+			if (e instanceof RpcError) return fail(e.message, e.code)
+			return fail(e?.message || 'That step failed', 'BAD_GATEWAY')
+		}
+		const done = {...running, status: 'done', resolvedAt: stamp()}
+		delete done.error
+		await conversations.saveAction(who.userId, done)
+		await appendOutcome(who, action, toolText(result, ''))
+		return publicAction(done)
+	}
 	async function approve(input, {auth}) {
 		const who = actor(auth)
 		const id = actionId(input)
@@ -107,6 +139,8 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			}
 			const running = {...action, status: 'running'}
 			await conversations.saveAction(who.userId, running)
+			// Await so the in-flight lock stays until the MCP call finishes. A bare return would run finally first.
+			if (action.kind === 'mcp') return await approveMcp(who, action, running)
 			const path = action.rpc?.path || spec?.rpc
 			// Generated here, passed only into the RPC. The card and the model never see it.
 			const secret = action.toolName === 'machines_create' || path === 'machines.create' ? randomBytes(12).toString('base64url') : ''
