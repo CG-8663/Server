@@ -1,6 +1,7 @@
 // Full-screen terminal: a shell on the server, or inside one app's container.
-// omarchyd streams a PTY over a WebSocket (bridged by the Touch server). Its size is
-// fixed when the shell starts, so on rotate we resize the font, not the shell.
+// omarchyd streams a PTY over a WebSocket (bridged by the Touch server). The terminal fills its
+// window: when the window (or the phone's keyboard) changes its size, the shell is resized to
+// match, so programs reflow and full-screen ones redraw, the way a native terminal does.
 import {useEffect, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 import {Terminal as XTerm} from '@xterm/xterm'
@@ -13,6 +14,11 @@ import {AppIcon, haptic, useConfirm, usePortalRoot, useScreenLock, useToast} fro
 type State = 'connecting' | 'connected' | 'closed' | 'lost' | 'error'
 const BASE_FONT = 13
 const SEQ = {esc: '\x1b', tab: '\t', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C', left: '\x1b[D', home: '\x1b[H', end: '\x1b[F', ctrlC: '\x03'}
+// Arrow, Home and End keys as a real keyboard sends them: full-screen programs (less, vim, htop)
+// switch the terminal to "application" cursor keys (ESC O A rather than ESC [ A), and some only
+// understand that form.
+const CURSOR: Record<string, string> = {[SEQ.up]: 'A', [SEQ.down]: 'B', [SEQ.right]: 'C', [SEQ.left]: 'D', [SEQ.home]: 'H', [SEQ.end]: 'F'}
+const cursorKey = (term: XTerm | undefined, seq: string) => (term?.modes.applicationCursorKeysMode && CURSOR[seq] ? `\x1bO${CURSOR[seq]}` : seq)
 
 // Keep a fixed-position screen inside the area the phone keyboard leaves visible.
 export function useVisualViewport(ref: React.RefObject<HTMLElement>, enabled = true) {
@@ -61,7 +67,8 @@ export function TerminalScreen({
 	const host = useRef<HTMLDivElement>(null)
 	const termRef = useRef<XTerm>()
 	const wsRef = useRef<WebSocket>()
-	const size = useRef({cols: 80, rows: 24, cellW: 7.8, font: BASE_FONT, ready: false})
+	// This window's own size in characters (what it asks the shell for); ready once measured.
+	const size = useRef({cols: 80, rows: 24, ready: false})
 	const [state, setState] = useState<State>('connecting')
 	const [message, setMessage] = useState('')
 	const [attempt, setAttempt] = useState(0)
@@ -144,14 +151,70 @@ export function TerminalScreen({
 		}
 		el.addEventListener('contextmenu', onContextMenu)
 
-		// Measure a cell, then size the shell to fill the screen.
-		const measure = () => {
+		// -- Size: fill the window at the normal text size --------------------------------------
+		// A character cell at the normal text size (measured at whatever size is showing now).
+		const cell = () => {
 			const dims = (term as any)._core?._renderService?.dimensions?.css?.cell
-			const cellW = dims?.width || BASE_FONT * 0.6
-			const cellH = dims?.height || BASE_FONT * 1.15 * 1.2
-			const cols = Math.max(20, Math.min(240, Math.floor((el.clientWidth - 12) / cellW)))
-			const rows = Math.max(8, Math.min(120, Math.floor((el.clientHeight - 8) / cellH)))
-			return {cols, rows, cellW, font: term.options.fontSize ?? BASE_FONT, ready: true}
+			const font = term.options.fontSize ?? BASE_FONT
+			const k = BASE_FONT / font
+			return {w: (dims?.width || font * 0.6) * k, h: (dims?.height || font * 1.15 * 1.2) * k}
+		}
+		// The room the text has: the window, less padding and (on a computer) the scrollbar.
+		const room = () => {
+			const cs = getComputedStyle(el)
+			const vp = el.querySelector<HTMLElement>('.xterm-viewport')
+			const bar = vp ? vp.offsetWidth - vp.clientWidth : 0
+			return {
+				w: el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - bar,
+				h: el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom),
+			}
+		}
+		// How many columns and rows fit this window.
+		const fitSize = () => {
+			const {w, h} = room()
+			const c = cell()
+			return {cols: Math.max(20, Math.min(500, Math.floor(w / c.w))), rows: Math.max(4, Math.min(300, Math.floor(h / c.h)))}
+		}
+		// Draw the terminal at the shell's size. At this window's own size that's the normal text
+		// size; if another device viewing the same shell set its size, scale the text to fit here.
+		const show = (cols: number, rows: number) => {
+			const buf = term.buffer.active
+			const atBottom = buf.viewportY >= buf.baseY
+			if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows)
+			const mine = size.current
+			let font = BASE_FONT
+			if (cols !== mine.cols || rows !== mine.rows) {
+				const {w, h} = room()
+				const c = cell()
+				font = Math.max(7, Math.min(BASE_FONT * 1.5, BASE_FONT * Math.min(w / (cols * c.w), h / (rows * c.h))))
+			}
+			// Round down to a half point, so the scaled text always fits inside the window.
+			if (Math.abs(font - (term.options.fontSize ?? BASE_FONT)) > 0.2) term.options.fontSize = Math.floor(font * 2) / 2
+			// Reading back through history stays put; at the bottom it stays at the bottom.
+			if (atBottom) term.scrollToBottom()
+		}
+		// Tell the shell this window's size (a binary frame; what's typed is text). A window being
+		// dragged changes size many times: send the last one.
+		let sizeTimer = 0
+		const sendSize = (now = false) => {
+			window.clearTimeout(sizeTimer)
+			const go = () => {
+				const ws = wsRef.current
+				if (ws?.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(JSON.stringify({type: 'resize', cols: size.current.cols, rows: size.current.rows})))
+			}
+			if (now) go()
+			else sizeTimer = window.setTimeout(go, 90)
+		}
+		// The window changed size (or the phone's keyboard came or went): fit it, and resize the shell.
+		const refit = () => {
+			if (!size.current.ready || !el.clientWidth || !el.clientHeight) return // hidden (another workspace)
+			const next = fitSize()
+			const changed = next.cols !== size.current.cols || next.rows !== size.current.rows
+			size.current = {...size.current, ...next}
+			if (changed || next.cols !== term.cols || next.rows !== term.rows) {
+				show(next.cols, next.rows)
+				if (changed || wsRef.current?.readyState === WebSocket.OPEN) sendSize()
+			}
 		}
 
 		const send = (data: string) => {
@@ -159,6 +222,12 @@ export function TerminalScreen({
 			if (ws?.readyState === WebSocket.OPEN) ws.send(data)
 		}
 		term.onData((data) => {
+			// Typing here after another device resized this shell: take it back to this window's size.
+			// (Sent now, ahead of what's typed: the server holds the typing until the shell has resized.)
+			if (term.cols !== size.current.cols || term.rows !== size.current.rows) {
+				show(size.current.cols, size.current.rows)
+				sendSize(true)
+			}
 			let out = data
 			const m = mods.current
 			if (m.ctrl && data.length === 1) {
@@ -176,10 +245,8 @@ export function TerminalScreen({
 		ta?.setAttribute('autocapitalize', 'off')
 		ta?.setAttribute('autocorrect', 'off')
 		ta?.setAttribute('spellcheck', 'false')
-		const onFocus = () => {
-			setKbd(true)
-			term.scrollToBottom()
-		}
+		// (Typing scrolls to the prompt by itself; tapping in to type doesn't throw away your place.)
+		const onFocus = () => setKbd(true)
 		const onBlur = () => setKbd(false)
 		ta?.addEventListener('focus', onFocus)
 		ta?.addEventListener('blur', onBlur)
@@ -197,7 +264,7 @@ export function TerminalScreen({
 			term.options.fontSize = BASE_FONT
 			await new Promise((r) => requestAnimationFrame(() => r(null)))
 			if (disposed) return
-			const s = measure()
+			const s = {...fitSize(), ready: true}
 			size.current = s
 			term.resize(s.cols, s.rows)
 			term.reset()
@@ -229,13 +296,10 @@ export function TerminalScreen({
 				}
 				if (m.type === 'session') setResumed(!!m.resumed)
 				if ((m.type === 'session' || m.type === 'size') && m.cols && m.rows) {
+					// In order with the output around it: a resumed screen replays at the size it was
+					// drawn, then the shell takes this window's size.
 					const {cols, rows} = m
-					term.write('', () => {
-						if (cols === term.cols && rows === term.rows) return
-						size.current = {...size.current, cols, rows}
-						term.resize(cols, rows)
-						fit()
-					})
+					term.write('', () => show(cols, rows))
 				}
 			}
 			ws.onclose = (e) => {
@@ -252,52 +316,105 @@ export function TerminalScreen({
 		}
 		connect()
 
-		// The shell's row count is fixed, so when the keyboard shrinks the screen the bottom rows
-		// (where you type) would be cut off. Slide the terminal up just enough to keep the cursor
-		// line in view; slide it back down when there's room again.
-		const frame = el.parentElement!
+		// Fill the window, now and whenever it changes size. (Phones: the keyboard shrinks the
+		// window, so the shell gets fewer rows and the prompt stays in view above it.)
 		let raf = 0
-		const follow = () => {
+		const onResize = () => {
 			cancelAnimationFrame(raf)
 			raf = requestAnimationFrame(() => {
-				const screen = el.querySelector<HTMLElement>('.xterm-screen')
-				const buf = term.buffer.active
-				if (!screen || !term.rows) return
-				const rowH = screen.clientHeight / term.rows
-				const atBottom = buf.viewportY === buf.baseY
-				const cursorBottom = 6 + (buf.cursorY + 1) * rowH + 4
-				const shift = atBottom ? Math.max(0, cursorBottom - frame.clientHeight) : 0
-				el.style.transform = shift ? `translateY(${-Math.ceil(shift)}px)` : ''
-				// Keep xterm's hidden input inside the visible area so iOS never scrolls to find it.
-				el.style.setProperty('--term-shift', `${Math.ceil(shift)}px`)
-				el.style.setProperty('--term-frame', `${frame.clientHeight}px`)
+				refit()
+				el.style.setProperty('--term-frame', `${el.clientHeight}px`)
 			})
 		}
-		term.onWriteParsed(follow)
-		term.onCursorMove(follow)
-		term.onScroll(follow)
-		term.onRender(follow)
-
-		// On rotate / keyboard, keep the shell's columns and scale the font to fit the width.
-		const fit = () => {
-			const {cols, cellW, font, ready} = size.current
-			if (!ready) return
-			const fitted = Math.max(8, Math.min(20, (font * (el.clientWidth - 12)) / (cols * cellW)))
-			if (Math.abs(fitted - (term.options.fontSize ?? BASE_FONT)) > 0.3) term.options.fontSize = Math.round(fitted * 2) / 2
-			term.scrollToBottom()
-			follow()
-		}
-		const ro = new ResizeObserver(fit)
+		const ro = new ResizeObserver(onResize)
 		ro.observe(el)
-		ro.observe(frame)
 		const rootEl = root.current
-		rootEl?.addEventListener('viewportchange', follow)
+		rootEl?.addEventListener('viewportchange', onResize)
+
+		// -- Touch: scroll like a phone app ---------------------------------------------------
+		// A drag moves the text with your finger and keeps going when you let go (momentum). In
+		// full-screen programs (less, man, vim) there's no history to scroll, so a drag sends the
+		// arrow keys instead, as a mouse wheel would. A tap still opens the keyboard, and a long
+		// press still offers Paste.
+		const viewport = () => el.querySelector<HTMLElement>('.xterm-viewport')
+		let touch: {startY: number; y: number; t: number; v: number; moved: boolean; carry: number} | null = null
+		let fling = 0
+		const stopFling = () => cancelAnimationFrame(fling)
+		// dy > 0: the text moves up (towards newer lines).
+		const scrollBy = (dy: number) => {
+			if (term.buffer.active.type === 'alternate') {
+				if (!touch) return false
+				touch.carry += dy
+				const rowH = cell().h * ((term.options.fontSize ?? BASE_FONT) / BASE_FONT)
+				let out = ''
+				while (Math.abs(touch.carry) >= rowH) {
+					out += cursorKey(term, touch.carry > 0 ? SEQ.down : SEQ.up)
+					touch.carry -= Math.sign(touch.carry) * rowH
+				}
+				if (out) send(out)
+				return true
+			}
+			const vp = viewport()
+			if (!vp) return false
+			const before = vp.scrollTop
+			vp.scrollTop = before + dy
+			return vp.scrollTop !== before
+		}
+		const onTouchStart = (e: TouchEvent) => {
+			stopFling()
+			if (e.touches.length !== 1) return void (touch = null)
+			const y = e.touches[0].clientY
+			touch = {startY: y, y, t: performance.now(), v: 0, moved: false, carry: 0}
+		}
+		const onTouchMove = (e: TouchEvent) => {
+			if (!touch || e.touches.length !== 1) return
+			const y = e.touches[0].clientY
+			if (!touch.moved && Math.abs(y - touch.startY) < 6) return // not a drag yet: maybe a tap or a long press
+			touch.moved = true
+			e.preventDefault() // ours, not the page's (or xterm's own, slower) scrolling
+			e.stopPropagation()
+			const now = performance.now()
+			const dy = touch.y - y
+			const dt = Math.max(1, now - touch.t)
+			touch.v = 0.75 * (dy / dt) + 0.25 * touch.v
+			touch.y = y
+			touch.t = now
+			scrollBy(dy)
+		}
+		const onTouchEnd = (e: TouchEvent) => {
+			const t = touch
+			touch = null
+			if (!t?.moved) return
+			e.stopPropagation()
+			// Let go mid-swipe: keep going and slow down, as a phone does (not in full-screen programs).
+			let v = performance.now() - t.t > 80 ? 0 : t.v
+			if (term.buffer.active.type === 'alternate' || Math.abs(v) < 0.05) return
+			let last = performance.now()
+			const step = (now: number) => {
+				const dt = now - last
+				last = now
+				v *= Math.pow(0.9965, dt)
+				if (Math.abs(v) < 0.02 || !scrollBy(v * dt)) return
+				fling = requestAnimationFrame(step)
+			}
+			fling = requestAnimationFrame(step)
+		}
+		el.addEventListener('touchstart', onTouchStart, {capture: true, passive: true})
+		el.addEventListener('touchmove', onTouchMove, {capture: true, passive: false})
+		el.addEventListener('touchend', onTouchEnd, {capture: true})
+		el.addEventListener('touchcancel', onTouchEnd, {capture: true})
 
 		return () => {
 			disposed = true
 			ro.disconnect()
 			cancelAnimationFrame(raf)
-			rootEl?.removeEventListener('viewportchange', follow)
+			stopFling()
+			window.clearTimeout(sizeTimer)
+			rootEl?.removeEventListener('viewportchange', onResize)
+			el.removeEventListener('touchstart', onTouchStart, {capture: true})
+			el.removeEventListener('touchmove', onTouchMove, {capture: true})
+			el.removeEventListener('touchend', onTouchEnd, {capture: true})
+			el.removeEventListener('touchcancel', onTouchEnd, {capture: true})
 			ta?.removeEventListener('focus', onFocus)
 			ta?.removeEventListener('blur', onBlur)
 			wsRef.current?.close()
@@ -306,9 +423,10 @@ export function TerminalScreen({
 		}
 	}, [app, agent?.id, attempt])
 
-	const sendSeq = (s: string) => {
+	const sendSeq = (seq: string) => {
 		haptic(5)
 		const ws = wsRef.current
+		const s = cursorKey(termRef.current, seq)
 		if (ws?.readyState === WebSocket.OPEN) ws.send(alt && s.length === 1 ? `\x1b${s}` : s)
 		if (alt) setAlt(false)
 	}

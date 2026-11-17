@@ -462,8 +462,16 @@ class Shell(Channel):
             env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", HOME=me.pw_dir, SHELL=shell, USER=me.pw_name, LANG=os.environ.get("LANG") or "C.UTF-8")
             os.execvpe(shell, [shell, "-l"], env)
         self.pid, self.fd = pid, fd
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", max(4, int(rows or 24)), max(10, int(cols or 80)), 0, 0))
+        self.resize(cols, rows)
         threading.Thread(target=self.pump, daemon=True).start()
+
+    def resize(self, cols, rows):
+        try:
+            cols = min(500, max(10, int(cols or 80)))
+            rows = min(300, max(4, int(rows or 24)))
+            fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        except (OSError, ValueError, TypeError):
+            pass
 
     def pump(self):
         while not self.closed:
@@ -681,6 +689,12 @@ class Connection:
                 self.channels[ch] = Shell(self, ch, msg.get("cols"), msg.get("rows")) if kind == "pty" else Screen(self, ch)
             except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
                 self.send({"op": "closed", "ch": ch, "code": 1011, "reason": str(e)[:200]})
+        elif op == "resize":
+            # The terminal's window changed size: the shell takes it (the kernel tells the programs
+            # in it with SIGWINCH, so full-screen ones redraw). Older servers never send this.
+            ch = self.channels.get(int(msg.get("ch", 0)))
+            if isinstance(ch, Shell):
+                ch.resize(msg.get("cols"), msg.get("rows"))
         elif op == "close":
             ch = self.channels.pop(int(msg.get("ch", 0)), None)
             if ch:

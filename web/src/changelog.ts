@@ -4,6 +4,21 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.36',
+		date: '2026-11-17',
+		title: 'A terminal that fits and scrolls',
+		added: [
+			'The terminal fills its window: make the window bigger (or rotate your phone) and the shell gets more columns and rows, at the same text size, instead of zooming in.',
+			'Scroll back through everything that happened: with the mouse wheel and a scrollbar on a computer, or by dragging on a phone, which keeps gliding when you let go. Changing the window’s size no longer jumps you back to the bottom.',
+			'In full-screen programs such as less, man and vim, swiping moves through them.',
+			'On a phone, the keyboard no longer covers the prompt: the terminal shrinks to the space above it.',
+		],
+		fixed: [
+			'The arrow, Home and End buttons on the phone’s key row now work in programs like less and vim.',
+			'Typing straight after reopening the terminal could be lost.',
+		],
+	},
+	{
 		version: '0.9.35',
 		date: '2026-11-17',
 		title: 'Hyprland layout: minimize and restore',

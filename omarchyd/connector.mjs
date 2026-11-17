@@ -20,6 +20,7 @@ import {WebSocketServer} from 'ws'
 
 import {writeAtomic} from './atomic.mjs'
 import {RpcError} from './rpc.mjs'
+import {parseResize} from './terminal.mjs'
 
 const ABILITIES = ['terminal', 'desktop', 'manage']
 const PAIR_TTL = 15 * 60_000
@@ -304,7 +305,17 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		l.ws.send(JSON.stringify({op: 'open', ch, kind, cols: opts.cols, rows: opts.rows}))
 		const head = Buffer.alloc(4)
 		head.writeUInt32BE(ch)
-		browserWs.on('message', (d) => l.ws.readyState === l.ws.OPEN && l.ws.send(Buffer.concat([head, Buffer.from(d)]), {binary: true}))
+		browserWs.on('message', (d, isBinary) => {
+			if (l.ws.readyState !== l.ws.OPEN) return
+			// A terminal's binary frames are size changes (what's typed is text); the connector
+			// resizes its shell. (A desktop's binary frames are the screen's own data.)
+			if (kind === 'pty' && isBinary) {
+				const size = parseResize(d, true)
+				if (size) l.ws.send(JSON.stringify({op: 'resize', ch, cols: size.cols, rows: size.rows}))
+				return
+			}
+			l.ws.send(Buffer.concat([head, Buffer.from(d)]), {binary: true})
+		})
 		const end = () => {
 			if (!l.channels.delete(ch)) return
 			if (l.ws.readyState === l.ws.OPEN) l.ws.send(JSON.stringify({op: 'close', ch}))

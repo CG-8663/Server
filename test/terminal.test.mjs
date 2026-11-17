@@ -104,6 +104,61 @@ test('closing the terminal leaves the shell running; opening it again resumes it
 	await b.close()
 })
 
+test('the window changes size: the shell takes it at once (and a resumed shell does too)', async () => {
+	const resize = (t, cols, rows) => t.ws.send(Buffer.from(JSON.stringify({type: 'resize', cols, rows})), {binary: true})
+	const a = await open({cols: '80', rows: '24'})
+	resize(a, 132, 41)
+	await new Promise((r) => setTimeout(r, 300))
+	a.ws.send('echo got-$(tput cols)x$(tput lines)\n')
+	await a.until(/got-132x41/)
+	// Resize and type at once: the command runs at the new size (typing waits for the resize).
+	a.ws.send(Buffer.from(JSON.stringify({type: 'resize', cols: 99, rows: 33})), {binary: true})
+	a.ws.send('echo at-once-$(tput cols)x$(tput lines)\n')
+	await a.until(/at-once-99x33/)
+	resize(a, 132, 41)
+	await new Promise((r) => setTimeout(r, 300))
+	// What's typed is text, so a typed '{"type":"resize"…}' is just typing, never a resize.
+	a.ws.send('echo \'{"type":"resize","cols":20,"rows":5}\' >/dev/null; echo still-$(tput cols)\n')
+	await a.until(/still-132/)
+	// Asking for the size it already is changes nothing, and later resizes still work.
+	resize(a, 132, 41)
+	await new Promise((r) => setTimeout(r, 200))
+	resize(a, 120, 40)
+	await new Promise((r) => setTimeout(r, 300))
+	a.ws.send('echo same-then-$(tput cols)x$(tput lines)\n')
+	await a.until(/same-then-120x40/)
+	resize(a, 132, 41)
+	await new Promise((r) => setTimeout(r, 300))
+	// Nonsense sizes are ignored.
+	resize(a, 3, 2)
+	a.ws.send(Buffer.from('not json'), {binary: true})
+	await new Promise((r) => setTimeout(r, 200))
+	a.ws.send('echo kept-$(tput cols)x$(tput lines)\n')
+	await a.until(/kept-132x41/)
+	await a.close()
+	// Opened again (resumed), then resized straight away: nothing is lost.
+	const b = await open({cols: '100', rows: '30'})
+	resize(b, 150, 45)
+	await new Promise((r) => setTimeout(r, 400))
+	b.ws.send('echo now-$(tput cols)x$(tput lines)\n')
+	await b.until(/now-150x45/)
+	b.ws.send('exit\n')
+	await new Promise((r) => b.ws.once('close', r))
+})
+
+test('two devices on one shell: whoever resizes, the other is told the size', async () => {
+	const a = await open({cols: '120', rows: '40'})
+	const b = await open({cols: '60', rows: '30'})
+	await new Promise((r) => setTimeout(r, 400))
+	// b joining resized the shell to b's window: a hears about it.
+	assert.deepEqual(a.control.at(-1), {type: 'size', cols: 60, rows: 30})
+	a.ws.send(Buffer.from(JSON.stringify({type: 'resize', cols: 120, rows: 40})), {binary: true})
+	await new Promise((r) => setTimeout(r, 400))
+	assert.deepEqual(b.control.at(-1), {type: 'size', cols: 120, rows: 40})
+	a.ws.send('exit\n')
+	await Promise.all([new Promise((r) => a.ws.once('close', r)), new Promise((r) => b.ws.once('close', r))])
+})
+
 test('two open at once both see it; “new session” ends the old shell; exit ends it', async () => {
 	const a = await open({cols: '80', rows: '24'})
 	const b = await open({cols: '80', rows: '24'})
