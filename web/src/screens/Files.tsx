@@ -196,7 +196,6 @@ function useListing(path: string | null, sort: "name" | "modified" | "size") {
         path,
         sortBy: sort,
         sortOrder: sort === "name" ? "ascending" : "descending",
-        limit: 2000,
       }),
     enabled: !!path && !path.startsWith("::"),
     refetchInterval: 15_000,

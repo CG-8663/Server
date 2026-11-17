@@ -102,9 +102,10 @@ describe('placing an app’s folders', () => {
 		const listing = (await q('appStore.registry'))[0].apps[0]
 		assert.deepEqual(listing.folders, [{id: 'projects', label: 'Your projects', detail: 'Where it keeps your projects.', suggest: 'Projects'}])
 		assert.equal(listing.caution, undefined, 'FOLDER_PROJECTS isn’t an unknown setting')
-		assert.deepEqual(listing.permissions, [], 'kept inside the app, it asks for nothing extra')
+		assert.equal(listing.permissions, undefined, 'permissions are computed at install review, not at index')
 		const review = await q('apps.installReview', {appId: 'devbox'})
 		assert.equal(review.home, home)
+		assert.deepEqual(review.permissions, [], 'kept inside the app, it asks for nothing extra')
 		assert.deepEqual(review.folders, [{id: 'projects', label: 'Your projects', detail: 'Where it keeps your projects.', suggest: join(home, 'Projects'), appId: 'devbox', appName: 'Devbox'}])
 	})
 

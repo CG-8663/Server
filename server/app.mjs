@@ -59,6 +59,7 @@ export const ALLOWED = {
 	'apps.logs': 'query',
 	'apps.installReview': 'query',
 	'appStore.registry': 'query',
+	'appStore.app': 'query',
 	'appStore.repositories': 'query',
 	'machines.list': 'query',
 	'notifications.get': 'query',
@@ -203,7 +204,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-const SLOW = new Set(['storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
+const SLOW = new Set(['storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
 
 function parseCookies(header = '') {
 	const out = {}

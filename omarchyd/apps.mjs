@@ -314,6 +314,21 @@ function execP(cmd, args, {env, cwd, timeout = 10 * 60_000} = {}) {
 	})
 }
 const exists = (p) => access(p).then(() => true, () => false)
+const LOAD_CONCURRENCY = 16
+
+async function mapPool(items, n, fn) {
+	const out = new Array(items.length)
+	let i = 0
+	await Promise.all(
+		Array.from({length: Math.min(n, items.length)}, async () => {
+			while (i < items.length) {
+				const idx = i++
+				out[idx] = await fn(items[idx], idx)
+			}
+		}),
+	)
+	return out
+}
 const portFree = (port) =>
 	new Promise((resolve) => {
 		const s = net.createServer()
@@ -332,6 +347,40 @@ async function readYaml(dir, names) {
 		}
 	}
 	return null
+}
+
+async function readFirst(dir, names) {
+	for (const n of names) {
+		try {
+			return {name: n, text: await readFile(join(dir, n), 'utf8')}
+		} catch (e) {
+			if (e.code !== 'ENOENT') throw e
+		}
+	}
+	return null
+}
+
+// Public listing fields. Pick these by name so a later loadStore change cannot leak folder, store, or compose.
+const LIST_FIELDS = [
+	'id', 'name', 'tagline', 'icon', 'category', 'version', 'developer', 'unsupported', 'caution',
+	'needs', 'dependencies', 'implements', 'port', 'path', 'web', 'shared', 'folders', 'openPorts',
+	'requiresHttps', 'system', 'defaultUsername', 'defaultPassword', 'deterministicPassword', 'repo',
+]
+const DETAIL_FIELDS = [...LIST_FIELDS, 'description', 'releaseNotes', 'gallery', 'website', 'permissions']
+
+function pickFields(a, keys) {
+	const out = {}
+	for (const k of keys) if (a[k] !== undefined) out[k] = a[k]
+	return out
+}
+
+// Browse payload: keep a shots count so Featured can pick apps that have screenshots.
+function toList(a) {
+	return {...pickFields(a, LIST_FIELDS), ...(Array.isArray(a.gallery) && a.gallery.length ? {shots: a.gallery.length} : {})}
+}
+
+function toDetail(a) {
+	return pickFields(a, DETAIL_FIELDS)
 }
 
 // Turn a store compose file into what omarchyd runs: no app_proxy, the web service published on
@@ -486,7 +535,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		for (const a of state.apps) if (a.system && a.state !== 'error') systemApps?.resume(a)
 		for (const a of state.apps) if (a.port && a.state !== 'error') await openGateways(a).catch((e) => console.error('[omarchyd] gateway', a.id, e.message))
 	})()
-	const save = () => writeAtomic(stateFile, () => JSON.stringify(state, null, 2))
+	const save = () => writeAtomic(stateFile, () => JSON.stringify(state))
 	const appDir = (id) => join(installedDir, id)
 	const project = (id) => `omarchy-${id}`
 
@@ -696,19 +745,17 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const apps = []
 		// First pass: every app and the variables each one's exports.sh provides (apps that need
 		// another app read that app's variables, such as its address and passwords).
-		const found = []
-		for (const entry of await readdir(dir, {withFileTypes: true})) {
-			if (!entry.isDirectory() || entry.name.startsWith('.')) continue
-			const m = await readYaml(join(dir, entry.name), APP_FILES).catch(() => null)
-			if (!m?.data?.id || m.data.id !== entry.name || !APP_ID.test(m.data.id)) continue
-			const c = await readYaml(join(dir, entry.name), COMPOSE_FILES).catch(() => null)
-			if (!c) continue
-			const compose = await readFile(join(dir, entry.name, c.name), 'utf8')
-			const exportsText = await readFile(join(dir, entry.name, 'exports.sh'), 'utf8').catch(() => '')
-			// `export NAME=…`, a bare `export NAME`, or one written out for later (echo "export NAME=…" >> .env).
-			const exported = [...exportsText.matchAll(/\bexport\s+([A-Za-z_][A-Za-z0-9_]*)\b/g)].map((m) => m[1])
-			found.push({a: m.data, entry, compose, exported})
-		}
+		const entries = (await readdir(dir, {withFileTypes: true})).filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+		const found = (
+			await mapPool(entries, LOAD_CONCURRENCY, async (entry) => {
+				const appPath = join(dir, entry.name)
+				const [m, c, exportsText] = await Promise.all([readYaml(appPath, APP_FILES).catch(() => null), readFirst(appPath, COMPOSE_FILES).catch(() => null), readFile(join(appPath, 'exports.sh'), 'utf8').catch(() => '')])
+				if (!m?.data?.id || m.data.id !== entry.name || !APP_ID.test(m.data.id) || !c) return null
+				// `export NAME=…`, a bare `export NAME`, or one written out for later (echo "export NAME=…" >> .env).
+				const exported = [...exportsText.matchAll(/\bexport\s+([A-Za-z_][A-Za-z0-9_]*)\b/g)].map((x) => x[1])
+				return {a: m.data, entry, compose: c.text, exported}
+			})
+		).filter(Boolean)
 		const byId = new Map(found.map((f) => [f.a.id, f]))
 		// Everything an app needs, all the way down (bitcoin → lightning → …).
 		const needsOf = (id, seen = new Set()) => {
@@ -761,7 +808,6 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				deterministicPassword: a.deterministicPassword === true,
 				// Needs a secure (https://) page in the browser, e.g. for WebCodecs or the Web Crypto API.
 				...(a.requiresHttps === true ? {requiresHttps: true} : {}),
-				permissions: appPermissions(compose, whereFor({id: a.id, port: a.port, version: a.version, folders: folderChoices(a.folders)})).map((p) => p.id),
 				...(Array.isArray(a.openPorts) ? {openPorts: a.openPorts.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535 && n !== 22).slice(0, 16)} : {}),
 				...(folderChoices(a.folders).length ? {folders: folderChoices(a.folders)} : {}),
 				...(a.web && typeof a.web.service === 'string' && Number.isInteger(Number(a.web.port)) ? {web: {service: a.web.service, port: Number(a.web.port), ...(a.web.https === true ? {https: true} : {})}} : {}),
@@ -793,17 +839,21 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		await ready
 		if (registryCache && !refresh && Date.now() - registryCache.at < 60 * 60_000) return registryCache.list
 		const list = []
+		let dirty = false
 		for (const s of state.stores) {
 			if (refresh || Date.now() - (s.syncedAt ?? 0) > 60 * 60_000) {
 				try {
 					await syncStore(s.url)
 					s.syncedAt = Date.now()
+					dirty = true
 				} catch {}
 			}
 			try {
 				const loaded = await loadStore(s.url)
 				if (s.name) loaded.meta.name = s.name
+				const prev = s.meta
 				s.meta = loaded.meta
+				if (!prev || prev.id !== loaded.meta.id || prev.name !== loaded.meta.name) dirty = true
 				list.push(loaded)
 			} catch {}
 		}
@@ -815,12 +865,15 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			if (app.system) continue
 			const src = list.find((l) => !app.store || l.url === app.store)?.apps.find((x) => x.id === app.id) ?? list.flatMap((l) => l.apps).find((x) => x.id === app.id)
 			if (!src) continue
-			if (src.requiresHttps) app.requiresHttps = true
+			const requiresHttps = !!src.requiresHttps
+			const internalHttps = !!src.web?.https
+			if (!!app.requiresHttps !== requiresHttps || !!app.internalHttps !== internalHttps) dirty = true
+			if (requiresHttps) app.requiresHttps = true
 			else delete app.requiresHttps
-			if (src.web?.https) app.internalHttps = true
+			if (internalHttps) app.internalHttps = true
 			else delete app.internalHttps
 		}
-		await save()
+		if (dirty) await save()
 		registryCache = {at: Date.now(), list}
 		return list
 	}
@@ -1534,10 +1587,25 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 
 	async function updates() {
+		const stores = await registry()
+		const byId = new Map(stores.flatMap((s) => s.apps.map((a) => [a.id, a])))
 		const out = []
 		for (const a of state.apps) {
 			if (a.system) continue
-			const src = await findInRegistry(a.id).catch(() => null)
+			let src = null
+			if (a.store) {
+				const st = stores.find((x) => x.url.toLowerCase() === a.store.toLowerCase())
+				src = st?.apps.find((x) => x.id === a.id) ?? null
+			} else {
+				for (const st of stores) {
+					const hit = st.apps.find((x) => x.id === a.id && !x.web)
+					if (hit) {
+						src = hit
+						break
+					}
+				}
+			}
+			src ??= byId.get(a.id)
 			if (src?.version && a.version && src.version !== a.version) out.push({id: a.id, version: src.version})
 		}
 		return out
@@ -1691,7 +1759,17 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					return {ticket: t, port, path: app.path ?? ''}
 				},
 			},
-			'appStore.registry': {kind: 'query', run: async () => (await registry()).map(({url, meta, apps}) => ({url, meta, apps: apps.map(({folder, ...a}) => a)}))},
+			'appStore.registry': {kind: 'query', run: async () => (await registry()).map(({url, meta, apps}) => ({url, meta, apps: apps.map(toList)}))},
+			'appStore.app': {
+				kind: 'query',
+				run: async (input) => {
+					const src = await findInRegistry(String(input?.appId ?? ''))
+					if (!src) throw new RpcError('NOT_FOUND', 'That app isn’t in your stores')
+					const a = toDetail(src)
+					if (!Array.isArray(a.permissions)) a.permissions = (await permissionsOf(src)).map((p) => p.id)
+					return a
+				},
+			},
 			// "Check for new apps": download every store's latest listings now instead of waiting for the hourly check.
 			'appStore.refresh': {kind: 'mutation', run: async () => ((await registry({refresh: true})).reduce((n, s) => n + s.apps.length, 0))},
 			'appStore.repositories': {kind: 'query', run: async () => (await ready, state.stores.map(({url, meta, name}) => ({url, meta: meta ?? {id: url, name: name ?? url.split('/').pop()}})))},

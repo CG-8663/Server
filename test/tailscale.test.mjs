@@ -151,7 +151,6 @@ describe('Tailscale on the system', () => {
 		assert.equal(reg[0].meta.name, 'Omarchy Server')
 		const listing = reg[0].apps.find((a) => a.id === 'tailscale')
 		assert.equal(listing.system, true)
-		assert.deepEqual(listing.permissions, ['system-software'])
 		assert.equal(listing.port, port)
 		const review = await q('apps.installReview', {appId: 'tailscale'})
 		assert.deepEqual(review.permissions.map((p) => p.id), ['system-software'], 'the built-in one, not the store’s container (which would ask for the host network)')
