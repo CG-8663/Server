@@ -165,4 +165,17 @@ describe('files: list paging', () => {
 			await rm(broken)
 		}
 	})
+
+	test('a link to a folder sorts with the folders, as before', async () => {
+		await mkdir(join(paged, 'zz-folder'), {recursive: true})
+		await symlink(join(paged, 'zz-folder'), join(paged, 'zz-link'))
+		try {
+			const l = await call('files.list', {path: '/Home/Paged', sortBy: 'name'})
+			assert.deepEqual(l.files.slice(0, 2).map((f) => f.name), ['zz-folder', 'zz-link'])
+			assert.equal(l.files[1].type, 'directory')
+		} finally {
+			await rm(join(paged, 'zz-link'))
+			await rm(join(paged, 'zz-folder'), {recursive: true})
+		}
+	})
 })

@@ -123,7 +123,12 @@ export function createFiles({home, dataDir}) {
 			files = cap ? rows.slice(0, cap) : rows
 		} else {
 			// Name/type: sort from dirents (cheap), slice, then stat only the page.
-			const rows = dirents.map((d) => ({name: d.name, dir: d.isDirectory(), type: d.isDirectory() ? 'directory' : typeFor(d.name)}))
+			// A link to a folder sorts with the folders (as it did when every entry was stat'ed).
+			const isDir = async (d) => d.isDirectory() || (d.isSymbolicLink() && (await stat(join(real, d.name)).then((s) => s.isDirectory(), () => false)))
+			const rows = await mapPool(dirents, STAT_CONCURRENCY, async (d) => {
+				const dir = await isDir(d)
+				return {name: d.name, dir, type: dir ? 'directory' : typeFor(d.name)}
+			})
 			rows.sort((a, b) => dirFirst(a, b) || textCmp(a, b, key === 'type' ? 'type' : 'name'))
 			if (sortOrder === 'descending') rows.reverse()
 			countable = rows.length
