@@ -116,3 +116,58 @@ describe('omarchyd', () => {
 		assert.equal(back, '/Home/Documents/Notes (2).txt')
 	})
 })
+
+describe('network shares are owner-only', () => {
+	let root, d, owner, member
+	before(async () => {
+		root = await mkdtemp(join(os.tmpdir(), 'omarchyd-shares-'))
+		const home = join(root, 'home')
+		const data = join(root, 'data')
+		await mkdir(join(home, 'Documents'), {recursive: true})
+		const accounts = await openAccounts(data)
+		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+		const state = JSON.parse(await readFile(join(data, 'accounts.json'), 'utf8'))
+		state.users.push({...state.users[0], userId: 'member', name: 'Pat', role: 'member'})
+		await writeFile(join(data, 'accounts.json'), JSON.stringify(state, null, '\t'))
+		d = await startOmarchyd({port: 0, dataDir: data, home})
+		const login = async (userId) => {
+			const r = await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId, password: 'correct horse', client: {id: 't'}})})
+			const body = await r.json()
+			return {authorization: `Bearer ${body.result.data.accessToken}`}
+		}
+		owner = await login('owner')
+		member = await login('member')
+	})
+	after(async () => {
+		await d.close()
+		await rm(root, {recursive: true, force: true})
+	})
+	const call = async (kind, path, input, headers) => {
+		const url = new URL(`${d.url}/trpc/${path}`)
+		const init = {method: kind === 'mutation' ? 'POST' : 'GET', headers: {...headers}}
+		if (kind === 'mutation') {
+			init.headers['content-type'] = 'application/json'
+			init.body = JSON.stringify(input ?? null)
+		} else if (input !== undefined) url.searchParams.set('input', JSON.stringify(input))
+		const r = await fetch(url, init)
+		return {status: r.status, body: await r.json()}
+	}
+	test('a member is refused every files.*Share* RPC; the owner may still list shares', async () => {
+		const rpcs = [
+			['query', 'files.shares'],
+			['query', 'files.sharePassword'],
+			['query', 'files.shareOptions'],
+			['mutation', 'files.addShare', {path: '/Home/Documents'}],
+			['mutation', 'files.updateShare', {path: '/Home/Documents'}],
+			['mutation', 'files.removeShare', {path: '/Home/Documents'}],
+			['mutation', 'files.setSharePassword', {password: 'abcdefgh'}],
+		]
+		for (const [kind, path, input] of rpcs) {
+			const r = await call(kind, path, input, member)
+			assert.equal(r.status, 403, path)
+			assert.match(r.body.error.message, /owner/i, path)
+		}
+		assert.equal((await call('query', 'files.shares', undefined, owner)).status, 200)
+		assert.equal((await call('query', 'files.list', {path: '/Home'}, member)).status, 200, 'members can still use Files')
+	})
+})

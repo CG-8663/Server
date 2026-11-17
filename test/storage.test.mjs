@@ -152,7 +152,16 @@ describe('helper', () => {
 		assert.match(conf, /^# Managed by Omarchy Server/)
 		assert.match(conf, /\[Music\]\n {3}path = \/home\/chris\/Music\n {3}valid users = chris/)
 		assert.match(conf, /map to guest = never/)
-		assert.ok(log.some((l) => l.join(' ') === 'ufw allow 445/tcp comment Omarchy Server shares'))
+		assert.ok(log.some((l) => l.join(' ') === 'ufw delete allow 445/tcp'), 'older unrestricted 445 is closed when shares are applied')
+		assert.ok(!log.some((l) => l.join(' ') === 'ufw allow 445/tcp comment Omarchy Server shares'), '445 is not opened to the world')
+		for (const cidr of ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']) {
+			assert.ok(log.some((l) => l.join(' ') === `ufw delete allow from ${cidr} to any port 445 proto tcp`), cidr)
+			assert.ok(log.some((l) => l.join(' ') === `ufw allow from ${cidr} to any port 445 proto tcp comment Omarchy Server shares`), cidr)
+		}
+		assert.ok(!log.some((l) => /100\.64\.0\.0\/10/.test(l.join(' '))), 'Tailscale is a second network')
+		log.length = 0
+		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]}))
+		assert.equal(log.filter((l) => l[0] === 'ufw' && l[1] === 'allow').length, 3, 're-applying replaces the LAN rules instead of stacking them')
 		const fs2 = fakeFs({'/etc/samba/smb.conf': '[global]\n   workgroup = HOME\n'})
 		await createHelper({user, run: fakeRun([]), fs: fs2}).handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]}))
 		assert.match(fs2.files.get('/etc/samba/smb.conf'), /^\[global\]\n {3}workgroup = HOME\n[\s\S]*include = \/etc\/samba\/omarchy-server-shares.conf/)
@@ -161,20 +170,41 @@ describe('helper', () => {
 		await assert.rejects(createHelper({user, run: fakeRun([]), fs: fs2}).handle('shares-apply', [], JSON.stringify({shares: [{name: 'Open', path: '/home/chris/Open', guest: true}]})), /own Samba settings/)
 	})
 
-	test('shares without a password: guests only for those shares, files still written as you; off again when none are left', async () => {
+	test('shares without a password: guests only for those shares; guest writes are not forced as you; off again when none are left', async () => {
 		const fs = fakeFs({})
 		const h = createHelper({user, run: fakeRun([]), fs})
 		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}, {name: 'Open', path: '/home/chris/Open', guest: true, readOnly: true}]}))
 		let conf = fs.files.get('/etc/samba/smb.conf')
 		assert.match(conf, /map to guest = bad user/)
 		assert.match(conf, /\[Music\]\n {3}path = \/home\/chris\/Music\n {3}valid users = chris\n {3}force user = chris/)
-		assert.match(conf, /\[Open\]\n {3}path = \/home\/chris\/Open\n {3}guest ok = yes\n {3}force user = chris\n {3}read only = yes/)
+		assert.match(conf, /\[Open\]\n {3}path = \/home\/chris\/Open\n {3}guest ok = yes\n {3}read only = yes/)
 		assert.doesNotMatch(conf.split('[Music]')[1].split('[Open]')[0], /guest ok/)
+		assert.doesNotMatch(conf.split('[Open]')[1].split('[')[0], /force user/, 'guest writes are not forced as the owner')
 		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]}))
 		conf = fs.files.get('/etc/samba/smb.conf')
 		assert.match(conf, /map to guest = never/)
 		assert.match(conf, /restrict anonymous = 2/)
 		assert.doesNotMatch(conf, /guest ok/)
+	})
+
+	test('shares refuse hidden path components', async () => {
+		const h = createHelper({user, run: fakeRun([]), fs: fakeFs()})
+		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'ssh', path: '/home/chris/.ssh'}]})), /hidden/i)
+		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'cfg', path: '/home/chris/.config/code'}]})), /hidden/i)
+		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'dot', path: '/home/chris/Music/.private'}]})), /hidden/i)
+		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]}))
+	})
+
+	test('shares close the old world-open 445 rule and the LAN rules when none are left', async () => {
+		const log = []
+		const h = createHelper({user, run: fakeRun(log), fs: fakeFs()})
+		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]}))
+		log.length = 0
+		await h.handle('shares-apply', [], JSON.stringify({shares: []}))
+		assert.ok(log.some((l) => l.join(' ') === 'ufw delete allow 445/tcp'), 'older unrestricted 445 is closed')
+		for (const cidr of ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']) {
+			assert.ok(log.some((l) => l.join(' ') === `ufw delete allow from ${cidr} to any port 445 proto tcp`), cidr)
+		}
 	})
 
 	test('sleep: hard drives only, valid times only, kept by serial', async () => {
@@ -270,6 +300,12 @@ errors: No known data errors
 		assert.equal(await h.handle('firewall-open', ['38780']), 'ok')
 		assert.equal(await h.handle('firewall-open', ['53']), 'ok', 'system ports, for apps you allowed to use them')
 		await assert.rejects(h.handle('firewall-close', ['7780']), /Bad port/)
+		const log = []
+		assert.equal(await createHelper({user, run: fakeRun(log), fs: fakeFs()}).handle('firewall-open', ['445']), 'ok')
+		assert.ok(log.some((l) => l.join(' ') === 'ufw delete allow 445/tcp'), 'older unrestricted 445 is closed')
+		assert.ok(!log.some((l) => l.join(' ') === 'ufw allow 445/tcp comment Omarchy Server app'), '445 is not opened to the world')
+		assert.ok(log.some((l) => l.join(' ') === 'ufw allow from 10.0.0.0/8 to any port 445 proto tcp comment Omarchy Server app'))
+		assert.ok(!log.some((l) => /100\.64\.0\.0\/10/.test(l.join(' '))), 'Tailscale is a second network')
 	})
 	test('pools never honour setuid programs or device files; older pools get hardened', async () => {
 		// New Btrfs pool line

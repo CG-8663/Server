@@ -407,10 +407,12 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
     queryKey: ["files.favorites"],
     queryFn: () => query<string[]>("files.favorites"),
   });
+  const owner = user.data != null && user.data.role !== "member";
   const shares = useQuery({
     queryKey: ["files.shares"],
     queryFn: () => query<SmbShare[]>("files.shares"),
     retry: false,
+    enabled: owner,
   });
   const search = useQuery({
     queryKey: ["files.search", q],
@@ -634,11 +636,11 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
           </div>
         )}
       </div>
-      {path && path.startsWith("/Home/") && (
+      {owner && path && path.startsWith("/Home/") && (
         <button
           className="round-btn"
-          aria-label="Share this folder on your network"
-          title="Share on network"
+          aria-label="Share this folder on your home LAN"
+          title="Share on your home LAN"
           aria-pressed={shareMap.has(path)}
           onClick={() => (haptic(5), setShareFor({ path, name: titleOf(path) }))}
         >
@@ -1182,6 +1184,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
           inTrash={inTrash || open.path.startsWith("/Trash/")}
           favorite={favSet.has(open.path)}
           shared={shareMap.get(open.path)}
+          canShare={owner}
           onClose={() => setOpen(null)}
           onOpenFolder={() => (setOpen(null), go(open.path))}
           onDownload={() => download([open.path])}
@@ -1320,6 +1323,7 @@ function ItemSheet(p: {
   inTrash: boolean;
   favorite: boolean;
   shared?: SmbShare;
+  canShare?: boolean;
   onClose: () => void;
   onOpenFolder: () => void;
   onView?: () => void;
@@ -1435,7 +1439,7 @@ function ItemSheet(p: {
           label: p.shared ? "Unshare" : "Network share",
           icon: "folder-share",
           onClick: p.onShare,
-          show: isDir(f) && (can("share") || !!p.shared),
+          show: !!p.canShare && isDir(f) && (can("share") || !!p.shared),
         },
         {
           id: "desk",
@@ -1474,14 +1478,14 @@ function ItemSheet(p: {
           </button>
         </div>
       )}
-      {p.shared && (
+      {p.canShare && p.shared && (
         <button
           className="glass card press share-chip"
           onClick={() => p.onShareInfo(p.shared!)}
         >
           <Icon name="folder-share" size={20} />
           <span>
-            Shared as <b>{p.shared.sharename}</b> on your network
+            Shared as <b>{p.shared.sharename}</b> on your home LAN
           </span>
           <Icon name="chevron" size={16} className="muted" />
         </button>
@@ -1852,7 +1856,7 @@ function UploadPanel({
 }
 
 // ---- SMB share info ----------------------------------------------------------------------------------
-// Share a folder on your network (Samba), or see and change how it's shared. Other computers open
+// Share a folder on your home LAN (Samba), or see and change how it's shared. Other computers open
 // it at smb://<server>/<name>; with a password, they sign in with your server account's user name
 // and your share password.
 export function ShareSheet({
@@ -1924,7 +1928,7 @@ export function ShareSheet({
       <Choice
         on={!current}
         title="No password"
-        note={noPasswordOk ? "Anyone on your network can open it. Only for folders you don’t mind anyone at home seeing." : "Needs Omarchy Server’s installer to run once more on this server."}
+        note={noPasswordOk ? "Anyone on your home LAN can open it. Writes are not saved as you. Only for folders you don’t mind anyone at home seeing." : "Needs Omarchy Server’s installer to run once more on this server."}
         onPick={() => pick(false)}
         disabled={!noPasswordOk}
       />
@@ -1954,7 +1958,7 @@ export function ShareSheet({
           </span>
         }
         title={share?.name ?? name}
-        subtitle={share ? "Shared on your network" : "Share this folder with computers on your network"}
+        subtitle={share ? "Shared on your home LAN" : "Share this folder with computers on your home LAN"}
         onClose={onClose}
       />
       {samba && !samba.ok && (
