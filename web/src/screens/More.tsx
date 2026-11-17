@@ -3,6 +3,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {diskPct, logout, mutate, query, type DiskUsage, type GpuInfo, type UsageItem, type Wallpaper} from '../api'
 import {useApps, useBootstrap, useCpu, useDisk, useGpus, useMemory, useTemp, useUptime, useUser} from '../data'
+import {shortGpuName} from '../gauges'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {ACCENTS, AppIcon, KV, Segmented, SolidColors, THEMES, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, useOmarchyThemes, preparePhoto, useConfirm, useToast, type Prefs} from '../ui'
@@ -50,10 +51,6 @@ function Spark({series, max = 100, color, label}: {series: number[]; max?: numbe
 
 const BAR = ['var(--blue)', 'var(--mauve)', 'var(--teal)', 'var(--peach)', 'var(--pink)', 'var(--green)']
 const GPU_COLORS = ['var(--green)', 'var(--teal)', 'var(--peach)', 'var(--pink)']
-
-function shortGpuName(name: string) {
-	return name.replace(/^NVIDIA GeForce /, '').replace(/^NVIDIA /, '').replace(/^AMD Radeon /, '').replace(/^Intel\(R\) /, '').replace(/^Intel /, '')
-}
 
 function GpuCard({gpu, stamp, color, title}: {gpu: GpuInfo; stamp: number; color: string; title: string}) {
 	const series = useHistory(gpu.used ?? undefined, stamp)

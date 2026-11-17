@@ -515,6 +515,9 @@ h1.title {
 	text-align: center;
 	color: inherit;
 }
+.gauges[data-n='4'] {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
 .gauge {
 	display: flex;
 	flex-direction: column;
