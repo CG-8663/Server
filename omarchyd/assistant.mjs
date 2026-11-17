@@ -72,6 +72,11 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		return auth.userId
 	}
 	const {runTurn, runTurnContinue} = createLoop({keys, conversations, runProcedure, fetchImpl, now})
+	const inflight = new Set()
+	const claim = (id) => {
+		if (inflight.has(id)) throw new RpcError('CONFLICT', 'That step was already handled')
+		inflight.add(id)
+	}
 	const actionId = (input) => {
 		const id = String(input?.actionId ?? '').trim()
 		if (!id) throw new RpcError('BAD_REQUEST', 'Missing action')
@@ -89,47 +94,59 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 	}
 	async function approve(input, {auth}) {
 		const who = actor(auth)
-		const {action} = await conversations.getAction(who.userId, actionId(input))
-		if (action.status !== 'pending') throw new RpcError('CONFLICT', 'That step was already handled')
-		const spec = writeTool(action.toolName)
-		if ((action.ownerOnly || spec?.ownerOnly) && who.role !== 'owner') {
-			const error = ownerMessage(action.toolName)
-			await conversations.saveAction(who.userId, {...action, status: 'error', error, resolvedAt: stamp()})
-			throw new RpcError('FORBIDDEN', error)
-		}
-		const running = {...action, status: 'running'}
-		await conversations.saveAction(who.userId, running)
-		const path = action.rpc?.path || spec?.rpc
-		// Generated here, passed only into the RPC. The card and the model never see it.
-		const secret = action.toolName === 'machines_create' || path === 'machines.create' ? randomBytes(12).toString('base64url') : ''
-		const rpcInput = {...(action.rpc?.input && typeof action.rpc.input === 'object' && !Array.isArray(action.rpc.input) ? action.rpc.input : {})}
-		delete rpcInput.password
-		if (secret) rpcInput.password = secret
-		let result
+		const id = actionId(input)
+		claim(id)
 		try {
-			if (!runProcedure || !path) throw new RpcError('PRECONDITION_FAILED', 'That step is not available')
-			result = await runProcedure(path, rpcInput, who)
-		} catch (e) {
-			const error = hide(e?.message || 'That step failed', secret)
-			await conversations.saveAction(who.userId, {...running, status: 'error', error, resolvedAt: stamp()})
-			await appendOutcome(who, action, error)
-			if (e instanceof RpcError) throw e
-			throw new RpcError('BAD_GATEWAY', error)
+			const {action} = await conversations.getAction(who.userId, id)
+			if (action.status !== 'pending') throw new RpcError('CONFLICT', 'That step was already handled')
+			const spec = writeTool(action.toolName)
+			if ((action.ownerOnly || spec?.ownerOnly) && who.role !== 'owner') {
+				const error = ownerMessage(action.toolName)
+				await conversations.saveAction(who.userId, {...action, status: 'error', error, resolvedAt: stamp()})
+				throw new RpcError('FORBIDDEN', error)
+			}
+			const running = {...action, status: 'running'}
+			await conversations.saveAction(who.userId, running)
+			const path = action.rpc?.path || spec?.rpc
+			// Generated here, passed only into the RPC. The card and the model never see it.
+			const secret = action.toolName === 'machines_create' || path === 'machines.create' ? randomBytes(12).toString('base64url') : ''
+			const rpcInput = {...(action.rpc?.input && typeof action.rpc.input === 'object' && !Array.isArray(action.rpc.input) ? action.rpc.input : {})}
+			delete rpcInput.password
+			if (secret) rpcInput.password = secret
+			let result
+			try {
+				if (!runProcedure || !path) throw new RpcError('PRECONDITION_FAILED', 'That step is not available')
+				result = await runProcedure(path, rpcInput, who)
+			} catch (e) {
+				const error = hide(e?.message || 'That step failed', secret)
+				await conversations.saveAction(who.userId, {...running, status: 'error', error, resolvedAt: stamp()})
+				await appendOutcome(who, action, error)
+				if (e instanceof RpcError) throw e
+				throw new RpcError('BAD_GATEWAY', error)
+			}
+			const done = {...running, status: 'done', resolvedAt: stamp()}
+			delete done.error
+			await conversations.saveAction(who.userId, done)
+			await appendOutcome(who, action, toolText(result, secret))
+			return publicAction(done)
+		} finally {
+			inflight.delete(id)
 		}
-		const done = {...running, status: 'done', resolvedAt: stamp()}
-		delete done.error
-		await conversations.saveAction(who.userId, done)
-		await appendOutcome(who, action, toolText(result, secret))
-		return publicAction(done)
 	}
 	async function reject(input, {auth}) {
 		const who = actor(auth)
-		const {action} = await conversations.getAction(who.userId, actionId(input))
-		if (action.status !== 'pending') throw new RpcError('CONFLICT', 'That step was already handled')
-		const rejected = {...action, status: 'rejected', resolvedAt: stamp()}
-		await conversations.saveAction(who.userId, rejected)
-		await appendOutcome(who, action, 'user rejected this step')
-		return publicAction(rejected)
+		const id = actionId(input)
+		claim(id)
+		try {
+			const {action} = await conversations.getAction(who.userId, id)
+			if (action.status !== 'pending') throw new RpcError('CONFLICT', 'That step was already handled')
+			const rejected = {...action, status: 'rejected', resolvedAt: stamp()}
+			await conversations.saveAction(who.userId, rejected)
+			await appendOutcome(who, action, 'user rejected this step')
+			return publicAction(rejected)
+		} finally {
+			inflight.delete(id)
+		}
 	}
 	// IncomingMessage 'close' fires when the body is consumed, so that would cancel every turn.
 	// The socket closes only when the client hangs up.

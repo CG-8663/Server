@@ -93,6 +93,8 @@ function pendingNote(actions) {
 	return open.map((a) => `Pending approval: ${a.title}. ${a.detail}`).join('\n')
 }
 
+const WAITING = 'this step is still waiting for Approve'
+
 function toOpenAI(m) {
 	if (m.role === 'user') return {role: 'user', content: String(m.content ?? '')}
 	if (m.role === 'assistant') {
@@ -108,6 +110,37 @@ function toOpenAI(m) {
 	}
 	if (m.role === 'tool') return {role: 'tool', tool_call_id: m.toolCallId, content: String(m.content ?? '')}
 	return null
+}
+
+function placeholder(action) {
+	if (action?.status === 'error') return action.error || 'That step failed'
+	if (action?.status === 'rejected') return 'user rejected this step'
+	return WAITING
+}
+
+// Tool results must sit immediately after their tool_calls. A later user message, or an Approve that appends the real result at the end, would otherwise leave a gap the provider rejects. Missing results stay synthetic; the action is not changed.
+function providerHistory(messages, actions) {
+	const toolById = new Map()
+	for (const m of messages) {
+		if (m?.role === 'tool' && m.toolCallId && !toolById.has(m.toolCallId)) toolById.set(m.toolCallId, m)
+	}
+	const actionByCall = new Map()
+	for (const a of actions ?? []) if (a?.toolCallId) actionByCall.set(a.toolCallId, a)
+	const out = []
+	for (const m of messages) {
+		if (m?.role === 'tool') continue
+		const o = toOpenAI(m)
+		if (!o) continue
+		out.push(o)
+		if (m.role !== 'assistant' || !Array.isArray(m.toolCalls) || !m.toolCalls.length) continue
+		for (const t of m.toolCalls) {
+			const found = toolById.get(t.id)
+			out.push(found ? toOpenAI(found) : {role: 'tool', tool_call_id: t.id, content: placeholder(actionByCall.get(t.id))})
+		}
+	}
+	const history = out.slice(-MAX_MESSAGES)
+	while (history[0]?.role === 'tool') history.shift()
+	return history
 }
 
 function parseArgs(raw) {
@@ -223,8 +256,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 
 			for (;;) {
 				if (signal?.aborted) return finish(row.id)
-				const history = row.messages.map(toOpenAI).filter(Boolean).slice(-MAX_MESSAGES)
-				while (history[0]?.role === 'tool') history.shift()
+				const history = providerHistory(row.messages, row.actions)
 				const note = pendingNote(row.actions)
 				const messages = [{role: 'system', content: note ? `${system}\n\n${note}` : system}, ...history]
 				let text = ''

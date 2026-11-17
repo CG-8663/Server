@@ -655,6 +655,114 @@ function streamPair(body) {
 	return {req, res, chunks}
 }
 
+function assertToolPairs(messages) {
+	const rest = messages.filter((m) => m.role !== 'system')
+	const covered = new Set()
+	for (let i = 0; i < rest.length; i++) {
+		const calls = rest[i].role === 'assistant' ? rest[i].tool_calls : null
+		if (!calls?.length) continue
+		for (let j = 0; j < calls.length; j++) {
+			const next = rest[i + 1 + j]
+			assert.equal(next?.role, 'tool')
+			assert.equal(next.tool_call_id, calls[j].id)
+			covered.add(i + 1 + j)
+		}
+	}
+	rest.forEach((m, i) => {
+		if (m.role === 'tool') assert.equal(covered.has(i), true)
+	})
+}
+
+test('a user message while a write is pending keeps a valid tool list', async () => {
+	const calls = []
+	const runProcedure = async (name, input) => {
+		calls.push({name, input})
+		if (name === 'system.getHostname') return 'box'
+		if (name === 'system.device') return {device: 'ThinkPad', os: 'Omarchy'}
+		if (name === 'apps.list') return []
+		if (name === 'swarm.list') return []
+		if (name === 'machines.create') return {id: 'vm1'}
+		return null
+	}
+	const args = {name: 'ubuntu', osId: 'ubuntu-2404', cores: 2, memoryGb: 4, diskSizeGb: 32, username: 'chris'}
+	const {seen, fetchImpl} = scripted([
+		toolSse('call_vm', 'machines_create', JSON.stringify(args)),
+		textSse('Noted.'),
+		textSse('Created.'),
+	])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'add ubuntu vm', emit: () => {}})
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'call it web', conversationId: out.conversationId, emit: () => {}})
+		const posted = seen[1].body.messages
+		assertToolPairs(posted)
+		const tool = posted.find((m) => m.role === 'tool' && m.tool_call_id === 'call_vm')
+		assert.equal(tool.content, 'this step is still waiting for Approve')
+		const users = posted.filter((m) => m.role === 'user').map((m) => m.content)
+		assert.deepEqual(users, ['add ubuntu vm', 'call it web'])
+		assert.ok(posted.indexOf(tool) < posted.findIndex((m) => m.role === 'user' && m.content === 'call it web'))
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		assert.equal(saved.actions[0].status, 'pending')
+		assert.equal(saved.messages.some((m) => m.role === 'tool'), false)
+		assert.equal(calls.some((c) => c.name === 'machines.create'), false)
+		await box.asst.procedures['assistant.approve'].run({actionId: saved.actions[0].id}, {auth: {userId: 'owner'}})
+		assert.equal(calls.filter((c) => c.name === 'machines.create').length, 1)
+		assert.equal((await box.asst.conversations.get('owner', out.conversationId)).actions[0].status, 'done')
+		await box.asst.runTurn({userId: 'owner', role: 'owner', conversationId: out.conversationId, continue: true, emit: () => {}})
+		const follow = seen.at(-1).body.messages
+		assertToolPairs(follow)
+		const real = follow.find((m) => m.role === 'tool' && m.tool_call_id === 'call_vm')
+		assert.match(real.content, /vm1/)
+		assert.equal(real.content.includes('still waiting'), false)
+		assert.equal(follow.filter((m) => m.role === 'tool' && m.tool_call_id === 'call_vm').length, 1)
+	} finally {
+		await box.close()
+	}
+})
+
+test('overlapping Approves run the RPC once', async () => {
+	let release
+	const gate = new Promise((r) => {
+		release = r
+	})
+	let creates = 0
+	const runProcedure = async (name) => {
+		if (name === 'machines.create') {
+			creates++
+			await gate
+			return {id: 'vm1'}
+		}
+		if (name === 'system.getHostname') return 'box'
+		if (name === 'system.device') return {device: 'ThinkPad', os: 'Omarchy'}
+		if (name === 'apps.list') return []
+		if (name === 'swarm.list') return []
+		return null
+	}
+	const args = {name: 'ubuntu', osId: 'ubuntu-2404', cores: 2, memoryGb: 4, diskSizeGb: 32, username: 'chris'}
+	const {fetchImpl} = scripted([toolSse('call_vm', 'machines_create', JSON.stringify(args))])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	try {
+		const events = []
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'add ubuntu vm', emit: (e) => events.push(e)})
+		const id = events.find((e) => e.event === 'action').data.id
+		const approve = () => box.asst.procedures['assistant.approve'].run({actionId: id}, {auth: {userId: 'owner'}})
+		const first = approve()
+		const second = approve()
+		const settled = Promise.allSettled([first, second])
+		release()
+		const done = await settled
+		assert.equal(creates, 1)
+		assert.equal(done.filter((s) => s.status === 'fulfilled').length, 1)
+		const rejected = done.find((s) => s.status === 'rejected')
+		assert.equal(rejected.reason.code, 'CONFLICT')
+		assert.equal(rejected.reason.message, 'That step was already handled')
+		assert.equal((await box.asst.conversations.get('owner', out.conversationId)).actions[0].status, 'done')
+	} finally {
+		release()
+		await box.close()
+	}
+})
+
 test('a write tool becomes pending and Approve runs the RPC once', async () => {
 	const calls = []
 	const runProcedure = async (name, input, auth) => {
