@@ -100,3 +100,53 @@ describe('files: Trash', () => {
 		assert.equal(await readlink(join(home, 'escape')), outside, 'links themselves left alone')
 	})
 })
+
+describe('files: list paging', () => {
+	let paged
+	before(async () => {
+		paged = join(home, 'Paged')
+		await mkdir(paged, {recursive: true})
+		for (const n of ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt']) await writeFile(join(paged, n), n)
+	})
+
+	test('limit returns a page after sort, with hasMore and the real total', async () => {
+		const l = await call('files.list', {path: '/Home/Paged', limit: 3, sortBy: 'name'})
+		assert.equal(l.files.length, 3)
+		assert.equal(l.hasMore, true)
+		assert.equal(l.totalFiles, 5)
+		assert.deepEqual(l.files.map((f) => f.name), ['a.txt', 'b.txt', 'c.txt'])
+		assert.ok(l.files.every((f) => f.path.startsWith('/Home/Paged/')))
+		assert.ok(l.files.every((f) => !String(f.path).includes(outside) && !String(f.path).includes(root)))
+	})
+
+	test('omitted limit still returns everything', async () => {
+		const l = await call('files.list', {path: '/Home/Paged', sortBy: 'name'})
+		assert.equal(l.files.length, 5)
+		assert.equal(l.hasMore, false)
+		assert.equal(l.totalFiles, 5)
+		assert.deepEqual(l.files.map((f) => f.name), ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt'])
+	})
+
+	test('limit 0 or negative is ignored and lists all', async () => {
+		for (const limit of [0, -1, -99]) {
+			const l = await call('files.list', {path: '/Home/Paged', limit})
+			assert.equal(l.files.length, 5, `limit ${limit}`)
+			assert.equal(l.hasMore, false, `limit ${limit}`)
+			assert.equal(l.totalFiles, 5, `limit ${limit}`)
+		}
+	})
+
+	test('limit is applied after the requested sort', async () => {
+		const {utimes} = await import('node:fs/promises')
+		const t0 = new Date('2026-01-01T00:00:00Z')
+		for (const [i, n] of ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt'].entries()) {
+			await utimes(join(paged, n), t0, new Date(t0.getTime() + i * 60_000))
+		}
+		const newest = await call('files.list', {path: '/Home/Paged', sortBy: 'modified', sortOrder: 'descending', limit: 2})
+		assert.deepEqual(newest.files.map((f) => f.name), ['e.txt', 'd.txt'])
+		assert.equal(newest.hasMore, true)
+		assert.equal(newest.totalFiles, 5)
+		const first = await call('files.list', {path: '/Home/Paged', sortBy: 'name', sortOrder: 'descending', limit: 2})
+		assert.deepEqual(first.files.map((f) => f.name), ['e.txt', 'd.txt'])
+	})
+})

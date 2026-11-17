@@ -29,14 +29,19 @@ test('a store that gained apps since it was first downloaded shows them (shallow
 			await addApp(work, id)
 			git(work, 'add', '-A'); git(work, 'commit', '-qm', id); git(work, 'push', '-q', 'origin', 'HEAD:main')
 		}
-		const again = createApps({dataDir: join(root, 'data'), home: join(root, 'home'), allowFileStores: true, defaultStores: [{url: `file://${origin}`}], run})
-		// The next sync (over an hour later) takes the store's latest commit.
+		apps.close()
+		// The next process, after the hourly window, takes the store's latest commit.
 		const stateFile = join(root, 'data', 'apps', 'apps.json')
 		const {readFile} = await import('node:fs/promises')
 		const st = JSON.parse(await readFile(stateFile, 'utf8').catch(() => '{}'))
 		for (const s of st.stores ?? []) s.syncedAt = 0
 		if (st.stores) await writeFile(stateFile, JSON.stringify(st))
-		assert.deepEqual((await again.procedures['appStore.registry'].run())[0].apps.map((a) => a.id).sort(), ['one', 'three', 'two'])
+		const again = createApps({dataDir: join(root, 'data'), home: join(root, 'home'), allowFileStores: true, defaultStores: [{url: `file://${origin}`}], run})
+		try {
+			assert.deepEqual((await again.procedures['appStore.registry'].run())[0].apps.map((a) => a.id).sort(), ['one', 'three', 'two'])
+		} finally {
+			again.close()
+		}
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}

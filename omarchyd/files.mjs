@@ -22,6 +22,21 @@ const MIME = {
 const typeFor = (name) => MIME[extname(name).slice(1).toLowerCase()] ?? 'application/octet-stream'
 // Shown inline when viewed; everything else is sent as a download.
 const INLINE = /^(image\/(jpeg|png|gif|webp|avif|bmp)|video\/(mp4|webm|quicktime)|audio\/|application\/pdf|text\/plain)/
+const STAT_CONCURRENCY = 16
+
+async function mapPool(items, n, fn) {
+	const out = new Array(items.length)
+	let i = 0
+	await Promise.all(
+		Array.from({length: Math.min(n, items.length)}, async () => {
+			while (i < items.length) {
+				const idx = i++
+				out[idx] = await fn(items[idx], idx)
+			}
+		}),
+	)
+	return out
+}
 
 export function createFiles({home, dataDir}) {
 	const trashRoot = join(home, '.local/share/Trash')
@@ -80,23 +95,39 @@ export function createFiles({home, dataDir}) {
 	}
 	const visible = (name) => !name.startsWith('.')
 
-	async function list({path, sortBy = 'name', sortOrder = 'ascending'} = {}) {
+	async function list({path, sortBy = 'name', sortOrder = 'ascending', limit} = {}) {
 		const {real} = await resolve(path)
 		if (path === '/Trash') await mkdir(trashFiles, {recursive: true})
 		const st = await stat(real)
 		if (!st.isDirectory()) throw new RpcError('BAD_REQUEST', '[not-a-directory]')
-		const names = (await readdir(real)).filter(visible)
-		const files = []
-		for (const n of names) {
-			const r = join(real, n)
-			const s = await stat(r).catch(() => null) // broken symlinks are skipped
-			if (s) files.push(await entry(`${path}/${n}`, r, s))
-		}
-		const dirFirst = (a, b) => Number(b.type === 'directory') - Number(a.type === 'directory')
+		const dirents = (await readdir(real, {withFileTypes: true})).filter((d) => visible(d.name))
+		const totalFiles = dirents.length
+		const cap = Number.isInteger(limit) && limit > 0 ? limit : null
+		const dirFirst = (a, b) => Number(!!b.dir) - Number(!!a.dir)
+		const textCmp = (a, b, key) => String(a[key]).localeCompare(String(b[key]), undefined, {numeric: true, sensitivity: 'base'})
 		const key = sortBy === 'modified' ? 'modified' : sortBy === 'size' ? 'size' : sortBy === 'type' ? 'type' : 'name'
-		files.sort((a, b) => dirFirst(a, b) || (key === 'name' || key === 'type' ? String(a[key]).localeCompare(String(b[key]), undefined, {numeric: true, sensitivity: 'base'}) : (a[key] ?? 0) - (b[key] ?? 0)))
-		if (sortOrder === 'descending') files.reverse()
-		return {...(await entry(path, real, st)), files, hasMore: false, totalFiles: files.length}
+		const toEntry = async (name) => {
+			const r = join(real, name)
+			const s = await stat(r).catch(() => null) // broken symlinks are skipped
+			return s ? await entry(`${path}/${name}`, r, s) : null
+		}
+
+		let files
+		if (key === 'modified' || key === 'size') {
+			// mtime/size sort needs every entry's stat; we still honour limit after sorting.
+			const rows = (await mapPool(dirents, STAT_CONCURRENCY, (d) => toEntry(d.name))).filter(Boolean)
+			rows.sort((a, b) => dirFirst({dir: a.type === 'directory'}, {dir: b.type === 'directory'}) || (a[key] ?? 0) - (b[key] ?? 0))
+			if (sortOrder === 'descending') rows.reverse()
+			files = cap ? rows.slice(0, cap) : rows
+		} else {
+			// Name/type: sort from dirents (cheap), slice, then stat only the page.
+			const rows = dirents.map((d) => ({name: d.name, dir: d.isDirectory(), type: d.isDirectory() ? 'directory' : typeFor(d.name)}))
+			rows.sort((a, b) => dirFirst(a, b) || textCmp(a, b, key === 'type' ? 'type' : 'name'))
+			if (sortOrder === 'descending') rows.reverse()
+			const page = cap ? rows.slice(0, cap) : rows
+			files = (await mapPool(page, STAT_CONCURRENCY, (row) => toEntry(row.name))).filter(Boolean)
+		}
+		return {...(await entry(path, real, st)), files, hasMore: cap != null && totalFiles > files.length, totalFiles}
 	}
 
 	// A free name next to the original: "Report (2).pdf".

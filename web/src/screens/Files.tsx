@@ -194,7 +194,7 @@ function useListing(path: string | null, sort: "name" | "modified" | "size") {
         limit: 2000,
       }),
     enabled: !!path && !path.startsWith("::"),
-    refetchInterval: 15_000,
+    refetchInterval: 30_000,
   });
 }
 
