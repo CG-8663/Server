@@ -710,6 +710,7 @@ export async function startFakeserverd({
 	const usbDrives = [{id: 'sde', name: 'SanDisk Extreme', transport: 'usb', size: 1e12, partitions: [{id: 'sde1', label: 'BACKUP', size: 1e12, mountpoints: ['/External/BACKUP'], supportsAppDataRoot: false}]}]
 
 	const appAuthChecks = []
+	let streamAborted = false
 	const server = http.createServer(async (req, res) => {
 		const send = (status, body) => {
 			res.writeHead(status, {'content-type': 'application/json'})
@@ -740,6 +741,29 @@ export async function startFakeserverd({
 				res.writeHead(404)
 				return res.end()
 			}
+		}
+		if (url.pathname === '/assistant/stream' && req.method === 'POST') {
+			let raw = ''
+			for await (const chunk of req) raw += chunk
+			let input
+			try {
+				input = raw ? JSON.parse(raw) : undefined
+			} catch {
+				return fail('BAD_REQUEST', 'Invalid JSON')
+			}
+			const [scheme, token] = req.headers.authorization?.split(' ') ?? []
+			const record = scheme === 'Bearer' && tokens.get(token)
+			calls.push({path: 'assistant.stream', input, authorization: req.headers.authorization ?? ''})
+			if (!record || record.expiresAt <= Date.now()) return fail('UNAUTHORIZED', 'Invalid token')
+			req.socket?.setNoDelay(true)
+			res.writeHead(200, {'content-type': 'text/event-stream', 'cache-control': 'no-store'})
+			res.on('close', () => {
+				if (!res.writableEnded) streamAborted = true
+			})
+			res.write('event: text\ndata: {"text":"Hi"}\n\n')
+			await new Promise((r) => setTimeout(r, 150))
+			if (!res.writableEnded) res.end('event: done\ndata: {"conversationId":"c_test"}\n\n')
+			return
 		}
 		const path = url.pathname.replace(/^\/trpc\//, '')
 		const proc = procedures[path]
@@ -846,6 +870,7 @@ export async function startFakeserverd({
 				fsTree,
 				apps,
 				appAuthChecks,
+				streamWasAborted: () => streamAborted,
 				appRequests,
 				expireAllAccessTokens: () => {
 					for (const v of tokens.values()) v.expiresAt = 0

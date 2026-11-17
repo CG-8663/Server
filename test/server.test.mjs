@@ -98,6 +98,52 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(r.status, 401)
 	})
 
+	test('assistant stream is proxied without buffering', async () => {
+		const fresh = await startTouch({backendUrl: fake.url})
+		try {
+			const anon = await fresh.req('POST', '/api/assistant/stream', {message: 'how much disk'})
+			assert.equal(anon.status, 401)
+			assert.equal((await fresh.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})).status, 200)
+			const res = await fetch(`${fresh.base}/api/assistant/stream`, {
+				method: 'POST',
+				headers: {'content-type': 'application/json', 'x-omarchy-server': '1', cookie: fresh.getCookie()},
+				body: JSON.stringify({message: 'how much disk'}),
+			})
+			assert.equal(res.status, 200)
+			assert.match(res.headers.get('content-type') ?? '', /^text\/event-stream/)
+			assert.equal(res.headers.get('cache-control'), 'no-store')
+			const reader = res.body.getReader()
+			const first = await reader.read()
+			const chunk = new TextDecoder().decode(first.value)
+			assert.match(chunk, /event: text/)
+			assert.equal(chunk.includes('event: done'), false)
+			let rest = ''
+			for (;;) {
+				const next = await reader.read()
+				if (next.done) break
+				rest += new TextDecoder().decode(next.value)
+			}
+			assert.match(rest, /event: done/)
+			assert.match(rest, /"conversationId":"c_test"/)
+			const hit = fake.calls.findLast((c) => c.path === 'assistant.stream')
+			assert.equal(hit.input.message, 'how much disk')
+			assert.match(hit.authorization, /^Bearer /)
+			assert.equal(`${chunk}${rest}`.includes(hit.authorization.slice('Bearer '.length)), false)
+			const hung = await fetch(`${fresh.base}/api/assistant/stream`, {
+				method: 'POST',
+				headers: {'content-type': 'application/json', 'x-omarchy-server': '1', cookie: fresh.getCookie()},
+				body: JSON.stringify({message: 'stop'}),
+			})
+			const early = hung.body.getReader()
+			assert.match(new TextDecoder().decode((await early.read()).value), /event: text/)
+			await early.cancel()
+			await new Promise((r) => setTimeout(r, 50))
+			assert.equal(fake.streamWasAborted(), true)
+		} finally {
+			await fresh.close()
+		}
+	})
+
 	test('wrong password surfaces omarchyd’s message', async () => {
 		// username and password are both required, and a wrong one of either reads the same
 		let r = await touch.req('POST', '/api/auth/login', {password: 'correct horse'})

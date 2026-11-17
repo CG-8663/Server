@@ -565,3 +565,110 @@ test('omarchyd serves the conversation RPCs', async () => {
 		await rm(root, {recursive: true, force: true})
 	}
 })
+
+test('omarchyd streams a turn as server-sent events', async () => {
+	const secret = 'xai-secret-stream'
+	const sseBody = 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n'
+	let providerBody = null
+	const srv = http.createServer(async (req, res) => {
+		assert.match(req.url, /\/chat\/completions$/)
+		assert.equal(req.headers.authorization, `Bearer ${secret}`)
+		const chunks = []
+		for await (const c of req) chunks.push(c)
+		providerBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+		res.writeHead(200, {'content-type': 'text/event-stream'})
+		res.end(sseBody)
+	})
+	await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+	const port = srv.address().port
+	const root = await mkdtemp(join(os.tmpdir(), 'al-'))
+	const data = join(root, 'data')
+	try {
+		const accounts = await openAccounts(data)
+		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+		const fetchImpl = (url, opts) => {
+			const u = new URL(url)
+			u.protocol = 'http:'
+			u.host = `127.0.0.1:${port}`
+			return fetch(u, opts)
+		}
+		const d = await startOmarchyd({port: 0, dataDir: data, home: root, assistantOptions: {fetchImpl}})
+		try {
+			const anon = await fetch(`${d.url}/assistant/stream`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({message: 'how much disk'})})
+			assert.equal(anon.status, 401)
+			const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
+			const headers = {authorization: `Bearer ${login.result.data.accessToken}`, 'content-type': 'application/json'}
+			const added = await (await fetch(`${d.url}/trpc/assistant.addKey`, {method: 'POST', headers, body: JSON.stringify({name: 'x', provider: 'spacexai', apiKey: secret, model: 'grok-4.7'})})).json()
+			assert.equal(added.result.data.apiKey, undefined)
+			const res = await fetch(`${d.url}/assistant/stream`, {method: 'POST', headers, body: JSON.stringify({message: 'how much disk'})})
+			assert.equal(res.status, 200)
+			assert.equal(res.headers.get('content-type'), 'text/event-stream')
+			assert.equal(res.headers.get('cache-control'), 'no-store')
+			const text = await res.text()
+			assert.match(text, /event: text\ndata: \{"text":"Hi"\}/)
+			assert.match(text, /event: done\ndata: \{"conversationId":"c_/)
+			assert.equal(text.includes(secret), false)
+			assert.match(providerBody.messages[0].content, /Role: owner/)
+			assert.equal(providerBody.stream, true)
+			assert.equal(providerBody.parallel_tool_calls, false)
+			const bad = await fetch(`${d.url}/assistant/stream`, {method: 'POST', headers, body: '{'})
+			assert.equal(bad.status, 400)
+		} finally {
+			await d.close()
+		}
+	} finally {
+		await new Promise((r) => srv.close(r))
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 40})
+	}
+})
+
+test('closing the assistant stream aborts the provider call', async () => {
+	let providerAborted = false
+	const srv = http.createServer(async (req, res) => {
+		const chunks = []
+		for await (const c of req) chunks.push(c)
+		res.writeHead(200, {'content-type': 'text/event-stream'})
+		res.write('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n')
+		await new Promise((resolve) => {
+			const timer = setTimeout(resolve, 2_000)
+			res.on('close', () => {
+				if (!res.writableEnded) providerAborted = true
+				clearTimeout(timer)
+				resolve()
+			})
+		})
+		if (!res.writableEnded) res.end('data: [DONE]\n\n')
+	})
+	await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+	const port = srv.address().port
+	const root = await mkdtemp(join(os.tmpdir(), 'al-'))
+	const data = join(root, 'data')
+	try {
+		const accounts = await openAccounts(data)
+		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+		const fetchImpl = (url, opts) => {
+			const u = new URL(url)
+			u.protocol = 'http:'
+			u.host = `127.0.0.1:${port}`
+			return fetch(u, opts)
+		}
+		const d = await startOmarchyd({port: 0, dataDir: data, home: root, assistantOptions: {fetchImpl}})
+		try {
+			const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
+			const headers = {authorization: `Bearer ${login.result.data.accessToken}`, 'content-type': 'application/json'}
+			await fetch(`${d.url}/trpc/assistant.addKey`, {method: 'POST', headers, body: JSON.stringify({name: 'x', provider: 'spacexai', apiKey: 'xai-secret-stream', model: 'grok-4.7'})})
+			const res = await fetch(`${d.url}/assistant/stream`, {method: 'POST', headers, body: JSON.stringify({message: 'how much disk'})})
+			const reader = res.body.getReader()
+			const first = new TextDecoder().decode((await reader.read()).value)
+			assert.match(first, /event: text/)
+			await reader.cancel()
+			await new Promise((r) => setTimeout(r, 300))
+			assert.equal(providerAborted, true)
+		} finally {
+			await d.close()
+		}
+	} finally {
+		await new Promise((r) => srv.close(r))
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 40})
+	}
+})

@@ -1585,6 +1585,62 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	api.get('/rpc/:path', proxy)
 	api.post('/rpc/:path', proxy)
 
+	// SSE from omarchyd. Pipe the body; do not buffer the model reply.
+	api.post('/assistant/stream', async (req, res) => {
+		const backend = getClient()
+		if (!backend) return res.status(409).json({error: {code: 'NOT_CONFIGURED', message: 'The Omarchy Server backend (omarchyd) isn’t set up yet'}})
+		const session = store.getSession(req.sid)
+		if (!session) return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Signed out'}})
+		const ac = new AbortController()
+		let timedOut = false
+		const timer = setTimeout(() => {
+			timedOut = true
+			ac.abort()
+		}, 20 * 60 * 1000)
+		timer.unref?.()
+		res.on('close', () => {
+			if (!res.writableEnded) ac.abort()
+		})
+		try {
+			const token = await accessTokenFor(req.sid, session)
+			const upstream = await fetchImpl(`${backend.baseUrl}/assistant/stream`, {
+				method: 'POST',
+				headers: {authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'text/event-stream'},
+				body: JSON.stringify(req.body ?? {}),
+				signal: ac.signal,
+			})
+			res.status(upstream.status)
+			res.setHeader('Content-Type', upstream.headers.get('content-type') || 'text/event-stream')
+			res.setHeader('Cache-Control', 'no-store')
+			res.socket?.setNoDelay(true)
+			if (!upstream.body) {
+				clearTimeout(timer)
+				return res.end()
+			}
+			const {Readable} = await import('node:stream')
+			const body = Readable.fromWeb(upstream.body)
+			const stop = () => clearTimeout(timer)
+			body.on('end', stop)
+			body.on('close', stop)
+			body.on('error', () => {
+				stop()
+				if (!res.writableEnded) res.destroy()
+			})
+			body.pipe(res)
+		} catch (error) {
+			clearTimeout(timer)
+			if (res.headersSent) {
+				if (!res.writableEnded) res.destroy()
+				return
+			}
+			if (error?.name === 'AbortError') {
+				if (timedOut && !res.destroyed) res.status(504).json({error: {code: 'TIMEOUT', message: 'The assistant took too long'}})
+				return
+			}
+			sendError(res, error)
+		}
+	})
+
 	api.get('/health', (req, res) => res.json({ok: true, version: VERSION}))
 	api.use((req, res) => res.status(404).json({error: {code: 'NOT_FOUND', message: 'Not found'}}))
 	app.use('/api', api)
