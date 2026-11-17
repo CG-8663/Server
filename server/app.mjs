@@ -450,6 +450,8 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				reachable: true,
 				version: version?.version,
 				name: version?.name,
+				startedAt: version?.startedAt,
+				revision: version?.revision,
 				device: discovery?.device ?? null,
 				onboarded: discovery?.onboarded ?? true,
 			}

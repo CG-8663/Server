@@ -49,6 +49,8 @@ export type Bootstrap = {
 		reachable: boolean
 		version?: string
 		name?: string
+		startedAt?: number
+		revision?: string
 		device?: string | null
 		onboarded?: boolean
 		error?: string
