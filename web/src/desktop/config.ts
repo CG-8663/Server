@@ -22,7 +22,7 @@ export type BuiltinWallpaper = (typeof WALLPAPERS)[number]['id']
 // 'color:#rrggbb' = a plain colour instead of a picture.
 export type WallpaperId = BuiltinWallpaper | 'server' | 'photo' | 'omarchy' | `color:#${string}`
 export const solidOf = (w: string) => (/^color:#[0-9a-f]{6}$/i.test(w) ? w.slice(6).toLowerCase() : null)
-export const wallpaperSrc = (id: string, thumb = false) => `/wallpapers/${id}${thumb ? '-thumb' : ''}.jpg`
+export const wallpaperSrc = (id: string, thumb = false) => `/wallpapers/${id}${thumb ? '-thumb' : ''}.webp`
 
 export type DeskStyle = 'yaru' | 'glass' | 'graphite' | 'daylight'
 export const STYLES: {id: DeskStyle; name: string; note: string}[] = [
