@@ -3,7 +3,8 @@ import {createContext, useCallback, useContext, useEffect, useLayoutEffect, useR
 
 import {useQuery} from '@tanstack/react-query'
 import type {AppState, Machine, Wallpaper} from './api'
-import {Icon} from './icons'
+import {Icon, type IconName} from './icons'
+import {versionTagProps, type VersionInfo} from './runningSince'
 
 // ---- portals --------------------------------------------------------------------------
 // Sheets, the terminal and the console portal out of their screen. On the phone that's <body>;
@@ -377,6 +378,91 @@ export function KV({rows}: {rows: [string, ReactNode][]}) {
 				</div>
 			))}
 		</div>
+	)
+}
+
+// Version, settings rows, and grouped lists. Copied screens used to drift (the version tooltip
+// only appeared where someone remembered to wire it).
+export function VersionTag({version, info, prefix}: {version?: string; info?: VersionInfo | null; prefix?: string}) {
+	const {text, title} = versionTagProps(version, info, {prefix})
+	return (
+		<span title={title}>
+			{text}
+			{title ? <span className="sr-only"> {title}</span> : null}
+		</span>
+	)
+}
+
+export function Row({
+	icon,
+	color = 'var(--accent)',
+	label,
+	value,
+	sub,
+	onClick,
+	href,
+	trailing,
+	title,
+	disabled,
+}: {
+	icon: IconName
+	color?: string
+	label: string
+	value?: ReactNode
+	sub?: ReactNode
+	onClick?: () => void
+	href?: string
+	trailing?: ReactNode
+	title?: string
+	disabled?: boolean
+}) {
+	const inner = (
+		<>
+			<span className="row-ico" style={{'--c': color} as CSSProperties}>
+				<Icon name={icon} size={19} />
+			</span>
+			<span className="main">
+				<b style={{fontWeight: 550}}>{label}</b>
+				{sub ? <span>{sub}</span> : null}
+			</span>
+			{value !== undefined && <span className="trail">{value}</span>}
+			{trailing ?? (onClick || href ? <Icon name="chevron" size={18} className="chev" /> : null)}
+		</>
+	)
+	if (href)
+		return (
+			<a className="row" href={href} target="_blank" rel="noopener noreferrer" title={title} style={{minHeight: 56}}>
+				{inner}
+			</a>
+		)
+	if (onClick)
+		return (
+			<button className="row" onClick={onClick} title={title} disabled={disabled} style={{minHeight: 56}}>
+				{inner}
+			</button>
+		)
+	return (
+		<div className="row static" title={title} style={{minHeight: 56}}>
+			{inner}
+		</div>
+	)
+}
+
+export function Group({title, children, footer}: {title: string; children: ReactNode; footer?: ReactNode}) {
+	return (
+		<section>
+			<div className="section-head">
+				<h2>{title}</h2>
+			</div>
+			<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+				{children}
+			</div>
+			{footer && (
+				<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
+					{footer}
+				</p>
+			)}
+		</section>
 	)
 }
 

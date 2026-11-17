@@ -5,7 +5,7 @@ import {diskPct, logout, mutate, query, type DiskUsage, type GpuInfo, type Usage
 import {useApps, useBootstrap, useCpu, useDisk, useGpus, useMemory, useTemp, useUptime, useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
-import {ACCENTS, AppIcon, KV, Segmented, SolidColors, THEMES, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, useOmarchyThemes, preparePhoto, useConfirm, useToast, type Prefs} from '../ui'
+import {ACCENTS, AppIcon, KV, Row, Segmented, SolidColors, THEMES, VersionTag, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, useOmarchyThemes, preparePhoto, useConfirm, useToast, type Prefs} from '../ui'
 
 // One point per successful poll (keyed on fetch time, so flat values still plot).
 function useHistory(value: number | undefined, stamp: number, size = 40) {
@@ -412,35 +412,12 @@ export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; 
 		onSignedOut()
 	}
 
-	const Row = ({icon, color, label, onClick, href}: {icon: Parameters<typeof Icon>[0]['name']; color: string; label: string; onClick?: () => void; href?: string}) => {
-		const inner = (
-			<>
-				<span className="row-ico" style={{'--c': color} as CSSProperties}>
-					<Icon name={icon} size={19} />
-				</span>
-				<span className="main">
-					<b style={{fontWeight: 550}}>{label}</b>
-				</span>
-				<Icon name="chevron" size={18} className="chev" />
-			</>
-		)
-		return href ? (
-			<a className="row" href={href} target="_blank" rel="noopener noreferrer" style={{minHeight: 56}}>
-				{inner}
-			</a>
-		) : (
-			<button className="row" onClick={onClick} style={{minHeight: 56}}>
-				{inner}
-			</button>
-		)
-	}
-
 	return (
 		<div className="stagger">
 			<div>
 				<h1 className="title">System</h1>
 				<p className="subtitle">
-					{boot.server?.device ?? 'server'} · {boot.server?.name ?? boot.server?.version}
+					{boot.server?.device ?? 'server'} · <VersionTag version={boot.server?.name ?? boot.server?.version} info={boot.server} />
 				</p>
 			</div>
 			<div>
@@ -455,7 +432,7 @@ export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; 
 					rows={[
 						['Device', boot.server?.device ?? '–'],
 						['Address', boot.server?.host ?? '–'],
-						['Omarchy Server', boot.server?.version ?? '–'],
+						['Omarchy Server', <VersionTag version={boot.server?.version} info={boot.server} />],
 						['Software update', update.data ? (update.data.available ? `${update.data.name} available` : 'Up to date') : '–'],
 						['Signed in as', `${user.data?.name ?? '–'}${user.data?.role ? ` (${user.data.role})` : ''}`],
 					]}
@@ -468,7 +445,9 @@ export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; 
 					<Row icon="signout" color="#8e8e93" label="Sign out of this device" onClick={signOut} />
 				</div>
 			</section>
-			<p className="footer-note">Omarchy Server {boot.touch.version}</p>
+			<p className="footer-note">
+				<VersionTag prefix="Omarchy Server " version={boot.touch.version} info={boot.server} />
+			</p>
 		</div>
 	)
 }
