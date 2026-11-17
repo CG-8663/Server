@@ -5,7 +5,7 @@ import {useApps, useBattery, useCpu, useDisk, useGpus, useMemory, useRecent, use
 import {batteryGaugeItem} from '../battery'
 import {gpuGaugeItems} from '../gauges'
 import {Icon} from '../icons'
-import {AppIcon, Ring, StoreIcon, TerminalIcon, appStatus, bytes, duration, greeting, haptic, isAppBusy, levelColor, pct, today} from '../ui'
+import {AppIcon, AssistantIcon, Ring, StoreIcon, TerminalIcon, appStatus, bytes, duration, greeting, haptic, isAppBusy, levelColor, pct, today} from '../ui'
 
 export function Gauges({onClick}: {onClick?: () => void}) {
 	const cpu = useCpu()
@@ -56,7 +56,7 @@ export function Gauges({onClick}: {onClick?: () => void}) {
 	)
 }
 
-export function Home({onOpenApp, go, onTerminal}: {onOpenApp: (app: UserApp) => void; go: (tab: 'apps' | 'more' | 'store') => void; onTerminal?: () => void}) {
+export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app: UserApp) => void; go: (tab: 'apps' | 'more' | 'store') => void; onTerminal?: () => void; onAssistant?: () => void}) {
 	const user = useUser()
 	const apps = useApps()
 	const updates = useUpdates()
@@ -172,47 +172,54 @@ export function Home({onOpenApp, go, onTerminal}: {onOpenApp: (app: UserApp) => 
 							</div>
 						))}
 					</div>
-				) : list.length === 0 ? (
-					<div className="glass empty">
-						<span className="big">
-							<Icon name="store" size={30} />
-						</span>
-						<b>No apps yet</b>
-						<span>Install your first app from the App Store.</span>
-						<button className="btn primary small" onClick={() => go('store')}>
-							Browse apps
-						</button>
-					</div>
 				) : (
-					<div className="app-grid">
-						<button className="app-tile" onClick={() => go('store')} aria-label="App Store">
-							<StoreIcon size={60} />
-							<span className="name">App Store</span>
-						</button>
-						{onTerminal && (
-							<button className="app-tile" onClick={() => onTerminal()} aria-label="Terminal">
-								<TerminalIcon size={60} />
-								<span className="name">Terminal</span>
+					<>
+						<div className="app-grid">
+							<button className="app-tile" onClick={() => go('store')} aria-label="App Store">
+								<StoreIcon size={60} />
+								<span className="name">App Store</span>
 							</button>
-						)}
-						{list.map((app) => {
-							const s = appStatus(app.state, updateIds.has(app.id))
-							const busy = isAppBusy(app.state)
-							return (
-								<button key={app.id} className="app-tile" onClick={() => open(app)} aria-label={`${app.name ?? app.id}, ${s.label}`}>
-									<AppIcon
-										src={app.icon}
-										name={app.name ?? app.id}
-										size={60}
-										dim={app.state === 'stopped'}
-										badge={s.kind === 'update' || s.kind === 'error' ? s.kind : undefined}
-										progress={busy ? (app.progress ? app.progress : 'spin') : undefined}
-									/>
-									<span className="name">{app.name ?? app.id}</span>
+							<button className="app-tile" onClick={() => onAssistant?.()} aria-label="Assistant">
+								<AssistantIcon size={60} />
+								<span className="name">Assistant</span>
+							</button>
+							{onTerminal && (
+								<button className="app-tile" onClick={() => onTerminal()} aria-label="Terminal">
+									<TerminalIcon size={60} />
+									<span className="name">Terminal</span>
 								</button>
-							)
-						})}
-					</div>
+							)}
+							{list.map((app) => {
+								const s = appStatus(app.state, updateIds.has(app.id))
+								const busy = isAppBusy(app.state)
+								return (
+									<button key={app.id} className="app-tile" onClick={() => open(app)} aria-label={`${app.name ?? app.id}, ${s.label}`}>
+										<AppIcon
+											src={app.icon}
+											name={app.name ?? app.id}
+											size={60}
+											dim={app.state === 'stopped'}
+											badge={s.kind === 'update' || s.kind === 'error' ? s.kind : undefined}
+											progress={busy ? (app.progress ? app.progress : 'spin') : undefined}
+										/>
+										<span className="name">{app.name ?? app.id}</span>
+									</button>
+								)
+							})}
+						</div>
+						{list.length === 0 && (
+							<div className="glass empty">
+								<span className="big">
+									<Icon name="store" size={30} />
+								</span>
+								<b>No apps yet</b>
+								<span>Install your first app from the App Store.</span>
+								<button className="btn primary small" onClick={() => go('store')}>
+									Browse apps
+								</button>
+							</div>
+						)}
+					</>
 				)}
 			</section>
 		</div>

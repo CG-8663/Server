@@ -997,6 +997,14 @@ export function TerminalIcon({size = 56}: {size?: number}) {
 	)
 }
 
+export function AssistantIcon({size = 56}: {size?: number}) {
+	return (
+		<span className="app-icon assistant-icon sys-ico" style={{width: size, height: size, '--grad': 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', '--tone': 'var(--mauve)'} as CSSProperties}>
+			<Icon name="sparkle" size={size * 0.5} stroke={1.8} />
+		</span>
+	)
+}
+
 export function StoreIcon({size = 56}: {size?: number}) {
 	return (
 		<span className="app-icon store-icon sys-ico" style={{width: size, height: size, '--tone': 'var(--blue)'} as CSSProperties}>

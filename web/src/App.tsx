@@ -22,6 +22,7 @@ const More = lazy(() => import('./screens/More').then((m) => ({default: m.More})
 const Settings = lazy(() => import('./screens/Settings').then((m) => ({default: m.Settings})))
 const Store = lazy(() => import('./screens/Store').then((m) => ({default: m.Store})))
 const TerminalScreen = lazy(() => import('./Terminal').then((m) => ({default: m.TerminalScreen})))
+const Assistant = lazy(() => import('./screens/Assistant').then((m) => ({default: m.Assistant})))
 
 function ScreenFallback() {
 	return (
@@ -118,6 +119,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 	}, [])
 	const [bellOpen, setBellOpen] = useState(false)
 	const [terminal, setTerminal] = useState<{app?: {id: string; name?: string; icon?: string}; input?: string} | null>(null)
+	const [assistantOpen, setAssistantOpen] = useState(false)
 	const user = useUser()
 	// omarchyd only gives the owner a shell.
 	const openTerminal = user.data?.role === 'member' ? undefined : (app?: {id: string; name?: string; icon?: string}, input?: string) => {
@@ -194,7 +196,18 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 				)}
 				<Suspense fallback={<ScreenFallback />}>
 					<main key={tab} className="screen">
-						{tab === 'home' && <Home onOpenApp={(a) => setAppId(a.id)} go={go} onTerminal={openTerminal} />}
+						{tab === 'home' && (
+							<Home
+								onOpenApp={(a) => setAppId(a.id)}
+								go={go}
+								onTerminal={openTerminal}
+								onAssistant={() => {
+									haptic(8)
+									setAppId(null)
+									setAssistantOpen(true)
+								}}
+							/>
+						)}
 						{tab === 'apps' && <Apps onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} onStore={() => go('store')} />}
 						{tab === 'files' && <Files />}
 						{tab === 'store' && <Store onOpenInstalled={(a) => setAppId(a.id)} onBack={() => history.back()} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
@@ -220,6 +233,18 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 			{terminal && (
 				<Suspense fallback={<ScreenFallback />}>
 					<TerminalScreen app={terminal.app} input={terminal.input} onClose={() => setTerminal(null)} />
+				</Suspense>
+			)}
+			{assistantOpen && (
+				<Suspense fallback={<ScreenFallback />}>
+					<Assistant
+						onClose={() => setAssistantOpen(false)}
+						onSettings={() => {
+							sessionStorage.setItem('omarchy-server:settings-page', 'assistant')
+							setAssistantOpen(false)
+							go('settings')
+						}}
+					/>
 				</Suspense>
 			)}
 			<NotificationsSheet
