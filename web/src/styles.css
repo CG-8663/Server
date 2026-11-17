@@ -2629,9 +2629,23 @@ h1.title {
 .term-host .xterm-viewport::-webkit-scrollbar {
 	display: none;
 }
-.term-host {
-	will-change: transform;
-	transition: transform 0.12s ease-out;
+/* With a mouse: a thin scrollbar shows where you are in the history, as in a desktop terminal. */
+@media (pointer: fine) {
+	.term-host .xterm-viewport {
+		scrollbar-width: thin;
+		scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+	}
+	.term-host .xterm-viewport::-webkit-scrollbar {
+		display: block;
+		width: 8px;
+	}
+	.term-host .xterm-viewport::-webkit-scrollbar-thumb {
+		border-radius: 4px;
+		background: rgba(255, 255, 255, 0.22);
+	}
+	.term-host .xterm-viewport::-webkit-scrollbar-thumb:hover {
+		background: rgba(255, 255, 255, 0.36);
+	}
 }
 .console.kbd-open .console-dock {
 	padding-bottom: 8px;

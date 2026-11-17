@@ -34,6 +34,22 @@ async function ptyOf(pid) {
 	return null
 }
 
+// The browser asks for a new size with a binary frame holding {"type":"resize","cols":…,"rows":…}.
+// What you type is always text, so the two never mix. Anything else binary is ignored.
+export function parseResize(data, isBinary) {
+	if (!isBinary) return null
+	try {
+		const m = JSON.parse(Buffer.from(data).toString('utf8'))
+		const cols = Number(m?.cols)
+		const rows = Number(m?.rows)
+		if (m?.type !== 'resize' || !Number.isInteger(cols) || !Number.isInteger(rows)) return null
+		if (cols < 10 || cols > 500 || rows < 4 || rows > 300) return null
+		return {cols, rows}
+	} catch {
+		return null
+	}
+}
+
 const KEEP = 512 * 1024 // what's replayed when you come back: the most recent output, up to this much
 const MAX_SESSIONS = 12 // per person (your shell plus app shells); the oldest unused one goes first
 
@@ -41,6 +57,29 @@ const MAX_SESSIONS = 12 // per person (your shell plus app shells); the oldest u
 export function createTerminalSessions({exec = execFile} = {}) {
 	const sessions = new Map() // `${userId}:${appId || ''}` -> session
 
+	// Resize to the latest size asked for, one at a time (a window being dragged asks many times).
+	const resizeTo = (s, cols, rows) => {
+		s.want = {cols, rows}
+		s.resizing ??= (async () => {
+			// Start on the next tick: if there were nothing to do, a synchronous finish would clear
+			// s.resizing before it's even set, and leave it looking busy for good.
+			await null
+			try {
+				while (s.want) {
+					const {cols, rows} = s.want
+					s.want = null
+					if (s.child.exitCode === null && (cols !== s.cols || rows !== s.rows)) await resize(s, cols, rows)
+				}
+			} finally {
+				s.resizing = null
+				// What was typed while it resized goes in now, so it runs at the new size.
+				const held = s.held ?? []
+				s.held = null
+				for (const d of held) if (s.child.stdin.writable) s.child.stdin.write(d)
+			}
+		})()
+		return s.resizing
+	}
 	const resize = async (s, cols, rows) => {
 		s.pty ??= await ptyOf(s.child.pid)
 		if (!s.pty) return false
@@ -104,34 +143,50 @@ export function createTerminalSessions({exec = execFile} = {}) {
 		}
 		const resumed = !!s
 		if (!s) s = start(key, {cols, rows, shell})
-		s.used = Date.now()
+		const session = s
+		session.used = Date.now()
 		// Control messages are text frames; the shell's output is always binary.
-		const tell = (m) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m))
+		const tell = (to, m) => to.readyState === to.OPEN && to.send(JSON.stringify(m))
+		// Everyone else watching this shell hears its new size, so their screens match.
+		const tellOthers = () => {
+			for (const other of session.sockets) if (other !== ws) tell(other, {type: 'size', cols: session.cols, rows: session.rows})
+		}
+		// Listen straight away: nothing typed (or resized) while a resumed screen is being set up is lost.
+		ws.on('message', (d, isBinary) => {
+			session.used = Date.now()
+			if (isBinary) {
+				// This device's window changed size: the shell takes it (the latest to ask wins).
+				const size = parseResize(d, true)
+				if (size) resizeTo(session, size.cols, size.rows).then(tellOthers)
+				return
+			}
+			if (session.resizing) return void (session.held ??= []).push(d)
+			if (session.child.stdin.writable) session.child.stdin.write(d)
+		})
 		if (resumed) {
 			// What was on screen, at the size it was drawn, then this device's size (the terminal
 			// reflows, and full-screen programs redraw for it).
-			tell({type: 'session', resumed: true, cols: s.cols, rows: s.rows})
-			const replay = Buffer.concat(s.chunks)
+			tell(ws, {type: 'session', resumed: true, cols: session.cols, rows: session.rows})
+			const replay = Buffer.concat(session.chunks)
 			if (replay.length && ws.readyState === ws.OPEN) ws.send(replay, {binary: true})
-			s.sockets.add(ws) // from here on it gets what the shell writes, like any other
-			if (s.cols !== cols || s.rows !== rows) {
-				if (await resize(s, cols, rows)) tell({type: 'size', cols, rows})
-			} else if (await resize(s, cols, Math.max(4, rows - 1))) {
+			session.sockets.add(ws) // from here on it gets what the shell writes, like any other
+			if (session.cols !== cols || session.rows !== rows) {
+				await resizeTo(session, cols, rows)
+				tell(ws, {type: 'size', cols: session.cols, rows: session.rows})
+				tellOthers()
+			} else {
 				// Same size: nudge it anyway so full-screen programs repaint over the replay.
-				await resize(s, cols, rows)
+				await resizeTo(session, cols, Math.max(4, rows - 1))
+				await resizeTo(session, cols, rows)
 			}
 		} else {
-			tell({type: 'session', resumed: false, cols, rows})
-			s.sockets.add(ws)
+			tell(ws, {type: 'session', resumed: false, cols, rows})
+			session.sockets.add(ws)
 		}
-		ws.on('message', (d) => {
-			s.used = Date.now()
-			if (s.child.stdin.writable) s.child.stdin.write(d)
-		})
 		// Closing the terminal only lets go of the shell; it keeps running.
 		const leave = () => {
-			s.sockets.delete(ws)
-			s.used = Date.now()
+			session.sockets.delete(ws)
+			session.used = Date.now()
 		}
 		ws.on('close', leave)
 		ws.on('error', leave)

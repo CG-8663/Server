@@ -162,6 +162,11 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		await new Promise((r, j) => (ws.once('open', r), ws.once('error', j)))
 		ws.send('echo swarm-$((40+2)); stty size\n')
 		await until(async () => out.includes('swarm-42') && /30 100/.test(out))
+		// The window changes size: the connector resizes its shell too.
+		ws.send(Buffer.from(JSON.stringify({type: 'resize', cols: 140, rows: 44})), {binary: true})
+		await new Promise((r) => setTimeout(r, 300))
+		ws.send('stty size\n')
+		await until(async () => /44 140/.test(out))
 		ws.close()
 	})
 
