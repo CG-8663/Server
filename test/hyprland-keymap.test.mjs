@@ -1,0 +1,47 @@
+import assert from 'node:assert/strict'
+import {describe, test} from 'node:test'
+
+import {actionOf} from '../web/src/desktop/hyprland/keymap.ts'
+
+const e = (code, extra = {}) => ({code, key: extra.key ?? code, metaKey: extra.meta ?? false, altKey: !!extra.alt, shiftKey: !!extra.shift, ctrlKey: !!extra.ctrl, ...extra})
+const superE = (code, extra = {}) => e(code, {meta: true, ...extra})
+
+describe('hyprland keymap', () => {
+	test('v1 chords', () => {
+		assert.deepEqual(actionOf(e('ScrollLock')), {type: 'grab-toggle'})
+		assert.deepEqual(actionOf(superE('F12')), {type: 'grab-toggle'})
+		assert.deepEqual(actionOf(superE('Enter')), {type: 'terminal'})
+		assert.deepEqual(actionOf(superE('KeyF', {shift: true})), {type: 'files'})
+		assert.deepEqual(actionOf(superE('Space', {alt: true})), {type: 'apps'})
+		assert.deepEqual(actionOf(superE('Space')), {type: 'launcher'})
+		assert.deepEqual(actionOf(superE('Escape')), {type: 'system-menu'})
+		assert.deepEqual(actionOf(superE('KeyK')), {type: 'cheatsheet'})
+		assert.deepEqual(actionOf(superE('KeyQ')), {type: 'close'})
+		assert.deepEqual(actionOf(superE('KeyW')), {type: 'close'})
+		assert.deepEqual(actionOf(superE('KeyF')), {type: 'fullscreen'})
+		assert.deepEqual(actionOf(superE('KeyT')), {type: 'float'})
+		assert.deepEqual(actionOf(superE('KeyJ')), {type: 'split'})
+		assert.deepEqual(actionOf(superE('KeyM')), {type: 'minimize'})
+		assert.deepEqual(actionOf(superE('ArrowLeft')), {type: 'focus', dir: 'left'})
+		assert.deepEqual(actionOf(superE('ArrowRight', {shift: true})), {type: 'swap', dir: 'right'})
+		assert.deepEqual(actionOf(superE('Digit1')), {type: 'workspace', n: 1})
+		assert.deepEqual(actionOf(superE('Digit9', {shift: true})), {type: 'move-workspace', n: 9})
+		assert.deepEqual(actionOf(superE('Tab')), {type: 'workspace-next'})
+		assert.deepEqual(actionOf(superE('Tab', {shift: true})), {type: 'workspace-prev'})
+	})
+
+	test('Digit1 with Shift is move-workspace, not a punctuation key', () => {
+		assert.deepEqual(actionOf(superE('Digit1', {shift: true, key: '!'})), {type: 'move-workspace', n: 1})
+	})
+
+	test('console-focused Super+Q is not close; Scroll Lock and Super+F12 still grab', () => {
+		assert.equal(actionOf(superE('KeyQ'), {consoleFocused: true}), null)
+		assert.deepEqual(actionOf(e('ScrollLock'), {consoleFocused: true}), {type: 'grab-toggle'})
+		assert.deepEqual(actionOf(superE('F12'), {consoleFocused: true}), {type: 'grab-toggle'})
+	})
+
+	test('keys without Super do nothing except Scroll Lock', () => {
+		assert.equal(actionOf(e('Enter')), null)
+		assert.equal(actionOf(e('KeyQ')), null)
+	})
+})

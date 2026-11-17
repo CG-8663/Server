@@ -105,6 +105,18 @@ where you left off; add `--purge` to delete those too.
 - Paste from your computer into the desktop's apps (Ctrl+V, or right-click → Paste on https://).
 - Full screen with system keys passed through (Chrome, Edge and Brave over https://).
 
+### Hyprland layout (the web desktop)
+
+- Desktop & Dock → Layout → Hyprland tiles the same windows (Files, Apps, Machines, Terminal) with
+  workspaces 1–9 and Omarchy Super shortcuts.
+- On an Omarchy computer, Super is taken by Hyprland. Paste the snippet from Desktop & Dock → Layout
+  into `~/.config/hypr/bindings.lua` (or `bindings.conf` on Omarchy from before its config moved to
+  Lua; both are offered), run `hyprctl reload`, then press Scroll Lock (or Super+F12) so Super stays in
+  the browser. Press it again to give Super back. The lock chip on the bar shows when keys stay here.
+  The server never changes your Hyprland config.
+- On https:// in Chrome, Edge or Brave, the lock chip can take Super without that snippet (full screen).
+  On http://, use the snippet.
+
 ### Terminal
 
 A real login shell in the browser, or a shell inside any app. Right-click copies a selection or

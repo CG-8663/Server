@@ -6,10 +6,12 @@ import {useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, useToast, wallpaperUrl, type Prefs} from '../ui'
-import {PRESETS, STYLES, solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
+import {PRESETS, STYLES, solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
+import {CAPTURE_KEY, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
+import {SnippetBlock} from './hyprland/Snippet'
 import {DESKTOP_KEY, useDesktop, useItems, type ItemInfo} from './Desktop'
 
-type Tab = 'themes' | 'background' | 'dock' | 'desktop'
+type Tab = 'themes' | 'background' | 'dock' | 'desktop' | 'layout'
 const ACCENT_CHOICES: {id: DeskAccent; label: string; swatch: string}[] = [
 	{id: 'wallpaper', label: 'From wallpaper', swatch: 'conic-gradient(#f97316,#eab308,#22c55e,#06b6d4,#8b5cf6,#ec4899,#f97316)'},
 	{id: 'app', label: 'App theme', swatch: 'var(--accent)'},
@@ -22,9 +24,9 @@ const ACCENT_CHOICES: {id: DeskAccent; label: string; swatch: string}[] = [
 ]
 
 export function Personalize({tab: initial, prefs, setPrefs}: {tab?: string; prefs: Prefs; setPrefs: (p: Prefs) => void}) {
-	const [tab, setTab] = useState<Tab>(((['themes', 'background', 'dock', 'desktop'] as string[]).includes(initial ?? '') ? initial : 'themes') as Tab)
+	const [tab, setTab] = useState<Tab>(((['themes', 'background', 'dock', 'desktop', 'layout'] as string[]).includes(initial ?? '') ? initial : 'themes') as Tab)
 	useEffect(() => {
-		if (initial && (['themes', 'background', 'dock', 'desktop'] as string[]).includes(initial)) setTab(initial as Tab)
+		if (initial && (['themes', 'background', 'dock', 'desktop', 'layout'] as string[]).includes(initial)) setTab(initial as Tab)
 	}, [initial])
 	const [cfg, setCfg] = useDeskConfig()
 	return (
@@ -40,6 +42,7 @@ export function Personalize({tab: initial, prefs, setPrefs}: {tab?: string; pref
 					{id: 'background', label: 'Background'},
 					{id: 'dock', label: 'Dock'},
 					{id: 'desktop', label: 'Desktop icons'},
+					{id: 'layout', label: 'Layout'},
 				]}
 				onChange={setTab}
 			/>
@@ -48,6 +51,7 @@ export function Personalize({tab: initial, prefs, setPrefs}: {tab?: string; pref
 			{tab === 'background' && <Background cfg={cfg} setCfg={setCfg} prefs={prefs} setPrefs={setPrefs} />}
 			{tab === 'dock' && <DockSettings cfg={cfg} setCfg={setCfg} />}
 			{tab === 'desktop' && <DesktopSettings cfg={cfg} setCfg={setCfg} />}
+			{tab === 'layout' && <LayoutSettings cfg={cfg} setCfg={setCfg} />}
 		</div>
 	)
 }
@@ -63,6 +67,92 @@ function Section({title, note, children}: {title: string; note?: ReactNode; chil
 			{children}
 			{note && <p className="footer-note pz-note">{note}</p>}
 		</section>
+	)
+}
+
+function LayoutSettings({cfg, setCfg}: P) {
+	const toast = useToast()
+	const secure = typeof window !== 'undefined' && window.isSecureContext
+	const hasLock = typeof navigator !== 'undefined' && !!keyboardLockApi()
+	const [mode, setMode] = useState<CaptureMode>(() => {
+		try {
+			const v = localStorage.getItem(CAPTURE_KEY)
+			if (v === 'host' || v === 'keyboard-lock') return coerceMode(v, secure)
+		} catch {
+			/* private */
+		}
+		return secure && hasLock ? 'keyboard-lock' : 'host'
+	})
+	const setCapture = (next: CaptureMode) => {
+		const v = coerceMode(next, secure)
+		setMode(v)
+		try {
+			localStorage.setItem(CAPTURE_KEY, v)
+		} catch {
+			/* private */
+		}
+		window.dispatchEvent(new CustomEvent('omarchy:key-capture', {detail: v}))
+	}
+	return (
+		<>
+			<Section title="Desktop layout" note="Ubuntu is the floating desktop with a dock. Hyprland tiles windows, with workspaces 1–9 and Omarchy Super shortcuts.">
+				<div className="glass group pz-rows">
+					<div className="row static">
+						<span className="main">
+							<b>Layout</b>
+						</span>
+						<Segmented<DeskShell>
+							label="Layout"
+							value={cfg.shell ?? 'gnome'}
+							options={[
+								{id: 'gnome', label: 'Ubuntu'},
+								{id: 'hyprland', label: 'Hyprland'},
+							]}
+							onChange={(v) => setCfg((c) => ({...c, shell: v}))}
+						/>
+					</div>
+				</div>
+			</Section>
+			{/* Key capture and the snippet only matter in the Hyprland layout (Ubuntu keeps Super for Activities). */}
+			{cfg.shell === 'hyprland' && (
+			<>
+			<Section title="Key capture" note="On an Omarchy computer, Super is taken by the desktop until you pass it through. HTTP can use host passthrough. Fullscreen system keys need https:// in Chrome, Edge or Brave.">
+				<div className="glass group pz-rows">
+					<div className="row static">
+						<span className="main">
+							<b>Capture Super</b>
+						</span>
+						<Segmented<CaptureMode>
+							label="Capture Super"
+							value={mode}
+							options={[
+								{id: 'host', label: 'Host passthrough'},
+								{id: 'keyboard-lock', label: 'Fullscreen'},
+							]}
+							onChange={(v) => {
+								if (v === 'keyboard-lock' && !canUseKeyboardLock(secure, hasLock)) {
+									toast('Open https:// in Chrome, Edge or Brave for fullscreen Super, or stay on host passthrough.')
+									return
+								}
+								setCapture(v)
+							}}
+						/>
+					</div>
+				</div>
+				{!secure && (
+					<p className="footer-note pz-note">
+						<button className="btn" onClick={() => (location.href = `https://${location.host}${location.pathname}${location.search}`)}>
+							Open HTTPS
+						</button>
+					</p>
+				)}
+			</Section>
+			<Section title="Omarchy snippet" note="Paste it at the end of your Hyprland key config on the Omarchy computer you browse from, run hyprctl reload, then press Scroll Lock (or Super+F12) to keep Super in this browser. Press it again to give Super back.">
+				<SnippetBlock />
+			</Section>
+			</>
+			)}
+		</>
 	)
 }
 
@@ -211,6 +301,7 @@ function DockSettings({cfg, setCfg}: P) {
 	const {info, appList, machineList, owner} = useItems()
 	const d = cfg.dock
 	const set = (patch: Partial<DeskConfig['dock']>) => setCfg((c) => ({...c, dock: {...c.dock, ...patch}}))
+	const hyprNote = cfg.shell === 'hyprland' ? 'The dock is hidden in the Hyprland layout. These settings apply when you switch back to Ubuntu.' : undefined
 	const move = (k: string, dir: -1 | 1) => {
 		const items = [...d.items]
 		const i = items.indexOf(k)
@@ -222,7 +313,7 @@ function DockSettings({cfg, setCfg}: P) {
 	const candidates = allKeys(appList, machineList, owner).filter((k) => !d.items.includes(k))
 	return (
 		<>
-			<Section title="Layout">
+			<Section title="Layout" note={hyprNote}>
 				<div className="glass group pz-rows">
 					<div className="row static">
 						<span className="main">
@@ -341,6 +432,7 @@ function DesktopSettings({cfg, setCfg}: P) {
 		...(owner ? [DESKTOP_KEY] : []),
 		...machineList.filter((m) => m.state === 'running').map((m) => `machine:${m.id}`),
 	].filter((k) => !onDesk.has(k))
+	const hyprNote = cfg.shell === 'hyprland' ? 'Desktop icons are hidden in the Hyprland layout. These settings apply when you switch back to Ubuntu.' : undefined
 	return (
 		<>
 			<Section
@@ -364,7 +456,7 @@ function DesktopSettings({cfg, setCfg}: P) {
 					</div>
 				</div>
 			</Section>
-			<Section title="Desktop">
+			<Section title="Desktop" note={hyprNote}>
 				<div className="glass group pz-rows">
 					<ToggleRow label="Show icons on the desktop" on={cfg.showIcons} onChange={(v) => setCfg((c) => ({...c, showIcons: v}))} />
 				</div>

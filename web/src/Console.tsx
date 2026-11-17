@@ -15,6 +15,7 @@ import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
 import {Icon} from './icons'
+import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
 
 type RFBClass = typeof import('@novnc/novnc/lib/rfb.js').default
@@ -91,7 +92,7 @@ const readMode = (): Mode => {
 	}
 }
 
-export function Console({machine, onClose, embedded}: {machine: Machine; onClose: () => void; embedded?: boolean}) {
+export function Console({machine, onClose, embedded, windowId}: {machine: Machine; onClose: () => void; embedded?: boolean; windowId?: string}) {
 	const portalRoot = usePortalRoot()
 	const rootRef = useRef<HTMLDivElement>(null)
 	const screenRef = useRef<HTMLDivElement>(null) // the visible viewport
@@ -296,13 +297,29 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 		root.addEventListener('keydown', onKey, true)
 		root.addEventListener('keyup', onKey, true)
 		window.addEventListener('blur', release)
+		const onInject = (e: {type: string; code: string; key: string}) => {
+			const mapped = keysymFromEvent(e)
+			if (mapped === 'super') {
+				// The Super button holds it down until clicked again, the same as a real Super key.
+				sendSuper(e.type === 'keydown' || superHeld)
+				return
+			}
+			if (!mapped) return
+			rfbRef.current?.sendKey(mapped.keysym, mapped.code, e.type === 'keydown')
+		}
+		if (windowId) setConsoleKeyHandler(windowId, onInject)
 		return () => {
 			root.removeEventListener('keydown', onKey, true)
 			root.removeEventListener('keyup', onKey, true)
 			window.removeEventListener('blur', release)
+			if (windowId) setConsoleKeyHandler(windowId, null)
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [superKey, superHeld])
+	}, [superKey, superHeld, windowId])
+	// Closing the console never leaves Super held down on the machine. (Only on close: this effect
+	// above also re-runs when the Super button is toggled, and must not let go of a held Super then.)
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	useEffect(() => () => sendSuper(false), [])
 	const toggleSuperHeld = () => {
 		const next = !superHeld
 		setSuperHeld(next)
