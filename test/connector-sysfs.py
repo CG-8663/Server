@@ -104,6 +104,37 @@ class Gpus(unittest.TestCase):
         self.assertEqual(gpus[0]["name"], "AMD Radeon RX 7900 XTX")
         self.assertEqual(gpus[0]["used"], 41)
 
+    def test_sleeping_nvidia_not_woken(self):
+        calls = []
+        state = {"status": "active"}
+        csv = "0, NVIDIA GeForce RTX 4060 Laptop GPU, GPU-x, 12, 300, 8188, 44\n"
+
+        def run(cmd, args):
+            calls.append(cmd)
+            return csv
+
+        def list_dir(path):
+            return ["0000:01:00.0"] if path == "/sys/bus/pci/devices" else []
+
+        def read_file(path, default=""):
+            if path.endswith("/vendor"):
+                return "0x10de\n"
+            if path.endswith("/class"):
+                return "0x030200\n"
+            if path.endswith("runtime_status"):
+                return state["status"]
+            return default
+
+        self.assertEqual(agent.gpus(run=run, list_dir=list_dir, read_file=read_file)[0]["used"], 12)
+        state["status"] = "suspended"
+        asleep = agent.gpus(run=run, list_dir=list_dir, read_file=read_file)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual((asleep[0]["id"], asleep[0]["used"]), ("GPU-x", 0))
+        state["status"] = "active"
+        agent.gpus(run=run, list_dir=list_dir, read_file=read_file)
+        self.assertEqual(len(calls), 2)
+        agent._last_nvidia = None
+
     def test_no_gpus(self):
         def run(cmd, args):
             return ""

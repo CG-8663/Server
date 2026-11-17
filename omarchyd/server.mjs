@@ -25,7 +25,7 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.36'
+export const OMARCHYD_VERSION = '0.9.37'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
@@ -162,6 +162,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'system.diskUsage': {kind: 'query', run: () => system.diskUsage(home, {dataDir})},
 		'system.cpuTemperature': {kind: 'query', run: () => system.cpuTemperature()},
 		'system.gpuUsage': {kind: 'query', run: () => system.gpuUsage()},
+		'system.batteryUsage': {kind: 'query', run: () => system.batteryUsage()},
 		'system.getHostname': {kind: 'query', run: () => settings.hostname},
 		'system.getIpAddresses': {kind: 'query', run: () => system.ipAddresses()},
 		'system.device': {kind: 'query', run: async () => ({device: await system.deviceName(), os: release.pretty})},

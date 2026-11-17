@@ -384,6 +384,27 @@ def _drm_gpus(list_dir, read_file):
     return gpus
 
 
+_last_nvidia = None
+
+
+def nvidia_asleep(list_dir=os.listdir, read_file=read, root="/sys/bus/pci/devices"):
+    """True when every NVIDIA display device is runtime-suspended (nvidia-smi would wake it)."""
+    try:
+        names = list_dir(root)
+    except OSError:
+        return False
+    found = False
+    for d in names:
+        if read_file(os.path.join(root, d, "vendor")).strip().lower() != "0x10de":
+            continue
+        if not read_file(os.path.join(root, d, "class")).strip().startswith("0x03"):
+            continue
+        found = True
+        if read_file(os.path.join(root, d, "power", "runtime_status")).strip() != "suspended":
+            return False
+    return found
+
+
 def gpus(run=None, list_dir=os.listdir, read_file=read):
     def _run(cmd, args):
         try:
@@ -391,7 +412,11 @@ def gpus(run=None, list_dir=os.listdir, read_file=read):
         except (OSError, subprocess.SubprocessError):
             return ""
 
+    global _last_nvidia
+    if _last_nvidia and nvidia_asleep(list_dir, read_file):
+        return [dict(g, used=0) for g in _last_nvidia]
     nvidia = _nvidia_gpus(run or _run)
+    _last_nvidia = nvidia or None
     if nvidia:
         return nvidia
     return _drm_gpus(list_dir, read_file)

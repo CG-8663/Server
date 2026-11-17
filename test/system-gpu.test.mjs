@@ -81,3 +81,31 @@ test('nvidia-smi wins when both NVIDIA and sysfs cards exist', async () => {
 	assert.equal(gpus.length, 2)
 	assert.equal(gpus[0].id, 'GPU-aaa')
 })
+
+test('a sleeping NVIDIA card is not woken: the last reading shows as idle', async () => {
+	const {nvidiaAsleep} = await import('../omarchyd/system.mjs')
+	let status = 'active'
+	let smi = 0
+	const run = async (cmd) => (cmd === 'nvidia-smi' ? (smi++, nvidiaCsv) : '')
+	const files = {
+		'/sys/bus/pci/devices/0000:01:00.0/vendor': '0x10de\n',
+		'/sys/bus/pci/devices/0000:01:00.0/class': '0x030000\n',
+		'/sys/bus/pci/devices/0000:00:02.0/vendor': '0x8086\n',
+		'/sys/bus/pci/devices/0000:00:02.0/class': '0x030000\n',
+	}
+	const read = async (p) => (p.endsWith('runtime_status') && p.includes('01:00.0') ? status : (files[p] ?? ''))
+	const list = async (p) => (p === '/sys/bus/pci/devices' ? ['0000:00:02.0', '0000:01:00.0'] : [])
+	assert.equal(await nvidiaAsleep({list, read}), false)
+	assert.equal((await gpuUsage({run, list, read})).gpus[0].used, 32)
+	assert.equal(smi, 1)
+	status = 'suspended'
+	assert.equal(await nvidiaAsleep({list, read}), true)
+	const asleep = await gpuUsage({run, list, read})
+	assert.equal(smi, 1, 'nvidia-smi not run while the card sleeps')
+	assert.deepEqual(asleep.gpus.map((g) => [g.id, g.used, g.temperature]), [['GPU-aaa', 0, null], ['GPU-bbb', 0, null]])
+	status = 'active'
+	await gpuUsage({run, list, read})
+	assert.equal(smi, 2)
+	// No NVIDIA device at all: never counted as asleep.
+	assert.equal(await nvidiaAsleep({list: async () => ['0000:00:02.0'], read}), false)
+})
