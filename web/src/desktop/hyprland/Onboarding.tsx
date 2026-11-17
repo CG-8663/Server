@@ -1,4 +1,4 @@
-import {useState} from 'react'
+import {useEffect, useState} from 'react'
 
 import {useToast} from '../../ui'
 import {SNIPPET} from './grab'
@@ -6,10 +6,19 @@ import {SNIPPET} from './grab'
 export function Onboarding({onDismiss}: {onDismiss: () => void}) {
 	const toast = useToast()
 	const [flash, setFlash] = useState(false)
+	useEffect(() => {
+		const on = (e: KeyboardEvent) => {
+			if (e.code !== 'ScrollLock') return
+			setFlash(true)
+			window.setTimeout(() => setFlash(false), 600)
+		}
+		window.addEventListener('keydown', on)
+		return () => window.removeEventListener('keydown', on)
+	}, [])
 	const copy = async () => {
 		try {
 			await navigator.clipboard.writeText(SNIPPET)
-			toast('Copied. Paste into ~/.config/hypr/bindings.lua, then Super+K or hyprctl reload.')
+			toast('Copied. Paste into ~/.config/hypr/bindings.lua, then hyprctl reload.')
 		} catch {
 			toast('Select the snippet and copy it')
 		}
@@ -26,19 +35,7 @@ export function Onboarding({onDismiss}: {onDismiss: () => void}) {
 				<button className="btn" onClick={copy}>
 					Copy snippet
 				</button>
-				<button
-					className="btn"
-					onClick={() => {
-						const on = (e: KeyboardEvent) => {
-							if (e.code !== 'ScrollLock') return
-							setFlash(true)
-							window.setTimeout(() => setFlash(false), 600)
-						}
-						window.addEventListener('keydown', on)
-						window.setTimeout(() => window.removeEventListener('keydown', on), 8000)
-						toast('Press Scroll Lock')
-					}}
-				>
+				<button className="btn" onClick={() => toast('Press Scroll Lock')}>
 					Test Scroll Lock
 				</button>
 				<button className="btn primary" onClick={onDismiss}>

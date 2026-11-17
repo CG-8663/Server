@@ -310,6 +310,7 @@ function DockSettings({cfg, setCfg}: P) {
 	const {info, appList, machineList, owner} = useItems()
 	const d = cfg.dock
 	const set = (patch: Partial<DeskConfig['dock']>) => setCfg((c) => ({...c, dock: {...c.dock, ...patch}}))
+	const hyprNote = cfg.shell === 'hyprland' ? 'The dock is hidden in the Hyprland layout. These settings apply when you switch back to Ubuntu.' : undefined
 	const move = (k: string, dir: -1 | 1) => {
 		const items = [...d.items]
 		const i = items.indexOf(k)
@@ -321,7 +322,7 @@ function DockSettings({cfg, setCfg}: P) {
 	const candidates = allKeys(appList, machineList, owner).filter((k) => !d.items.includes(k))
 	return (
 		<>
-			<Section title="Layout">
+			<Section title="Layout" note={hyprNote}>
 				<div className="glass group pz-rows">
 					<div className="row static">
 						<span className="main">
@@ -440,6 +441,7 @@ function DesktopSettings({cfg, setCfg}: P) {
 		...(owner ? [DESKTOP_KEY] : []),
 		...machineList.filter((m) => m.state === 'running').map((m) => `machine:${m.id}`),
 	].filter((k) => !onDesk.has(k))
+	const hyprNote = cfg.shell === 'hyprland' ? 'Desktop icons are hidden in the Hyprland layout. These settings apply when you switch back to Ubuntu.' : undefined
 	return (
 		<>
 			<Section
@@ -463,7 +465,7 @@ function DesktopSettings({cfg, setCfg}: P) {
 					</div>
 				</div>
 			</Section>
-			<Section title="Desktop">
+			<Section title="Desktop" note={hyprNote}>
 				<div className="glass group pz-rows">
 					<ToggleRow label="Show icons on the desktop" on={cfg.showIcons} onChange={(v) => setCfg((c) => ({...c, showIcons: v}))} />
 				</div>

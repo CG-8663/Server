@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {describe, test} from 'node:test'
 
-import {canUseKeyboardLock, coerceMode, defaultMode, onBlur, onFullscreenChange, resolveMode, toggleLock} from '../web/src/desktop/hyprland/grab.ts'
+import {canUseKeyboardLock, coerceMode, defaultMode, onBlur, onCaptureModeChange, onFullscreenChange, resolveMode, toggleLock} from '../web/src/desktop/hyprland/grab.ts'
 
 const unlocked = (mode) => ({keysLocked: false, method: 'none', mode})
 
@@ -39,5 +39,15 @@ describe('hyprland grab', () => {
 		const on = toggleLock(unlocked('keyboard-lock'), 'chip')
 		assert.equal(on.method, 'keyboard-lock')
 		assert.equal(on.keysLocked, true)
+	})
+
+	test('leaving keyboard-lock capture unlocks that method', () => {
+		const locked = {keysLocked: true, method: 'keyboard-lock', mode: 'keyboard-lock'}
+		assert.deepEqual(onCaptureModeChange(locked, 'host'), {keysLocked: false, method: 'none', mode: 'host'})
+		assert.deepEqual(onCaptureModeChange(toggleLock(unlocked('host'), 'scroll'), 'keyboard-lock'), {
+			keysLocked: true,
+			method: 'scroll',
+			mode: 'keyboard-lock',
+		})
 	})
 })

@@ -50,6 +50,11 @@ export function onBlur(state: GrabState): GrabState {
 	return state
 }
 
+export function onCaptureModeChange(state: GrabState, next: CaptureMode): GrabState {
+	if (state.method === 'keyboard-lock' && next !== 'keyboard-lock') return {keysLocked: false, method: 'none', mode: next}
+	return {...state, mode: next}
+}
+
 export function chipIntent(state: GrabState): 'toggle' | 'request-keyboard-lock' | 'unlock-keyboard-lock' {
 	if (state.mode !== 'keyboard-lock') return 'toggle'
 	return state.keysLocked ? 'unlock-keyboard-lock' : 'request-keyboard-lock'

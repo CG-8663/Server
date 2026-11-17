@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {describe, test} from 'node:test'
 
-import {flipSplit, focusDir, insert, rebuild, rects, remove, swapDir} from '../web/src/desktop/hyprland/layout.ts'
+import {flipSplit, focusDir, insert, isNode, rebuild, reconcile, rects, remove, swapDir} from '../web/src/desktop/hyprland/layout.ts'
 
 const area = {x: 0, y: 0, w: 1000, h: 800}
 
@@ -59,5 +59,23 @@ describe('hyprland layout', () => {
 		const t = insert(insert(null, null, 'a', area), 'a', 'b', area, 0)
 		assert.equal(t.axis, 'h')
 		assert.equal(flipSplit(t, 'a').axis, 'v')
+	})
+
+	test('isNode rejects corrupt trees', () => {
+		assert.equal(isNode({kind: 'leaf', id: 'a'}), true)
+		assert.equal(isNode({kind: 'split', axis: 'h', ratio: 0.5, a: {kind: 'leaf', id: 'a'}, b: {kind: 'leaf', id: 'b'}}), true)
+		assert.equal(isNode({kind: 'split', axis: 'h'}), false)
+		assert.equal(isNode({foo: 1}), false)
+	})
+
+	test('reconcile drops unknown ids and inserts missing ones', () => {
+		const stale = insert(insert(null, null, 'gone', area), 'gone', 'a', area, 0)
+		const next = reconcile(stale, ['a', 'b'], area, 0)
+		assert.deepEqual(Object.keys(rects(next, area, 0)).sort(), ['a', 'b'])
+	})
+
+	test('reconcile rebuilds a corrupt tree', () => {
+		const next = reconcile({kind: 'split'}, ['a', 'b'], area, 0)
+		assert.deepEqual(Object.keys(rects(next, area, 0)).sort(), ['a', 'b'])
 	})
 })

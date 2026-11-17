@@ -16,11 +16,11 @@ import {AppIcon, InWindow, PortalRoot, StoreIcon, TerminalIcon, customBackground
 import {SYSTEM_DOCK, WALLPAPERS, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
 import {Cheatsheet} from './hyprland/Cheatsheet'
-import {injectConsoleKey} from './hyprland/consoleBridge'
-import {CAPTURE_KEY, ONBOARDING_KEY, canUseKeyboardLock, chipIntent, keyboardLockApi, onFullscreenChange, resolveMode, toggleLock, type GrabState} from './hyprland/grab'
+import {injectConsoleKey, keysymFromEvent, lastMinimizedOn, releaseConsoleSuper, topVisibleWindow} from './hyprland/consoleBridge'
+import {CAPTURE_KEY, ONBOARDING_KEY, canUseKeyboardLock, chipIntent, keyboardLockApi, onCaptureModeChange, onFullscreenChange, resolveMode, toggleLock, type GrabState} from './hyprland/grab'
 import {actionOf, isSuper, type Action} from './hyprland/keymap'
 import {Launcher} from './hyprland/Launcher'
-import {GAP, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, rebuild, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
+import {GAP, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, reconcile, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
 
 const Files = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
@@ -91,7 +91,14 @@ function loadLayout(): {workspace: number; trees: Record<number, Node | null>} {
 	try {
 		const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? '')
 		const workspace = Number(raw?.workspace)
-		return {workspace: workspace >= 1 && workspace <= 9 ? workspace : 1, trees: raw?.trees && typeof raw.trees === 'object' ? raw.trees : {}}
+		const trees: Record<number, Node | null> = {}
+		if (raw?.trees && typeof raw.trees === 'object') {
+			for (const [k, v] of Object.entries(raw.trees as Record<string, unknown>)) {
+				const n = Number(k)
+				if (n >= 1 && n <= 9 && Number.isInteger(n)) trees[n] = isNode(v) ? v : null
+			}
+		}
+		return {workspace: workspace >= 1 && workspace <= 9 ? workspace : 1, trees}
 	} catch {
 		return {workspace: 1, trees: {}}
 	}
@@ -307,6 +314,12 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	const treesRef = useRef(trees)
 	treesRef.current = trees
 	const runHyprRef = useRef<(act: Action) => void>(() => {})
+	const lastConsoleRef = useRef<string | null>(null)
+	const releaseLastConsole = () => {
+		if (!lastConsoleRef.current) return
+		releaseConsoleSuper(lastConsoleRef.current)
+		lastConsoleRef.current = null
+	}
 	const toast = useToast()
 	const confirm = useConfirm()
 	const qc = useQueryClient()
@@ -350,7 +363,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	const onWs = (w: Win) => (w.workspace ?? 1) === hyprWs
 	const visible = wins.filter((w) => !w.min && (!hypr || onWs(w)))
 	const active = visible.length ? visible.reduce((a, b) => (b.z > a.z ? b : a)) : null
-	const tiled = hypr ? tileRectsOf(trees[hyprWs] ?? null, usable()) : {}
+	const tiled = hypr ? tileRectsOf(isNode(trees[hyprWs]) ? trees[hyprWs] : null, usable()) : {}
 
 	// -- window operations --
 	const dropFromTrees = (id: string) =>
@@ -539,13 +552,27 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		if (act.type === 'cheatsheet') return void setCheatsheet(true)
 		if (act.type === 'close' && focused) return void close(focused.id)
 		if (act.type === 'fullscreen' && focused) return void update(focused.id, {snap: focused.snap === 'max' ? null : 'max'})
-		if (act.type === 'minimize' && focused) return void minimize(focused.id)
+		if (act.type === 'minimize') {
+			if (focused) return void minimize(focused.id)
+			const minned = lastMinimizedOn(winsRef.current, ws)
+			if (minned) return void focus(minned.id)
+			return
+		}
 		if (act.type === 'split' && focused) return void setTrees((ts) => ({...ts, [ws]: flipSplit(ts[ws] ?? null, focused.id)}))
 		if (act.type === 'focus' && focused) return void focus(focusDir(treesRef.current[ws] ?? null, focused.id, act.dir, usable()))
 		if (act.type === 'swap' && focused) return void setTrees((ts) => ({...ts, [ws]: swapDir(ts[ws] ?? null, focused.id, act.dir, usable())}))
-		if (act.type === 'workspace') return void setHyprWs(act.n)
-		if (act.type === 'workspace-next') return void setHyprWs((n) => (n === 9 ? 1 : n + 1))
-		if (act.type === 'workspace-prev') return void setHyprWs((n) => (n === 1 ? 9 : n - 1))
+		if (act.type === 'workspace') {
+			releaseLastConsole()
+			return void setHyprWs(act.n)
+		}
+		if (act.type === 'workspace-next') {
+			releaseLastConsole()
+			return void setHyprWs((n) => (n === 9 ? 1 : n + 1))
+		}
+		if (act.type === 'workspace-prev') {
+			releaseLastConsole()
+			return void setHyprWs((n) => (n === 1 ? 9 : n - 1))
+		}
 		if (act.type === 'move-workspace' && focused) {
 			dropFromTrees(focused.id)
 			update(focused.id, {workspace: act.n})
@@ -592,19 +619,24 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 				setLauncher(false)
 				setCheatsheet(false)
 			}
-			const consoleFocused = winsRef.current.filter((w) => !w.min).sort((a, b) => b.z - a.z)[0]?.kind === 'console' && (hyprWsRef.current === (winsRef.current.find((w) => w.kind === 'console' && !w.min)?.workspace ?? 1) || cfg.shell !== 'hyprland')
-			const act = actionOf(e, {consoleFocused: !!(consoleFocused && cfg.shell === 'hyprland')})
+			if (cfg.shell !== 'hyprland') return
+			const top = topVisibleWindow(winsRef.current, hyprWsRef.current, true)
+			const consoleFocused = top?.kind === 'console'
+			const act = actionOf(e, {consoleFocused: !!consoleFocused})
 			if (act?.type === 'grab-toggle') {
 				e.preventDefault()
 				e.stopPropagation()
+				releaseLastConsole()
 				setGrab((s) => toggleLock(s, e.code === 'F12' ? 'f12' : 'scroll'))
 				return
 			}
-			if (cfg.shell !== 'hyprland') return
-			if (consoleFocused && isSuper(e) && !act) {
+			if (consoleFocused && top && isSuper(e) && !act) {
+				if (!keysymFromEvent(e)) return
 				e.preventDefault()
 				e.stopPropagation()
-				injectConsoleKey(e)
+				if (lastConsoleRef.current && lastConsoleRef.current !== top.id) releaseConsoleSuper(lastConsoleRef.current)
+				lastConsoleRef.current = top.id
+				injectConsoleKey(top.id, e)
 				return
 			}
 			if (!act) return
@@ -615,9 +647,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		const up = (e: KeyboardEvent) => {
 			if (cfg.shell !== 'hyprland' && (e.key === 'Meta' || e.key === 'OS') && superAlone) setOverview((o) => (o ? null : 'windows'))
 			superAlone = false
-			if (cfg.shell === 'hyprland') {
-				const top = winsRef.current.filter((w) => !w.min).sort((a, b) => b.z - a.z)[0]
-				if (top?.kind === 'console' && isSuper({code: e.code, key: e.key, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey})) injectConsoleKey(e)
+			if (cfg.shell === 'hyprland' && lastConsoleRef.current && (isSuper({code: e.code, key: e.key, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey}) || keysymFromEvent(e))) {
+				injectConsoleKey(lastConsoleRef.current, e)
 			}
 		}
 		window.addEventListener('keydown', down, true)
@@ -749,7 +780,17 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		})
 
 	useEffect(() => {
-		const onFs = () => setGrab((s) => onFullscreenChange(s, !!document.fullscreenElement))
+		const onFs = () => {
+			const fs = !!document.fullscreenElement
+			if (!fs) {
+				try {
+					keyboardLockApi()?.unlock()
+				} catch {
+					/* already unlocked */
+				}
+			}
+			setGrab((s) => onFullscreenChange(s, fs))
+		}
 		document.addEventListener('fullscreenchange', onFs)
 		return () => document.removeEventListener('fullscreenchange', onFs)
 	}, [])
@@ -757,7 +798,25 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		if (!window.isSecureContext && grab.mode === 'keyboard-lock') setGrab((s) => ({...s, mode: 'host'}))
 	}, [grab.mode])
 	useEffect(() => {
-		const on = (e: Event) => setGrab((s) => ({...s, mode: (e as CustomEvent<GrabState['mode']>).detail}))
+		const on = (e: Event) => {
+			const mode = (e as CustomEvent<GrabState['mode']>).detail
+			setGrab((s) => {
+				const next = onCaptureModeChange(s, mode)
+				if (s.method === 'keyboard-lock' && next.method === 'none') {
+					try {
+						keyboardLockApi()?.unlock()
+					} catch {
+						/* already unlocked */
+					}
+					try {
+						document.exitFullscreen()
+					} catch {
+						/* already out */
+					}
+				}
+				return next
+			})
+		}
 		window.addEventListener('omarchy:key-capture', on)
 		return () => window.removeEventListener('omarchy:key-capture', on)
 	}, [])
@@ -765,11 +824,25 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		if (!hypr) return
 		setWins((ws) => ws.map((w) => (w.workspace ? w : {...w, workspace: 1})))
 		setTrees((ts) => {
-			if (Object.values(ts).some(Boolean)) return ts
-			const ids = winsRef.current.filter((w) => !w.min && !w.float).map((w) => w.id)
-			return ids.length ? {1: rebuild(ids, usable())} : ts
+			const groups: Record<number, string[]> = {}
+			for (const w of [...winsRef.current].sort((a, b) => a.z - b.z)) {
+				if (w.min || w.float) continue
+				const n = w.workspace ?? 1
+				;(groups[n] ??= []).push(w.id)
+			}
+			const next = {...ts}
+			for (let n = 1; n <= 9; n++) next[n] = reconcile(ts[n], groups[n] ?? [], usable())
+			return next
 		})
 	}, [hypr])
+	useEffect(() => {
+		const top = topVisibleWindow(wins, hyprWs, hypr)
+		const id = top?.kind === 'console' ? top.id : null
+		if (lastConsoleRef.current && lastConsoleRef.current !== id) {
+			releaseConsoleSuper(lastConsoleRef.current)
+			lastConsoleRef.current = null
+		}
+	}, [wins, hyprWs, hypr])
 
 	const occupied = new Set(wins.filter((w) => !w.min).map((w) => w.workspace ?? 1))
 	const minimizedWs = new Set(wins.filter((w) => w.min).map((w) => w.workspace ?? 1))
@@ -834,7 +907,20 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 					onPersonalize={() => open('personalize')}
 					left={
 						hypr ? (
-							<WorkspacePills current={hyprWs} occupied={occupied} minimized={minimizedWs} onSwitch={setHyprWs} />
+							<WorkspacePills
+								current={hyprWs}
+								occupied={occupied}
+								minimized={minimizedWs}
+								onSwitch={(n) => {
+									if (n === hyprWs && minimizedWs.has(n) && !occupied.has(n)) {
+										const minned = lastMinimizedOn(wins, n)
+										if (minned) focus(minned.id)
+										return
+									}
+									releaseLastConsole()
+									setHyprWs(n)
+								}}
+							/>
 						) : undefined
 					}
 					lockChip={hypr ? <LockChip locked={grab.keysLocked} onClick={onLockChip} title={lockTitle} /> : undefined}
@@ -2328,7 +2414,7 @@ const WindowContent = memo(
 				case 'terminal':
 					return owner ? <TerminalScreen embedded app={win.payload?.term} input={win.payload?.input} onClose={close} /> : <div className="win-empty">Only the server’s owner can open a terminal.</div>
 				case 'console':
-					return <ConsoleWindow machineId={win.payload!.machineId!} onClose={close} />
+					return <ConsoleWindow machineId={win.payload!.machineId!} windowId={win.id} onClose={close} />
 				default:
 					return null
 			}
@@ -2359,11 +2445,11 @@ function AppsWindow() {
 	)
 }
 
-function ConsoleWindow({machineId, onClose}: {machineId: string; onClose: () => void}) {
-	if (machineId === 'desktop') return <Console embedded machine={SERVER_DESKTOP} onClose={onClose} />
-	return <MachineConsoleWindow machineId={machineId} onClose={onClose} />
+function ConsoleWindow({machineId, windowId, onClose}: {machineId: string; windowId: string; onClose: () => void}) {
+	if (machineId === 'desktop') return <Console embedded machine={SERVER_DESKTOP} windowId={windowId} onClose={onClose} />
+	return <MachineConsoleWindow machineId={machineId} windowId={windowId} onClose={onClose} />
 }
-function MachineConsoleWindow({machineId, onClose}: {machineId: string; onClose: () => void}) {
+function MachineConsoleWindow({machineId, windowId, onClose}: {machineId: string; windowId: string; onClose: () => void}) {
 	const machines = useMachines()
 	const m = machines.data?.find((x) => x.id === machineId)
 	if (machines.isLoading)
@@ -2381,5 +2467,5 @@ function MachineConsoleWindow({machineId, onClose}: {machineId: string; onClose:
 				<span>{m.state === 'starting' ? 'It’s starting. The console connects once it’s up.' : 'Start it from its desktop icon or from Machines.'}</span>
 			</div>
 		)
-	return <Console embedded machine={m} onClose={onClose} />
+	return <Console embedded machine={m} windowId={windowId} onClose={onClose} />
 }

@@ -128,6 +128,39 @@ export function rebuild(ids: string[], area: Rect, gap = GAP): Node | null {
 	return tree
 }
 
+export function isNode(n: unknown): n is Node {
+	if (!n || typeof n !== 'object') return false
+	const x = n as Record<string, unknown>
+	if (x.kind === 'leaf') return typeof x.id === 'string'
+	if (x.kind === 'split') return (x.axis === 'h' || x.axis === 'v') && typeof x.ratio === 'number' && isNode(x.a) && isNode(x.b)
+	return false
+}
+
+export function leafIds(tree: Node | null): string[] {
+	if (!tree) return []
+	return tree.kind === 'leaf' ? [tree.id] : [...leafIds(tree.a), ...leafIds(tree.b)]
+}
+
+export function reconcile(tree: unknown, ids: string[], area: Rect, gap = GAP): Node | null {
+	if (!ids.length) return null
+	const valid = isNode(tree) ? tree : null
+	if (!valid) return rebuild(ids, area, gap)
+	const have = new Set(leafIds(valid))
+	if (have.size === ids.length && ids.every((id) => have.has(id))) return valid
+	let next: Node | null = valid
+	for (const id of have) {
+		if (!ids.includes(id)) next = remove(next, id)
+	}
+	let last = firstLeaf(next)
+	for (const id of ids) {
+		if (!contains(next, id)) {
+			next = insert(next, last, id, area, gap)
+			last = id
+		}
+	}
+	return next
+}
+
 function replaceLeaf(tree: Node, id: string, next: Node): Node {
 	if (tree.kind === 'leaf') return tree.id === id ? next : tree
 	return {...tree, a: replaceLeaf(tree.a, id, next), b: replaceLeaf(tree.b, id, next)}
