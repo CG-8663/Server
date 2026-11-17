@@ -109,6 +109,7 @@ export async function startFakeserverd({
 	let lastCreate = null
 	const keys = [] // keysyms typed into the fake VM console
 	const assistantKeys = [] // Settings → Assistant; public rows never include apiKey
+	const assistantChats = [] // Assistant threads. Another user's chat looks missing.
 	const terminals = []
 	const gb = 1024 ** 3
 	const apps = [
@@ -235,6 +236,26 @@ export async function startFakeserverd({
 		mine: k.ownerUserId === userId,
 	})
 	const assistantCanUse = (k, userId) => k.ownerUserId === userId || k.sharedWith.includes(userId) || k.systemDefault
+	const assistantOwned = (id, userId) => assistantChats.find((c) => c.id === String(id ?? '') && c.userId === userId)
+	const assistantStep = (actionId, userId) => {
+		const id = String(actionId ?? '').trim()
+		if (!id) return {error: ['BAD_REQUEST', 'Missing action']}
+		for (const chat of assistantChats) {
+			if (chat.userId !== userId) continue
+			const action = chat.actions?.find((a) => a.id === id)
+			if (action) return {action}
+		}
+		return {error: ['NOT_FOUND', 'That step isn’t here']}
+	}
+	const assistantDecide = (input, auth, status) => {
+		const found = assistantStep(input?.actionId, auth.userId)
+		if (found.error) return found
+		if (found.action.status !== 'pending') return {error: ['CONFLICT', 'That step was already handled']}
+		found.action.status = status
+		found.action.resolvedAt = Date.now()
+		if (status === 'done') delete found.action.error
+		return {...found.action}
+	}
 
 	const procedures = {
 		'system.version': {kind: 'query', public: true, run: () => ({version: '2.0.0', name: 'Omarchy Server 2.0', startedAt: 1_700_000_000_000, revision: 'abc1234'})},
@@ -671,6 +692,25 @@ export async function startFakeserverd({
 				return true
 			},
 		},
+		'assistant.conversations': {
+			kind: 'query',
+			run: (_i, auth) => assistantChats.filter((c) => c.userId === auth.userId).map(({id, title, updatedAt}) => ({id, title, updatedAt})).sort((a, b) => b.updatedAt - a.updatedAt),
+		},
+		'assistant.getConversation': {
+			kind: 'query',
+			run: (input, auth) => assistantOwned(input?.id, auth.userId) ?? {error: ['NOT_FOUND', 'That chat isn’t here']},
+		},
+		'assistant.deleteConversation': {
+			kind: 'mutation',
+			run: (input, auth) => {
+				const i = assistantChats.findIndex((c) => c.id === String(input?.id ?? '') && c.userId === auth.userId)
+				if (i < 0) return {error: ['NOT_FOUND', 'That chat isn’t here']}
+				assistantChats.splice(i, 1)
+				return true
+			},
+		},
+		'assistant.approve': {kind: 'mutation', run: (input, auth) => assistantDecide(input, auth, 'done')},
+		'assistant.reject': {kind: 'mutation', run: (input, auth) => assistantDecide(input, auth, 'rejected')},
 	}
 
 	// Storage hardware. Default: a single-drive server (no pool) with two spare disks attached.
