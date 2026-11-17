@@ -300,7 +300,8 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		const onInject = (e: {type: string; code: string; key: string}) => {
 			const mapped = keysymFromEvent(e)
 			if (mapped === 'super') {
-				sendSuper(e.type === 'keydown')
+				// The Super button holds it down until clicked again, the same as a real Super key.
+				sendSuper(e.type === 'keydown' || superHeld)
 				return
 			}
 			if (!mapped) return
@@ -311,11 +312,14 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			root.removeEventListener('keydown', onKey, true)
 			root.removeEventListener('keyup', onKey, true)
 			window.removeEventListener('blur', release)
-			sendSuper(false)
 			if (windowId) setConsoleKeyHandler(windowId, null)
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [superKey, superHeld, windowId])
+	// Closing the console never leaves Super held down on the machine. (Only on close: this effect
+	// above also re-runs when the Super button is toggled, and must not let go of a held Super then.)
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	useEffect(() => () => sendSuper(false), [])
 	const toggleSuperHeld = () => {
 		const next = !superHeld
 		setSuperHeld(next)

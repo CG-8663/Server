@@ -51,3 +51,15 @@ describe('hyprland grab', () => {
 		})
 	})
 })
+
+test('the snippet comes in both Omarchy config formats, each toggling the same passthrough submap', async () => {
+	const {SNIPPETS} = await import('../web/src/desktop/hyprland/grab.ts')
+	const lua = SNIPPETS.lua.text
+	assert.match(lua, /o\.bind\("SCROLL_LOCK", [^\n]*hl\.dsp\.submap\("passthrough"\), \{ non_consuming = true \}\)/)
+	assert.match(lua, /hl\.define_submap\("passthrough", function\(\)[\s\S]*hl\.dsp\.submap\("reset"\)[\s\S]*end\)/)
+	assert.equal(SNIPPETS.lua.file, '~/.config/hypr/bindings.lua')
+	const conf = SNIPPETS.conf.text.split('\n')
+	// Non-consuming binds (bindn) on, then the submap, its way back out, and the end of the submap.
+	assert.deepEqual(conf, ['bindn = , Scroll_Lock, submap, passthrough', 'bindn = SUPER, F12, submap, passthrough', 'submap = passthrough', 'bindn = , Scroll_Lock, submap, reset', 'bindn = SUPER, F12, submap, reset', 'submap = reset'])
+	assert.equal(SNIPPETS.conf.file, '~/.config/hypr/bindings.conf')
+})

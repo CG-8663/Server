@@ -7,7 +7,8 @@ import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {PRESETS, STYLES, solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
-import {CAPTURE_KEY, SNIPPET, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
+import {CAPTURE_KEY, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
+import {SnippetBlock} from './hyprland/Snippet'
 import {DESKTOP_KEY, useDesktop, useItems, type ItemInfo} from './Desktop'
 
 type Tab = 'themes' | 'background' | 'dock' | 'desktop' | 'layout'
@@ -92,14 +93,6 @@ function LayoutSettings({cfg, setCfg}: P) {
 		}
 		window.dispatchEvent(new CustomEvent('omarchy:key-capture', {detail: v}))
 	}
-	const copy = async () => {
-		try {
-			await navigator.clipboard.writeText(SNIPPET)
-			toast('Copied. Paste into ~/.config/hypr/bindings.lua, then hyprctl reload.')
-		} catch {
-			toast('Select the snippet and copy it')
-		}
-	}
 	return (
 		<>
 			<Section title="Desktop layout" note="Ubuntu is the floating desktop with a dock. Hyprland tiles windows, with workspaces 1–9 and Omarchy Super shortcuts.">
@@ -120,6 +113,9 @@ function LayoutSettings({cfg, setCfg}: P) {
 					</div>
 				</div>
 			</Section>
+			{/* Key capture and the snippet only matter in the Hyprland layout (Ubuntu keeps Super for Activities). */}
+			{cfg.shell === 'hyprland' && (
+			<>
 			<Section title="Key capture" note="On an Omarchy computer, Super is taken by the desktop until you pass it through. HTTP can use host passthrough. Fullscreen system keys need https:// in Chrome, Edge or Brave.">
 				<div className="glass group pz-rows">
 					<div className="row static">
@@ -151,16 +147,11 @@ function LayoutSettings({cfg, setCfg}: P) {
 					</p>
 				)}
 			</Section>
-			<Section title="Omarchy snippet">
-				<pre className="hypr-snippet" tabIndex={0}>
-					{SNIPPET}
-				</pre>
-				<div className="pz-actions">
-					<button className="btn primary" onClick={copy}>
-						Copy snippet
-					</button>
-				</div>
+			<Section title="Omarchy snippet" note="Paste it at the end of your Hyprland key config on the Omarchy computer you browse from, run hyprctl reload, then press Scroll Lock (or Super+F12) to keep Super in this browser. Press it again to give Super back.">
+				<SnippetBlock />
 			</Section>
+			</>
+			)}
 		</>
 	)
 }

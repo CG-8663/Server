@@ -314,6 +314,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	const treesRef = useRef(trees)
 	treesRef.current = trees
 	const runHyprRef = useRef<(act: Action) => void>(() => {})
+	const hyprRef = useRef(hypr)
+	hyprRef.current = hypr
+	// The focused tile on a workspace: the top tiled window there (what a new window splits).
+	const topTileOn = (ws: number, except?: string) =>
+		winsRef.current.filter((x) => x.id !== except && !x.min && !x.float && (x.workspace ?? 1) === ws).sort((a, b) => b.z - a.z)[0]
 	const lastConsoleRef = useRef<string | null>(null)
 	const releaseLastConsole = () => {
 		if (!lastConsoleRef.current) return
@@ -374,15 +379,17 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		})
 	const focus = useCallback((id: string) => {
 		const found = winsRef.current.find((x) => x.id === id)
-		if (found && (found.workspace ?? 1) !== hyprWsRef.current) setHyprWs(found.workspace ?? 1)
-		if (found?.min && !found.float) {
-			const ws = found.workspace ?? 1
-			setTrees((ts) => {
-				const t = ts[ws] ?? null
-				if (contains(t, id)) return ts
-				const focused = winsRef.current.find((x) => !x.min && !x.float && (x.workspace ?? 1) === ws)
-				return {...ts, [ws]: insertTile(t, focused?.id ?? firstLeaf(t), id, usable())}
-			})
+		if (hyprRef.current && found) {
+			if ((found.workspace ?? 1) !== hyprWsRef.current) setHyprWs(found.workspace ?? 1)
+			if (found.min && !found.float) {
+				const ws = found.workspace ?? 1
+				const focused = topTileOn(ws, id)
+				setTrees((ts) => {
+					const t = ts[ws] ?? null
+					if (contains(t, id)) return ts
+					return {...ts, [ws]: insertTile(t, focused?.id ?? firstLeaf(t), id, usable())}
+				})
+			}
 		}
 		setWins((ws) => {
 			const w = ws.find((x) => x.id === id)
@@ -429,7 +436,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			const workspace = hyprWsRef.current
 			const win: Win = {id, kind, key, payload, x: Math.max(a.x + 8, x), y: Math.max(a.y + 8, y), w, h, z: zTop.current, min: false, snap: null, born: Date.now(), workspace, float: false}
 			if (cfg.shell === 'hyprland') {
-				const focused = winsRef.current.find((x) => !x.min && !x.float && (x.workspace ?? 1) === workspace)
+				const focused = topTileOn(workspace)
 				setTrees((ts) => ({...ts, [workspace]: insertTile(ts[workspace] ?? null, focused?.id ?? firstLeaf(ts[workspace] ?? null), id, usable())}))
 			}
 			setWins((ws) => [...ws, win])
@@ -579,7 +586,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			if (!focused.float) {
 				setTrees((ts) => {
 					const t = ts[act.n] ?? null
-					const other = winsRef.current.find((x) => x.id !== focused.id && !x.min && !x.float && (x.workspace ?? 1) === act.n)
+					const other = topTileOn(act.n, focused.id)
 					return {...ts, [act.n]: insertTile(t, other?.id ?? firstLeaf(t), focused.id, usable())}
 				})
 			}
@@ -591,7 +598,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 				update(focused.id, {float: false, snap: null})
 				setTrees((ts) => {
 					const t = ts[ws] ?? null
-					const other = winsRef.current.find((x) => x.id !== focused.id && !x.min && !x.float && (x.workspace ?? 1) === ws)
+					const other = topTileOn(ws, focused.id)
 					return {...ts, [ws]: insertTile(t, other?.id ?? firstLeaf(t), focused.id, usable())}
 				})
 			} else {
@@ -610,7 +617,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			if (e.ctrlKey && e.altKey && e.key.toLowerCase() === 't' && owner) {
 				e.preventDefault()
 				api.openTerminal()
-				return
+				if (cfg.shell === 'hyprland') return
 			}
 			if (e.key === 'Escape') {
 				setMenu(null)
@@ -651,11 +658,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 				injectConsoleKey(lastConsoleRef.current, e)
 			}
 		}
-		window.addEventListener('keydown', down, true)
-		window.addEventListener('keyup', up, true)
+		// Hyprland listens before the page (capture), so its Super shortcuts win over a focused
+		// window. Ubuntu keeps listening after it, as it always has.
+		const capture = cfg.shell === 'hyprland'
+		window.addEventListener('keydown', down, capture)
+		window.addEventListener('keyup', up, capture)
 		return () => {
-			window.removeEventListener('keydown', down, true)
-			window.removeEventListener('keyup', up, true)
+			window.removeEventListener('keydown', down, capture)
+			window.removeEventListener('keyup', up, capture)
 		}
 	}, [api, owner, cfg.shell])
 

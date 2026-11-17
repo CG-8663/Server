@@ -1,8 +1,8 @@
 # Hyprland desktop mode and Super-key grab
 
 Date: 2026-11-16
-Status: approved
-Repo: omarchy-server (calledtoconstruct fork). Ship on `feat/hyprland-desktop`, merge into local `local/security-and-perf`. Do not open a PR against TouchWorkStation/omarchy-server.
+Status: shipped in Omarchy Server 0.9.34 (PR #38, by calledtoconstruct). The design below is as written
+for that PR; what changed in review is listed at the end.
 
 ## 1. Goal
 
@@ -275,17 +275,16 @@ Manual on this Omarchy box, after merge and restart:
 6. HTTP: keyboard-lock row disabled, Open HTTPS works, host mode lock chip toggles without fullscreen.
 7. Console window focused while locked: Super+Return reaches the VM, not a new SPA terminal.
 
-## 13. Version and copy
+## 13. Changes in review (0.9.34)
 
-Bump to **0.9.32**. Changelog title: “Hyprland layout and Super keys”. Added lines:
-
-- Desktop & Dock → Layout: Hyprland tiles windows, with workspaces 1–9 and the same Super shortcuts as Omarchy.
-- Scroll Lock (or Super+F12) hands Super to this browser on an Omarchy computer. Paste the snippet from Desktop & Dock → Keys. The lock chip on the bar shows when keys stay here.
-- On https:// in Chrome, Edge or Brave, the lock chip can take Super without that snippet (full screen). On http://, use the snippet; the chip still marks the lock.
-
-## 14. Git / deploy (this machine)
-
-- Branch `feat/hyprland-desktop` in a worktree off `local/security-and-perf`.
-- Commit and push that branch to `origin` (calledtoconstruct/omarchy-server).
-- Merge into local `local/security-and-perf`. Do not push `local/security-and-perf`. Do not open a PR against TouchWorkStation/omarchy-server.
-- Update `~/.local/share/omarchy-server/app` to that commit, `npm run build`, restart `omarchyd.service` and `omarchy-server-web.service`.
+- A new window (and a restored, moved or re-tiled one) splits the focused tile: the top window on that
+  workspace, not the first one in the list.
+- The Ubuntu layout's keyboard handling is unchanged: it listens after the page, as before. Only the
+  Hyprland layout listens first (capture), so its Super shortcuts win over a focused window.
+- The Hyprland bookkeeping in `focus` (switching workspace, re-tiling a restored window) only runs in
+  the Hyprland layout.
+- The console's Super button keeps Super held until it's clicked again (its key effect re-runs when
+  the button is toggled; Super is now let go only when the console closes).
+- The first-run card's Scroll Lock check listens in the capture phase, so it sees the key.
+- The snippet is offered for `bindings.lua` (current Omarchy) and `bindings.conf` (Omarchy from
+  before its Hyprland config moved to Lua): `bindn` there is the same non-consuming bind.

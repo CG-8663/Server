@@ -7742,7 +7742,9 @@ html.page-locked body {
 	right: 20px;
 	bottom: 20px;
 	z-index: 100020;
-	width: min(420px, calc(100vw - 32px));
+	width: min(560px, calc(100vw - 32px));
+	max-height: calc(100vh - 34px - 40px);
+	overflow: auto;
 	background: var(--bg-solid);
 	border: 1px solid var(--line);
 	border-radius: 16px;
@@ -7768,8 +7770,25 @@ html.page-locked body {
 	user-select: all;
 	-webkit-user-select: all;
 }
-.hypr-onboard pre.flash {
+.hypr-onboard pre.flash,
+.hypr-snippet.flash {
 	outline: 2px solid var(--accent);
+}
+.hypr-snippet-block {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 8px;
+}
+.hypr-snippet-block .hypr-snippet {
+	align-self: stretch;
+	margin: 0;
+	overflow-x: auto;
+	white-space: pre;
+}
+.hypr-onboard .hypr-snippet-block .footer-note {
+	margin: 0;
+	text-align: left;
 }
 .hypr-onboard-actions {
 	display: flex;
@@ -7779,4 +7798,12 @@ html.page-locked body {
 }
 .shell-hypr .desk-dock {
 	display: none;
+}
+/* Desktop & Dock's section tabs: in a narrow window (a tile), keep each label inside its own tab. */
+.personalize > .segmented button {
+	min-width: 0;
+	padding: 0 6px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }

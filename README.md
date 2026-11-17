@@ -110,8 +110,10 @@ where you left off; add `--purge` to delete those too.
 - Desktop & Dock → Layout → Hyprland tiles the same windows (Files, Apps, Machines, Terminal) with
   workspaces 1–9 and Omarchy Super shortcuts.
 - On an Omarchy computer, Super is taken by Hyprland. Paste the snippet from Desktop & Dock → Layout
-  into `~/.config/hypr/bindings.lua`, reload, then press Scroll Lock (or Super+F12) so Super stays in
-  the browser. The lock chip on the bar shows when keys stay here.
+  into `~/.config/hypr/bindings.lua` (or `bindings.conf` on Omarchy from before its config moved to
+  Lua; both are offered), run `hyprctl reload`, then press Scroll Lock (or Super+F12) so Super stays in
+  the browser. Press it again to give Super back. The lock chip on the bar shows when keys stay here.
+  The server never changes your Hyprland config.
 - On https:// in Chrome, Edge or Brave, the lock chip can take Super without that snippet (full screen).
   On http://, use the snippet.
 

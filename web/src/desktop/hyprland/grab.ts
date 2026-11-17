@@ -11,6 +11,21 @@ hl.define_submap("passthrough", function()
   o.bind("SCROLL_LOCK", "Return keys to Hyprland", hl.dsp.submap("reset"), { non_consuming = true })
   o.bind("SUPER + F12", "Return keys to Hyprland", hl.dsp.submap("reset"), { non_consuming = true })
 end)`
+// The same, for Omarchy installs from before its Hyprland config moved to Lua (bindings.conf).
+// `bindn` is a non-consuming bind, like non_consuming = true above.
+export const SNIPPET_CONF = `bindn = , Scroll_Lock, submap, passthrough
+bindn = SUPER, F12, submap, passthrough
+submap = passthrough
+bindn = , Scroll_Lock, submap, reset
+bindn = SUPER, F12, submap, reset
+submap = reset`
+export type SnippetFormat = 'lua' | 'conf'
+export const SNIPPETS: Record<SnippetFormat, {text: string; file: string; label: string}> = {
+	lua: {text: SNIPPET, file: '~/.config/hypr/bindings.lua', label: 'bindings.lua'},
+	conf: {text: SNIPPET_CONF, file: '~/.config/hypr/bindings.conf', label: 'bindings.conf (older Omarchy)'},
+}
+// Which one this Omarchy uses: bindings.lua if that file is in ~/.config/hypr, bindings.conf otherwise.
+export const SNIPPET_HELP = 'Omarchy now keeps its keys in bindings.lua. If ~/.config/hypr has bindings.conf instead, use that one.'
 
 export function defaultMode(secure: boolean, hasLock: boolean): CaptureMode {
 	return secure && hasLock ? 'keyboard-lock' : 'host'

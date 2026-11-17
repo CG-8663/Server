@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.34',
+		date: '2026-11-17',
+		title: 'A Hyprland layout for the desktop',
+		added: [
+			'Desktop & Dock → Layout → Hyprland: windows tile side by side, with workspaces 1–9 on the top bar and Omarchy’s Super shortcuts (Super+Return for a terminal, Super+1–9, Super+arrows, Super+Q and more; Super+K lists them). Ubuntu stays the default, and switching back keeps your dock and icons.',
+			'Using it from an Omarchy computer: copy the snippet from Desktop & Dock → Layout into your Hyprland key config, then press Scroll Lock (or Super+F12) to keep Super in the browser, and again to give it back. On https:// in Chrome, Edge or Brave, the lock chip on the bar can take Super in full screen instead.',
+			'With a machine’s screen focused, Super shortcuts go to that machine.',
+		],
+	},
+	{
 		version: '0.9.33',
 		date: '2026-11-17',
 		title: 'Your GPUs, live',
