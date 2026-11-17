@@ -618,6 +618,56 @@ test('overlapping MCP Approves call the tool once', async () => {
 	}
 })
 
+test('a restart within the TTL lists tools again', async () => {
+	const tool = {name: 'status', description: 'Read the status', inputSchema: {type: 'object', properties: {}}, annotations: {readOnlyHint: true}}
+	const mcp = startMcp({tools: [tool]})
+	const other = startMcp({tools: [{name: 'other', description: 'Other', inputSchema: {type: 'object', properties: {}}, annotations: {readOnlyHint: true}}]})
+	const addr = await mcp.listen()
+	const otherAddr = await other.listen()
+	let running = true
+	const lists = () => mcp.seen.filter((m) => m.method === 'tools/list').length
+	const {seen, fetchImpl} = scripted([
+		textSse('Hi.'),
+		textSse('Still.'),
+		textSse('Gone.'),
+		toolSse('call_status', 'app__demo__status', '{}'),
+		textSse('Done.'),
+	])
+	const box = await withAssistant({
+		fetchImpl,
+		mcpTargets: async () => (running ? [{appId: 'demo', name: 'Demo', url: addr.url, transport: 'http', running: true}] : []),
+	})
+	try {
+		await listMcpTools({url: otherAddr.url, transport: 'http', fetchImpl: fetch, now: () => 10_000})
+		const otherLists = other.seen.filter((m) => m.method === 'tools/list').length
+		const first = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: () => {}})
+		assert.equal(lists(), 1)
+		assert.equal(seen[0].body.tools.some((t) => t.function.name === 'app__demo__status'), true)
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'again', conversationId: first.conversationId, emit: () => {}})
+		assert.equal(lists(), 1)
+		running = false
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'stopped', conversationId: first.conversationId, emit: () => {}})
+		assert.equal(lists(), 1)
+		assert.equal(seen[2].body.tools.some((t) => t.function.name === 'app__demo__status'), false)
+		tool.annotations.readOnlyHint = false
+		running = true
+		const events = []
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'check', conversationId: first.conversationId, emit: (e) => events.push(e)})
+		assert.equal(lists(), 2)
+		assert.equal(mcp.seen.filter((m) => m.method === 'tools/call').length, 0)
+		const action = events.find((e) => e.event === 'action')
+		assert.equal(action.data.kind, 'mcp')
+		assert.equal(action.data.status, 'pending')
+		assert.equal(action.data.mcp.tool, 'status')
+		await listMcpTools({url: otherAddr.url, transport: 'http', fetchImpl: fetch, now: () => 10_000})
+		assert.equal(other.seen.filter((m) => m.method === 'tools/list').length, otherLists)
+	} finally {
+		await box.close()
+		await mcp.close()
+		await other.close()
+	}
+})
+
 test('an sse transport that answers the POST with an event still lists tools', async () => {
 	const mcp = startMcp({
 		frame: 'sse',

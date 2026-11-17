@@ -125,6 +125,12 @@ function toolOf(tool) {
 
 const copyTools = (tools) => tools.map((t) => ({...t}))
 
+// Only these URLs. Callers must not clear the map; other turns share it.
+export function forgetMcpTools(urls) {
+	if (!urls) return
+	for (const url of urls) cache.delete(url)
+}
+
 export async function listMcpTools({url, transport, fetchImpl = fetch, ttlMs = 60_000, now = () => Date.now(), signal} = {}) {
 	if (transport !== 'http' && transport !== 'sse') return []
 	if (!loopback(url)) return []

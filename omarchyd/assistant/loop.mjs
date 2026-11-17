@@ -1,4 +1,4 @@
-import {callMcpTool, listMcpTools} from './mcp.mjs'
+import {callMcpTool, forgetMcpTools, listMcpTools} from './mcp.mjs'
 import {streamChat} from './providers.mjs'
 import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
@@ -195,6 +195,8 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 	}
 
 	// Built-in writes live in WRITE_TOOLS. An MCP tool is a write unless readOnlyHint is true.
+	// URLs this loop last saw running. A URL that leaves mcpTargets drops its cached tool list; the 60s TTL still covers apps that stay up.
+	const mcpLive = new Set()
 	async function mcpCatalog(signal) {
 		if (typeof mcpTargets !== 'function') return []
 		let targets
@@ -205,11 +207,21 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			return []
 		}
 		if (!Array.isArray(targets)) return []
-		const out = []
-		const seen = new Set()
+		const running = []
 		for (const target of targets) {
 			if (!target || target.running === false) continue
 			if (typeof target.appId !== 'string' || !target.appId || typeof target.url !== 'string' || !target.url) continue
+			running.push(target)
+		}
+		const urls = new Set(running.map((t) => t.url))
+		const gone = []
+		for (const url of mcpLive) if (!urls.has(url)) gone.push(url)
+		if (gone.length) forgetMcpTools(gone)
+		mcpLive.clear()
+		for (const url of urls) mcpLive.add(url)
+		const out = []
+		const seen = new Set()
+		for (const target of running) {
 			let listed = []
 			try {
 				listed = await listMcpTools({url: target.url, transport: target.transport, fetchImpl, signal})
