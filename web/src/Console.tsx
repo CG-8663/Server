@@ -15,6 +15,7 @@ import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
 import {Icon} from './icons'
+import {setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
 
 type RFBClass = typeof import('@novnc/novnc/lib/rfb.js').default
@@ -296,10 +297,23 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 		root.addEventListener('keydown', onKey, true)
 		root.addEventListener('keyup', onKey, true)
 		window.addEventListener('blur', release)
+		const onInject = (e: KeyboardEvent) => {
+			if (['MetaLeft', 'MetaRight', 'OSLeft', 'OSRight'].includes(e.code) || e.key === 'Meta' || e.key === 'OS') {
+				sendSuper(e.type === 'keydown')
+				return
+			}
+			const r = rfbRef.current
+			if (!r) return
+			const keysym = e.code === 'Enter' ? KEY.Enter : e.code === 'Space' ? 0x20 : e.code === 'Tab' ? KEY.Tab : e.code === 'Escape' ? KEY.Escape : e.key.length === 1 ? keysymOf(e.key) : null
+			if (keysym == null) return
+			r.sendKey(keysym, e.code, e.type === 'keydown')
+		}
+		setConsoleKeyHandler(onInject)
 		return () => {
 			root.removeEventListener('keydown', onKey, true)
 			root.removeEventListener('keyup', onKey, true)
 			window.removeEventListener('blur', release)
+			setConsoleKeyHandler(null)
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [superKey, superHeld])

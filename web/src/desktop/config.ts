@@ -39,12 +39,14 @@ export const DOCK_ICON_MAX = 80
 const LEGACY_SIZE: Record<string, number> = {small: 38, medium: 46, large: 56}
 export type DeskIcon = {key: string; col: number; row: number}
 
+export type DeskShell = 'gnome' | 'hyprland'
 export type DeskConfig = {
 	v: 1
 	preset: string | null
 	wallpaper: WallpaperId
 	style: DeskStyle
 	accent: DeskAccent
+	shell: DeskShell
 	dock: {position: DockPos; iconSize: number; hover: DockHover; magnify: number; bounce: boolean; floating: boolean; autohide: boolean; showRunning: boolean; items: string[]}
 	icons: DeskIcon[]
 	showIcons: boolean
@@ -76,6 +78,7 @@ export const DEFAULT_CONFIG: DeskConfig = {
 	wallpaper: 'omarchy',
 	style: 'glass',
 	accent: 'wallpaper',
+	shell: 'gnome',
 	dock: {position: 'left', iconSize: 46, hover: 'lift', magnify: 1.6, bounce: true, floating: false, autohide: false, showRunning: true, items: [...SYSTEM_DOCK]},
 	icons: [
 		{key: 'folder:/Home', col: 0, row: 0},
@@ -103,6 +106,7 @@ function clean(raw: unknown): DeskConfig {
 		preset: typeof c.preset === 'string' ? c.preset : null,
 		wallpaper: okWall(c.wallpaper) ? c.wallpaper : d.wallpaper,
 		style: STYLES.some((s) => s.id === c.style) ? (c.style as DeskStyle) : d.style,
+		shell: c.shell === 'hyprland' ? 'hyprland' : 'gnome',
 		accent: (['app', 'wallpaper', 'blue', 'mauve', 'teal', 'peach', 'green', 'pink'] as const).includes(c.accent as DeskAccent) ? (c.accent as DeskAccent) : d.accent,
 		dock: {
 			position: (['left', 'bottom', 'right', 'top'] as const).includes(dock.position) ? dock.position : 'left',

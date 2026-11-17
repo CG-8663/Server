@@ -248,6 +248,9 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal((await touch.req('POST', '/api/desktop', {config: [1]})).status, 400)
 		assert.equal((await touch.req('POST', '/api/desktop', {config: {x: 'y'.repeat(61_000)}})).status, 413)
 		assert.equal((await fetch(`${touch.base}/api/desktop`)).status, 401)
+		r = await touch.req('POST', '/api/desktop', {config: {shell: 'hyprland', wallpaper: 'valley'}})
+		assert.equal(r.status, 200)
+		assert.equal((await touch.req('GET', '/api/desktop')).body.desktop.config.shell, 'hyprland')
 	})
 
 	test('custom background upload accepts JPEG only and is private', async () => {

@@ -1,7 +1,5 @@
-// Desktop mode: a full desktop in the style of Ubuntu (GNOME) for wide screens with a mouse.
-// Top bar (Activities, clock + notifications, system menu), a customizable dock, icons on the
-// desktop for folders, apps and machines, freely movable and resizable windows with snapping,
-// and an Activities overview. Every window reuses the same screens as the phone layout.
+// Desktop mode: Ubuntu (GNOME) by default — top bar, dock, icons, floating windows, Activities.
+// Optional Hyprland shell: tiling, workspaces 1–9, Omarchy Super chords. Same screens either way.
 import {createContext, lazy, memo, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 import {createPortal} from 'react-dom'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
@@ -16,6 +14,14 @@ import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../osLook'
 import {AppIcon, InWindow, PortalRoot, StoreIcon, TerminalIcon, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
+import {LockChip, WorkspacePills} from './hyprland/Bar'
+import {Cheatsheet} from './hyprland/Cheatsheet'
+import {injectConsoleKey} from './hyprland/consoleBridge'
+import {CAPTURE_KEY, ONBOARDING_KEY, canUseKeyboardLock, chipIntent, keyboardLockApi, onFullscreenChange, resolveMode, toggleLock, type GrabState} from './hyprland/grab'
+import {actionOf, isSuper, type Action} from './hyprland/keymap'
+import {Launcher} from './hyprland/Launcher'
+import {GAP, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, rebuild, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
+import {Onboarding} from './hyprland/Onboarding'
 
 const Files = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
 const ShareSheet = lazy(() => import('../screens/Files').then((m) => ({default: m.ShareSheet})))
@@ -40,7 +46,7 @@ type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 's
 type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; term?: {id: string; name?: string; icon?: string}; input?: string}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
-type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number}
+type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number; workspace?: number; float?: boolean}
 type SysKind = Exclude<Kind, 'app' | 'console'>
 
 const TOP = 34 // top bar height
@@ -79,6 +85,17 @@ const rectOf = (win: Win): Rect => (win.snap ? snapRect(win.snap) : {x: win.x, y
 
 const dockThickness = (cfg: DeskConfig) => cfg.dock.iconSize + 26 + (cfg.dock.floating ? 14 : 0)
 const reducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+const LAYOUT_KEY = 'omarchy-server:hypr-layout'
+const usable = () => ({x: GAP, y: TOP + GAP, w: Math.max(0, window.innerWidth - GAP * 2), h: Math.max(0, window.innerHeight - TOP - GAP * 2)})
+function loadLayout(): {workspace: number; trees: Record<number, Node | null>} {
+	try {
+		const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? '')
+		const workspace = Number(raw?.workspace)
+		return {workspace: workspace >= 1 && workspace <= 9 ? workspace : 1, trees: raw?.trees && typeof raw.trees === 'object' ? raw.trees : {}}
+	} catch {
+		return {workspace: 1, trees: {}}
+	}
+}
 
 export function SysIcon({kind, size = 44}: {kind: string; size?: number}) {
 	if (kind === 'store') return <StoreIcon size={size} />
@@ -259,29 +276,101 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	const [preview, setPreview] = useState<Rect | null>(null)
 	const [dragging, setDragging] = useState(false)
 	const [starting, setStarting] = useState<string[]>([])
+	const hypr = cfg.shell === 'hyprland'
+	const [hyprWs, setHyprWs] = useState(() => loadLayout().workspace)
+	const [trees, setTrees] = useState<Record<number, Node | null>>(() => loadLayout().trees)
+	const [grab, setGrab] = useState<GrabState>(() => {
+		const secure = typeof window !== 'undefined' && window.isSecureContext
+		const hasLock = typeof navigator !== 'undefined' && !!keyboardLockApi()
+		let stored: string | null = null
+		try {
+			stored = localStorage.getItem(CAPTURE_KEY)
+		} catch {
+			/* private */
+		}
+		return {keysLocked: false, method: 'none', mode: resolveMode(stored, secure, hasLock)}
+	})
+	const [launcher, setLauncher] = useState(false)
+	const [cheatsheet, setCheatsheet] = useState(false)
+	const [onboard, setOnboard] = useState(() => {
+		try {
+			return hypr && !localStorage.getItem(ONBOARDING_KEY)
+		} catch {
+			return hypr
+		}
+	})
 	const zTop = useRef(Math.max(10, ...wins.map((w) => w.z)))
 	const winsRef = useRef(wins)
 	winsRef.current = wins
+	const hyprWsRef = useRef(hyprWs)
+	hyprWsRef.current = hyprWs
+	const treesRef = useRef(trees)
+	treesRef.current = trees
+	const runHyprRef = useRef<(act: Action) => void>(() => {})
 	const toast = useToast()
 	const confirm = useConfirm()
 	const qc = useQueryClient()
 
-	// Reserve space for the dock (unless it hides itself).
+	// Reserve space for the dock (unless it hides itself). Hyprland mode has no dock.
 	const thick = dockThickness(cfg)
-	const reserve = cfg.dock.autohide ? 0 : thick
-	AREA = {t: TOP + (cfg.dock.position === 'top' ? reserve : 0), l: cfg.dock.position === 'left' ? reserve : 0, r: cfg.dock.position === 'right' ? reserve : 0, b: cfg.dock.position === 'bottom' ? reserve : 0}
+	const reserve = hypr || cfg.dock.autohide ? 0 : thick
+	AREA = hypr
+		? {t: TOP, l: 0, r: 0, b: 0}
+		: {t: TOP + (cfg.dock.position === 'top' ? reserve : 0), l: cfg.dock.position === 'left' ? reserve : 0, r: cfg.dock.position === 'right' ? reserve : 0, b: cfg.dock.position === 'bottom' ? reserve : 0}
 
 	useEffect(() => save(STORE_KEY, wins.filter((w) => w.kind !== 'terminal' && w.kind !== 'console')), [wins])
+	useEffect(() => {
+		try {
+			localStorage.setItem(LAYOUT_KEY, JSON.stringify({workspace: hyprWs, trees}))
+		} catch {
+			/* private */
+		}
+	}, [hyprWs, trees])
+	useEffect(() => {
+		try {
+			localStorage.setItem(CAPTURE_KEY, grab.mode)
+		} catch {
+			/* private */
+		}
+	}, [grab.mode])
 	useEffect(() => {
 		document.documentElement.classList.add('desk-mode')
 		return () => document.documentElement.classList.remove('desk-mode')
 	}, [])
+	useEffect(() => {
+		if (hypr) {
+			try {
+				if (!localStorage.getItem(ONBOARDING_KEY)) setOnboard(true)
+			} catch {
+				setOnboard(true)
+			}
+		}
+	}, [hypr])
 
-	const visible = wins.filter((w) => !w.min)
+	const onWs = (w: Win) => (w.workspace ?? 1) === hyprWs
+	const visible = wins.filter((w) => !w.min && (!hypr || onWs(w)))
 	const active = visible.length ? visible.reduce((a, b) => (b.z > a.z ? b : a)) : null
+	const tiled = hypr ? tileRectsOf(trees[hyprWs] ?? null, usable()) : {}
 
 	// -- window operations --
+	const dropFromTrees = (id: string) =>
+		setTrees((ts) => {
+			const next = {...ts}
+			for (const k of Object.keys(next)) next[Number(k)] = removeTile(next[Number(k)] ?? null, id)
+			return next
+		})
 	const focus = useCallback((id: string) => {
+		const found = winsRef.current.find((x) => x.id === id)
+		if (found && (found.workspace ?? 1) !== hyprWsRef.current) setHyprWs(found.workspace ?? 1)
+		if (found?.min && !found.float) {
+			const ws = found.workspace ?? 1
+			setTrees((ts) => {
+				const t = ts[ws] ?? null
+				if (contains(t, id)) return ts
+				const focused = winsRef.current.find((x) => !x.min && !x.float && (x.workspace ?? 1) === ws)
+				return {...ts, [ws]: insertTile(t, focused?.id ?? firstLeaf(t), id, usable())}
+			})
+		}
 		setWins((ws) => {
 			const w = ws.find((x) => x.id === id)
 			if (!w) return ws
@@ -292,8 +381,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		})
 	}, [])
 	const update = useCallback((id: string, patch: Partial<Win>) => setWins((ws) => ws.map((w) => (w.id === id ? {...w, ...patch} : w))), [])
-	const close = useCallback((id: string) => setWins((ws) => ws.filter((w) => w.id !== id)), [])
-	const minimize = useCallback((id: string) => update(id, {min: true}), [update])
+	const close = useCallback((id: string) => {
+		dropFromTrees(id)
+		setWins((ws) => ws.filter((w) => w.id !== id))
+	}, [])
+	const minimize = useCallback((id: string) => {
+		dropFromTrees(id)
+		update(id, {min: true})
+	}, [update])
 
 	const open = useCallback<DesktopApi['open']>(
 		(kind, payload, opts) => {
@@ -317,10 +412,16 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			const x = Math.min(a.x + Math.max(16, (a.w - w) / 2) + off - 60, a.x + a.w - w - 8)
 			const y = Math.min(a.y + Math.max(12, (a.h - h) / 2) + off - 30, a.y + a.h - h - 8)
 			zTop.current += 1
-			const win: Win = {id: Math.random().toString(36).slice(2, 10), kind, key, payload, x: Math.max(a.x + 8, x), y: Math.max(a.y + 8, y), w, h, z: zTop.current, min: false, snap: null, born: Date.now()}
+			const id = Math.random().toString(36).slice(2, 10)
+			const workspace = hyprWsRef.current
+			const win: Win = {id, kind, key, payload, x: Math.max(a.x + 8, x), y: Math.max(a.y + 8, y), w, h, z: zTop.current, min: false, snap: null, born: Date.now(), workspace, float: false}
+			if (cfg.shell === 'hyprland') {
+				const focused = winsRef.current.find((x) => !x.min && !x.float && (x.workspace ?? 1) === workspace)
+				setTrees((ts) => ({...ts, [workspace]: insertTile(ts[workspace] ?? null, focused?.id ?? firstLeaf(ts[workspace] ?? null), id, usable())}))
+			}
 			setWins((ws) => [...ws, win])
 		},
-		[focus, update],
+		[focus, update, cfg.shell],
 	)
 
 	// Starting a stopped machine from its icon: start it, then open the console once it's running.
@@ -426,7 +527,55 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		return () => window.removeEventListener('blur', onBlur)
 	}, [focus])
 
-	// Keyboard: Super taps toggle Activities, Ctrl+Alt+T opens a terminal, Escape leaves menus.
+	const runHyprAction = (act: Action) => {
+		const current = winsRef.current.filter((w) => !w.min && (w.workspace ?? 1) === hyprWsRef.current)
+		const focused = current.sort((a, b) => b.z - a.z)[0]
+		const ws = hyprWsRef.current
+		if (act.type === 'terminal') return void api.openTerminal()
+		if (act.type === 'files') return void open('files')
+		if (act.type === 'apps') return void open('apps')
+		if (act.type === 'launcher') return void setLauncher(true)
+		if (act.type === 'system-menu') return void setTopMenu((m) => (m === 'system' ? null : 'system'))
+		if (act.type === 'cheatsheet') return void setCheatsheet(true)
+		if (act.type === 'close' && focused) return void close(focused.id)
+		if (act.type === 'fullscreen' && focused) return void update(focused.id, {snap: focused.snap === 'max' ? null : 'max'})
+		if (act.type === 'minimize' && focused) return void minimize(focused.id)
+		if (act.type === 'split' && focused) return void setTrees((ts) => ({...ts, [ws]: flipSplit(ts[ws] ?? null, focused.id)}))
+		if (act.type === 'focus' && focused) return void focus(focusDir(treesRef.current[ws] ?? null, focused.id, act.dir, usable()))
+		if (act.type === 'swap' && focused) return void setTrees((ts) => ({...ts, [ws]: swapDir(ts[ws] ?? null, focused.id, act.dir, usable())}))
+		if (act.type === 'workspace') return void setHyprWs(act.n)
+		if (act.type === 'workspace-next') return void setHyprWs((n) => (n === 9 ? 1 : n + 1))
+		if (act.type === 'workspace-prev') return void setHyprWs((n) => (n === 1 ? 9 : n - 1))
+		if (act.type === 'move-workspace' && focused) {
+			dropFromTrees(focused.id)
+			update(focused.id, {workspace: act.n})
+			if (!focused.float) {
+				setTrees((ts) => {
+					const t = ts[act.n] ?? null
+					const other = winsRef.current.find((x) => x.id !== focused.id && !x.min && !x.float && (x.workspace ?? 1) === act.n)
+					return {...ts, [act.n]: insertTile(t, other?.id ?? firstLeaf(t), focused.id, usable())}
+				})
+			}
+			setHyprWs(act.n)
+			return
+		}
+		if (act.type === 'float' && focused) {
+			if (focused.float) {
+				update(focused.id, {float: false, snap: null})
+				setTrees((ts) => {
+					const t = ts[ws] ?? null
+					const other = winsRef.current.find((x) => x.id !== focused.id && !x.min && !x.float && (x.workspace ?? 1) === ws)
+					return {...ts, [ws]: insertTile(t, other?.id ?? firstLeaf(t), focused.id, usable())}
+				})
+			} else {
+				dropFromTrees(focused.id)
+				update(focused.id, {float: true, snap: null})
+			}
+		}
+	}
+	runHyprRef.current = runHyprAction
+
+	// GNOME: Super tap toggles Activities, Ctrl+Alt+T opens a terminal. Hyprland: Omarchy Super map.
 	useEffect(() => {
 		let superAlone = false
 		const down = (e: KeyboardEvent) => {
@@ -434,24 +583,50 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			if (e.ctrlKey && e.altKey && e.key.toLowerCase() === 't' && owner) {
 				e.preventDefault()
 				api.openTerminal()
+				return
 			}
 			if (e.key === 'Escape') {
 				setMenu(null)
 				setTopMenu(null)
 				setOverview(null)
+				setLauncher(false)
+				setCheatsheet(false)
 			}
+			const consoleFocused = winsRef.current.filter((w) => !w.min).sort((a, b) => b.z - a.z)[0]?.kind === 'console' && (hyprWsRef.current === (winsRef.current.find((w) => w.kind === 'console' && !w.min)?.workspace ?? 1) || cfg.shell !== 'hyprland')
+			const act = actionOf(e, {consoleFocused: !!(consoleFocused && cfg.shell === 'hyprland')})
+			if (act?.type === 'grab-toggle') {
+				e.preventDefault()
+				e.stopPropagation()
+				setGrab((s) => toggleLock(s, e.code === 'F12' ? 'f12' : 'scroll'))
+				return
+			}
+			if (cfg.shell !== 'hyprland') return
+			if (consoleFocused && isSuper(e) && !act) {
+				e.preventDefault()
+				e.stopPropagation()
+				injectConsoleKey(e)
+				return
+			}
+			if (!act) return
+			e.preventDefault()
+			e.stopPropagation()
+			runHyprRef.current(act)
 		}
 		const up = (e: KeyboardEvent) => {
-			if ((e.key === 'Meta' || e.key === 'OS') && superAlone) setOverview((o) => (o ? null : 'windows'))
+			if (cfg.shell !== 'hyprland' && (e.key === 'Meta' || e.key === 'OS') && superAlone) setOverview((o) => (o ? null : 'windows'))
 			superAlone = false
+			if (cfg.shell === 'hyprland') {
+				const top = winsRef.current.filter((w) => !w.min).sort((a, b) => b.z - a.z)[0]
+				if (top?.kind === 'console' && isSuper({code: e.code, key: e.key, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey})) injectConsoleKey(e)
+			}
 		}
-		window.addEventListener('keydown', down)
-		window.addEventListener('keyup', up)
+		window.addEventListener('keydown', down, true)
+		window.addEventListener('keyup', up, true)
 		return () => {
-			window.removeEventListener('keydown', down)
-			window.removeEventListener('keyup', up)
+			window.removeEventListener('keydown', down, true)
+			window.removeEventListener('keyup', up, true)
 		}
-	}, [api, owner])
+	}, [api, owner, cfg.shell])
 
 	// -- dock --
 	const pinned = cfg.dock.items.filter((k) => !info(k).missing)
@@ -573,10 +748,75 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			],
 		})
 
+	useEffect(() => {
+		const onFs = () => setGrab((s) => onFullscreenChange(s, !!document.fullscreenElement))
+		document.addEventListener('fullscreenchange', onFs)
+		return () => document.removeEventListener('fullscreenchange', onFs)
+	}, [])
+	useEffect(() => {
+		if (!window.isSecureContext && grab.mode === 'keyboard-lock') setGrab((s) => ({...s, mode: 'host'}))
+	}, [grab.mode])
+	useEffect(() => {
+		const on = (e: Event) => setGrab((s) => ({...s, mode: (e as CustomEvent<GrabState['mode']>).detail}))
+		window.addEventListener('omarchy:key-capture', on)
+		return () => window.removeEventListener('omarchy:key-capture', on)
+	}, [])
+	useEffect(() => {
+		if (!hypr) return
+		setWins((ws) => ws.map((w) => (w.workspace ? w : {...w, workspace: 1})))
+		setTrees((ts) => {
+			if (Object.values(ts).some(Boolean)) return ts
+			const ids = winsRef.current.filter((w) => !w.min && !w.float).map((w) => w.id)
+			return ids.length ? {1: rebuild(ids, usable())} : ts
+		})
+	}, [hypr])
+
+	const occupied = new Set(wins.filter((w) => !w.min).map((w) => w.workspace ?? 1))
+	const minimizedWs = new Set(wins.filter((w) => w.min).map((w) => w.workspace ?? 1))
+	const onLockChip = async () => {
+		const intent = chipIntent(grab)
+		const secure = window.isSecureContext
+		const kb = keyboardLockApi()
+		if (intent === 'request-keyboard-lock') {
+			if (!canUseKeyboardLock(secure, !!kb)) {
+				toast('Open the https:// address in Chrome, Edge or Brave, or use host passthrough and the snippet.', true)
+				return
+			}
+			try {
+				await document.documentElement.requestFullscreen({navigationUI: 'hide'})
+				await kb!.lock()
+				setGrab((s) => toggleLock(s, 'chip'))
+			} catch {
+				toast('Couldn’t take Super. Open https://, or paste the Hyprland snippet.', true)
+			}
+			return
+		}
+		if (intent === 'unlock-keyboard-lock') {
+			try {
+				kb?.unlock()
+			} catch {
+				/* already unlocked */
+			}
+			try {
+				await document.exitFullscreen()
+			} catch {
+				/* already out */
+			}
+			setGrab((s) => toggleLock(s, 'chip'))
+			return
+		}
+		setGrab((s) => toggleLock(s, 'chip'))
+	}
+	const lockTitle = grab.keysLocked
+		? 'Keys stay in this window. Scroll Lock or Super+F12 returns them to the desktop.'
+		: grab.mode === 'keyboard-lock'
+			? 'Lock Super to this window (full screen). Scroll Lock does the same on Omarchy after you paste the snippet.'
+			: 'Mark keys as locked to this window. On Omarchy, press Scroll Lock after pasting the snippet.'
+
 	return (
 		<DesktopContext.Provider value={api}>
 			<div
-				className={`desk style-${cfg.style} dock-${cfg.dock.position}${cfg.dock.floating ? ' dock-floating' : ''}${cfg.dock.autohide ? ' dock-autohide' : ''} dock-hover-${cfg.dock.hover}${dragging ? ' dragging' : ''}${overview ? ` overview-on ov-${overview}` : ''}`}
+				className={`desk style-${cfg.style} dock-${cfg.dock.position}${cfg.dock.floating ? ' dock-floating' : ''}${cfg.dock.autohide ? ' dock-autohide' : ''} dock-hover-${cfg.dock.hover}${dragging ? ' dragging' : ''}${overview ? ` overview-on ov-${overview}` : ''}${hypr ? ' shell-hypr' : ''}${grab.keysLocked ? ' keys-locked' : ''}`}
 				style={deskStyle as CSSProperties}
 			>
 				{solidOf(cfg.wallpaper) ? <div className="desk-wall" aria-hidden="true" style={{background: solidOf(cfg.wallpaper)!}} /> : wallUrl && <Wall url={wallUrl} />}
@@ -592,9 +832,15 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 					onSettings={() => open('settings')}
 					onSystem={() => open('system')}
 					onPersonalize={() => open('personalize')}
+					left={
+						hypr ? (
+							<WorkspacePills current={hyprWs} occupied={occupied} minimized={minimizedWs} onSwitch={setHyprWs} />
+						) : undefined
+					}
+					lockChip={hypr ? <LockChip locked={grab.keysLocked} onClick={onLockChip} title={lockTitle} /> : undefined}
 				/>
 
-				<DesktopIcons
+				{!hypr && <DesktopIcons
 					cfg={cfg}
 					setCfg={setCfg}
 					info={info}
@@ -607,7 +853,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 					}}
 					empty={wins.length === 0}
 					deviceName={boot.server?.device ?? 'server'}
-				/>
+				/>}
 
 				{wins.map((w) => (
 					<WindowFrame
@@ -628,6 +874,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 							focus(id)
 							setOverview(null)
 						}}
+						tile={hypr && !w.float && !w.min && w.snap !== 'max' ? tiled[w.id] ?? null : null}
+						hidden={hypr && (w.workspace ?? 1) !== hyprWs}
 					>
 						<WindowContent win={w} prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} owner={owner} />
 					</WindowFrame>
@@ -635,7 +883,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 
 				{preview && <div className="snap-preview" style={{left: preview.x, top: preview.y, width: preview.w, height: preview.h}} />}
 
-				<Dock
+				{!hypr && <Dock
 					cfg={cfg}
 					keys={dockKeys}
 					info={info}
@@ -659,9 +907,9 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 							],
 						})
 					}
-				/>
+				/>}
 
-				{overview && (
+				{!hypr && overview && (
 					<Overview
 						mode={overview}
 						setMode={setOverview}
@@ -680,6 +928,28 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 					<Suspense fallback={<WinFallback />}>
 						<ShareSheet path={shareFor.path} name={shareFor.name} host={boot.server?.host ?? ''} username={user.data?.sambaUsername} onClose={() => setShareFor(null)} />
 					</Suspense>
+				)}
+				{hypr && launcher && (
+					<Launcher
+						onClose={() => setLauncher(false)}
+						onOpen={(key) => api.openItem(key)}
+						items={['files', 'apps', 'store', 'terminal', 'machines', 'system', 'settings', 'personalize', ...appList.map((a) => `app:${a.id}`), ...machineList.map((m) => `machine:${m.id}`)]
+							.map((key) => info(key))
+							.filter((it) => !it.missing)}
+					/>
+				)}
+				{hypr && cheatsheet && <Cheatsheet onClose={() => setCheatsheet(false)} />}
+				{hypr && onboard && (
+					<Onboarding
+						onDismiss={() => {
+							try {
+								localStorage.setItem(ONBOARDING_KEY, '1')
+							} catch {
+								/* private */
+							}
+							setOnboard(false)
+						}}
+					/>
 				)}
 			</div>
 		</DesktopContext.Provider>
@@ -1170,6 +1440,8 @@ function TopBar(p: {
 	onSettings: () => void
 	onSystem: () => void
 	onPersonalize: () => void
+	left?: ReactNode
+	lockChip?: ReactNode
 }) {
 	const now = useClock()
 	const notes = useNotifications().data ?? []
@@ -1183,14 +1455,16 @@ function TopBar(p: {
 	return (
 		<header className="desk-top">
 			<div className="top-left">
-				<button className={`activities${p.overview ? ' on' : ''}`} onClick={p.toggleOverview} aria-pressed={p.overview}>
-					<span className="act-dots" aria-hidden="true">
-						<i />
-						<i />
-						<i />
-					</span>
-					Activities
-				</button>
+				{p.left ?? (
+					<button className={`activities${p.overview ? ' on' : ''}`} onClick={p.toggleOverview} aria-pressed={p.overview}>
+						<span className="act-dots" aria-hidden="true">
+							<i />
+							<i />
+							<i />
+						</span>
+						Activities
+					</button>
+				)}
 				{p.activeTitle && !p.overview && <span className="top-title">{p.activeTitle}</span>}
 			</div>
 			<button className={`top-clock${p.menu === 'clock' ? ' on' : ''}`} onClick={() => p.setMenu(p.menu === 'clock' ? null : 'clock')}>
@@ -1199,6 +1473,7 @@ function TopBar(p: {
 				{notes.length + updates.length > 0 && <span className="note-dot" />}
 			</button>
 			<div className="top-right">
+				{p.lockChip}
 				{cpuPct !== null && (
 					<span className="top-stat" title="CPU">
 						<Icon name="cpu" size={15} />
@@ -1486,6 +1761,8 @@ function WindowFrame({
 	onPreview,
 	onDragging,
 	onOverviewPick,
+	tile,
+	hidden,
 	children,
 }: {
 	win: Win
@@ -1501,12 +1778,14 @@ function WindowFrame({
 	onPreview: (r: Rect | null) => void
 	onDragging: (b: boolean) => void
 	onOverviewPick: (id: string) => void
+	tile?: Rect | null
+	hidden?: boolean
 	children: ReactNode
 }) {
 	const el = useRef<HTMLDivElement>(null)
 	const [portal, setPortal] = useState<HTMLDivElement | null>(null)
 	const [reload, setReload] = useState(0)
-	const r = rectOf(win)
+	const r = tile ?? rectOf(win)
 	const app = win.kind === 'app' ? appList.find((a) => a.id === win.payload?.appId) : undefined
 	const machine = win.kind === 'console' ? machineList.find((m) => m.id === win.payload?.machineId) : undefined
 	const boot = useBootstrap()
@@ -1516,6 +1795,7 @@ function WindowFrame({
 
 	// Move: drag the title bar. Snap to the top edge to maximize, to a side to tile half the screen.
 	const startMove = (e: React.PointerEvent) => {
+		if (tile) return
 		if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return
 		e.preventDefault() // no text selection while dragging a window
 		window.getSelection()?.removeAllRanges()
@@ -1607,7 +1887,7 @@ function WindowFrame({
 		<div
 			ref={el}
 			data-id={win.id}
-			className={`win${active ? ' active' : ''}${win.snap ? ` snapped snap-${win.snap}` : ''}${win.min ? ' minimized' : ''}${overviewSlot ? ' in-overview' : ''}`}
+			className={`win${active ? ' active' : ''}${win.snap ? ` snapped snap-${win.snap}` : ''}${win.min ? ' minimized' : ''}${overviewSlot ? ' in-overview' : ''}${tile ? ' tiled' : ''}${hidden ? ' off-workspace' : ''}${win.float ? ' floated' : ''}`}
 			style={style}
 			role="dialog"
 			aria-label={title}
@@ -1648,7 +1928,7 @@ function WindowFrame({
 				</PortalRoot.Provider>
 				<div className="win-portal" ref={setPortal} />
 			</div>
-			{!win.snap && !overviewSlot && EDGES.map((edge) => <span key={edge} className={`win-edge e-${edge}`} onPointerDown={startResize(edge)} />)}
+			{!win.snap && !overviewSlot && !tile && EDGES.map((edge) => <span key={edge} className={`win-edge e-${edge}`} onPointerDown={startResize(edge)} />)}
 			{overviewSlot && <button className="win-pick" aria-label={`Switch to ${title}`} onClick={() => onOverviewPick(win.id)} />}
 		</div>
 	)

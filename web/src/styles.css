@@ -7584,3 +7584,199 @@ html.page-locked body {
 	overflow: auto;
 	height: 100%;
 }
+
+/* ---- Hyprland shell ---- */
+.hypr-ws {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 0 4px;
+}
+.hypr-pill {
+	min-width: 22px;
+	height: 22px;
+	padding: 0 6px;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 12px;
+	font-weight: 650;
+	opacity: 0.4;
+	cursor: default;
+}
+.hypr-pill.occ {
+	opacity: 0.85;
+}
+.hypr-pill.min {
+	opacity: 0.55;
+	outline: 1px dashed rgba(255, 255, 255, 0.35);
+	outline-offset: -1px;
+}
+.hypr-pill.on {
+	opacity: 1;
+	background: var(--accent);
+	color: var(--on-accent, #111);
+}
+.hypr-lock {
+	height: 26px;
+	padding: 0 10px;
+	border: 0;
+	border-radius: 13px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 12.5px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	cursor: default;
+}
+.hypr-lock.on {
+	background: var(--accent);
+	color: var(--on-accent, #111);
+}
+.win.tiled {
+	border-radius: 8px;
+	box-shadow: none;
+	animation: none;
+	border: 1px solid color-mix(in srgb, var(--fg) 22%, transparent);
+}
+.win.tiled.active {
+	border-color: var(--accent);
+	border-width: 2px;
+	box-shadow: none;
+}
+.win.off-workspace {
+	opacity: 0;
+	pointer-events: none;
+	visibility: hidden;
+}
+.hypr-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 100010;
+	background: rgba(0, 0, 0, 0.45);
+	display: grid;
+	place-items: start center;
+	padding-top: 12vh;
+}
+.hypr-launcher,
+.hypr-sheet {
+	width: min(520px, calc(100vw - 32px));
+	background: var(--bg-solid);
+	border: 1px solid var(--line);
+	border-radius: 16px;
+	box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+	overflow: hidden;
+}
+.hypr-launcher input {
+	width: 100%;
+	border: 0;
+	border-bottom: 1px solid var(--line);
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 16px;
+	padding: 14px 16px;
+	outline: none;
+}
+.hypr-launcher ul {
+	list-style: none;
+	margin: 0;
+	padding: 8px;
+	max-height: 50vh;
+	overflow: auto;
+}
+.hypr-launcher button {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	padding: 8px 10px;
+	border-radius: 10px;
+	cursor: default;
+}
+.hypr-launcher button.on,
+.hypr-launcher button:hover {
+	background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.hypr-launch-ico {
+	display: grid;
+	place-items: center;
+}
+.hypr-sheet header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 16px 8px;
+}
+.hypr-sheet h2 {
+	margin: 0;
+	font-size: 16px;
+}
+.hypr-sheet table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 13px;
+}
+.hypr-sheet th {
+	text-align: left;
+	font-weight: 650;
+	padding: 6px 16px;
+	white-space: nowrap;
+	width: 46%;
+}
+.hypr-sheet td {
+	padding: 6px 16px;
+	color: var(--muted);
+}
+.hypr-onboard {
+	position: fixed;
+	right: 20px;
+	bottom: 20px;
+	z-index: 100020;
+	width: min(420px, calc(100vw - 32px));
+	background: var(--bg-solid);
+	border: 1px solid var(--line);
+	border-radius: 16px;
+	padding: 16px;
+	box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+.hypr-onboard h2 {
+	margin: 0 0 8px;
+	font-size: 16px;
+}
+.hypr-onboard p,
+.hypr-onboard pre {
+	font-size: 13px;
+	line-height: 1.45;
+}
+.hypr-onboard pre,
+.hypr-snippet {
+	white-space: pre-wrap;
+	background: rgba(0, 0, 0, 0.28);
+	border-radius: 10px;
+	padding: 10px 12px;
+	font-size: 12px;
+	user-select: all;
+	-webkit-user-select: all;
+}
+.hypr-onboard pre.flash {
+	outline: 2px solid var(--accent);
+}
+.hypr-onboard-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 10px;
+}
+.shell-hypr .desk-dock {
+	display: none;
+}
