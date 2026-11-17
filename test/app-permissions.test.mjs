@@ -140,3 +140,12 @@ test('a symlink under an allowed folder is classified as the folder it really is
 		await rm(root, {recursive: true, force: true})
 	}
 })
+
+test('/lib/modules is a system folder (asks), even where /lib is a link to /usr/lib as on Arch', () => {
+	// WireGuard's listing binds it. Resolving /lib/modules to /usr/lib/modules must not make it refused.
+	assert.deepEqual(ids(compose('/lib/modules:/lib/modules:ro')), ['system'])
+	assert.deepEqual(what(compose('/lib/modules:/lib/modules:ro'), 'system'), ['/lib/modules'])
+	assert.deepEqual(ids(compose('/usr/lib/modules:/lib/modules:ro')), ['system'])
+	// The rest of /usr is still refused.
+	assert.ok(ids(compose('/usr/bin:/host-bin')).includes('refused'))
+})

@@ -97,6 +97,7 @@ function refusedMount(path, home) {
 	return false
 }
 const SOCKET = /(?:^|\/)(?:docker|podman)\.sock$|\$\{?DOCKER_SOCKET/
+const SYSTEM_PATH = /^\/run\/(dbus|systemd|udev)(\/|$)|^\/var\/run\/dbus(\/|$)|^\/(sys|lib\/modules|usr\/lib\/modules)(\/|$)/
 // Follow the longest prefix that exists, the way the folder picker does, so a symlink under an
 // allowed folder can't hide a refused one. Missing paths stay as resolved (Compose will create them).
 // lstat, not exists: a dangling symlink is the folder it names, not "missing so use the parent".
@@ -220,7 +221,9 @@ export function appPermissions(text, where = {}) {
 				const real = realpathExisting(path)
 				if (SOCKET.test(path) || SOCKET.test(real)) add('containers', name)
 				else if (/^\/dev(\/|$)/.test(real) && !/^\/dev\/shm/.test(real)) add('devices', real)
-				else if (/^\/run\/(dbus|systemd|udev)(\/|$)|^\/var\/run\/dbus(\/|$)|^\/(sys|lib\/modules)(\/|$)/.test(real)) add('system', real)
+				// System folders, as written or as resolved: on Arch (and so Omarchy) /lib is a link to
+				// /usr/lib, so /lib/modules resolves under /usr and must still count as a system folder.
+				else if (SYSTEM_PATH.test(path) || SYSTEM_PATH.test(real)) add('system', SYSTEM_PATH.test(path) ? path : real)
 				else {
 					const own = (where.allowed ?? []).some((d) => {
 						if (!d) return false
