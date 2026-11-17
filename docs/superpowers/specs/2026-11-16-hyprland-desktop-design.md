@@ -154,8 +154,8 @@ type Node =
 - Super+J: flip `axis` on the focused leaf’s parent.
 - Super+T: `float: true`, remove from tree, use `x,y,w,h` like GNOME (drag/resize). Super+T again inserts at the focused tile.
 - Super+F: tile fills the usable area (`snap: 'max'`). Again restores the tree slot.
-- Super+M: `min: true`, remove from tree, marker on the pill.
-- Super+Shift+M: restore the most recently minimized window on this workspace (repeat for the next). Inserts like a new window.
+- Super+M: `min: true`, keep the leaf in the tree (sibling fills). Marker on the pill.
+- Super+Shift+M: restore the most recently minimized window on this workspace (repeat for the next). It occupies its previous slot.
 - Super+arrows: focus the nearest leaf whose center lies in that direction.
 - Super+Shift+arrows: swap the focused leaf’s window id with that neighbor.
 

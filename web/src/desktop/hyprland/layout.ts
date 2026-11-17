@@ -39,10 +39,28 @@ export function contains(tree: Node | null, id: string): boolean {
 	return tree.kind === 'leaf' ? tree.id === id : contains(tree.a, id) || contains(tree.b, id)
 }
 
-export function insert(tree: Node | null, focusedId: string | null, newId: string, area: Rect, gap = GAP): Node {
+export function collapse(tree: Node | null, skip: Iterable<string>): Node | null {
+	const hidden = skip instanceof Set ? skip : new Set(skip)
+	if (!tree || !hidden.size) return tree
+	if (tree.kind === 'leaf') return hidden.has(tree.id) ? null : tree
+	const a = collapse(tree.a, hidden)
+	const b = collapse(tree.b, hidden)
+	if (!a) return b
+	if (!b) return a
+	if (a === tree.a && b === tree.b) return tree
+	return {...tree, a, b}
+}
+
+export function insert(tree: Node | null, focusedId: string | null, newId: string, area: Rect, gap = GAP, skip?: Iterable<string>): Node {
 	if (!tree) return {kind: 'leaf', id: newId}
-	const target = focusedId && contains(tree, focusedId) ? focusedId : firstLeaf(tree)!
-	const r = rects(tree, area, gap)[target]
+	const hidden = skip ? (skip instanceof Set ? skip : new Set(skip)) : new Set<string>()
+	const shown = collapse(tree, hidden)
+	if (!shown) {
+		const axis: Axis = area.w >= area.h ? 'h' : 'v'
+		return {kind: 'split', axis, ratio: 0.5, a: tree, b: {kind: 'leaf', id: newId}}
+	}
+	const target = focusedId && contains(shown, focusedId) ? focusedId : firstLeaf(shown)!
+	const r = rects(shown, area, gap)[target]
 	const axis: Axis = !r || r.w >= r.h ? 'h' : 'v'
 	return replaceLeaf(tree, target, {
 		kind: 'split',
@@ -76,7 +94,8 @@ export function flipSplit(tree: Node | null, focusedId: string): Node | null {
 	return {...tree, a, b}
 }
 
-export function focusDir(tree: Node | null, focusedId: string, dir: Dir, area: Rect, gap = GAP): string {
+export function focusDir(tree: Node | null, focusedId: string, dir: Dir, area: Rect, gap = GAP, skip?: Iterable<string>): string {
+	tree = skip ? collapse(tree, skip) : tree
 	if (!tree) return focusedId
 	const all = rects(tree, area, gap)
 	const src = all[focusedId]
@@ -113,8 +132,8 @@ export function swapIds(tree: Node | null, a: string, b: string): Node | null {
 	return {...tree, a: swapIds(tree.a, a, b)!, b: swapIds(tree.b, a, b)!}
 }
 
-export function swapDir(tree: Node | null, focusedId: string, dir: Dir, area: Rect, gap = GAP): Node | null {
-	const other = focusDir(tree, focusedId, dir, area, gap)
+export function swapDir(tree: Node | null, focusedId: string, dir: Dir, area: Rect, gap = GAP, skip?: Iterable<string>): Node | null {
+	const other = focusDir(tree, focusedId, dir, area, gap, skip)
 	return swapIds(tree, focusedId, other)
 }
 
