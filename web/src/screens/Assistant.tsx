@@ -2,24 +2,44 @@ import {useEffect, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 import {useQuery} from '@tanstack/react-query'
 
-import {query, type AssistantKey} from '../api'
-import {streamAssistant, type AssistantChatMessage, type AssistantConversation, type AssistantConversationSummary} from '../assistant'
+import {ApiError, mutate, query, type AssistantAction, type AssistantKey} from '../api'
+import {cardAction, streamAssistant, threadItems, type AssistantConversation, type AssistantConversationSummary, type AssistantItem, type AssistantStreamBody} from '../assistant'
 import {useUser} from '../data'
 import {Icon} from '../icons'
 import {haptic, usePortalRoot} from '../ui'
 
-type Bubble = {id: string; role: 'user' | 'assistant'; content: string; streaming?: boolean}
+const prettyTool = (name: string) => name.replaceAll('_', ' ')
 
-const toBubbles = (messages: AssistantChatMessage[]): Bubble[] => {
-	const out: Bubble[] = []
-	messages.forEach((m, i) => {
-		if (m.role === 'user') out.push({id: `u-${m.at}-${i}`, role: 'user', content: m.content})
-		else if (m.role === 'assistant' && m.content) out.push({id: `a-${m.at}-${i}`, role: 'assistant', content: m.content})
-	})
-	return out
+const statusText = (action: AssistantAction) => {
+	if (action.status === 'done') return 'Approved'
+	if (action.status === 'rejected') return 'Rejected'
+	if (action.status === 'error') return action.error || 'Didn’t finish'
+	return null
 }
 
-const prettyTool = (name: string) => name.replaceAll('_', ' ')
+function ActionCard({action, onDecide}: {action: AssistantAction; onDecide: (actionId: string, path: 'assistant.approve' | 'assistant.reject') => void}) {
+	const running = action.status === 'running'
+	const pending = action.status === 'pending' || running
+	const status = statusText(action)
+	return (
+		<div className="assistant-card glass" role="group" aria-label={action.title || 'Approval'}>
+			<b>{action.title || 'Approve this step'}</b>
+			{action.detail ? <p>{action.detail}</p> : null}
+			{pending ? (
+				<div>
+					<button type="button" className="btn primary" disabled={running} onClick={() => onDecide(action.id, 'assistant.approve')}>
+						Approve
+					</button>
+					<button type="button" className="btn" disabled={running} onClick={() => onDecide(action.id, 'assistant.reject')}>
+						Reject
+					</button>
+				</div>
+			) : status ? (
+				<p>{status}</p>
+			) : null}
+		</div>
+	)
+}
 
 export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettings: () => void}) {
 	const portalRoot = usePortalRoot()
@@ -31,6 +51,8 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 	const alive = useRef(true)
 	const conversationIdRef = useRef<string | undefined>(undefined)
 	const seq = useRef(0)
+	const turn = useRef(0)
+	const deciding = useRef(new Set<string>())
 	const focused = useRef(false)
 	const user = useUser()
 	const member = user.data?.role === 'member'
@@ -51,7 +73,9 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 		retry: false,
 		staleTime: 0,
 	})
-	const [bubbles, setBubbles] = useState<Bubble[] | null>(null)
+	const [items, setItems] = useState<AssistantItem[] | null>(null)
+	const itemsRef = useRef<AssistantItem[] | null>(null)
+	itemsRef.current = items
 	const [draft, setDraft] = useState('')
 	const [activity, setActivity] = useState<string | null>(null)
 	const [turnError, setTurnError] = useState<string | null>(null)
@@ -93,80 +117,74 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 	}, [onClose])
 
 	useEffect(() => {
-		if (bubbles !== null || !keys.isSuccess || !hasKeys) return
+		if (items !== null || !keys.isSuccess || !hasKeys) return
 		if (convs.isError) {
-			setBubbles([])
+			setItems([])
 			setTurnError((convs.error as Error).message)
 			return
 		}
 		if (!convs.isSuccess) return
 		if (!convs.data.length) {
-			setBubbles([])
+			setItems([])
 			return
 		}
 		if (thread.isError) {
-			setBubbles([])
+			setItems([])
 			setTurnError((thread.error as Error).message)
 			return
 		}
 		if (!thread.isSuccess) return
 		conversationIdRef.current = thread.data.id
-		setBubbles(toBubbles(thread.data.messages ?? []))
-	}, [bubbles, keys.isSuccess, hasKeys, convs.isError, convs.isSuccess, convs.data, convs.error, thread.isError, thread.isSuccess, thread.data, thread.error])
+		setItems(threadItems(thread.data))
+	}, [items, keys.isSuccess, hasKeys, convs.isError, convs.isSuccess, convs.data, convs.error, thread.isError, thread.isSuccess, thread.data, thread.error])
 
 	useEffect(() => {
 		const el = threadRef.current
 		if (el && stick.current) el.scrollTop = el.scrollHeight
-	}, [bubbles, activity, turnError])
+	}, [items, activity, turnError])
 
 	useEffect(() => {
-		if (onClose || !bubbles || focused.current) return
+		if (onClose || !items || focused.current) return
 		focused.current = true
 		inputRef.current?.focus()
-	}, [bubbles, onClose])
+	}, [items, onClose])
 
 	const fit = (el: HTMLTextAreaElement) => {
 		el.style.height = 'auto'
 		el.style.height = `${Math.min(el.scrollHeight, 140)}px`
 	}
 
-	const send = async () => {
-		const text = draft.trim()
-		if (!text || bubbles === null) return
-		const previous = acRef.current
-		previous?.abort()
-		let conversationId = conversationIdRef.current
-		// The id arrives on `done`. A second send before that stays on the thread just created.
-		if (previous && !conversationId) {
-			const list = await query<AssistantConversationSummary[]>('assistant.conversations').catch(() => null)
-			const found = list?.[0]?.id
-			if (found) {
-				conversationId = found
-				conversationIdRef.current = found
-			}
-		}
-		if (!alive.current) return
-		const ac = new AbortController()
-		acRef.current = ac
-		const id = ++seq.current
-		const aid = `live-${id}`
-		setDraft('')
-		if (inputRef.current) inputRef.current.style.height = 'auto'
-		setTurnError(null)
-		setActivity(null)
-		stick.current = true
-		setBubbles((bs) => [...(bs ?? []), {id: `user-${id}`, role: 'user', content: text}, {id: aid, role: 'assistant', content: '', streaming: true}])
+	const runStream = async (body: AssistantStreamBody, ac: AbortController, aid: string) => {
 		let aborted = false
 		let failed = false
+		let sawAction = false
 		try {
-			await streamAssistant({...(conversationId ? {conversationId} : {}), message: text}, (e) => {
+			await streamAssistant(body, (e) => {
 				if (!alive.current || ac.signal.aborted) return
 				if (e.event === 'text') {
 					setActivity(null)
-					setBubbles((bs) => bs?.map((b) => (b.id === aid ? {...b, content: b.content + e.data.text} : b)) ?? bs)
+					setItems((bs) => bs?.map((b) => (b.kind === 'text' && b.id === aid ? {...b, content: b.content + e.data.text} : b)) ?? bs)
 				} else if (e.event === 'tool') {
 					const name = prettyTool(e.data.name)
 					setActivity(e.data.state === 'error' ? `Couldn’t check ${name}` : `Checked ${name}`)
+				} else if (e.event === 'action') {
+					sawAction = true
+					const action = cardAction(e.data)
+					if (!action.id) return
+					setActivity(null)
+					setItems((bs) => {
+						if (!bs) return bs
+						const card: AssistantItem = {id: `card-${action.id}`, kind: 'card', action}
+						const idx = bs.findIndex((b) => b.kind === 'card' && b.action.id === action.id)
+						if (idx >= 0) return bs.map((b, i) => (i === idx ? card : b))
+						const live = bs.findIndex((b) => b.kind === 'text' && b.id === aid && !b.content)
+						if (live >= 0) {
+							const next = bs.slice()
+							next.splice(live, 0, card)
+							return next
+						}
+						return [...bs, card]
+					})
 				} else if (e.event === 'done') {
 					conversationIdRef.current = e.data.conversationId
 				} else if (e.event === 'error') {
@@ -182,11 +200,11 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 			}
 		} finally {
 			if (!alive.current) return
-			setBubbles((bs) => {
+			setItems((bs) => {
 				if (!bs) return bs
 				return bs.flatMap((b) => {
-					if (b.id !== aid) return [b]
-					if (!b.content && (aborted || failed)) return []
+					if (b.kind !== 'text' || b.id !== aid) return [b]
+					if (!b.content && (aborted || failed || sawAction)) return []
 					return [{...b, streaming: false}]
 				})
 			})
@@ -194,7 +212,84 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 		}
 	}
 
-	const loading = keys.isLoading || (hasKeys && bubbles === null && !keys.isError)
+	const send = async () => {
+		const text = draft.trim()
+		if (!text || items === null) return
+		const token = ++turn.current
+		const previous = acRef.current
+		previous?.abort()
+		let conversationId = conversationIdRef.current
+		// The id arrives on `done`. A second send before that stays on the thread just created.
+		if (previous && !conversationId) {
+			const list = await query<AssistantConversationSummary[]>('assistant.conversations').catch(() => null)
+			const found = list?.[0]?.id
+			if (found) {
+				conversationId = found
+				conversationIdRef.current = found
+			}
+		}
+		if (turn.current !== token || !alive.current) return
+		const ac = new AbortController()
+		acRef.current = ac
+		const id = ++seq.current
+		const aid = `live-${id}`
+		setDraft('')
+		if (inputRef.current) inputRef.current.style.height = 'auto'
+		setTurnError(null)
+		setActivity(null)
+		stick.current = true
+		setItems((bs) => [...(bs ?? []), {id: `user-${id}`, kind: 'text', role: 'user', content: text}, {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
+		await runStream(conversationId ? {conversationId, message: text} : {message: text}, ac, aid)
+	}
+
+	const decide = async (actionId: string, path: 'assistant.approve' | 'assistant.reject') => {
+		if (deciding.current.has(actionId)) return
+		const conversationId = conversationIdRef.current
+		if (!conversationId) {
+			setTurnError('That chat isn’t here')
+			return
+		}
+		const cur = itemsRef.current?.find((b) => b.kind === 'card' && b.action.id === actionId)
+		if (!cur || cur.kind !== 'card' || cur.action.status !== 'pending') return
+		deciding.current.add(actionId)
+		const token = ++turn.current
+		acRef.current?.abort()
+		haptic(6)
+		setTurnError(null)
+		setActivity(null)
+		setItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: {...b.action, status: 'running'}} : b)) ?? bs)
+		try {
+			const updated = await mutate<AssistantAction>(path, {actionId})
+			if (!alive.current) return
+			setItems((bs) =>
+				bs?.map((b) => {
+					if (b.kind !== 'card' || b.action.id !== actionId) return b
+					const extra = updated && typeof updated === 'object' && !Array.isArray(updated) ? updated : {}
+					return {...b, action: cardAction({...b.action, ...extra, id: actionId})}
+				}) ?? bs,
+			)
+			if (turn.current !== token) return
+			const ac = new AbortController()
+			acRef.current = ac
+			const id = ++seq.current
+			const aid = `live-${id}`
+			stick.current = true
+			setItems((bs) => [...(bs ?? []), {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
+			await runStream({conversationId, continue: true}, ac, aid)
+		} catch (err) {
+			if (!alive.current) return
+			if (err instanceof ApiError) {
+				setItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: cardAction({...b.action, id: actionId, status: 'error', error: err.message})} : b)) ?? bs)
+			} else {
+				setItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId && b.action.status === 'running' ? {...b, action: {...b.action, status: 'pending'}} : b)) ?? bs)
+				if (turn.current === token) setTurnError(err instanceof Error ? err.message : 'That step didn’t finish')
+			}
+		} finally {
+			deciding.current.delete(actionId)
+		}
+	}
+
+	const loading = keys.isLoading || (hasKeys && items === null && !keys.isError)
 	const column = (
 		<div className="assistant glass" role="dialog" aria-modal={onClose ? true : undefined} aria-label="Assistant">
 			{onClose && (
@@ -230,7 +325,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 					</div>
 				</div>
 			)}
-			{hasKeys && bubbles && (
+			{hasKeys && items && (
 				<>
 					<div
 						className="assistant-thread"
@@ -240,7 +335,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 							stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
 						}}
 					>
-						{bubbles.length === 0 && !turnError && (
+						{items.length === 0 && !turnError && (
 							<div className="empty">
 								<span className="big">
 									<Icon name="sparkle" size={30} />
@@ -249,12 +344,16 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 								<span>Usage, apps, machines, and the Local swarm.</span>
 							</div>
 						)}
-						{bubbles.map((b) => (
-							<div key={b.id} className={`bubble ${b.role}${b.streaming ? ' live' : ''}`}>
-								{b.content}
-								{b.streaming && <span className="cursor" aria-hidden="true" />}
-							</div>
-						))}
+						{items.map((b) =>
+							b.kind === 'card' ? (
+								<ActionCard key={b.id} action={b.action} onDecide={(id, path) => void decide(id, path)} />
+							) : (
+								<div key={b.id} className={`bubble ${b.role}${b.streaming ? ' live' : ''}`}>
+									{b.content}
+									{b.streaming && <span className="cursor" aria-hidden="true" />}
+								</div>
+							),
+						)}
 						{activity && <p className="assistant-activity">{activity}</p>}
 						{turnError && (
 							<div className="error" role="alert">
