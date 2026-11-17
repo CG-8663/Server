@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {test} from 'node:test'
@@ -948,5 +948,158 @@ test('closing the assistant stream aborts the provider call', async () => {
 	} finally {
 		await new Promise((r) => srv.close(r))
 		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 40})
+	}
+})
+
+test('a ../ conversation id cannot read or write keys.json or accounts.json', async () => {
+	const dataDir = await mkdtemp(join(os.tmpdir(), 'ac-escape-'))
+	try {
+		const assistant = join(dataDir, 'assistant')
+		const convDir = join(assistant, 'conversations')
+		await mkdir(convDir, {recursive: true})
+		const keysBody = '{\n\t"keys": [\n\t\t{"apiKey": "super-secret"}\n\t]\n}\n'
+		const accountsBody = '{"users":[{"userId":"owner"}]}\n'
+		const keys = join(assistant, 'keys.json')
+		const accounts = join(dataDir, 'accounts.json')
+		await writeFile(keys, keysBody, {mode: 0o600})
+		await writeFile(accounts, accountsBody, {mode: 0o600})
+		await writeFile(join(assistant, 'pwn.json'), JSON.stringify({id: '../accounts', userId: 'owner', title: 'x', createdAt: 1, updatedAt: 1, messages: [], actions: []}))
+		await writeFile(join(assistant, 'pwn-keys.json'), JSON.stringify({id: '../keys', userId: 'owner', title: 'x', createdAt: 1, updatedAt: 1, messages: [], actions: []}))
+		const outside = join(dataDir, 'outside.json')
+		await writeFile(outside, JSON.stringify({id: '../accounts', userId: 'owner', title: 'z', createdAt: 1, updatedAt: 1, messages: [], actions: []}))
+		const c = createConversations({dataDir, now: () => 1})
+		await assert.rejects(() => c.get('owner', '../pwn'), (e) => e.code === 'NOT_FOUND')
+		await assert.rejects(() => c.append('owner', '../pwn', {role: 'user', content: 'hi', at: 2}), (e) => e.code === 'NOT_FOUND')
+		await assert.rejects(() => c.append('owner', '../pwn-keys', {role: 'user', content: 'hi', at: 2}), (e) => e.code === 'NOT_FOUND')
+		await assert.rejects(() => c.remove('owner', '../accounts'), (e) => e.code === 'NOT_FOUND')
+		const poisoned = 'c_' + 'a'.repeat(12)
+		await writeFile(join(convDir, `${poisoned}.json`), JSON.stringify({id: '../keys', userId: 'owner', title: 'x', createdAt: 1, updatedAt: 1, messages: [], actions: []}))
+		const saved = await c.append('owner', poisoned, {role: 'user', content: 'safe', at: 2})
+		assert.equal(saved.id, poisoned)
+		assert.equal(saved.messages.at(-1).content, 'safe')
+		const linkId = 'c_' + 'b'.repeat(12)
+		await symlink(outside, join(convDir, `${linkId}.json`))
+		await assert.rejects(() => c.get('owner', linkId), (e) => e.code === 'NOT_FOUND')
+		await assert.rejects(() => c.append('owner', linkId, {role: 'user', content: 'nope', at: 3}), (e) => e.code === 'NOT_FOUND')
+		assert.equal(await readFile(keys, 'utf8'), keysBody)
+		assert.equal(await readFile(accounts, 'utf8'), accountsBody)
+		assert.equal(await readFile(outside, 'utf8').then((t) => t.includes('nope')), false)
+		const row = await c.create('owner', {title: 'ok'})
+		assert.match(row.id, /^c_[0-9a-f]{12}$/)
+		assert.equal((await c.append('owner', row.id, {role: 'user', content: 'hi', at: 4})).messages[0].content, 'hi')
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
+test('a stale save cannot undo Approve', async () => {
+	const calls = []
+	const runProcedure = async (name) => {
+		calls.push(name)
+		if (name === 'machines.create') return {id: 'vm1'}
+		return null
+	}
+	const dataDir = await mkdtemp(join(os.tmpdir(), 'al-stale-'))
+	try {
+		const asst = createAssistant({dataDir, accounts: fakeAccounts(), now: () => 1, runProcedure, fetchImpl: fetch})
+		const conv = await asst.conversations.create('owner', {title: 't'})
+		const action = await asst.conversations.putAction('owner', conv.id, {
+			kind: 'rpc',
+			toolName: 'machines_create',
+			title: 'Create',
+			detail: '',
+			rpc: {path: 'machines.create', input: {name: 'ubuntu', username: 'chris'}},
+		})
+		const snap = await asst.conversations.get('owner', conv.id)
+		await asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}})
+		assert.equal(calls.filter((n) => n === 'machines.create').length, 1)
+		await asst.conversations.saveAction('owner', snap.actions[0])
+		await asst.conversations.append('owner', conv.id, {role: 'tool', toolCallId: 'call_x', name: 'machines_create', content: 'late', at: 9})
+		await assert.rejects(
+			asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}}),
+			(e) => e.code === 'CONFLICT' && e.message === 'That step was already handled',
+		)
+		assert.equal(calls.filter((n) => n === 'machines.create').length, 1)
+		const after = await asst.conversations.get('owner', conv.id)
+		assert.equal(after.actions[0].status, 'done')
+		assert.equal(after.messages.some((m) => m.content === 'late'), true)
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
+test('aborting a turn stops the tool call so Approve stays done', async () => {
+	let toolAborted = false
+	let toolFinished = false
+	let releaseTool = () => {}
+	let timer
+	let creates = 0
+	let releaseStarted
+	const started = new Promise((resolve) => {
+		releaseStarted = resolve
+	})
+	const runProcedure = async (name, _input, _auth, signal) => {
+		if (name === 'system.diskUsage') {
+			releaseStarted()
+			await new Promise((resolve, reject) => {
+				releaseTool = resolve
+				timer = setTimeout(resolve, 30_000)
+				const stop = () => {
+					clearTimeout(timer)
+					toolAborted = true
+					const error = new Error('aborted')
+					error.name = 'AbortError'
+					reject(error)
+				}
+				if (signal?.aborted) return stop()
+				if (signal) signal.addEventListener('abort', stop, {once: true})
+			})
+			toolFinished = true
+			return {used: 1}
+		}
+		if (name === 'machines.create') {
+			creates++
+			return {id: 'vm1'}
+		}
+		if (name === 'system.getHostname') return 'box'
+		if (name === 'system.device') return {device: 'ThinkPad', os: 'Omarchy'}
+		if (name === 'apps.list') return []
+		if (name === 'swarm.list') return []
+		return null
+	}
+	const {fetchImpl} = scripted([toolSse('call_disk', 'system_diskUsage', '{}')])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const ac = new AbortController()
+	let turnP
+	try {
+		const conv = await box.asst.conversations.create('owner', {title: 't'})
+		const action = await box.asst.conversations.putAction('owner', conv.id, {
+			kind: 'rpc',
+			toolName: 'machines_create',
+			title: 'Create',
+			detail: '',
+			rpc: {path: 'machines.create', input: {name: 'ubuntu', username: 'chris'}},
+		})
+		turnP = box.asst.runTurn({userId: 'owner', role: 'owner', message: 'how much disk', conversationId: conv.id, signal: ac.signal, emit: () => {}})
+		await started
+		ac.abort()
+		await box.asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}})
+		const outcome = await Promise.race([turnP.then(() => 'ended', () => 'ended'), new Promise((resolve) => setTimeout(() => resolve('hung'), 400))])
+		assert.equal(outcome, 'ended')
+		assert.equal(toolAborted, true)
+		assert.equal(toolFinished, false)
+		assert.equal(creates, 1)
+		assert.equal((await box.asst.conversations.get('owner', conv.id)).actions[0].status, 'done')
+		await assert.rejects(
+			box.asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}}),
+			(e) => e.code === 'CONFLICT',
+		)
+		assert.equal(creates, 1)
+	} finally {
+		clearTimeout(timer)
+		releaseTool()
+		ac.abort()
+		if (turnP) await turnP.catch(() => {})
+		await box.close()
 	}
 })

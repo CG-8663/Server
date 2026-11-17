@@ -166,6 +166,27 @@ function parseArgs(raw) {
 	return args
 }
 
+function abortError() {
+	const error = new Error('The turn was stopped')
+	error.name = 'AbortError'
+	return error
+}
+
+// Stop waiting as soon as the turn is aborted, and pass the signal through so the call can stop too.
+function watchAbort(signal, pending) {
+	if (!signal) return pending
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(abortError())
+		if (signal.aborted) {
+			onAbort()
+			Promise.resolve(pending).catch(() => {})
+			return
+		}
+		signal.addEventListener('abort', onAbort, {once: true})
+		Promise.resolve(pending).then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+	})
+}
+
 export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now = () => Date.now()}) {
 	const stamp = () => now()
 
@@ -309,7 +330,8 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		}
 	}
 
-	async function runTool(tool, auth) {
+	async function runTool(tool, auth, signal) {
+		if (signal?.aborted) throw abortError()
 		const read = lookupTool(tool.name)
 		if (!read) return {content: 'unknown tool', state: 'done'}
 		let args
@@ -319,10 +341,15 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			return {content: 'invalid arguments', state: 'error'}
 		}
 		try {
+			if (signal?.aborted) throw abortError()
 			if (!runProcedure) return {content: 'tool failed', state: 'error'}
-			const result = read.name === 'appStore_search' ? filterAppStore(await runProcedure('appStore.registry', {}, auth), args) : await runProcedure(read.rpc, args, auth)
+			const pending = read.name === 'appStore_search' ? runProcedure('appStore.registry', {}, auth, signal) : runProcedure(read.rpc, args, auth, signal)
+			const raw = await watchAbort(signal, pending)
+			if (signal?.aborted) throw abortError()
+			const result = read.name === 'appStore_search' ? filterAppStore(raw, args) : raw
 			return {content: textOf(redactToolResult(read.name, result)), state: 'done'}
 		} catch (e) {
+			if (signal?.aborted || e?.name === 'AbortError') throw e?.name === 'AbortError' ? e : abortError()
 			return {content: e?.message || 'tool failed', state: 'error'}
 		}
 	}
@@ -494,7 +521,9 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 						})
 						continue
 					}
-					const outcome = mcpByName.has(tool.name) ? await runMcp(tool, mcpByName.get(tool.name), signal) : await runTool(tool, auth)
+					if (signal?.aborted) return finish(row.id)
+					const outcome = mcpByName.has(tool.name) ? await runMcp(tool, mcpByName.get(tool.name), signal) : await runTool(tool, auth, signal)
+					if (signal?.aborted) return finish(row.id)
 					used++
 					row = await conversations.append(userId, row.id, {
 						role: 'tool',
