@@ -6,7 +6,7 @@ import {lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type R
 
 import {mutate, query} from '../api'
 import {Icon, type IconName} from '../icons'
-import {osLook} from '../screens/Machines'
+import {osLook} from '../osLook'
 import {Switch} from '../screens/Settings'
 import {Sheet, SheetHeader, StatusPill, bytes, duration, haptic, useConfirm, useToast} from '../ui'
 
