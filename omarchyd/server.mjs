@@ -38,7 +38,6 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		})
 	})
 	const accounts = await openAccounts(dataDir)
-	const assistant = createAssistant({dataDir, accounts})
 	const files = createFiles({home, dataDir})
 	const machines = createMachines({dataDir, files, ...machineOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
@@ -339,6 +338,15 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		},
 		'apps.getTorEnabled': {kind: 'query', run: () => false},
 	}
+	const assistant = createAssistant({
+		dataDir,
+		accounts,
+		runProcedure: (name, input, auth) => {
+			const p = procedures[name]
+			if (!p) throw new RpcError('NOT_FOUND', 'Unknown tool')
+			return p.run(input, {auth})
+		},
+	})
 	Object.assign(procedures, assistant.procedures)
 
 	const omarchyTheme = createOmarchyTheme({home, ...themeOptions})
