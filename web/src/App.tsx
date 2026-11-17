@@ -14,6 +14,7 @@ import {Home} from './screens/Home'
 import {Desktop} from './desktop/Desktop'
 import {Backdrop, Sheet, SheetHeader, haptic, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
+import {InstallerPrompt} from './InstallerPrompt'
 
 const Files = lazy(() => import('./screens/Files').then((m) => ({default: m.Files})))
 const Machines = lazy(() => import('./screens/Machines').then((m) => ({default: m.Machines})))
@@ -65,6 +66,8 @@ export function App() {
 		return () => window.removeEventListener('touch:signed-out', onOut)
 	}, [qc, refresh])
 
+	// The installer prompt waits for What's New, so the two don't stack.
+	const [whatsNewDone, setWhatsNewDone] = useState(false)
 	const b = boot.data
 	let content
 	if (boot.isLoading) {
@@ -90,7 +93,8 @@ export function App() {
 		content = (
 			<BootstrapContext.Provider value={b}>
 				{layout.desktop ? <Desktop boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} /> : <Shell boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} />}
-				<WhatsNewOnUpdate version={b.touch.version} />
+				<WhatsNewOnUpdate version={b.touch.version} onDone={() => setWhatsNewDone(true)} />
+				<InstallerPrompt ready={whatsNewDone} />
 			</BootstrapContext.Provider>
 		)
 

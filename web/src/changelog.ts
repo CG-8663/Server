@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.38',
+		date: '2026-11-17',
+		title: 'Finish updates that need the installer',
+		added: [
+			'When an update needs the installer run again (new system packages or a changed storage helper), Omarchy Server asks at your next sign-in. Run the installer opens it in the terminal, where sudo asks for your password on the server.',
+		],
+		fixed: ['Running the installer from Omarchy Server’s own terminal no longer stops partway when it restarts the server.'],
+	},
+	{
 		version: '0.9.37',
 		date: '2026-11-17',
 		title: 'Battery and GPU at a glance',

@@ -60,7 +60,35 @@ export function releaseNotes(changelogSource, since) {
 	return out.join('\n\n')
 }
 
-export function createUpdater({autoCheck = true, appDir, dataDir, currentVersion, run = execP, fetchImpl = fetch, raw = null, branch = 'main', helperPath = HELPER, restartDelay = '2s'}) {
+// While Omarchy Server is in beta, an update that needs the installer asks the owner to run it at their
+// next sign-in (people update in the app and never re-run the installer). Set to false after beta: the
+// update check still says when the installer is needed, in its release notes.
+export const BETA_INSTALLER_PROMPT = true
+
+// install.sh's INSTALLER_REVISION: raised when a change needs the installer run again. The installer
+// writes the one it ran to <data>/installer-revision when it finishes.
+export function installerRevision(script) {
+	const m = /^INSTALLER_REVISION=(\d+)\s*$/m.exec(String(script ?? ''))
+	return m ? Number(m[1]) : 0
+}
+const PACKAGE_NAME = /^[a-z0-9][a-z0-9+._-]*$/
+export const installerPackages = (script) => (/for pkg in ([^;]+);/.exec(String(script ?? ''))?.[1] ?? '').trim().split(/\s+/).filter((p) => PACKAGE_NAME.test(p))
+
+export function createUpdater({
+	autoCheck = true,
+	appDir,
+	dataDir,
+	currentVersion,
+	run = execP,
+	fetchImpl = fetch,
+	raw = null,
+	branch = 'main',
+	helperPath = HELPER,
+	restartDelay = '2s',
+	webPort = 7780,
+	// Only a copy the installer set up (running as a systemd service) is checked; not a dev run.
+	installerCheck = BETA_INSTALLER_PROMPT && !!process.env.INVOCATION_ID,
+}) {
 	let rawBase = raw
 	const source = async () =>
 		(rawBase ??= await run('git', ['-C', appDir, 'remote', 'get-url', 'origin'], {timeout: 10_000}).then(rawFromOrigin, () => null).then((r) => r ?? REPO_RAW))
@@ -104,7 +132,7 @@ export function createUpdater({autoCheck = true, appDir, dataDir, currentVersion
 		} catch {}
 		try {
 			const install = await get('install.sh')
-			const pkgs = (/for pkg in ([^;]+);/.exec(install)?.[1] ?? '').trim().split(/\s+/).filter((p) => /^[a-z0-9][a-z0-9+._-]*$/.test(p))
+			const pkgs = installerPackages(install)
 			const missing = []
 			for (const p of pkgs) if (!(await run('pacman', ['-Q', p], {timeout: 10_000}).then(() => true, () => false))) missing.push(p)
 			if (missing.length) reasons.push(`it needs new packages (${missing.join(', ')})`)
@@ -176,6 +204,34 @@ export function createUpdater({autoCheck = true, appDir, dataDir, currentVersion
 		return true
 	}
 
+	// Does this copy, as it is now (after an update in the app), need the installer run again? Read only
+	// from this machine: the installer this version ships, what the installer last ran, the installed
+	// storage helper, and the system packages.
+	const hash = (t) => createHash('sha256').update(t).digest('hex')
+	let installerCache = null
+	async function installerStatus() {
+		if (!installerCheck) return {needed: false, reasons: []}
+		if (installerCache && Date.now() - installerCache.at < 30_000) return installerCache.value
+		const script = await readFile(join(appDir, 'install.sh'), 'utf8').catch(() => null)
+		const reasons = []
+		if (script !== null) {
+			const ran = Number.parseInt(await readFile(join(dataDir, 'installer-revision'), 'utf8').catch(() => '0'), 10) || 0
+			if (installerRevision(script) > ran) reasons.push('This update changed what the installer sets up.')
+			const shipped = await readFile(join(appDir, 'helper', 'helper.mjs'), 'utf8').catch(() => null)
+			const installed = await readFile(helperPath, 'utf8').catch(() => null)
+			if (shipped !== null && installed === null) reasons.push('The storage helper isn’t installed.')
+			else if (shipped !== null && hash(shipped) !== hash(installed)) reasons.push('The storage helper changed.')
+			const missing = []
+			for (const p of installerPackages(script)) if (!(await run('pacman', ['-Q', p], {timeout: 10_000}).then(() => true, () => false))) missing.push(p)
+			if (missing.length) reasons.push(`New system packages are needed: ${missing.join(', ')}.`)
+		}
+		const value = reasons.length
+			? {needed: true, reasons, command: `curl -fsSL ${await source()}/${branch}/install.sh | OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=${Number(webPort) || 7780} bash`}
+			: {needed: false, reasons: []}
+		installerCache = {at: Date.now(), value}
+		return value
+	}
+
 	// Check GitHub in the background (a minute after start, then every 6 hours), so the bell can
 	// say an update is waiting without anyone opening Settings.
 	let known = null // the newest version seen by a check, when it's newer than this one
@@ -201,6 +257,7 @@ export function createUpdater({autoCheck = true, appDir, dataDir, currentVersion
 			'system.checkUpdate': {kind: 'query', run: () => check()},
 			'system.update': {kind: 'mutation', run: update},
 			'system.updateStatus': {kind: 'query', run: async () => (await ready, {running: status.running, progress: status.progress, description: status.description, error: status.error})},
+			'system.installerStatus': {kind: 'query', run: () => installerStatus()},
 			'system.getReleaseChannel': {kind: 'query', run: () => 'stable'},
 			'system.setReleaseChannel': {
 				kind: 'mutation',

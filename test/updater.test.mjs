@@ -115,3 +115,50 @@ test('checks and updates from the repository it was installed from (omarchy-serv
 	await u2.procedures['system.checkUpdate'].run()
 	assert.ok(asked2[0].startsWith('https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/'))
 })
+
+test('installer prompt: needed after an update the installer hasn’t been run for, then not once it has', async () => {
+	const {mkdir} = await import('node:fs/promises')
+	const {installerRevision, installerPackages} = await import('../omarchyd/updater.mjs')
+	const app = join(dir, 'inst-app')
+	const data = join(dir, 'inst-data')
+	await mkdir(join(app, 'helper'), {recursive: true})
+	await mkdir(data, {recursive: true})
+	const helperPath = join(dir, 'inst-helper.mjs')
+	await writeFile(join(app, 'install.sh'), '#!/bin/bash\nINSTALLER_REVISION=2\nfor pkg in nodejs samba newthing; do x; done\n')
+	await writeFile(join(app, 'helper', 'helper.mjs'), 'helper v2')
+	await writeFile(helperPath, 'helper v1')
+	assert.equal(installerRevision('a\nINSTALLER_REVISION=7\n'), 7)
+	assert.equal(installerRevision('no revision'), 0)
+	assert.deepEqual(installerPackages('for pkg in a b-c $(bad) d; do'), ['a', 'b-c', 'd'])
+	let installed = new Set(['nodejs', 'samba'])
+	const run = async (cmd, args) => {
+		if (cmd === 'git') return 'https://github.com/TouchWorkStation/omarchy-server.git\n'
+		if (cmd === 'pacman' && !installed.has(args[1])) throw new Error('not found')
+		return ''
+	}
+	const make = (opts = {}) => createUpdater({autoCheck: false, appDir: app, dataDir: data, currentVersion: '1.0.0', run, helperPath, webPort: 7790, installerCheck: true, ...opts})
+	const st = await make().procedures['system.installerStatus'].run()
+	assert.equal(st.needed, true)
+	assert.deepEqual(st.reasons, ['This update changed what the installer sets up.', 'The storage helper changed.', 'New system packages are needed: newthing.'])
+	// Runs the installer from the same place this copy came from, keeps the port, and defers the restart.
+	assert.equal(st.command, 'curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=7790 bash')
+	// What the installer leaves behind when it finishes.
+	await writeFile(join(data, 'installer-revision'), '2\n')
+	await writeFile(helperPath, 'helper v2')
+	installed = new Set(['nodejs', 'samba', 'newthing'])
+	assert.deepEqual(await make().procedures['system.installerStatus'].run(), {needed: false, reasons: []})
+	// After beta (or in a dev run), never asked.
+	await writeFile(join(data, 'installer-revision'), '1\n')
+	assert.deepEqual(await make({installerCheck: false}).procedures['system.installerStatus'].run(), {needed: false, reasons: []})
+})
+
+test('the installer ships a revision, stamps it when it finishes, and defers its restart when run from the app', async () => {
+	const {installerRevision} = await import('../omarchyd/updater.mjs')
+	const script = await readFile(new URL('../install.sh', import.meta.url), 'utf8')
+	assert.ok(installerRevision(script) >= 1)
+	assert.match(script, /printf '%s\\n' "\$INSTALLER_REVISION" >"\$BASE\/omarchyd\/installer-revision"/)
+	assert.match(script, /\[ "\$FROM_APP" = 1 \] \|\| systemctl --user restart omarchyd\.service omarchy-server-web\.service/)
+	assert.match(script, /systemd-run --user --collect --on-active=5s/)
+	// The stamp comes after the last sudo step, so a failed run doesn't count.
+	assert.ok(script.indexOf('installer-revision') > script.lastIndexOf('sudo '))
+})
