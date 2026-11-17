@@ -1,5 +1,6 @@
 // omarchyd: the Omarchy Server backend. It listens on localhost only; the Touch web server in front
 // of it is the one thing that faces the network. Runs as the owner's own user, not root.
+import {execFile} from 'node:child_process'
 import {mkdir, readFile, readdir, realpath, rm, stat, writeFile} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
 import http from 'node:http'
@@ -27,11 +28,19 @@ import {WebSocketServer} from 'ws'
 export const OMARCHYD_VERSION = '0.9.31'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+	const appDir = fileURLToPath(new URL('..', import.meta.url))
+	const startedAt = Date.now()
+	const revision = await new Promise((resolve) => {
+		execFile('git', ['-C', appDir, 'rev-parse', '--short', 'HEAD'], {timeout: 5_000}, (err, stdout) => {
+			const sha = String(stdout ?? '').trim()
+			resolve(err || !/^[0-9a-f]{7,40}$/i.test(sha) ? undefined : sha)
+		})
+	})
 	const accounts = await openAccounts(dataDir)
 	const files = createFiles({home, dataDir})
 	const machines = createMachines({dataDir, files, ...machineOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
-	const updater = createUpdater({appDir: fileURLToPath(new URL('..', import.meta.url)), dataDir, currentVersion: OMARCHYD_VERSION, ...updaterOptions})
+	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, ...updaterOptions})
 	// One certificate context for the app gateways and the Security settings. On a server this is
 	// the folder the web server uses too (omarchyd/cli.mjs passes it), so apps are served with the
 	// certificate your devices trust and the Security settings reach both. Before 0.9.13 omarchyd kept
@@ -83,7 +92,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	}
 	const procedures = {
 		// ---- who's here -----------------------------------------------------------------------
-		'system.version': {kind: 'query', public: true, run: () => ({version: OMARCHYD_VERSION, name: `Omarchy Server ${OMARCHYD_VERSION}`})},
+		'system.version': {kind: 'query', public: true, run: () => ({version: OMARCHYD_VERSION, name: `Omarchy Server ${OMARCHYD_VERSION}`, startedAt, ...(revision ? {revision} : {})})},
 		'system.discoveryInfo': {
 			kind: 'query',
 			public: true,

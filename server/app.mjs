@@ -451,6 +451,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				reachable: true,
 				version: version?.version,
 				name: version?.name,
+				// When it last started and its exact build: for signed-in people only (before sign-in,
+				// nothing more than the version, so the sign-in page doesn't tell anyone when it restarts).
+				...(session ? {startedAt: version?.startedAt, revision: version?.revision} : {}),
 				device: discovery?.device ?? null,
 				onboarded: discovery?.onboarded ?? true,
 			}

@@ -66,9 +66,24 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		// a loopback Server address is reported as the address the phone used to reach Touch
 		assert.equal(r.body.server.host, '127.0.0.1')
 		assert.equal(r.body.server.url, 'http://127.0.0.1')
+		// before sign-in, not when it last started or its exact build
+		assert.equal(r.body.server.startedAt, undefined)
+		assert.equal(r.body.server.revision, undefined)
 		// before sign-in nothing identifies the accounts; only the backdrop wallpaper is shared
 		assert.deepEqual(r.body.accounts, [{userId: '', name: '', avatar: null, wallpaper: {id: '23', brandColorHsl: '24 90% 50%'}}])
 		assert.equal(r.body.session, null)
+	})
+
+	test('signed in, bootstrap says when the server last started and its exact build', async () => {
+		const signedIn = await startTouch({backendUrl: fake.url})
+		try {
+			assert.equal((await signedIn.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})).status, 200)
+			const r = await signedIn.req('GET', '/api/bootstrap')
+			assert.equal(r.body.server.startedAt, 1_700_000_000_000)
+			assert.equal(r.body.server.revision, 'abc1234')
+		} finally {
+			await signedIn.close()
+		}
 	})
 
 	test('wallpaper route only serves numeric Omarchy Server wallpaper ids', async () => {
