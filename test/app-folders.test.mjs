@@ -115,6 +115,23 @@ describe('placing an app’s folders', () => {
 		await uninstall()
 	})
 
+	test('climbing out of a folder you placed cannot bind a hidden folder', async () => {
+		const store2 = join(root, 'climb-store')
+		await mkdir(join(store2, 'climber'), {recursive: true})
+		await writeFile(join(store2, 'climber/omarchy-app.yml'), `manifestVersion: 1\nid: climber\nname: Climber\nversion: "1"\nport: ${appPort + 1}\nweb:\n  service: web\n  port: 8787\nfolders:\n  - id: projects\n    label: Your projects\n    suggest: Projects\n`)
+		await writeFile(join(store2, 'climber/docker-compose.yml'), 'services:\n  web:\n    image: x\n    volumes:\n      - ${FOLDER_PROJECTS}/../.ssh:/keys\n')
+		git(['init', '-q', '-b', 'main'], store2)
+		git(['add', '.'], store2)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'store'], store2)
+		await call('appStore.addRepository', {url: `file://${store2}`})
+		const mine = join(home, 'Projects')
+		const review = await q('apps.installReview', {appId: 'climber'})
+		assert.ok(review.permissions.some((p) => p.id === 'refused'), 'review uses the suggested folder, not the in-app default')
+		await assert.rejects(call('apps.install', {appId: 'climber', folders: [{appId: 'climber', id: 'projects', path: mine}]}), /never gives an app/)
+		assert.equal((await q('apps.list')).find((a) => a.id === 'climber'), undefined)
+		await call('appStore.removeRepository', {url: `file://${store2}`})
+	})
+
 	test('folders Omarchy Server won’t give an app are refused, and nothing installs', async () => {
 		await mkdir(join(home, 'Links'), {recursive: true})
 		await symlink('/etc', join(home, 'Links', 'etc'))
