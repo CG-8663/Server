@@ -66,9 +66,24 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		// a loopback Server address is reported as the address the phone used to reach Touch
 		assert.equal(r.body.server.host, '127.0.0.1')
 		assert.equal(r.body.server.url, 'http://127.0.0.1')
+		// before sign-in, not when it last started or its exact build
+		assert.equal(r.body.server.startedAt, undefined)
+		assert.equal(r.body.server.revision, undefined)
 		// before sign-in nothing identifies the accounts; only the backdrop wallpaper is shared
 		assert.deepEqual(r.body.accounts, [{userId: '', name: '', avatar: null, wallpaper: {id: '23', brandColorHsl: '24 90% 50%'}}])
 		assert.equal(r.body.session, null)
+	})
+
+	test('signed in, bootstrap says when the server last started and its exact build', async () => {
+		const signedIn = await startTouch({backendUrl: fake.url})
+		try {
+			assert.equal((await signedIn.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})).status, 200)
+			const r = await signedIn.req('GET', '/api/bootstrap')
+			assert.equal(r.body.server.startedAt, 1_700_000_000_000)
+			assert.equal(r.body.server.revision, 'abc1234')
+		} finally {
+			await signedIn.close()
+		}
 	})
 
 	test('wallpaper route only serves numeric Omarchy Server wallpaper ids', async () => {
@@ -107,7 +122,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.31', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.32', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -279,6 +294,34 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(fake.terminals.at(-1).fresh, undefined)
 		assert.equal((await open('appId=../x&cols=80&rows=24')).status, 400)
 		assert.equal((await open('cols=5000&rows=24')).status, 400)
+	})
+
+	test('a member cannot open the host terminal or a swarm computer through the web server', async () => {
+		const member = await startTouch({backendUrl: fake.url})
+		try {
+			const login = await member.req('POST', '/api/auth/login', {username: 'Sam', password: 'correct horse'})
+			assert.equal(login.status, 200)
+			const open = (path) =>
+				new Promise((resolve) => {
+					const ws = new WebSocket(`${member.base.replace('http', 'ws')}${path}`, {headers: {cookie: member.getCookie(), origin: member.base}})
+					ws.once('open', () => {
+						ws.close()
+						resolve({ok: true})
+					})
+					ws.once('unexpected-response', (_q, res) => resolve({ok: false, status: res.statusCode}))
+				})
+			assert.equal((await open('/api/terminal?cols=80&rows=24')).status, 403)
+			assert.equal((await open('/api/terminal?agentId=0123456789ab&cols=80&rows=24')).status, 403)
+			assert.equal((await open('/api/console?machineId=agent-0123456789ab')).status, 403)
+			assert.equal((await member.req('GET', '/api/console/check?target=terminal')).status, 403)
+			assert.equal((await member.req('GET', '/api/console/check?machineId=agent-0123456789ab')).status, 403)
+			assert.equal((await open('/api/console?machineId=desktop')).status, 403, 'this server’s desktop is the owner’s session')
+			assert.equal((await member.req('GET', '/api/console/check?machineId=desktop')).status, 403)
+			const vm = await open('/api/console?machineId=ubuntu-1')
+			assert.equal(vm.ok, true, 'a member can still open a VM screen')
+		} finally {
+			await member.close()
+		}
 	})
 
 	test('files: list, upload, download and preview through the server', async () => {

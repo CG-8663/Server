@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.32',
+		date: '2026-11-17',
+		title: 'Safer sharing, faster loading',
+		added: [
+			'Omarchy Server opens faster: Files, the App Store, Terminal and machine screens load the first time you open them, the App Store list is about a third smaller, and the desktop wallpapers are lighter.',
+			'Hover the Omarchy Server version in Settings to see how long it has been running and its exact build.',
+		],
+		fixed: [
+			'Only the server’s owner can open its shell, an app’s shell, this server’s own desktop, or a Local swarm computer. Members keep their apps and virtual machine screens.',
+			'Network shares: only the owner can set them up, hidden folders can’t be shared, files saved to a no-password share are no longer saved as you, and shares are open on your home network only (not over Tailscale).',
+			'An app’s listing can no longer reach your private folders (such as SSH keys) through tricks in its folder paths.',
+		],
+	},
+	{
 		version: '0.9.31',
 		date: '2026-11-16',
 		title: 'Local swarm: your other Linux computers',

@@ -1,5 +1,6 @@
 // omarchyd: the Omarchy Server backend. It listens on localhost only; the Touch web server in front
 // of it is the one thing that faces the network. Runs as the owner's own user, not root.
+import {execFile} from 'node:child_process'
 import {mkdir, readFile, readdir, realpath, rm, stat, writeFile} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
 import http from 'node:http'
@@ -24,14 +25,22 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.31'
+export const OMARCHYD_VERSION = '0.9.32'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+	const appDir = fileURLToPath(new URL('..', import.meta.url))
+	const startedAt = Date.now()
+	const revision = await new Promise((resolve) => {
+		execFile('git', ['-C', appDir, 'rev-parse', '--short', 'HEAD'], {timeout: 5_000}, (err, stdout) => {
+			const sha = String(stdout ?? '').trim()
+			resolve(err || !/^[0-9a-f]{7,40}$/i.test(sha) ? undefined : sha)
+		})
+	})
 	const accounts = await openAccounts(dataDir)
 	const files = createFiles({home, dataDir})
 	const machines = createMachines({dataDir, files, ...machineOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
-	const updater = createUpdater({appDir: fileURLToPath(new URL('..', import.meta.url)), dataDir, currentVersion: OMARCHYD_VERSION, ...updaterOptions})
+	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, ...updaterOptions})
 	// One certificate context for the app gateways and the Security settings. On a server this is
 	// the folder the web server uses too (omarchyd/cli.mjs passes it), so apps are served with the
 	// certificate your devices trust and the Security settings reach both. Before 0.9.13 omarchyd kept
@@ -83,7 +92,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	}
 	const procedures = {
 		// ---- who's here -----------------------------------------------------------------------
-		'system.version': {kind: 'query', public: true, run: () => ({version: OMARCHYD_VERSION, name: `Omarchy Server ${OMARCHYD_VERSION}`})},
+		'system.version': {kind: 'query', public: true, run: () => ({version: OMARCHYD_VERSION, name: `Omarchy Server ${OMARCHYD_VERSION}`, startedAt, ...(revision ? {revision} : {})})},
 		'system.discoveryInfo': {
 			kind: 'query',
 			public: true,
@@ -141,7 +150,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 				const now = Date.now()
 				for (const [t, v] of tickets) if (v.expires < now) tickets.delete(t)
 				const ticket = randomBytes(24).toString('base64url')
-				tickets.set(ticket, {userId: auth.userId, target: input.target, expires: now + 30_000})
+				tickets.set(ticket, {userId: auth.userId, role: accounts.getUser(auth.userId)?.role, target: input.target, expires: now + 30_000})
 				return ticket
 			},
 		},
@@ -309,7 +318,13 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'wifi.networks': {kind: 'query', run: () => wifi.networks()},
 
 		...files.procedures,
-		...storage.procedures,
+		...Object.fromEntries(
+			Object.entries(storage.procedures).map(([name, p]) =>
+				['files.shares', 'files.sharePassword', 'files.shareOptions', 'files.addShare', 'files.updateShare', 'files.removeShare', 'files.setSharePassword'].includes(name)
+					? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage network shares'), p.run(input))}]
+					: [name, p],
+			),
+		),
 		...machines.procedures,
 		...apps.procedures,
 		...updater.procedures,
@@ -592,8 +607,12 @@ WantedBy=graphical-session.target
 			const t = tickets.get(url.searchParams.get('ticket') ?? '')
 			tickets.delete(url.searchParams.get('ticket') ?? '')
 			if (!t || t.expires < Date.now() || t.target !== route) return refuse('401 Unauthorized')
+			const owner = (t.role ?? accounts.getUser(t.userId)?.role) === 'owner'
 			// A shell: your own, or one inside an installed app's container.
 			if (route === 'terminal') {
+				// This process runs as the owner’s user, and a swarm computer’s terminal is the
+				// same as managing the swarm (owner-only). Members can’t be given a different OS user.
+				if (!owner) return refuse('403 Forbidden')
 				const cols = Number(url.searchParams.get('cols'))
 				const rows = Number(url.searchParams.get('rows'))
 				if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || cols > 500 || rows < 4 || rows > 300) return refuse('400 Bad Request')
@@ -615,8 +634,13 @@ WantedBy=graphical-session.target
 			}
 			// "desktop" is this server's own Omarchy desktop, shared by wayvnc on 127.0.0.1 only.
 			const machineId = url.searchParams.get('machineId') ?? ''
-			// A computer in the local swarm: its connector shares its screen.
-			if (connector.isAgentMachine(machineId)) return wss.handleUpgrade(req, socket, head, (ws) => connector.openChannel(machineId.slice(6), 'vnc', ws))
+			// A computer in the local swarm: its connector shares its screen. Owner-only, like managing the swarm.
+			if (connector.isAgentMachine(machineId)) {
+				if (!owner) return refuse('403 Forbidden')
+				return wss.handleUpgrade(req, socket, head, (ws) => connector.openChannel(machineId.slice(6), 'vnc', ws))
+			}
+			// This server's own desktop is the owner's signed-in Omarchy session: owner-only too.
+			if (machineId === 'desktop' && !owner) return refuse('403 Forbidden')
 			const target = machineId === 'desktop' ? await desktopTarget() : await machines.vncSocket(machineId).then((path) => ({path}), () => null)
 			if (!target) return refuse('409 Conflict')
 			const vnc = net.connect(target)

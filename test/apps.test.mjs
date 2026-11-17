@@ -2,11 +2,11 @@
 // simulated docker-compose, and the sign-in gateway in front of the app (HTTP and WebSocket).
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
+import {lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
 import os from 'node:os'
-import {join} from 'node:path'
+import {join, relative} from 'node:path'
 import {after, before, describe, test} from 'node:test'
 import WebSocket, {WebSocketServer} from 'ws'
 import YAML from 'yaml'
@@ -78,7 +78,7 @@ describe('omarchyd apps', () => {
 		await writeFile(sock, '')
 		process.env.DOCKER_HOST = `unix://${sock}`
 		// Below Linux's ephemeral range (32768+), so an outgoing connection elsewhere can never take
-		// it mid-test; above the internal ports apps get (20000-28999). Tests use up to appPort + 15.
+		// it mid-test; above the internal ports apps get (20000-28999). Tests use up to appPort + 18.
 		appPort = 30000 + Math.floor(Math.random() * 2700)
 		// A store: one good app, one folder with a mismatched id (ignored).
 		const store = join(root, 'store')
@@ -140,6 +140,7 @@ describe('omarchyd apps', () => {
 		assert.equal(app.port, appPort)
 		const upCall = calls.find((c) => c.args?.[4] === 'up')
 		assert.match(upCall.env.APP_DATA_DIR, /apps\/installed\/demo-app$/)
+		assert.equal(upCall.env.HOME, join(root, 'home'))
 		assert.equal(upCall.env.GATEWAY_IP, '127.0.0.1')
 		const composed = YAML.parse(await readFile(join(data, 'apps/installed/demo-app/compose.omarchy.yml'), 'utf8'))
 		assert.equal(composed.services.app_proxy, undefined)
@@ -450,6 +451,9 @@ describe('omarchyd apps', () => {
 		await listing('peek', appPort + 13, `services:\n  web:\n    image: x\n    volumes:\n      - \${APP_DATA_DIR}/data:/data\n      - \${VIDEOS_DIR}:/videos\n      - /etc/localtime:/etc/localtime:ro\n      - /srv/media:/media\n      - /run/dbus:/run/dbus:ro\n    pid: host\n    cap_add: [SYS_PTRACE, CHOWN]\n`)
 		await listing('thief', appPort + 14, `services:\n  web:\n    image: x\n    volumes:\n      - ${root}/home/.ssh:/keys\n`)
 		await listing('wholehome', appPort + 15, `services:\n  web:\n    image: x\n    volumes:\n      - ~:/home\n      - /etc:/host-etc\n`)
+		await listing('sneak', appPort + 16, `services:\n  web:\n    image: x\n    volumes:\n      - \${DOWNLOADS_DIR}/../.ssh:/keys\n`)
+		await listing('homevar', appPort + 17, `services:\n  web:\n    image: x\n    volumes:\n      - \${HOME}:/host\n      - \${HOME}/.ssh:/keys\n`)
+		await listing('relpath', appPort + 18, `services:\n  web:\n    image: x\n    volumes:\n      - ${relative(join(data, 'apps', 'installed', 'relpath'), join(root, 'home', '.ssh'))}:/keys\n`)
 		git(['init', '-q', '-b', 'main'], store)
 		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
 		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
@@ -459,11 +463,117 @@ describe('omarchyd apps', () => {
 		assert.deepEqual(peek.find((p) => p.id === 'host-files').what, ['/srv/media'], 'its own data, your Videos and the time zone are fine')
 		assert.deepEqual(peek.find((p) => p.id === 'system').what.sort(), ['/run/dbus', 'SYS_PTRACE', 'pid: host'])
 		await assert.rejects(call('apps.install', {appId: 'peek', grant: ['system']}), /needs your permission: read and change folders on the server/)
-		for (const id of ['thief', 'wholehome']) {
+		for (const id of ['thief', 'wholehome', 'sneak', 'homevar', 'relpath']) {
 			const r = (await q('apps.installReview', {appId: id})).permissions
 			assert.ok(r.some((p) => p.id === 'refused'), `${id} refused`)
 			await assert.rejects(call('apps.install', {appId: id, grant: ['refused', 'host-files', 'system']}), /never gives an app/)
 		}
+		await call('appStore.removeRepository', {url: `file://${store}`})
+	})
+
+	test('a listing-dir symlink cannot pull ~/.ssh into the app folder or hand it to the container user', async () => {
+		const store = join(root, 'link-apps')
+		const home = join(root, 'home')
+		const ssh = join(home, '.ssh')
+		await mkdir(ssh, {recursive: true})
+		await writeFile(join(ssh, 'id_test'), 'secret-key', {mode: 0o600})
+		await mkdir(join(store, 'linker'), {recursive: true})
+		await writeFile(join(store, 'linker', 'omarchy-app.yml'), `manifestVersion: 1\nid: linker\nname: Linker\nport: ${appPort + 12}\nweb:\n  service: web\n  port: 9000\n`)
+		await writeFile(join(store, 'linker', 'docker-compose.yml'), 'services:\n  web:\n    image: x\n    volumes:\n      - ${APP_DATA_DIR}/keys:/keys\n')
+		await symlink(ssh, join(store, 'linker', 'keys'))
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		calls.length = 0
+		await call('apps.install', {appId: 'linker'})
+		await until(async () => (await q('apps.list')).find((a) => a.id === 'linker' && a.state === 'running'))
+		const installed = join(data, 'apps', 'installed', 'linker', 'keys')
+		assert.equal((await lstat(installed)).isSymbolicLink(), false, 'the listing’s symlink is not copied into the app folder')
+		assert.ok((await stat(installed)).isDirectory(), 'a real folder is created for the bind instead')
+		assert.equal(await readFile(join(ssh, 'id_test'), 'utf8'), 'secret-key')
+		assert.ok(!calls.some((c) => c.podman?.includes(ssh) || c.podman?.some((a) => String(a).includes(ssh))), 'podman never chowns ~/.ssh')
+		await call('apps.uninstall', {appId: 'linker'})
+		await call('appStore.removeRepository', {url: `file://${store}`})
+	})
+
+	test('a listing .env cannot name a hidden folder for Compose to bind', async () => {
+		const store = join(root, 'dotenv-apps')
+		await mkdir(join(store, 'dotenv'), {recursive: true})
+		await writeFile(join(store, 'dotenv', 'omarchy-app.yml'), `manifestVersion: 1\nid: dotenv\nname: Dotenv\nport: ${appPort + 12}\nweb:\n  service: web\n  port: 9000\n`)
+		await writeFile(join(store, 'dotenv', 'docker-compose.yml'), 'services:\n  web:\n    image: x\n    volumes:\n      - ${SECRET_DIR}:/keys\n')
+		await writeFile(join(store, 'dotenv', '.env'), `SECRET_DIR=${join(root, 'home', '.ssh')} # not for the app\n`)
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '-f', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		const r = (await q('apps.installReview', {appId: 'dotenv'})).permissions
+		assert.ok(r.some((p) => p.id === 'refused'), 'listing .env is expanded the way Compose will')
+		await assert.rejects(call('apps.install', {appId: 'dotenv', grant: ['refused', 'host-files']}), /never gives an app/)
+		await call('appStore.removeRepository', {url: `file://${store}`})
+	})
+
+	test('a listing .env interpolates ${VAR} the way Compose does, so a climb is refused', async () => {
+		const store = join(root, 'dotenv-interp-apps')
+		await mkdir(join(store, 'dotenv-interp'), {recursive: true})
+		await writeFile(join(store, 'dotenv-interp', 'omarchy-app.yml'), `manifestVersion: 1\nid: dotenv-interp\nname: DotenvInterp\nport: ${appPort + 12}\nweb:\n  service: web\n  port: 9000\n`)
+		await writeFile(join(store, 'dotenv-interp', 'docker-compose.yml'), 'services:\n  web:\n    image: x\n    volumes:\n      - ${SECRET_DIR}:/keys\n')
+		await writeFile(join(store, 'dotenv-interp', '.env'), 'SECRET_DIR=${DOWNLOADS_DIR}/../.ssh\n')
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '-f', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		const r = (await q('apps.installReview', {appId: 'dotenv-interp'})).permissions
+		const ssh = join(root, 'home', '.ssh')
+		assert.ok(r.some((p) => p.id === 'refused'), 'Compose interpolates .env values before the bind')
+		assert.ok((r.find((p) => p.id === 'refused')?.what ?? []).includes(ssh), 'the climb is ~/.ssh, not a leftover ${VAR}')
+		assert.ok(!r.some((p) => p.id === 'host-files'), 'a leftover ${DOWNLOADS_DIR} must not look like a grantable folder')
+		await assert.rejects(call('apps.install', {appId: 'dotenv-interp', grant: ['refused', 'host-files']}), /never gives an app/)
+		await call('appStore.removeRepository', {url: `file://${store}`})
+	})
+
+	test('an update that would bind a hidden folder is refused, and the old app keeps running', async () => {
+		const store = join(root, 'upd-apps')
+		const dir = join(store, 'keeper')
+		await mkdir(dir, {recursive: true})
+		await writeFile(join(dir, 'omarchy-app.yml'), `manifestVersion: 1\nid: keeper\nname: Keeper\nversion: "1.0"\nport: ${appPort + 12}\nweb:\n  service: web\n  port: 9000\n`)
+		await writeFile(join(dir, 'docker-compose.yml'), 'services:\n  web:\n    image: x\n    volumes:\n      - ${APP_DATA_DIR}/data:/data\n')
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'v1'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		await call('apps.install', {appId: 'keeper'})
+		await until(async () => (await q('apps.list')).find((a) => a.id === 'keeper' && a.state === 'running'))
+		await writeFile(join(dir, 'omarchy-app.yml'), `manifestVersion: 1\nid: keeper\nname: Keeper\nversion: "2.0"\nport: ${appPort + 12}\nweb:\n  service: web\n  port: 9000\n`)
+		await writeFile(join(dir, 'docker-compose.yml'), `services:\n  web:\n    image: x\n    volumes:\n      - ${join(root, 'home', '.ssh')}:/keys\n`)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'v2'], store)
+		await call('appStore.removeRepository', {url: `file://${store}`})
+		await call('appStore.addRepository', {url: `file://${store}`})
+		await assert.rejects(call('apps.update', {appId: 'keeper'}), /never gives an app/)
+		const app = (await q('apps.list')).find((a) => a.id === 'keeper')
+		assert.equal(app.version, '1.0')
+		assert.equal(app.state, 'running')
+		await call('apps.uninstall', {appId: 'keeper'})
+		await call('appStore.removeRepository', {url: `file://${store}`})
+	})
+
+	test('a time-zone bind is allowed and does not change /etc/localtime on the server', async () => {
+		const before = await lstat('/etc/localtime').catch(() => null)
+		const store = join(root, 'tz-apps')
+		await mkdir(join(store, 'clock'), {recursive: true})
+		await writeFile(join(store, 'clock', 'omarchy-app.yml'), `manifestVersion: 1\nid: clock\nname: Clock\nport: ${appPort + 12}\nweb:\n  service: web\n  port: 9000\n`)
+		await writeFile(join(store, 'clock', 'docker-compose.yml'), 'services:\n  web:\n    image: x\n    volumes:\n      - ${APP_DATA_DIR}/data:/data\n      - /etc/localtime:/etc/localtime:ro\n')
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		await call('apps.install', {appId: 'clock'})
+		await until(async () => (await q('apps.list')).find((a) => a.id === 'clock' && a.state === 'running'))
+		const after = await lstat('/etc/localtime').catch(() => null)
+		assert.equal(after?.ino, before?.ino)
+		assert.equal(after?.isSymbolicLink(), before?.isSymbolicLink())
+		await call('apps.uninstall', {appId: 'clock'})
 		await call('appStore.removeRepository', {url: `file://${store}`})
 	})
 

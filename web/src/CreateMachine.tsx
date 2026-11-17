@@ -4,7 +4,7 @@ import {useQuery} from '@tanstack/react-query'
 import {query, type MachineCapabilities, type OsImage} from './api'
 import {useAction, useCpu, useMachines, useMemory, useUser} from './data'
 import {Icon} from './icons'
-import {osLook} from './screens/Machines'
+import {osLook} from './osLook'
 import {Sheet, SheetHeader, bytes, haptic} from './ui'
 
 // Per-OS starting specs and floors.

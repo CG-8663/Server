@@ -1,5 +1,5 @@
 import {createPortal} from 'react-dom'
-import {createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode} from 'react'
+import {createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject} from 'react'
 
 import {useQuery} from '@tanstack/react-query'
 import type {AppState, Machine, Wallpaper} from './api'
@@ -214,6 +214,22 @@ export function Segmented<T extends string>({
 	)
 }
 
+export function Switch({on, onChange, label, disabled}: {on: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean}) {
+	return (
+		<button
+			className="switch"
+			role="switch"
+			aria-checked={on}
+			aria-label={label}
+			disabled={disabled}
+			onClick={() => {
+				haptic(6)
+				onChange(!on)
+			}}
+		/>
+	)
+}
+
 // ---- page scroll lock -------------------------------------------------------
 // Sheets and full-screen views stop the page behind them from scrolling. Several can be open at
 // once (a sheet over a sheet, a confirm over a sheet), so it's counted: the page scrolls again only
@@ -234,6 +250,42 @@ export function lockPageScroll() {
 			document.body.style.overflow = ''
 		}
 	}
+}
+
+// Make a full-screen overlay behave like its own window on iPhone: freeze the page underneath
+// (iOS ignores overflow:hidden on body and will scroll it to "reveal" a focused input), and
+// stop drags outside the real scroll areas from panning the page while the keyboard is up.
+export function useScreenLock(ref: RefObject<HTMLElement>, guardTouch = true, enabled = true) {
+	useEffect(() => {
+		if (!enabled) return
+		const html = document.documentElement
+		const b = document.body.style
+		const y = window.scrollY
+		Object.assign(b, {position: 'fixed', top: `-${y}px`, left: '0', right: '0', width: '100%'})
+		const release = lockPageScroll()
+		html.classList.add('screen-locked')
+		const el = ref.current
+		const scrollers = '.xterm-viewport, .console-keys, .term-paste textarea'
+		const onMove = (e: TouchEvent) => {
+			if (e.touches.length > 1) return void e.preventDefault() // no pinch-zoom of the page
+			const t = e.target as Element | null
+			if (t?.closest?.(scrollers)) return
+			e.preventDefault()
+		}
+		if (guardTouch) el?.addEventListener('touchmove', onMove, {passive: false})
+		// iOS can still pan the page after the keyboard opens; pull it back.
+		const onScroll = () => window.scrollY && window.scrollTo(0, 0)
+		window.addEventListener('scroll', onScroll)
+		return () => {
+			if (guardTouch) el?.removeEventListener('touchmove', onMove)
+			window.removeEventListener('scroll', onScroll)
+			// Back to the page's normal layout (not a saved copy, which another overlay may have changed).
+			Object.assign(b, {position: '', top: '', left: '', right: '', width: ''})
+			release()
+			html.classList.remove('screen-locked')
+			window.scrollTo(0, y)
+		}
+	}, [ref, guardTouch, enabled])
 }
 
 // ---- bottom sheet -----------------------------------------------------------
@@ -427,6 +479,24 @@ const DEFAULT_PREFS: Prefs = {theme: 'omarchy', accent: 'wallpaper'}
 // Plain colours to choose instead of a picture (the phone's background and the desktop's wallpaper).
 export const SOLID_COLORS = ['#1a1b26', '#11111b', '#000000', '#2e3440', '#1f2335', '#283618', '#3b2f2f', '#4a1942', '#0f3b57', '#7aa2f7', '#9ece6a', '#e0af68'] as const
 export const isSolidColor = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v)
+
+// Plain colours instead of a picture: a few to tap, any other with the colour picker, or the picture.
+export function SolidColors({value, onChange}: {value: string | null; onChange: (c: string | null) => void}) {
+	return (
+		<div className="solid-colors" role="radiogroup" aria-label="Solid colour">
+			<button role="radio" aria-checked={!value} className={`solid-swatch picture${!value ? ' on' : ''}`} onClick={() => onChange(null)} title="A picture (no solid colour)">
+				<Icon name="wallpaper" size={16} />
+			</button>
+			{SOLID_COLORS.map((c) => (
+				<button key={c} role="radio" aria-checked={value === c} aria-label={c} className={`solid-swatch${value === c ? ' on' : ''}`} style={{background: c}} onClick={() => onChange(c)} />
+			))}
+			<label className={`solid-swatch custom${value && !(SOLID_COLORS as readonly string[]).includes(value) ? ' on' : ''}`} title="Any colour" style={value && !(SOLID_COLORS as readonly string[]).includes(value) ? {background: value} : undefined}>
+				<Icon name="palette" size={16} />
+				<input type="color" value={value ?? '#1a1b26'} onChange={(e) => onChange(e.target.value.toLowerCase())} aria-label="Pick any colour" />
+			</label>
+		</div>
+	)
+}
 const LOCAL_KEY = 'omarchy-server:prefs'
 
 function clean(p: Partial<Prefs> | null | undefined): Prefs {

@@ -2,28 +2,38 @@
 // Top bar (Activities, clock + notifications, system menu), a customizable dock, icons on the
 // desktop for folders, apps and machines, freely movable and resizable windows with snapping,
 // and an Activities overview. Every window reuses the same screens as the phone layout.
-import {createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
+import {createContext, lazy, memo, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 import {createPortal} from 'react-dom'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {SERVER_DESKTOP, logout, mutate, type Bootstrap, type Machine, type UserApp} from '../api'
 import {AppSheet} from '../AppSheet'
-import {Console} from '../Console'
 import {askApp, explainProbe} from '../openApp'
 import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory, useNotifications, useUpdates, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
-import {Files, ShareSheet} from '../screens/Files'
 import {OPEN_TERMINAL} from '../terminalEvent'
-import {osLook} from '../screens/Machines'
-import {MachinesDesktop} from '../machines/Desktop'
-import {More} from '../screens/More'
-import {Settings} from '../screens/Settings'
-import {Store} from '../screens/Store'
-import {TerminalScreen} from '../Terminal'
+import {osLook} from '../osLook'
 import {AppIcon, InWindow, PortalRoot, StoreIcon, TerminalIcon, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
-import {Personalize} from './Personalize'
+
+const Files = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
+const ShareSheet = lazy(() => import('../screens/Files').then((m) => ({default: m.ShareSheet})))
+const Store = lazy(() => import('../screens/Store').then((m) => ({default: m.Store})))
+const MachinesDesktop = lazy(() => import('../machines/Desktop').then((m) => ({default: m.MachinesDesktop})))
+const More = lazy(() => import('../screens/More').then((m) => ({default: m.More})))
+const Settings = lazy(() => import('../screens/Settings').then((m) => ({default: m.Settings})))
+const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
+const Personalize = lazy(() => import('./Personalize').then((m) => ({default: m.Personalize})))
+const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
+
+function WinFallback() {
+	return (
+		<div className="win-empty">
+			<span className="spinner" aria-label="Loading" />
+		</div>
+	)
+}
 
 // ---- model ---------------------------------------------------------------------------------
 type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'console' | 'app'
@@ -463,7 +473,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		const machine = key.startsWith('machine:') ? machineList.find((m) => m.id === key.slice(8)) : undefined
 		const mine = winsOf(key)
 		const items: MenuItem[] = [{label: mine.length && where === 'dock' && !key.startsWith('folder:') ? 'Show' : 'Open', icon: 'open', onClick: () => (mine.length && where === 'dock' ? dockClick(key) : api.openItem(key))}]
-		if (key.startsWith('folder:/Home/') && owner) items.push({label: 'Share on network…', icon: 'folder-share', onClick: () => setShareFor({path: key.slice(7), name: it.label})})
+		if (key.startsWith('folder:/Home/') && owner) items.push({label: 'Share on your home LAN…', icon: 'folder-share', onClick: () => setShareFor({path: key.slice(7), name: it.label})})
 		if (key === 'files' || key === 'terminal') items.push({label: 'New window', icon: 'plus', onClick: () => (key === 'terminal' ? api.openTerminal() : open('files', undefined, {newWindow: true}))})
 		if (app && appUrl(app, boot.server!.host)) items.push({label: 'Open in a browser tab', icon: 'open', onClick: () => window.open(appUrl(app, boot.server!.host)!, '_blank', 'noopener')})
 		if (machine && machine.state === 'running')
@@ -666,7 +676,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 				)}
 
 				{menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
-				{shareFor && <ShareSheet path={shareFor.path} name={shareFor.name} host={boot.server?.host ?? ''} username={user.data?.sambaUsername} onClose={() => setShareFor(null)} />}
+				{shareFor && (
+					<Suspense fallback={<WinFallback />}>
+						<ShareSheet path={shareFor.path} name={shareFor.name} host={boot.server?.host ?? ''} username={user.data?.sambaUsername} onClose={() => setShareFor(null)} />
+					</Suspense>
+				)}
 			</div>
 		</DesktopContext.Provider>
 	)
@@ -2039,10 +2053,11 @@ const WindowContent = memo(
 					return null
 			}
 		})()
-		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'machines') return body
+		const content = <Suspense fallback={<WinFallback />}>{body}</Suspense>
+		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'machines') return content
 		return (
 			<div className="win-scroll">
-				<main className="screen win-screen">{body}</main>
+				<main className="screen win-screen">{content}</main>
 			</div>
 		)
 	},

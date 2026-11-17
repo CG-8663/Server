@@ -17,12 +17,13 @@
 import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
+import {lstatSync, readlinkSync, realpathSync} from 'node:fs'
 import {access, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
 import os from 'node:os'
-import {join, resolve} from 'node:path'
+import {dirname, join, resolve} from 'node:path'
 import tls from 'node:tls'
 import YAML from 'yaml'
 
@@ -48,7 +49,7 @@ export const DEFAULT_STORES = [{url: 'https://github.com/TouchWorkStation/app-st
 const GALLERIES = {}
 // Variables omarchyd provides to every app (anything else a compose file needs without a default
 // means the app relies on something Omarchy Server doesn't offer yet).
-const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'APP_SEED_32', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID', 'DOCKER_SOCKET', 'APP_GATEWAY_KEY'])
+const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'APP_SEED_32', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'HOME', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID', 'DOCKER_SOCKET', 'APP_GATEWAY_KEY'])
 // Apps that talk to each other (an app and the apps it needs, or apps with fixed internal
 // addresses) share one container network, laid out the way their store expects (10.21.0.0/16).
 // Apps that don't stay on a private network of their own.
@@ -86,15 +87,94 @@ export const PERMISSIONS = {
 }
 // Bind mounts no app may have, whatever it asks: your whole home folder, its hidden folders (SSH keys,
 // settings, Omarchy Server's own data and keys), and the system's own folders.
+const under = (p, base) => Boolean(base) && (p === base || p.startsWith(`${base}/`))
+const CLOCK_FILES = ['/etc/localtime', '/etc/timezone']
 function refusedMount(path, home) {
-	const under = (p, base) => p === base || p.startsWith(`${base}/`)
 	if (path === '/' || path === home || path === '/home' || under(path, '/root') || under(path, '/boot') || under(path, '/proc') || under(path, '/run/user') || under(path, '/var/lib') || under(path, '/usr') || under(path, '/bin') || under(path, '/sbin')) return true
-	if (under(path, '/etc') && !['/etc/localtime', '/etc/timezone'].includes(path)) return true
+	if (under(path, '/etc') && !CLOCK_FILES.includes(path)) return true
 	if (home && path.startsWith(`${home}/.`)) return true
 	if (/^\/home\/[^/]+$/.test(path) || (path.startsWith('/home/') && home && !under(path, home))) return true
 	return false
 }
 const SOCKET = /(?:^|\/)(?:docker|podman)\.sock$|\$\{?DOCKER_SOCKET/
+const SYSTEM_PATH = /^\/run\/(dbus|systemd|udev)(\/|$)|^\/var\/run\/dbus(\/|$)|^\/(sys|lib\/modules|usr\/lib\/modules)(\/|$)/
+// Follow the longest prefix that exists, the way the folder picker does, so a symlink under an
+// allowed folder can't hide a refused one. Missing paths stay as resolved (Compose will create them).
+// lstat, not exists: a dangling symlink is the folder it names, not "missing so use the parent".
+// Only absolute paths: a leftover `$VAR` must not walk dirname to `.` and glue onto the process cwd.
+function realpathExisting(path, seen) {
+	if (!path || path.includes('\0') || !path.startsWith('/')) return path
+	seen ??= new Set()
+	if (seen.has(path) || seen.size > 32) return path
+	seen.add(path)
+	let st
+	try {
+		st = lstatSync(path)
+	} catch {
+		st = null
+	}
+	if (st?.isSymbolicLink()) {
+		let dest = ''
+		try {
+			dest = readlinkSync(path)
+		} catch {
+			return path
+		}
+		const abs = dest.startsWith('/') ? dest : resolve(dirname(path), dest)
+		return realpathExisting(resolve(abs), seen)
+	}
+	if (st) {
+		try {
+			return realpathSync(path)
+		} catch {
+			return path
+		}
+	}
+	const parent = dirname(path)
+	if (parent === path) return path
+	const realParent = realpathExisting(parent, seen)
+	return realParent === parent ? path : realParent + path.slice(parent.length)
+}
+// KEY=value lines Compose reads from a listing's .env (shell env still wins).
+function parseDotEnv(text) {
+	const env = {}
+	for (const line of String(text).split('\n')) {
+		const t = line.trim()
+		if (!t || t.startsWith('#')) continue
+		const m = t.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
+		if (!m) continue
+		let v = m[2]
+		if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
+		else {
+			const cut = v.search(/\s+#/)
+			if (cut >= 0) v = v.slice(0, cut).trimEnd()
+		}
+		env[m[1]] = v
+	}
+	return env
+}
+// Compose interpolates ${VAR} inside .env values from earlier keys and the process environment.
+function expandDotEnv(dotenv, overlay = {}) {
+	const out = {}
+	for (const [k, v] of Object.entries(dotenv ?? {})) out[k] = expandVars(String(v), {...dotenv, ...out, ...overlay})
+	return out
+}
+// The host folder a bind will actually use: expand is already done; collapse `..`, turn `~` and
+// leftover $HOME into the home folder Compose will see, and resolve relative sources from the app.
+function bindHostPath(raw, where = {}) {
+	let path = String(raw ?? '')
+	if (!path || path.includes('\0')) return path
+	const home = where.home
+	if (home) {
+		if (path === '~' || path.startsWith('~/')) path = `${home}${path.slice(1)}`
+		else if (path === '${HOME}' || path.startsWith('${HOME}/')) path = `${home}${path.slice('${HOME}'.length)}`
+		else if (path === '$HOME' || path.startsWith('$HOME/')) path = `${home}${path.slice('$HOME'.length)}`
+	}
+	const cwd = where.cwd ?? where.allowed?.[0]
+	if (path.startsWith('/')) path = resolve(path)
+	else if (cwd && !path.startsWith('$')) path = resolve(cwd, path)
+	return path.replace(/\/+$/, '') || '/'
+}
 // What a compose file asks of the server beyond an ordinary container. `where` (when known) says
 // which folders are the app's own: its data folder, the shared folders and your media folders
 // (Videos, Music…), which apps may use without asking; `expand` resolves its variables.
@@ -123,17 +203,37 @@ export function appPermissions(text, where = {}) {
 			if (type === 'volume' || type === 'tmpfs') continue
 			// A bare "/path" is an anonymous volume (inside the container), not a server folder.
 			if (typeof v === 'string' && !v.includes(':')) continue
+			const orig = typeof v === 'string' ? v.trim() : String(v?.source ?? '').trim()
 			const raw = typeof v === 'string' ? (where.expand ? where.expand(v) : v).split(':')[0] : String(where.expand ? where.expand(v?.source ?? '') : (v?.source ?? ''))
+			const looksBind = type === 'bind' || raw.startsWith('/') || raw.startsWith('$') || raw.startsWith('~') || raw.startsWith('.') || raw.includes('/') || (!raw && (type === 'bind' || orig.startsWith('$') || orig.startsWith('~') || orig.startsWith('/') || orig.startsWith('.')))
 			if (SOCKET.test(raw)) add('containers', name)
-			else if (/^\/dev(\/|$)/.test(raw) && !/^\/dev\/shm/.test(raw)) add('devices', raw)
-			else if (/^\/run\/(dbus|systemd|udev)(\/|$)|^\/var\/run\/dbus(\/|$)|^\/(sys|lib\/modules)(\/|$)/.test(raw)) add('system', raw)
-			else if (raw.startsWith('/') || raw.startsWith('$') || raw.startsWith('~')) {
-				// Absolute paths (after expanding): the app's own folders are fine; anything else asks.
-				const path = raw.replace(/\/+$/, '') || '/'
-				const own = (where.allowed ?? []).some((d) => path === d || path.startsWith(`${d}/`))
-				if (own || ['/etc/localtime', '/etc/timezone'].includes(path)) continue
-				if (refusedMount(path, where.home)) add('refused', path)
-				else add('host-files', path)
+			else if (looksBind) {
+				// Host paths (after expanding): resolve `..` and `~` the way Compose will, so an allowed
+				// prefix can't hide a hidden folder. Long-syntax `type: bind` and relative sources
+				// with a slash are binds too. Classify the real path (devices, system, own, refused).
+				const path = bindHostPath(raw, where)
+				if (!path || path.includes('\0') || path.startsWith('$')) {
+					add('refused', 'invalid path')
+					continue
+				}
+				// /etc/localtime is often a link into /usr/share/zoneinfo; allow the bind, don't follow it.
+				if (CLOCK_FILES.includes(path)) continue
+				const real = realpathExisting(path)
+				if (SOCKET.test(path) || SOCKET.test(real)) add('containers', name)
+				else if (/^\/dev(\/|$)/.test(real) && !/^\/dev\/shm/.test(real)) add('devices', real)
+				// System folders, as written or as resolved: on Arch (and so Omarchy) /lib is a link to
+				// /usr/lib, so /lib/modules resolves under /usr and must still count as a system folder.
+				else if (SYSTEM_PATH.test(path) || SYSTEM_PATH.test(real)) add('system', SYSTEM_PATH.test(path) ? path : real)
+				else {
+					const own = (where.allowed ?? []).some((d) => {
+						if (!d) return false
+						const base = realpathExisting(d)
+						return under(real, base) || under(real, d)
+					})
+					if (own) continue
+					if (refusedMount(real, where.home) || refusedMount(path, where.home)) add('refused', real)
+					else add('host-files', real)
+				}
 			}
 		}
 		for (const d of s.devices ?? []) add('devices', String(typeof d === 'string' ? d.split(':')[0] : d?.source ?? 'device'))
@@ -214,6 +314,21 @@ function execP(cmd, args, {env, cwd, timeout = 10 * 60_000} = {}) {
 	})
 }
 const exists = (p) => access(p).then(() => true, () => false)
+const LOAD_CONCURRENCY = 16
+
+async function mapPool(items, n, fn) {
+	const out = new Array(items.length)
+	let i = 0
+	await Promise.all(
+		Array.from({length: Math.min(n, items.length)}, async () => {
+			while (i < items.length) {
+				const idx = i++
+				out[idx] = await fn(items[idx], idx)
+			}
+		}),
+	)
+	return out
+}
 const portFree = (port) =>
 	new Promise((resolve) => {
 		const s = net.createServer()
@@ -232,6 +347,40 @@ async function readYaml(dir, names) {
 		}
 	}
 	return null
+}
+
+async function readFirst(dir, names) {
+	for (const n of names) {
+		try {
+			return {name: n, text: await readFile(join(dir, n), 'utf8')}
+		} catch (e) {
+			if (e.code !== 'ENOENT') throw e
+		}
+	}
+	return null
+}
+
+// Public listing fields. Pick these by name so a later loadStore change cannot leak folder, store, or compose.
+const LIST_FIELDS = [
+	'id', 'name', 'tagline', 'icon', 'category', 'version', 'developer', 'unsupported', 'caution',
+	'needs', 'dependencies', 'implements', 'port', 'path', 'web', 'shared', 'folders', 'openPorts',
+	'requiresHttps', 'system', 'defaultUsername', 'defaultPassword', 'deterministicPassword', 'repo',
+]
+const DETAIL_FIELDS = [...LIST_FIELDS, 'description', 'releaseNotes', 'gallery', 'website', 'permissions']
+
+function pickFields(a, keys) {
+	const out = {}
+	for (const k of keys) if (a[k] !== undefined) out[k] = a[k]
+	return out
+}
+
+// Browse payload: keep a shots count so Featured can pick apps that have screenshots.
+function toList(a) {
+	return {...pickFields(a, LIST_FIELDS), ...(Array.isArray(a.gallery) && a.gallery.length ? {shots: a.gallery.length} : {})}
+}
+
+function toDetail(a) {
+	return pickFields(a, DETAIL_FIELDS)
 }
 
 // Turn a store compose file into what omarchyd runs: no app_proxy, the web service published on
@@ -386,7 +535,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		for (const a of state.apps) if (a.system && a.state !== 'error') systemApps?.resume(a)
 		for (const a of state.apps) if (a.port && a.state !== 'error') await openGateways(a).catch((e) => console.error('[omarchyd] gateway', a.id, e.message))
 	})()
-	const save = () => writeAtomic(stateFile, () => JSON.stringify(state, null, 2))
+	const save = () => writeAtomic(stateFile, () => JSON.stringify(state))
 	const appDir = (id) => join(installedDir, id)
 	const project = (id) => `omarchy-${id}`
 
@@ -596,19 +745,17 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const apps = []
 		// First pass: every app and the variables each one's exports.sh provides (apps that need
 		// another app read that app's variables, such as its address and passwords).
-		const found = []
-		for (const entry of await readdir(dir, {withFileTypes: true})) {
-			if (!entry.isDirectory() || entry.name.startsWith('.')) continue
-			const m = await readYaml(join(dir, entry.name), APP_FILES).catch(() => null)
-			if (!m?.data?.id || m.data.id !== entry.name || !APP_ID.test(m.data.id)) continue
-			const c = await readYaml(join(dir, entry.name), COMPOSE_FILES).catch(() => null)
-			if (!c) continue
-			const compose = await readFile(join(dir, entry.name, c.name), 'utf8')
-			const exportsText = await readFile(join(dir, entry.name, 'exports.sh'), 'utf8').catch(() => '')
-			// `export NAME=…`, a bare `export NAME`, or one written out for later (echo "export NAME=…" >> .env).
-			const exported = [...exportsText.matchAll(/\bexport\s+([A-Za-z_][A-Za-z0-9_]*)\b/g)].map((m) => m[1])
-			found.push({a: m.data, entry, compose, exported})
-		}
+		const entries = (await readdir(dir, {withFileTypes: true})).filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+		const found = (
+			await mapPool(entries, LOAD_CONCURRENCY, async (entry) => {
+				const appPath = join(dir, entry.name)
+				const [m, c, exportsText] = await Promise.all([readYaml(appPath, APP_FILES).catch(() => null), readFirst(appPath, COMPOSE_FILES).catch(() => null), readFile(join(appPath, 'exports.sh'), 'utf8').catch(() => '')])
+				if (!m?.data?.id || m.data.id !== entry.name || !APP_ID.test(m.data.id) || !c) return null
+				// `export NAME=…`, a bare `export NAME`, or one written out for later (echo "export NAME=…" >> .env).
+				const exported = [...exportsText.matchAll(/\bexport\s+([A-Za-z_][A-Za-z0-9_]*)\b/g)].map((x) => x[1])
+				return {a: m.data, entry, compose: c.text, exported}
+			})
+		).filter(Boolean)
 		const byId = new Map(found.map((f) => [f.a.id, f]))
 		// Everything an app needs, all the way down (bitcoin → lightning → …).
 		const needsOf = (id, seen = new Set()) => {
@@ -661,7 +808,6 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				deterministicPassword: a.deterministicPassword === true,
 				// Needs a secure (https://) page in the browser, e.g. for WebCodecs or the Web Crypto API.
 				...(a.requiresHttps === true ? {requiresHttps: true} : {}),
-				permissions: appPermissions(compose, whereFor({id: a.id, port: a.port, version: a.version, folders: folderChoices(a.folders)})).map((p) => p.id),
 				...(Array.isArray(a.openPorts) ? {openPorts: a.openPorts.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535 && n !== 22).slice(0, 16)} : {}),
 				...(folderChoices(a.folders).length ? {folders: folderChoices(a.folders)} : {}),
 				...(a.web && typeof a.web.service === 'string' && Number.isInteger(Number(a.web.port)) ? {web: {service: a.web.service, port: Number(a.web.port), ...(a.web.https === true ? {https: true} : {})}} : {}),
@@ -693,17 +839,21 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		await ready
 		if (registryCache && !refresh && Date.now() - registryCache.at < 60 * 60_000) return registryCache.list
 		const list = []
+		let dirty = false
 		for (const s of state.stores) {
 			if (refresh || Date.now() - (s.syncedAt ?? 0) > 60 * 60_000) {
 				try {
 					await syncStore(s.url)
 					s.syncedAt = Date.now()
+					dirty = true
 				} catch {}
 			}
 			try {
 				const loaded = await loadStore(s.url)
 				if (s.name) loaded.meta.name = s.name
+				const prev = s.meta
 				s.meta = loaded.meta
+				if (!prev || prev.id !== loaded.meta.id || prev.name !== loaded.meta.name) dirty = true
 				list.push(loaded)
 			} catch {}
 		}
@@ -715,12 +865,15 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			if (app.system) continue
 			const src = list.find((l) => !app.store || l.url === app.store)?.apps.find((x) => x.id === app.id) ?? list.flatMap((l) => l.apps).find((x) => x.id === app.id)
 			if (!src) continue
-			if (src.requiresHttps) app.requiresHttps = true
+			const requiresHttps = !!src.requiresHttps
+			const internalHttps = !!src.web?.https
+			if (!!app.requiresHttps !== requiresHttps || !!app.internalHttps !== internalHttps) dirty = true
+			if (requiresHttps) app.requiresHttps = true
 			else delete app.requiresHttps
-			if (src.web?.https) app.internalHttps = true
+			if (internalHttps) app.internalHttps = true
 			else delete app.internalHttps
 		}
-		await save()
+		if (dirty) await save()
 		registryCache = {at: Date.now(), list}
 		return list
 	}
@@ -770,6 +923,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			TOR_PROXY_PORT,
 			TOR_PASSWORD,
 			TOR_DATA_DIR: join(base, 'shared-root', 'tor', 'data'),
+			HOME: home,
 			APP_DATA_DIR: dir,
 			APP_DATA_ROOT: dir,
 			APP_ID: app.id,
@@ -815,29 +969,43 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// Bind-mount sources that don't exist yet are folders the app expects to own (Podman won't
 	// create them the way Docker does).
 	async function createBindSources(app, text) {
-		const env = composeEnv(app)
+		const overlay = {...process.env, ...composeEnv(app)}
+		const dotenv = expandDotEnv(parseDotEnv(await readFile(join(appDir(app.id), '.env'), 'utf8').catch(() => '')), overlay)
+		const env = {...dotenv, ...overlay}
 		const shared = join(base, 'shared-root')
 		const doc = YAML.parse(text) ?? {}
 		app.dataDirs = []
 		app.userDirs = []
+		const dir = appDir(app.id)
+		const allowed = [dir, shared, ...Object.values(USER_DIRS).map((d) => join(home, d)), ...Object.values(app.folders ?? {}).filter((p) => typeof p === 'string')]
 		for (const s of Object.values(doc.services ?? {})) {
 			for (const v of s?.volumes ?? []) {
 				// Expand first: a source like ${APP_DATA_DIR:-.}/data has a colon of its own.
 				const src = typeof v === 'string' ? expandVars(v, env).split(':')[0] : v?.source && expandVars(v.source, env)
-				if (!src || !/^[/.]/.test(src)) continue
-				const path = resolve(appDir(app.id), src)
+				if (!src) continue
+				const path = bindHostPath(src, {home, cwd: dir})
+				if (!path.startsWith('/') || path.includes('\0') || CLOCK_FILES.includes(path)) continue
+				const real = realpathExisting(path)
+				// Drop escaped app-dir symlinks even when the target is refused, so Compose cannot follow them.
+				// Never touch host files such as /etc/localtime (those are not under the app folder).
+				if (under(path, dir) && (await lstat(path).then((st) => st.isSymbolicLink(), () => false))) {
+					const target = await realpath(path).catch(() => '')
+					const ok = target && allowed.some((d) => under(target, d)) && !refusedMount(target, home)
+					if (!ok) await rm(path, {force: true})
+				}
+				if (refusedMount(real, home) || refusedMount(path, home)) continue
 				// One of your folders (Videos, Music…): make sure it exists and let the app's user in.
-				const mine = Object.values(USER_DIRS).map((d) => join(home, d)).find((d) => path === d || path.startsWith(`${d}/`))
+				const mine = Object.values(USER_DIRS).map((d) => join(home, d)).find((d) => under(path, d) || under(real, d))
 				if (mine) {
 					if (!(await exists(path))) await mkdir(path, {recursive: true})
 					app.userDirs = [...new Set([...(app.userDirs ?? []), mine])]
 					continue
 				}
 				// Only inside the app's own folder, or the shared folders (e.g. a Downloads subfolder).
-				if (!path.startsWith(appDir(app.id)) && !path.startsWith(shared)) continue
+				if (!under(path, dir) && !under(path, shared) && !under(real, dir) && !under(real, shared)) continue
 				if (!(await exists(path))) await mkdir(path, {recursive: true})
 				// Folders inside the app's own folder are its data: they get handed to its container user.
-				if (path.startsWith(`${appDir(app.id)}/`) && (await stat(path).then((st) => st.isDirectory(), () => false))) app.dataDirs.push(path)
+				if (under(path, dir) && path !== dir && (await lstat(path).then((st) => st.isDirectory(), () => false))) app.dataDirs.push(path)
 			}
 		}
 	}
@@ -1089,7 +1257,16 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	async function copyListing(src, app) {
 		const dir = appDir(app.id)
 		const fresh = !(await exists(dir))
-		const filter = (p) => !p.split('/').includes('.git')
+		// Listing-dir symlinks that point outside the listing (for example keys → ~/.ssh) must not
+		// be copied: Compose would bind the target, and chown would follow it.
+		const filter = async (p) => {
+			if (p.split('/').includes('.git')) return false
+			const st = await lstat(p).catch(() => null)
+			if (!st?.isSymbolicLink()) return true
+			const target = await realpath(p).catch(() => null)
+			const root = await realpath(src.folder).catch(() => src.folder)
+			return !!(target && under(target, root))
+		}
 		if (fresh) return cp(src.folder, dir, {recursive: true, filter})
 		const stage = await mkdtemp(join(base, `.update-${app.id}-`))
 		try {
@@ -1161,19 +1338,26 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 
 	// The extra access a listing's compose file asks for.
 	// The folders an app may use without asking, and how its variables expand, for appPermissions.
-	function whereFor(app) {
+	function whereFor(app, dotenv = {}) {
 		// Before you place them, an app's folders count as its own (inside the app's folder).
-		const env = composeEnv({id: app.id, port: app.port, version: app.version, folderIds: (app.folders ?? []).map((f) => f.id)})
+		// After placing, `folders` is id → path and Compose will expand FOLDER_* to those paths.
+		const folderIds = app.folderIds ?? (Array.isArray(app.folders) ? app.folders.map((f) => f.id) : [])
+		const folders = app.folders && !Array.isArray(app.folders) ? app.folders : undefined
+		const env = composeEnv({id: app.id, port: app.port, version: app.version, folderIds, folders})
+		const merged = {...expandDotEnv(dotenv, {...process.env, ...env}), ...process.env, ...env}
 		return {
 			home,
-			expand: (v) => expandVars(String(v), env).replace(/^\.(?=\/|$)/, appDir(app.id)).replace(/^~(?=\/|$)/, home),
-			allowed: [appDir(app.id), join(base, 'shared-root'), ...Object.values(USER_DIRS).map((d) => join(home, d))],
+			cwd: appDir(app.id),
+			expand: (v) => expandVars(String(v), merged).replace(/^\.(?=\/|$)/, appDir(app.id)).replace(/^~(?=\/|$)/, home),
+			allowed: [appDir(app.id), join(base, 'shared-root'), ...Object.values(USER_DIRS).map((d) => join(home, d)), ...Object.values(folders ?? {})],
 		}
 	}
 	async function permissionsOf(src) {
 		if (src.system) return systemApps?.permissions(src.id) ?? []
 		const c = await readYaml(src.folder, COMPOSE_FILES).catch(() => null)
-		return c ? appPermissions(await readFile(join(src.folder, c.name), 'utf8'), whereFor(src)) : []
+		if (!c) return []
+		const dotenv = parseDotEnv(await readFile(join(src.folder, '.env'), 'utf8').catch(() => ''))
+		return appPermissions(await readFile(join(src.folder, c.name), 'utf8'), whereFor(src, dotenv))
 	}
 
 	// What installing `id` involves: the apps it needs that aren't installed yet, then the app.
@@ -1204,17 +1388,6 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 		if (state.apps.some((a) => a.id === id)) throw new RpcError('CONFLICT', 'That app is already installed')
 		const plan = await installPlan(id)
-		// Every extra access the apps ask for must be allowed explicitly, for this install.
-		const granted = new Set(Array.isArray(input?.grant) ? input.grant.map(String) : [])
-		const needs = new Map()
-		for (const src of plan) {
-			const perms = await permissionsOf(src)
-			const refused = perms.find((p) => p.id === 'refused')
-			if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
-			needs.set(src.id, perms.map((p) => p.id))
-		}
-		const missing = [...new Set([...needs.values()].flat())].filter((p) => !granted.has(p))
-		if (missing.length) throw new RpcError('PRECONDITION_FAILED', `Installing needs your permission: ${missing.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}.`)
 		if (plan.some((src) => !src.system) && !(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
 		if (plan.some((src) => src.system) && !systemApps) throw new RpcError('PRECONDITION_FAILED', 'This server can’t install system apps')
 		// Check every port first, so nothing starts installing if one of them can't.
@@ -1241,6 +1414,19 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			placed.set(`${src.id}/${f.id}`, path)
 		}
 		for (const path of placed.values()) await mkdir(path, {recursive: true})
+		// Extra access: after folders are placed, so FOLDER_* is the path Compose will expand.
+		const granted = new Set(Array.isArray(input?.grant) ? input.grant.map(String) : [])
+		const needs = new Map()
+		for (const src of plan) {
+			const folderIds = (src.folders ?? []).map((f) => f.id)
+			const folders = Object.fromEntries(folderIds.filter((fid) => placed.has(`${src.id}/${fid}`)).map((fid) => [fid, placed.get(`${src.id}/${fid}`)]))
+			const perms = await permissionsOf({...src, folderIds, folders})
+			const refused = perms.find((p) => p.id === 'refused')
+			if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
+			needs.set(src.id, perms.map((p) => p.id))
+		}
+		const missing = [...new Set([...needs.values()].flat())].filter((p) => !granted.has(p))
+		if (missing.length) throw new RpcError('PRECONDITION_FAILED', `Installing needs your permission: ${missing.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}.`)
 		// Every app in the plan shows as installing right away; they then install one after another.
 		const queued = plan.map((src) => {
 			const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
@@ -1312,7 +1498,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const src = await findInRegistry(app.id)
 		if (!src) throw new RpcError('NOT_FOUND', 'That app is no longer in your stores')
 		// An update never adds access you didn't allow. (Apps installed before permissions existed keep what they run with.)
-		const wants = (await permissionsOf(src)).map((p) => p.id)
+		const wantsPerms = await permissionsOf({...src, folderIds: app.folderIds, folders: app.folders && !Array.isArray(app.folders) ? app.folders : undefined})
+		const refused = wantsPerms.find((p) => p.id === 'refused')
+		if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
+		const wants = wantsPerms.map((p) => p.id)
 		app.permissions ??= wants
 		const extra = wants.filter((p) => !app.permissions.includes(p) && !(Array.isArray(input?.grant) && input.grant.includes(p)))
 		if (extra.length) throw new RpcError('PRECONDITION_FAILED', `This update asks for more access (${extra.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}). Uninstall and install it again to allow that.`)
@@ -1398,10 +1587,25 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 
 	async function updates() {
+		const stores = await registry()
+		const byId = new Map(stores.flatMap((s) => s.apps.map((a) => [a.id, a])))
 		const out = []
 		for (const a of state.apps) {
 			if (a.system) continue
-			const src = await findInRegistry(a.id).catch(() => null)
+			let src = null
+			if (a.store) {
+				const st = stores.find((x) => x.url.toLowerCase() === a.store.toLowerCase())
+				src = st?.apps.find((x) => x.id === a.id) ?? null
+			} else {
+				for (const st of stores) {
+					const hit = st.apps.find((x) => x.id === a.id && !x.web)
+					if (hit) {
+						src = hit
+						break
+					}
+				}
+			}
+			src ??= byId.get(a.id)
 			if (src?.version && a.version && src.version !== a.version) out.push({id: a.id, version: src.version})
 		}
 		return out
@@ -1500,7 +1704,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					const also = plan.slice(0, -1).map((a) => ({id: a.id, name: a.name, icon: a.icon}))
 					// Extra access, per app in the plan (shown for you to allow before installing).
 					const access = []
-					for (const a of plan) for (const p of await permissionsOf(a)) access.push({...p, appId: a.id, appName: a.name})
+					for (const a of plan) {
+						const chosen = folderChoices(a.folders)
+						const folderIds = chosen.map((f) => f.id)
+						const folders = Object.fromEntries(chosen.map((f) => [f.id, join(home, f.suggest || f.id)]))
+						for (const p of await permissionsOf({...a, folderIds, folders})) access.push({...p, appId: a.id, appName: a.name})
+					}
 					// System apps that need a one-time step from you first (see system-apps.mjs).
 					const setup = []
 					for (const a of plan) if (a.system && systemApps?.setup) { const s = await systemApps.setup(a.id); if (s) setup.push({...s, appId: a.id, appName: a.name}) }
@@ -1550,7 +1759,17 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					return {ticket: t, port, path: app.path ?? ''}
 				},
 			},
-			'appStore.registry': {kind: 'query', run: async () => (await registry()).map(({url, meta, apps}) => ({url, meta, apps: apps.map(({folder, ...a}) => a)}))},
+			'appStore.registry': {kind: 'query', run: async () => (await registry()).map(({url, meta, apps}) => ({url, meta, apps: apps.map(toList)}))},
+			'appStore.app': {
+				kind: 'query',
+				run: async (input) => {
+					const src = await findInRegistry(String(input?.appId ?? ''))
+					if (!src) throw new RpcError('NOT_FOUND', 'That app isn’t in your stores')
+					const a = toDetail(src)
+					if (!Array.isArray(a.permissions)) a.permissions = (await permissionsOf(src)).map((p) => p.id)
+					return a
+				},
+			},
 			// "Check for new apps": download every store's latest listings now instead of waiting for the hourly check.
 			'appStore.refresh': {kind: 'mutation', run: async () => ((await registry({refresh: true})).reduce((n, s) => n + s.apps.length, 0))},
 			'appStore.repositories': {kind: 'query', run: async () => (await ready, state.stores.map(({url, meta, name}) => ({url, meta: meta ?? {id: url, name: name ?? url.split('/').pop()}})))},

@@ -31,6 +31,16 @@ const catIcon = (c: string) => (hasIcon(c) ? c : 'category')
 // Shown first in "Featured" when present in the catalog; otherwise any app with screenshots.
 const FEATURED = ['immich', 'nextcloud', 'home-assistant', 'jellyfin', 'plex', 'bitcoin', 'ollama', 'vaultwarden', 'pi-hole', 'tailscale']
 
+function useStoreApp(app: StoreApp | null) {
+	const missing = !!app && (!app.description || !Array.isArray(app.gallery) || !app.website)
+	return useQuery({
+		queryKey: ['appStore.app', app?.id],
+		queryFn: () => query<RegistryApp>('appStore.app', {appId: app!.id}),
+		enabled: missing,
+		staleTime: 10 * 60_000,
+	})
+}
+
 // The Omarchy plugins view (its own catalog, next to the app categories).
 const PLUGINS = '::omarchy-plugins'
 
@@ -61,7 +71,7 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 		return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([c]) => c)
 	}, [all])
 	const featured = useMemo(() => {
-		const withShots = all.filter((a) => a.gallery?.length)
+		const withShots = all.filter((a) => a.shots || (a.gallery?.length ?? 0) > 0)
 		const picked = FEATURED.map((id) => withShots.find((a) => a.id === id)).filter(Boolean) as StoreApp[]
 		return (picked.length >= 3 ? picked : [...picked, ...withShots.filter((a) => !picked.includes(a))]).slice(0, 6)
 	}, [all])
@@ -160,18 +170,7 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 			{browsing && featured.length > 0 && (
 				<div className="featured">
 					{featured.map((app) => (
-						<button key={app.id} className="feature" onClick={() => pick(app)}>
-							<img src={app.gallery![0]} alt="" loading="lazy" decoding="async" />
-							<span className="scrim-b" />
-							<span className="tag">{label(app.category ?? 'Featured')}</span>
-							<span className="meta">
-								<AppIcon src={app.icon} name={app.name} size={44} />
-								<span className="t">
-									<b>{app.name}</b>
-									<span>{app.tagline}</span>
-								</span>
-							</span>
-						</button>
+						<FeaturedCard key={app.id} app={app} onPick={() => pick(app)} />
 					))}
 				</div>
 			)}
@@ -374,6 +373,25 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 	)
 }
 
+function FeaturedCard({app, onPick}: {app: StoreApp; onPick: () => void}) {
+	const detail = useStoreApp(app)
+	const shot = app.gallery?.[0] ?? detail.data?.gallery?.[0]
+	return (
+		<button className="feature" onClick={onPick}>
+			{shot ? <img src={shot} alt="" loading="lazy" decoding="async" /> : null}
+			<span className="scrim-b" />
+			<span className="tag">{label(app.category ?? 'Featured')}</span>
+			<span className="meta">
+				<AppIcon src={app.icon} name={app.name} size={44} />
+				<span className="t">
+					<b>{app.name}</b>
+					<span>{app.tagline}</span>
+				</span>
+			</span>
+		</button>
+	)
+}
+
 function StoreSheet({
 	app,
 	startInstall,
@@ -400,6 +418,15 @@ function StoreSheet({
 	const [reviewing, setReviewing] = useState(!!startInstall)
 	const [more, setMore] = useState(false)
 	const review = useInstallReview(reviewing ? app.id : null)
+	const detail = useStoreApp(app)
+	const website = detail.data?.website ?? app.website
+	const view = {
+		...app,
+		description: detail.data?.description ?? app.description,
+		gallery: detail.data?.gallery ?? app.gallery,
+		website: typeof website === 'string' && /^https?:\/\//i.test(website) ? website : undefined,
+		releaseNotes: detail.data?.releaseNotes ?? app.releaseNotes,
+	}
 
 	const live = installed.get(app.id)
 	// What it needs that isn't installed yet (an installed app can stand in, e.g. Bitcoin Knots).
@@ -718,22 +745,29 @@ function StoreSheet({
 					</div>
 
 					{app.tagline && <p style={{margin: '0 0 16px', fontSize: 17, fontWeight: 600, letterSpacing: '-0.01em'}}>{app.tagline}</p>}
-					{(app.gallery?.length ?? 0) > 0 && (
+					{(view.gallery?.length ?? 0) > 0 && (
 						<div className="gallery">
-							{app.gallery!.slice(0, 6).map((src) => (
+							{view.gallery!.slice(0, 6).map((src) => (
 								<img key={src} src={src} alt="" loading="lazy" decoding="async" />
 							))}
 						</div>
 					)}
-					{app.description && (
+					{view.description && (
 						<>
-							<div className={`prose${more ? '' : ' clamp'}`}>{app.description}</div>
-							{!more && app.description.length > 280 && (
+							<div className={`prose${more ? '' : ' clamp'}`}>{view.description}</div>
+							{!more && view.description.length > 280 && (
 								<button className="link-btn" style={{paddingLeft: 0}} onClick={() => setMore(true)}>
 									More
 								</button>
 							)}
 						</>
+					)}
+					{view.website && (
+						<p className="footer-note" style={{textAlign: 'left', marginTop: 18}}>
+							<a href={view.website} target="_blank" rel="noreferrer">
+								{view.website.replace(/^https?:\/\//, '')}
+							</a>
+						</p>
 					)}
 					{app.repo && <p className="footer-note" style={{textAlign: 'left', marginTop: 18}}>From {app.repo}</p>}
 				</>

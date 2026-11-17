@@ -136,12 +136,31 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		const home = await fs.realpath(user.home)
 		const real = await fs.realpath(path).catch(() => fail(`No folder at ${path}`))
 		if (real === home || !real.startsWith(home + sep)) fail('Only folders inside your home can be shared')
+		if (real.slice(home.length + 1).split(sep).some((part) => part.startsWith('.'))) fail('Hidden folders can’t be shared')
 		return real
 	}
 	// Rules are added whenever ufw is installed, even while it's off, so they're in place the
 	// moment it's turned on (Omarchy turns it on during its own install).
 	async function ufwActive() {
 		return run('ufw', ['status']).then(() => true, () => false)
+	}
+	// SMB (445) is for the home LAN only. Tailscale is a second network (100.64.0.0/10) and is not
+	// included, so shares stay off the tailnet unless you add a rule yourself. Applying or removing
+	// shares closes an older world-open 445 rule and replaces the LAN rules, so they do not stack.
+	const SMB_LAN = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']
+	async function ufwDelete(port, proto) {
+		if (!(await ufwActive())) return
+		await run('ufw', ['delete', 'allow', `${port}/${proto}`]).catch(() => {})
+		if (Number(port) === 445) for (const cidr of SMB_LAN) await run('ufw', ['delete', 'allow', 'from', cidr, 'to', 'any', 'port', '445', 'proto', proto]).catch(() => {})
+	}
+	async function ufwAllow(port, proto, comment) {
+		if (!(await ufwActive())) return
+		if (Number(port) === 445) {
+			await ufwDelete(445, proto)
+			for (const cidr of SMB_LAN) await run('ufw', ['allow', 'from', cidr, 'to', 'any', 'port', '445', 'proto', proto, 'comment', comment])
+			return
+		}
+		await run('ufw', ['allow', `${port}/${proto}`, 'comment', comment])
 	}
 
 	// ---- ZFS --------------------------------------------------------------------------------------
@@ -581,8 +600,8 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			if (!Array.isArray(body?.shares) || body.shares.length > 64) fail('Bad share list')
 			const seen = new Set()
 			const blocks = []
-			// A share can be open to anyone on your network, without a password (guest ok). Files are
-			// still written as you. Only when at least one such share exists does Samba accept guests at all.
+			// A share can be open to anyone on your LAN, without a password (guest ok). Guest writes
+			// stay as nobody, not as you. Only when at least one such share exists does Samba accept guests at all.
 			const anyGuest = body.shares.some((s) => s?.guest === true)
 			for (const s of body.shares) {
 				const name = String(s?.name ?? '')
@@ -590,8 +609,8 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 				seen.add(name.toLowerCase())
 				const path = await inHome(String(s?.path ?? ''))
 				if (/[\n\r]/.test(path)) fail('Bad folder')
-				const who = s.guest === true ? `   guest ok = yes\n` : `   valid users = ${user.name}\n`
-				blocks.push(`[${name}]\n   path = ${path}\n${who}   force user = ${user.name}\n   read only = ${s.readOnly ? 'yes' : 'no'}\n   browseable = yes\n`)
+				const who = s.guest === true ? `   guest ok = yes\n` : `   valid users = ${user.name}\n   force user = ${user.name}\n`
+				blocks.push(`[${name}]\n   path = ${path}\n${who}   read only = ${s.readOnly ? 'yes' : 'no'}\n   browseable = yes\n`)
 			}
 			const shares = `${SMB_MARK}. Edit shares in the Omarchy Server web app.\n\n${blocks.join('\n')}`
 			const current = await fs.readFile(SMB_CONF, 'utf8').catch(() => null)
@@ -609,10 +628,10 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 				await samba(() => run('smbd', ['-b']))
 				await run('systemctl', ['enable', '--now', 'smb.service'])
 				await run('smbcontrol', ['smbd', 'reload-config']).catch(() => run('systemctl', ['restart', 'smb.service']))
-				if (await ufwActive()) await run('ufw', ['allow', '445/tcp', 'comment', 'Omarchy Server shares'])
+				await ufwAllow(445, 'tcp', 'Omarchy Server shares')
 			} else {
 				await run('systemctl', ['disable', '--now', 'smb.service']).catch(() => {})
-				if (await ufwActive()) await run('ufw', ['delete', 'allow', '445/tcp']).catch(() => {})
+				await ufwDelete(445, 'tcp')
 			}
 			return 'ok'
 		},
@@ -633,7 +652,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		'firewall-open': async ([port]) => {
 			const p = Number(port)
 			if (!Number.isInteger(p) || p < 1 || p > 65535 || [22, 2021, 5900].includes(p)) fail('Bad port')
-			if (await ufwActive()) for (const proto of ['tcp', 'udp']) await run('ufw', ['allow', `${p}/${proto}`, 'comment', 'Omarchy Server app'])
+			for (const proto of ['tcp', 'udp']) await ufwAllow(p, proto, 'Omarchy Server app')
 			return 'ok'
 		},
 		// Let your (rootless) containers listen on ports from N up, for apps you allowed to use
@@ -650,7 +669,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		'firewall-close': async ([port]) => {
 			const p = Number(port)
 			if (!Number.isInteger(p) || p < 1 || p > 65535 || [22, 2021, 5900, 7780].includes(p)) fail('Bad port')
-			if (await ufwActive()) for (const proto of ['tcp', 'udp']) await run('ufw', ['delete', 'allow', `${p}/${proto}`]).catch(() => {})
+			for (const proto of ['tcp', 'udp']) await ufwDelete(p, proto)
 			return 'ok'
 		},
 	}

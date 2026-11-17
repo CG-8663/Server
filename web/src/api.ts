@@ -49,6 +49,8 @@ export type Bootstrap = {
 		reachable: boolean
 		version?: string
 		name?: string
+		startedAt?: number
+		revision?: string
 		device?: string | null
 		onboarded?: boolean
 		error?: string
@@ -132,6 +134,9 @@ export type RegistryApp = {
 	developer?: string
 	website?: string
 	gallery?: string[]
+	/** Count of screenshots; set on the compact registry list in place of `gallery` URLs. */
+	shots?: number
+	unsupported?: string
 	dependencies?: string[]
 	/** Every app installed along with it, in install order (what it needs comes first). */
 	needs?: string[]

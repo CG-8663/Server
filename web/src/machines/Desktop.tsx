@@ -1,16 +1,16 @@
 // The Machines window on the desktop, laid out like Proxmox VE: a resource tree on the left, the
 // selected machine's toolbar and its settings panels, and the task log along the bottom.
-import {useEffect, useRef, useState} from 'react'
+import {lazy, Suspense, useEffect, useRef, useState} from 'react'
 
 import {SERVER_DESKTOP, type Machine} from '../api'
-import {CreateMachine} from '../CreateMachine'
-import {useMachines} from '../data'
+import {useMachines, useUser} from '../data'
 import {useDesktop} from '../desktop/Desktop'
 import {Icon, type IconName} from '../icons'
-import {PortForwarding, osLook} from '../screens/Machines'
+import {osLook} from '../osLook'
 import {LocalSwarm, useSwarm} from '../swarm/Swarm'
 import {bytes, duration, haptic, useConfirm} from '../ui'
 import {mib, useAllTasks, useBackups, useMachineAction, useMachineDetails, useNode, when} from './api'
+import {PortForwarding} from './PortForwarding'
 import {
 	BackupsPanel,
 	CloudInitPanel,
@@ -25,6 +25,8 @@ import {
 	usePowerActions,
 	type PanelId,
 } from './panels'
+
+const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
 
 type Sel = {kind: 'node'} | {kind: 'vm'; id: string} | {kind: 'swarm'}
 
@@ -110,7 +112,17 @@ export function MachinesDesktop() {
 				</button>
 				{tasksOpen && <RecentTasks />}
 			</footer>
-			<CreateMachine open={creating} onClose={() => setCreating(false)} />
+			{creating && (
+				<Suspense
+					fallback={
+						<div className="win-empty">
+							<span className="spinner" aria-label="Loading" />
+						</div>
+					}
+				>
+					<CreateMachine open={creating} onClose={() => setCreating(false)} />
+				</Suspense>
+			)}
 		</div>
 	)
 }
@@ -126,6 +138,7 @@ function RecentTasks() {
 
 // ---- the server ("node") ----------------------------------------------------------------------
 function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreate: () => void}) {
+	const owner = useUser().data?.role !== 'member'
 	const node = useNode()
 	const machines = useMachines()
 	const backups = useBackups(null)
@@ -166,21 +179,24 @@ function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreat
 							<dd>{n ? `${n.counts.running} of ${n.counts.total} running` : '–'}</dd>
 						</dl>
 					</div>
-					<div className="mx-card">
-						<h4>Consoles</h4>
-						<button type="button" className="pve-desktop" onClick={() => (desk ? desk.openConsole('desktop') : null)}>
-							<Icon name="terminal" size={20} />
-							<span>
-								<b>{SERVER_DESKTOP.name}</b>
-								<small>This server’s own desktop, live.</small>
-							</span>
-						</button>
-						{desk && (
-							<button type="button" className="btn small" style={{marginTop: 8}} onClick={() => desk.addIcon('machine:desktop')}>
-								<Icon name="plus" size={15} /> Add to desktop
+					{/* This server’s own desktop is the owner’s signed-in session: owner-only. */}
+					{owner && (
+						<div className="mx-card">
+							<h4>Consoles</h4>
+							<button type="button" className="pve-desktop" onClick={() => (desk ? desk.openConsole('desktop') : null)}>
+								<Icon name="terminal" size={20} />
+								<span>
+									<b>{SERVER_DESKTOP.name}</b>
+									<small>This server’s own desktop, live.</small>
+								</span>
 							</button>
-						)}
-					</div>
+							{desk && (
+								<button type="button" className="btn small" style={{marginTop: 8}} onClick={() => desk.addIcon('machine:desktop')}>
+									<Icon name="plus" size={15} /> Add to desktop
+								</button>
+							)}
+						</div>
+					)}
 				</div>
 				<h4 className="mx-h">Virtual machines</h4>
 				<div className="mx-table vms" role="table">

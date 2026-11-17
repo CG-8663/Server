@@ -15,8 +15,7 @@ import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
 import {Icon} from './icons'
-import {haptic, settleViewport, usePortalRoot, useToast} from './ui'
-import {useScreenLock} from './Terminal'
+import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
 
 type RFBClass = typeof import('@novnc/novnc/lib/rfb.js').default
 // noVNC ships CommonJS; depending on the bundler the class is the default or default.default.

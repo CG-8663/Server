@@ -17,12 +17,12 @@ export async function startFakeserverd({
 } = {}) {
 	const wallpaper = {id: process.env.FAKE_WALLPAPER_ID ?? '23', brandColorHsl: process.env.FAKE_BRAND ?? '24 90% 50%'}
 	let baseUrl = ''
-	const tokens = new Map() // access token -> {expiresAt, sessionId}
-	const devices = new Map() // device token -> sessionId
+	const tokens = new Map() // access token -> {expiresAt, sessionId, userId}
+	const devices = new Map() // device token -> {sessionId, userId}
 	const calls = []
 	const browser = new Map() // dashboard token -> browser-session cookie value
 	const urlTokens = new Map() // file URL token -> browser-session cookie value
-	const tickets = new Set()
+	const tickets = new Map() // ticket -> {role}
 	// In-memory file tree for the Files tab: path -> {type, size, modified, data?}
 	const now = Date.now()
 	const fsTree = new Map([
@@ -213,17 +213,18 @@ export async function startFakeserverd({
 	)
 
 	const newToken = () => randomBytes(24).toString('base64url')
-	const issueAccess = (sessionId) => {
+	const issueAccess = (sessionId, userId = 'owner') => {
 		const accessToken = newToken()
 		const accessExpiresAt = Date.now() + accessTtlMs
-		tokens.set(accessToken, {expiresAt: accessExpiresAt, sessionId})
+		tokens.set(accessToken, {expiresAt: accessExpiresAt, sessionId, userId})
 		return {accessToken, accessExpiresAt}
 	}
+	const accountOf = (userId) => (userId === 'sam' ? {userId: 'sam', name: 'Sam', role: 'member'} : {userId: 'owner', name: 'Chris', role: 'owner'})
 
 	const procedures = {
-		'system.version': {kind: 'query', public: true, run: () => ({version: '2.0.0', name: 'Omarchy Server 2.0'})},
+		'system.version': {kind: 'query', public: true, run: () => ({version: '2.0.0', name: 'Omarchy Server 2.0', startedAt: 1_700_000_000_000, revision: 'abc1234'})},
 		'system.discoveryInfo': {kind: 'query', public: true, run: () => ({id: 'abc', device: 'Linux VM', version: '2.0.0', onboarded: true})},
-		'user.listAccounts': {kind: 'query', public: true, run: () => [{userId: 'owner', name: 'Chris', language: 'en', wallpaper}]},
+		'user.listAccounts': {kind: 'query', public: true, run: () => [accountOf('owner'), accountOf('sam')].map((a) => ({...a, language: 'en', wallpaper}))},
 		'user.loginNative': {
 			kind: 'mutation',
 			public: true,
@@ -231,19 +232,20 @@ export async function startFakeserverd({
 				if (legacy) return {notFound: true}
 				if (input?.password !== password) return {error: ['UNAUTHORIZED', 'Incorrect password']}
 				if (!input?.client?.id) return {error: ['BAD_REQUEST', 'Missing client']}
+				const userId = input?.userId === 'sam' ? 'sam' : 'owner'
 				const sessionId = newToken()
 				const deviceToken = newToken()
-				devices.set(deviceToken, sessionId)
-				return {accountId: 'owner', ...issueAccess(sessionId), deviceToken}
+				devices.set(deviceToken, {sessionId, userId})
+				return {accountId: userId, ...issueAccess(sessionId, userId), deviceToken}
 			},
 		},
 		'user.refreshNativeAccess': {
 			kind: 'mutation',
 			public: true,
 			run: (input) => {
-				const sessionId = devices.get(input?.deviceToken)
-				if (!sessionId) return {error: ['UNAUTHORIZED', 'Invalid native session']}
-				return issueAccess(sessionId)
+				const rec = devices.get(input?.deviceToken)
+				if (!rec) return {error: ['UNAUTHORIZED', 'Invalid native session']}
+				return issueAccess(rec.sessionId, rec.userId)
 			},
 		},
 		'user.login': {
@@ -251,7 +253,8 @@ export async function startFakeserverd({
 			public: true,
 			run: (input, _auth, res) => {
 				if (input?.password !== password) return {error: ['UNAUTHORIZED', 'Incorrect password']}
-				const {accessToken} = issueAccess(legacy ? 'legacy' : newToken())
+				const userId = input?.userId === 'sam' ? 'sam' : 'owner'
+				const {accessToken} = issueAccess(legacy ? 'legacy' : newToken(), userId)
 				tokens.get(accessToken).expiresAt = Infinity
 				const cookie = newToken()
 				browser.set(accessToken, cookie)
@@ -270,7 +273,7 @@ export async function startFakeserverd({
 				if (!cookie || legacy) return {error: ['FORBIDDEN', 'Browser session required']}
 				if (!String(req.headers.cookie ?? '').includes(`OMARCHY_BROWSER_SESSION=${cookie}`)) return {error: ['UNAUTHORIZED', 'Invalid token']}
 				const ticket = `${input.target}:${newToken()}`
-				tickets.add(ticket)
+				tickets.set(ticket, {role: accountOf(auth.userId).role})
 				return ticket
 			},
 		},
@@ -287,11 +290,11 @@ export async function startFakeserverd({
 			kind: 'mutation',
 			run: (_, auth) => {
 				for (const [t, v] of tokens) if (v.sessionId === auth.sessionId) tokens.delete(t)
-				for (const [d, s] of devices) if (s === auth.sessionId) devices.delete(d)
+				for (const [d, rec] of devices) if (rec.sessionId === auth.sessionId) devices.delete(d)
 				return true
 			},
 		},
-		'user.get': {kind: 'query', run: () => ({userId: 'owner', name: 'Chris', role: 'owner', wallpaper, sambaUsername: 'chris'})},
+		'user.get': {kind: 'query', run: (_i, auth) => ({...accountOf(auth.userId), wallpaper, sambaUsername: 'chris'})},
 		'apps.recentlyOpened': {kind: 'query', run: () => ['immich', 'home-assistant']},
 		'system.uptime': {kind: 'query', run: () => 1_234_567},
 		'system.cpuTemperature': {kind: 'query', run: () => ({warning: 'normal', temperature: 52})},
@@ -710,12 +713,21 @@ export async function startFakeserverd({
 	server.on('upgrade', (req, socket, head) => {
 		const url = new URL(req.url, 'http://x')
 		const ticket = url.searchParams.get('ticket')
+		const held = tickets.get(ticket)
 		if (url.pathname === '/terminal') {
-			if (!ticket?.startsWith('terminal:') || !tickets.delete(ticket)) return socket.destroy()
+			if (!ticket?.startsWith('terminal:') || !tickets.delete(ticket) || !held) return socket.destroy()
+			if (held.role !== 'owner') {
+				socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+				return socket.destroy()
+			}
 			terminals.push({appId: url.searchParams.get('appId'), cols: Number(url.searchParams.get('cols')), rows: Number(url.searchParams.get('rows')), ...(url.searchParams.get('fresh') ? {fresh: url.searchParams.get('fresh')} : {})})
 			return wss.handleUpgrade(req, socket, head, (ws) => shellServer(ws, url.searchParams.get('appId'), keys))
 		}
-		if (url.pathname !== '/machines/console' || !ticket?.startsWith('machines:') || !tickets.delete(ticket) || !url.searchParams.get('machineId') || !url.searchParams.get('sessionId')) {
+		if (url.pathname !== '/machines/console' || !ticket?.startsWith('machines:') || !tickets.delete(ticket) || !held || !url.searchParams.get('machineId') || !url.searchParams.get('sessionId')) {
+			return socket.destroy()
+		}
+		if (held.role !== 'owner' && /^agent-[0-9a-f]{12}$/.test(url.searchParams.get('machineId') ?? '')) {
+			socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
 			return socket.destroy()
 		}
 		wss.handleUpgrade(req, socket, head, (ws) => rfbServer(ws, keys))

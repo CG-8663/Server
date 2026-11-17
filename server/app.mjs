@@ -20,7 +20,7 @@ import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.31'
+export const VERSION = '0.9.32'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -59,6 +59,7 @@ export const ALLOWED = {
 	'apps.logs': 'query',
 	'apps.installReview': 'query',
 	'appStore.registry': 'query',
+	'appStore.app': 'query',
 	'appStore.repositories': 'query',
 	'machines.list': 'query',
 	'notifications.get': 'query',
@@ -203,7 +204,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-const SLOW = new Set(['storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
+const SLOW = new Set(['storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
 
 function parseCookies(header = '') {
 	const out = {}
@@ -450,6 +451,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				reachable: true,
 				version: version?.version,
 				name: version?.name,
+				// When it last started and its exact build: for signed-in people only (before sign-in,
+				// nothing more than the version, so the sign-in page doesn't tell anyone when it restarts).
+				...(session ? {startedAt: version?.startedAt, revision: version?.revision} : {}),
 				device: discovery?.device ?? null,
 				onboarded: discovery?.onboarded ?? true,
 			}
@@ -830,6 +834,14 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			return await getClient().mutation('user.createWebSocketTicket', {target}, auth)
 		} catch (error) {
 			throw await lostBrowserSession(sid, error)
+		}
+	}
+	async function sessionIsOwner(sid) {
+		try {
+			const me = await authedCall({sid}, 'user.get', 'query')
+			return me?.role === 'owner'
+		} catch {
+			return false
 		}
 	}
 
@@ -1358,12 +1370,17 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	// Asked before the socket opens so the app can show a clear reason when it can't.
 	api.get('/console/check', async (req, res) => {
 		try {
-			await consoleTicket(req.sid, req.query.target === 'terminal' ? 'terminal' : 'machines') // single-use, 30s; discarded
+			const terminal = req.query.target === 'terminal'
+			const agent = /^agent-([0-9a-f]{12})$/.exec(String(req.query.machineId ?? ''))
+			const ownDesktop = req.query.machineId === 'desktop'
+			if ((terminal || agent || ownDesktop) && !(await sessionIsOwner(req.sid))) {
+				throw new BackendError(terminal ? 'Only the server’s owner can open a shell' : ownDesktop ? 'Only the server’s owner can open this server’s desktop' : 'Only the server’s owner can manage the local swarm', {code: 'FORBIDDEN', status: 403})
+			}
+			await consoleTicket(req.sid, terminal ? 'terminal' : 'machines') // single-use, 30s; discarded
 			// The server's own desktop: make sure its screen sharing is running (starts it if not),
 			// or say plainly why it can't be.
 			if (req.query.machineId === 'desktop') await authedCall(req, 'system.desktopShare', 'mutation')
 			// A computer in the local swarm: is its desktop there to show (and allowed)?
-			const agent = /^agent-([0-9a-f]{12})$/.exec(String(req.query.machineId ?? ''))
 			if (agent) await authedCall(req, 'swarm.desktopCheck', 'query', {id: agent[1]})
 			res.json({ok: true})
 		} catch (error) {
@@ -1435,9 +1452,16 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					target.pathname = '/terminal'
 					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
 				}
+				const needsOwner = route === 'terminal' || params.machineId === 'desktop' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
+				if (needsOwner && !(await sessionIsOwner(sid))) return refuse('403 Forbidden')
 				const ticket = await consoleTicket(sid, route)
 				target.search = new URLSearchParams({...params, ticket}).toString()
 				const upstream = new WebSocket(target, route === 'machines' ? ['binary'] : [], {handshakeTimeout: 10_000})
+				upstream.once('unexpected-response', (_q, r) => {
+					r.resume()
+					upstream.removeAllListeners('error')
+					refuse(r.statusCode === 403 ? '403 Forbidden' : r.statusCode === 401 ? '401 Unauthorized' : '502 Bad Gateway')
+				})
 				upstream.once('error', () => refuse('502 Bad Gateway'))
 				upstream.once('open', () => {
 					upstream.removeAllListeners('error')

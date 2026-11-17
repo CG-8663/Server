@@ -4,11 +4,9 @@ import {useEffect, useRef, useState, type CSSProperties, type ReactNode} from 'r
 
 import {useUser} from '../data'
 import {Icon} from '../icons'
-import {Switch} from '../screens/Settings'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
-import {Segmented, customBackgroundUrl, haptic, preparePhoto, useToast, wallpaperUrl, type Prefs} from '../ui'
+import {Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {PRESETS, STYLES, solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
-import {SolidColors} from '../screens/More'
 import {DESKTOP_KEY, useDesktop, useItems, type ItemInfo} from './Desktop'
 
 type Tab = 'themes' | 'background' | 'dock' | 'desktop'

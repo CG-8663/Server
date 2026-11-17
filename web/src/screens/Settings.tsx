@@ -5,11 +5,12 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {logout, mutate, query, type ActiveSession} from '../api'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
-import {InWindow, Segmented, Sheet, SheetHeader, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
+import {InWindow, Segmented, Sheet, SheetHeader, Switch, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
 import {Appearance} from './More'
 import {OmarchyThemes} from '../OmarchyThemes'
 import {StoragePage} from './Storage'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
+import {formatRunningSince} from '../runningSince'
 
 
 function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false; staleTime?: number; refetchOnWindowFocus?: boolean; refetchOnReconnect?: boolean} = {}) {
@@ -32,7 +33,7 @@ function useSave() {
 	})
 }
 
-function Row({icon, color, label, value, onClick, href, trailing}: {icon: IconName; color: string; label: string; value?: ReactNode; onClick?: () => void; href?: string; trailing?: ReactNode}) {
+function Row({icon, color, label, value, onClick, href, trailing, title}: {icon: IconName; color: string; label: string; value?: ReactNode; onClick?: () => void; href?: string; trailing?: ReactNode; title?: string}) {
 	const inner = (
 		<>
 			<span className="row-ico" style={{'--c': color} as CSSProperties}>
@@ -47,36 +48,20 @@ function Row({icon, color, label, value, onClick, href, trailing}: {icon: IconNa
 	)
 	if (href)
 		return (
-			<a className="row" href={href} target="_blank" rel="noopener noreferrer" style={{minHeight: 56}}>
+			<a className="row" href={href} target="_blank" rel="noopener noreferrer" title={title} style={{minHeight: 56}}>
 				{inner}
 			</a>
 		)
 	if (onClick)
 		return (
-			<button className="row" onClick={onClick} style={{minHeight: 56}}>
+			<button className="row" onClick={onClick} title={title} style={{minHeight: 56}}>
 				{inner}
 			</button>
 		)
 	return (
-		<div className="row static" style={{minHeight: 56}}>
+		<div className="row static" title={title} style={{minHeight: 56}}>
 			{inner}
 		</div>
-	)
-}
-
-export function Switch({on, onChange, label, disabled}: {on: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean}) {
-	return (
-		<button
-			className="switch"
-			role="switch"
-			aria-checked={on}
-			aria-label={label}
-			disabled={disabled}
-			onClick={() => {
-				haptic(6)
-				onChange(!on)
-			}}
-		/>
 	)
 }
 
@@ -354,7 +339,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				<Group title="Software update">
 					<Row icon="sparkle" color="var(--pink)" label="What’s new" value={boot.touch.version} onClick={() => setNotes(true)} />
 					{notes && <WhatsNewSheet releases={allReleases(boot.touch.version)} version={boot.touch.version} onClose={() => setNotes(false)} />}
-					<Row icon="server" color="var(--blue)" label="Omarchy Server" value={boot.server?.version} />
+					<Row icon="server" color="var(--blue)" label="Omarchy Server" value={boot.server?.version} title={formatRunningSince(boot.server?.startedAt, {revision: boot.server?.revision}) || undefined} />
 					{updateError && !updating && (
 						<div className="row static update-error" role="alert">
 							<span className="row-ico" style={{'--c': 'var(--red)'} as CSSProperties}>
@@ -449,7 +434,9 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				{owner && <Row icon="power" color="var(--red)" label="Shut down server" onClick={() => power('shutdown')} />}
 				{owner && <Row icon="danger" color="var(--red)" label="Factory reset" onClick={() => setSheet('reset')} />}
 			</Group>
-			<p className="footer-note">Omarchy Server {boot.touch.version}</p>
+			<p className="footer-note" title={formatRunningSince(boot.server?.startedAt, {revision: boot.server?.revision}) || undefined}>
+				Omarchy Server {boot.touch.version}
+			</p>
 
 			<NameSheet open={sheet === 'name'} current={user.data?.name ?? ''} onClose={close} />
 			<PasswordSheet open={sheet === 'password'} onClose={close} onSignedOut={onSignedOut} />
