@@ -45,6 +45,19 @@ export function createFiles({home, dataDir}) {
 	const favoritesFile = join(dataDir, 'favorites.json')
 	let homeReal = null
 	const roots = async () => (homeReal ??= await realpath(home))
+	// Keys and the rest of omarchyd state live under dataDir, often inside Home. Never serve that tree.
+	const realCache = new Map()
+	async function cachedReal(target) {
+		if (realCache.has(target)) return realCache.get(target)
+		try {
+			const real = await realpath(target)
+			realCache.set(target, real)
+			return real
+		} catch {
+			return null
+		}
+	}
+	const privateRoots = typeof dataDir === 'string' ? [dataDir, join(dataDir, 'assistant')] : []
 
 	// Virtual path -> real path, refusing anything outside /Home or /Trash.
 	async function resolve(virtual, {mustExist = true} = {}) {
@@ -65,6 +78,12 @@ export function createFiles({home, dataDir}) {
 		}
 		const baseReal = top === 'Home' ? base : await realpath(base).catch(() => base)
 		if (resolved !== baseReal && !resolved.startsWith(baseReal + sep)) throw new RpcError('FORBIDDEN', '[outside-home]')
+		const homeRoot = await roots()
+		for (const target of privateRoots) {
+			const blocked = await cachedReal(target)
+			if (!blocked || blocked === homeRoot || homeRoot.startsWith(blocked + sep)) continue
+			if (resolved === blocked || resolved.startsWith(blocked + sep)) throw new RpcError('FORBIDDEN', '[outside-home]')
+		}
 		return {real, top, base}
 	}
 	// Trash lives inside Home, so it's checked first.
