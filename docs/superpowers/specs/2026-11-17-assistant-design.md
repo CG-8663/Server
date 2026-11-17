@@ -1,7 +1,7 @@
 # Omarchy Server assistant
 
 Date: 2026-11-17
-Status: draft — awaiting review of this file
+Status: approved
 Repo: omarchy-server (calledtoconstruct fork). Ship on `feat/assistant` from `upstream/main`. Open a PR against TouchWorkStation/omarchy-server when the slices below are done. Do not mix in `local/security-and-perf` clone paths.
 
 ## 1. Goal
