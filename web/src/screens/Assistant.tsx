@@ -374,21 +374,25 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 								<span>Usage, apps, machines, and the Local swarm.</span>
 							</div>
 						)}
-						{items.map((b) =>
-							b.kind === 'card' ? (
-								<ActionCard key={b.id} action={b.action} onDecide={(id, path) => void decide(id, path)} />
-							) : (
-								<div key={b.id} className={`bubble ${b.role}${b.streaming ? ' live' : ''}`}>
-									{b.content}
-									{b.streaming && <span className="cursor" aria-hidden="true" />}
-								</div>
-							),
-						)}
-						{activity && <p className="assistant-activity">{activity}</p>}
-						{turnError && (
-							<div className="error" role="alert">
-								<Icon name="alert" size={18} />
-								{turnError}
+						{(items.length > 0 || activity || turnError) && (
+							<div className="assistant-thread-end">
+								{items.map((b) =>
+									b.kind === 'card' ? (
+										<ActionCard key={b.id} action={b.action} onDecide={(id, path) => void decide(id, path)} />
+									) : (
+										<div key={b.id} className={`bubble ${b.role}${b.streaming ? ' live' : ''}`}>
+											{b.content}
+											{b.streaming && <span className="cursor" aria-hidden="true" />}
+										</div>
+									),
+								)}
+								{activity && <p className="assistant-activity">{activity}</p>}
+								{turnError && (
+									<div className="error" role="alert">
+										<Icon name="alert" size={18} />
+										{turnError}
+									</div>
+								)}
 							</div>
 						)}
 					</div>

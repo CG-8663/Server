@@ -7880,6 +7880,7 @@ html.page-locked body {
 }
 .assistant-screen > .assistant {
 	flex: 1;
+	min-height: 0;
 }
 .assistant {
 	display: flex;
@@ -7893,13 +7894,13 @@ html.page-locked body {
 .win-body > .assistant {
 	position: absolute;
 	inset: 10px;
-	height: auto;
 }
 .assistant-head {
 	display: flex;
 	align-items: center;
 	gap: 10px;
 	min-height: 40px;
+	flex: none;
 }
 .assistant-head b {
 	font-size: 17px;
@@ -7912,15 +7913,19 @@ html.page-locked body {
 	overflow-y: auto;
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
 	overscroll-behavior: contain;
 }
 .assistant .assistant-thread > .spinner,
 .assistant .assistant-thread > .empty {
 	margin: auto;
 }
-.assistant .assistant-thread > :first-child {
+.assistant .assistant-thread-end {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
 	margin-top: auto;
+	flex: none;
+	width: 100%;
 }
 .assistant .bubble {
 	max-width: min(82%, 520px);
@@ -7965,6 +7970,7 @@ html.page-locked body {
 	display: flex;
 	align-items: flex-end;
 	gap: 8px;
+	flex: none;
 	padding: 6px 6px 6px 12px;
 	border-radius: 18px;
 	background: var(--glass-2);
