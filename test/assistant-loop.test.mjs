@@ -321,6 +321,45 @@ test('appStore_search filters the registry inside the turn', async () => {
 	}
 })
 
+test('apps_list and appStore_app results omit passwords', async () => {
+	const {runProcedure} = factsProcedure(async (name) => {
+		if (name === 'apps.list') return [{id: 'files', name: 'Files', state: 'running', port: 8080, credentials: {defaultUsername: 'admin', defaultPassword: 'app-secret', showBeforeOpen: true}}]
+		if (name === 'appStore.app') return {id: 'jellyfin', name: 'Jellyfin', tagline: 'Media', port: 8096, defaultUsername: 'jelly', defaultPassword: 'store-secret', deterministicPassword: true}
+	})
+	const {seen, fetchImpl} = scripted([
+		toolSse('call_a', 'apps_list', '{}'),
+		toolSse('call_b', 'appStore_app', '{"appId":"jellyfin"}'),
+		textSse('listed'),
+	])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'which apps', emit: () => {}})
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		const raw = await readFile(join(box.dataDir, 'assistant', 'conversations', `${out.conversationId}.json`), 'utf8')
+		assert.equal(raw.includes('app-secret'), false)
+		assert.equal(raw.includes('store-secret'), false)
+		assert.equal(raw.includes('defaultPassword'), false)
+		assert.equal(raw.includes('credentials'), false)
+		const listed = JSON.parse(saved.messages.find((m) => m.name === 'apps_list').content)
+		assert.equal(listed[0].id, 'files')
+		assert.equal(listed[0].name, 'Files')
+		assert.equal(listed[0].state, 'running')
+		assert.equal(listed[0].port, 8080)
+		const detail = JSON.parse(saved.messages.find((m) => m.name === 'appStore_app').content)
+		assert.equal(detail.name, 'Jellyfin')
+		assert.equal(detail.port, 8096)
+		assert.equal(detail.defaultUsername, 'jelly')
+		assert.equal(detail.tagline, 'Media')
+		const posted = JSON.stringify(seen.slice(1).map((s) => s.body.messages))
+		assert.equal(posted.includes('app-secret'), false)
+		assert.equal(posted.includes('store-secret'), false)
+		assert.equal(posted.includes('defaultPassword'), false)
+		assert.equal(posted.includes('credentials'), false)
+	} finally {
+		await box.close()
+	}
+})
+
 test('a failed read is given back to the model', async () => {
 	const {runProcedure} = factsProcedure(async (name) => {
 		if (name === 'system.diskUsage') throw new Error('disk vanished')

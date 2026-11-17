@@ -10,6 +10,18 @@ const MAX_MESSAGES = 40
 
 const textOf = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
 
+const withoutSecrets = (row) => {
+	if (!row || typeof row !== 'object' || Array.isArray(row)) return row
+	const {credentials, defaultPassword, ...rest} = row
+	return rest
+}
+
+function redactToolResult(name, result) {
+	if (name !== 'apps_list' && name !== 'appStore_app') return result
+	if (Array.isArray(result)) return result.map(withoutSecrets)
+	return withoutSecrets(result)
+}
+
 function toOpenAI(m) {
 	if (m.role === 'user') return {role: 'user', content: String(m.content ?? '')}
 	if (m.role === 'assistant') {
@@ -76,7 +88,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, now = 
 		try {
 			if (!runProcedure) return {content: 'tool failed', state: 'error'}
 			const result = read.name === 'appStore_search' ? filterAppStore(await runProcedure('appStore.registry', {}, auth), args) : await runProcedure(read.rpc, args, auth)
-			return {content: textOf(result), state: 'done'}
+			return {content: textOf(redactToolResult(read.name, result)), state: 'done'}
 		} catch (e) {
 			return {content: e?.message || 'tool failed', state: 'error'}
 		}
