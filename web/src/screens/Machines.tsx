@@ -1,15 +1,16 @@
-import {useState} from 'react'
+import {lazy, Suspense, useState} from 'react'
 
 import {SERVER_DESKTOP, type Machine, type PortForward} from '../api'
-import {Console} from '../Console'
 import {useDesktop} from '../desktop/Desktop'
-import {CreateMachine} from '../CreateMachine'
 import {useAction, useMachines} from '../data'
 import {useMachineDetails} from '../machines/api'
 import {BackupsPanel, CloudInitPanel, HardwarePanel, HistoryPanel, MonitorPanel, OptionsPanel, PANELS, SnapshotsPanel, SummaryPanel, usePowerActions, type PanelId} from '../machines/panels'
 import {Icon, type IconName} from '../icons'
-import {LocalSwarm} from '../swarm/Swarm'
 import {Sheet, SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
+
+const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
+const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
+const LocalSwarm = lazy(() => import('../swarm/Swarm').then((m) => ({default: m.LocalSwarm})))
 
 export function osLook(osId = ''): {icon: IconName; bg: string; name: string} {
 	const id = osId.toLowerCase()
@@ -151,9 +152,25 @@ export function Machines() {
 					}}
 				/>
 			)}
-			<LocalSwarm />
-			<CreateMachine open={creating} onClose={() => setCreating(false)} />
-			{consoleMachine && <Console machine={consoleMachine} onClose={() => setConsoleId(null)} />}
+			<Suspense fallback={null}>
+				<LocalSwarm />
+			</Suspense>
+			{creating && (
+				<Suspense fallback={null}>
+					<CreateMachine open={creating} onClose={() => setCreating(false)} />
+				</Suspense>
+			)}
+			{consoleMachine && (
+				<Suspense
+					fallback={
+						<main className="screen center">
+							<span className="spinner" aria-label="Loading" />
+						</main>
+					}
+				>
+					<Console machine={consoleMachine} onClose={() => setConsoleId(null)} />
+				</Suspense>
+			)}
 		</div>
 	)
 }

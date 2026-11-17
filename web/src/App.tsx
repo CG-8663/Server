@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useState, type CSSProperties} from 'react'
+import {lazy, Suspense, useCallback, useEffect, useState, type CSSProperties} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {getBootstrap, query, type Bootstrap, type User, type UserApp} from './api'
@@ -9,17 +9,26 @@ import {OPEN_TERMINAL} from './terminalEvent'
 import {BootstrapContext, useAction, useApps, useNotifications, useUpdates, useUser} from './data'
 import {Icon, type IconName} from './icons'
 import {Apps} from './screens/Apps'
-import {Files} from './screens/Files'
 import {Connect, Login} from './screens/Auth'
 import {Home} from './screens/Home'
-import {Machines} from './screens/Machines'
-import {More} from './screens/More'
-import {Settings} from './screens/Settings'
-import {Store} from './screens/Store'
-import {TerminalScreen} from './Terminal'
 import {Desktop} from './desktop/Desktop'
 import {Backdrop, Sheet, SheetHeader, haptic, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
+
+const Files = lazy(() => import('./screens/Files').then((m) => ({default: m.Files})))
+const Machines = lazy(() => import('./screens/Machines').then((m) => ({default: m.Machines})))
+const More = lazy(() => import('./screens/More').then((m) => ({default: m.More})))
+const Settings = lazy(() => import('./screens/Settings').then((m) => ({default: m.Settings})))
+const Store = lazy(() => import('./screens/Store').then((m) => ({default: m.Store})))
+const TerminalScreen = lazy(() => import('./Terminal').then((m) => ({default: m.TerminalScreen})))
+
+function ScreenFallback() {
+	return (
+		<main className="screen center">
+			<span className="spinner" aria-label="Loading" />
+		</main>
+	)
+}
 
 type Tab = 'home' | 'apps' | 'files' | 'machines' | 'more' | 'settings' | 'store'
 // `tone`: the palette colour each tab's icon takes in the themed looks (the same as on the desktop).
@@ -179,15 +188,17 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 						Lost contact with your server. Retrying…
 					</div>
 				)}
-				<main key={tab} className="screen">
-					{tab === 'home' && <Home onOpenApp={(a) => setAppId(a.id)} go={go} onTerminal={openTerminal} />}
-					{tab === 'apps' && <Apps onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} onStore={() => go('store')} />}
-					{tab === 'files' && <Files />}
-					{tab === 'store' && <Store onOpenInstalled={(a) => setAppId(a.id)} onBack={() => history.back()} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
-					{tab === 'machines' && <Machines />}
-					{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} />}
-					{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={() => history.back()} />}
-				</main>
+				<Suspense fallback={<ScreenFallback />}>
+					<main key={tab} className="screen">
+						{tab === 'home' && <Home onOpenApp={(a) => setAppId(a.id)} go={go} onTerminal={openTerminal} />}
+						{tab === 'apps' && <Apps onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} onStore={() => go('store')} />}
+						{tab === 'files' && <Files />}
+						{tab === 'store' && <Store onOpenInstalled={(a) => setAppId(a.id)} onBack={() => history.back()} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
+						{tab === 'machines' && <Machines />}
+						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} />}
+						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={() => history.back()} />}
+					</main>
+				</Suspense>
 			</div>
 			<nav className="dock" aria-label="Main">
 				<span className="indicator" style={{transform: `translateX(${Math.max(index, 0) * 100}%)`, opacity: index < 0 ? 0 : 1}} aria-hidden="true" />
@@ -202,7 +213,11 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 			<AppSheet app={app} update={update} onClose={() => setAppId(null)} onTerminal={openTerminal} />
 			{viewing && <AppViewer app={viewing} onClose={() => setViewing(null)} />}
 
-			{terminal && <TerminalScreen app={terminal.app} input={terminal.input} onClose={() => setTerminal(null)} />}
+			{terminal && (
+				<Suspense fallback={<ScreenFallback />}>
+					<TerminalScreen app={terminal.app} input={terminal.input} onClose={() => setTerminal(null)} />
+				</Suspense>
+			)}
 			<NotificationsSheet
 				open={bellOpen}
 				notes={notes}
