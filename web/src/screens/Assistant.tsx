@@ -53,6 +53,9 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 	const seq = useRef(0)
 	const turn = useRef(0)
 	const deciding = useRef(new Set<string>())
+	const decisionAbort = useRef(new Map<string, AbortController>())
+	const followQueued = useRef(false)
+	const pumping = useRef(false)
 	const focused = useRef(false)
 	const user = useUser()
 	const member = user.data?.role === 'member'
@@ -79,12 +82,15 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 	const [draft, setDraft] = useState('')
 	const [activity, setActivity] = useState<string | null>(null)
 	const [turnError, setTurnError] = useState<string | null>(null)
+	const [decidingCount, setDecidingCount] = useState(0)
+	const noteDeciding = () => setDecidingCount(deciding.current.size)
 
 	useEffect(() => {
 		alive.current = true
 		return () => {
 			alive.current = false
 			acRef.current?.abort()
+			for (const ac of decisionAbort.current.values()) ac.abort()
 		}
 	}, [])
 
@@ -214,7 +220,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 
 	const send = async () => {
 		const text = draft.trim()
-		if (!text || items === null) return
+		if (!text || items === null || deciding.current.size > 0) return
 		const token = ++turn.current
 		const previous = acRef.current
 		previous?.abort()
@@ -228,7 +234,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 				conversationIdRef.current = found
 			}
 		}
-		if (turn.current !== token || !alive.current) return
+		if (turn.current !== token || !alive.current || deciding.current.size > 0) return
 		const ac = new AbortController()
 		acRef.current = ac
 		const id = ++seq.current
@@ -242,6 +248,28 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 		await runStream(conversationId ? {conversationId, message: text} : {message: text}, ac, aid)
 	}
 
+	const pumpFollow = async () => {
+		if (pumping.current || deciding.current.size > 0 || !followQueued.current || !alive.current) return
+		pumping.current = true
+		followQueued.current = false
+		const conversationId = conversationIdRef.current
+		acRef.current?.abort()
+		const ac = new AbortController()
+		acRef.current = ac
+		const id = ++seq.current
+		const aid = `live-${id}`
+		stick.current = true
+		setTurnError(null)
+		setActivity(null)
+		if (conversationId) setItems((bs) => [...(bs ?? []), {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
+		try {
+			if (conversationId) await runStream({conversationId, continue: true}, ac, aid)
+		} finally {
+			pumping.current = false
+			if (followQueued.current && deciding.current.size === 0 && alive.current) void pumpFollow()
+		}
+	}
+
 	const decide = async (actionId: string, path: 'assistant.approve' | 'assistant.reject') => {
 		if (deciding.current.has(actionId)) return
 		const conversationId = conversationIdRef.current
@@ -251,16 +279,21 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 		}
 		const cur = itemsRef.current?.find((b) => b.kind === 'card' && b.action.id === actionId)
 		if (!cur || cur.kind !== 'card' || cur.action.status !== 'pending') return
+		const own = new AbortController()
+		decisionAbort.current.set(actionId, own)
 		deciding.current.add(actionId)
-		const token = ++turn.current
+		noteDeciding()
+		// Drop a send that is still resolving the thread id. The follow-up does not use this token.
+		++turn.current
 		acRef.current?.abort()
 		haptic(6)
 		setTurnError(null)
 		setActivity(null)
 		setItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: {...b.action, status: 'running'}} : b)) ?? bs)
+		let follow = false
 		try {
 			const updated = await mutate<AssistantAction>(path, {actionId})
-			if (!alive.current) return
+			if (!alive.current || own.signal.aborted) return
 			setItems((bs) =>
 				bs?.map((b) => {
 					if (b.kind !== 'card' || b.action.id !== actionId) return b
@@ -268,24 +301,21 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 					return {...b, action: cardAction({...b.action, ...extra, id: actionId})}
 				}) ?? bs,
 			)
-			if (turn.current !== token) return
-			const ac = new AbortController()
-			acRef.current = ac
-			const id = ++seq.current
-			const aid = `live-${id}`
-			stick.current = true
-			setItems((bs) => [...(bs ?? []), {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
-			await runStream({conversationId, continue: true}, ac, aid)
+			follow = true
 		} catch (err) {
-			if (!alive.current) return
+			if (!alive.current || own.signal.aborted) return
 			if (err instanceof ApiError) {
 				setItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: cardAction({...b.action, id: actionId, status: 'error', error: err.message})} : b)) ?? bs)
 			} else {
 				setItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId && b.action.status === 'running' ? {...b, action: {...b.action, status: 'pending'}} : b)) ?? bs)
-				if (turn.current === token) setTurnError(err instanceof Error ? err.message : 'That step didn’t finish')
+				setTurnError(err instanceof Error ? err.message : 'That step didn’t finish')
 			}
 		} finally {
 			deciding.current.delete(actionId)
+			decisionAbort.current.delete(actionId)
+			if (alive.current) noteDeciding()
+			if (follow) followQueued.current = true
+			if (followQueued.current && deciding.current.size === 0 && alive.current) void pumpFollow()
 		}
 	}
 
@@ -376,6 +406,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 							placeholder="Message"
 							aria-label="Message"
 							enterKeyHint="send"
+							disabled={decidingCount > 0}
 							onChange={(e) => {
 								setDraft(e.target.value)
 								fit(e.target)
@@ -387,7 +418,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 								}
 							}}
 						/>
-						<button type="submit" className="btn primary small" disabled={!draft.trim()}>
+						<button type="submit" className="btn primary small" disabled={decidingCount > 0 || !draft.trim()}>
 							Send
 						</button>
 					</form>
