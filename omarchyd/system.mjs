@@ -177,6 +177,82 @@ export async function cpuTemperature() {
 	return {warning: temperature >= 90 ? 'hot' : temperature >= 80 ? 'warm' : 'normal', temperature}
 }
 
+const num = (s) => {
+	if (s == null) return null
+	const t = String(s).trim()
+	if (!t || t === '[N/A]' || /^n\/?a$/i.test(t)) return null
+	const n = Number(t)
+	return Number.isFinite(n) ? n : null
+}
+
+function nvidiaGpu(line) {
+	const parts = line.split(',').map((s) => s.trim())
+	if (parts.length < 7) return null
+	const [index, name, uuid, used, memUsed, memTotal, temp] = parts
+	const i = num(index)
+	if (i == null || !name) return null
+	const mib = (v) => {
+		const n = num(v)
+		return n == null ? null : Math.round(n * 1024 * 1024)
+	}
+	const t = num(temp)
+	return {
+		id: uuid || `nvidia-${i}`,
+		index: i,
+		name,
+		used: num(used),
+		memoryUsed: mib(memUsed),
+		memoryTotal: mib(memTotal),
+		temperature: t == null ? null : Math.round(t),
+	}
+}
+
+async function nvidiaGpus(run) {
+	const out = await run('nvidia-smi', ['--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits'], 8_000)
+	const gpus = []
+	for (const line of String(out).split('\n')) {
+		if (!line.trim()) continue
+		const g = nvidiaGpu(line)
+		if (g) gpus.push(g)
+	}
+	return gpus
+}
+
+async function drmGpus(list, readText) {
+	const names = await list('/sys/class/drm').catch(() => [])
+	const cards = names.filter((n) => /^card\d+$/.test(n)).sort((a, b) => Number(a.slice(4)) - Number(b.slice(4)))
+	const gpus = []
+	for (const card of cards) {
+		const dir = `/sys/class/drm/${card}/device`
+		const used = num(await readText(`${dir}/gpu_busy_percent`))
+		const memoryUsed = num(await readText(`${dir}/mem_info_vram_used`))
+		const memoryTotal = num(await readText(`${dir}/mem_info_vram_total`))
+		if (used == null && memoryUsed == null && memoryTotal == null) continue
+		let temperature = null
+		for (const hw of await list(`${dir}/hwmon`).catch(() => [])) {
+			const t = num(await readText(`${dir}/hwmon/${hw}/temp1_input`))
+			if (t != null) {
+				temperature = Math.round(t / 1000)
+				break
+			}
+		}
+		const name = (await readText(`${dir}/product_name`)).trim() || card
+		gpus.push({id: `drm-${card}`, index: Number(card.slice(4)), name, used, memoryUsed, memoryTotal, temperature})
+	}
+	return gpus
+}
+
+// Each GPU we can see: NVIDIA through nvidia-smi, otherwise AMD (and similar) through sysfs.
+export async function gpuUsage({run = sh, list = readdir, read: readText = read} = {}) {
+	try {
+		const nvidia = await nvidiaGpus(run)
+		if (nvidia.length) return {gpus: nvidia}
+		return {gpus: await drmGpus(list, readText)}
+	} catch {
+		return {gpus: []}
+	}
+}
+
 export function ipAddresses() {
 	const out = []
 	for (const [name, list] of Object.entries(os.networkInterfaces())) {

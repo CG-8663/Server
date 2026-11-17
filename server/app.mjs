@@ -48,6 +48,7 @@ export const ALLOWED = {
 	'system.cpuUsage': 'query',
 	'system.memoryUsage': 'query',
 	'system.diskUsage': 'query',
+	'system.gpuUsage': 'query',
 	'system.getIpAddresses': 'query',
 	'system.checkUpdate': 'query',
 	'user.get': 'query',

@@ -1,8 +1,8 @@
 import {useEffect, useMemo, useRef, useState, type CSSProperties} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {diskPct, logout, mutate, query, type DiskUsage, type UsageItem, type Wallpaper} from '../api'
-import {useApps, useBootstrap, useCpu, useDisk, useMemory, useTemp, useUptime, useUser} from '../data'
+import {diskPct, logout, mutate, query, type DiskUsage, type GpuInfo, type UsageItem, type Wallpaper} from '../api'
+import {useApps, useBootstrap, useCpu, useDisk, useGpus, useMemory, useTemp, useUptime, useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {ACCENTS, AppIcon, KV, Segmented, SolidColors, THEMES, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, useOmarchyThemes, preparePhoto, useConfirm, useToast, type Prefs} from '../ui'
@@ -49,6 +49,35 @@ function Spark({series, max = 100, color, label}: {series: number[]; max?: numbe
 }
 
 const BAR = ['var(--blue)', 'var(--mauve)', 'var(--teal)', 'var(--peach)', 'var(--pink)', 'var(--green)']
+const GPU_COLORS = ['var(--green)', 'var(--teal)', 'var(--peach)', 'var(--pink)']
+
+function shortGpuName(name: string) {
+	return name.replace(/^NVIDIA GeForce /, '').replace(/^NVIDIA /, '').replace(/^AMD Radeon /, '').replace(/^Intel\(R\) /, '').replace(/^Intel /, '')
+}
+
+function GpuCard({gpu, stamp, color, title}: {gpu: GpuInfo; stamp: number; color: string; title: string}) {
+	const series = useHistory(gpu.used ?? undefined, stamp)
+	const vram =
+		gpu.memoryUsed != null && gpu.memoryTotal != null
+			? `${bytes(gpu.memoryUsed, 1, 1024)} of ${bytes(gpu.memoryTotal, 0, 1024)}`
+			: gpu.memoryTotal != null
+				? bytes(gpu.memoryTotal, 0, 1024)
+				: null
+	const bits = [shortGpuName(gpu.name), vram, gpu.temperature != null ? `${Math.round(gpu.temperature)}°C` : null].filter(Boolean)
+	return (
+		<section className="glass stat" aria-label={`${gpu.name} usage`}>
+			<div className="k">
+				<Icon name="gpu" size={16} /> {title}
+			</div>
+			<div className="v">
+				{gpu.used != null ? gpu.used.toFixed(0) : '–'}
+				{gpu.used != null && <small>%</small>}
+			</div>
+			<div className="sub">{bits.join(' · ') || ' '}</div>
+			<Spark series={series} color={color} label={`${gpu.name} usage over the last two minutes`} />
+		</section>
+	)
+}
 
 function Usage() {
 	const cpu = useCpu()
@@ -107,6 +136,8 @@ function Live() {
 	const disk = useDisk()
 	const temp = useTemp()
 	const uptime = useUptime()
+	const gpus = useGpus()
+	const gpuList = gpus.data?.gpus ?? []
 	const cpuSeries = useHistory(cpu.data?.totalUsed, cpu.dataUpdatedAt)
 	const memSeries = useHistory(mem.data ? (mem.data.totalUsed / mem.data.size) * 100 : undefined, mem.dataUpdatedAt)
 	const parts = disk.data
@@ -164,6 +195,19 @@ function Live() {
 					</div>
 				</section>
 			</div>
+			{gpuList.length > 0 && (
+				<div className="split" style={{marginTop: 12}}>
+					{gpuList.map((gpu, i) => (
+						<GpuCard
+							key={gpu.id}
+							gpu={gpu}
+							stamp={gpus.dataUpdatedAt}
+							color={GPU_COLORS[i % GPU_COLORS.length]}
+							title={gpuList.length > 1 ? `GPU ${gpu.index}` : 'GPU'}
+						/>
+					))}
+				</div>
+			)}
 			<section className="glass card" style={{marginTop: 12}} aria-label="Storage">
 				<div className="card-head">
 					<strong>Storage</strong>
