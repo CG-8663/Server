@@ -1,52 +1,11 @@
-import {useEffect, useMemo, useRef, useState, type CSSProperties} from 'react'
+import {useRef, useState, type CSSProperties} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {diskPct, logout, mutate, query, type DiskUsage, type GpuInfo, type UsageItem, type Wallpaper} from '../api'
 import {useApps, useBootstrap, useCpu, useDisk, useGpus, useMemory, useTemp, useUptime, useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
-import {ACCENTS, AppIcon, KV, Row, Segmented, SolidColors, THEMES, VersionTag, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, useOmarchyThemes, preparePhoto, useConfirm, useToast, type Prefs} from '../ui'
-
-// One point per successful poll (keyed on fetch time, so flat values still plot).
-function useHistory(value: number | undefined, stamp: number, size = 40) {
-	const [series, setSeries] = useState<number[]>([])
-	useEffect(() => {
-		if (value === undefined || !stamp) return
-		setSeries((s) => [...s.slice(-(size - 1)), value])
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [stamp])
-	return series
-}
-
-function Spark({series, max = 100, color, label}: {series: number[]; max?: number; color: string; label: string}) {
-	const w = 300
-	const h = 54
-	const id = useMemo(() => `g${Math.random().toString(36).slice(2)}`, [])
-	if (series.length < 2) return <svg className="spark" viewBox={`0 0 ${w} ${h}`} aria-hidden="true" />
-	const step = w / Math.max(series.length - 1, 1)
-	const y = (v: number) => h - 3 - (Math.min(v, max) / max) * (h - 8)
-	const pts = series.map((v, i) => [i * step, y(v)] as const)
-	// Smooth the line with simple cubic segments.
-	let d = `M${pts[0][0]},${pts[0][1]}`
-	for (let i = 1; i < pts.length; i++) {
-		const [x0, y0] = pts[i - 1]
-		const [x1, y1] = pts[i]
-		const cx = (x0 + x1) / 2
-		d += ` C${cx},${y0} ${cx},${y1} ${x1},${y1}`
-	}
-	return (
-		<svg className="spark" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label={label}>
-			<defs>
-				<linearGradient id={id} x1="0" x2="0" y1="0" y2="1">
-					<stop offset="0" stopColor={color} stopOpacity="0.35" />
-					<stop offset="1" stopColor={color} stopOpacity="0" />
-				</linearGradient>
-			</defs>
-			<path d={`${d} L${w},${h} L0,${h} Z`} fill={`url(#${id})`} />
-			<path d={d} fill="none" stroke={color} strokeWidth="2.2" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
-		</svg>
-	)
-}
+import {ACCENTS, AppIcon, Card, CardHead, KV, Row, Segmented, SolidColors, StatCard, THEMES, VersionTag, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, preparePhoto, useConfirm, useHistory, useOmarchyThemes, useToast, type Prefs} from '../ui'
 
 const BAR = ['var(--blue)', 'var(--mauve)', 'var(--teal)', 'var(--peach)', 'var(--pink)', 'var(--green)']
 const GPU_COLORS = ['var(--green)', 'var(--teal)', 'var(--peach)', 'var(--pink)']
@@ -65,17 +24,15 @@ function GpuCard({gpu, stamp, color, title}: {gpu: GpuInfo; stamp: number; color
 				: null
 	const bits = [shortGpuName(gpu.name), vram, gpu.temperature != null ? `${Math.round(gpu.temperature)}°C` : null].filter(Boolean)
 	return (
-		<section className="glass stat" aria-label={`${gpu.name} usage`}>
-			<div className="k">
-				<Icon name="gpu" size={16} /> {title}
-			</div>
-			<div className="v">
-				{gpu.used != null ? gpu.used.toFixed(0) : '–'}
-				{gpu.used != null && <small>%</small>}
-			</div>
-			<div className="sub">{bits.join(' · ') || ' '}</div>
-			<Spark series={series} color={color} label={`${gpu.name} usage over the last two minutes`} />
-		</section>
+		<StatCard
+			icon="gpu"
+			label={title}
+			ariaLabel={`${gpu.name} usage`}
+			value={gpu.used != null ? gpu.used.toFixed(0) : '–'}
+			unit={gpu.used != null ? '%' : undefined}
+			sub={bits.join(' · ') || ' '}
+			spark={{series, color, label: `${gpu.name} usage over the last two minutes`}}
+		/>
 	)
 }
 
@@ -95,10 +52,8 @@ function Usage() {
 	const top = [...source.items].sort((a, b) => b.used - a.used).slice(0, 6)
 	const max = Math.max(...top.map((t) => t.used), 0.0001)
 	return (
-		<section className="glass card" style={{marginTop: 12}}>
-			<div className="card-head">
-				<strong>What’s using it</strong>
-			</div>
+		<Card style={{marginTop: 12}}>
+			<CardHead title="What’s using it" />
 			<Segmented
 				value={tab}
 				onChange={setTab}
@@ -126,7 +81,7 @@ function Usage() {
 					)
 				})}
 			</div>
-		</section>
+		</Card>
 	)
 }
 
@@ -151,49 +106,31 @@ function Live() {
 	return (
 		<>
 			<div className="split">
-				<section className="glass stat">
-					<div className="k">
-						<Icon name="cpu" size={16} /> CPU
-					</div>
-					<div className="v">
-						{cpu.data ? cpu.data.totalUsed.toFixed(0) : '–'}
-						<small>%</small>
-					</div>
-					<div className="sub">{cpu.data ? `${cpu.data.threads} threads` : ' '}</div>
-					<Spark series={cpuSeries} color="var(--blue)" label="CPU usage over the last two minutes" />
-				</section>
-				<section className="glass stat">
-					<div className="k">
-						<Icon name="memory" size={16} /> Memory
-					</div>
-					<div className="v">
-						{mem.data ? bytes(mem.data.totalUsed, 1, 1024).split(' ')[0] : '–'}
-						<small>{mem.data ? bytes(mem.data.totalUsed, 1, 1024).split(' ')[1] : ''}</small>
-					</div>
-					<div className="sub">of {bytes(mem.data?.size, 0, 1024)}</div>
-					<Spark series={memSeries} color="var(--mauve)" label="Memory usage over the last two minutes" />
-				</section>
-				<section className="glass stat">
-					<div className="k">
-						<Icon name="thermo" size={16} /> Temperature
-					</div>
-					<div className="v">
-						{temp.data?.temperature != null ? Math.round(temp.data.temperature) : '–'}
-						{temp.data?.temperature != null && <small>°C</small>}
-					</div>
-					<div className="sub" style={{paddingBottom: 4, textTransform: temp.data?.temperature != null ? 'capitalize' : undefined}}>
-						{temp.data?.temperature != null ? temp.data.warning : temp.data?.reason === 'virtual' ? 'Not available in a virtual machine' : temp.data ? 'No sensor found' : ' '}
-					</div>
-				</section>
-				<section className="glass stat">
-					<div className="k">
-						<Icon name="clock" size={16} /> Uptime
-					</div>
-					<div className="v">{duration(uptime.data)}</div>
-					<div className="sub" style={{paddingBottom: 4}}>
-						since last restart
-					</div>
-				</section>
+				<StatCard
+					icon="cpu"
+					label="CPU"
+					value={cpu.data ? cpu.data.totalUsed.toFixed(0) : '–'}
+					unit="%"
+					sub={cpu.data ? `${cpu.data.threads} threads` : ' '}
+					spark={{series: cpuSeries, color: 'var(--blue)', label: 'CPU usage over the last two minutes'}}
+				/>
+				<StatCard
+					icon="memory"
+					label="Memory"
+					value={mem.data ? bytes(mem.data.totalUsed, 1, 1024).split(' ')[0] : '–'}
+					unit={mem.data ? bytes(mem.data.totalUsed, 1, 1024).split(' ')[1] : ''}
+					sub={`of ${bytes(mem.data?.size, 0, 1024)}`}
+					spark={{series: memSeries, color: 'var(--mauve)', label: 'Memory usage over the last two minutes'}}
+				/>
+				<StatCard
+					icon="thermo"
+					label="Temperature"
+					value={temp.data?.temperature != null ? Math.round(temp.data.temperature) : '–'}
+					unit={temp.data?.temperature != null ? '°C' : undefined}
+					sub={temp.data?.temperature != null ? temp.data.warning : temp.data?.reason === 'virtual' ? 'Not available in a virtual machine' : temp.data ? 'No sensor found' : ' '}
+					subStyle={{paddingBottom: 4, textTransform: temp.data?.temperature != null ? 'capitalize' : undefined}}
+				/>
+				<StatCard icon="clock" label="Uptime" value={duration(uptime.data)} sub="since last restart" subStyle={{paddingBottom: 4}} />
 			</div>
 			{gpuList.length > 0 && (
 				<div className="split" style={{marginTop: 12}}>
@@ -208,11 +145,11 @@ function Live() {
 					))}
 				</div>
 			)}
-			<section className="glass card" style={{marginTop: 12}} aria-label="Storage">
-				<div className="card-head">
-					<strong>Storage</strong>
-					<span>{disk.data ? `${bytes(disk.data.available, 0)} free of ${bytes(disk.data.size, 0)} · ${Math.round(diskPct(disk.data))}% used` : ''}</span>
-				</div>
+			<Card style={{marginTop: 12}} label="Storage">
+				<CardHead
+					title="Storage"
+					extra={disk.data ? `${bytes(disk.data.available, 0)} free of ${bytes(disk.data.size, 0)} · ${Math.round(diskPct(disk.data))}% used` : ''}
+				/>
 				<div className="stacked" aria-hidden="true">
 					{parts.map((p) => (
 						<i key={p.label} style={{width: `${(p.value / (disk.data?.size || 1)) * 100}%`, background: p.color}} />
@@ -229,7 +166,7 @@ function Live() {
 				</div>
 				{disk.data?.measuring && <p className="muted" style={{fontSize: 12.5, margin: '8px 0 0'}}>Measuring apps, machines and files…</p>}
 				{disk.data?.drive && disk.data.drive.notInUse > 0 && <UnusedSpace disk={disk.data} />}
-			</section>
+			</Card>
 			<PoolsCard />
 		</>
 	)
@@ -271,7 +208,7 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 	}
 
 	return (
-		<section className="glass card">
+		<Card>
 			<input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => upload(e.target.files?.[0])} />
 			<div className="themes" role="radiogroup" aria-label="Theme">
 				{THEMES.map((t) => {
@@ -368,7 +305,7 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 			<p className="footer-note" style={{textAlign: 'left', margin: '14px 2px 0'}}>
 				Saved to your account, so it follows you to every phone you sign in on.
 			</p>
-		</section>
+		</Card>
 	)
 }
 
@@ -516,11 +453,8 @@ function PoolsCard() {
 	const pools = useQuery({queryKey: ['storage.pools'], queryFn: () => query<PoolInfo[]>('storage.pools'), refetchInterval: 30_000, retry: false})
 	if (!pools.data?.length) return null
 	return (
-		<section className="glass card" style={{marginTop: 12}} aria-label="Storage pools">
-			<div className="card-head">
-				<strong>Storage pools</strong>
-				<span>{pools.data.length} pool{pools.data.length > 1 ? 's' : ''}</span>
-			</div>
+		<Card style={{marginTop: 12}} label="Storage pools">
+			<CardHead title="Storage pools" extra={`${pools.data.length} pool${pools.data.length > 1 ? 's' : ''}`} />
 			{pools.data.map((p) => {
 				const used = p.size != null && p.free != null ? p.size - p.free : null
 				const pct = used != null && p.size ? (100 * used) / p.size : 0
@@ -545,6 +479,6 @@ function PoolsCard() {
 					</div>
 				)
 			})}
-		</section>
+		</Card>
 	)
 }

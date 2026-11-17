@@ -5,7 +5,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {logout, mutate, query, type ActiveSession} from '../api'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
-import {Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
+import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
 import {Appearance} from './More'
 import {OmarchyThemes} from '../OmarchyThemes'
 import {StoragePage} from './Storage'
@@ -507,7 +507,7 @@ function TwoFactorSheet({open, enabled, onClose}: {open: boolean; enabled: boole
 			}
 		>
 			{!enabled && (
-				<div className="glass card" style={{borderRadius: 18, marginBottom: 16}}>
+				<Card style={{borderRadius: 18, marginBottom: 16}}>
 					<p className="prose" style={{margin: '0 0 12px'}}>
 						1. Add your server to an authenticator app (Google Authenticator, 1Password, Authy…).
 					</p>
@@ -536,7 +536,7 @@ function TwoFactorSheet({open, enabled, onClose}: {open: boolean; enabled: boole
 					<p className="prose" style={{margin: '14px 0 0'}}>
 						2. Enter the 6-digit code it shows.
 					</p>
-				</div>
+				</Card>
 			)}
 			<Field
 				id="code"
