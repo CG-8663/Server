@@ -32,6 +32,55 @@ test('addKey stores the secret on disk and listPublic never returns it', async (
 	}
 })
 
+test('openai-compatible accepts an empty API key', async () => {
+	const dataDir = await tmp()
+	try {
+		const keys = createKeyStore({dataDir})
+		const row = await keys.add('owner', {
+			name: 'Local Ollama',
+			provider: 'openai-compatible',
+			apiKey: '',
+			model: 'spark-x2.5-4b',
+			baseUrl: 'http://127.0.0.1:11434/v1',
+		})
+		assert.equal(row.last4, '')
+		assert.equal(row.apiKey, undefined)
+		const raw = JSON.parse(await readFile(join(dataDir, 'assistant', 'keys.json'), 'utf8'))
+		assert.equal(raw.keys[0].apiKey, '')
+		await assert.rejects(
+			() => keys.add('owner', {name: 'x', provider: 'spacexai', apiKey: '', model: 'grok-4.7'}),
+			/API key/,
+		)
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
+test('openai-compatible adds /v1 when the base URL has no path', async () => {
+	const dataDir = await tmp()
+	try {
+		const keys = createKeyStore({dataDir})
+		const row = await keys.add('owner', {
+			name: 'Local Ollama',
+			provider: 'openai-compatible',
+			apiKey: 'ollama',
+			model: 'spark-x2.5-4b',
+			baseUrl: 'http://127.0.0.1:11434',
+		})
+		assert.equal(row.baseUrl, 'http://127.0.0.1:11434/v1')
+		const already = await keys.add('owner', {
+			name: 'with v1',
+			provider: 'openai-compatible',
+			apiKey: 'ollama',
+			model: 'llama',
+			baseUrl: 'http://127.0.0.1:11434/v1/',
+		})
+		assert.equal(already.baseUrl, 'http://127.0.0.1:11434/v1')
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
 test('a member cannot use or list a key until it is shared or default', async () => {
 	const dataDir = await tmp()
 	try {

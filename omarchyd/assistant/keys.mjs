@@ -8,6 +8,14 @@ import {RpcError} from '../rpc.mjs'
 const SPACEXAI = 'https://api.x.ai/v1'
 const ID = () => 'k_' + randomBytes(6).toString('hex')
 const last4 = (s) => String(s).slice(-4)
+const normalizeBaseUrl = (raw) => {
+	const s = String(raw ?? '').trim().replace(/\/+$/, '')
+	try {
+		const u = new URL(s)
+		if (!u.pathname || u.pathname === '/') return `${u.origin}/v1`
+	} catch {}
+	return s
+}
 const publicOf = (k, userId) => ({
 	id: k.id,
 	name: k.name,
@@ -47,11 +55,12 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			const provider = input?.provider === 'openai-compatible' ? 'openai-compatible' : input?.provider === 'spacexai' ? 'spacexai' : null
 			if (!provider) throw new RpcError('BAD_REQUEST', 'Choose SpaceXAI or an OpenAI-compatible endpoint')
 			const apiKey = String(input?.apiKey ?? '').trim()
-			if (apiKey.length < 4 || apiKey.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+			if (apiKey.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+			if (provider === 'spacexai' && apiKey.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')
 			const model = String(input?.model ?? '').trim()
 			if (!model || model.length > 80) throw new RpcError('BAD_REQUEST', 'Enter a model id')
 			const name = String(input?.name ?? '').trim().slice(0, 48) || (provider === 'spacexai' ? 'SpaceXAI' : 'API')
-			let baseUrl = provider === 'spacexai' ? SPACEXAI : String(input?.baseUrl ?? '').trim().replace(/\/+$/, '')
+			let baseUrl = provider === 'spacexai' ? SPACEXAI : normalizeBaseUrl(input?.baseUrl)
 			if (provider === 'openai-compatible') {
 				if (!/^https?:\/\/[^\s]+/i.test(baseUrl) || baseUrl.length > 200) throw new RpcError('BAD_REQUEST', 'Enter the API base URL')
 			}
@@ -81,11 +90,16 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			if (k.ownerUserId === actor.userId) {
 				if (typeof input?.name === 'string') k.name = input.name.trim().slice(0, 48) || k.name
 				if (typeof input?.model === 'string' && input.model.trim()) k.model = input.model.trim().slice(0, 80)
-				if (typeof input?.apiKey === 'string' && input.apiKey.trim().length >= 4) {
-					k.apiKey = input.apiKey.trim()
-					k.last4 = last4(k.apiKey)
+				if (typeof input?.apiKey === 'string') {
+					const next = input.apiKey.trim()
+					if (next.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+					if (k.provider === 'spacexai' && next.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+					if (k.provider === 'openai-compatible' || next.length >= 4) {
+						k.apiKey = next
+						k.last4 = last4(k.apiKey)
+					}
 				}
-				if (k.provider === 'openai-compatible' && typeof input?.baseUrl === 'string') k.baseUrl = input.baseUrl.trim().replace(/\/+$/, '')
+				if (k.provider === 'openai-compatible' && typeof input?.baseUrl === 'string') k.baseUrl = normalizeBaseUrl(input.baseUrl)
 				if (Array.isArray(input?.sharedWith)) k.sharedWith = [...new Set(input.sharedWith.map((id) => String(id)).filter((id) => id && id !== k.ownerUserId))].slice(0, 32)
 			}
 			k.updatedAt = now()

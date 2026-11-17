@@ -503,7 +503,8 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 						<span className="main">
 							<b style={{fontWeight: 550}}>{PROVIDER_LABEL[k.provider]}</b>
 							<span>
-								{k.model} · …{k.last4}
+								{k.model}
+								{k.last4 ? ` · …${k.last4}` : ''}
 							</span>
 						</span>
 					</div>
@@ -567,7 +568,8 @@ function AddKeySheet({open, onClose}: {open: boolean; onClose: () => void}) {
 		setApiKey('')
 		setBaseUrl('')
 	}, [open])
-	const ready = apiKey.trim().length >= 4 && !!model.trim() && (provider === 'spacexai' || /^https?:\/\/[^\s]+/i.test(baseUrl.trim()))
+	const keyOk = provider === 'openai-compatible' || apiKey.trim().length >= 4
+	const ready = keyOk && !!model.trim() && (provider === 'spacexai' || /^https?:\/\/[^\s]+/i.test(baseUrl.trim()))
 	return (
 		<FormSheet
 			open={open}
@@ -597,7 +599,10 @@ function AddKeySheet({open, onClose}: {open: boolean; onClose: () => void}) {
 			<Segmented
 				label="Provider"
 				value={provider}
-				onChange={setProvider}
+				onChange={(v) => {
+					setProvider(v)
+					if (v === 'openai-compatible' && !baseUrl.trim()) setBaseUrl('http://127.0.0.1:11434/v1')
+				}}
 				options={[
 					{id: 'spacexai', label: 'SpaceXAI'},
 					{id: 'openai-compatible', label: 'OpenAI-compatible'},
@@ -609,12 +614,21 @@ function AddKeySheet({open, onClose}: {open: boolean; onClose: () => void}) {
 				label="Model"
 				value={model}
 				onChange={(e) => setModel(e.target.value)}
-				placeholder={provider === 'spacexai' ? 'grok-4.7' : undefined}
+				placeholder={provider === 'spacexai' ? 'grok-4.7' : 'llama3.2'}
+				hint={provider === 'openai-compatible' ? 'Must match a model id the endpoint serves.' : undefined}
 				autoCapitalize="off"
 				autoCorrect="off"
 				spellCheck={false}
 			/>
-			<Field id="ask-key" label="API key" type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+			<Field
+				id="ask-key"
+				label="API key"
+				type="password"
+				autoComplete="off"
+				value={apiKey}
+				onChange={(e) => setApiKey(e.target.value)}
+				hint={provider === 'openai-compatible' ? 'Leave blank for local Ollama.' : undefined}
+			/>
 			{provider === 'openai-compatible' && (
 				<Field
 					id="ask-url"
@@ -622,6 +636,7 @@ function AddKeySheet({open, onClose}: {open: boolean; onClose: () => void}) {
 					value={baseUrl}
 					onChange={(e) => setBaseUrl(e.target.value)}
 					placeholder="http://127.0.0.1:11434/v1"
+					hint="Include /v1. Local Ollama is http://127.0.0.1:11434/v1."
 					autoCapitalize="off"
 					autoCorrect="off"
 					spellCheck={false}
