@@ -1,7 +1,9 @@
 import {useMemo} from 'react'
 
 import {diskPct, type UserApp} from '../api'
-import {useApps, useCpu, useDisk, useMemory, useRecent, useTemp, useUpdates, useUptime, useUser} from '../data'
+import {useApps, useBattery, useCpu, useDisk, useGpus, useMemory, useRecent, useTemp, useUpdates, useUptime, useUser} from '../data'
+import {batteryGaugeItem} from '../battery'
+import {gpuGaugeItems} from '../gauges'
 import {Icon} from '../icons'
 import {AppIcon, Ring, StoreIcon, TerminalIcon, appStatus, bytes, duration, greeting, haptic, isAppBusy, levelColor, pct, today} from '../ui'
 
@@ -9,6 +11,8 @@ export function Gauges({onClick}: {onClick?: () => void}) {
 	const cpu = useCpu()
 	const mem = useMemory()
 	const disk = useDisk()
+	const gpus = useGpus()
+	const battery = useBattery()
 	const items = [
 		{
 			k: 'CPU',
@@ -31,12 +35,14 @@ export function Gauges({onClick}: {onClick?: () => void}) {
 			sub: disk.data ? `${bytes(disk.data.available, 0)} free` : '–',
 			ready: !!disk.data,
 		},
+		...gpuGaugeItems(gpus.data?.gpus ?? []),
+		...batteryGaugeItem(battery.data?.batteries ?? []),
 	]
 	return (
-		<button className="glass gauges press" onClick={onClick} aria-label="System usage, open details">
+		<button className="glass gauges press" data-n={items.length} onClick={onClick} aria-label="System usage, open details">
 			{items.map((g) => (
 				<div className="gauge" key={g.k}>
-					<Ring value={g.p} color={levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
+					<Ring value={g.p} color={'color' in g ? g.color : levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
 						<span className="pct">
 							{g.ready ? Math.round(g.p) : '–'}
 							<small>%</small>

@@ -6,7 +6,7 @@ computer opens no ports. It runs as you (a systemd user service), never as root.
 
 What it does, each only if allowed when it was installed (see ABILITIES in its config, which the
 server can't widen):
-  watch     always: CPU, memory, disks, temperature, uptime, updates waiting
+  watch     always: CPU, memory, disks, GPU, battery, temperature, uptime, updates waiting
   terminal  a shell, as you
   desktop   your screen (wayvnc on Hyprland/Sway and other wlroots desktops, x11vnc on X11),
             shared only through a private socket in your runtime folder
@@ -279,6 +279,149 @@ def disks():
     return out[:12]
 
 
+def _num(s):
+    t = str(s or "").strip()
+    if not t or t.lower() in ("[n/a]", "n/a", "na"):
+        return None
+    try:
+        n = float(t)
+    except ValueError:
+        return None
+    return n
+
+
+def batteries(list_dir=os.listdir, read_file=read, root="/sys/class/power_supply"):
+    """System packs only. HID mouse/keyboard batteries (scope=Device) are skipped."""
+    try:
+        names = sorted(list_dir(root))
+    except OSError:
+        return []
+    statuses = {"charging": "charging", "discharging": "discharging", "full": "full", "not charging": "not-charging"}
+    out = []
+    for name in names:
+        d = os.path.join(root, name)
+        if read_file(os.path.join(d, "type")).strip().lower() != "battery":
+            continue
+        if read_file(os.path.join(d, "present")).strip() == "0":
+            continue
+        if read_file(os.path.join(d, "scope")).strip().lower() == "device":
+            continue
+        status = statuses.get(read_file(os.path.join(d, "status")).strip().lower(), "unknown")
+        model = read_file(os.path.join(d, "model_name")).strip() or read_file(os.path.join(d, "manufacturer")).strip() or name
+        capacity = _num(read_file(os.path.join(d, "capacity")))
+        energy_now = _num(read_file(os.path.join(d, "energy_now")))
+        energy_full = _num(read_file(os.path.join(d, "energy_full")))
+        power_now = _num(read_file(os.path.join(d, "power_now")))
+        charge_now = _num(read_file(os.path.join(d, "charge_now")))
+        charge_full = _num(read_file(os.path.join(d, "charge_full")))
+        current_now = _num(read_file(os.path.join(d, "current_now")))
+        voltage_now = _num(read_file(os.path.join(d, "voltage_now")))
+        if energy_now is None and charge_now is not None and voltage_now is not None:
+            energy_now = charge_now * voltage_now / 1e6
+        if energy_full is None and charge_full is not None and voltage_now is not None:
+            energy_full = charge_full * voltage_now / 1e6
+        if power_now is None and current_now is not None and voltage_now is not None:
+            power_now = current_now * voltage_now / 1e6
+        percent = capacity
+        if percent is None and energy_now is not None and energy_full and energy_full > 0:
+            percent = 100 * energy_now / energy_full
+        if percent is not None:
+            percent = int(round(min(100, max(0, percent))))
+        seconds = None
+        if power_now and power_now > 0 and energy_now is not None:
+            if status == "discharging":
+                seconds = int(round(energy_now / power_now * 3600))
+            elif status == "charging" and energy_full and energy_full > energy_now:
+                seconds = int(round((energy_full - energy_now) / power_now * 3600))
+        out.append(
+            {
+                "id": name,
+                "index": len(out),
+                "name": model,
+                "percent": percent,
+                "status": status,
+                "secondsRemaining": seconds,
+                "power": None if power_now is None else round(power_now / 1e6, 1),
+                "energyNow": None if energy_now is None else int(round(energy_now)),
+                "energyFull": None if energy_full is None else int(round(energy_full)),
+            }
+        )
+    return out
+
+
+def _nvidia_gpus(run):
+    try:
+        out = run("nvidia-smi", ["--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits"])
+    except (OSError, subprocess.SubprocessError):
+        return []
+    gpus = []
+    for line in (out or "").splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 4:
+            continue
+        index = _num(parts[0])
+        name = parts[1]
+        if index is None or not name:
+            continue
+        used = _num(parts[3])
+        gpus.append({"id": parts[2] or f"nvidia-{int(index)}", "index": int(index), "name": name, "used": None if used is None else int(round(used))})
+    return gpus
+
+
+def _drm_gpus(list_dir, read_file):
+    try:
+        names = list_dir("/sys/class/drm")
+    except OSError:
+        return []
+    cards = sorted(n for n in names if n.startswith("card") and n[4:].isdigit())
+    gpus = []
+    for card in cards:
+        used = _num(read_file(f"/sys/class/drm/{card}/device/gpu_busy_percent"))
+        if used is None:
+            continue
+        name = read_file(f"/sys/class/drm/{card}/device/product_name").strip() or card
+        gpus.append({"id": f"drm-{card}", "index": int(card[4:]), "name": name, "used": int(round(used))})
+    return gpus
+
+
+_last_nvidia = None
+
+
+def nvidia_asleep(list_dir=os.listdir, read_file=read, root="/sys/bus/pci/devices"):
+    """True when every NVIDIA display device is runtime-suspended (nvidia-smi would wake it)."""
+    try:
+        names = list_dir(root)
+    except OSError:
+        return False
+    found = False
+    for d in names:
+        if read_file(os.path.join(root, d, "vendor")).strip().lower() != "0x10de":
+            continue
+        if not read_file(os.path.join(root, d, "class")).strip().startswith("0x03"):
+            continue
+        found = True
+        if read_file(os.path.join(root, d, "power", "runtime_status")).strip() != "suspended":
+            return False
+    return found
+
+
+def gpus(run=None, list_dir=os.listdir, read_file=read):
+    def _run(cmd, args):
+        try:
+            return subprocess.run([cmd, *args], capture_output=True, text=True, timeout=8).stdout or ""
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    global _last_nvidia
+    if _last_nvidia and nvidia_asleep(list_dir, read_file):
+        return [dict(g, used=0) for g in _last_nvidia]
+    nvidia = _nvidia_gpus(run or _run)
+    _last_nvidia = nvidia or None
+    if nvidia:
+        return nvidia
+    return _drm_gpus(list_dir, read_file)
+
+
 def temperature():
     best = None
     for base in ("/sys/class/hwmon", "/sys/class/thermal"):
@@ -328,6 +471,8 @@ def metrics(pkg):
         "mem": mem,
         "swap": swap,
         "disks": disks(),
+        "gpus": gpus(),
+        "batteries": batteries(),
         "temp": temperature(),
         "uptime": float(read("/proc/uptime", "0").split()[0] or 0),
         "updates": updates_waiting(pkg),

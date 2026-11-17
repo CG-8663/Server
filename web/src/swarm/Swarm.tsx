@@ -7,7 +7,8 @@ import {lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type R
 import {mutate, query} from '../api'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
-import {Sheet, SheetHeader, StatusPill, Switch, bytes, duration, haptic, useConfirm, useToast} from '../ui'
+import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
+import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, levelColor, useConfirm, useToast} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
@@ -45,6 +46,8 @@ export type Agent = {
 		mem?: {total: number; used: number}
 		swap?: {total: number; used: number}
 		disks?: {mount: string; total: number; used: number}[]
+		gpus?: {id: string; index: number; name: string; used: number | null}[]
+		batteries?: SwarmBattery[]
 		temp?: number | null
 		uptime?: number
 		updates?: number | null
@@ -164,9 +167,30 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 function Meter({icon, label, value}: {icon: IconName; label: string; value: number | null}) {
 	if (value === null) return null
 	return (
-		<span className="spec" title={label}>
-			<Icon name={icon} size={14} /> {value}%
-		</span>
+		<StatChip icon={icon} label={label}>
+			{value}%
+		</StatChip>
+	)
+}
+
+function SwarmGauges({metrics}: {metrics: NonNullable<Agent['metrics']>}) {
+	const items = swarmGaugeItems(metrics)
+	if (!items.length) return null
+	return (
+		<div className="glass gauges" data-n={items.length} aria-label="System usage" style={{marginTop: 16}}>
+			{items.map((g) => (
+				<div className="gauge" key={g.k}>
+					<Ring value={g.p} color={'color' in g ? g.color : levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
+						<span className="pct">
+							{g.ready ? Math.round(g.p) : '–'}
+							<small>%</small>
+						</span>
+					</Ring>
+					<span className="k">{g.k}</span>
+					<span className="sub">{g.sub}</span>
+				</div>
+			))}
+		</div>
 	)
 }
 
@@ -193,15 +217,19 @@ function AgentCard({a, onClick}: {a: Agent; onClick: () => void}) {
 					<Meter icon="cpu" label="CPU" value={m.cpu === null ? null : Math.round(m.cpu)} />
 					<Meter icon="memory" label="Memory" value={pct(m.mem)} />
 					<Meter icon="disk" label="Disk" value={pct(rootDisk(a))} />
+					{(m.gpus ?? []).map((g, i, all) => (
+						<Meter key={g.id} icon="gpu" label={all.length > 1 ? `GPU ${g.index}` : 'GPU'} value={g.used == null ? null : Math.round(g.used)} />
+					))}
+					<Meter icon="battery" label="Battery" value={swarmGaugeItems(m).find((g) => g.k === 'Battery' && g.ready)?.p ?? null} />
 					{typeof m.temp === 'number' && (
-						<span className="spec">
-							<Icon name="thermo" size={14} /> {Math.round(m.temp)}°C
-						</span>
+						<StatChip icon="thermo" label="Temperature">
+							{Math.round(m.temp)}°C
+						</StatChip>
 					)}
 					{!!m.updates && (
-						<span className="spec">
-							<Icon name="update" size={14} /> {m.updates} update{m.updates === 1 ? '' : 's'}
-						</span>
+						<StatChip icon="update" label="Updates">
+							{m.updates} update{m.updates === 1 ? '' : 's'}
+						</StatChip>
 					)}
 				</span>
 			)}
@@ -219,30 +247,6 @@ function Group({title, children}: {title: string; children: ReactNode}) {
 				{children}
 			</div>
 		</>
-	)
-}
-
-function Row({icon, color = 'var(--accent)', label, sub, trailing, onClick, disabled}: {icon: IconName; color?: string; label: string; sub?: ReactNode; trailing?: ReactNode; onClick?: () => void; disabled?: boolean}) {
-	const inner = (
-		<>
-			<span className="row-ico" style={{'--c': color} as CSSProperties}>
-				<Icon name={icon} size={19} />
-			</span>
-			<span className="main">
-				<b style={{fontWeight: 550}}>{label}</b>
-				{sub && <span>{sub}</span>}
-			</span>
-			{trailing ?? (onClick ? <Icon name="chevron" size={18} className="chev" /> : null)}
-		</>
-	)
-	return onClick ? (
-		<button className="row" onClick={onClick} disabled={disabled} style={{minHeight: 56}}>
-			{inner}
-		</button>
-	) : (
-		<div className="row static" style={{minHeight: 56}}>
-			{inner}
-		</div>
 	)
 }
 
@@ -283,11 +287,10 @@ function AgentSheet({a, onClose, onTerminal, onDesktop}: {a: Agent; onClose: () 
 			</div>
 			{a.online && may(a, 'desktop') && desk && !desk.ok && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>{desk.why}</p>}
 
-			{a.online && m && (
+			{a.online && m && <SwarmGauges metrics={m} />}
+			{a.online && m && (extraDisks(m.disks).length > 0 || typeof m.temp === 'number' || m.uptime !== undefined) && (
 				<Group title="Now">
-					<Row icon="cpu" color="#5e8bff" label="CPU" sub={`${m.cores ?? '?'} cores · load ${(m.load ?? []).map((l) => l.toFixed(2)).join(' ')}`} trailing={<b>{m.cpu === null ? '…' : `${Math.round(m.cpu)}%`}</b>} />
-					<Row icon="memory" color="#2fbf71" label="Memory" sub={m.mem ? `${bytes(m.mem.used)} of ${bytes(m.mem.total)}` : undefined} trailing={<b>{pct(m.mem) ?? '–'}%</b>} />
-					{(m.disks ?? []).map((d) => (
+					{extraDisks(m.disks).map((d) => (
 						<Row key={d.mount} icon="disk" color="#f0a020" label={d.mount} sub={`${bytes(d.used)} of ${bytes(d.total)}`} trailing={<b>{pct(d)}%</b>} />
 					))}
 					{typeof m.temp === 'number' && <Row icon="thermo" color="#ef5350" label="Temperature" trailing={<b>{Math.round(m.temp)}°C</b>} />}
@@ -330,7 +333,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop}: {a: Agent; onClose: () 
 			)}
 
 			<Group title="Allowed here">
-				<Row icon="sparkle" color="#2fbf71" label="Watch" sub="Always on: CPU, memory, disks, temperature, updates" />
+				<Row icon="sparkle" color="#2fbf71" label="Watch" sub="Always on: CPU, memory, disks, GPU, battery, temperature, updates" />
 				{(Object.keys(ABILITY) as Ability[]).map((k) => (
 					<Row
 						key={k}

@@ -130,6 +130,19 @@ export type GpuInfo = {
 	temperature: number | null
 }
 export type GpuUsage = {gpus: GpuInfo[]}
+export type BatteryStatus = 'charging' | 'discharging' | 'full' | 'not-charging' | 'unknown'
+export type BatteryInfo = {
+	id: string
+	index: number
+	name: string
+	percent: number | null
+	status: BatteryStatus
+	secondsRemaining: number | null
+	power: number | null
+	energyNow: number | null
+	energyFull: number | null
+}
+export type BatteryUsage = {batteries: BatteryInfo[]}
 /** Share of the space you can use that's in use (like df: space kept back for the system isn't counted). */
 export const diskPct = (d: DiskUsage) => (d.totalUsed + d.available > 0 ? (100 * d.totalUsed) / (d.totalUsed + d.available) : 0)
 

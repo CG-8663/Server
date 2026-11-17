@@ -43,7 +43,7 @@ describe('omarchyd', () => {
 		const r = await call('query', 'system.version')
 		assert.equal(r.status, 200)
 		const v = r.body.result.data
-		assert.equal(v.version, '0.9.36')
+		assert.equal(v.version, '0.9.37')
 		assert.equal(typeof v.startedAt, 'number')
 		assert.ok(v.startedAt <= Date.now() && Date.now() - v.startedAt < 60_000)
 		assert.match(String(v.revision ?? ''), /^[0-9a-f]{7,40}$/)
@@ -90,6 +90,8 @@ describe('omarchyd', () => {
 		assert.ok(mem.size > 0 && mem.totalUsed > 0)
 		const gpus = (await call('query', 'system.gpuUsage', undefined, native)).body.result.data
 		assert.ok(Array.isArray(gpus.gpus))
+		const battery = (await call('query', 'system.batteryUsage', undefined, native)).body.result.data
+		assert.ok(Array.isArray(battery.batteries))
 	})
 	test('files: nothing outside Home, not via .. nor via a symlink', async () => {
 		assert.equal((await call('query', 'files.list', {path: '/Home/../..'}, native)).status, 400)

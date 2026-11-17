@@ -2,7 +2,7 @@ import {useState, type FormEvent} from 'react'
 
 import {ApiError, login, setup, type Bootstrap} from '../api'
 import {Icon} from '../icons'
-import {haptic} from '../ui'
+import {VersionTag, haptic} from '../ui'
 
 function Logo() {
 	return (
@@ -177,7 +177,11 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 				<div style={{flex: 1, minWidth: 0}}>
 					<div style={{fontWeight: 600, fontSize: 14}}>{boot.server?.device ?? 'server'}</div>
 					<div className="muted" style={{fontSize: 12.5, marginTop: 2}}>
-						{boot.server?.host} · {boot.server?.name ?? `Omarchy Server ${boot.server?.version}`}
+						{boot.server?.host} ·{' '}
+						<VersionTag
+							version={boot.server?.name ?? (boot.server?.version ? `Omarchy Server ${boot.server.version}` : undefined)}
+							info={boot.server}
+						/>
 					</div>
 				</div>
 				<Icon name="shield" size={20} className="muted" />

@@ -152,6 +152,8 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		assert.equal(a.info.hostname, os.hostname())
 		assert.ok(a.metrics.disks.length >= 1)
 		assert.ok(a.metrics.cores >= 1)
+		assert.ok(Array.isArray(a.metrics.gpus))
+		assert.ok(Array.isArray(a.metrics.batteries))
 	})
 
 	test('a terminal on that computer, through the server', async () => {
@@ -187,7 +189,8 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 	test('manage: only the fixed actions; unverified plugins refused before it’s asked', async () => {
 		const [a] = await q('swarm.list')
 		await assert.rejects(call('swarm.action', {id: a.id, name: 'run', args: 'rm -rf /'}), /Unknown action/)
-		await assert.rejects(call('swarm.action', {id: a.id, name: 'theme-set', theme: 'Tokyo Night'}), /can’t be set here/)
+		// A name no machine accepts, so this never switches a real desktop's theme (and holds on Omarchy too).
+		await assert.rejects(call('swarm.action', {id: a.id, name: 'theme-set', theme: '../Tokyo Night'}), /can’t be set here|Bad theme|theme/i)
 		await call('swarm.rename', {id: a.id, name: 'Study PC'})
 		assert.equal((await q('swarm.list'))[0].name, 'Study PC')
 	})

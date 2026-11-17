@@ -8,7 +8,7 @@ import {PortForwarding} from '../machines/PortForwarding'
 import {BackupsPanel, CloudInitPanel, HardwarePanel, HistoryPanel, MonitorPanel, OptionsPanel, PANELS, SnapshotsPanel, SummaryPanel, usePowerActions, type PanelId} from '../machines/panels'
 import {Icon} from '../icons'
 import {osLook} from '../osLook'
-import {Sheet, SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
+import {Sheet, SheetHeader, StatChip, StatusPill, haptic, machineStatus} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
@@ -101,19 +101,19 @@ export function Machines() {
 						) : (
 							<span className="specs">
 								{m.cores ? (
-									<span className="spec">
-										<Icon name="cpu" size={14} /> {m.cores} cores
-									</span>
+									<StatChip icon="cpu" label="CPU">
+										{m.cores} cores
+									</StatChip>
 								) : null}
 								{m.memoryGb ? (
-									<span className="spec">
-										<Icon name="memory" size={14} /> {m.memoryGb} GB
-									</span>
+									<StatChip icon="memory" label="Memory">
+										{m.memoryGb} GB
+									</StatChip>
 								) : null}
 								{m.diskSizeGb ? (
-									<span className="spec">
-										<Icon name="disk" size={14} /> {m.diskSizeGb} GB
-									</span>
+									<StatChip icon="disk" label="Disk">
+										{m.diskSizeGb} GB
+									</StatChip>
 								) : null}
 							</span>
 						)}

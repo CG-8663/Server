@@ -243,13 +243,92 @@ async function drmGpus(list, readText) {
 }
 
 // Each GPU we can see: NVIDIA through nvidia-smi, otherwise AMD (and similar) through sysfs.
+// A hybrid laptop powers its NVIDIA card down when idle; nvidia-smi would wake it on every poll.
+// When every NVIDIA display device is runtime-suspended, show the last reading as idle instead.
+const PCI = '/sys/bus/pci/devices'
+let lastNvidia = null
+export async function nvidiaAsleep({list = readdir, read: readText = read} = {}) {
+	let found = false
+	for (const d of await list(PCI).catch(() => [])) {
+		if ((await readText(`${PCI}/${d}/vendor`)).trim().toLowerCase() !== '0x10de') continue
+		if (!(await readText(`${PCI}/${d}/class`)).trim().startsWith('0x03')) continue
+		found = true
+		if ((await readText(`${PCI}/${d}/power/runtime_status`)).trim() !== 'suspended') return false
+	}
+	return found
+}
+
 export async function gpuUsage({run = sh, list = readdir, read: readText = read} = {}) {
 	try {
+		if (lastNvidia && (await nvidiaAsleep({list, read: readText}))) {
+			return {gpus: lastNvidia.map((g) => ({...g, used: 0, memoryUsed: 0, temperature: null}))}
+		}
 		const nvidia = await nvidiaGpus(run)
+		lastNvidia = nvidia.length ? nvidia : null
 		if (nvidia.length) return {gpus: nvidia}
 		return {gpus: await drmGpus(list, readText)}
 	} catch {
 		return {gpus: []}
+	}
+}
+
+const POWER_SUPPLY = '/sys/class/power_supply'
+const BATTERY_STATUS = {
+	charging: 'charging',
+	discharging: 'discharging',
+	full: 'full',
+	'not charging': 'not-charging',
+}
+
+// System batteries from sysfs. HID/mouse packs (scope=Device) and mains adapters are skipped.
+export async function batteryUsage({list = readdir, read: readText = read} = {}) {
+	try {
+		const names = [...(await list(POWER_SUPPLY).catch(() => []))].sort()
+		const batteries = []
+		for (const id of names) {
+			const dir = `${POWER_SUPPLY}/${id}`
+			const type = (await readText(`${dir}/type`)).trim()
+			if (!/^battery$/i.test(type)) continue
+			if ((await readText(`${dir}/present`)).trim() === '0') continue
+			const scope = (await readText(`${dir}/scope`)).trim()
+			if (scope && /^device$/i.test(scope)) continue
+			const status = BATTERY_STATUS[(await readText(`${dir}/status`)).trim().toLowerCase()] ?? 'unknown'
+			const model = (await readText(`${dir}/model_name`)).trim()
+			const manufacturer = (await readText(`${dir}/manufacturer`)).trim()
+			const capacity = num(await readText(`${dir}/capacity`))
+			let energyNow = num(await readText(`${dir}/energy_now`))
+			let energyFull = num(await readText(`${dir}/energy_full`))
+			let powerNow = num(await readText(`${dir}/power_now`))
+			const chargeNow = num(await readText(`${dir}/charge_now`))
+			const chargeFull = num(await readText(`${dir}/charge_full`))
+			const currentNow = num(await readText(`${dir}/current_now`))
+			const voltageNow = num(await readText(`${dir}/voltage_now`))
+			if (energyNow == null && chargeNow != null && voltageNow != null) energyNow = (chargeNow * voltageNow) / 1e6
+			if (energyFull == null && chargeFull != null && voltageNow != null) energyFull = (chargeFull * voltageNow) / 1e6
+			if (powerNow == null && currentNow != null && voltageNow != null) powerNow = (currentNow * voltageNow) / 1e6
+			let percent = capacity
+			if (percent == null && energyNow != null && energyFull > 0) percent = (100 * energyNow) / energyFull
+			if (percent != null) percent = Math.round(Math.max(0, Math.min(100, percent)))
+			let secondsRemaining = null
+			if (powerNow > 0 && energyNow != null) {
+				if (status === 'discharging') secondsRemaining = Math.round((energyNow / powerNow) * 3600)
+				else if (status === 'charging' && energyFull > energyNow) secondsRemaining = Math.round(((energyFull - energyNow) / powerNow) * 3600)
+			}
+			batteries.push({
+				id,
+				index: batteries.length,
+				name: model || manufacturer || id,
+				percent,
+				status,
+				secondsRemaining,
+				power: powerNow == null ? null : Math.round((powerNow / 1e6) * 10) / 10,
+				energyNow: energyNow == null ? null : Math.round(energyNow),
+				energyFull: energyFull == null ? null : Math.round(energyFull),
+			})
+		}
+		return {batteries}
+	} catch {
+		return {batteries: []}
 	}
 }
 

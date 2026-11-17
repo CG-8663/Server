@@ -23,7 +23,7 @@ import {
 } from "../api";
 import { useBootstrap, useDisk, useUser } from "../data";
 import { Icon, type IconName } from "../icons";
-import { Sheet, SheetHeader, bytes, haptic, useConfirm, usePortalRoot, useToast } from "../ui";
+import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, useConfirm, usePortalRoot, useToast } from "../ui";
 import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
@@ -911,14 +911,17 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
             ))}
           </div>
           {disk.data && (
-            <div className="glass card storage-card">
-              <div className="card-head" style={{ marginBottom: 10 }}>
-                <strong>Storage</strong>
-                <span>
-                  {bytes(disk.data.available, 0)} free of{" "}
-                  {bytes(disk.data.size, 0)}
-                </span>
-              </div>
+            <Card className="storage-card">
+              <CardHead
+                title="Storage"
+                extra={
+                  <>
+                    {bytes(disk.data.available, 0)} free of{" "}
+                    {bytes(disk.data.size, 0)}
+                  </>
+                }
+                style={{ marginBottom: 10 }}
+              />
               <span className="progress" style={{ height: 8 }}>
                 <i
                   style={{
@@ -932,7 +935,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
                   }}
                 />
               </span>
-            </div>
+            </Card>
           )}
           {(shares.data?.length ?? 0) > 0 && (
             <section>

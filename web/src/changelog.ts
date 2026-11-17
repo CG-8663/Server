@@ -4,6 +4,21 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.37',
+		date: '2026-11-17',
+		title: 'Battery and GPU at a glance',
+		added: [
+			'On a laptop, Home shows a Battery ring with charging state or time left, and System shows each battery pack with a short history.',
+			'Home shows a ring for each graphics card.',
+			'Opening a computer in your swarm shows the same rings as Home, including its graphics cards and battery.',
+			'The version you’re running is shown in the desktop menu, on the sign-in screen, in System and in Settings.',
+		],
+		fixed: [
+			'A laptop’s NVIDIA graphics card is no longer woken just to read how busy it is while it’s asleep, which saves battery.',
+			'The small facts under the rings line up evenly.',
+		],
+	},
+	{
 		version: '0.9.36',
 		date: '2026-11-17',
 		title: 'A terminal that fits and scrolls',

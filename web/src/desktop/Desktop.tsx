@@ -12,7 +12,7 @@ import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
 import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../osLook'
-import {AppIcon, InWindow, PortalRoot, StoreIcon, TerminalIcon, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
+import {AppIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
 import {Cheatsheet} from './hyprland/Cheatsheet'
@@ -1578,16 +1578,14 @@ function TopBar(p: {
 			<div className="top-right">
 				{p.lockChip}
 				{cpuPct !== null && (
-					<span className="top-stat" title="CPU">
-						<Icon name="cpu" size={15} />
+					<StatChip icon="cpu" label="CPU" className="top-stat" size={15}>
 						{cpuPct}%
-					</span>
+					</StatChip>
 				)}
 				{memPct !== null && (
-					<span className="top-stat" title="Memory">
-						<Icon name="memory" size={15} />
+					<StatChip icon="memory" label="Memory" className="top-stat" size={15}>
 						{memPct}%
-					</span>
+					</StatChip>
 				)}
 				{(() => {
 					const count = notes.length + (updates.length > 0 ? 1 : 0)
@@ -1660,6 +1658,9 @@ function TopBar(p: {
 						<span>
 							<b>{p.boot.server?.device ?? 'server'}</b>
 							<span className="mono muted">{p.boot.server?.host}</span>
+							<span className="muted">
+								<VersionTag prefix="Omarchy Server " version={p.boot.touch.version} info={p.boot.server} />
+							</span>
 						</span>
 					</div>
 					<div className="sys-user muted">Signed in as {user.data?.name ?? 'you'}</div>

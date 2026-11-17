@@ -32,3 +32,20 @@ export function formatRunningSince(
 	if (revision) parts.push(`Revision ${revision}`)
 	return parts.length ? `${parts.join('. ')}.` : ''
 }
+
+export type VersionInfo = {startedAt?: number; revision?: string}
+
+export function versionTagProps(
+	version?: string,
+	info?: VersionInfo | null,
+	{
+		prefix = '',
+		now,
+		locale,
+		timeZone,
+	}: {prefix?: string; now?: number; locale?: string; timeZone?: string} = {},
+): {text: string; title?: string; ariaLabel?: string} {
+	const text = `${prefix}${version ?? '–'}`
+	const title = formatRunningSince(info?.startedAt, {revision: info?.revision, now, locale, timeZone}) || undefined
+	return title ? {text, title, ariaLabel: `${text}. ${title}`} : {text}
+}
