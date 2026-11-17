@@ -152,6 +152,8 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		assert.equal(a.info.hostname, os.hostname())
 		assert.ok(a.metrics.disks.length >= 1)
 		assert.ok(a.metrics.cores >= 1)
+		assert.ok(Array.isArray(a.metrics.gpus))
+		assert.ok(Array.isArray(a.metrics.batteries))
 	})
 
 	test('a terminal on that computer, through the server', async () => {
