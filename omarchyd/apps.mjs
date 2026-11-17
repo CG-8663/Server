@@ -260,15 +260,27 @@ async function readFirst(dir, names) {
 	return null
 }
 
-// Browse payload: drop the heavy listing fields (and the store path). Keep a shots count so Featured can pick apps that have screenshots.
+// Public listing fields. Pick these by name so a later loadStore change cannot leak folder, store, or compose.
+const LIST_FIELDS = [
+	'id', 'name', 'tagline', 'icon', 'category', 'version', 'developer', 'unsupported', 'caution',
+	'needs', 'dependencies', 'implements', 'port', 'path', 'web', 'shared', 'folders', 'openPorts',
+	'requiresHttps', 'system', 'defaultUsername', 'defaultPassword', 'deterministicPassword', 'repo',
+]
+const DETAIL_FIELDS = [...LIST_FIELDS, 'description', 'releaseNotes', 'gallery', 'website', 'permissions']
+
+function pickFields(a, keys) {
+	const out = {}
+	for (const k of keys) if (a[k] !== undefined) out[k] = a[k]
+	return out
+}
+
+// Browse payload: keep a shots count so Featured can pick apps that have screenshots.
 function toList(a) {
-	const {description, releaseNotes, gallery, folder, permissions, website, store, ...rest} = a
-	return {...rest, ...(Array.isArray(gallery) && gallery.length ? {shots: gallery.length} : {})}
+	return {...pickFields(a, LIST_FIELDS), ...(Array.isArray(a.gallery) && a.gallery.length ? {shots: a.gallery.length} : {})}
 }
 
 function toDetail(a) {
-	const {folder, store, ...rest} = a
-	return rest
+	return pickFields(a, DETAIL_FIELDS)
 }
 
 // Turn a store compose file into what omarchyd runs: no app_proxy, the web service published on

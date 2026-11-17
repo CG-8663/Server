@@ -149,4 +149,20 @@ describe('files: list paging', () => {
 		const first = await call('files.list', {path: '/Home/Paged', sortBy: 'name', sortOrder: 'descending', limit: 2})
 		assert.deepEqual(first.files.map((f) => f.name), ['e.txt', 'd.txt'])
 	})
+
+	test('a broken symlink does not set hasMore when the whole folder fits the limit', async () => {
+		const broken = join(paged, 'gone.txt')
+		await symlink(join(paged, 'no-such-file'), broken)
+		try {
+			const all = await call('files.list', {path: '/Home/Paged', limit: 2000, sortBy: 'name'})
+			assert.equal(all.hasMore, false)
+			assert.equal(all.totalFiles, 6)
+			assert.equal(all.files.length, 5)
+			const page = await call('files.list', {path: '/Home/Paged', limit: 3, sortBy: 'name'})
+			assert.equal(page.hasMore, true)
+			assert.equal(page.totalFiles, 6)
+		} finally {
+			await rm(broken)
+		}
+	})
 })

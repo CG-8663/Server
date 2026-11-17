@@ -113,21 +113,24 @@ export function createFiles({home, dataDir}) {
 		}
 
 		let files
+		let countable
 		if (key === 'modified' || key === 'size') {
 			// mtime/size sort needs every entry's stat; we still honour limit after sorting.
 			const rows = (await mapPool(dirents, STAT_CONCURRENCY, (d) => toEntry(d.name))).filter(Boolean)
 			rows.sort((a, b) => dirFirst({dir: a.type === 'directory'}, {dir: b.type === 'directory'}) || (a[key] ?? 0) - (b[key] ?? 0))
 			if (sortOrder === 'descending') rows.reverse()
+			countable = rows.length
 			files = cap ? rows.slice(0, cap) : rows
 		} else {
 			// Name/type: sort from dirents (cheap), slice, then stat only the page.
 			const rows = dirents.map((d) => ({name: d.name, dir: d.isDirectory(), type: d.isDirectory() ? 'directory' : typeFor(d.name)}))
 			rows.sort((a, b) => dirFirst(a, b) || textCmp(a, b, key === 'type' ? 'type' : 'name'))
 			if (sortOrder === 'descending') rows.reverse()
+			countable = rows.length
 			const page = cap ? rows.slice(0, cap) : rows
 			files = (await mapPool(page, STAT_CONCURRENCY, (row) => toEntry(row.name))).filter(Boolean)
 		}
-		return {...(await entry(path, real, st)), files, hasMore: cap != null && totalFiles > files.length, totalFiles}
+		return {...(await entry(path, real, st)), files, hasMore: cap != null && countable > cap, totalFiles}
 	}
 
 	// A free name next to the original: "Report (2).pdf".

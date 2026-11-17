@@ -419,11 +419,12 @@ function StoreSheet({
 	const [more, setMore] = useState(false)
 	const review = useInstallReview(reviewing ? app.id : null)
 	const detail = useStoreApp(app)
+	const website = detail.data?.website ?? app.website
 	const view = {
 		...app,
 		description: detail.data?.description ?? app.description,
 		gallery: detail.data?.gallery ?? app.gallery,
-		website: detail.data?.website ?? app.website,
+		website: typeof website === 'string' && /^https?:\/\//i.test(website) ? website : undefined,
 		releaseNotes: detail.data?.releaseNotes ?? app.releaseNotes,
 	}
 
