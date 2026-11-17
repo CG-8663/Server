@@ -4,6 +4,12 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.33',
+		date: '2026-11-17',
+		title: 'Your GPUs, live',
+		added: ['System shows a live card for each graphics card (NVIDIA and AMD): how busy it is, its memory and temperature, with a graph of the last two minutes. Servers without one look the same as before.'],
+	},
+	{
 		version: '0.9.32',
 		date: '2026-11-17',
 		title: 'Safer sharing, faster loading',

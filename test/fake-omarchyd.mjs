@@ -310,6 +310,15 @@ export async function startFakeserverd({
 			kind: 'query',
 			run: () => ({size: 1000 * gb, totalUsed: 720 * gb, available: 280 * gb, system: 40 * gb, files: 300 * gb, apps: [{id: 'immich', used: 210 * gb}], machines: []}),
 		},
+		'system.gpuUsage': {
+			kind: 'query',
+			run: () => ({
+				gpus: [
+					{id: 'GPU-aaa', index: 0, name: 'NVIDIA GeForce RTX 3060', used: 32, memoryUsed: 1.4 * gb, memoryTotal: 12 * gb, temperature: 39},
+					{id: 'GPU-bbb', index: 1, name: 'NVIDIA GeForce RTX 3060', used: 4, memoryUsed: 0.2 * gb, memoryTotal: 12 * gb, temperature: 36},
+				],
+			}),
+		},
 		'apps.list': {kind: 'query', run: () => apps},
 		'apps.state': {kind: 'query', run: ({appId}) => apps.find((a) => a.id === appId) ?? {state: 'not-installed', progress: 0}},
 		'apps.updates': {kind: 'query', run: () => [{id: 'nextcloud', version: '30.0.4'}]},
