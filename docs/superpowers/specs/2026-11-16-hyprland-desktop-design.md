@@ -154,7 +154,8 @@ type Node =
 - Super+J: flip `axis` on the focused leaf’s parent.
 - Super+T: `float: true`, remove from tree, use `x,y,w,h` like GNOME (drag/resize). Super+T again inserts at the focused tile.
 - Super+F: tile fills the usable area (`snap: 'max'`). Again restores the tree slot.
-- Super+M: `min: true`, remove from tree, marker on the pill. Restore inserts like a new window.
+- Super+M: `min: true`, keep the leaf in the tree (sibling fills). Marker on the pill.
+- Super+Shift+M: restore the most recently minimized window on this workspace (repeat for the next). It occupies its previous slot.
 - Super+arrows: focus the nearest leaf whose center lies in that direction.
 - Super+Shift+arrows: swap the focused leaf’s window id with that neighbor.
 
@@ -198,7 +199,8 @@ Omarchy chord names, SPA actions. Implemented in `keymap.ts`. Ignored in GNOME m
 | Super+Shift+1–9 | Move focused window to workspace |
 | Super+Tab | Next workspace |
 | Super+Shift+Tab | Previous workspace |
-| Super+M | Minimize / restore focused |
+| Super+M | Minimize focused |
+| Super+Shift+M | Restore last minimized (reverse order of minimize) |
 
 Super is `event.metaKey` or `event.key === 'Meta' | 'OS'`. Digits use `event.code` `Digit1`…`Digit9` so shift does not produce `!` / `@`.
 

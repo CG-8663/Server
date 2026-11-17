@@ -20,7 +20,7 @@ import {injectConsoleKey, keysymFromEvent, lastMinimizedOn, releaseConsoleSuper,
 import {CAPTURE_KEY, ONBOARDING_KEY, canUseKeyboardLock, chipIntent, keyboardLockApi, onCaptureModeChange, onFullscreenChange, resolveMode, toggleLock, type GrabState} from './hyprland/grab'
 import {actionOf, isSuper, type Action} from './hyprland/keymap'
 import {Launcher} from './hyprland/Launcher'
-import {GAP, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, reconcile, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
+import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, reconcile, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
 
 const Files = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
@@ -46,7 +46,7 @@ type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 's
 type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; term?: {id: string; name?: string; icon?: string}; input?: string}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
-type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number; workspace?: number; float?: boolean}
+type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number; workspace?: number; float?: boolean; minAt?: number}
 type SysKind = Exclude<Kind, 'app' | 'console'>
 
 const TOP = 34 // top bar height
@@ -307,6 +307,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		}
 	})
 	const zTop = useRef(Math.max(10, ...wins.map((w) => w.z)))
+	const minSeq = useRef(Math.max(0, ...wins.map((w) => w.minAt ?? 0)))
 	const winsRef = useRef(wins)
 	winsRef.current = wins
 	const hyprWsRef = useRef(hyprWs)
@@ -368,7 +369,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	const onWs = (w: Win) => (w.workspace ?? 1) === hyprWs
 	const visible = wins.filter((w) => !w.min && (!hypr || onWs(w)))
 	const active = visible.length ? visible.reduce((a, b) => (b.z > a.z ? b : a)) : null
-	const tiled = hypr ? tileRectsOf(isNode(trees[hyprWs]) ? trees[hyprWs] : null, usable()) : {}
+	const hiddenIds = (workspace: number, list = winsRef.current) => new Set(list.filter((w) => (w.min || w.float) && (w.workspace ?? 1) === workspace).map((w) => w.id))
+	const tiled = hypr ? tileRectsOf(collapse(isNode(trees[hyprWs]) ? trees[hyprWs] : null, hiddenIds(hyprWs, wins)), usable()) : {}
 
 	// -- window operations --
 	const dropFromTrees = (id: string) =>
@@ -387,7 +389,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 				setTrees((ts) => {
 					const t = ts[ws] ?? null
 					if (contains(t, id)) return ts
-					return {...ts, [ws]: insertTile(t, focused?.id ?? firstLeaf(t), id, usable())}
+					return {...ts, [ws]: insertTile(t, focused?.id ?? firstLeaf(t), id, usable(), GAP, hiddenIds(ws))}
 				})
 			}
 		}
@@ -397,7 +399,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			const top = ws.every((x) => x.id === id || x.min || x.z < w.z)
 			if (top && !w.min) return ws
 			zTop.current += 1
-			return ws.map((x) => (x.id === id ? {...x, z: zTop.current, min: false} : x))
+			return ws.map((x) => (x.id === id ? {...x, z: zTop.current, min: false, minAt: undefined} : x))
 		})
 	}, [])
 	const update = useCallback((id: string, patch: Partial<Win>) => setWins((ws) => ws.map((w) => (w.id === id ? {...w, ...patch} : w))), [])
@@ -406,8 +408,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		setWins((ws) => ws.filter((w) => w.id !== id))
 	}, [])
 	const minimize = useCallback((id: string) => {
-		dropFromTrees(id)
-		update(id, {min: true})
+		minSeq.current += 1
+		update(id, {min: true, minAt: minSeq.current})
 	}, [update])
 
 	const open = useCallback<DesktopApi['open']>(
@@ -437,7 +439,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			const win: Win = {id, kind, key, payload, x: Math.max(a.x + 8, x), y: Math.max(a.y + 8, y), w, h, z: zTop.current, min: false, snap: null, born: Date.now(), workspace, float: false}
 			if (cfg.shell === 'hyprland') {
 				const focused = topTileOn(workspace)
-				setTrees((ts) => ({...ts, [workspace]: insertTile(ts[workspace] ?? null, focused?.id ?? firstLeaf(ts[workspace] ?? null), id, usable())}))
+				setTrees((ts) => ({...ts, [workspace]: insertTile(ts[workspace] ?? null, focused?.id ?? firstLeaf(ts[workspace] ?? null), id, usable(), GAP, hiddenIds(workspace))}))
 			}
 			setWins((ws) => [...ws, win])
 		},
@@ -565,9 +567,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			if (minned) return void focus(minned.id)
 			return
 		}
+		if (act.type === 'restore') {
+			const minned = lastMinimizedOn(winsRef.current, ws)
+			if (minned) return void focus(minned.id)
+			return
+		}
 		if (act.type === 'split' && focused) return void setTrees((ts) => ({...ts, [ws]: flipSplit(ts[ws] ?? null, focused.id)}))
-		if (act.type === 'focus' && focused) return void focus(focusDir(treesRef.current[ws] ?? null, focused.id, act.dir, usable()))
-		if (act.type === 'swap' && focused) return void setTrees((ts) => ({...ts, [ws]: swapDir(ts[ws] ?? null, focused.id, act.dir, usable())}))
+		if (act.type === 'focus' && focused) return void focus(focusDir(treesRef.current[ws] ?? null, focused.id, act.dir, usable(), GAP, hiddenIds(ws)))
+		if (act.type === 'swap' && focused) return void setTrees((ts) => ({...ts, [ws]: swapDir(ts[ws] ?? null, focused.id, act.dir, usable(), GAP, hiddenIds(ws))}))
 		if (act.type === 'workspace') {
 			releaseLastConsole()
 			return void setHyprWs(act.n)
@@ -587,7 +594,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 				setTrees((ts) => {
 					const t = ts[act.n] ?? null
 					const other = topTileOn(act.n, focused.id)
-					return {...ts, [act.n]: insertTile(t, other?.id ?? firstLeaf(t), focused.id, usable())}
+					return {...ts, [act.n]: insertTile(t, other?.id ?? firstLeaf(t), focused.id, usable(), GAP, hiddenIds(act.n))}
 				})
 			}
 			setHyprWs(act.n)
@@ -599,7 +606,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 				setTrees((ts) => {
 					const t = ts[ws] ?? null
 					const other = topTileOn(ws, focused.id)
-					return {...ts, [ws]: insertTile(t, other?.id ?? firstLeaf(t), focused.id, usable())}
+					return {...ts, [ws]: insertTile(t, other?.id ?? firstLeaf(t), focused.id, usable(), GAP, hiddenIds(ws))}
 				})
 			} else {
 				dropFromTrees(focused.id)
@@ -836,7 +843,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		setTrees((ts) => {
 			const groups: Record<number, string[]> = {}
 			for (const w of [...winsRef.current].sort((a, b) => a.z - b.z)) {
-				if (w.min || w.float) continue
+				if (w.float) continue
 				const n = w.workspace ?? 1
 				;(groups[n] ??= []).push(w.id)
 			}

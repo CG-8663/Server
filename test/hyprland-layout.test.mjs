@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {describe, test} from 'node:test'
 
-import {flipSplit, focusDir, insert, isNode, rebuild, reconcile, rects, remove, swapDir} from '../web/src/desktop/hyprland/layout.ts'
+import {collapse, contains, flipSplit, focusDir, insert, isNode, leafIds, rebuild, reconcile, rects, remove, swapDir} from '../web/src/desktop/hyprland/layout.ts'
 
 const area = {x: 0, y: 0, w: 1000, h: 800}
 
@@ -77,5 +77,22 @@ describe('hyprland layout', () => {
 	test('reconcile rebuilds a corrupt tree', () => {
 		const next = reconcile({kind: 'split'}, ['a', 'b'], area, 0)
 		assert.deepEqual(Object.keys(rects(next, area, 0)).sort(), ['a', 'b'])
+	})
+
+	test('collapse hides a leaf so the sibling fills; the original split is unchanged', () => {
+		const t = insert(insert(null, null, 'a', area), 'a', 'b', area, 0)
+		const shown = collapse(t, new Set(['b']))
+		assert.deepEqual(shown, {kind: 'leaf', id: 'a'})
+		assert.deepEqual(rects(shown, area, 0), {a: area})
+		assert.equal(rects(t, area, 0).a.w, 500)
+		assert.equal(rects(t, area, 0).b.w, 500)
+	})
+
+	test('insert beside a visible leaf keeps a hidden sibling in its slot', () => {
+		const t = insert(insert(null, null, 'a', area), 'a', 'b', area, 0)
+		const next = insert(t, 'a', 'c', area, 0, new Set(['b']))
+		assert.equal(contains(next, 'b'), true)
+		assert.ok(leafIds(next).includes('c'))
+		assert.deepEqual(Object.keys(rects(collapse(next, new Set(['b'])), area, 0)).sort(), ['a', 'c'])
 	})
 })

@@ -80,12 +80,12 @@ export function keysymFromEvent(e: {code: string; key: string}): {keysym: number
 	return null
 }
 
-export type WinLike = {id: string; kind: string; min: boolean; z: number; workspace?: number}
+export type WinLike = {id: string; kind: string; min: boolean; z: number; workspace?: number; minAt?: number}
 
 export function topVisibleWindow<T extends WinLike>(wins: T[], workspace: number, hypr: boolean): T | undefined {
 	return wins.filter((w) => !w.min && (!hypr || (w.workspace ?? 1) === workspace)).sort((a, b) => b.z - a.z)[0]
 }
 
 export function lastMinimizedOn<T extends WinLike>(wins: T[], workspace: number): T | undefined {
-	return wins.filter((w) => w.min && (w.workspace ?? 1) === workspace).sort((a, b) => b.z - a.z)[0]
+	return wins.filter((w) => w.min && (w.workspace ?? 1) === workspace).sort((a, b) => (b.minAt ?? 0) - (a.minAt ?? 0) || b.z - a.z)[0]
 }
