@@ -855,7 +855,9 @@ test('a write tool becomes pending and Approve runs the RPC once', async () => {
 		const schema = seen[0].body.tools.find((t) => t.function.name === 'machines_create')
 		assert.equal(schema.function.parameters.properties.password, undefined)
 		assert.equal(seen[0].body.tools.some((t) => t.function.name === 'swarm_action'), true)
+		const providerCalls = seen.length
 		await box.asst.procedures['assistant.approve'].run({actionId: actionEv.data.id}, {auth: {userId: 'owner'}})
+		assert.equal(seen.length, providerCalls, 'Approve runs the RPC without calling the model')
 		const created = calls.filter((c) => c.name === 'machines.create')
 		assert.equal(created.length, 1)
 		assert.equal(created[0].input.name, 'ubuntu')
@@ -962,7 +964,7 @@ test('a member cannot approve swarm.action', async () => {
 
 test('approving a wallpaper uses the chosen background id', async () => {
 	const {calls, runProcedure} = factsProcedure()
-	const {fetchImpl} = scripted([toolSse('call_bg', 'omarchy_setBackground', JSON.stringify({theme: 'tokyo-night', id: 'aaaaaaaaaaaaaaaa'}))])
+	const {seen, fetchImpl} = scripted([toolSse('call_bg', 'omarchy_setBackground', JSON.stringify({theme: 'tokyo-night', id: 'aaaaaaaaaaaaaaaa'}))])
 	const box = await withAssistant({runProcedure, fetchImpl})
 	const events = []
 	try {
@@ -973,7 +975,9 @@ test('approving a wallpaper uses the chosen background id', async () => {
 		assert.equal(action.detail, 'tokyo-night')
 		assert.deepEqual(action.picker, {theme: 'tokyo-night', selected: 'aaaaaaaaaaaaaaaa'})
 		assert.equal(calls.some((c) => c.name === 'omarchy.setBackground'), false)
+		const providerCalls = seen.length
 		await box.asst.procedures['assistant.approve'].run({actionId: action.id, id: 'bbbbbbbbbbbbbbbb'}, {auth: {userId: 'owner'}})
+		assert.equal(seen.length, providerCalls, 'Approve runs the RPC without calling the model')
 		const bg = calls.find((c) => c.name === 'omarchy.setBackground')
 		assert.equal(bg?.input.id, 'bbbbbbbbbbbbbbbb')
 		assert.equal(bg.input.theme, 'tokyo-night')
