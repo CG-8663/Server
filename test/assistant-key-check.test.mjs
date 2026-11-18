@@ -15,11 +15,21 @@ const json = (status, body) => ({ok: status >= 200 && status < 300, status, json
 const fakeAccounts = () => ({getUser: (id) => (id === 'owner' ? OWNER : id === 'sam' ? {userId: 'sam', role: 'member'} : null)})
 const tmp = () => mkdtemp(join(os.tmpdir(), 'akc-'))
 
-test('isChatModel drops embeddings, speech, images and fine-tunes', () => {
-	for (const id of ['gpt-5.5', 'o4-mini', 'gpt-4.1', 'chatgpt-4o-latest']) assert.equal(isChatModel(id), true, id)
-	for (const id of ['text-embedding-3-large', 'tts-1', 'whisper-1', 'dall-e-3', 'gpt-image-1', 'omni-moderation-latest', 'gpt-4o-realtime-preview', 'gpt-4o-transcribe', 'ft:gpt-4o:me']) {
+test('isChatModel keeps chat models and fine-tunes of them; drops embeddings, speech, images, realtime and moderation', () => {
+	for (const id of ['gpt-5.5', 'o4-mini', 'gpt-4.1', 'chatgpt-4o-latest', 'chat-latest', 'gpt-6.2-sol', 'o3-pro', 'ft:gpt-4o-mini:acme::abc123']) assert.equal(isChatModel(id), true, id)
+	for (const id of [
+		'text-embedding-3-large', 'tts-1', 'tts-1-hd-1106', 'whisper-1', 'dall-e-3', 'gpt-image-1', 'gpt-image-2.5-flare', 'chatgpt-image-latest',
+		'omni-moderation-latest', 'gpt-4o-realtime-preview', 'gpt-realtime-2.1-mini', 'gpt-4o-transcribe', 'gpt-4o-transcribe-diarize', 'gpt-transcribe',
+		'gpt-4o-mini-tts', 'gpt-audio-mini', 'gpt-5-search-api', 'gpt-live-1', 'gpt-live-transcribe', 'ft:whisper-1:acme::x',
+	]) {
 		assert.equal(isChatModel(id), false, id)
 	}
+})
+
+test('a custom endpoint pointed at OpenAI gets the same chat-only list; other endpoints keep everything', async () => {
+	const fetchImpl = async () => json(200, {data: [{id: 'gpt-5.5'}, {id: 'tts-1'}, {id: 'gpt-image-2'}]})
+	assert.deepEqual(await listModels({provider: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', apiKey: 'k', fetchImpl}), [{id: 'gpt-5.5'}])
+	assert.deepEqual((await listModels({provider: 'openai-compatible', baseUrl: 'http://127.0.0.1:8000/v1', apiKey: '', fetchImpl})).length, 3)
 })
 
 test('listModels reads /models, filters OpenAI to chat models and sorts', async () => {

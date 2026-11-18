@@ -427,10 +427,21 @@ export async function* withToolFallback(stream, opts) {
 
 // OpenAI's /models also lists embeddings, speech, images and moderation. Keep what can chat.
 export function isChatModel(id) {
-	const s = String(id).toLowerCase()
-	if (/^(text-embedding|tts-|whisper|dall-e|gpt-image|omni-moderation|text-moderation|davinci|babbage|sora|computer-use)/.test(s)) return false
-	if (/(-realtime|-audio|-transcribe|-tts|-search-api|embedding)/.test(s)) return false
-	return !s.startsWith('ft:')
+	// A fine-tune is a chat model when the model it was tuned from is (ft:gpt-4o-mini:org::id).
+	const s = String(id).toLowerCase().replace(/^ft:([^:]+):.*$/, '$1')
+	if (/^(text-embedding|tts-|whisper|dall-e|davinci|babbage|sora|computer-use|gpt-live)/.test(s)) return false
+	if (/(realtime|-audio|^gpt-audio|transcribe|diarize|-tts|-search-api|embedding|moderation|image)/.test(s)) return false
+	return true
+}
+
+// OpenAI's list, whichever way it was added (preset or a custom endpoint pointed at it).
+const isOpenAiList = (provider, baseUrl) => {
+	if (provider === 'openai') return true
+	try {
+		return new URL(String(baseUrl)).hostname === 'api.openai.com'
+	} catch {
+		return false
+	}
 }
 
 const trimBase = (baseUrl) => String(baseUrl ?? '').replace(/\/+$/, '')
@@ -481,12 +492,13 @@ export async function listModels({provider, baseUrl, apiKey, fetchImpl = fetch, 
 		throw new ProviderCheckError('error', 'The endpoint answered, but not with a model list')
 	}
 	const rows = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : []
+	const openAi = isOpenAiList(provider, baseUrl)
 	const seen = new Set()
 	const models = []
 	for (const r of rows) {
 		const id = String((typeof r === 'string' ? r : r?.id ?? r?.name ?? r?.model) ?? '').trim()
 		if (!id || id.length > 200 || seen.has(id)) continue
-		if (provider === 'openai' && !isChatModel(id)) continue
+		if (openAi && !isChatModel(id)) continue
 		seen.add(id)
 		const name = typeof r === 'object' && r?.display_name ? String(r.display_name) : undefined
 		models.push(name && name !== id ? {id, name} : {id})
