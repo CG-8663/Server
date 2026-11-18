@@ -3,7 +3,7 @@ import {createKeyStore, normalizeBaseUrl, presetBaseUrl} from './assistant/keys.
 import {createLoop, publicAction} from './assistant/loop.mjs'
 import {callMcpTool} from './assistant/mcp.mjs'
 import {verifyKey} from './assistant/providers.mjs'
-import {writeTool} from './assistant/tools.mjs'
+import {coerceDeskShell, writeTool} from './assistant/tools.mjs'
 import {RpcError} from './rpc.mjs'
 
 async function readJson(req, limit) {
@@ -150,10 +150,22 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			const vm = action.toolName === 'machines_create' || path === 'machines.create'
 			const secret = vm ? String(input?.password ?? '') : ''
 			if (vm && (secret.length < 1 || secret.length > 256 || /[\r\n]/.test(secret))) throw new RpcError('BAD_REQUEST', 'Enter a password for the machine')
+			if (action.toolName === 'desktop_setLayout') {
+				const shell = coerceDeskShell(rpcInput.shell)
+				if (!shell) throw new RpcError('BAD_REQUEST', 'Use gnome (Ubuntu) or hyprland')
+				rpcInput.shell = shell
+			}
 			const running = {...action, status: 'running', rpc: action.rpc ? {...action.rpc, input: {...rpcInput}} : action.rpc}
 			await conversations.saveAction(who.userId, running)
 			// Await so the in-flight lock stays until the MCP call finishes. A bare return would run finally first.
 			if (action.kind === 'mcp') return await approveMcp(who, action, running)
+			if (action.toolName === 'desktop_setLayout') {
+				const done = {...running, status: 'done', resolvedAt: stamp()}
+				delete done.error
+				await conversations.saveAction(who.userId, done)
+				await appendOutcome(who, action, JSON.stringify({shell: rpcInput.shell}))
+				return publicAction(done)
+			}
 			if (secret) rpcInput.password = secret
 			let result
 			try {

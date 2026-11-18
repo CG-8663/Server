@@ -8,6 +8,7 @@ import {useUser} from '../data'
 import {Icon} from '../icons'
 import {setAssistantActivity, useAssistantAnimationState} from '../assistantActivity'
 import {AssistantCharacter, lookName, useAssistantLook} from '../character/AssistantCharacter'
+import {patchDeskConfig} from '../desktop/config'
 import {haptic, omarchyBackgroundUrl, useOmarchyThemes, usePortalRoot, useScreenLock, type Prefs} from '../ui'
 
 const prettyTool = (name: string) => name.replaceAll('_', ' ')
@@ -476,6 +477,11 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 			const ok = !status || status === 'done'
 			if (path === 'assistant.approve' && ok && cur.action.toolName === 'omarchy_setTheme') reloadTheme = cur.action.detail || ''
 			if (path === 'assistant.approve' && ok && cur.action.toolName === 'system_restart') reloadAfterRestart = true
+			if (path === 'assistant.approve' && ok && cur.action.toolName === 'desktop_setLayout') {
+				const label = String((updated && typeof updated === 'object' && 'detail' in updated ? updated.detail : cur.action.detail) ?? '').toLowerCase()
+				if (label.includes('hyprland')) patchDeskConfig({shell: 'hyprland'})
+				else if (label.includes('ubuntu')) patchDeskConfig({shell: 'gnome'})
+			}
 			if (path === 'assistant.approve' && ok && cur.action.toolName === 'omarchy_setBackground' && extra?.id && setPrefs && prefs) {
 				setPrefs({
 					...prefs,

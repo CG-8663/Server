@@ -228,6 +228,15 @@ function startSync() {
 	document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && pull())
 	window.setInterval(() => document.visibilityState === 'visible' && pull(), 20_000)
 }
+export function patchDeskConfig(patch: Partial<DeskConfig>) {
+	current = clean({...(current ?? loadConfig()), ...patch})
+	keepLocal(current)
+	edits++
+	store(DIRTY_KEY, '1')
+	listeners.forEach((l) => l(current!))
+	push()
+}
+
 export function useDeskConfig() {
 	const [cfg, setCfg] = useState<DeskConfig>(() => (current ??= loadConfig()))
 	useEffect(() => {
@@ -236,12 +245,7 @@ export function useDeskConfig() {
 		return () => void listeners.delete(setCfg)
 	}, [])
 	const update = useCallback((fn: (c: DeskConfig) => DeskConfig) => {
-		current = fn(current ?? loadConfig())
-		keepLocal(current)
-		edits++
-		store(DIRTY_KEY, '1')
-		listeners.forEach((l) => l(current!))
-		push()
+		patchDeskConfig(fn(current ?? loadConfig()))
 	}, [])
 	return [cfg, update] as const
 }

@@ -4,9 +4,9 @@ import {apiOf, effortOf} from './keys.mjs'
 import {chatOrResponses, streamResponses, withToolFallback} from './providers.mjs'
 import {backoffMs, retryableStreamError, retryingFetch, sleepFor} from './retry.mjs'
 import {needsSummary, pickCut, summaryNote, summaryOf, unsummarized, writeSummary} from './summary.mjs'
-import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
+import {appearanceCatalog, coerceDeskShell, filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
-export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
+export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Ubuntu vs Hyprland layout on this server: desktop_setLayout. App chrome (Appearance, glass): appearance_list. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
 
 const LIMIT = 'I hit the lookup limit for this turn.'
 const KEY_REJECTED = 'That API key was rejected. Replace it in Settings → Assistant.'
@@ -114,6 +114,11 @@ function cardFor(name, args) {
 		return {title: labels[a.name] || 'Swarm action', detail: [a.id, a.name, a.pluginId, a.theme].filter((v) => v != null && v !== '').map(String).join(' · ')}
 	}
 	if (name === 'swarm_rename') return {title: a.name ? `Rename swarm computer to ${a.name}` : 'Rename a swarm computer', detail: [a.id, a.name].filter(Boolean).join(' · ')}
+	if (name === 'desktop_setLayout') {
+		const shell = coerceDeskShell(a.shell)
+		const label = shell === 'hyprland' ? 'Hyprland' : shell === 'gnome' ? 'Ubuntu' : 'desktop'
+		return {title: `Switch to ${label} layout`, detail: label}
+	}
 	if (name === 'omarchy_setTheme') return {title: a.slug ? `Set theme ${a.slug}` : 'Set the Omarchy theme', detail: String(a.slug ?? '')}
 	if (name === 'omarchy_setBackground') {
 		const theme = String(a.theme ?? '').trim()
@@ -315,6 +320,11 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			name = 'omarchy_setBackground'
 			args = {theme: slug, ...(BACKGROUND_ID.test(String(args.id ?? '')) ? {id: String(args.id)} : {})}
 		}
+		if (name === 'desktop_setLayout') {
+			const shell = coerceDeskShell(args.shell)
+			if (!shell) return {content: 'Use gnome (Ubuntu) or hyprland', state: 'error'}
+			args = {shell}
+		}
 		const spec = writeTool(name)
 		if (!spec || (spec.ownerOnly && auth.role !== 'owner')) return {content: 'unknown tool', state: 'done'}
 		if (name === 'omarchy_setBackground') {
@@ -386,6 +396,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		}
 		try {
 			if (signal?.aborted) throw abortError()
+			if (read.name === 'appearance_list') return {content: textOf(appearanceCatalog()), state: 'done'}
 			if (!runProcedure) return {content: 'tool failed', state: 'error'}
 			const pending = read.name === 'appStore_search' ? runProcedure('appStore.registry', {}, auth, signal) : runProcedure(read.rpc, args, auth, signal)
 			const raw = await watchAbort(signal, pending)

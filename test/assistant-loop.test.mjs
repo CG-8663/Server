@@ -9,7 +9,7 @@ import {createAssistant} from '../omarchyd/assistant.mjs'
 import {createConversations} from '../omarchyd/assistant/conversations.mjs'
 import {SYSTEM_PROMPT} from '../omarchyd/assistant/loop.mjs'
 import {streamChat} from '../omarchyd/assistant/providers.mjs'
-import {READ_TOOLS, WRITE_TOOLS, filterAppStore, toolsFor} from '../omarchyd/assistant/tools.mjs'
+import {READ_TOOLS, WRITE_TOOLS, appearanceCatalog, coerceDeskShell, filterAppStore, toolsFor} from '../omarchyd/assistant/tools.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 import {ALLOWED} from '../server/app.mjs'
 
@@ -208,6 +208,7 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 		'swarm_list',
 		'omarchy_plugins',
 		'omarchy_listBackgrounds',
+		'appearance_list',
 		'notifications_get',
 	])
 	assert.deepEqual(READ_TOOLS.find((t) => t.name === 'system_diskUsage'), {
@@ -234,6 +235,20 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 	assert.match(SYSTEM_PROMPT, /omarchy_setBackground/)
 	assert.match(SYSTEM_PROMPT, /wallpaper/i)
 	assert.match(SYSTEM_PROMPT, /only omarchy_setBackground|not also call omarchy_setTheme|Do not call both/i)
+	assert.match(SYSTEM_PROMPT, /appearance_list/)
+	assert.match(SYSTEM_PROMPT, /desktop_setLayout/)
+	assert.match(SYSTEM_PROMPT, /glass|Appearance/i)
+	assert.equal(READ_TOOLS.find((t) => t.name === 'appearance_list').ownerOnly, false)
+	assert.match(READ_TOOLS.find((t) => t.name === 'appearance_list').description, /Appearance|glass/i)
+	assert.equal(toolsFor('member').some((t) => t.name === 'appearance_list'), true)
+	const layout = WRITE_TOOLS.find((t) => t.name === 'desktop_setLayout')
+	assert.equal(layout.ownerOnly, false)
+	assert.deepEqual(layout.parameters.properties.shell.enum, ['gnome', 'hyprland'])
+	assert.match(layout.description, /Ubuntu|Hyprland/)
+	assert.match(layout.description, /rounded|square|tiling|floating/i)
+	assert.match(layout.description, /not a swarm/i)
+	assert.equal(toolsFor('member').some((t) => t.name === 'desktop_setLayout'), true)
+	assert.match(WRITE_TOOLS.find((t) => t.name === 'swarm_action').description, /swarm computer|another computer|not this/i)
 	assert.match(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').description, /wallpaper|background/i)
 	assert.match(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').description, /theme/i)
 	assert.equal(toolsFor('member').some((t) => t.name === 'swarm_list'), false)
@@ -260,6 +275,80 @@ test('appStore_search keeps a short listing, not the registry dump', () => {
 	assert.equal(filterAppStore(registry, {limit: 100}).length, 24)
 	assert.deepEqual(filterAppStore(registry, {q: 'app 4', category: 'files'}).map((a) => a.id), ['a4'])
 	assert.equal(JSON.stringify(defaults).includes('secret-compose'), false)
+})
+
+test('appearance_list names where to change glass and lists the theme cards', () => {
+	const cat = appearanceCatalog()
+	assert.match(cat.appearance.where, /Settings → Appearance/)
+	assert.equal(cat.themes.find((t) => t.id === 'omarchy').name, 'Omarchy')
+	assert.match(cat.themes.find((t) => t.id === 'omarchy').look, /square|solid|no blur/i)
+	for (const id of ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte']) {
+		assert.match(cat.themes.find((t) => t.id === id).look, /round|glass/i, id)
+	}
+	assert.equal(cat.themes.find((t) => t.id === 'custom').name, 'Your photo')
+	assert.match(cat.panelStyle.where, /Personalize → Panel style/)
+	assert.deepEqual(cat.panelStyle.styles.map((s) => s.id), ['yaru', 'glass', 'graphite', 'daylight'])
+	assert.match(cat.panelStyle.styles.find((s) => s.id === 'glass').note, /frost|see-through|blur/i)
+	assert.match(cat.layout.where, /Personalize → Layout/)
+	assert.match(cat.layout.note, /Ubuntu|floating|rounded/i)
+	assert.match(cat.layout.note, /Hyprland|tiling|square/i)
+	assert.deepEqual(cat.layout.options.map((o) => o.id), ['gnome', 'hyprland'])
+})
+
+test('layout aliases map to Ubuntu or Hyprland', () => {
+	assert.equal(coerceDeskShell('ubuntu'), 'gnome')
+	assert.equal(coerceDeskShell('rounded'), 'gnome')
+	assert.equal(coerceDeskShell('floating'), 'gnome')
+	assert.equal(coerceDeskShell('hyprland'), 'hyprland')
+	assert.equal(coerceDeskShell('square'), 'hyprland')
+	assert.equal(coerceDeskShell('tiling'), 'hyprland')
+	assert.equal(coerceDeskShell('glass'), null)
+	assert.equal(coerceDeskShell('rounded corners'), 'gnome')
+	assert.equal(coerceDeskShell('round corners'), 'gnome')
+	assert.equal(coerceDeskShell('floating windows'), 'gnome')
+	assert.equal(coerceDeskShell('Ubuntu layout'), 'gnome')
+	assert.equal(coerceDeskShell('square corners'), 'hyprland')
+	assert.equal(coerceDeskShell('tiling wm'), 'hyprland')
+	assert.equal(coerceDeskShell('Hyprland layout'), 'hyprland')
+})
+
+test('desktop_setLayout is an Approve on this server, not a swarm theme RPC', async () => {
+	const {calls, runProcedure} = factsProcedure()
+	const {seen, fetchImpl} = scripted([toolSse('call_lay', 'desktop_setLayout', JSON.stringify({shell: 'rounded'}))])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'switch to rounded corners', emit: (e) => events.push(e)})
+		const action = events.find((e) => e.event === 'action')?.data
+		assert.equal(action?.toolName, 'desktop_setLayout')
+		assert.match(action.title, /Ubuntu/i)
+		assert.equal(action.rpc?.input?.shell, 'gnome')
+		assert.equal(calls.some((c) => c.name === 'swarm.action' || c.name === 'omarchy.setTheme'), false)
+		const before = calls.length
+		const done = await box.asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}})
+		assert.equal(done.status, 'done')
+		assert.equal(done.rpc?.input?.shell, 'gnome')
+		assert.equal(calls.length, before, 'Approve does not call omarchyd or swarm')
+		assert.equal(seen.filter((s) => s.url.includes('/chat/completions')).length, 1)
+	} finally {
+		await box.close()
+	}
+})
+
+test('appearance_list runs without an omarchyd RPC', async () => {
+	const {calls, runProcedure} = factsProcedure(async () => null)
+	const {seen, fetchImpl} = scripted([toolSse('call_a', 'appearance_list', '{}'), textSse('Settings → Appearance')])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'rounded corners', emit: () => {}})
+		assert.equal(calls.some((c) => c.name === 'appearance.list' || c.name === 'appearance_list'), false)
+		const tool = seen[1].body.messages.find((m) => m.role === 'tool')
+		const cat = JSON.parse(tool.content)
+		assert.match(cat.appearance.where, /Settings → Appearance/)
+		assert.equal(cat.themes.some((t) => t.id === 'omarchy'), true)
+	} finally {
+		await box.close()
+	}
 })
 
 test('runTurn runs a read tool then streams the reply', async () => {
