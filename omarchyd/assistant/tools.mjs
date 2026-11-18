@@ -37,6 +37,7 @@ export const READ_TOOLS = [
 	tool('omarchy_listBackgrounds', 'omarchy.backgrounds', 'List this machine’s wallpaper and background images, grouped by Omarchy theme. Use this when they ask which wallpapers exist.', {
 		theme: {type: 'string', description: 'Theme slug; omit for every theme'},
 	}),
+	tool('appearance_list', 'appearance.list', 'Where to change this app’s look (rounded corners and glass vs square solid panels) and the theme and panel-style options. Use this when they ask about rounded corners, glass, square panels, Appearance, or Ubuntu vs Hyprland layout.'),
 	tool('notifications_get', 'notifications.get', 'Notifications waiting on this server'),
 ]
 
@@ -105,6 +106,42 @@ export function openAiTools(role) {
 		type: 'function',
 		function: {name: t.name, description: t.description, parameters: t.parameters},
 	}))
+}
+
+export function appearanceCatalog() {
+	return {
+		appearance: {
+			where: 'Settings → Appearance',
+			note: 'This is the app look: rounding and glass vs square solid panels. Picking a wallpaper here can switch the theme to Omarchy unless you were already on Horizon.',
+		},
+		themes: [
+			{id: 'horizon', name: 'Horizon', look: 'Rounded glass over the wallpaper'},
+			{id: 'custom', name: 'Your photo', look: 'Rounded glass over your photo'},
+			{id: 'mocha', name: 'Midnight', look: 'Rounded glass, dark palette'},
+			{id: 'tokyo', name: 'Neon', look: 'Rounded glass, dark palette'},
+			{id: 'gruvbox', name: 'Ember', look: 'Rounded glass, warm palette'},
+			{id: 'latte', name: 'Daylight', look: 'Rounded glass, light palette'},
+			{id: 'omarchy', name: 'Omarchy', look: 'Square corners, solid panels, no blur'},
+		],
+		panelStyle: {
+			where: 'Personalize → Panel style',
+			note: 'Desktop chrome only (top bar, dock, windows).',
+			styles: [
+				{id: 'yaru', name: 'Yaru', note: 'Ubuntu’s look: solid dark panels'},
+				{id: 'glass', name: 'Glass', note: 'Frosted, see-through panels'},
+				{id: 'graphite', name: 'Graphite', note: 'Flat and crisp, no blur'},
+				{id: 'daylight', name: 'Daylight', note: 'Light top bar, dock and menus'},
+			],
+		},
+		layout: {
+			where: 'Personalize → Layout',
+			note: 'Changing layout does not restore rounded corners or glass.',
+			options: [
+				{id: 'gnome', name: 'Ubuntu'},
+				{id: 'hyprland', name: 'Hyprland'},
+			],
+		},
+	}
 }
 
 export function filterAppStore(registry, input = {}) {

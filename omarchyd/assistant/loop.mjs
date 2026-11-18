@@ -1,8 +1,8 @@
 import {callMcpTool, forgetMcpTools, listMcpTools} from './mcp.mjs'
 import {streamChat} from './providers.mjs'
-import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
+import {appearanceCatalog, filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
-export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
+export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Rounded corners, glass, square panels, or this app’s look: appearance_list. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
 
 const LIMIT = 'I hit the lookup limit for this turn.'
 const KEY_REJECTED = 'That API key was rejected. Replace it in Settings → Assistant.'
@@ -376,6 +376,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		}
 		try {
 			if (signal?.aborted) throw abortError()
+			if (read.name === 'appearance_list') return {content: textOf(appearanceCatalog()), state: 'done'}
 			if (!runProcedure) return {content: 'tool failed', state: 'error'}
 			const pending = read.name === 'appStore_search' ? runProcedure('appStore.registry', {}, auth, signal) : runProcedure(read.rpc, args, auth, signal)
 			const raw = await watchAbort(signal, pending)

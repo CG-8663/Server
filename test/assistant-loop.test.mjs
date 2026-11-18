@@ -9,7 +9,7 @@ import {createAssistant} from '../omarchyd/assistant.mjs'
 import {createConversations} from '../omarchyd/assistant/conversations.mjs'
 import {SYSTEM_PROMPT} from '../omarchyd/assistant/loop.mjs'
 import {streamChat} from '../omarchyd/assistant/providers.mjs'
-import {READ_TOOLS, WRITE_TOOLS, filterAppStore, toolsFor} from '../omarchyd/assistant/tools.mjs'
+import {READ_TOOLS, WRITE_TOOLS, appearanceCatalog, filterAppStore, toolsFor} from '../omarchyd/assistant/tools.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 import {ALLOWED} from '../server/app.mjs'
 
@@ -208,6 +208,7 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 		'swarm_list',
 		'omarchy_plugins',
 		'omarchy_listBackgrounds',
+		'appearance_list',
 		'notifications_get',
 	])
 	assert.deepEqual(READ_TOOLS.find((t) => t.name === 'system_diskUsage'), {
@@ -234,6 +235,11 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 	assert.match(SYSTEM_PROMPT, /omarchy_setBackground/)
 	assert.match(SYSTEM_PROMPT, /wallpaper/i)
 	assert.match(SYSTEM_PROMPT, /only omarchy_setBackground|not also call omarchy_setTheme|Do not call both/i)
+	assert.match(SYSTEM_PROMPT, /appearance_list/)
+	assert.match(SYSTEM_PROMPT, /rounded|glass/i)
+	assert.equal(READ_TOOLS.find((t) => t.name === 'appearance_list').ownerOnly, false)
+	assert.match(READ_TOOLS.find((t) => t.name === 'appearance_list').description, /Appearance|rounded|glass/i)
+	assert.equal(toolsFor('member').some((t) => t.name === 'appearance_list'), true)
 	assert.match(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').description, /wallpaper|background/i)
 	assert.match(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').description, /theme/i)
 	assert.equal(toolsFor('member').some((t) => t.name === 'swarm_list'), false)
@@ -260,6 +266,39 @@ test('appStore_search keeps a short listing, not the registry dump', () => {
 	assert.equal(filterAppStore(registry, {limit: 100}).length, 24)
 	assert.deepEqual(filterAppStore(registry, {q: 'app 4', category: 'files'}).map((a) => a.id), ['a4'])
 	assert.equal(JSON.stringify(defaults).includes('secret-compose'), false)
+})
+
+test('appearance_list names where to change glass and lists the theme cards', () => {
+	const cat = appearanceCatalog()
+	assert.match(cat.appearance.where, /Settings → Appearance/)
+	assert.equal(cat.themes.find((t) => t.id === 'omarchy').name, 'Omarchy')
+	assert.match(cat.themes.find((t) => t.id === 'omarchy').look, /square|solid|no blur/i)
+	for (const id of ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte']) {
+		assert.match(cat.themes.find((t) => t.id === id).look, /round|glass/i, id)
+	}
+	assert.equal(cat.themes.find((t) => t.id === 'custom').name, 'Your photo')
+	assert.match(cat.panelStyle.where, /Personalize → Panel style/)
+	assert.deepEqual(cat.panelStyle.styles.map((s) => s.id), ['yaru', 'glass', 'graphite', 'daylight'])
+	assert.match(cat.panelStyle.styles.find((s) => s.id === 'glass').note, /frost|see-through|blur/i)
+	assert.match(cat.layout.where, /Personalize → Layout/)
+	assert.match(cat.layout.note, /does not restore|not restore|doesn’t restore/i)
+	assert.deepEqual(cat.layout.options.map((o) => o.id), ['gnome', 'hyprland'])
+})
+
+test('appearance_list runs without an omarchyd RPC', async () => {
+	const {calls, runProcedure} = factsProcedure(async () => null)
+	const {seen, fetchImpl} = scripted([toolSse('call_a', 'appearance_list', '{}'), textSse('Settings → Appearance')])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'rounded corners', emit: () => {}})
+		assert.equal(calls.some((c) => c.name === 'appearance.list' || c.name === 'appearance_list'), false)
+		const tool = seen[1].body.messages.find((m) => m.role === 'tool')
+		const cat = JSON.parse(tool.content)
+		assert.match(cat.appearance.where, /Settings → Appearance/)
+		assert.equal(cat.themes.some((t) => t.id === 'omarchy'), true)
+	} finally {
+		await box.close()
+	}
 })
 
 test('runTurn runs a read tool then streams the reply', async () => {
