@@ -7,9 +7,11 @@ import {RpcError} from '../rpc.mjs'
 
 const SPACEXAI = 'https://api.x.ai/v1'
 const OPENAI = 'https://api.openai.com/v1'
+// Fixed addresses of the named providers; a custom endpoint brings its own.
+export const presetBaseUrl = (provider) => ({spacexai: SPACEXAI, openai: OPENAI})[provider] ?? null
 const ID = () => 'k_' + randomBytes(6).toString('hex')
 const last4 = (s) => String(s).slice(-4)
-const normalizeBaseUrl = (raw) => {
+export const normalizeBaseUrl = (raw) => {
 	const s = String(raw ?? '').trim().replace(/\/+$/, '')
 	try {
 		const u = new URL(s)
@@ -17,12 +19,15 @@ const normalizeBaseUrl = (raw) => {
 	} catch {}
 	return s
 }
+// The last live check of a key, so Settings can show whether it still works.
+const publicCheck = (c) => (c && typeof c === 'object' ? {ok: !!c.ok, status: String(c.status ?? ''), message: String(c.message ?? '').slice(0, 300), at: Number(c.at) || 0} : null)
 const publicOf = (k, userId) => ({
 	id: k.id,
 	name: k.name,
 	provider: k.provider,
 	baseUrl: k.baseUrl,
 	model: k.model,
+	check: publicCheck(k.check),
 	last4: k.last4,
 	ownerUserId: k.ownerUserId,
 	sharedWith: k.sharedWith,
@@ -94,7 +99,10 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			}
 			if (k.ownerUserId === actor.userId) {
 				if (typeof input?.name === 'string') k.name = input.name.trim().slice(0, 48) || k.name
-				if (typeof input?.model === 'string' && input.model.trim()) k.model = input.model.trim().slice(0, 80)
+				if (typeof input?.model === 'string' && input.model.trim() && input.model.trim() !== k.model) {
+					k.model = input.model.trim().slice(0, 80)
+					delete k.check
+				}
 				if (typeof input?.apiKey === 'string') {
 					const next = input.apiKey.trim()
 					if (next.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
@@ -102,11 +110,13 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 					if (k.provider === 'openai-compatible' || next.length >= 4) {
 						k.apiKey = next
 						k.last4 = last4(k.apiKey)
+						delete k.check
 					}
 				}
 				if (k.provider === 'openai-compatible' && typeof input?.baseUrl === 'string') {
 					if (actor.role !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can change a custom endpoint')
 					k.baseUrl = normalizeBaseUrl(input.baseUrl)
+					delete k.check
 				}
 				if (Array.isArray(input?.sharedWith)) k.sharedWith = [...new Set(input.sharedWith.map((id) => String(id)).filter((id) => id && id !== k.ownerUserId))].slice(0, 32)
 			}
@@ -122,6 +132,14 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			state.keys = state.keys.filter((x) => x.id !== id)
 			await save()
 			return true
+		},
+		async recordCheck(id, check) {
+			await loaded
+			const k = find(id)
+			if (!k) return null
+			k.check = {...publicCheck(check), at: now()}
+			await save()
+			return publicCheck(k.check)
 		},
 		async getSecret(id) {
 			await loaded

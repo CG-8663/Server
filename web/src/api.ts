@@ -238,12 +238,17 @@ export type ActiveSession = {
 }
 
 export type AssistantProvider = 'spacexai' | 'openai' | 'openai-compatible'
+export type AssistantCheck = {ok: boolean; status: string; message: string; at: number}
+export type AssistantModel = {id: string; name?: string}
+// A live check: the stored check plus the models the endpoint serves.
+export type AssistantVerify = AssistantCheck & {modelFound: boolean | null; models: AssistantModel[]}
 export type AssistantKey = {
 	id: string
 	name: string
 	provider: AssistantProvider
 	baseUrl: string
 	model: string
+	check: AssistantCheck | null
 	last4: string
 	ownerUserId: string
 	sharedWith: string[]

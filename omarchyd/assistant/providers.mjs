@@ -204,3 +204,91 @@ export async function* streamChat({baseUrl, apiKey, model, messages, tools, fetc
 		yield {type: 'tool', id: row.id, name: row.name, arguments: args}
 	}
 }
+
+// ---- Live checks and model lists ----------------------------------------------------------------
+// GET {base}/models is cheap: it proves the address is right and the key is accepted, and it says
+// which models the endpoint serves.
+
+// OpenAI's /models also lists embeddings, speech, images and moderation. Keep what can chat.
+export function isChatModel(id) {
+	const s = String(id).toLowerCase()
+	if (/^(text-embedding|tts-|whisper|dall-e|gpt-image|omni-moderation|text-moderation|davinci|babbage|sora|computer-use)/.test(s)) return false
+	if (/(-realtime|-audio|-transcribe|-tts|-search-api|embedding)/.test(s)) return false
+	return !s.startsWith('ft:')
+}
+
+const trimBase = (baseUrl) => String(baseUrl ?? '').replace(/\/+$/, '')
+const bearer = (apiKey) => (apiKey ? {authorization: `Bearer ${apiKey}`} : {})
+const listRequest = (provider, baseUrl, apiKey) => ({url: `${trimBase(baseUrl)}/models`, headers: bearer(apiKey)})
+
+const withTimeout = (signal, ms) => {
+	const t = AbortSignal.timeout(ms)
+	return signal && typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, t]) : t
+}
+
+export class ProviderCheckError extends Error {
+	constructor(status, message, httpStatus) {
+		super(message)
+		this.status = status
+		this.httpStatus = httpStatus
+	}
+}
+
+export async function listModels({provider, baseUrl, apiKey, fetchImpl = fetch, signal, timeoutMs = 10_000}) {
+	const {url, headers} = listRequest(provider, baseUrl, apiKey)
+	let res
+	try {
+		res = await fetchImpl(url, {headers: {accept: 'application/json', ...headers}, signal: withTimeout(signal, timeoutMs)})
+	} catch (e) {
+		if (signal?.aborted) throw e
+		const why = e?.name === 'TimeoutError' || e?.name === 'AbortError' ? 'it didn’t answer in time' : e?.cause?.code || e?.message || 'the connection failed'
+		throw new ProviderCheckError('unreachable', `Couldn’t reach ${trimBase(baseUrl)}: ${why}`)
+	}
+	if (res.status === 401 || res.status === 403) {
+		throw new ProviderCheckError('rejected', apiKey ? 'The endpoint rejected this API key' : 'The endpoint needs an API key', res.status)
+	}
+	if (res.status === 404) throw new ProviderCheckError('no-list', `Nothing at ${url.split('?')[0]}. Check the base URL ends in /v1.`, 404)
+	if (!res.ok) {
+		let raw = ''
+		try {
+			raw = await res.text()
+		} catch {}
+		throw new ProviderCheckError('error', errorMessage(raw, res.status), res.status)
+	}
+	let payload
+	try {
+		payload = await res.json()
+	} catch {
+		throw new ProviderCheckError('error', 'The endpoint answered, but not with a model list')
+	}
+	const rows = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : []
+	const seen = new Set()
+	const models = []
+	for (const r of rows) {
+		const id = String((typeof r === 'string' ? r : r?.id ?? r?.name ?? r?.model) ?? '').trim()
+		if (!id || id.length > 200 || seen.has(id)) continue
+		if (provider === 'openai' && !isChatModel(id)) continue
+		seen.add(id)
+		const name = typeof r === 'object' && r?.display_name ? String(r.display_name) : undefined
+		models.push(name && name !== id ? {id, name} : {id})
+	}
+	models.sort((a, b) => a.id.localeCompare(b.id))
+	return models
+}
+
+// Reachable, key accepted, and (when a model is set) whether the endpoint serves it.
+export async function verifyKey({provider, baseUrl, apiKey, model, fetchImpl = fetch, signal, timeoutMs}) {
+	try {
+		const models = await listModels({provider, baseUrl, apiKey, fetchImpl, signal, timeoutMs})
+		const wanted = String(model ?? '').trim()
+		const found = !wanted || !models.length ? null : models.some((m) => m.id === wanted)
+		const count = models.length
+		if (found === false) {
+			return {ok: false, status: 'no-model', message: `Key works, but ${wanted} isn’t one of the ${count} models this endpoint serves`, models, modelFound: false}
+		}
+		return {ok: true, status: 'ok', message: count ? `Connected · ${count} model${count === 1 ? '' : 's'} available` : 'Connected', models, modelFound: found}
+	} catch (e) {
+		if (!(e instanceof ProviderCheckError)) throw e
+		return {ok: false, status: e.status, message: e.message, models: [], modelFound: null}
+	}
+}

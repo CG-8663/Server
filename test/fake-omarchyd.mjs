@@ -223,6 +223,7 @@ export async function startFakeserverd({
 	}
 	const accountOf = (userId) => (userId === 'sam' ? {userId: 'sam', name: 'Sam', role: 'member'} : {userId: 'owner', name: 'Chris', role: 'owner'})
 	const SPACEXAI = 'https://api.x.ai/v1'
+	const FAKE_MODELS = ['grok-4.7', 'grok-4.7-mini', 'gpt-5.5', 'llama3.2']
 	const OPENAI = 'https://api.openai.com/v1'
 	const normalizeBaseUrl = (raw) => {
 		const s = String(raw ?? '').trim().replace(/\/+$/, '')
@@ -238,6 +239,7 @@ export async function startFakeserverd({
 		provider: k.provider,
 		baseUrl: k.baseUrl,
 		model: k.model,
+		check: k.check ?? null,
 		last4: k.last4,
 		ownerUserId: k.ownerUserId,
 		sharedWith: k.sharedWith,
@@ -699,6 +701,23 @@ export async function startFakeserverd({
 					if (Array.isArray(input?.sharedWith)) k.sharedWith = [...new Set(input.sharedWith.map((id) => String(id)).filter((id) => id && id !== k.ownerUserId))].slice(0, 32)
 				}
 				return assistantPublic(k, auth.userId)
+			},
+		},
+		'assistant.verifyKey': {
+			kind: 'mutation',
+			run: (input, auth) => {
+				const k = input?.id ? assistantKeys.find((x) => x.id === String(input.id) && assistantCanUse(x, auth.userId)) : null
+				if (input?.id && !k) return {error: ['NOT_FOUND', 'That key isn’t available']}
+				const provider = k ? k.provider : String(input?.provider ?? '')
+				if (!k && provider === 'openai-compatible' && accountOf(auth.userId).role !== 'owner') return {error: ['FORBIDDEN', 'Only the server’s owner can add a custom endpoint']}
+				const apiKey = k ? k.apiKey : String(input?.apiKey ?? '')
+				const model = k ? k.model : ''
+				let check
+				if (provider !== 'openai-compatible' && apiKey.length < 4) check = {ok: false, status: 'rejected', message: 'The endpoint needs an API key', modelFound: null}
+				else if (model && !FAKE_MODELS.includes(model)) check = {ok: false, status: 'no-model', message: `Key works, but ${model} isn’t one of the ${FAKE_MODELS.length} models this endpoint serves`, modelFound: false}
+				else check = {ok: true, status: 'ok', message: `Connected · ${FAKE_MODELS.length} models available`, modelFound: model ? true : null}
+				if (k) k.check = {ok: check.ok, status: check.status, message: check.message, at: Date.now()}
+				return {...check, models: FAKE_MODELS.map((id) => ({id})), at: Date.now()}
 			},
 		},
 		'assistant.removeKey': {

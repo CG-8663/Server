@@ -124,6 +124,7 @@ export const ALLOWED = {
 	'assistant.addKey': 'mutation',
 	'assistant.updateKey': 'mutation',
 	'assistant.removeKey': 'mutation',
+	'assistant.verifyKey': 'mutation',
 	'assistant.conversations': 'query',
 	'assistant.getConversation': 'query',
 	'assistant.deleteConversation': 'mutation',

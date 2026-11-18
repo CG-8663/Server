@@ -2,7 +2,7 @@
 import {useContext, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {logout, mutate, query, type ActiveSession, type AssistantKey, type AssistantProvider} from '../api'
+import {logout, mutate, query, type ActiveSession, type AssistantCheck, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
@@ -432,6 +432,97 @@ const PROVIDER_LABEL: Record<AssistantProvider, string> = {
 	'openai-compatible': 'Custom endpoint',
 }
 
+const MODEL_PLACEHOLDER: Record<AssistantProvider, string> = {
+	spacexai: 'grok-4.7',
+	openai: 'gpt-5.5',
+	'openai-compatible': 'llama3.2',
+}
+
+// The result of a live check, under a key or in Add provider.
+function CheckLine({check, busy}: {check: Pick<AssistantCheck, 'ok' | 'message'> | null; busy?: boolean}) {
+	const style: CSSProperties = {textAlign: 'left', margin: '2px 6px 8px', display: 'flex', gap: 6, alignItems: 'center'}
+	if (busy) {
+		return (
+			<p className="footer-note" style={style}>
+				<span className="spinner" /> Checking…
+			</p>
+		)
+	}
+	if (!check) return null
+	return (
+		<p className="footer-note" role="status" style={{...style, color: check.ok ? 'var(--green)' : 'var(--red)'}}>
+			<Icon name={check.ok ? 'check' : 'alert'} size={15} />
+			{check.message}
+		</p>
+	)
+}
+
+// Checks the endpoint (and so the key) a moment after the details stop changing, and keeps its model list.
+function useEndpointCheck(target: Record<string, unknown> | null, model: string) {
+	const [result, setResult] = useState<AssistantVerify | null>(null)
+	const [busy, setBusy] = useState(false)
+	const sig = target ? JSON.stringify(target) : ''
+	useEffect(() => {
+		setResult(null)
+		if (!sig) return
+		let live = true
+		const t = setTimeout(async () => {
+			setBusy(true)
+			try {
+				const r = await mutate<AssistantVerify>('assistant.verifyKey', JSON.parse(sig))
+				if (live) setResult(r)
+			} catch (e) {
+				if (live) setResult({ok: false, status: 'error', message: (e as Error).message, at: Date.now(), modelFound: null, models: []})
+			} finally {
+				if (live) setBusy(false)
+			}
+		}, 600)
+		return () => {
+			live = false
+			clearTimeout(t)
+		}
+	}, [sig])
+	const models = result?.models ?? []
+	const wanted = model.trim()
+	let check: Pick<AssistantCheck, 'ok' | 'message'> | null = result
+	// The list is already here, so the model being typed is judged without asking the endpoint again.
+	if (result && (result.status === 'ok' || result.status === 'no-model') && wanted && models.length) {
+		check = models.some((m) => m.id === wanted)
+			? {ok: true, message: `Connected · ${models.length} model${models.length === 1 ? '' : 's'} available`}
+			: {ok: false, message: `Key works, but ${wanted} isn’t one of the ${models.length} models this endpoint serves`}
+	}
+	return {busy, check, models}
+}
+
+function ModelField({id, value, onChange, models, provider}: {id: string; value: string; onChange: (v: string) => void; models: AssistantModel[]; provider: AssistantProvider}) {
+	const listId = `${id}-models`
+	return (
+		<>
+			<Field
+				id={id}
+				label="Model"
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+				placeholder={MODEL_PLACEHOLDER[provider] ?? models[0]?.id}
+				list={models.length ? listId : undefined}
+				hint={models.length ? `${models.length} models from the endpoint. Pick one or type an id.` : 'Must match a model id the endpoint serves.'}
+				autoCapitalize="off"
+				autoCorrect="off"
+				spellCheck={false}
+			/>
+			{models.length > 0 && (
+				<datalist id={listId}>
+					{models.map((m) => (
+						<option key={m.id} value={m.id}>
+							{m.name ?? ''}
+						</option>
+					))}
+				</datalist>
+			)}
+		</>
+	)
+}
+
 function AssistantPage({onBack}: {onBack: () => void}) {
 	const boot = useBootstrap()
 	const user = useUser()
@@ -442,6 +533,22 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 	const keys = useQ<AssistantKey[]>('assistant.keys')
 	const [add, setAdd] = useState(false)
 	const [share, setShare] = useState<AssistantKey | null>(null)
+	const [edit, setEdit] = useState<AssistantKey | null>(null)
+	const [checking, setChecking] = useState<string | null>(null)
+	const qc = useQueryClient()
+	const toast = useToast()
+	const check = async (k: AssistantKey) => {
+		setChecking(k.id)
+		try {
+			const r = await mutate<AssistantVerify>('assistant.verifyKey', {id: k.id})
+			toast(r.message, !r.ok)
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setChecking(null)
+			qc.invalidateQueries({queryKey: ['assistant.keys']})
+		}
+	}
 	const list = keys.data ?? []
 	const remove = async (k: AssistantKey) => {
 		const ok = await confirm({
@@ -510,6 +617,15 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 							</span>
 						</span>
 					</div>
+					{k.check && <CheckLine check={k.check} />}
+					<Row
+						icon="check"
+						color="var(--green)"
+						label={checking === k.id ? 'Checking…' : 'Check connection'}
+						trailing={checking === k.id ? <span className="spinner" /> : undefined}
+						onClick={() => checking || check(k)}
+					/>
+					{k.mine && <Row icon="pencil" color="var(--accent)" label="Model" value={k.model} onClick={() => setEdit(k)} />}
 					{k.mine && (
 						<Row
 							icon="share"
@@ -553,6 +669,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 			<AssistantAppearanceSettings />
 
 			<AddKeySheet open={add} owner={user.data?.role === 'owner'} onClose={() => setAdd(false)} />
+			<EditKeySheet open={!!edit} keyRow={edit} onClose={() => setEdit(null)} />
 			<ShareKeySheet open={!!share} keyRow={share} accounts={boot.accounts} self={self} onClose={() => setShare(null)} />
 		</div>
 	)
@@ -572,8 +689,16 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 		setApiKey('')
 		setBaseUrl('')
 	}, [open])
-	const keyOk = provider === 'openai-compatible' || apiKey.trim().length >= 4
-	const ready = keyOk && !!model.trim() && (provider !== 'openai-compatible' || /^https?:\/\/[^\s]+/i.test(baseUrl.trim()))
+	const qc = useQueryClient()
+	const custom = provider === 'openai-compatible'
+	const keyOk = custom || apiKey.trim().length >= 4
+	const urlOk = !custom || /^https?:\/\/[^\s]+/i.test(baseUrl.trim())
+	const ready = keyOk && !!model.trim() && urlOk
+	const live = useEndpointCheck(open && keyOk && urlOk ? {provider, apiKey: apiKey.trim(), ...(custom ? {baseUrl: baseUrl.trim()} : {})} : null, model)
+	// Once the list arrives, fill in a model unless one was typed.
+	useEffect(() => {
+		if (!model.trim() && live.models.length) setModel((live.models.find((m) => m.id === MODEL_PLACEHOLDER[provider]) ?? live.models[0]).id)
+	}, [live.models]) // eslint-disable-line react-hooks/exhaustive-deps
 	return (
 		<FormSheet
 			open={open}
@@ -596,7 +721,14 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 						done: 'Provider added',
 						refresh: ['assistant.keys'],
 					},
-					{onSuccess: onClose},
+					{
+						// Record a first check on the saved key, so its row shows whether it works.
+						onSuccess: (row) => {
+							onClose()
+							const id = (row as AssistantKey | undefined)?.id
+							if (id) mutate('assistant.verifyKey', {id}).catch(() => {}).finally(() => qc.invalidateQueries({queryKey: ['assistant.keys']}))
+						},
+					},
 				)
 			}
 		>
@@ -605,6 +737,7 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 				value={provider}
 				onChange={(v) => {
 					setProvider(v)
+					setModel('')
 					if (v === 'openai-compatible' && !baseUrl.trim()) setBaseUrl('http://127.0.0.1:11434/v1')
 				}}
 				options={[
@@ -615,27 +748,7 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 				]}
 			/>
 			<Field id="ask-name" label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-			<Field
-				id="ask-model"
-				label="Model"
-				value={model}
-				onChange={(e) => setModel(e.target.value)}
-				placeholder={provider === 'spacexai' ? 'grok-4.7' : provider === 'openai' ? 'gpt-5.5' : 'llama3.2'}
-				hint={provider === 'openai-compatible' ? 'Must match a model id the endpoint serves.' : undefined}
-				autoCapitalize="off"
-				autoCorrect="off"
-				spellCheck={false}
-			/>
-			<Field
-				id="ask-key"
-				label="API key"
-				type="password"
-				autoComplete="off"
-				value={apiKey}
-				onChange={(e) => setApiKey(e.target.value)}
-				hint={provider === 'openai-compatible' ? 'Leave blank for local Ollama.' : undefined}
-			/>
-			{provider === 'openai-compatible' && (
+			{custom && (
 				<Field
 					id="ask-url"
 					label="Base URL"
@@ -648,6 +761,42 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 					spellCheck={false}
 				/>
 			)}
+			<Field
+				id="ask-key"
+				label="API key"
+				type="password"
+				autoComplete="off"
+				value={apiKey}
+				onChange={(e) => setApiKey(e.target.value)}
+				hint={custom ? 'Leave blank for local Ollama.' : 'Checked with the provider as you type.'}
+			/>
+			<CheckLine check={live.check} busy={live.busy} />
+			<ModelField id="ask-model" value={model} onChange={setModel} models={live.models} provider={provider} />
+		</FormSheet>
+	)
+}
+
+// Pick another model for a key, from the endpoint's own list.
+function EditKeySheet({open, keyRow, onClose}: {open: boolean; keyRow: AssistantKey | null; onClose: () => void}) {
+	const save = useSave()
+	const [model, setModel] = useState('')
+	useEffect(() => setModel(keyRow?.model ?? ''), [keyRow, open])
+	const live = useEndpointCheck(open && keyRow ? {id: keyRow.id} : null, model)
+	return (
+		<FormSheet
+			open={open}
+			title={keyRow?.name ?? 'Model'}
+			subtitle={keyRow ? PROVIDER_LABEL[keyRow.provider] : undefined}
+			onClose={onClose}
+			submit="Save"
+			busy={save.isPending}
+			disabled={!keyRow || !model.trim() || model.trim() === keyRow.model}
+			onSubmit={() =>
+				keyRow && save.mutate({path: 'assistant.updateKey', input: {id: keyRow.id, model: model.trim()}, done: 'Model saved', refresh: ['assistant.keys']}, {onSuccess: onClose})
+			}
+		>
+			<CheckLine check={live.check} busy={live.busy} />
+			{keyRow && <ModelField id="edit-model" value={model} onChange={setModel} models={live.models} provider={keyRow.provider} />}
 		</FormSheet>
 	)
 }

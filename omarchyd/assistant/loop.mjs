@@ -482,6 +482,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				}
 				if (providerError) {
 					await stopped(text)
+					if (providerError.status === 401) await keys.recordCheck?.(key.id, {ok: false, status: 'rejected', message: 'The provider rejected this key'}).catch(() => {})
 					say('error', {message: providerError.status === 401 ? KEY_REJECTED : (providerError.message || 'The assistant did not answer')})
 					return finish(row.id)
 				}

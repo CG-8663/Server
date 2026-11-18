@@ -1,7 +1,8 @@
 import {createConversations} from './assistant/conversations.mjs'
-import {createKeyStore} from './assistant/keys.mjs'
+import {createKeyStore, normalizeBaseUrl, presetBaseUrl} from './assistant/keys.mjs'
 import {createLoop, publicAction} from './assistant/loop.mjs'
 import {callMcpTool} from './assistant/mcp.mjs'
+import {verifyKey} from './assistant/providers.mjs'
 import {writeTool} from './assistant/tools.mjs'
 import {RpcError} from './rpc.mjs'
 
@@ -222,6 +223,34 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			if (res.headersSent && !res.writableEnded && !res.destroyed) res.end()
 		}
 	}
+	// A saved key (by id; its secret stays here) or what's typed into Add provider before saving.
+	async function endpointFor(input, auth) {
+		const who = actor(auth)
+		if (input?.id) {
+			const k = await keys.resolveForUser(who.userId, String(input.id))
+			return {id: k.id, provider: k.provider, baseUrl: k.baseUrl, apiKey: k.apiKey, model: k.model}
+		}
+		const provider = String(input?.provider ?? '')
+		let baseUrl = presetBaseUrl(provider)
+		if (!baseUrl) {
+			if (provider !== 'openai-compatible') throw new RpcError('BAD_REQUEST', 'Choose a provider')
+			// Same rule as adding one: a typed address can point anywhere the server reaches.
+			if (who.role !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can add a custom endpoint')
+			baseUrl = normalizeBaseUrl(input?.baseUrl)
+			if (!/^https?:\/\/[^\s]+$/i.test(baseUrl) || baseUrl.length > 200) throw new RpcError('BAD_REQUEST', 'Enter the API base URL')
+		}
+		const apiKey = String(input?.apiKey ?? '').trim()
+		if (apiKey.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+		return {id: null, provider, baseUrl, apiKey, model: String(input?.model ?? '')}
+	}
+	// Live check: is the endpoint there, does it take the key, which models does it serve.
+	async function verify(input, {auth}) {
+		const ep = await endpointFor(input, auth)
+		const result = await verifyKey({...ep, fetchImpl})
+		const check = {ok: result.ok, status: result.status, message: result.message}
+		if (ep.id) await keys.recordCheck(ep.id, check)
+		return {...check, modelFound: result.modelFound, models: result.models, at: stamp()}
+	}
 	return {
 		keys,
 		conversations,
@@ -232,6 +261,7 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			'assistant.keys': {kind: 'query', run: (_i, {auth}) => keys.listPublic(auth.userId)},
 			'assistant.addKey': {kind: 'mutation', run: (input, {auth}) => keys.add(actor(auth), input)},
 			'assistant.updateKey': {kind: 'mutation', run: (input, {auth}) => keys.update(actor(auth), input)},
+			'assistant.verifyKey': {kind: 'mutation', run: verify},
 			'assistant.removeKey': {kind: 'mutation', run: (input, {auth}) => keys.remove(actor(auth), String(input?.id ?? ''))},
 			'assistant.conversations': {kind: 'query', run: (_i, {auth}) => conversations.list(userIdOf(auth))},
 			'assistant.getConversation': {kind: 'query', run: (input, {auth}) => conversations.get(userIdOf(auth), String(input?.id ?? ''))},
