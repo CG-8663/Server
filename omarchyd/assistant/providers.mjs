@@ -143,7 +143,7 @@ function parseEvent(event, pending) {
 
 
 
-export async function* streamChat({baseUrl, apiKey, model, messages, tools, fetchImpl = fetch, signal}) {
+export async function* streamChat({baseUrl, apiKey, model, messages, tools, effort, fetchImpl = fetch, signal}) {
 	const url = `${String(baseUrl).replace(/\/+$/, '')}/chat/completions`
 	const res = await fetchImpl(url, {
 		method: 'POST',
@@ -156,6 +156,7 @@ export async function* streamChat({baseUrl, apiKey, model, messages, tools, fetc
 			model,
 			messages,
 			stream: true,
+			...(effort ? {reasoning_effort: effort} : {}),
 			...(tools?.length ? {tools, parallel_tool_calls: false, tool_choice: 'auto'} : {}),
 		}),
 		signal,
@@ -229,10 +230,11 @@ export function responsesInput(messages) {
 export const responsesTools = (tools) =>
 	(tools ?? []).map((t) => ({type: 'function', name: t.function?.name, description: t.function?.description ?? '', parameters: t.function?.parameters ?? {type: 'object', properties: {}}}))
 
-export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', apiKey, accessToken, model, messages, tools, fetchImpl = fetch, signal}) {
+export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', apiKey, accessToken, model, messages, tools, effort, fetchImpl = fetch, signal}) {
 	const {instructions, input} = responsesInput(messages)
 	const token = accessToken ?? apiKey
 	const body = {model, input, store: false, stream: true}
+	if (effort) body.reasoning = {effort}
 	if (instructions) body.instructions = instructions
 	const fnTools = responsesTools(tools)
 	if (fnTools.length) Object.assign(body, {tools: fnTools, tool_choice: 'auto', parallel_tool_calls: false})

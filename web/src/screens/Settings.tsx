@@ -2,7 +2,7 @@
 import {useContext, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {logout, mutate, query, type ActiveSession, type AssistantApi, type AssistantCheck, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
+import {logout, mutate, query, type ActiveSession, type AssistantApi, type AssistantCheck, type AssistantEffort, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
@@ -501,6 +501,13 @@ const API_OPTIONS: {id: AssistantApi; label: string}[] = [
 	{id: 'chat', label: 'Chat Completions'},
 	{id: 'responses', label: 'Responses'},
 ]
+const EFFORT_OPTIONS: {id: AssistantEffort; label: string}[] = [
+	{id: '', label: 'Default'},
+	{id: 'low', label: 'Low'},
+	{id: 'medium', label: 'Medium'},
+	{id: 'high', label: 'High'},
+]
+
 // OpenAI and most local servers (Ollama, vLLM, LM Studio) serve both.
 const pickApi = (provider: AssistantProvider) => provider === 'openai' || provider === 'openai-compatible'
 const defaultApi = (provider: AssistantProvider): AssistantApi => (provider === 'openai' ? 'responses' : 'chat')
@@ -625,6 +632,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 							<span>
 								{k.model}
 								{k.api === 'responses' ? ' · Responses' : ''}
+								{k.effort ? ` · ${k.effort} reasoning` : ''}
 								{k.last4 ? ` · …${k.last4}` : ''}
 							</span>
 						</span>
@@ -806,9 +814,11 @@ function EditKeySheet({open, keyRow, onClose}: {open: boolean; keyRow: Assistant
 	const save = useSave()
 	const [model, setModel] = useState('')
 	const [api, setApi] = useState<AssistantApi>('chat')
+	const [effort, setEffort] = useState<AssistantEffort>('')
 	useEffect(() => {
 		setModel(keyRow?.model ?? '')
 		setApi(keyRow?.api ?? 'chat')
+		setEffort(keyRow?.effort ?? '')
 	}, [keyRow, open])
 	const live = useEndpointCheck(open && keyRow ? {id: keyRow.id} : null, model)
 	const canPick = !!keyRow && pickApi(keyRow.provider)
@@ -820,15 +830,19 @@ function EditKeySheet({open, keyRow, onClose}: {open: boolean; keyRow: Assistant
 			onClose={onClose}
 			submit="Save"
 			busy={save.isPending}
-			disabled={!keyRow || !model.trim() || (model.trim() === keyRow.model && api === keyRow.api)}
+			disabled={!keyRow || !model.trim() || (model.trim() === keyRow.model && api === keyRow.api && effort === keyRow.effort)}
 			onSubmit={() =>
 				keyRow &&
-				save.mutate({path: 'assistant.updateKey', input: {id: keyRow.id, model: model.trim(), ...(canPick ? {api} : {})}, done: 'Saved', refresh: ['assistant.keys']}, {onSuccess: onClose})
+				save.mutate({path: 'assistant.updateKey', input: {id: keyRow.id, model: model.trim(), effort, ...(canPick ? {api} : {})}, done: 'Saved', refresh: ['assistant.keys']}, {onSuccess: onClose})
 			}
 		>
 			<CheckLine check={live.check} busy={live.busy} />
 			{keyRow && <ModelField id="edit-model" value={model} onChange={setModel} models={live.models} provider={keyRow.provider} />}
 			{canPick && <Segmented label="API" value={api} onChange={setApi} options={API_OPTIONS} />}
+			<Segmented label="Reasoning" value={effort} onChange={setEffort} options={EFFORT_OPTIONS} />
+			<p className="footer-note" style={{textAlign: 'left', margin: '2px 6px 0'}}>
+				How hard a reasoning model thinks before answering. Default leaves it to the model; models that don’t reason may refuse a level.
+			</p>
 		</FormSheet>
 	)
 }

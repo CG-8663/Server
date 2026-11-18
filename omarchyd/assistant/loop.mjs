@@ -1,6 +1,6 @@
 import {callMcpTool, forgetMcpTools, listMcpTools} from './mcp.mjs'
 import {streamAnthropic} from './anthropic.mjs'
-import {apiOf} from './keys.mjs'
+import {apiOf, effortOf} from './keys.mjs'
 import {streamChat, streamResponses, withToolFallback} from './providers.mjs'
 import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
@@ -470,6 +470,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 						baseUrl: key.baseUrl,
 						apiKey: key.apiKey,
 						model: key.model,
+						effort: effortOf(key),
 						messages,
 						tools,
 						fetchImpl,

@@ -14,6 +14,9 @@ export const presetBaseUrl = (provider) => ({spacexai: SPACEXAI, openai: OPENAI,
 // Completions, and a key can switch (most local servers now serve both).
 const APIS = ['chat', 'responses']
 export const apiOf = (k) => (APIS.includes(k?.api) ? k.api : k?.provider === 'openai' ? 'responses' : 'chat')
+// How hard a reasoning model thinks. Empty leaves the model's own default and sends nothing.
+const EFFORTS = ['low', 'medium', 'high']
+export const effortOf = (k) => (EFFORTS.includes(k?.effort) ? k.effort : '')
 const ID = () => 'k_' + randomBytes(6).toString('hex')
 const last4 = (s) => String(s).slice(-4)
 export const normalizeBaseUrl = (raw) => {
@@ -33,6 +36,7 @@ const publicOf = (k, userId) => ({
 	baseUrl: k.baseUrl,
 	model: k.model,
 	api: apiOf(k),
+	effort: effortOf(k),
 	check: publicCheck(k.check),
 	last4: k.last4,
 	ownerUserId: k.ownerUserId,
@@ -81,7 +85,7 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 				if (!/^https?:\/\/[^\s]+/i.test(baseUrl) || baseUrl.length > 200) throw new RpcError('BAD_REQUEST', 'Enter the API base URL')
 			}
 			const t = now()
-			const row = {id: ID(), ownerUserId, name, provider, baseUrl, api: apiOf({provider, api: input?.api}), model, apiKey, last4: last4(apiKey), sharedWith: [], systemDefault: false, createdAt: t, updatedAt: t}
+			const row = {id: ID(), ownerUserId, name, provider, baseUrl, api: apiOf({provider, api: input?.api}), effort: effortOf(input), model, apiKey, last4: last4(apiKey), sharedWith: [], systemDefault: false, createdAt: t, updatedAt: t}
 			state.keys.push(row)
 			await save()
 			return publicOf(row, ownerUserId)
@@ -97,10 +101,10 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			} else if (input?.systemDefault === false && k.ownerUserId === actor.userId && actor.role !== 'member') {
 				k.systemDefault = false
 			}
-			if (k.ownerUserId !== actor.userId && input?.sharedWith === undefined && input?.name === undefined && input?.model === undefined && input?.apiKey === undefined && input?.baseUrl === undefined && input?.api === undefined && input?.systemDefault === undefined) {
+			if (k.ownerUserId !== actor.userId && input?.sharedWith === undefined && input?.name === undefined && input?.model === undefined && input?.apiKey === undefined && input?.baseUrl === undefined && input?.api === undefined && input?.effort === undefined && input?.systemDefault === undefined) {
 				throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
 			}
-			if (k.ownerUserId !== actor.userId && (input?.sharedWith || input?.name || input?.model || input?.apiKey || input?.baseUrl || input?.api)) {
+			if (k.ownerUserId !== actor.userId && (input?.sharedWith || input?.name || input?.model || input?.apiKey || input?.baseUrl || input?.api || input?.effort !== undefined)) {
 				throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
 			}
 			if (k.ownerUserId === actor.userId) {
@@ -110,6 +114,7 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 					delete k.check
 				}
 				if (APIS.includes(input?.api)) k.api = input.api
+				if (input?.effort === '' || EFFORTS.includes(input?.effort)) k.effort = input.effort
 				if (typeof input?.apiKey === 'string') {
 					const next = input.apiKey.trim()
 					if (next.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')

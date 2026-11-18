@@ -12,6 +12,8 @@
 export const ANTHROPIC = 'https://api.anthropic.com/v1'
 export const ANTHROPIC_VERSION = '2023-06-01'
 const MAX_TOKENS = 8192
+// Room for thinking as well as the answer when an effort is chosen.
+const MAX_TOKENS_THINKING = 32_000
 
 export const anthropicHeaders = (apiKey) => ({'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION})
 
@@ -85,9 +87,12 @@ const errorText = (raw, status) => {
 	return (raw && String(raw).trim()) || `HTTP ${status}`
 }
 
-export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, messages, tools, fetchImpl = fetch, signal, retried = false}) {
+export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, messages, tools, effort, fetchImpl = fetch, signal, retried = false}) {
 	const converted = anthropicMessages(messages)
-	const body = {model, max_tokens: MAX_TOKENS, messages: converted.messages, stream: true}
+	const body = {model, max_tokens: effort ? MAX_TOKENS_THINKING : MAX_TOKENS, messages: converted.messages, stream: true}
+	// Adaptive thinking with an effort level, on the current Claude models. Without one the model's own
+	// default applies (most current models already think).
+	if (effort) Object.assign(body, {thinking: {type: 'adaptive'}, output_config: {effort}})
 	if (converted.system) body.system = converted.system
 	const fnTools = anthropicTools(tools)
 	if (fnTools.length) Object.assign(body, {tools: fnTools, tool_choice: {type: 'auto', disable_parallel_tool_use: true}})
@@ -104,7 +109,7 @@ export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, mess
 		} catch {}
 		const message = errorText(raw, res.status)
 		if (res.status === 400 && !retried && /thinking|signature/i.test(message)) {
-			yield* streamAnthropic({baseUrl, apiKey, model, messages: flattenToolTurns(messages), tools, fetchImpl, signal, retried: true})
+			yield* streamAnthropic({baseUrl, apiKey, model, messages: flattenToolTurns(messages), tools, effort, fetchImpl, signal, retried: true})
 			return
 		}
 		yield {type: 'error', message, status: res.status}

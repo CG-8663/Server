@@ -240,6 +240,8 @@ export type ActiveSession = {
 export type AssistantProvider = 'spacexai' | 'openai' | 'anthropic' | 'openai-compatible'
 // Which endpoint the assistant streams from: /chat/completions or /responses.
 export type AssistantApi = 'chat' | 'responses'
+// How hard a reasoning model thinks; '' leaves the model's default.
+export type AssistantEffort = '' | 'low' | 'medium' | 'high'
 export type AssistantCheck = {ok: boolean; status: string; message: string; at: number}
 export type AssistantModel = {id: string; name?: string}
 // A live check: the stored check plus the models the endpoint serves.
@@ -251,6 +253,7 @@ export type AssistantKey = {
 	baseUrl: string
 	model: string
 	api: AssistantApi
+	effort: AssistantEffort
 	check: AssistantCheck | null
 	last4: string
 	ownerUserId: string
