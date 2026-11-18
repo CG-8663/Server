@@ -82,8 +82,8 @@ export const WRITE_TOOLS = [
 		theme: {type: 'string'},
 	}, true),
 	mutation('swarm_rename', 'swarm.rename', 'Rename a swarm computer', {id: {type: 'string'}, name: {type: 'string'}}, true),
-	mutation('desktop_setLayout', 'desktop.setLayout', 'Set this Omarchy Server’s desktop layout on this machine: Ubuntu (gnome: floating, rounded) or Hyprland (hyprland: tiling, square). Not a swarm theme and not omarchy_setTheme.', {
-		shell: {type: 'string', enum: ['gnome', 'hyprland'], description: 'gnome = Ubuntu; hyprland = Hyprland'},
+	mutation('desktop_setLayout', 'desktop.setLayout', 'Set this Omarchy Server’s desktop layout on this machine: Ubuntu (gnome: floating, rounded corners) or Hyprland (hyprland: tiling, square corners). Not a swarm theme and not omarchy_setTheme.', {
+		shell: {type: 'string', enum: ['gnome', 'hyprland'], description: 'gnome = Ubuntu, floating, rounded. hyprland = Hyprland, tiling, square.'},
 	}),
 	mutation('omarchy_setTheme', 'omarchy.setTheme', 'Set this machine’s Omarchy theme colours. Use this only when they want colours and not a wallpaper change.', {slug: {type: 'string'}}, true),
 	mutation('omarchy_setBackground', 'omarchy.setBackground', 'Change this machine’s desktop wallpaper and the web app background. If they also want that theme’s colours, pass the theme slug — do not also call omarchy_setTheme. Use this whenever they ask to change the wallpaper, background, backdrop, picture, or theme plus wallpaper. The person picks the image on the Approve card.', {
@@ -112,9 +112,9 @@ export function openAiTools(role) {
 }
 
 export function coerceDeskShell(value) {
-	const s = String(value ?? '').trim().toLowerCase()
-	if (['gnome', 'ubuntu', 'floating', 'rounded', 'round'].includes(s)) return 'gnome'
-	if (['hyprland', 'hypr', 'tiling', 'tiled', 'square'].includes(s)) return 'hyprland'
+	const tokens = String(value ?? '').trim().toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+	if (tokens.some((t) => ['gnome', 'ubuntu', 'floating', 'rounded', 'round'].includes(t))) return 'gnome'
+	if (tokens.some((t) => ['hyprland', 'hypr', 'tiling', 'tiled', 'square'].includes(t))) return 'hyprland'
 	return null
 }
 

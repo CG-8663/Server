@@ -303,6 +303,13 @@ test('layout aliases map to Ubuntu or Hyprland', () => {
 	assert.equal(coerceDeskShell('square'), 'hyprland')
 	assert.equal(coerceDeskShell('tiling'), 'hyprland')
 	assert.equal(coerceDeskShell('glass'), null)
+	assert.equal(coerceDeskShell('rounded corners'), 'gnome')
+	assert.equal(coerceDeskShell('round corners'), 'gnome')
+	assert.equal(coerceDeskShell('floating windows'), 'gnome')
+	assert.equal(coerceDeskShell('Ubuntu layout'), 'gnome')
+	assert.equal(coerceDeskShell('square corners'), 'hyprland')
+	assert.equal(coerceDeskShell('tiling wm'), 'hyprland')
+	assert.equal(coerceDeskShell('Hyprland layout'), 'hyprland')
 })
 
 test('desktop_setLayout is an Approve on this server, not a swarm theme RPC', async () => {
