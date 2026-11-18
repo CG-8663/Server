@@ -19,8 +19,9 @@ const EFFORTS = ['low', 'medium', 'high']
 export const effortOf = (k) => (EFFORTS.includes(k?.effort) ? k.effort : '')
 const ID = () => 'k_' + randomBytes(6).toString('hex')
 const last4 = (s) => String(s).slice(-4)
+// A pasted endpoint (…/v1/chat/completions, …/v1/responses, …/v1/models) is trimmed back to its base.
 export const normalizeBaseUrl = (raw) => {
-	const s = String(raw ?? '').trim().replace(/\/+$/, '')
+	const s = String(raw ?? '').trim().replace(/\/+$/, '').replace(/\/(?:chat\/completions|completions|responses|models)$/i, '')
 	try {
 		const u = new URL(s)
 		if (!u.pathname || u.pathname === '/') return `${u.origin}/v1`
@@ -56,6 +57,8 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 		.then((t) => {
 			state = JSON.parse(t)
 			if (!Array.isArray(state.keys)) state.keys = []
+			// Custom endpoints saved with a pasted endpoint path (…/v1/responses) work without re-adding them.
+			for (const k of state.keys) if (k?.provider === 'openai-compatible' && k.baseUrl) k.baseUrl = normalizeBaseUrl(k.baseUrl)
 		})
 		.catch(() => {})
 	const save = () => writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600})

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import {mkdtemp, rm} from 'node:fs/promises'
+import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {test} from 'node:test'
 
 import {createAssistant} from '../omarchyd/assistant.mjs'
+import {createKeyStore, normalizeBaseUrl} from '../omarchyd/assistant/keys.mjs'
 
 const OWNER = {userId: 'owner', role: 'owner'}
 const SAM = {userId: 'sam', role: 'member'}
@@ -76,6 +77,27 @@ test('saving an edit changes the name, key and address together and clears the o
 		assert.equal(out.baseUrl, 'http://127.0.0.1:8000/v1')
 		assert.equal(out.check, null)
 		assert.equal(out.apiKey, undefined)
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
+test('a pasted endpoint address is trimmed back to its base', () => {
+	assert.equal(normalizeBaseUrl('https://api.openai.com/v1/responses'), 'https://api.openai.com/v1')
+	assert.equal(normalizeBaseUrl('http://127.0.0.1:8000/v1/chat/completions/'), 'http://127.0.0.1:8000/v1')
+	assert.equal(normalizeBaseUrl('http://box:1234/v1/models'), 'http://box:1234/v1')
+	assert.equal(normalizeBaseUrl('http://127.0.0.1:11434'), 'http://127.0.0.1:11434/v1')
+	assert.equal(normalizeBaseUrl('https://openrouter.ai/api/v1'), 'https://openrouter.ai/api/v1')
+})
+
+test('a custom endpoint saved with a pasted endpoint path is fixed when keys load', async () => {
+	const dataDir = await mkdtemp(join(os.tmpdir(), 'aep-'))
+	try {
+		await mkdir(join(dataDir, 'assistant'), {recursive: true})
+		const row = {id: 'k1', name: 'Mine', provider: 'openai-compatible', baseUrl: 'https://api.openai.com/v1/responses', apiKey: 'sk-x', last4: 'sk-x', model: 'm', ownerUserId: 'owner', sharedWith: [], systemDefault: true, createdAt: 1, updatedAt: 1}
+		await writeFile(join(dataDir, 'assistant', 'keys.json'), JSON.stringify({keys: [row]}))
+		const [listed] = await createKeyStore({dataDir}).listPublic('owner')
+		assert.equal(listed.baseUrl, 'https://api.openai.com/v1')
 	} finally {
 		await rm(dataDir, {recursive: true, force: true})
 	}
