@@ -480,6 +480,7 @@ function useEndpointCheck(target: Record<string, unknown> | null, model: string)
 		return () => {
 			live = false
 			clearTimeout(t)
+			setBusy(false)
 		}
 	}, [sig])
 	const models = result?.models ?? []
@@ -694,7 +695,12 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 	const keyOk = custom || apiKey.trim().length >= 4
 	const urlOk = !custom || /^https?:\/\/[^\s]+/i.test(baseUrl.trim())
 	const ready = keyOk && !!model.trim() && urlOk
-	const live = useEndpointCheck(open && keyOk && urlOk ? {provider, apiKey: apiKey.trim(), ...(custom ? {baseUrl: baseUrl.trim()} : {})} : null, model)
+	// The key goes to the chosen provider only once it's been entered (the field is left), never while
+	// it's being pasted under another provider. A keyless local endpoint is checked straight away.
+	const [keyEntered, setKeyEntered] = useState(false)
+	useEffect(() => setKeyEntered(false), [open, provider])
+	const checkable = open && keyOk && urlOk && (keyEntered || (custom && !apiKey.trim()))
+	const live = useEndpointCheck(checkable ? {provider, apiKey: apiKey.trim(), ...(custom ? {baseUrl: baseUrl.trim()} : {})} : null, model)
 	// Once the list arrives, fill in a model unless one was typed.
 	useEffect(() => {
 		if (!model.trim() && live.models.length) setModel((live.models.find((m) => m.id === MODEL_PLACEHOLDER[provider]) ?? live.models[0]).id)
@@ -738,6 +744,8 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 				onChange={(v) => {
 					setProvider(v)
 					setModel('')
+					// A key belongs to one provider; don't carry it over to another.
+					setApiKey('')
 					if (v === 'openai-compatible' && !baseUrl.trim()) setBaseUrl('http://127.0.0.1:11434/v1')
 				}}
 				options={[
@@ -768,7 +776,8 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 				autoComplete="off"
 				value={apiKey}
 				onChange={(e) => setApiKey(e.target.value)}
-				hint={custom ? 'Leave blank for local Ollama.' : 'Checked with the provider as you type.'}
+				onBlur={() => setKeyEntered(true)}
+				hint={custom ? 'Leave blank for local Ollama.' : 'Checked with the provider when you move on from this field.'}
 			/>
 			<CheckLine check={live.check} busy={live.busy} />
 			<ModelField id="ask-model" value={model} onChange={setModel} models={live.models} provider={provider} />
