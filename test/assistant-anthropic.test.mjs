@@ -87,10 +87,10 @@ test('streamAnthropic posts to /messages with Anthropic headers and yields text 
 	assert.equal(seen[0].opts.headers['x-api-key'], SECRET)
 	assert.equal(seen[0].opts.headers['anthropic-version'], '2023-06-01')
 	assert.equal(seen[0].opts.headers.authorization, undefined)
-	assert.equal(seen[0].body.system, 'sys')
+	assert.deepEqual(seen[0].body.system, [{type: 'text', text: 'sys', cache_control: {type: 'ephemeral'}}])
 	assert.equal(seen[0].body.stream, true)
 	assert.ok(seen[0].body.max_tokens > 0)
-	assert.deepEqual(seen[0].body.tools, [{name: 'system_disk', description: 'Disk use', input_schema: {type: 'object', properties: {}}}])
+	assert.deepEqual(seen[0].body.tools, [{name: 'system_disk', description: 'Disk use', input_schema: {type: 'object', properties: {}}, cache_control: {type: 'ephemeral'}}])
 	assert.deepEqual(seen[0].body.tool_choice, {type: 'auto', disable_parallel_tool_use: true})
 	assert.deepEqual(out, [
 		{type: 'text', text: 'Checking'},

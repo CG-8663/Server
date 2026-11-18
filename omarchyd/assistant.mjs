@@ -59,7 +59,7 @@ function ownerMessage(toolName) {
 	return 'Only the server’s owner can change the desktop’s theme'
 }
 
-export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl, mcpTargets}) {
+export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl, mcpTargets, sleep}) {
 	const keys = createKeyStore({dataDir, now})
 	const conversations = createConversations({dataDir, now})
 	const stamp = () => (now ? now() : Date.now())
@@ -72,7 +72,7 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		if (!auth?.userId) throw new RpcError('UNAUTHORIZED', 'Invalid token')
 		return auth.userId
 	}
-	const {runTurn, runTurnContinue} = createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now})
+	const {runTurn, runTurnContinue} = createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now, sleep})
 	const inflight = new Set()
 	const claim = (id) => {
 		if (inflight.has(id)) throw new RpcError('CONFLICT', 'That step was already handled')

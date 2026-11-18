@@ -2,6 +2,7 @@ import {callMcpTool, forgetMcpTools, listMcpTools} from './mcp.mjs'
 import {streamAnthropic} from './anthropic.mjs'
 import {apiOf, effortOf} from './keys.mjs'
 import {streamChat, streamResponses, withToolFallback} from './providers.mjs'
+import {backoffMs, retryableStreamError, retryingFetch, sleepFor} from './retry.mjs'
 import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
 export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
@@ -10,6 +11,8 @@ const LIMIT = 'I hit the lookup limit for this turn.'
 const KEY_REJECTED = 'That API key was rejected. Replace it in Settings → Assistant.'
 const MAX_CALLS = 16
 const MAX_MESSAGES = 40
+// Fresh requests after the provider reports itself busy mid-stream, before any of the answer arrived.
+const STREAM_RETRIES = 2
 
 const textOf = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
 
@@ -211,8 +214,10 @@ function watchAbort(signal, pending) {
 	})
 }
 
-export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now = () => Date.now()}) {
+export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now = () => Date.now(), sleep = sleepFor}) {
 	const stamp = () => now()
+	// Provider requests wait and try again when the provider is busy; MCP and lookups do not go through this.
+	const providerFetch = retryingFetch(fetchImpl ?? fetch, {sleep})
 
 	async function grab(name, auth, input = {}) {
 		if (!runProcedure) return null
@@ -447,6 +452,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			// Anthropic thinking from this run of the tool loop, by the tool call it led to. Kept in memory
 			// only: it is valid to send back within this run, never after the history changes.
 			const thinkingByCall = new Map()
+			let streamRetries = 0
 			for (;;) {
 				if (signal?.aborted) return finish(row.id)
 				const history = providerHistory(row.messages, row.actions)
@@ -473,7 +479,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 						effort: effortOf(key),
 						messages,
 						tools,
-						fetchImpl,
+						fetchImpl: providerFetch,
 						signal,
 					})) {
 						if (signal?.aborted) break
@@ -496,6 +502,14 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				if (signal?.aborted) {
 					await stopped(text)
 					return finish(row.id)
+				}
+				if (providerError && retryableStreamError(providerError) && !text && !toolCalls.length && streamRetries < STREAM_RETRIES) {
+					try {
+						await sleep(backoffMs(streamRetries++), signal)
+					} catch {
+						return finish(row.id)
+					}
+					continue
 				}
 				if (providerError) {
 					await stopped(text)

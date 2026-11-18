@@ -14,6 +14,7 @@ export const ANTHROPIC_VERSION = '2023-06-01'
 const MAX_TOKENS = 8192
 // Room for thinking as well as the answer when an effort is chosen.
 const MAX_TOKENS_THINKING = 32_000
+const EPHEMERAL = Object.freeze({type: 'ephemeral'})
 
 export const anthropicHeaders = (apiKey) => ({'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION})
 
@@ -93,9 +94,16 @@ export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, mess
 	// Adaptive thinking with an effort level, on the current Claude models. Without one the model's own
 	// default applies (most current models already think).
 	if (effort) Object.assign(body, {thinking: {type: 'adaptive'}, output_config: {effort}})
-	if (converted.system) body.system = converted.system
+	// Prompt caching. Every request re-sends the tools and system prompt, and each step of a tool loop
+	// re-sends the whole chat, so: one breakpoint after the tools (they rarely change), one after the
+	// system prompt, and top-level caching for the conversation so far. Short prompts just don't cache.
+	if (converted.system) body.system = [{type: 'text', text: converted.system, cache_control: EPHEMERAL}]
 	const fnTools = anthropicTools(tools)
-	if (fnTools.length) Object.assign(body, {tools: fnTools, tool_choice: {type: 'auto', disable_parallel_tool_use: true}})
+	if (fnTools.length) {
+		fnTools[fnTools.length - 1].cache_control = EPHEMERAL
+		Object.assign(body, {tools: fnTools, tool_choice: {type: 'auto', disable_parallel_tool_use: true}})
+	}
+	if (converted.messages.length) body.cache_control = EPHEMERAL
 	const res = await fetchImpl(`${String(baseUrl).replace(/\/+$/, '')}/messages`, {
 		method: 'POST',
 		headers: {'content-type': 'application/json', accept: 'text/event-stream', ...anthropicHeaders(apiKey)},
@@ -156,7 +164,11 @@ export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, mess
 		}
 		else if (ev.type === 'error') {
 			finished = true
-			yield {type: 'error', message: String(ev.error?.message || 'The assistant did not answer'), status: ev.error?.type === 'authentication_error' ? 401 : 0}
+			const kind = ev.error?.type
+			const error = {type: 'error', message: String(ev.error?.message || 'The assistant did not answer'), status: kind === 'authentication_error' ? 401 : kind === 'overloaded_error' ? 529 : 0}
+			// Overloaded or a server error after a 200: a fresh request may well work.
+			if (kind === 'overloaded_error' || kind === 'api_error') error.retryable = true
+			yield error
 		}
 	}
 	const decoder = new TextDecoder()
