@@ -3,10 +3,11 @@ import type {AssistantAction} from './api'
 export type {AssistantAction} from './api'
 
 const REOPEN_ASSISTANT = 'omarchy-server:reopen-assistant'
+const REOPEN_ASSISTANT_MAX_MS = 2 * 60 * 60_000
 
 export function markReopenAssistant() {
 	try {
-		sessionStorage.setItem(REOPEN_ASSISTANT, '1')
+		localStorage.setItem(REOPEN_ASSISTANT, String(Date.now()))
 	} catch {
 		/* private mode */
 	}
@@ -14,9 +15,13 @@ export function markReopenAssistant() {
 
 export function consumeReopenAssistant() {
 	try {
-		if (sessionStorage.getItem(REOPEN_ASSISTANT) !== '1') return false
+		const raw = localStorage.getItem(REOPEN_ASSISTANT) ?? sessionStorage.getItem(REOPEN_ASSISTANT)
+		localStorage.removeItem(REOPEN_ASSISTANT)
 		sessionStorage.removeItem(REOPEN_ASSISTANT)
-		return true
+		if (!raw) return false
+		if (raw === '1') return true
+		const at = Number(raw)
+		return Number.isFinite(at) && Date.now() - at <= REOPEN_ASSISTANT_MAX_MS
 	} catch {
 		return false
 	}

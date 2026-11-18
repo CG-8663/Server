@@ -24,6 +24,21 @@ async function waitForDesktopTheme(slug: string) {
 	}
 }
 
+async function waitForServer() {
+	const start = Date.now()
+	let sawDown = false
+	while (Date.now() - start < 10 * 60_000) {
+		try {
+			const r = await fetch('/api/bootstrap', {credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(4000)})
+			if (r.ok && sawDown) return
+			if (!r.ok) sawDown = true
+		} catch {
+			sawDown = true
+		}
+		await new Promise((r) => setTimeout(r, sawDown ? 1500 : 400))
+	}
+}
+
 async function renderMarkdown(src: string) {
 	const [{marked}, {default: DOMPurify}] = await Promise.all([import('marked'), import('dompurify')])
 	const html = await marked.parse(src, {gfm: true, breaks: true})
@@ -355,6 +370,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 		setItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: {...b.action, status: 'running'}} : b)) ?? bs)
 		let follow = false
 		let reloadTheme: string | null = null
+		let reloadAfterRestart = false
 		try {
 			const updated = await mutate<AssistantAction>(path, {actionId})
 			if (!alive.current || own.signal.aborted) return
@@ -367,7 +383,9 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 			)
 			follow = true
 			const status = updated && typeof updated === 'object' && !Array.isArray(updated) ? updated.status : undefined
-			if (path === 'assistant.approve' && cur.action.toolName === 'omarchy_setTheme' && (!status || status === 'done')) reloadTheme = cur.action.detail || ''
+			const ok = !status || status === 'done'
+			if (path === 'assistant.approve' && ok && cur.action.toolName === 'omarchy_setTheme') reloadTheme = cur.action.detail || ''
+			if (path === 'assistant.approve' && ok && cur.action.toolName === 'system_restart') reloadAfterRestart = true
 		} catch (err) {
 			if (!alive.current || own.signal.aborted) return
 			if (err instanceof ApiError) {
@@ -382,7 +400,14 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 			if (alive.current) noteDeciding()
 			if (follow) followQueued.current = true
 			if (followQueued.current && deciding.current.size === 0 && alive.current) {
-				if (reloadTheme != null) {
+				if (reloadAfterRestart) {
+					markReopenAssistant()
+					setActivity('Waiting for the server to come back…')
+					void (async () => {
+						await waitForServer()
+						if (alive.current) location.reload()
+					})()
+				} else if (reloadTheme != null) {
 					markReopenAssistant()
 					void (async () => {
 						try {
