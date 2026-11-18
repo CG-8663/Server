@@ -180,7 +180,8 @@ export function createUpdater({
 			const previous = (await run('git', ['-C', appDir, 'rev-parse', 'HEAD'])).trim()
 			try {
 				await step(10, 'Downloading')
-				await run('git', ['-C', appDir, 'fetch', '--depth', '1', 'origin', branch])
+				// Name where it lands: a shallow clone of another branch doesn't track this one otherwise.
+				await run('git', ['-C', appDir, 'fetch', '--depth', '1', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`])
 				await run('git', ['-C', appDir, 'reset', '--hard', `origin/${branch}`])
 				await step(35, 'Installing parts')
 				// Packages only when they changed (npm ci needs a lot of memory).
