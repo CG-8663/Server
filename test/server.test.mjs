@@ -168,7 +168,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.39', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.40', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -252,6 +252,24 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.deepEqual(sessions.map((x) => x.current), [true])
 		const secondCookie = second.headers.getSetCookie().find((c) => c.startsWith('omarchy_server_sid=')).split(';')[0]
 		assert.equal((await fetch(`${touch.base}/api/rpc/apps.list`, {headers: {cookie: secondCookie}})).status, 401, 'the other browser is signed out')
+	})
+
+	test('the assistant’s look is saved per account, cleaned, and never sent to omarchyd', async () => {
+		const before = fake.calls.length
+		let r = await touch.req('POST', '/api/prefs', {assistantLook: {character: 'patch', name: '  Sparky <b>\n', animate: false, intensity: 'playful', size: 'large', floating: false, reactions: true, extra: 'dropped'}})
+		assert.equal(r.status, 200)
+		assert.deepEqual(r.body.prefs.assistantLook, {character: 'patch', name: 'Sparky b', animate: false, intensity: 'playful', size: 'large', floating: false, reactions: true})
+		r = await touch.req('GET', '/api/prefs')
+		assert.equal(r.body.prefs.assistantLook.character, 'patch')
+		// Unknown values fall back; a bad character id or shape is refused; null resets.
+		r = await touch.req('POST', '/api/prefs', {assistantLook: {character: 'orbit', intensity: 'wild', size: 'huge', name: 'x'.repeat(80)}})
+		assert.deepEqual([r.body.prefs.assistantLook.intensity, r.body.prefs.assistantLook.size, r.body.prefs.assistantLook.name.length], ['normal', 'medium', 24])
+		assert.equal((await touch.req('POST', '/api/prefs', {assistantLook: {character: '../x'}})).status, 400)
+		assert.equal((await touch.req('POST', '/api/prefs', {assistantLook: 'oma'})).status, 400)
+		r = await touch.req('POST', '/api/prefs', {assistantLook: null})
+		assert.equal(r.body.prefs.assistantLook, null)
+		// Appearance only: none of this reached the assistant (omarchyd).
+		assert.equal(fake.calls.slice(before).some((c) => String(c.path).startsWith('assistant')), false)
 	})
 
 	test('theme settings are saved per account and validated', async () => {

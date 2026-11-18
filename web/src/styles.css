@@ -8140,3 +8140,211 @@ html.page-locked body {
 	font-size: 14px;
 	font-weight: 700;
 }
+
+/* ---- The assistant's character ------------------------------------------------------------------
+   Frames from the character sheet (web/public/assistant), moved gently by CSS. Intensity scales the
+   motion; it stops for reduced motion, when turned off, or while the tab is in the background. */
+.ac {
+	--amp: 1;
+	position: relative;
+	display: inline-block;
+	flex: none;
+	line-height: 0;
+}
+.ac.ac-minimal { --amp: 0.45; }
+.ac.ac-playful { --amp: 1.7; }
+.ac .ac-img {
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+	user-select: none;
+	-webkit-user-drag: none;
+	pointer-events: none;
+	animation: ac-breathe 3.6s ease-in-out infinite;
+}
+@keyframes ac-breathe { 50% { transform: translateY(calc(-2.5% * var(--amp))) scale(calc(1 + 0.015 * var(--amp))); } }
+/* hover or tap: a hop */
+.ac.is-hover .ac-img { animation: ac-hop 0.6s ease-out, ac-breathe 3.6s ease-in-out 0.6s infinite; }
+@keyframes ac-hop { 40% { transform: translateY(calc(-9% * var(--amp))) scale(1.04); } 70% { transform: translateY(calc(1.5% * var(--amp))); } }
+/* listening: a soft glow in time */
+.ac.is-listening .ac-img { animation: ac-breathe 3.6s ease-in-out infinite, ac-glow 1.8s ease-in-out infinite; }
+@keyframes ac-glow { 50% { filter: drop-shadow(0 0 calc(6px * var(--amp)) color-mix(in srgb, var(--ac-1) 70%, transparent)); } }
+/* thinking: a slow, curious tilt */
+.ac.is-thinking .ac-img { animation: ac-ponder 2.4s ease-in-out infinite; }
+@keyframes ac-ponder { 25% { transform: rotate(calc(-3deg * var(--amp))) translateY(-1%); } 75% { transform: rotate(calc(3deg * var(--amp))) translateY(-1%); } }
+/* answering: a little bob while the mouth moves (frames) */
+.ac.is-responding .ac-img { animation: ac-bob 0.46s ease-in-out infinite alternate; }
+@keyframes ac-bob { to { transform: translateY(calc(-2% * var(--amp))); } }
+/* working: busy, with a glow */
+.ac.is-working .ac-img { animation: ac-busy 0.9s ease-in-out infinite, ac-glow 1.2s ease-in-out infinite; }
+@keyframes ac-busy { 50% { transform: translateY(calc(-1.5% * var(--amp))) rotate(calc(1.5deg * var(--amp))); } }
+/* success (only after a step the server confirmed): a happy bounce */
+.ac.is-success .ac-img { animation: ac-hop 0.7s ease-out 2, ac-breathe 3.6s ease-in-out 1.4s infinite; }
+/* error: a small shake, then still */
+.ac.is-error .ac-img { animation: ac-shake 0.45s ease-in-out; }
+@keyframes ac-shake { 25% { transform: translateX(-4%); } 75% { transform: translateX(4%); } }
+/* sleeping: slow breathing */
+.ac.is-sleeping .ac-img { animation-duration: 6s; }
+
+.ac.still .ac-img { animation: none !important; }
+html.ac-paused .ac .ac-img { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) {
+	.ac .ac-img { animation: none !important; }
+}
+
+/* ---- the floating character: opens the assistant ----------------------------------------------- */
+.ac-widget {
+	position: fixed;
+	z-index: 30;
+	display: grid;
+	place-items: center;
+	padding: 0;
+	border: 0;
+	border-radius: 22px;
+	background: none;
+	color: inherit;
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+	transition: transform 0.18s var(--ease, ease);
+}
+.ac-widget:active { transform: scale(0.94); }
+.ac-widget:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.ac-widget .ac-dot {
+	position: absolute;
+	top: 2px;
+	right: 2px;
+	min-width: 18px;
+	height: 18px;
+	padding: 0 5px;
+	border-radius: 9px;
+	background: var(--red, #f7768e);
+	color: #fff;
+	font-size: 11px;
+	font-weight: 700;
+	line-height: 18px;
+	box-shadow: 0 0 0 2px var(--bg);
+}
+.ac-widget .ac-dot.warn { background: var(--peach, #e0af68); color: #111; }
+/* phone: above the dock, on the right, out of the way of a page's own button */
+html:not(.desk-mode) .ac-widget {
+	right: max(16px, calc(50% - 240px + 6px));
+	bottom: calc(var(--safe-b) + var(--dock-h) + 22px - var(--ios-gap, 0px));
+}
+html:not(.desk-mode) body:has(.fab) .ac-widget,
+html:not(.desk-mode) body:has(.select-bar) .ac-widget,
+html:not(.desk-mode) body:has(.upload-panel) .ac-widget {
+	bottom: calc(var(--safe-b) + var(--dock-h) + 92px - var(--ios-gap, 0px));
+}
+/* desktop: bottom right, clear of the dock wherever it is */
+.desk .ac-widget { z-index: 99990; right: 22px; bottom: 96px; }
+.desk.dock-top .ac-widget, .desk.dock-left .ac-widget { bottom: 22px; }
+.desk.dock-right .ac-widget { right: 104px; bottom: 22px; }
+
+/* in the chat: the character beside its replies */
+.assistant .assistant-msg {
+	display: flex;
+	align-items: flex-end;
+	gap: 6px;
+	align-self: flex-start;
+	max-width: 100%;
+}
+.assistant .assistant-msg > .ac { margin-bottom: 2px; }
+.assistant .assistant-msg > .bubble { max-width: min(82vw - 40px, 520px); }
+.assistant-head .ac { margin: -4px 0; }
+
+/* settings: "Choose Your AI Assistant" — the grid and the panel beside it */
+.ac-title { margin: 6px 0 4px; font-size: 26px; font-weight: 750; letter-spacing: -0.01em; }
+.ac-title em { font-style: normal; color: var(--green, #a3e635); }
+.ac-lead { margin: 0 0 14px; color: var(--muted); font-size: 14px; line-height: 1.45; }
+.ac-choose { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.ac-choose > .ac-panel { order: -1; }
+@media (min-width: 900px) {
+	.ac-choose { grid-template-columns: minmax(0, 1.55fr) minmax(260px, 1fr); }
+	.ac-choose > .ac-panel { order: 0; }
+}
+.win-body .ac-choose { grid-template-columns: minmax(0, 1fr); }
+.win-body .ac-choose > .ac-panel { order: -1; }
+.ac-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 380px) { .ac-picker { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ac-pick {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 2px;
+	padding: 10px 6px 12px;
+	border-radius: 16px;
+	border: 1.5px solid var(--line);
+	background: color-mix(in srgb, #000 35%, var(--glass-2));
+	color: var(--fg);
+	text-align: center;
+	cursor: pointer;
+	transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ac-pick .ac { width: min(88px, 100%) !important; height: auto !important; aspect-ratio: 1; }
+.ac-pick b { font-size: 15px; margin-top: 2px; }
+.ac-pick span:not(.ac):not(.ac-check) { font-size: 11.5px; color: var(--muted); line-height: 1.25; }
+.ac-pick[aria-checked='true'] {
+	border-color: var(--ac-1);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--ac-1) 22%, transparent), 0 0 22px color-mix(in srgb, var(--ac-1) 25%, transparent);
+}
+.ac-pick .ac-check {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	z-index: 1;
+	display: grid;
+	place-items: center;
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	background: var(--green, #a3e635);
+	color: #111;
+}
+.ac-panel { display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 16px; }
+.ac-panel > .ac { align-self: center; width: min(180px, 60%) !important; height: auto !important; aspect-ratio: 1; }
+.ac-panel-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ac-panel-head b { font-size: 28px; font-weight: 750; }
+.ac-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 3px 12px 3px 8px;
+	border-radius: 999px;
+	border: 1px solid var(--green, #a3e635);
+	color: var(--green, #a3e635);
+	background: color-mix(in srgb, var(--green, #a3e635) 12%, transparent);
+	font-size: 13px;
+	font-weight: 600;
+}
+.ac-panel p { margin: 0; color: var(--fg); opacity: 0.85; font-size: 14.5px; line-height: 1.45; }
+.ac-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.ac-chips span {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 7px 12px;
+	border-radius: 999px;
+	background: var(--glass-2);
+	border: 1px solid var(--line);
+	font-size: 13px;
+}
+.ac-chips span svg { color: var(--green, #a3e635); }
+.ac-panel .states { display: flex; flex-wrap: wrap; gap: 6px; }
+.ac-panel .states button {
+	padding: 4px 10px;
+	border-radius: 999px;
+	border: 1px solid var(--line);
+	background: transparent;
+	color: var(--muted);
+	font-size: 12px;
+	cursor: pointer;
+}
+.ac-panel .states button[aria-pressed='true'] { border-color: var(--ac-1); color: var(--ac-1); }
+.ac-panel-actions { display: grid; grid-template-columns: 1.4fr 1fr; gap: 10px; margin-top: 2px; }
+.ac-panel-actions .btn { justify-content: center; gap: 8px; white-space: nowrap; }
+.ac-use { background: var(--green, #a3e635) !important; color: #111 !important; font-weight: 700; }
+.ac-use:disabled { opacity: 0.85; }
+
+/* room under the last thing on a page, so the floating character never hides it */
+html:not(.desk-mode) body:has(.ac-widget) .shell { padding-bottom: calc(var(--dock-h) + var(--safe-b) + 44px + 64px); }

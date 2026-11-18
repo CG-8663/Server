@@ -6,7 +6,9 @@ import {ApiError, mutate, query, type AssistantAction, type AssistantKey} from '
 import {cardAction, markReopenAssistant, streamAssistant, threadItems, type AssistantConversation, type AssistantConversationSummary, type AssistantItem, type AssistantStreamBody} from '../assistant'
 import {useUser} from '../data'
 import {Icon} from '../icons'
-import {haptic, omarchyBackgroundUrl, useOmarchyThemes, usePortalRoot, type Prefs} from '../ui'
+import {setAssistantActivity, useAssistantAnimationState} from '../assistantActivity'
+import {AssistantCharacter, lookName, useAssistantLook} from '../character/AssistantCharacter'
+import {haptic, omarchyBackgroundUrl, useOmarchyThemes, usePortalRoot, useScreenLock, type Prefs} from '../ui'
 
 const prettyTool = (name: string) => name.replaceAll('_', ' ')
 
@@ -197,6 +199,32 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 	const [turnError, setTurnError] = useState<string | null>(null)
 	const [decidingCount, setDecidingCount] = useState(0)
 	const noteDeciding = () => setDecidingCount(deciding.current.size)
+	const {look} = useAssistantLook()
+	const [composing, setComposing] = useState(false)
+
+	// Tell the assistant's character what's happening, from what this screen already shows: a reply
+	// being written (thinking until text arrives), a lookup or an approved step running, a problem,
+	// and Approve cards waiting. "Done" only when the server said an approved step finished.
+	const cardStatus = useRef(new Map<string, string>())
+	useEffect(() => {
+		const live = items?.find((b) => b.kind === 'text' && b.streaming)
+		const cards = (items ?? []).filter((b): b is Extract<AssistantItem, {kind: 'card'}> => b.kind === 'card')
+		let successAt = 0
+		for (const c of cards) {
+			const before = cardStatus.current.get(c.action.id)
+			if (before === 'running' && c.action.status === 'done') successAt = Date.now()
+			cardStatus.current.set(c.action.id, c.action.status)
+		}
+		const running = cards.some((c) => c.action.status === 'running')
+		const phase = turnError ? 'error' : running || (live && activity) ? 'working' : live ? (live.kind === 'text' && live.content ? 'responding' : 'thinking') : 'idle'
+		setAssistantActivity({phase, pending: cards.filter((c) => c.action.status === 'pending').length, composing, ...(successAt ? {successAt} : {})})
+	}, [items, activity, turnError, composing])
+	useEffect(() => {
+		setAssistantActivity({open: true})
+		return () => setAssistantActivity({open: false, composing: false, phase: 'idle'})
+	}, [])
+	const faceState = useAssistantAnimationState({reactions: look.reactions})
+	const name = lookName(look)
 
 	useEffect(() => {
 		alive.current = true
@@ -206,6 +234,11 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 			for (const ac of decisionAbort.current.values()) ac.abort()
 		}
 	}, [])
+
+	// Full screen on a phone: hold the page behind still. Otherwise iOS Safari sends a drag over the
+	// chat to the page underneath (Home, scrolled) instead of the messages. Touches aren't blocked,
+	// so the chat, the message box and the cards still scroll themselves.
+	useScreenLock(screenRef, false, !!onClose)
 
 	useEffect(() => {
 		if (!onClose) return
@@ -486,14 +519,15 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 
 	const loading = keys.isLoading || (hasKeys && items === null && !keys.isError)
 	const column = (
-		<div className="assistant glass" role="dialog" aria-modal={onClose ? true : undefined} aria-label="Assistant">
+		<div className="assistant glass" role="dialog" aria-modal={onClose ? true : undefined} aria-label={name}>
 			<header className="assistant-head">
 				{onClose && (
 					<button type="button" className="round-btn" aria-label="Back" onClick={() => (haptic(6), onClose())}>
 						<Icon name="back" size={20} />
 					</button>
 				)}
-				<b>Assistant</b>
+				<AssistantCharacter id={look.character} state={faceState} size={34} animate={look.animate} intensity={look.intensity} />
+				<b>{name}</b>
 				{hasKeys && (
 					<button type="button" className="round-btn" aria-label="New session" title="New session" onClick={newSession} disabled={items === null}>
 						<Icon name="reset" size={19} />
@@ -540,10 +574,8 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 					>
 						{items.length === 0 && !turnError && (
 							<div className="empty">
-								<span className="big">
-									<Icon name="sparkle" size={30} />
-								</span>
-								<b>Ask about this server</b>
+								<AssistantCharacter id={look.character} state={faceState} size={96} animate={look.animate} intensity={look.intensity} />
+								<b>Ask {name} about this server</b>
 								<span>Usage, apps, machines, and the Local swarm.</span>
 							</div>
 						)}
@@ -552,10 +584,18 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 								{items.map((b) =>
 									b.kind === 'card' ? (
 										<ActionCard key={b.id} action={b.action} onDecide={(id, path, extra) => void decide(id, path, extra)} />
+									) : b.role === 'assistant' ? (
+										<div key={b.id} className="assistant-msg">
+											{/* The character beside its replies; only the one being written moves. */}
+											<AssistantCharacter id={look.character} state={b.streaming ? faceState : 'idle'} size={28} animate={look.animate && !!b.streaming} intensity={look.intensity} />
+											<div className={`bubble ${b.role}${b.streaming ? ' live' : ''}`}>
+												<BubbleMarkdown text={b.content} />
+												{b.streaming && <span className="cursor" aria-hidden="true" />}
+											</div>
+										</div>
 									) : (
-										<div key={b.id} className={`bubble ${b.role}${b.streaming ? ' live' : ''}`}>
-											{b.role === 'assistant' ? <BubbleMarkdown text={b.content} /> : b.content}
-											{b.streaming && <span className="cursor" aria-hidden="true" />}
+										<div key={b.id} className={`bubble ${b.role}`}>
+											{b.content}
 										</div>
 									),
 								)}
@@ -588,6 +628,8 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 								setDraft(e.target.value)
 								fit(e.target)
 							}}
+							onFocus={() => setComposing(true)}
+							onBlur={() => setComposing(false)}
 							onKeyDown={(e) => {
 								if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
 									e.preventDefault()

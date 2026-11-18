@@ -5,6 +5,7 @@ import {useApps, useBattery, useCpu, useDisk, useGpus, useMemory, useRecent, use
 import {batteryGaugeItem} from '../battery'
 import {gpuGaugeItems} from '../gauges'
 import {Icon} from '../icons'
+import {lookName, useAssistantLook} from '../character/AssistantCharacter'
 import {AppIcon, AssistantIcon, Ring, StoreIcon, TerminalIcon, appStatus, bytes, duration, greeting, haptic, isAppBusy, levelColor, pct, today} from '../ui'
 
 export function Gauges({onClick}: {onClick?: () => void}) {
@@ -57,6 +58,7 @@ export function Gauges({onClick}: {onClick?: () => void}) {
 }
 
 export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app: UserApp) => void; go: (tab: 'apps' | 'more' | 'store') => void; onTerminal?: () => void; onAssistant?: () => void}) {
+	const {look} = useAssistantLook()
 	const user = useUser()
 	const apps = useApps()
 	const updates = useUpdates()
@@ -179,9 +181,9 @@ export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app:
 								<StoreIcon size={60} />
 								<span className="name">App Store</span>
 							</button>
-							<button className="app-tile" onClick={() => onAssistant?.()} aria-label="Assistant">
+							<button className="app-tile" onClick={() => onAssistant?.()} aria-label={`Open ${lookName(look)}, the assistant`}>
 								<AssistantIcon size={60} />
-								<span className="name">Assistant</span>
+								<span className="name">{lookName(look)}</span>
 							</button>
 							{onTerminal && (
 								<button className="app-tile" onClick={() => onTerminal()} aria-label="Terminal">

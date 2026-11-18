@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.40',
+		date: '2026-11-18',
+		title: 'Meet Oma',
+		added: [
+			'The assistant has a face: Oma, the Omarchy mascot, floats above the page and opens the assistant. It listens, thinks, talks, works, celebrates a step that finished, and naps when things are quiet.',
+			'Settings → Assistant → Choose Your AI Assistant: Oma, Patch, Pixel, Stack, Pulse or Orbit. Give it a name, and set its size and how lively it is (or keep it still). Saved to your account, so it follows you to every device.',
+		],
+		fixed: ['On a phone, scrolling in the assistant scrolls the chat, not the page behind it.'],
+	},
+	{
 		version: '0.9.39',
 		date: '2026-11-18',
 		title: 'Assistant',

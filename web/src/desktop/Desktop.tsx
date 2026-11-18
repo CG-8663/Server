@@ -12,6 +12,7 @@ import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
 import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../osLook'
+import {AssistantCharacterWidget} from '../character/widgets'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
@@ -920,6 +921,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				style={deskStyle as CSSProperties}
 			>
 				{solidOf(cfg.wallpaper) ? <div className="desk-wall" aria-hidden="true" style={{background: solidOf(cfg.wallpaper)!}} /> : wallUrl && <Wall url={wallUrl} />}
+				{/* The assistant's floating character: opens (or brings forward) the Assistant window. */}
+				{!overview && !wins.some((w) => w.kind === 'assistant' && !w.min) && <AssistantCharacterWidget onOpen={() => open('assistant')} />}
 				<TopBar
 					boot={boot}
 					activeTitle={active ? winTitle(active, appList, machineList) : null}
