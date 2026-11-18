@@ -7883,6 +7883,9 @@ html.page-locked body {
 	backdrop-filter: blur(10px);
 	-webkit-backdrop-filter: blur(10px);
 }
+.assistant-screen[hidden] {
+	display: none;
+}
 .assistant-screen.kbd-open {
 	padding-bottom: 10px;
 }
@@ -8024,18 +8027,31 @@ html.page-locked body {
 	min-width: 2.4em;
 	min-height: 1.45em;
 }
-.assistant .bubble .cursor {
-	display: inline-block;
-	width: 2px;
-	height: 1em;
-	margin-left: 2px;
-	background: currentColor;
-	vertical-align: text-bottom;
-	animation: assistant-cursor 1s steps(2) infinite;
+.assistant .bubble .spinner {
+	width: 14px;
+	height: 14px;
+	margin: 2px 0;
 }
-@keyframes assistant-cursor {
-	50% {
-		opacity: 0;
+.assistant .bubble .typing {
+	display: inline-block;
+	margin-left: 2px;
+	letter-spacing: 0.12em;
+	animation: assistant-typing 1.2s ease-in-out infinite;
+}
+@keyframes assistant-typing {
+	0%,
+	80%,
+	100% {
+		opacity: 0.25;
+	}
+	40% {
+		opacity: 1;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.assistant .bubble .typing {
+		animation: none !important;
+		opacity: 1;
 	}
 }
 .assistant .composer {

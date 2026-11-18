@@ -788,6 +788,7 @@ test('omarchyd streams a turn as server-sent events', async () => {
 
 function streamPair(body) {
 	const chunks = []
+	const close = []
 	const req = {
 		socket: {on() {}, off() {}, setNoDelay() {}},
 		async *[Symbol.asyncIterator]() {
@@ -805,7 +806,12 @@ function streamPair(body) {
 		end() {
 			this.writableEnded = true
 		},
-		on() {},
+		on(ev, fn) {
+			if (ev === 'close') close.push(fn)
+		},
+		hangup() {
+			for (const fn of close) fn()
+		},
 		chunks,
 	}
 	return {req, res, chunks}
@@ -1114,7 +1120,27 @@ test('a theme write is one wallpaper Approve, not a second card after follow-up'
 	}
 })
 
-test('closing the assistant stream aborts the provider call', async () => {
+test('hanging up the assistant stream still runs a lookup', async () => {
+	const {calls, runProcedure} = factsProcedure(async (name) => {
+		if (name === 'system.diskUsage') return {free: '12 GB'}
+	})
+	const {fetchImpl} = scripted([toolSse('call_d', 'system_diskUsage', '{}'), textSse('12 GB free')])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	try {
+		const {req, res} = streamPair({message: 'how much disk'})
+		const head = res.writeHead.bind(res)
+		res.writeHead = (...args) => {
+			head(...args)
+			queueMicrotask(() => res.hangup())
+		}
+		await box.asst.handleStream(req, res, {userId: 'owner'})
+		assert.equal(calls.some((c) => c.name === 'system.diskUsage'), true)
+	} finally {
+		await box.close()
+	}
+})
+
+test('closing the assistant stream still lets the provider finish', async () => {
 	let providerAborted = false
 	const srv = http.createServer(async (req, res) => {
 		const chunks = []
@@ -1155,7 +1181,7 @@ test('closing the assistant stream aborts the provider call', async () => {
 			assert.match(first, /event: text/)
 			await reader.cancel()
 			await new Promise((r) => setTimeout(r, 300))
-			assert.equal(providerAborted, true)
+			assert.equal(providerAborted, false)
 		} finally {
 			await d.close()
 		}

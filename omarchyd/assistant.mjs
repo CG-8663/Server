@@ -203,22 +203,22 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		}
 	}
 	// IncomingMessage 'close' fires when the body is consumed, so that would cancel every turn.
-	// The socket closes only when the client hangs up.
+	// Closing the chat window (Super+W) hangs up SSE; lookups must still finish and be saved.
 	async function handleStream(req, res, auth) {
 		const who = actor(auth)
 		const ac = new AbortController()
-		const onSocketClose = () => ac.abort()
-		req.socket?.on('close', onSocketClose)
-		res.on('close', () => {
-			if (!res.writableEnded) ac.abort()
-		})
 		try {
 			const body = await readJson(req, 100_000)
 			if (ac.signal.aborted) return
 			req.socket?.setNoDelay(true)
 			res.writeHead(200, {'content-type': 'text/event-stream', 'cache-control': 'no-store'})
 			const emit = ({event, data}) => {
-				if (!res.writableEnded && !res.destroyed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+				if (res.writableEnded || res.destroyed) return
+				try {
+					res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+				} catch {
+					/* client hung up */
+				}
 			}
 			const turn = body.continue === true ? runTurnContinue : runTurn
 			await turn({
@@ -231,8 +231,13 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 				emit,
 			})
 		} finally {
-			req.socket?.off('close', onSocketClose)
-			if (res.headersSent && !res.writableEnded && !res.destroyed) res.end()
+			if (res.headersSent && !res.writableEnded && !res.destroyed) {
+				try {
+					res.end()
+				} catch {
+					/* client hung up */
+				}
+			}
 		}
 	}
 	// A saved key (by id; its secret stays here) or what's typed into Add provider before saving.

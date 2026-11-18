@@ -12,6 +12,7 @@ import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
 import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../osLook'
+import {closeAssistantView, keepAssistantWindow, openAssistantView} from '../assistantTurn'
 import {AssistantCharacterWidget} from '../character/widgets'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
@@ -387,6 +388,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		})
 	const focus = useCallback((id: string) => {
 		const found = winsRef.current.find((x) => x.id === id)
+		if (found?.kind === 'assistant') openAssistantView()
 		if (hyprRef.current && found) {
 			if ((found.workspace ?? 1) !== hyprWsRef.current) setHyprWs(found.workspace ?? 1)
 			if (found.min && !found.float) {
@@ -410,9 +412,16 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	}, [])
 	const update = useCallback((id: string, patch: Partial<Win>) => setWins((ws) => ws.map((w) => (w.id === id ? {...w, ...patch} : w))), [])
 	const close = useCallback((id: string) => {
+		const w = winsRef.current.find((x) => x.id === id)
+		if (w && keepAssistantWindow(w.kind)) {
+			minSeq.current += 1
+			update(id, {min: true, minAt: minSeq.current})
+			closeAssistantView()
+			return
+		}
 		dropFromTrees(id)
-		setWins((ws) => ws.filter((w) => w.id !== id))
-	}, [])
+		setWins((ws) => ws.filter((x) => x.id !== id))
+	}, [update])
 	const minimize = useCallback((id: string) => {
 		minSeq.current += 1
 		update(id, {min: true, minAt: minSeq.current})
