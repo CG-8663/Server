@@ -1,9 +1,8 @@
-import {randomBytes} from 'node:crypto'
-
 import {createConversations} from './assistant/conversations.mjs'
-import {createKeyStore} from './assistant/keys.mjs'
+import {createKeyStore, normalizeBaseUrl, presetBaseUrl} from './assistant/keys.mjs'
 import {createLoop, publicAction} from './assistant/loop.mjs'
 import {callMcpTool} from './assistant/mcp.mjs'
+import {verifyKey} from './assistant/providers.mjs'
 import {writeTool} from './assistant/tools.mjs'
 import {RpcError} from './rpc.mjs'
 
@@ -60,7 +59,7 @@ function ownerMessage(toolName) {
 	return 'Only the server’s owner can change the desktop’s theme'
 }
 
-export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl, mcpTargets}) {
+export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl, mcpTargets, sleep}) {
 	const keys = createKeyStore({dataDir, now})
 	const conversations = createConversations({dataDir, now})
 	const stamp = () => (now ? now() : Date.now())
@@ -73,7 +72,7 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		if (!auth?.userId) throw new RpcError('UNAUTHORIZED', 'Invalid token')
 		return auth.userId
 	}
-	const {runTurn, runTurnContinue} = createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now})
+	const {runTurn, runTurnContinue} = createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now, sleep})
 	const inflight = new Set()
 	const claim = (id) => {
 		if (inflight.has(id)) throw new RpcError('CONFLICT', 'That step was already handled')
@@ -146,12 +145,15 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 				if (!/^[0-9a-f]{16}$/.test(chosen)) throw new RpcError('BAD_REQUEST', 'Pick a wallpaper first')
 				rpcInput.id = chosen
 			}
+			// A new machine's password is typed on the Approve card and passed only into the RPC: never
+			// stored, and the model never sees it. Checked before the step starts, so it stays open.
+			const vm = action.toolName === 'machines_create' || path === 'machines.create'
+			const secret = vm ? String(input?.password ?? '') : ''
+			if (vm && (secret.length < 1 || secret.length > 256 || /[\r\n]/.test(secret))) throw new RpcError('BAD_REQUEST', 'Enter a password for the machine')
 			const running = {...action, status: 'running', rpc: action.rpc ? {...action.rpc, input: {...rpcInput}} : action.rpc}
 			await conversations.saveAction(who.userId, running)
 			// Await so the in-flight lock stays until the MCP call finishes. A bare return would run finally first.
 			if (action.kind === 'mcp') return await approveMcp(who, action, running)
-			// Generated here, passed only into the RPC. The card and the model never see it.
-			const secret = action.toolName === 'machines_create' || path === 'machines.create' ? randomBytes(12).toString('base64url') : ''
 			if (secret) rpcInput.password = secret
 			let result
 			try {
@@ -221,6 +223,47 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			if (res.headersSent && !res.writableEnded && !res.destroyed) res.end()
 		}
 	}
+	// A saved key (by id; its secret stays here) or what's typed into Add provider before saving.
+	async function endpointFor(input, auth) {
+		const who = actor(auth)
+		if (input?.id) {
+			const k = await keys.resolveForUser(who.userId, String(input.id))
+			// Editing a saved key: check a newly typed key or address before it's saved. Only its owner may,
+			// and a custom address follows the same owner-only rule as adding one. The check isn't recorded.
+			const newKey = typeof input.apiKey === 'string' && input.apiKey.trim() ? input.apiKey.trim() : null
+			const newUrl = typeof input.baseUrl === 'string' && input.baseUrl.trim() ? input.baseUrl.trim() : null
+			if (!newKey && !newUrl) return {id: k.id, provider: k.provider, baseUrl: k.baseUrl, apiKey: k.apiKey, model: k.model}
+			if (k.ownerUserId !== who.userId) throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
+			if (newKey && newKey.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+			let baseUrl = k.baseUrl
+			if (newUrl && k.provider === 'openai-compatible') {
+				if (who.role !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can change a custom endpoint')
+				baseUrl = normalizeBaseUrl(newUrl)
+				if (!/^https?:\/\/[^\s]+$/i.test(baseUrl) || baseUrl.length > 200) throw new RpcError('BAD_REQUEST', 'Enter the API base URL')
+			}
+			return {id: null, provider: k.provider, baseUrl, apiKey: newKey ?? k.apiKey, model: k.model}
+		}
+		const provider = String(input?.provider ?? '')
+		let baseUrl = presetBaseUrl(provider)
+		if (!baseUrl) {
+			if (provider !== 'openai-compatible') throw new RpcError('BAD_REQUEST', 'Choose a provider')
+			// Same rule as adding one: a typed address can point anywhere the server reaches.
+			if (who.role !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can add a custom endpoint')
+			baseUrl = normalizeBaseUrl(input?.baseUrl)
+			if (!/^https?:\/\/[^\s]+$/i.test(baseUrl) || baseUrl.length > 200) throw new RpcError('BAD_REQUEST', 'Enter the API base URL')
+		}
+		const apiKey = String(input?.apiKey ?? '').trim()
+		if (apiKey.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+		return {id: null, provider, baseUrl, apiKey, model: String(input?.model ?? '')}
+	}
+	// Live check: is the endpoint there, does it take the key, which models does it serve.
+	async function verify(input, {auth}) {
+		const ep = await endpointFor(input, auth)
+		const result = await verifyKey({...ep, fetchImpl})
+		const check = {ok: result.ok, status: result.status, message: result.message}
+		if (ep.id) await keys.recordCheck(ep.id, check)
+		return {...check, modelFound: result.modelFound, models: result.models, at: stamp()}
+	}
 	return {
 		keys,
 		conversations,
@@ -229,8 +272,9 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		handleStream,
 		procedures: {
 			'assistant.keys': {kind: 'query', run: (_i, {auth}) => keys.listPublic(auth.userId)},
-			'assistant.addKey': {kind: 'mutation', run: (input, {auth}) => keys.add(auth.userId, input)},
+			'assistant.addKey': {kind: 'mutation', run: (input, {auth}) => keys.add(actor(auth), input)},
 			'assistant.updateKey': {kind: 'mutation', run: (input, {auth}) => keys.update(actor(auth), input)},
+			'assistant.verifyKey': {kind: 'mutation', run: verify},
 			'assistant.removeKey': {kind: 'mutation', run: (input, {auth}) => keys.remove(actor(auth), String(input?.id ?? ''))},
 			'assistant.conversations': {kind: 'query', run: (_i, {auth}) => conversations.list(userIdOf(auth))},
 			'assistant.getConversation': {kind: 'query', run: (input, {auth}) => conversations.get(userIdOf(auth), String(input?.id ?? ''))},

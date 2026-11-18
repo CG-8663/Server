@@ -2,7 +2,7 @@
 import {useContext, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {logout, mutate, query, type ActiveSession, type AssistantKey, type AssistantProvider} from '../api'
+import {logout, mutate, query, type ActiveSession, type AssistantApi, type AssistantCheck, type AssistantEffort, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
@@ -427,8 +427,118 @@ function Field({id, label, hint, ...input}: {id: string; label: string; hint?: s
 }
 
 const PROVIDER_LABEL: Record<AssistantProvider, string> = {
-	spacexai: 'SpaceXAI',
-	'openai-compatible': 'OpenAI-compatible',
+	spacexai: 'Grok (SpaceXAI)',
+	openai: 'OpenAI API',
+	anthropic: 'Anthropic API',
+	'openai-compatible': 'Custom endpoint',
+}
+
+const MODEL_PLACEHOLDER: Record<AssistantProvider, string> = {
+	spacexai: 'grok-4.7',
+	openai: 'gpt-5.5',
+	anthropic: 'claude-sonnet-5-5',
+	'openai-compatible': 'llama3.2',
+}
+
+// The result of a live check, under a key or in Add provider.
+function CheckLine({check, busy}: {check: Pick<AssistantCheck, 'ok' | 'message'> | null; busy?: boolean}) {
+	const style: CSSProperties = {textAlign: 'left', margin: '2px 6px 8px', display: 'flex', gap: 6, alignItems: 'center'}
+	if (busy) {
+		return (
+			<p className="footer-note" style={style}>
+				<span className="spinner" /> Checking…
+			</p>
+		)
+	}
+	if (!check) return null
+	return (
+		<p className="footer-note" role="status" style={{...style, color: check.ok ? 'var(--green)' : 'var(--red)'}}>
+			<Icon name={check.ok ? 'check' : 'alert'} size={15} />
+			{check.message}
+		</p>
+	)
+}
+
+// Checks the endpoint (and so the key) a moment after the details stop changing, and keeps its model list.
+function useEndpointCheck(target: Record<string, unknown> | null, model: string) {
+	const [result, setResult] = useState<AssistantVerify | null>(null)
+	const [busy, setBusy] = useState(false)
+	const sig = target ? JSON.stringify(target) : ''
+	useEffect(() => {
+		setResult(null)
+		if (!sig) return
+		let live = true
+		const t = setTimeout(async () => {
+			setBusy(true)
+			try {
+				const r = await mutate<AssistantVerify>('assistant.verifyKey', JSON.parse(sig))
+				if (live) setResult(r)
+			} catch (e) {
+				if (live) setResult({ok: false, status: 'error', message: (e as Error).message, at: Date.now(), modelFound: null, models: []})
+			} finally {
+				if (live) setBusy(false)
+			}
+		}, 600)
+		return () => {
+			live = false
+			clearTimeout(t)
+			setBusy(false)
+		}
+	}, [sig])
+	const models = result?.models ?? []
+	const wanted = model.trim()
+	let check: Pick<AssistantCheck, 'ok' | 'message'> | null = result
+	// The list is already here, so the model being typed is judged without asking the endpoint again.
+	if (result && (result.status === 'ok' || result.status === 'no-model') && wanted && models.length) {
+		check = models.some((m) => m.id === wanted)
+			? {ok: true, message: `Connected · ${models.length} model${models.length === 1 ? '' : 's'} available`}
+			: {ok: false, message: `Key works, but ${wanted} isn’t one of the ${models.length} models this endpoint serves`}
+	}
+	return {busy, check, models}
+}
+
+const API_OPTIONS: {id: AssistantApi; label: string}[] = [
+	{id: 'chat', label: 'Chat Completions'},
+	{id: 'responses', label: 'Responses'},
+]
+const EFFORT_OPTIONS: {id: AssistantEffort; label: string}[] = [
+	{id: '', label: 'Default'},
+	{id: 'low', label: 'Low'},
+	{id: 'medium', label: 'Medium'},
+	{id: 'high', label: 'High'},
+]
+
+// OpenAI and most local servers (Ollama, vLLM, LM Studio) serve both.
+const pickApi = (provider: AssistantProvider) => provider === 'openai' || provider === 'openai-compatible'
+const defaultApi = (provider: AssistantProvider): AssistantApi => (provider === 'openai' ? 'responses' : 'chat')
+
+function ModelField({id, value, onChange, models, provider}: {id: string; value: string; onChange: (v: string) => void; models: AssistantModel[]; provider: AssistantProvider}) {
+	const listId = `${id}-models`
+	return (
+		<>
+			<Field
+				id={id}
+				label="Model"
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+				placeholder={MODEL_PLACEHOLDER[provider] ?? models[0]?.id}
+				list={models.length ? listId : undefined}
+				hint={models.length ? `${models.length} models from the endpoint. Pick one or type an id.` : 'Must match a model id the endpoint serves.'}
+				autoCapitalize="off"
+				autoCorrect="off"
+				spellCheck={false}
+			/>
+			{models.length > 0 && (
+				<datalist id={listId}>
+					{models.map((m) => (
+						<option key={m.id} value={m.id}>
+							{m.name ?? ''}
+						</option>
+					))}
+				</datalist>
+			)}
+		</>
+	)
 }
 
 function AssistantPage({onBack}: {onBack: () => void}) {
@@ -441,6 +551,22 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 	const keys = useQ<AssistantKey[]>('assistant.keys')
 	const [add, setAdd] = useState(false)
 	const [share, setShare] = useState<AssistantKey | null>(null)
+	const [edit, setEdit] = useState<AssistantKey | null>(null)
+	const [checking, setChecking] = useState<string | null>(null)
+	const qc = useQueryClient()
+	const toast = useToast()
+	const check = async (k: AssistantKey) => {
+		setChecking(k.id)
+		try {
+			const r = await mutate<AssistantVerify>('assistant.verifyKey', {id: k.id})
+			toast(r.message, !r.ok)
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setChecking(null)
+			qc.invalidateQueries({queryKey: ['assistant.keys']})
+		}
+	}
 	const list = keys.data ?? []
 	const remove = async (k: AssistantKey) => {
 		const ok = await confirm({
@@ -502,13 +628,24 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 							<Icon name="sparkle" size={19} />
 						</span>
 						<span className="main">
-							<b style={{fontWeight: 550}}>{PROVIDER_LABEL[k.provider]}</b>
+							<b style={{fontWeight: 550}}>{PROVIDER_LABEL[k.provider] ?? k.provider}</b>
 							<span>
 								{k.model}
+								{k.api === 'responses' ? ' · Responses' : ''}
+								{k.effort ? ` · ${k.effort} reasoning` : ''}
 								{k.last4 ? ` · …${k.last4}` : ''}
 							</span>
 						</span>
 					</div>
+					{k.check && <CheckLine check={k.check} />}
+					<Row
+						icon="check"
+						color="var(--green)"
+						label={checking === k.id ? 'Checking…' : 'Check connection'}
+						trailing={checking === k.id ? <span className="spinner" /> : undefined}
+						onClick={() => checking || check(k)}
+					/>
+					{k.mine && <Row icon="pencil" color="var(--accent)" label="Edit" value="Name, key, model" onClick={() => setEdit(k)} />}
 					{k.mine && (
 						<Row
 							icon="share"
@@ -551,13 +688,14 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 
 			<AssistantAppearanceSettings />
 
-			<AddKeySheet open={add} onClose={() => setAdd(false)} />
+			<AddKeySheet open={add} owner={user.data?.role === 'owner'} onClose={() => setAdd(false)} />
+			<EditKeySheet open={!!edit} keyRow={edit} owner={user.data?.role === 'owner'} onClose={() => setEdit(null)} />
 			<ShareKeySheet open={!!share} keyRow={share} accounts={boot.accounts} self={self} onClose={() => setShare(null)} />
 		</div>
 	)
 }
 
-function AddKeySheet({open, onClose}: {open: boolean; onClose: () => void}) {
+function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onClose: () => void}) {
 	const save = useSave()
 	const [provider, setProvider] = useState<AssistantProvider>('spacexai')
 	const [name, setName] = useState('')
@@ -571,8 +709,23 @@ function AddKeySheet({open, onClose}: {open: boolean; onClose: () => void}) {
 		setApiKey('')
 		setBaseUrl('')
 	}, [open])
-	const keyOk = provider === 'openai-compatible' || apiKey.trim().length >= 4
-	const ready = keyOk && !!model.trim() && (provider === 'spacexai' || /^https?:\/\/[^\s]+/i.test(baseUrl.trim()))
+	const qc = useQueryClient()
+	const [api, setApi] = useState<AssistantApi>('chat')
+	useEffect(() => setApi(defaultApi(provider)), [provider, open])
+	const custom = provider === 'openai-compatible'
+	const keyOk = custom || apiKey.trim().length >= 4
+	const urlOk = !custom || /^https?:\/\/[^\s]+/i.test(baseUrl.trim())
+	const ready = keyOk && !!model.trim() && urlOk
+	// The key goes to the chosen provider only once it's been entered (the field is left), never while
+	// it's being pasted under another provider. A keyless local endpoint is checked straight away.
+	const [keyEntered, setKeyEntered] = useState(false)
+	useEffect(() => setKeyEntered(false), [open, provider])
+	const checkable = open && keyOk && urlOk && (keyEntered || (custom && !apiKey.trim()))
+	const live = useEndpointCheck(checkable ? {provider, apiKey: apiKey.trim(), ...(custom ? {baseUrl: baseUrl.trim()} : {})} : null, model)
+	// Once the list arrives, fill in a model unless one was typed.
+	useEffect(() => {
+		if (!model.trim() && live.models.length) setModel((live.models.find((m) => m.id === MODEL_PLACEHOLDER[provider]) ?? live.models[0]).id)
+	}, [live.models]) // eslint-disable-line react-hooks/exhaustive-deps
 	return (
 		<FormSheet
 			open={open}
@@ -591,11 +744,19 @@ function AddKeySheet({open, onClose}: {open: boolean; onClose: () => void}) {
 							model: model.trim(),
 							apiKey: apiKey.trim(),
 							...(provider === 'openai-compatible' ? {baseUrl: baseUrl.trim()} : {}),
+							...(pickApi(provider) ? {api} : {}),
 						},
 						done: 'Provider added',
 						refresh: ['assistant.keys'],
 					},
-					{onSuccess: onClose},
+					{
+						// Record a first check on the saved key, so its row shows whether it works.
+						onSuccess: (row) => {
+							onClose()
+							const id = (row as AssistantKey | undefined)?.id
+							if (id) mutate('assistant.verifyKey', {id}).catch(() => {}).finally(() => qc.invalidateQueries({queryKey: ['assistant.keys']}))
+						},
+					},
 				)
 			}
 		>
@@ -604,35 +765,21 @@ function AddKeySheet({open, onClose}: {open: boolean; onClose: () => void}) {
 				value={provider}
 				onChange={(v) => {
 					setProvider(v)
+					setModel('')
+					// A key belongs to one provider; don't carry it over to another.
+					setApiKey('')
 					if (v === 'openai-compatible' && !baseUrl.trim()) setBaseUrl('http://127.0.0.1:11434/v1')
 				}}
 				options={[
-					{id: 'spacexai', label: 'SpaceXAI'},
-					{id: 'openai-compatible', label: 'OpenAI-compatible'},
+					{id: 'spacexai', label: 'Grok'},
+					{id: 'openai', label: 'OpenAI'},
+					{id: 'anthropic', label: 'Anthropic'},
+					// A custom address makes the server send requests anywhere it can reach: owner only.
+					...(owner ? [{id: 'openai-compatible' as const, label: 'Custom'}] : []),
 				]}
 			/>
 			<Field id="ask-name" label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-			<Field
-				id="ask-model"
-				label="Model"
-				value={model}
-				onChange={(e) => setModel(e.target.value)}
-				placeholder={provider === 'spacexai' ? 'grok-4.7' : 'llama3.2'}
-				hint={provider === 'openai-compatible' ? 'Must match a model id the endpoint serves.' : undefined}
-				autoCapitalize="off"
-				autoCorrect="off"
-				spellCheck={false}
-			/>
-			<Field
-				id="ask-key"
-				label="API key"
-				type="password"
-				autoComplete="off"
-				value={apiKey}
-				onChange={(e) => setApiKey(e.target.value)}
-				hint={provider === 'openai-compatible' ? 'Leave blank for local Ollama.' : undefined}
-			/>
-			{provider === 'openai-compatible' && (
+			{custom && (
 				<Field
 					id="ask-url"
 					label="Base URL"
@@ -645,6 +792,120 @@ function AddKeySheet({open, onClose}: {open: boolean; onClose: () => void}) {
 					spellCheck={false}
 				/>
 			)}
+			<Field
+				id="ask-key"
+				label="API key"
+				type="password"
+				autoComplete="off"
+				value={apiKey}
+				onChange={(e) => setApiKey(e.target.value)}
+				onBlur={() => setKeyEntered(true)}
+				hint={custom ? 'Leave blank for local Ollama.' : 'Checked with the provider when you move on from this field.'}
+			/>
+			<CheckLine check={live.check} busy={live.busy} />
+			<ModelField id="ask-model" value={model} onChange={setModel} models={live.models} provider={provider} />
+			{pickApi(provider) && <Segmented label="API" value={api} onChange={setApi} options={API_OPTIONS} />}
+		</FormSheet>
+	)
+}
+
+// Change a saved provider: its name, key, address (custom endpoints), model, API and reasoning.
+function EditKeySheet({open, keyRow, owner, onClose}: {open: boolean; keyRow: AssistantKey | null; owner: boolean; onClose: () => void}) {
+	const save = useSave()
+	const qc = useQueryClient()
+	const [name, setName] = useState('')
+	const [apiKey, setApiKey] = useState('')
+	const [baseUrl, setBaseUrl] = useState('')
+	const [model, setModel] = useState('')
+	const [api, setApi] = useState<AssistantApi>('chat')
+	const [effort, setEffort] = useState<AssistantEffort>('')
+	const [keyEntered, setKeyEntered] = useState(false)
+	useEffect(() => {
+		setName(keyRow?.name ?? '')
+		setApiKey('')
+		setBaseUrl(keyRow?.baseUrl ?? '')
+		setModel(keyRow?.model ?? '')
+		setApi(keyRow?.api ?? 'chat')
+		setEffort(keyRow?.effort ?? '')
+		setKeyEntered(false)
+	}, [keyRow, open])
+	const custom = keyRow?.provider === 'openai-compatible'
+	const canPick = !!keyRow && pickApi(keyRow.provider)
+	// Blank keeps the saved key. A new one must look like a key, except on a custom endpoint.
+	const newKey = apiKey.trim()
+	const keyOk = !newKey || custom || newKey.length >= 4
+	const urlChanged = custom && owner && baseUrl.trim() !== keyRow?.baseUrl
+	const urlOk = !urlChanged || /^https?:\/\/[^\s]+/i.test(baseUrl.trim())
+	// A new key is checked once its field is left, as when adding one; otherwise the saved key is.
+	const target = open && keyRow && keyOk && urlOk ? {id: keyRow.id, ...(newKey && keyEntered ? {apiKey: newKey} : {}), ...(urlChanged ? {baseUrl: baseUrl.trim()} : {})} : null
+	const live = useEndpointCheck(target, model)
+	const changes: Record<string, unknown> = {}
+	if (keyRow) {
+		if (name.trim() && name.trim() !== keyRow.name) changes.name = name.trim()
+		if (newKey) changes.apiKey = newKey
+		if (urlChanged) changes.baseUrl = baseUrl.trim()
+		if (model.trim() && model.trim() !== keyRow.model) changes.model = model.trim()
+		if (canPick && api !== keyRow.api) changes.api = api
+		if (effort !== keyRow.effort) changes.effort = effort
+	}
+	return (
+		<FormSheet
+			open={open}
+			title="Edit provider"
+			subtitle={keyRow ? PROVIDER_LABEL[keyRow.provider] : undefined}
+			onClose={onClose}
+			submit="Save"
+			busy={save.isPending}
+			disabled={!keyRow || !model.trim() || !keyOk || !urlOk || !Object.keys(changes).length}
+			onSubmit={() =>
+				keyRow &&
+				save.mutate(
+					{path: 'assistant.updateKey', input: {id: keyRow.id, ...changes}, done: 'Saved', refresh: ['assistant.keys']},
+					{
+						onSuccess: () => {
+							onClose()
+							// A new key or address clears the old check; record a fresh one for the row.
+							if (changes.apiKey || changes.baseUrl || changes.model) mutate('assistant.verifyKey', {id: keyRow.id}).catch(() => {}).finally(() => qc.invalidateQueries({queryKey: ['assistant.keys']}))
+						},
+					},
+				)
+			}
+		>
+			<Field id="edit-name" label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+			{custom && owner && (
+				<Field
+					id="edit-url"
+					label="Base URL"
+					value={baseUrl}
+					onChange={(e) => setBaseUrl(e.target.value)}
+					placeholder="http://127.0.0.1:11434/v1"
+					hint="Include /v1."
+					autoCapitalize="off"
+					autoCorrect="off"
+					spellCheck={false}
+				/>
+			)}
+			<Field
+				id="edit-key"
+				label="API key"
+				type="password"
+				autoComplete="off"
+				value={apiKey}
+				onChange={(e) => {
+					setApiKey(e.target.value)
+					setKeyEntered(false)
+				}}
+				onBlur={() => setKeyEntered(true)}
+				placeholder={keyRow?.last4 ? `Saved key …${keyRow.last4}` : 'No key saved'}
+				hint="Leave blank to keep the saved key."
+			/>
+			<CheckLine check={live.check} busy={live.busy} />
+			{keyRow && <ModelField id="edit-model" value={model} onChange={setModel} models={live.models} provider={keyRow.provider} />}
+			{canPick && <Segmented label="API" value={api} onChange={setApi} options={API_OPTIONS} />}
+			<Segmented label="Reasoning" value={effort} onChange={setEffort} options={EFFORT_OPTIONS} />
+			<p className="footer-note" style={{textAlign: 'left', margin: '2px 6px 0'}}>
+				How hard a reasoning model thinks before answering. Default leaves it to the model; models that don’t reason may refuse a level.
+			</p>
 		</FormSheet>
 	)
 }
