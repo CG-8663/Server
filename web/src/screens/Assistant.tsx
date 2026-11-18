@@ -10,6 +10,42 @@ import {haptic, usePortalRoot} from '../ui'
 
 const prettyTool = (name: string) => name.replaceAll('_', ' ')
 
+async function renderMarkdown(src: string) {
+	const [{marked}, {default: DOMPurify}] = await Promise.all([import('marked'), import('dompurify')])
+	const html = await marked.parse(src, {gfm: true, breaks: true})
+	return DOMPurify.sanitize(html, {FORBID_TAGS: ['style', 'form', 'input'], USE_PROFILES: {html: true}})
+}
+
+function BubbleMarkdown({text}: {text: string}) {
+	const [html, setHtml] = useState('')
+	useEffect(() => {
+		if (!text) {
+			setHtml('')
+			return
+		}
+		let on = true
+		void renderMarkdown(text).then((next) => {
+			if (on) setHtml(next)
+		})
+		return () => {
+			on = false
+		}
+	}, [text])
+	if (!html) return <>{text}</>
+	return (
+		<div
+			className="md"
+			dangerouslySetInnerHTML={{__html: html}}
+			onClick={(e) => {
+				const a = (e.target as HTMLElement).closest('a')
+				if (!a?.href) return
+				e.preventDefault()
+				window.open(a.href, '_blank', 'noopener,noreferrer')
+			}}
+		/>
+	)
+}
+
 const statusText = (action: AssistantAction) => {
 	if (action.status === 'done') return 'Approved'
 	if (action.status === 'rejected') return 'Rejected'
@@ -402,7 +438,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 										<ActionCard key={b.id} action={b.action} onDecide={(id, path) => void decide(id, path)} />
 									) : (
 										<div key={b.id} className={`bubble ${b.role}${b.streaming ? ' live' : ''}`}>
-											{b.content}
+											{b.role === 'assistant' ? <BubbleMarkdown text={b.content} /> : b.content}
 											{b.streaming && <span className="cursor" aria-hidden="true" />}
 										</div>
 									),
