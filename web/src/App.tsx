@@ -12,7 +12,7 @@ import {Apps} from './screens/Apps'
 import {Connect, Login} from './screens/Auth'
 import {Home} from './screens/Home'
 import {Desktop} from './desktop/Desktop'
-import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, useLayout, usePrefs, type Prefs} from './ui'
+import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, scrollPhoneToTop, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
 import {LayoutChooser} from './LayoutChooser'
 import {InstallerPrompt} from './InstallerPrompt'
@@ -156,11 +156,11 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	}, [])
 	const go = (t: Tab) => {
 		haptic(5)
-		if (t === tab) window.scrollTo({top: 0, behavior: 'smooth'})
+		if (t === tab) scrollPhoneToTop('smooth')
 		else {
 			history.pushState(null, '', `#/${t}`)
 			setTab(t)
-			window.scrollTo({top: 0})
+			scrollPhoneToTop()
 		}
 	}
 

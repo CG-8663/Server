@@ -1078,6 +1078,15 @@ export function useLayout(): {desktop: boolean; pref: LayoutPref; detected: bool
 	return {desktop: pref === 'desktop' || (pref === 'auto' && wide), pref, detected: wide}
 }
 
+// The phone page scroller is .shell (or .auth before sign-in). The document itself does not scroll.
+function phoneScroller(): HTMLElement | null {
+	return document.querySelector<HTMLElement>('.shell, .auth')
+}
+export function scrollPhoneToTop(behavior: ScrollBehavior = 'auto') {
+	phoneScroller()?.scrollTo({top: 0, behavior})
+	window.scrollTo({top: 0, behavior})
+}
+
 // ---- iOS keyboard viewport repair -------------------------------------------------------------
 // After the on-screen keyboard closes, iOS Safari can keep the shrunken viewport, so fixed
 // elements (the dock, the backdrop) sit too high and leave a strip at the bottom until the page
@@ -1085,11 +1094,14 @@ export function useLayout(): {desktop: boolean; pref: LayoutPref; detected: bool
 export function nudgeViewport() {
 	if (document.documentElement.classList.contains('desk-mode')) return
 	const root = document.documentElement
-	const y = window.scrollY
+	const scroller = phoneScroller()
+	const y = scroller?.scrollTop ?? window.scrollY
 	const prev = root.style.minHeight
 	root.style.minHeight = 'calc(100% + 2px)'
+	if (scroller) scroller.scrollTop = y + 1
 	window.scrollTo(0, y + 1)
 	requestAnimationFrame(() => {
+		if (scroller) scroller.scrollTop = y
 		window.scrollTo(0, y)
 		root.style.minHeight = prev
 	})

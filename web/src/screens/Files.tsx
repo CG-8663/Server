@@ -23,7 +23,7 @@ import {
 } from "../api";
 import { useBootstrap, useDisk, useUser } from "../data";
 import { Icon, type IconName } from "../icons";
-import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, useConfirm, usePortalRoot, useToast } from "../ui";
+import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, scrollPhoneToTop, useConfirm, usePortalRoot, useToast } from "../ui";
 import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
@@ -435,7 +435,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
     haptic(5);
     setQ("");
     setPath(p);
-    window.scrollTo({ top: 0 });
+    scrollPhoneToTop();
   };
   const up = () => {
     if (!path) return;
