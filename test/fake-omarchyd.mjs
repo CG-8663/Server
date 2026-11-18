@@ -108,6 +108,8 @@ export async function startFakeserverd({
 	const settings = {twoFactor: false, channel: 'stable', hostname: 'omarchy', externalDns: true, tor: false}
 	let lastCreate = null
 	const keys = [] // keysyms typed into the fake VM console
+	const assistantKeys = [] // Settings → Assistant; public rows never include apiKey
+	const assistantChats = [] // Assistant threads. Another user's chat looks missing.
 	const terminals = []
 	const gb = 1024 ** 3
 	const apps = [
@@ -220,6 +222,48 @@ export async function startFakeserverd({
 		return {accessToken, accessExpiresAt}
 	}
 	const accountOf = (userId) => (userId === 'sam' ? {userId: 'sam', name: 'Sam', role: 'member'} : {userId: 'owner', name: 'Chris', role: 'owner'})
+	const SPACEXAI = 'https://api.x.ai/v1'
+	const normalizeBaseUrl = (raw) => {
+		const s = String(raw ?? '').trim().replace(/\/+$/, '')
+		try {
+			const u = new URL(s)
+			if (!u.pathname || u.pathname === '/') return `${u.origin}/v1`
+		} catch {}
+		return s
+	}
+	const assistantPublic = (k, userId) => ({
+		id: k.id,
+		name: k.name,
+		provider: k.provider,
+		baseUrl: k.baseUrl,
+		model: k.model,
+		last4: k.last4,
+		ownerUserId: k.ownerUserId,
+		sharedWith: k.sharedWith,
+		systemDefault: !!k.systemDefault,
+		mine: k.ownerUserId === userId,
+	})
+	const assistantCanUse = (k, userId) => k.ownerUserId === userId || k.sharedWith.includes(userId) || k.systemDefault
+	const assistantOwned = (id, userId) => assistantChats.find((c) => c.id === String(id ?? '') && c.userId === userId)
+	const assistantStep = (actionId, userId) => {
+		const id = String(actionId ?? '').trim()
+		if (!id) return {error: ['BAD_REQUEST', 'Missing action']}
+		for (const chat of assistantChats) {
+			if (chat.userId !== userId) continue
+			const action = chat.actions?.find((a) => a.id === id)
+			if (action) return {action}
+		}
+		return {error: ['NOT_FOUND', 'That step isn’t here']}
+	}
+	const assistantDecide = (input, auth, status) => {
+		const found = assistantStep(input?.actionId, auth.userId)
+		if (found.error) return found
+		if (found.action.status !== 'pending') return {error: ['CONFLICT', 'That step was already handled']}
+		found.action.status = status
+		found.action.resolvedAt = Date.now()
+		if (status === 'done') delete found.action.error
+		return {...found.action}
+	}
 
 	const procedures = {
 		'system.version': {kind: 'query', public: true, run: () => ({version: '2.0.0', name: 'Omarchy Server 2.0', startedAt: 1_700_000_000_000, revision: 'abc1234'})},
@@ -582,6 +626,105 @@ export async function startFakeserverd({
 		'hardware.raid.addMirror': {kind: 'mutation', run: () => true},
 		'hardware.raid.addAccelerator': {kind: 'mutation', run: () => true},
 		'system.logs': {kind: 'query', run: ({type}) => `${type} log line 1\n${type} log line 2\n`},
+		'assistant.keys': {
+			kind: 'query',
+			run: (_i, auth) => assistantKeys.filter((k) => assistantCanUse(k, auth.userId)).map((k) => assistantPublic(k, auth.userId)),
+		},
+		'assistant.addKey': {
+			kind: 'mutation',
+			run: (input, auth) => {
+				const provider = input?.provider === 'openai-compatible' ? 'openai-compatible' : input?.provider === 'spacexai' ? 'spacexai' : null
+				if (!provider) return {error: ['BAD_REQUEST', 'Choose SpaceXAI or an OpenAI-compatible endpoint']}
+				const apiKey = String(input?.apiKey ?? '').trim()
+				if (apiKey.length > 512) return {error: ['BAD_REQUEST', 'Enter an API key']}
+				if (provider === 'spacexai' && apiKey.length < 4) return {error: ['BAD_REQUEST', 'Enter an API key']}
+				const model = String(input?.model ?? '').trim()
+				if (!model || model.length > 80) return {error: ['BAD_REQUEST', 'Enter a model id']}
+				const name = String(input?.name ?? '').trim().slice(0, 48) || (provider === 'spacexai' ? 'SpaceXAI' : 'API')
+				let baseUrl = provider === 'spacexai' ? SPACEXAI : normalizeBaseUrl(input?.baseUrl)
+				if (provider === 'openai-compatible') {
+					if (!/^https?:\/\/[^\s]+/i.test(baseUrl) || baseUrl.length > 200) return {error: ['BAD_REQUEST', 'Enter the API base URL']}
+				}
+				const row = {
+					id: 'k_' + randomBytes(6).toString('hex'),
+					ownerUserId: auth.userId,
+					name,
+					provider,
+					baseUrl,
+					model,
+					apiKey,
+					last4: apiKey.slice(-4),
+					sharedWith: [],
+					systemDefault: false,
+				}
+				assistantKeys.push(row)
+				return assistantPublic(row, auth.userId)
+			},
+		},
+		'assistant.updateKey': {
+			kind: 'mutation',
+			run: (input, auth) => {
+				const k = assistantKeys.find((x) => x.id === String(input?.id ?? ''))
+				if (!k) return {error: ['NOT_FOUND', 'That key isn’t here']}
+				const role = accountOf(auth.userId).role
+				if (input?.systemDefault === true) {
+					if (role === 'member') return {error: ['FORBIDDEN', 'Only the server’s owner can set the default key']}
+					if (k.ownerUserId !== auth.userId) return {error: ['FORBIDDEN', 'You can only make a key you own the default']}
+					for (const x of assistantKeys) x.systemDefault = x.id === k.id
+				} else if (input?.systemDefault === false && k.ownerUserId === auth.userId && role !== 'member') {
+					k.systemDefault = false
+				}
+				if (k.ownerUserId !== auth.userId && (input?.sharedWith || input?.name || input?.model || input?.apiKey || input?.baseUrl)) {
+					return {error: ['FORBIDDEN', 'Only the person who added this key can change it']}
+				}
+				if (k.ownerUserId === auth.userId) {
+					if (typeof input?.name === 'string') k.name = input.name.trim().slice(0, 48) || k.name
+					if (typeof input?.model === 'string' && input.model.trim()) k.model = input.model.trim().slice(0, 80)
+					if (typeof input?.apiKey === 'string') {
+						const next = input.apiKey.trim()
+						if (next.length > 512) return {error: ['BAD_REQUEST', 'Enter an API key']}
+						if (k.provider === 'spacexai' && next.length < 4) return {error: ['BAD_REQUEST', 'Enter an API key']}
+						if (k.provider === 'openai-compatible' || next.length >= 4) {
+							k.apiKey = next
+							k.last4 = k.apiKey.slice(-4)
+						}
+					}
+					if (k.provider === 'openai-compatible' && typeof input?.baseUrl === 'string') k.baseUrl = normalizeBaseUrl(input.baseUrl)
+					if (Array.isArray(input?.sharedWith)) k.sharedWith = [...new Set(input.sharedWith.map((id) => String(id)).filter((id) => id && id !== k.ownerUserId))].slice(0, 32)
+				}
+				return assistantPublic(k, auth.userId)
+			},
+		},
+		'assistant.removeKey': {
+			kind: 'mutation',
+			run: (input, auth) => {
+				const id = String(input?.id ?? '')
+				const i = assistantKeys.findIndex((x) => x.id === id)
+				if (i < 0) return {error: ['NOT_FOUND', 'That key isn’t here']}
+				if (assistantKeys[i].ownerUserId !== auth.userId) return {error: ['FORBIDDEN', 'Only the person who added this key can delete it']}
+				assistantKeys.splice(i, 1)
+				return true
+			},
+		},
+		'assistant.conversations': {
+			kind: 'query',
+			run: (_i, auth) => assistantChats.filter((c) => c.userId === auth.userId).map(({id, title, updatedAt}) => ({id, title, updatedAt})).sort((a, b) => b.updatedAt - a.updatedAt),
+		},
+		'assistant.getConversation': {
+			kind: 'query',
+			run: (input, auth) => assistantOwned(input?.id, auth.userId) ?? {error: ['NOT_FOUND', 'That chat isn’t here']},
+		},
+		'assistant.deleteConversation': {
+			kind: 'mutation',
+			run: (input, auth) => {
+				const i = assistantChats.findIndex((c) => c.id === String(input?.id ?? '') && c.userId === auth.userId)
+				if (i < 0) return {error: ['NOT_FOUND', 'That chat isn’t here']}
+				assistantChats.splice(i, 1)
+				return true
+			},
+		},
+		'assistant.approve': {kind: 'mutation', run: (input, auth) => assistantDecide(input, auth, 'done')},
+		'assistant.reject': {kind: 'mutation', run: (input, auth) => assistantDecide(input, auth, 'rejected')},
 	}
 
 	// Storage hardware. Default: a single-drive server (no pool) with two spare disks attached.
@@ -621,6 +764,7 @@ export async function startFakeserverd({
 	const usbDrives = [{id: 'sde', name: 'SanDisk Extreme', transport: 'usb', size: 1e12, partitions: [{id: 'sde1', label: 'BACKUP', size: 1e12, mountpoints: ['/External/BACKUP'], supportsAppDataRoot: false}]}]
 
 	const appAuthChecks = []
+	let streamAborted = false
 	const server = http.createServer(async (req, res) => {
 		const send = (status, body) => {
 			res.writeHead(status, {'content-type': 'application/json'})
@@ -651,6 +795,29 @@ export async function startFakeserverd({
 				res.writeHead(404)
 				return res.end()
 			}
+		}
+		if (url.pathname === '/assistant/stream' && req.method === 'POST') {
+			let raw = ''
+			for await (const chunk of req) raw += chunk
+			let input
+			try {
+				input = raw ? JSON.parse(raw) : undefined
+			} catch {
+				return fail('BAD_REQUEST', 'Invalid JSON')
+			}
+			const [scheme, token] = req.headers.authorization?.split(' ') ?? []
+			const record = scheme === 'Bearer' && tokens.get(token)
+			calls.push({path: 'assistant.stream', input, authorization: req.headers.authorization ?? ''})
+			if (!record || record.expiresAt <= Date.now()) return fail('UNAUTHORIZED', 'Invalid token')
+			req.socket?.setNoDelay(true)
+			res.writeHead(200, {'content-type': 'text/event-stream', 'cache-control': 'no-store'})
+			res.on('close', () => {
+				if (!res.writableEnded) streamAborted = true
+			})
+			res.write('event: text\ndata: {"text":"Hi"}\n\n')
+			await new Promise((r) => setTimeout(r, 150))
+			if (!res.writableEnded) res.end('event: done\ndata: {"conversationId":"c_test"}\n\n')
+			return
 		}
 		const path = url.pathname.replace(/^\/trpc\//, '')
 		const proc = procedures[path]
@@ -757,6 +924,7 @@ export async function startFakeserverd({
 				fsTree,
 				apps,
 				appAuthChecks,
+				streamWasAborted: () => streamAborted,
 				appRequests,
 				expireAllAccessTokens: () => {
 					for (const v of tokens.values()) v.expiresAt = 0

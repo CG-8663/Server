@@ -10,6 +10,7 @@ import os from 'node:os'
 import {dirname, extname, join} from 'node:path'
 
 import {openAccounts} from './accounts.mjs'
+import {createAssistant} from './assistant.mjs'
 import {APP_COOKIE, createApps} from './apps.mjs'
 import {createFiles} from './files.mjs'
 import {createMachines} from './machines.mjs'
@@ -27,7 +28,7 @@ import {WebSocketServer} from 'ws'
 
 export const OMARCHYD_VERSION = '0.9.38'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
 	const startedAt = Date.now()
 	const revision = await new Promise((resolve) => {
@@ -125,7 +126,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'user.logout': {kind: 'mutation', run: async (_i, {auth}) => (await accounts.logout(auth), true)},
 		// ---- the Omarchy desktop's themes (Settings → Appearance → Omarchy) ---------------------------
 		'omarchy.themes': {kind: 'query', run: () => omarchyTheme.themes()},
+		'omarchy.backgrounds': {kind: 'query', run: (input) => omarchyTheme.backgrounds(input ?? {})},
 		'omarchy.setTheme': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth), themeCall(() => omarchyTheme.setTheme(String(input?.slug ?? ''))))},
+		'omarchy.setBackground': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth), themeCall(() => omarchyTheme.setBackground(String(input?.id ?? ''), input?.theme)))},
 		'omarchy.installTheme': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth), themeCall(() => omarchyTheme.installTheme(String(input?.slug ?? ''))))},
 		'omarchy.removeTheme': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth), themeCall(() => omarchyTheme.removeTheme(String(input?.slug ?? ''))))},
 		// Verified plugins from the Omarchy plugin registry (see omarchy-plugins.mjs).
@@ -337,6 +340,18 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		},
 		'apps.getTorEnabled': {kind: 'query', run: () => false},
 	}
+	const assistant = createAssistant({
+		dataDir,
+		accounts,
+		fetchImpl: assistantOptions.fetchImpl,
+		mcpTargets: () => apps.mcpTargets(),
+		runProcedure: (name, input, auth) => {
+			const p = procedures[name]
+			if (!p) throw new RpcError('NOT_FOUND', 'Unknown tool')
+			return p.run(input, {auth})
+		},
+	})
+	Object.assign(procedures, assistant.procedures)
 
 	const omarchyTheme = createOmarchyTheme({home, ...themeOptions})
 	const omarchyPlugins = createOmarchyPlugins({home, theme: omarchyTheme, ...pluginOptions})
@@ -548,6 +563,11 @@ WantedBy=graphical-session.target
 	const server = http.createServer(async (req, res) => {
 		const url = new URL(req.url ?? '/', 'http://localhost')
 		try {
+			if (url.pathname === '/assistant/stream' && req.method === 'POST') {
+				const auth = accounts.authenticate(req)
+				if (!auth) return sendError(res, new RpcError('UNAUTHORIZED', 'Invalid token'))
+				return await assistant.handleStream(req, res, auth)
+			}
 			if (url.pathname.startsWith('/trpc/')) return await handleRpc(req, res, url, procedures, (r) => accounts.authenticate(r))
 			if (url.pathname === '/assets/wallpapers/1.jpg' && req.method === 'GET') return await wallpaper(res)
 			// A connector trading its one-time pairing code for its own id and key.

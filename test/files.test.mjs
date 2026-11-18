@@ -179,3 +179,43 @@ describe('files: list paging', () => {
 		}
 	})
 })
+
+describe('files: assistant store', () => {
+	test('download and replace of assistant/keys.json are refused', async () => {
+		const secretHome = join(root, 'secret-home')
+		const dataDir = join(secretHome, '.local/share/omarchy-server/omarchyd')
+		const assistant = join(dataDir, 'assistant')
+		await mkdir(assistant, {recursive: true})
+		const keys = join(assistant, 'keys.json')
+		const accounts = join(dataDir, 'accounts.json')
+		const secret = '{"keys":[{"apiKey":"super-secret"}]}'
+		await writeFile(keys, secret, {mode: 0o600})
+		await writeFile(accounts, '{"users":[]}', {mode: 0o600})
+		await mkdir(join(secretHome, 'Documents'), {recursive: true})
+		await symlink(keys, join(secretHome, 'Documents', 'alias.json'))
+		const f = createFiles({home: secretHome, dataDir})
+		const virtual = '/Home/.local/share/omarchy-server/omarchyd/assistant/keys.json'
+		await assert.rejects(f.resolve(virtual), (e) => e.code === 'FORBIDDEN')
+		await assert.rejects(f.resolve('/Home/.local/share/omarchy-server/omarchyd/accounts.json'), (e) => e.code === 'FORBIDDEN')
+		await assert.rejects(f.resolve('/Home/Documents/alias.json'), (e) => e.code === 'FORBIDDEN')
+		const server = http.createServer((req, res) => {
+			const url = new URL(req.url, 'http://x')
+			if (req.method === 'POST') return f.upload(req, res, url)
+			return f.serveFile(req, res, url, 'download')
+		})
+		await new Promise((r) => server.listen(0, '127.0.0.1', r))
+		try {
+			const port = server.address().port
+			const down = await fetch(`http://127.0.0.1:${port}/?path=${encodeURIComponent(virtual)}`)
+			assert.notEqual(down.status, 200)
+			assert.equal((await down.text()).includes('super-secret'), false)
+			const up = await fetch(`http://127.0.0.1:${port}/?path=${encodeURIComponent(virtual)}&collision=replace`, {method: 'POST', body: 'pwned'})
+			assert.notEqual(up.status, 200)
+			assert.equal(await readFile(keys, 'utf8'), secret)
+			assert.equal((await readFile(accounts, 'utf8')).includes('pwned'), false)
+			assert.deepEqual(await readdir(assistant), ['keys.json'])
+		} finally {
+			await new Promise((r) => server.close(r))
+		}
+	})
+})

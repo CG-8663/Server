@@ -7862,3 +7862,273 @@ html.page-locked body {
 	cursor: copy;
 	user-select: all;
 }
+
+/* ---- Assistant chat -------------------------------------------------------- */
+.assistant-screen {
+	position: fixed;
+	inset: 0;
+	z-index: 50;
+	display: flex;
+	flex-direction: column;
+	padding: calc(var(--safe-t) + 10px) 12px calc(var(--safe-b) + 12px);
+	background: color-mix(in srgb, var(--bg) 55%, transparent);
+	backdrop-filter: blur(10px);
+	-webkit-backdrop-filter: blur(10px);
+}
+.assistant-screen.kbd-open {
+	padding-bottom: 10px;
+}
+.assistant-screen > .assistant {
+	flex: 1;
+	min-height: 0;
+}
+.assistant {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	min-width: 0;
+	min-height: 0;
+	padding: 12px;
+	overflow: hidden;
+}
+.win-body > .assistant {
+	position: absolute;
+	inset: 10px;
+}
+.assistant-head {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-height: 40px;
+	flex: none;
+}
+.assistant-head b {
+	flex: 1;
+	min-width: 0;
+	font-size: 17px;
+	font-weight: 650;
+}
+.assistant .assistant-thread {
+	flex: 1;
+	min-height: 0;
+	overflow-x: hidden;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	overscroll-behavior: contain;
+}
+.assistant .assistant-thread > .spinner,
+.assistant .assistant-thread > .empty {
+	margin: auto;
+}
+.assistant .assistant-thread-end {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin-top: auto;
+	flex: none;
+	width: 100%;
+}
+.assistant .bubble {
+	max-width: min(82%, 520px);
+	padding: 10px 12px;
+	border-radius: 18px;
+	overflow-wrap: anywhere;
+	line-height: 1.45;
+}
+.assistant .bubble.user {
+	align-self: flex-end;
+	background: var(--accent);
+	color: var(--on-accent);
+	border-bottom-right-radius: 6px;
+	white-space: pre-wrap;
+}
+.assistant .bubble.assistant {
+	align-self: flex-start;
+	background: var(--glass-2);
+	border: 1px solid var(--line);
+	color: var(--fg);
+	border-bottom-left-radius: 6px;
+}
+.assistant .bubble.assistant .md > :first-child {
+	margin-top: 0;
+}
+.assistant .bubble.assistant .md > :last-child {
+	margin-bottom: 0;
+}
+.assistant .bubble.assistant .md p,
+.assistant .bubble.assistant .md ul,
+.assistant .bubble.assistant .md ol,
+.assistant .bubble.assistant .md pre,
+.assistant .bubble.assistant .md blockquote,
+.assistant .bubble.assistant .md table {
+	margin: 0.5em 0;
+}
+.assistant .bubble.assistant .md ul,
+.assistant .bubble.assistant .md ol {
+	padding-left: 1.3em;
+}
+.assistant .bubble.assistant .md a {
+	color: var(--accent-text);
+}
+.assistant .bubble.assistant .md code {
+	font-family: var(--mono);
+	font-size: 0.88em;
+	background: var(--glass);
+	padding: 0.15em 0.4em;
+}
+.assistant .bubble.assistant .md pre {
+	background: var(--glass-press);
+	border: 1px solid var(--line);
+	padding: 10px 12px;
+	overflow: auto;
+}
+.assistant .bubble.assistant .md pre code {
+	background: none;
+	padding: 0;
+}
+.assistant .bubble.assistant .md blockquote {
+	padding: 0 0.8em;
+	border-left: 3px solid var(--line-2);
+	color: var(--fg-2);
+}
+.assistant .bubble.assistant .md table {
+	border-collapse: collapse;
+	display: block;
+	overflow: auto;
+}
+.assistant .bubble.assistant .md th,
+.assistant .bubble.assistant .md td {
+	border: 1px solid var(--line-2);
+	padding: 4px 8px;
+}
+.assistant .bubble.assistant .md img {
+	max-width: 100%;
+}
+.assistant .bubble.assistant .md h1,
+.assistant .bubble.assistant .md h2,
+.assistant .bubble.assistant .md h3 {
+	font-size: 1em;
+	font-weight: 650;
+	margin: 0.7em 0 0.35em;
+}
+.assistant .bubble.live {
+	min-width: 2.4em;
+	min-height: 1.45em;
+}
+.assistant .bubble .cursor {
+	display: inline-block;
+	width: 2px;
+	height: 1em;
+	margin-left: 2px;
+	background: currentColor;
+	vertical-align: text-bottom;
+	animation: assistant-cursor 1s steps(2) infinite;
+}
+@keyframes assistant-cursor {
+	50% {
+		opacity: 0;
+	}
+}
+.assistant .composer {
+	display: flex;
+	align-items: flex-end;
+	gap: 8px;
+	flex: none;
+	padding: 6px 6px 6px 12px;
+	border-radius: 18px;
+	background: var(--glass-2);
+	border: 1px solid var(--line);
+}
+.assistant .composer textarea {
+	flex: 1;
+	min-width: 0;
+	max-height: 140px;
+	resize: none;
+	border: 0;
+	background: transparent;
+	padding: 8px 0;
+	line-height: 1.4;
+}
+.assistant .composer .btn {
+	flex: none;
+}
+.assistant-activity {
+	align-self: flex-start;
+	margin: 0;
+	color: var(--muted);
+	font-size: 13px;
+}
+.assistant-card {
+	align-self: flex-start;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	width: min(100%, 420px);
+	padding: 12px 14px;
+}
+.assistant-card b {
+	font-size: 15px;
+	font-weight: 650;
+	overflow-wrap: anywhere;
+}
+.assistant-card p {
+	margin: 0;
+	color: var(--muted);
+	font-size: 13px;
+	line-height: 1.4;
+	overflow-wrap: anywhere;
+}
+.assistant-card .assistant-actions {
+	display: flex;
+	gap: 8px;
+}
+.assistant-bg-pick {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	max-height: 240px;
+	overflow: auto;
+	margin: 2px 0;
+}
+.assistant-bg-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 0;
+	padding: 6px 8px;
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	cursor: pointer;
+}
+.assistant-bg-row.on {
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.assistant-bg-row input {
+	flex: none;
+	accent-color: var(--accent);
+}
+.assistant-bg-row img {
+	width: 72px;
+	height: 45px;
+	object-fit: cover;
+	border-radius: 8px;
+	background: #1a1b26;
+	flex: none;
+}
+.assistant-bg-row span {
+	font-size: 13px;
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.assistant-card .btn {
+	flex: 1;
+	min-height: 36px;
+	padding: 0 12px;
+	border-radius: 999px;
+	font-size: 14px;
+	font-weight: 700;
+}

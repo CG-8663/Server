@@ -12,7 +12,7 @@ import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
 import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../osLook'
-import {AppIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
+import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
 import {Cheatsheet} from './hyprland/Cheatsheet'
@@ -30,6 +30,7 @@ const MachinesDesktop = lazy(() => import('../machines/Desktop').then((m) => ({d
 const More = lazy(() => import('../screens/More').then((m) => ({default: m.More})))
 const Settings = lazy(() => import('../screens/Settings').then((m) => ({default: m.Settings})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
+const Assistant = lazy(() => import('../screens/Assistant').then((m) => ({default: m.Assistant})))
 const Personalize = lazy(() => import('./Personalize').then((m) => ({default: m.Personalize})))
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 
@@ -42,7 +43,7 @@ function WinFallback() {
 }
 
 // ---- model ---------------------------------------------------------------------------------
-type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'console' | 'app'
+type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'app'
 type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; term?: {id: string; name?: string; icon?: string}; input?: string}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
@@ -66,6 +67,7 @@ export const SYS: Record<SysKind, {title: string; icon?: IconName; bg?: string; 
 	system: {title: 'System Monitor', icon: 'activity-filled', bg: 'linear-gradient(150deg,#fdba74,#c2410c 70%)', tone: 'var(--peach)', w: 820, h: 720},
 	settings: {title: 'Settings', icon: 'settings', bg: 'linear-gradient(150deg,#cbd5e1,#475569 70%)', tone: 'var(--fg)', w: 760, h: 720},
 	personalize: {title: 'Desktop & Dock', icon: 'palette', bg: 'linear-gradient(150deg,#f9a8d4,#be185d 70%)', tone: 'var(--pink)', w: 880, h: 720},
+	assistant: {title: 'Assistant', icon: 'sparkle', bg: 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', tone: 'var(--mauve)', w: 720, h: 640},
 }
 const isSys = (k: string): k is SysKind => Object.hasOwn(SYS, k)
 const keyOf = (kind: Kind, p?: Payload) => (kind === 'app' ? `app:${p?.appId}` : kind === 'console' ? `console:${p?.machineId}` : kind)
@@ -107,6 +109,7 @@ function loadLayout(): {workspace: number; trees: Record<number, Node | null>} {
 export function SysIcon({kind, size = 44}: {kind: string; size?: number}) {
 	if (kind === 'store') return <StoreIcon size={size} />
 	if (kind === 'terminal') return <TerminalIcon size={size} />
+	if (kind === 'assistant') return <AssistantIcon size={size} />
 	const s = isSys(kind) ? SYS[kind] : undefined
 	return (
 		<span className="app-icon sys-ico" style={{width: size, height: size, '--grad': s?.bg ?? '#555', '--tone': s?.tone ?? 'var(--fg)'} as CSSProperties}>
@@ -269,7 +272,7 @@ type MenuItem = {label: string; icon?: IconName; onClick: () => void; danger?: b
 type Menu = {x: number; y: number; title?: string; items: MenuItem[]}
 
 // ---- the desktop -------------------------------------------------------------------------------
-export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void}) {
+export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Bootstrap; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; reopenAssistant?: boolean}) {
 	useViewport()
 	const user = useUser()
 	const [cfg, setCfg] = useDeskConfig()
@@ -445,6 +448,13 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		},
 		[focus, update, cfg.shell],
 	)
+
+	const didReopenAssistant = useRef(false)
+	useEffect(() => {
+		if (!reopenAssistant || didReopenAssistant.current) return
+		didReopenAssistant.current = true
+		open('assistant')
+	}, [reopenAssistant, open])
 
 	// Starting a stopped machine from its icon: start it, then open the console once it's running.
 	useEffect(() => {
@@ -1036,7 +1046,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 					<Launcher
 						onClose={() => setLauncher(false)}
 						onOpen={(key) => api.openItem(key)}
-						items={['files', 'apps', 'store', 'terminal', 'machines', 'system', 'settings', 'personalize', ...appList.map((a) => `app:${a.id}`), ...machineList.map((m) => `machine:${m.id}`)]
+						items={['files', 'apps', 'store', 'terminal', 'machines', 'system', 'settings', 'assistant', 'personalize', ...appList.map((a) => `app:${a.id}`), ...machineList.map((m) => `machine:${m.id}`)]
 							.map((key) => info(key))
 							.filter((it) => !it.missing)}
 					/>
@@ -1783,6 +1793,7 @@ function Overview({
 	const showApps = mode === 'apps' || q.trim() !== '' || !hasWindows
 	const keys = [
 		...SYSTEM_DOCK.filter((k) => k !== 'terminal' || owner),
+		'assistant',
 		'personalize',
 		...[...appList].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)).map((a) => `app:${a.id}`),
 		...(owner ? [DESKTOP_KEY] : []),
@@ -2429,6 +2440,17 @@ const WindowContent = memo(
 					return <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={close} />
 				case 'personalize':
 					return <Personalize tab={win.payload?.tab} prefs={prefs} setPrefs={setPrefs} />
+				case 'assistant':
+					return (
+						<Assistant
+							onSettings={() => {
+								sessionStorage.setItem('omarchy-server:settings-page', 'assistant')
+								desk.open('settings')
+							}}
+							prefs={prefs}
+							setPrefs={setPrefs}
+						/>
+					)
 				case 'terminal':
 					return owner ? <TerminalScreen embedded app={win.payload?.term} input={win.payload?.input} onClose={close} /> : <div className="win-empty">Only the server’s owner can open a terminal.</div>
 				case 'console':
@@ -2438,7 +2460,7 @@ const WindowContent = memo(
 			}
 		})()
 		const content = <Suspense fallback={<WinFallback />}>{body}</Suspense>
-		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'machines') return content
+		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'machines' || win.kind === 'assistant') return content
 		return (
 			<div className="win-scroll">
 				<main className="screen win-screen">{content}</main>

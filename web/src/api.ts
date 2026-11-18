@@ -237,6 +237,32 @@ export type ActiveSession = {
 	client: {type: 'native'; id?: string; platform?: string; deviceClass?: string; appVersion?: string} | {type: 'browser'; userAgent?: string}
 }
 
+export type AssistantProvider = 'spacexai' | 'openai-compatible'
+export type AssistantKey = {
+	id: string
+	name: string
+	provider: AssistantProvider
+	baseUrl: string
+	model: string
+	last4: string
+	ownerUserId: string
+	sharedWith: string[]
+	systemDefault: boolean
+	mine: boolean
+}
+
+// Public card. The chat shows these fields only — never rpc input, passwords, apiKey, or credentials.
+export type AssistantAction = {
+	id: string
+	status: 'pending' | 'rejected' | 'running' | 'done' | 'error'
+	kind: 'rpc' | 'mcp'
+	toolName: string
+	title: string
+	detail: string
+	error?: string
+	picker?: {theme: string | null; selected: string | null}
+}
+
 export type FileEntry = {
 	name: string
 	path: string

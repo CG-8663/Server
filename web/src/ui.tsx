@@ -315,6 +315,7 @@ export function Segmented<T extends string>({
 			{options.map((o) => (
 				<button
 					key={o.id}
+					type="button"
 					role="tab"
 					aria-selected={o.id === value}
 					onClick={() => {
@@ -992,6 +993,14 @@ export function TerminalIcon({size = 56}: {size?: number}) {
 			<svg width={size * 0.5} height={size * 0.5} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
 				<path d="M5 7l5 5-5 5M12 18h7" />
 			</svg>
+		</span>
+	)
+}
+
+export function AssistantIcon({size = 56}: {size?: number}) {
+	return (
+		<span className="app-icon assistant-icon sys-ico" style={{width: size, height: size, '--grad': 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', '--tone': 'var(--mauve)'} as CSSProperties}>
+			<Icon name="sparkle" size={size * 0.5} stroke={1.8} />
 		</span>
 	)
 }

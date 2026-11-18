@@ -483,6 +483,7 @@ function allKeys(appList: {id: string; name?: string}[], machineList: {id: strin
 	return [
 		...(folders ? ['folder:/Home', 'folder:/Trash'] : []),
 		...SYSTEM_DOCK.filter((k) => k !== 'terminal' || owner),
+		'assistant',
 		'personalize',
 		...[...appList].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)).map((a) => `app:${a.id}`),
 		...(owner ? [DESKTOP_KEY] : []),
