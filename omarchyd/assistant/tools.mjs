@@ -81,8 +81,8 @@ export const WRITE_TOOLS = [
 		theme: {type: 'string'},
 	}, true),
 	mutation('swarm_rename', 'swarm.rename', 'Rename a swarm computer', {id: {type: 'string'}, name: {type: 'string'}}, true),
-	mutation('omarchy_setTheme', 'omarchy.setTheme', 'Set this machine’s Omarchy theme colours. After this, propose omarchy_setBackground so they can pick a wallpaper.', {slug: {type: 'string'}}, true),
-	mutation('omarchy_setBackground', 'omarchy.setBackground', 'Change this machine’s desktop wallpaper and the web app background. Use this whenever they ask to change the wallpaper, background, backdrop, or picture. Pass the theme slug (for example nord). The person picks the image on the Approve card.', {
+	mutation('omarchy_setTheme', 'omarchy.setTheme', 'Set this machine’s Omarchy theme colours. Use this only when they want colours and not a wallpaper change.', {slug: {type: 'string'}}, true),
+	mutation('omarchy_setBackground', 'omarchy.setBackground', 'Change this machine’s desktop wallpaper and the web app background. If they also want that theme’s colours, pass the theme slug — do not also call omarchy_setTheme. Use this whenever they ask to change the wallpaper, background, backdrop, picture, or theme plus wallpaper. The person picks the image on the Approve card.', {
 		theme: {type: 'string', description: 'Theme slug whose pictures to show'},
 		id: {type: 'string', description: 'Background id to pre-select (16 hex characters)'},
 	}, true),

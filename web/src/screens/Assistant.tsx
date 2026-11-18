@@ -442,6 +442,8 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 					theme: prefs.theme === 'horizon' ? 'horizon' : 'omarchy',
 				})
 				void qc.invalidateQueries({queryKey: ['omarchy-themes']})
+				const theme = cur.action.picker?.theme || cur.action.detail || ''
+				if (theme) reloadTheme = theme
 			}
 		} catch (err) {
 			if (!alive.current || own.signal.aborted) return

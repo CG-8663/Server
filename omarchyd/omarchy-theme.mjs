@@ -219,12 +219,14 @@ export function createOmarchyTheme({home, run = null, env = process.env, systemS
 		if (!theme || !SLUG.test(theme)) return all
 		return {...all, groups: all.groups.filter((g) => g.theme === theme)}
 	}
-	async function setBackground(id) {
+	async function setBackground(id, theme) {
 		const hex = String(id ?? '')
 		if (!/^[0-9a-f]{16}$/.test(hex)) throw Object.assign(new Error('That background isn’t here'), {code: 'NOT_FOUND'})
 		if (!index.has(hex)) await list()
 		const path = index.get(hex)
 		if (!path) throw Object.assign(new Error('That background isn’t here'), {code: 'NOT_FOUND'})
+		const slug = String(theme ?? '').trim()
+		if (slug && slug !== (await currentName())) await setTheme(slug)
 		const key = `bg:${hex}`
 		if (jobs.get(key)?.state === 'switching') return true
 		job(key, 'switching', inTurn('omarchy-theme-bg-set', [path]))

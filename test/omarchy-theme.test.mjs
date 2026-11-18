@@ -118,6 +118,7 @@ test('setBackground runs omarchy-theme-bg-set with that image, and refuses unkno
 	await writeFile(join(omarchy, 'themes/tokyo-night/backgrounds/city.jpg'), 'img-tokyo')
 	await mkdir(join(omarchy, 'bin'), {recursive: true})
 	await writeFile(join(omarchy, 'bin', 'omarchy-theme-bg-set'), '#!/bin/sh\n', {mode: 0o755})
+	await writeFile(join(omarchy, 'bin', 'omarchy-theme-set'), '#!/bin/sh\n', {mode: 0o755})
 	const state = join(home, '.local/state/omarchy/current')
 	await mkdir(state, {recursive: true})
 	await symlink(join(omarchy, 'themes/nord'), join(state, 'theme'))
@@ -138,6 +139,13 @@ test('setBackground runs omarchy-theme-bg-set with that image, and refuses unkno
 	await t.setBackground(nord.items[0].id)
 	await new Promise((r) => setTimeout(r, 10))
 	assert.deepEqual(ran, [['omarchy-theme-bg-set', file]])
+	ran.length = 0
+	await t.setBackground(tokyo.items[0].id, 'tokyo-night')
+	await new Promise((r) => setTimeout(r, 10))
+	assert.deepEqual(ran, [
+		['omarchy-theme-set', 'tokyo-night'],
+		['omarchy-theme-bg-set', join(omarchy, 'themes/tokyo-night/backgrounds/city.jpg')],
+	])
 	await assert.rejects(t.setBackground('0123456789abcdef'), /isn.t/)
 	await assert.rejects(t.setBackground('../../etc/passwd'), /isn.t/)
 	await assert.rejects(t.setBackground(file), /isn.t/)

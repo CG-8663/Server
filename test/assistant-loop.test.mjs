@@ -233,7 +233,9 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 	assert.equal(toolsFor('owner').some((t) => t.name === 'omarchy_setBackground'), true)
 	assert.match(SYSTEM_PROMPT, /omarchy_setBackground/)
 	assert.match(SYSTEM_PROMPT, /wallpaper/i)
+	assert.match(SYSTEM_PROMPT, /only omarchy_setBackground|not also call omarchy_setTheme|Do not call both/i)
 	assert.match(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').description, /wallpaper|background/i)
+	assert.match(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').description, /theme/i)
 	assert.equal(toolsFor('member').some((t) => t.name === 'swarm_list'), false)
 	assert.equal(toolsFor('owner').some((t) => t.name === 'swarm_list'), true)
 	assert.equal([...READ_TOOLS, ...WRITE_TOOLS].some((t) => /shell|podman|web_search|x_search/i.test(t.name)), false)
@@ -986,6 +988,33 @@ test('approving a wallpaper uses the chosen background id', async () => {
 		assert.equal(bg.input.theme, 'tokyo-night')
 		assert.equal(ALLOWED['omarchy.backgrounds'], 'query')
 		assert.equal(ALLOWED['omarchy.setBackground'], 'mutation')
+	} finally {
+		await box.close()
+	}
+})
+
+test('a theme write is one wallpaper Approve, not a second card after follow-up', async () => {
+	const {calls, runProcedure} = factsProcedure()
+	const {fetchImpl} = scripted([
+		toolSse('call_theme', 'omarchy_setTheme', JSON.stringify({slug: 'solitude'})),
+		toolSse('call_bg', 'omarchy_setBackground', JSON.stringify({theme: 'solitude'})),
+		textSse('Done.'),
+	])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const first = []
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'Change theme and background to solitude', emit: (e) => first.push(e)})
+		const action = first.find((e) => e.event === 'action')?.data
+		assert.equal(action?.toolName, 'omarchy_setBackground')
+		assert.equal(action.picker?.theme, 'solitude')
+		assert.equal(first.filter((e) => e.event === 'action').length, 1)
+		assert.equal(calls.some((c) => c.name === 'omarchy.setTheme'), false)
+		await box.asst.procedures['assistant.approve'].run({actionId: action.id, id: 'ccccccccccccccdd'}, {auth: {userId: 'owner'}})
+		const follow = []
+		await box.asst.runTurn({userId: 'owner', role: 'owner', conversationId: out.conversationId, continue: true, emit: (e) => follow.push(e)})
+		assert.equal(follow.some((e) => e.event === 'action'), false)
+		assert.equal(calls.filter((c) => c.name === 'omarchy.setBackground').length, 1)
+		assert.equal(calls.some((c) => c.name === 'omarchy.setTheme'), false)
 	} finally {
 		await box.close()
 	}

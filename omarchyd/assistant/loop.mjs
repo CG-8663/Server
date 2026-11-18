@@ -2,7 +2,7 @@ import {callMcpTool, forgetMcpTools, listMcpTools} from './mcp.mjs'
 import {streamChat} from './providers.mjs'
 import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
-export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Theme colours: omarchy_setTheme. Wallpaper and background: omarchy_listBackgrounds then omarchy_setBackground. Stay on this host.'
+export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
 
 const LIMIT = 'I hit the lookup limit for this turn.'
 const KEY_REJECTED = 'That API key was rejected. Replace it in Settings → Assistant.'
@@ -34,6 +34,16 @@ function redactToolResult(name, result) {
 }
 
 const BACKGROUND_ID = /^[0-9a-f]{16}$/
+
+function lookAlreadyApplied(row) {
+	let lastUserAt = 0
+	for (const m of row?.messages ?? []) if (m.role === 'user') lastUserAt = m.at ?? 0
+	return (row?.actions ?? []).some((a) => {
+		if (a.toolName !== 'omarchy_setTheme' && a.toolName !== 'omarchy_setBackground') return false
+		if (a.status !== 'done') return false
+		return (a.resolvedAt ?? a.createdAt ?? 0) >= lastUserAt
+	})
+}
 
 export function publicAction(action) {
 	if (!action || typeof action !== 'object') return action
@@ -289,8 +299,20 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		} catch {
 			return {content: 'invalid arguments', state: 'error'}
 		}
-		const spec = writeTool(tool.name)
+		let name = tool.name
+		if (name === 'omarchy_setTheme') {
+			const slug = String(args.slug ?? args.theme ?? '').trim()
+			name = 'omarchy_setBackground'
+			args = {theme: slug, ...(BACKGROUND_ID.test(String(args.id ?? '')) ? {id: String(args.id)} : {})}
+		}
+		const spec = writeTool(name)
 		if (!spec || (spec.ownerOnly && auth.role !== 'owner')) return {content: 'unknown tool', state: 'done'}
+		if (name === 'omarchy_setBackground') {
+			const row = await conversations.get(auth.userId, conversationId)
+			if (lookAlreadyApplied(row)) {
+				return {content: 'Theme and wallpaper were already applied for this request. Do not call omarchy_setTheme or omarchy_setBackground again unless they ask for a different look.', state: 'done'}
+			}
+		}
 		const card = cardFor(spec.name, args)
 		const action = await conversations.putAction(auth.userId, conversationId, {
 			kind: 'rpc',
