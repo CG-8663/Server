@@ -151,13 +151,12 @@ export async function* streamChat({baseUrl, apiKey, model, messages, tools, fetc
 			'content-type': 'application/json',
 			authorization: `Bearer ${apiKey}`,
 		},
+		// Without tools (the text protocol below), send no tool fields: some servers refuse tool_choice alone.
 		body: JSON.stringify({
 			model,
 			messages,
-			tools,
 			stream: true,
-			parallel_tool_calls: false,
-			tool_choice: 'auto',
+			...(tools?.length ? {tools, parallel_tool_calls: false, tool_choice: 'auto'} : {}),
 		}),
 		signal,
 	})
@@ -312,6 +311,89 @@ export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', a
 	yield* handle('', true)
 	// An interrupted stream is a failure, not an answer.
 	if (!finished && !signal?.aborted) yield {type: 'error', message: 'The answer was cut off; try again'}
+}
+
+// ---- Tools as text, for models that can't take them natively ----------------------------------
+// Some backends refuse native tools for some models (Ollama with Gemma: "does not support tools";
+// OpenRouter: "No endpoints found that support tool use"). Then the tools go in the system prompt,
+// the model writes <tool_call>{"name","arguments"}</tool_call>, and takeXmlTools above reads it back
+// as an ordinary tool call. Approve cards and lookups work the same. (Ported from Wardyx, where
+// this measured 100% valid calls on gemma3:12b.)
+const TOOLS_UNSUPPORTED = /does not support tool|tools? (?:are|is) not supported|function calling is not supported|tool use is not supported|no endpoints found that support tool use|tool_choice.*not supported/i
+export const toolsUnsupported = (ev) => ev?.type === 'error' && (ev.status === 400 || ev.status === 404 || ev.status === 422) && TOOLS_UNSUPPORTED.test(String(ev.message ?? ''))
+
+export function toolProtocolPrompt(tools) {
+	const lines = (tools ?? []).map((t) => JSON.stringify({name: t.function?.name, description: t.function?.description ?? '', parameters: t.function?.parameters ?? {}}))
+	return [
+		'# Tool calling',
+		'You can call tools to look things up or take actions. Your tools are listed below, one JSON signature per line:',
+		'<tools>',
+		...lines,
+		'</tools>',
+		'To call a tool, output exactly:',
+		'<tool_call>{"name": "<tool name>", "arguments": {<arguments as JSON>}}</tool_call>',
+		'Rules:',
+		'- One <tool_call> block per call. Use only the tool names listed above.',
+		'- A tool’s result comes back in a <tool_response> block; continue from there.',
+		'- When you have the answer, reply normally with no <tool_call> block.',
+	].join('\n')
+}
+
+// The same conversation with tool calls and results written as text, for a backend without tools.
+export function toolProtocolMessages(messages, tools) {
+	const out = []
+	const nameById = new Map()
+	const push = (role, content) => {
+		const last = out.at(-1)
+		if (role === 'user' && last?.role === 'user') last.content += `\n\n${content}`
+		else out.push({role, content})
+	}
+	const protocol = toolProtocolPrompt(tools)
+	let sawSystem = false
+	for (const m of messages ?? []) {
+		if (!m) continue
+		if (m.role === 'system') {
+			sawSystem = true
+			out.push({role: 'system', content: `${m.content ?? ''}\n\n${protocol}`})
+		} else if (m.role === 'assistant') {
+			const calls = (m.tool_calls ?? []).map((t) => {
+				nameById.set(t.id, t.function?.name)
+				let args = {}
+				try {
+					args = JSON.parse(t.function?.arguments || '{}')
+				} catch {}
+				return `<tool_call>${JSON.stringify({name: t.function?.name, arguments: args})}</tool_call>`
+			})
+			push('assistant', [m.content, ...calls].filter(Boolean).join('\n') || ' ')
+		} else if (m.role === 'tool') {
+			const name = nameById.get(m.tool_call_id)
+			push('user', `<tool_response${name ? ` name="${name}"` : ''}>\n${m.content ?? ''}\n</tool_response>`)
+		} else push('user', String(m.content ?? ''))
+	}
+	if (!sawSystem) out.unshift({role: 'system', content: protocol})
+	return out
+}
+
+// Backends (address + model) that refused native tools, so later turns skip the failed request.
+const textToolModels = new Set()
+export const forgetTextToolModels = () => textToolModels.clear()
+
+// Runs a stream (Chat Completions or Responses); if the backend refuses native tools, runs it again
+// with the tools as text, and remembers that for this address and model.
+export async function* withToolFallback(stream, opts) {
+	const id = `${String(opts.baseUrl ?? '').replace(/\/+$/, '')}|${opts.model}`
+	const asText = () => stream({...opts, messages: toolProtocolMessages(opts.messages, opts.tools), tools: []})
+	if (!opts.tools?.length) return yield* stream(opts)
+	if (textToolModels.has(id)) return yield* asText()
+	let first = true
+	for await (const ev of stream(opts)) {
+		if (first && toolsUnsupported(ev)) {
+			textToolModels.add(id)
+			return yield* asText()
+		}
+		first = false
+		yield ev
+	}
 }
 
 // ---- Live checks and model lists ----------------------------------------------------------------

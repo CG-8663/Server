@@ -1,7 +1,7 @@
 import {callMcpTool, forgetMcpTools, listMcpTools} from './mcp.mjs'
 import {streamAnthropic} from './anthropic.mjs'
 import {apiOf} from './keys.mjs'
-import {streamChat, streamResponses} from './providers.mjs'
+import {streamChat, streamResponses, withToolFallback} from './providers.mjs'
 import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
 export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
@@ -463,7 +463,9 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				const thinking = []
 				let providerError = null
 				try {
-					const stream = key.provider === 'anthropic' ? streamAnthropic : apiOf(key) === 'responses' ? streamResponses : streamChat
+					// OpenAI-style endpoints fall back to tools-as-text when a model can't take native tools.
+					const openAiStyle = apiOf(key) === 'responses' ? streamResponses : streamChat
+					const stream = key.provider === 'anthropic' ? streamAnthropic : (opts) => withToolFallback(openAiStyle, opts)
 					for await (const ev of stream({
 						baseUrl: key.baseUrl,
 						apiKey: key.apiKey,
