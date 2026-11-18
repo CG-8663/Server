@@ -1145,6 +1145,11 @@ h1.title {
 	display: flex;
 	flex-direction: column;
 }
+/* Logs and the Files zoom pane scroll inside the sheet. Other children keep their
+   content height so a large panel cannot paint over the power actions. */
+.sheet.tall > *:not(.logs):not(.zoom-view) {
+	flex-shrink: 0;
+}
 @keyframes rise {
 	from {
 		transform: translate(-50%, 100%);
@@ -6957,6 +6962,9 @@ html.page-locked body {
 }
 .mx-power.actions {
 	grid-template-columns: repeat(3, minmax(0, 1fr));
+	grid-template-rows: auto auto;
+	flex: none;
+	min-height: min-content;
 }
 
 /* ---- desktop: Proxmox-style Machines window ---------------------------------------------------- */
