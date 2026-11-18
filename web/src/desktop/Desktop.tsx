@@ -272,7 +272,7 @@ type MenuItem = {label: string; icon?: IconName; onClick: () => void; danger?: b
 type Menu = {x: number; y: number; title?: string; items: MenuItem[]}
 
 // ---- the desktop -------------------------------------------------------------------------------
-export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void}) {
+export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Bootstrap; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; reopenAssistant?: boolean}) {
 	useViewport()
 	const user = useUser()
 	const [cfg, setCfg] = useDeskConfig()
@@ -448,6 +448,13 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		},
 		[focus, update, cfg.shell],
 	)
+
+	const didReopenAssistant = useRef(false)
+	useEffect(() => {
+		if (!reopenAssistant || didReopenAssistant.current) return
+		didReopenAssistant.current = true
+		open('assistant')
+	}, [reopenAssistant, open])
 
 	// Starting a stopped machine from its icon: start it, then open the console once it's running.
 	useEffect(() => {

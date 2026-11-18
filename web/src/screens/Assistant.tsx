@@ -3,12 +3,26 @@ import {createPortal} from 'react-dom'
 import {useQuery} from '@tanstack/react-query'
 
 import {ApiError, mutate, query, type AssistantAction, type AssistantKey} from '../api'
-import {cardAction, streamAssistant, threadItems, type AssistantConversation, type AssistantConversationSummary, type AssistantItem, type AssistantStreamBody} from '../assistant'
+import {cardAction, markReopenAssistant, streamAssistant, threadItems, type AssistantConversation, type AssistantConversationSummary, type AssistantItem, type AssistantStreamBody} from '../assistant'
 import {useUser} from '../data'
 import {Icon} from '../icons'
 import {haptic, usePortalRoot} from '../ui'
 
 const prettyTool = (name: string) => name.replaceAll('_', ' ')
+
+async function waitForDesktopTheme(slug: string) {
+	const want = slug.trim().toLowerCase()
+	const start = Date.now()
+	while (Date.now() - start < 12_000) {
+		try {
+			const data = await query<{current?: string | null}>('omarchy.themes')
+			const now = String(data?.current ?? '').toLowerCase()
+			if (want && now === want) return
+			if (!want && Date.now() - start > 1500) return
+		} catch {}
+		await new Promise((r) => setTimeout(r, 400))
+	}
+}
 
 async function renderMarkdown(src: string) {
 	const [{marked}, {default: DOMPurify}] = await Promise.all([import('marked'), import('dompurify')])
@@ -340,6 +354,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 		setActivity(null)
 		setItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: {...b.action, status: 'running'}} : b)) ?? bs)
 		let follow = false
+		let reloadTheme: string | null = null
 		try {
 			const updated = await mutate<AssistantAction>(path, {actionId})
 			if (!alive.current || own.signal.aborted) return
@@ -351,6 +366,8 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 				}) ?? bs,
 			)
 			follow = true
+			const status = updated && typeof updated === 'object' && !Array.isArray(updated) ? updated.status : undefined
+			if (path === 'assistant.approve' && cur.action.toolName === 'omarchy_setTheme' && (!status || status === 'done')) reloadTheme = cur.action.detail || ''
 		} catch (err) {
 			if (!alive.current || own.signal.aborted) return
 			if (err instanceof ApiError) {
@@ -364,7 +381,22 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 			decisionAbort.current.delete(actionId)
 			if (alive.current) noteDeciding()
 			if (follow) followQueued.current = true
-			if (followQueued.current && deciding.current.size === 0 && alive.current) void pumpFollow()
+			if (followQueued.current && deciding.current.size === 0 && alive.current) {
+				if (reloadTheme != null) {
+					markReopenAssistant()
+					void (async () => {
+						try {
+							await pumpFollow()
+						} finally {
+							if (!alive.current) return
+							await waitForDesktopTheme(reloadTheme)
+							if (alive.current) location.reload()
+						}
+					})()
+				} else {
+					void pumpFollow()
+				}
+			}
 		}
 	}
 

@@ -1,4 +1,4 @@
-import {lazy, Suspense, useCallback, useEffect, useState, type CSSProperties} from 'react'
+import {lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {getBootstrap, query, type Bootstrap, type User, type UserApp} from './api'
@@ -15,6 +15,7 @@ import {Desktop} from './desktop/Desktop'
 import {Backdrop, Sheet, SheetHeader, haptic, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
 import {InstallerPrompt} from './InstallerPrompt'
+import {consumeReopenAssistant} from './assistant'
 
 const Files = lazy(() => import('./screens/Files').then((m) => ({default: m.Files})))
 const Machines = lazy(() => import('./screens/Machines').then((m) => ({default: m.Machines})))
@@ -57,6 +58,7 @@ export function App() {
 	const [prefs, setPrefs] = usePrefs(wallpaper?.brandColorHsl, signedIn)
 	const refresh = useCallback(() => qc.invalidateQueries({queryKey: ['bootstrap']}), [qc])
 	const layout = useLayout()
+	const reopenAssistant = useRef(consumeReopenAssistant()).current
 
 	useEffect(() => {
 		const onOut = () => {
@@ -93,7 +95,7 @@ export function App() {
 	else
 		content = (
 			<BootstrapContext.Provider value={b}>
-				{layout.desktop ? <Desktop boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} /> : <Shell boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} />}
+				{layout.desktop ? <Desktop boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} reopenAssistant={reopenAssistant} /> : <Shell boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} reopenAssistant={reopenAssistant} />}
 				<WhatsNewOnUpdate version={b.touch.version} onDone={() => setWhatsNewDone(true)} />
 				<InstallerPrompt ready={whatsNewDone} />
 			</BootstrapContext.Provider>
@@ -107,7 +109,7 @@ export function App() {
 	)
 }
 
-function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void}) {
+function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Bootstrap; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; reopenAssistant?: boolean}) {
 	const [tab, setTab] = useState<Tab>(tabFromHash)
 	const [appId, setAppId] = useState<string | null>(null)
 	// An app open inside Omarchy Server (full screen, back button returns here).
@@ -119,7 +121,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 	}, [])
 	const [bellOpen, setBellOpen] = useState(false)
 	const [terminal, setTerminal] = useState<{app?: {id: string; name?: string; icon?: string}; input?: string} | null>(null)
-	const [assistantOpen, setAssistantOpen] = useState(false)
+	const [assistantOpen, setAssistantOpen] = useState(() => !!reopenAssistant)
 	const user = useUser()
 	// omarchyd only gives the owner a shell.
 	const openTerminal = user.data?.role === 'member' ? undefined : (app?: {id: string; name?: string; icon?: string}, input?: string) => {

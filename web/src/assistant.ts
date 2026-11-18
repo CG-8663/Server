@@ -2,6 +2,26 @@ import type {AssistantAction} from './api'
 
 export type {AssistantAction} from './api'
 
+const REOPEN_ASSISTANT = 'omarchy-server:reopen-assistant'
+
+export function markReopenAssistant() {
+	try {
+		sessionStorage.setItem(REOPEN_ASSISTANT, '1')
+	} catch {
+		/* private mode */
+	}
+}
+
+export function consumeReopenAssistant() {
+	try {
+		if (sessionStorage.getItem(REOPEN_ASSISTANT) !== '1') return false
+		sessionStorage.removeItem(REOPEN_ASSISTANT)
+		return true
+	} catch {
+		return false
+	}
+}
+
 const STATUSES: readonly AssistantAction['status'][] = ['pending', 'rejected', 'running', 'done', 'error']
 const SECRET_JSON = /"(password|apiKey|credentials|defaultPassword)"\s*:\s*(?:"(?:\\.|[^"\\])*"|\{[^{}]*\}|\[[^\[\]]*\]|[^,\n\r}\]]+)/gi
 const SECRET_PAIR = /\b(password|apiKey|credentials|defaultPassword)\b(\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|\S+)/gi
