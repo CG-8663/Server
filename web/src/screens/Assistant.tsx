@@ -218,6 +218,19 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 		}
 	}
 
+	const newSession = () => {
+		haptic(6)
+		acRef.current?.abort()
+		acRef.current = null
+		turn.current++
+		conversationIdRef.current = undefined
+		setItems([])
+		setActivity(null)
+		setTurnError(null)
+		setDraft('')
+		if (inputRef.current) inputRef.current.style.height = 'auto'
+	}
+
 	const send = async () => {
 		const text = draft.trim()
 		if (!text || items === null || deciding.current.size > 0) return
@@ -322,14 +335,22 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 	const loading = keys.isLoading || (hasKeys && items === null && !keys.isError)
 	const column = (
 		<div className="assistant glass" role="dialog" aria-modal={onClose ? true : undefined} aria-label="Assistant">
-			{onClose && (
-				<header className="assistant-head">
+			<header className="assistant-head">
+				{onClose && (
 					<button type="button" className="round-btn" aria-label="Back" onClick={() => (haptic(6), onClose())}>
 						<Icon name="back" size={20} />
 					</button>
-					<b>Assistant</b>
-				</header>
-			)}
+				)}
+				<b>Assistant</b>
+				{hasKeys && (
+					<button type="button" className="round-btn" aria-label="New session" title="New session" onClick={newSession} disabled={items === null}>
+						<Icon name="reset" size={19} />
+					</button>
+				)}
+				<button type="button" className="round-btn" aria-label="Settings" title="Settings" onClick={() => (haptic(6), onSettings())}>
+					<Icon name="settings" size={19} />
+				</button>
+			</header>
 			{keys.isError && (
 				<div className="error" role="alert">
 					<Icon name="alert" size={18} />

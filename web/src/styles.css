@@ -7903,6 +7903,8 @@ html.page-locked body {
 	flex: none;
 }
 .assistant-head b {
+	flex: 1;
+	min-width: 0;
 	font-size: 17px;
 	font-weight: 650;
 }
