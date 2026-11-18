@@ -444,13 +444,23 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				if (text) row = await conversations.append(userId, row.id, {role: 'assistant', content: text, at: stamp()})
 			}
 
+			// Anthropic thinking from this run of the tool loop, by the tool call it led to. Kept in memory
+			// only: it is valid to send back within this run, never after the history changes.
+			const thinkingByCall = new Map()
 			for (;;) {
 				if (signal?.aborted) return finish(row.id)
 				const history = providerHistory(row.messages, row.actions)
+				if (key.provider === 'anthropic') {
+					for (const m of history) {
+						const blocks = m.role === 'assistant' && m.tool_calls?.length ? thinkingByCall.get(m.tool_calls[0].id) : null
+						if (blocks) m.thinking = blocks
+					}
+				}
 				const note = pendingNote(row.actions)
 				const messages = [{role: 'system', content: note ? `${system}\n\n${note}` : system}, ...history]
 				let text = ''
 				const toolCalls = []
+				const thinking = []
 				let providerError = null
 				try {
 					const stream = key.provider === 'anthropic' ? streamAnthropic : apiOf(key) === 'responses' ? streamResponses : streamChat
@@ -468,6 +478,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 							text += ev.text
 							say('text', {text: ev.text})
 						} else if (ev.type === 'tool') toolCalls.push(ev)
+						else if (ev.type === 'thinking') thinking.push(ev.block)
 						else if (ev.type === 'error') {
 							providerError = ev
 							break
@@ -502,6 +513,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 					}
 				}
 				const batch = toolCalls.slice(0, end)
+				if (thinking.length) thinkingByCall.set(batch[0].id, thinking)
 				row = await conversations.append(userId, row.id, {
 					role: 'assistant',
 					content: text,

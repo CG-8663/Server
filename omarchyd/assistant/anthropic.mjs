@@ -1,7 +1,14 @@
 // Anthropic's own Messages API (POST /v1/messages). The loop speaks Chat Completions, so its messages
 // and tools are converted here and the stream comes back as the same {text | tool | error} events.
-import {randomBytes} from 'node:crypto'
-
+//
+// Thinking. Current Claude models think by default, and inside a tool loop the assistant turn with the
+// tool call must be sent back with its thinking blocks, unchanged (signature included). A replayed
+// block is also bound to the conversation before it, and this loop rebuilds the system prompt between
+// turns (live facts, pending Approve notes) and swaps a waiting tool result for the real one after
+// Approve. So the loop replays thinking only within the run that produced it (append-only, so valid)
+// and drops it from earlier turns (dropping the oldest blocks is accepted). If the API still objects,
+// for instance when a turn resumes after Approve, the request is retried once with that history's tool
+// calls written as plain text, which has no thinking requirement.
 export const ANTHROPIC = 'https://api.anthropic.com/v1'
 export const ANTHROPIC_VERSION = '2023-06-01'
 const MAX_TOKENS = 8192
@@ -9,7 +16,7 @@ const MAX_TOKENS = 8192
 export const anthropicHeaders = (apiKey) => ({'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION})
 
 // Tool ids must match ^[a-zA-Z0-9_-]+$; ids from another provider are mapped the same way on both sides.
-const safeId = (id) => String(id || '').replace(/[^a-zA-Z0-9_-]/g, '_') || 'toolu_' + randomBytes(4).toString('hex')
+const safeId = (id) => String(id || '').replace(/[^a-zA-Z0-9_-]/g, '_') || 'toolu_missing'
 
 const parseInput = (raw) => {
 	try {
@@ -35,9 +42,10 @@ export function anthropicMessages(messages) {
 		if (m.role === 'system') {
 			if (m.content) system.push(String(m.content))
 		} else if (m.role === 'user') {
-			push('user', [{type: 'text', text: String(m.content ?? '') || ' '}])
+			push('user', [{type: 'text', text: String(m.content ?? '').trim() ? String(m.content) : '(empty message)'}])
 		} else if (m.role === 'assistant') {
-			const blocks = []
+			// Thinking from this run of the tool loop goes first, exactly as it came.
+			const blocks = Array.isArray(m.thinking) ? m.thinking.map((b) => ({...b})) : []
 			if (m.content) blocks.push({type: 'text', text: String(m.content)})
 			for (const t of m.tool_calls ?? []) blocks.push({type: 'tool_use', id: safeId(t.id), name: t.function?.name, input: parseInput(t.function?.arguments)})
 			push('assistant', blocks)
@@ -46,6 +54,24 @@ export function anthropicMessages(messages) {
 		}
 	}
 	return {system: system.join('\n\n'), messages: out}
+}
+
+// The same history with tool calls and results as plain text, and no thinking: the fallback when the
+// API refuses how earlier tool turns or thinking were sent back.
+export function flattenToolTurns(messages) {
+	const names = new Map()
+	return (messages ?? []).map((m) => {
+		if (m?.role === 'assistant' && m.tool_calls?.length) {
+			const calls = m.tool_calls.map((t) => {
+				names.set(t.id, t.function?.name)
+				return `[Called ${t.function?.name} with ${t.function?.arguments || '{}'}]`
+			})
+			return {role: 'assistant', content: [m.content, ...calls].filter(Boolean).join('\n')}
+		}
+		if (m?.role === 'tool') return {role: 'user', content: `[Result of ${names.get(m.tool_call_id) ?? 'the tool'}]\n${m.content ?? ''}`}
+		if (m?.role === 'assistant') return {role: 'assistant', content: m.content}
+		return m
+	})
 }
 
 export const anthropicTools = (tools) =>
@@ -59,7 +85,7 @@ const errorText = (raw, status) => {
 	return (raw && String(raw).trim()) || `HTTP ${status}`
 }
 
-export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, messages, tools, fetchImpl = fetch, signal}) {
+export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, messages, tools, fetchImpl = fetch, signal, retried = false}) {
 	const converted = anthropicMessages(messages)
 	const body = {model, max_tokens: MAX_TOKENS, messages: converted.messages, stream: true}
 	if (converted.system) body.system = converted.system
@@ -76,10 +102,17 @@ export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, mess
 		try {
 			raw = await res.text()
 		} catch {}
-		yield {type: 'error', message: errorText(raw, res.status), status: res.status}
+		const message = errorText(raw, res.status)
+		if (res.status === 400 && !retried && /thinking|signature/i.test(message)) {
+			yield* streamAnthropic({baseUrl, apiKey, model, messages: flattenToolTurns(messages), tools, fetchImpl, signal, retried: true})
+			return
+		}
+		yield {type: 'error', message, status: res.status}
 		return
 	}
 	const blocks = new Map() // content blocks by index
+	const toolEvents = [] // held until the stop reason says the turn finished cleanly
+	let stopReason = null
 	let finished = false
 	const handle = function* (event) {
 		const data = event.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).replace(/^ /, '')).join('\n')
@@ -92,20 +125,30 @@ export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, mess
 		}
 		if (ev.type === 'content_block_start') {
 			const cb = ev.content_block ?? {}
-			blocks.set(ev.index, {type: cb.type, id: cb.id, name: cb.name, json: ''})
+			blocks.set(ev.index, {type: cb.type, id: cb.id, name: cb.name, json: '', thinking: cb.thinking ?? '', signature: cb.signature ?? '', data: cb.data})
 			if (cb.type === 'text' && cb.text) yield {type: 'text', text: cb.text}
 		} else if (ev.type === 'content_block_delta') {
 			const b = blocks.get(ev.index)
 			if (ev.delta?.type === 'text_delta' && ev.delta.text) yield {type: 'text', text: ev.delta.text}
 			else if (ev.delta?.type === 'input_json_delta' && b) b.json += ev.delta.partial_json ?? ''
+			else if (ev.delta?.type === 'thinking_delta' && b) b.thinking += ev.delta.thinking ?? ''
+			else if (ev.delta?.type === 'signature_delta' && b) b.signature = ev.delta.signature ?? ''
 		} else if (ev.type === 'content_block_stop') {
 			const b = blocks.get(ev.index)
-			if (b?.type === 'tool_use' && b.name) {
-				const input = parseInput(b.json)
-				yield {type: 'tool', id: b.id || safeId(''), name: b.name, arguments: JSON.stringify(input)}
-			}
+			if (b?.type === 'tool_use' && b.name) toolEvents.push({type: 'tool', id: b.id || safeId(''), name: b.name, arguments: JSON.stringify(parseInput(b.json))})
+			// Not shown; kept by the loop only to send back within this tool loop.
+			else if (b?.type === 'thinking') yield {type: 'thinking', block: {type: 'thinking', thinking: b.thinking, signature: b.signature}}
+			else if (b?.type === 'redacted_thinking') yield {type: 'thinking', block: {type: 'redacted_thinking', data: b.data}}
 			blocks.delete(ev.index)
-		} else if (ev.type === 'message_stop') finished = true
+		} else if (ev.type === 'message_delta') {
+			if (ev.delta?.stop_reason) stopReason = ev.delta.stop_reason
+		} else if (ev.type === 'message_stop') {
+			finished = true
+			// A reply cut off by its length limit may hold a half-written tool call: run none of it.
+			if (stopReason === 'max_tokens') yield {type: 'error', message: 'The answer ran out of room and was cut off; try again or ask for less'}
+			else if (stopReason === 'refusal') yield {type: 'error', message: 'The model declined to answer this'}
+			else yield* toolEvents
+		}
 		else if (ev.type === 'error') {
 			finished = true
 			yield {type: 'error', message: String(ev.error?.message || 'The assistant did not answer'), status: ev.error?.type === 'authentication_error' ? 401 : 0}
