@@ -2,7 +2,7 @@
 // prompts, tools or permissions.
 //
 // Each character is a set of frames, one per state, in web/public/assistant/<id>/<state>.webp (square,
-// 176 px, its own dark background faded at the edges). To add a character: add its nine frames there
+// 256 px, transparent, cut from the character sheet). To add a character: add its nine frames there
 // and one entry below. Movement (floating, bouncing, blinking, talking) is added by AssistantCharacter.
 import type {CharacterState} from '../assistantActivity'
 

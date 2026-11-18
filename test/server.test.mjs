@@ -168,7 +168,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.40', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.41', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -258,7 +258,10 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		const before = fake.calls.length
 		let r = await touch.req('POST', '/api/prefs', {assistantLook: {character: 'patch', name: '  Sparky <b>\n', animate: false, intensity: 'playful', size: 'large', floating: false, reactions: true, extra: 'dropped'}})
 		assert.equal(r.status, 200)
-		assert.deepEqual(r.body.prefs.assistantLook, {character: 'patch', name: 'Sparky b', animate: false, intensity: 'playful', size: 'large', floating: false, reactions: true})
+		assert.deepEqual(r.body.prefs.assistantLook, {character: 'patch', name: 'Sparky b', animate: false, intensity: 'playful', size: 'large', floating: false, reactions: true, position: {}})
+		// Where you dragged it, per layout: kept on the screen (0–1), anything else dropped.
+		r = await touch.req('POST', '/api/prefs', {assistantLook: {character: 'patch', position: {phone: {x: 0.25, y: 1.7}, desktop: {x: 'x', y: 0}, tv: {x: 0, y: 0}}}})
+		assert.deepEqual(r.body.prefs.assistantLook.position, {phone: {x: 0.25, y: 1}})
 		r = await touch.req('GET', '/api/prefs')
 		assert.equal(r.body.prefs.assistantLook.character, 'patch')
 		// Unknown values fall back; a bad character id or shape is refused; null resets.
