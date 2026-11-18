@@ -24,6 +24,8 @@ import {Launcher} from './hyprland/Launcher'
 import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, reconcile, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
 
+const HINT_KEY = 'omarchy-server:desk-hint-closed'
+
 const Files = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
 const ShareSheet = lazy(() => import('../screens/Files').then((m) => ({default: m.ShareSheet})))
 const Store = lazy(() => import('../screens/Store').then((m) => ({default: m.Store})))
@@ -1375,6 +1377,25 @@ function DesktopIcons(p: {
 	deviceName: string
 }) {
 	const [sel, setSel] = useState<Set<string>>(new Set())
+	// The "right-click the desktop" tip: gone for good once closed, a window has been open, or the
+	// desktop menu used (on this device).
+	const [hintGone, setHintGone] = useState(() => {
+		try {
+			return localStorage.getItem(HINT_KEY) === '1'
+		} catch {
+			return false
+		}
+	})
+	const dropHint = () => {
+		setHintGone(true)
+		try {
+			localStorage.setItem(HINT_KEY, '1')
+		} catch {}
+	}
+	useEffect(() => {
+		if (!p.empty && !hintGone) dropHint()
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [p.empty])
 	const [band, setBand] = useState<Rect | null>(null)
 	const [move, setMove] = useState<{dx: number; dy: number} | null>(null)
 	const icons = p.cfg.showIcons ? p.cfg.icons.filter((i) => !p.info(i.key).missing) : []
@@ -1484,15 +1505,19 @@ function DesktopIcons(p: {
 				e.preventDefault()
 				if ((e.target as HTMLElement).closest('.desk-icon')) return
 				setSel(new Set())
+				dropHint()
 				p.onDesktopMenu(e.clientX, e.clientY)
 			}}
 		>
-			{p.empty && icons.length <= 2 && (
+			{p.empty && icons.length <= 2 && !hintGone && (
 				<div className="desk-hint">
 					<Icon name="info" size={16} />
 					<span>
 						<b>{p.deviceName}</b> · Right-click the desktop to add icons for apps, machines and folders.
 					</span>
+					<button type="button" className="desk-hint-close" aria-label="Close this tip" onClick={dropHint}>
+						<Icon name="close" size={15} />
+					</button>
 				</div>
 			)}
 			{icons.map((i) => {

@@ -8388,3 +8388,74 @@ html.ac-paused .ac :is(.ac-body, .ac-shadow) { animation-play-state: paused !imp
 
 /* room under the last thing on a page, so the floating character never hides it */
 html:not(.desk-mode) body:has(.ac-widget) .shell { padding-bottom: calc(var(--dock-h) + var(--safe-b) + 44px + 64px); }
+
+/* the desktop's one-time tip: closable */
+.desk-hint { pointer-events: auto; }
+.desk-hint-close {
+	display: grid;
+	place-items: center;
+	width: 28px;
+	height: 28px;
+	margin-left: 4px;
+	border: 0;
+	border-radius: 50%;
+	background: color-mix(in srgb, var(--fg) 12%, transparent);
+	color: var(--fg);
+	cursor: pointer;
+}
+.desk-hint-close:hover { background: color-mix(in srgb, var(--fg) 22%, transparent); }
+
+/* ---- first sign-in on a device: Desktop or Phone & tablet ---- */
+.layout-chooser {
+	position: fixed;
+	inset: 0;
+	z-index: 200000;
+	display: grid;
+	place-items: center;
+	padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+	background: color-mix(in srgb, var(--bg, #111) 70%, transparent);
+	backdrop-filter: blur(18px) saturate(1.2);
+	-webkit-backdrop-filter: blur(18px) saturate(1.2);
+	overflow-y: auto;
+}
+.layout-card {
+	width: min(640px, 100%);
+	padding: 24px 20px 18px;
+	border-radius: 24px;
+	text-align: center;
+}
+.layout-card h2 { margin: 0 0 6px; font-size: 22px; line-height: 1.25; }
+.layout-card > p { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+.layout-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.layout-option {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	padding: 22px 16px 18px;
+	border-radius: 18px;
+	border: 1.5px solid var(--line);
+	background: var(--glass-2);
+	color: var(--fg);
+	cursor: pointer;
+	transition: border-color 0.15s, transform 0.15s;
+}
+.layout-option:hover { border-color: var(--accent); }
+.layout-option:active { transform: scale(0.98); }
+.layout-option.suits { border-color: var(--green, var(--accent)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green, var(--accent)) 22%, transparent); }
+.layout-option b { font-size: 18px; }
+.layout-option > span:last-child { color: var(--muted); font-size: 13.5px; line-height: 1.4; }
+.layout-art { display: grid; place-items: center; width: 72px; height: 72px; border-radius: 20px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.layout-badge {
+	position: absolute;
+	top: -11px;
+	padding: 3px 10px;
+	border-radius: 999px;
+	background: var(--green, var(--accent));
+	color: #111;
+	font-size: 11.5px;
+	font-weight: 700;
+	white-space: nowrap;
+}
+.layout-auto { margin-top: 14px; padding: 8px 14px; border: 0; background: none; color: var(--muted); font-size: 14px; text-decoration: underline; cursor: pointer; }

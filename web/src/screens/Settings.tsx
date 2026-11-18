@@ -216,7 +216,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 						}}
 					/>
 					<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
-						Desktop gives you windows, a dock and Activities, like Ubuntu. Automatic uses it on wide screens with a mouse or trackpad. Saved on this device only.
+						Desktop gives you windows, a dock and Activities, like Ubuntu. Automatic uses it on a big screen with a mouse or trackpad (on this screen: {layout.detected ? 'Desktop' : 'Phone'}). Saved on this device only.
 					</p>
 				</section>
 			</div>
