@@ -4,7 +4,7 @@ import {createConversations} from './assistant/conversations.mjs'
 import {createKeyStore} from './assistant/keys.mjs'
 import {createLoop, publicAction} from './assistant/loop.mjs'
 import {callMcpTool} from './assistant/mcp.mjs'
-import {writeTool} from './assistant/tools.mjs'
+import {coerceDeskShell, writeTool} from './assistant/tools.mjs'
 import {RpcError} from './rpc.mjs'
 
 async function readJson(req, limit) {
@@ -146,10 +146,22 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 				if (!/^[0-9a-f]{16}$/.test(chosen)) throw new RpcError('BAD_REQUEST', 'Pick a wallpaper first')
 				rpcInput.id = chosen
 			}
+			if (action.toolName === 'desktop_setLayout') {
+				const shell = coerceDeskShell(rpcInput.shell)
+				if (!shell) throw new RpcError('BAD_REQUEST', 'Use gnome (Ubuntu) or hyprland')
+				rpcInput.shell = shell
+			}
 			const running = {...action, status: 'running', rpc: action.rpc ? {...action.rpc, input: {...rpcInput}} : action.rpc}
 			await conversations.saveAction(who.userId, running)
 			// Await so the in-flight lock stays until the MCP call finishes. A bare return would run finally first.
 			if (action.kind === 'mcp') return await approveMcp(who, action, running)
+			if (action.toolName === 'desktop_setLayout') {
+				const done = {...running, status: 'done', resolvedAt: stamp()}
+				delete done.error
+				await conversations.saveAction(who.userId, done)
+				await appendOutcome(who, action, JSON.stringify({shell: rpcInput.shell}))
+				return publicAction(done)
+			}
 			// Generated here, passed only into the RPC. The card and the model never see it.
 			const secret = action.toolName === 'machines_create' || path === 'machines.create' ? randomBytes(12).toString('base64url') : ''
 			if (secret) rpcInput.password = secret

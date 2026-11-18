@@ -37,7 +37,7 @@ export const READ_TOOLS = [
 	tool('omarchy_listBackgrounds', 'omarchy.backgrounds', 'List this machine’s wallpaper and background images, grouped by Omarchy theme. Use this when they ask which wallpapers exist.', {
 		theme: {type: 'string', description: 'Theme slug; omit for every theme'},
 	}),
-	tool('appearance_list', 'appearance.list', 'Where to change this app’s look (rounded corners and glass vs square solid panels) and the theme and panel-style options. Use this when they ask about rounded corners, glass, square panels, Appearance, or Ubuntu vs Hyprland layout.'),
+	tool('appearance_list', 'appearance.list', 'Where to change this app’s Appearance themes and panel styles (glass vs solid). Not Ubuntu vs Hyprland layout.'),
 	tool('notifications_get', 'notifications.get', 'Notifications waiting on this server'),
 ]
 
@@ -75,13 +75,16 @@ export const WRITE_TOOLS = [
 			},
 		},
 	}),
-	mutation('swarm_action', 'swarm.action', 'Install a plugin, set a theme, or reboot a swarm computer', {
+	mutation('swarm_action', 'swarm.action', 'Install a plugin, set a theme, or reboot another Local swarm computer — not this server’s Ubuntu vs Hyprland layout', {
 		id: {type: 'string'},
 		name: {type: 'string', enum: ['plugin-install', 'plugin-remove', 'theme-set', 'reboot']},
 		pluginId: {type: 'string'},
 		theme: {type: 'string'},
 	}, true),
 	mutation('swarm_rename', 'swarm.rename', 'Rename a swarm computer', {id: {type: 'string'}, name: {type: 'string'}}, true),
+	mutation('desktop_setLayout', 'desktop.setLayout', 'Set this Omarchy Server’s desktop layout on this machine: Ubuntu (gnome: floating, rounded) or Hyprland (hyprland: tiling, square). Not a swarm theme and not omarchy_setTheme.', {
+		shell: {type: 'string', enum: ['gnome', 'hyprland'], description: 'gnome = Ubuntu; hyprland = Hyprland'},
+	}),
 	mutation('omarchy_setTheme', 'omarchy.setTheme', 'Set this machine’s Omarchy theme colours. Use this only when they want colours and not a wallpaper change.', {slug: {type: 'string'}}, true),
 	mutation('omarchy_setBackground', 'omarchy.setBackground', 'Change this machine’s desktop wallpaper and the web app background. If they also want that theme’s colours, pass the theme slug — do not also call omarchy_setTheme. Use this whenever they ask to change the wallpaper, background, backdrop, picture, or theme plus wallpaper. The person picks the image on the Approve card.', {
 		theme: {type: 'string', description: 'Theme slug whose pictures to show'},
@@ -106,6 +109,13 @@ export function openAiTools(role) {
 		type: 'function',
 		function: {name: t.name, description: t.description, parameters: t.parameters},
 	}))
+}
+
+export function coerceDeskShell(value) {
+	const s = String(value ?? '').trim().toLowerCase()
+	if (['gnome', 'ubuntu', 'floating', 'rounded', 'round'].includes(s)) return 'gnome'
+	if (['hyprland', 'hypr', 'tiling', 'tiled', 'square'].includes(s)) return 'hyprland'
+	return null
 }
 
 export function appearanceCatalog() {
@@ -135,7 +145,7 @@ export function appearanceCatalog() {
 		},
 		layout: {
 			where: 'Personalize → Layout',
-			note: 'Changing layout does not restore rounded corners or glass.',
+			note: 'Ubuntu is floating with rounded windows. Hyprland tiles with square corners. App chrome rounding is Settings → Appearance.',
 			options: [
 				{id: 'gnome', name: 'Ubuntu'},
 				{id: 'hyprland', name: 'Hyprland'},
