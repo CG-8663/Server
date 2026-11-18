@@ -1388,9 +1388,11 @@ h1.title {
 	padding: calc(var(--safe-t) + 56px) 22px calc(var(--safe-b) + 32px);
 	display: flex;
 	flex-direction: column;
-	justify-content: center;
+	justify-content: safe center;
+	overflow-x: hidden;
 	overflow-y: auto;
 	overscroll-behavior-y: contain;
+	-webkit-overflow-scrolling: touch;
 	position: relative;
 	z-index: 1;
 }

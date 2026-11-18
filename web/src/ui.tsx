@@ -1095,15 +1095,25 @@ export function nudgeViewport() {
 	if (document.documentElement.classList.contains('desk-mode')) return
 	const root = document.documentElement
 	const scroller = phoneScroller()
-	const y = scroller?.scrollTop ?? window.scrollY
-	const prev = root.style.minHeight
+	const yWin = window.scrollY
+	const y = scroller?.scrollTop ?? yWin
+	const prevMin = root.style.minHeight
+	const prevOverflow = root.style.overflow
+	const prevPad = scroller?.style.paddingBottom ?? ''
+	// html/body overflow:hidden clips a 1px document scroll; open it for one frame so iOS remeasures.
 	root.style.minHeight = 'calc(100% + 2px)'
+	root.style.overflow = 'auto'
+	if (scroller) scroller.style.paddingBottom = '2px'
 	if (scroller) scroller.scrollTop = y + 1
-	window.scrollTo(0, y + 1)
+	window.scrollTo(0, yWin + 1)
 	requestAnimationFrame(() => {
-		if (scroller) scroller.scrollTop = y
-		window.scrollTo(0, y)
-		root.style.minHeight = prev
+		if (scroller) {
+			scroller.scrollTop = y
+			scroller.style.paddingBottom = prevPad
+		}
+		window.scrollTo(0, yWin)
+		root.style.minHeight = prevMin
+		root.style.overflow = prevOverflow
 	})
 }
 let viewportTimers: number[] = []
@@ -1161,6 +1171,7 @@ export function watchStandaloneGap() {
 	window.addEventListener('orientationchange', () => window.setTimeout(measure, 300))
 	window.visualViewport?.addEventListener('resize', () => window.setTimeout(measure, 50))
 	window.addEventListener('scroll', measure, {passive: true})
+	document.addEventListener('scroll', measure, {passive: true, capture: true})
 	document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && window.setTimeout(measure, 100))
 	document.addEventListener('focusout', () => [120, 450, 900].forEach((ms) => window.setTimeout(measure, ms)))
 }

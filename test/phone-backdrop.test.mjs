@@ -43,3 +43,21 @@ test('ios-gap does not resize the wallpaper on scroll', () => {
 	assert.match(css, /\n\.scrim,\n\.menu-scrim,/)
 	assert.doesNotMatch(css, /\n\.backdrop,\n\.scrim,/)
 })
+
+test('the height chain and lock classes freeze the phone scroller', () => {
+	assert.match(decls('#root'), /height:\s*100%/)
+	const auth = decls('.auth')
+	assert.match(auth, /z-index:\s*1/)
+	assert.match(auth, /overflow-y:\s*auto/)
+	assert.match(css, /html\.page-locked \.shell/)
+	assert.match(css, /html\.screen-locked \.shell/)
+})
+
+test('no later .backdrop rule puts the wallpaper under the page again', () => {
+	const matches = [...css.matchAll(/\n\.backdrop \{([^}]+)\}/g)]
+	assert.ok(matches.length >= 1, 'missing .backdrop')
+	for (const m of matches) {
+		assert.doesNotMatch(m[1], /z-index:\s*-1/)
+		assert.doesNotMatch(m[1], /inset:\s*0/)
+	}
+})
