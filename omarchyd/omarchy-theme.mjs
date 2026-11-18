@@ -109,15 +109,19 @@ export function createOmarchyTheme({home, run = null, env = process.env, systemS
 		const next = new Map()
 		const groups = [...themes]
 			.sort(([a], [b]) => (a === current ? -1 : b === current ? 1 : a.localeCompare(b)))
-			.map(([name, files]) => ({
-				theme: name,
-				label: themeLabel(name),
-				items: [...files.keys()].map((real) => {
+			.map(([name, files]) => {
+				const seen = new Set()
+				const items = []
+				for (const real of files.keys()) {
 					const id = idOf(real)
 					next.set(id, real)
-					return {id, name: basename(real).replace(/\.[^.]+$/, '')}
-				}),
-			}))
+					const label = basename(real).replace(/\.[^.]+$/, '')
+					if (seen.has(label)) continue
+					seen.add(label)
+					items.push({id, name: label})
+				}
+				return {theme: name, label: themeLabel(name), items}
+			})
 		if (currentBg && TYPES[extname(currentBg).toLowerCase()]) next.set(idOf(currentBg), currentBg)
 		index = next
 		return {theme: current, label: current ? themeLabel(current) : null, current: currentBg ? idOf(currentBg) : null, colors: await colors(), groups}
