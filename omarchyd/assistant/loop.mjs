@@ -1,7 +1,7 @@
 import {callMcpTool, forgetMcpTools, listMcpTools} from './mcp.mjs'
 import {streamAnthropic} from './anthropic.mjs'
 import {apiOf, effortOf} from './keys.mjs'
-import {streamChat, streamResponses, withToolFallback} from './providers.mjs'
+import {chatOrResponses, streamResponses, withToolFallback} from './providers.mjs'
 import {backoffMs, retryableStreamError, retryingFetch, sleepFor} from './retry.mjs'
 import {needsSummary, pickCut, summaryNote, summaryOf, unsummarized, writeSummary} from './summary.mjs'
 import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
@@ -408,7 +408,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		const from = summaryOf(row)?.upTo ?? 0
 		const cut = pickCut(row.messages, from)
 		if (cut < 0) return row
-		const openAiStyle = apiOf(key) === 'responses' ? streamResponses : streamChat
+		const openAiStyle = apiOf(key) === 'responses' ? streamResponses : chatOrResponses
 		const base = key.provider === 'anthropic' ? streamAnthropic : openAiStyle
 		const stream = (opts) => base({baseUrl: key.baseUrl, apiKey: key.apiKey, model: key.model, fetchImpl: providerFetch, ...opts})
 		let text = null
@@ -504,7 +504,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				let providerError = null
 				try {
 					// OpenAI-style endpoints fall back to tools-as-text when a model can't take native tools.
-					const openAiStyle = apiOf(key) === 'responses' ? streamResponses : streamChat
+					const openAiStyle = apiOf(key) === 'responses' ? streamResponses : chatOrResponses
 					const stream = key.provider === 'anthropic' ? streamAnthropic : (opts) => withToolFallback(openAiStyle, opts)
 					for await (const ev of stream({
 						baseUrl: key.baseUrl,

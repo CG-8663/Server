@@ -377,6 +377,29 @@ export function toolProtocolMessages(messages, tools) {
 }
 
 // Backends (address + model) that refused native tools, so later turns skip the failed request.
+// ---- Chat Completions that send you to the Responses API ------------------------------------------
+// Some models refuse tools on /chat/completions and say so ("…not supported for gpt-6.2-sol in
+// /v1/chat/completions. To use function tools, use /v1/responses…"). Then the request goes to
+// /responses at the same address instead, and that is remembered for this address and model.
+const RESPONSES_ONLY = /\buse \/?(?:v1\/)?responses\b|(?:only|is) (?:supported|available) (?:in|on|by|via|through) (?:the )?(?:\/?v1\/)?responses\b/i
+export const wantsResponses = (ev) => ev?.type === 'error' && (ev.status === 400 || ev.status === 404) && RESPONSES_ONLY.test(String(ev.message ?? ''))
+const responsesModels = new Set()
+export const forgetResponsesModels = () => responsesModels.clear()
+
+export async function* chatOrResponses(opts) {
+	const id = `${String(opts.baseUrl ?? '').replace(/\/+$/, '')}|${opts.model}`
+	if (responsesModels.has(id)) return yield* streamResponses(opts)
+	let first = true
+	for await (const ev of streamChat(opts)) {
+		if (first && wantsResponses(ev)) {
+			responsesModels.add(id)
+			return yield* streamResponses(opts)
+		}
+		first = false
+		yield ev
+	}
+}
+
 const textToolModels = new Set()
 export const forgetTextToolModels = () => textToolModels.clear()
 

@@ -102,3 +102,31 @@ test('a custom endpoint saved with a pasted endpoint path is fixed when keys loa
 		await rm(dataDir, {recursive: true, force: true})
 	}
 })
+
+test('a model that only takes tools through /responses is moved there, and that is remembered', async () => {
+	const {chatOrResponses, forgetResponsesModels, wantsResponses} = await import('../omarchyd/assistant/providers.mjs')
+	forgetResponsesModels()
+	const refusal = "Function tools with reasoning_effort are not supported for gpt-6.2-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+	assert.equal(wantsResponses({type: 'error', status: 400, message: refusal}), true)
+	assert.equal(wantsResponses({type: 'error', status: 400, message: 'This model is only available in the Responses API'}), true)
+	assert.equal(wantsResponses({type: 'error', status: 400, message: 'Invalid value for responses'}), false)
+	assert.equal(wantsResponses({type: 'error', status: 500, message: refusal}), false)
+	const urls = []
+	const fetchImpl = async (url) => {
+		urls.push(url)
+		if (url.endsWith('/chat/completions')) return json(400, {error: {message: refusal}})
+		return {ok: true, status: 200, headers: new Headers(), body: (async function* () {
+			yield new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"pong"}\n\ndata: {"type":"response.completed"}\n\n')
+		})()}
+	}
+	const run = async () => {
+		const out = []
+		for await (const ev of chatOrResponses({baseUrl: 'http://x/v1', apiKey: 'k', model: 'gpt-6.2-sol', messages: [{role: 'user', content: 'hi'}], tools: [{type: 'function', function: {name: 't', parameters: {}}}], fetchImpl})) out.push(ev)
+		return out
+	}
+	assert.deepEqual(await run(), [{type: 'text', text: 'pong'}])
+	assert.deepEqual(urls, ['http://x/v1/chat/completions', 'http://x/v1/responses'])
+	await run()
+	assert.deepEqual(urls.slice(2), ['http://x/v1/responses'], 'goes straight to /responses next time')
+	forgetResponsesModels()
+})
