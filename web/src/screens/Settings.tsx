@@ -645,7 +645,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 						trailing={checking === k.id ? <span className="spinner" /> : undefined}
 						onClick={() => checking || check(k)}
 					/>
-					{k.mine && <Row icon="pencil" color="var(--accent)" label="Model" value={k.model} onClick={() => setEdit(k)} />}
+					{k.mine && <Row icon="pencil" color="var(--accent)" label="Edit" value="Name, key, model" onClick={() => setEdit(k)} />}
 					{k.mine && (
 						<Row
 							icon="share"
@@ -689,7 +689,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 			<AssistantAppearanceSettings />
 
 			<AddKeySheet open={add} owner={user.data?.role === 'owner'} onClose={() => setAdd(false)} />
-			<EditKeySheet open={!!edit} keyRow={edit} onClose={() => setEdit(null)} />
+			<EditKeySheet open={!!edit} keyRow={edit} owner={user.data?.role === 'owner'} onClose={() => setEdit(null)} />
 			<ShareKeySheet open={!!share} keyRow={share} accounts={boot.accounts} self={self} onClose={() => setShare(null)} />
 		</div>
 	)
@@ -809,33 +809,96 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 	)
 }
 
-// Pick another model for a key, from the endpoint's own list.
-function EditKeySheet({open, keyRow, onClose}: {open: boolean; keyRow: AssistantKey | null; onClose: () => void}) {
+// Change a saved provider: its name, key, address (custom endpoints), model, API and reasoning.
+function EditKeySheet({open, keyRow, owner, onClose}: {open: boolean; keyRow: AssistantKey | null; owner: boolean; onClose: () => void}) {
 	const save = useSave()
+	const qc = useQueryClient()
+	const [name, setName] = useState('')
+	const [apiKey, setApiKey] = useState('')
+	const [baseUrl, setBaseUrl] = useState('')
 	const [model, setModel] = useState('')
 	const [api, setApi] = useState<AssistantApi>('chat')
 	const [effort, setEffort] = useState<AssistantEffort>('')
+	const [keyEntered, setKeyEntered] = useState(false)
 	useEffect(() => {
+		setName(keyRow?.name ?? '')
+		setApiKey('')
+		setBaseUrl(keyRow?.baseUrl ?? '')
 		setModel(keyRow?.model ?? '')
 		setApi(keyRow?.api ?? 'chat')
 		setEffort(keyRow?.effort ?? '')
+		setKeyEntered(false)
 	}, [keyRow, open])
-	const live = useEndpointCheck(open && keyRow ? {id: keyRow.id} : null, model)
+	const custom = keyRow?.provider === 'openai-compatible'
 	const canPick = !!keyRow && pickApi(keyRow.provider)
+	// Blank keeps the saved key. A new one must look like a key, except on a custom endpoint.
+	const newKey = apiKey.trim()
+	const keyOk = !newKey || custom || newKey.length >= 4
+	const urlChanged = custom && owner && baseUrl.trim() !== keyRow?.baseUrl
+	const urlOk = !urlChanged || /^https?:\/\/[^\s]+/i.test(baseUrl.trim())
+	// A new key is checked once its field is left, as when adding one; otherwise the saved key is.
+	const target = open && keyRow && keyOk && urlOk ? {id: keyRow.id, ...(newKey && keyEntered ? {apiKey: newKey} : {}), ...(urlChanged ? {baseUrl: baseUrl.trim()} : {})} : null
+	const live = useEndpointCheck(target, model)
+	const changes: Record<string, unknown> = {}
+	if (keyRow) {
+		if (name.trim() && name.trim() !== keyRow.name) changes.name = name.trim()
+		if (newKey) changes.apiKey = newKey
+		if (urlChanged) changes.baseUrl = baseUrl.trim()
+		if (model.trim() && model.trim() !== keyRow.model) changes.model = model.trim()
+		if (canPick && api !== keyRow.api) changes.api = api
+		if (effort !== keyRow.effort) changes.effort = effort
+	}
 	return (
 		<FormSheet
 			open={open}
-			title={keyRow?.name ?? 'Model'}
+			title="Edit provider"
 			subtitle={keyRow ? PROVIDER_LABEL[keyRow.provider] : undefined}
 			onClose={onClose}
 			submit="Save"
 			busy={save.isPending}
-			disabled={!keyRow || !model.trim() || (model.trim() === keyRow.model && api === keyRow.api && effort === keyRow.effort)}
+			disabled={!keyRow || !model.trim() || !keyOk || !urlOk || !Object.keys(changes).length}
 			onSubmit={() =>
 				keyRow &&
-				save.mutate({path: 'assistant.updateKey', input: {id: keyRow.id, model: model.trim(), effort, ...(canPick ? {api} : {})}, done: 'Saved', refresh: ['assistant.keys']}, {onSuccess: onClose})
+				save.mutate(
+					{path: 'assistant.updateKey', input: {id: keyRow.id, ...changes}, done: 'Saved', refresh: ['assistant.keys']},
+					{
+						onSuccess: () => {
+							onClose()
+							// A new key or address clears the old check; record a fresh one for the row.
+							if (changes.apiKey || changes.baseUrl || changes.model) mutate('assistant.verifyKey', {id: keyRow.id}).catch(() => {}).finally(() => qc.invalidateQueries({queryKey: ['assistant.keys']}))
+						},
+					},
+				)
 			}
 		>
+			<Field id="edit-name" label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+			{custom && owner && (
+				<Field
+					id="edit-url"
+					label="Base URL"
+					value={baseUrl}
+					onChange={(e) => setBaseUrl(e.target.value)}
+					placeholder="http://127.0.0.1:11434/v1"
+					hint="Include /v1."
+					autoCapitalize="off"
+					autoCorrect="off"
+					spellCheck={false}
+				/>
+			)}
+			<Field
+				id="edit-key"
+				label="API key"
+				type="password"
+				autoComplete="off"
+				value={apiKey}
+				onChange={(e) => {
+					setApiKey(e.target.value)
+					setKeyEntered(false)
+				}}
+				onBlur={() => setKeyEntered(true)}
+				placeholder={keyRow?.last4 ? `Saved key …${keyRow.last4}` : 'No key saved'}
+				hint="Leave blank to keep the saved key."
+			/>
 			<CheckLine check={live.check} busy={live.busy} />
 			{keyRow && <ModelField id="edit-model" value={model} onChange={setModel} models={live.models} provider={keyRow.provider} />}
 			{canPick && <Segmented label="API" value={api} onChange={setApi} options={API_OPTIONS} />}

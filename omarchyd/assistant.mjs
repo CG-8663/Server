@@ -228,7 +228,20 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		const who = actor(auth)
 		if (input?.id) {
 			const k = await keys.resolveForUser(who.userId, String(input.id))
-			return {id: k.id, provider: k.provider, baseUrl: k.baseUrl, apiKey: k.apiKey, model: k.model}
+			// Editing a saved key: check a newly typed key or address before it's saved. Only its owner may,
+			// and a custom address follows the same owner-only rule as adding one. The check isn't recorded.
+			const newKey = typeof input.apiKey === 'string' && input.apiKey.trim() ? input.apiKey.trim() : null
+			const newUrl = typeof input.baseUrl === 'string' && input.baseUrl.trim() ? input.baseUrl.trim() : null
+			if (!newKey && !newUrl) return {id: k.id, provider: k.provider, baseUrl: k.baseUrl, apiKey: k.apiKey, model: k.model}
+			if (k.ownerUserId !== who.userId) throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
+			if (newKey && newKey.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+			let baseUrl = k.baseUrl
+			if (newUrl && k.provider === 'openai-compatible') {
+				if (who.role !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can change a custom endpoint')
+				baseUrl = normalizeBaseUrl(newUrl)
+				if (!/^https?:\/\/[^\s]+$/i.test(baseUrl) || baseUrl.length > 200) throw new RpcError('BAD_REQUEST', 'Enter the API base URL')
+			}
+			return {id: null, provider: k.provider, baseUrl, apiKey: newKey ?? k.apiKey, model: k.model}
 		}
 		const provider = String(input?.provider ?? '')
 		let baseUrl = presetBaseUrl(provider)
