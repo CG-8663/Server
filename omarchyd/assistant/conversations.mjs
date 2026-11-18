@@ -141,6 +141,18 @@ export function createConversations({dataDir, now = () => Date.now()}) {
 				return row
 			})
 		},
+		// The summary of messages[0, upTo). It only moves forward; an older one arriving late is ignored.
+		async setSummary(userId, id, {text, upTo}) {
+			if (typeof id !== 'string' || !CHAT_ID.test(id)) throw missingChat()
+			return withLock(id, async () => {
+				const row = await readOwned(userId, id)
+				const current = Number.isInteger(row.summary?.upTo) ? row.summary.upTo : 0
+				if (!Number.isInteger(upTo) || upTo <= current || upTo > row.messages.length || typeof text !== 'string' || !text.trim()) return row
+				row.summary = {text, upTo, at: now()}
+				await writeRow(id, row)
+				return row
+			})
+		},
 		async setKey(userId, id, keyId) {
 			if (typeof id !== 'string' || !CHAT_ID.test(id)) throw missingChat()
 			return withLock(id, async () => {

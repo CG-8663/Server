@@ -3,6 +3,7 @@ import {streamAnthropic} from './anthropic.mjs'
 import {apiOf, effortOf} from './keys.mjs'
 import {streamChat, streamResponses, withToolFallback} from './providers.mjs'
 import {backoffMs, retryableStreamError, retryingFetch, sleepFor} from './retry.mjs'
+import {needsSummary, pickCut, summaryNote, summaryOf, unsummarized, writeSummary} from './summary.mjs'
 import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
 export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
@@ -13,6 +14,8 @@ const MAX_CALLS = 16
 const MAX_MESSAGES = 40
 // Fresh requests after the provider reports itself busy mid-stream, before any of the answer arrived.
 const STREAM_RETRIES = 2
+// After a summary fails, wait for this many more messages before trying again.
+const SUMMARY_RETRY_AFTER = 10
 
 const textOf = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
 
@@ -395,6 +398,34 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		}
 	}
 
+	// Once a chat is long, have the model summarize its older part, so later turns send the summary and
+	// the recent messages rather than silently losing the start. A failed summary changes nothing.
+	// Chats whose summary just failed, by how many messages they had then: don't ask again every turn.
+	const summaryFailed = new Map()
+	async function summarizeIfLong(row, key, userId, signal) {
+		if (!needsSummary(row)) return row
+		if (row.messages.length - (summaryFailed.get(row.id) ?? -Infinity) < SUMMARY_RETRY_AFTER) return row
+		const from = summaryOf(row)?.upTo ?? 0
+		const cut = pickCut(row.messages, from)
+		if (cut < 0) return row
+		const openAiStyle = apiOf(key) === 'responses' ? streamResponses : streamChat
+		const base = key.provider === 'anthropic' ? streamAnthropic : openAiStyle
+		const stream = (opts) => base({baseUrl: key.baseUrl, apiKey: key.apiKey, model: key.model, fetchImpl: providerFetch, ...opts})
+		let text = null
+		try {
+			text = await writeSummary({stream, previous: summaryOf(row)?.text, messages: row.messages.slice(from, cut), actions: row.actions, signal})
+		} catch (e) {
+			if (signal?.aborted || e?.name === 'AbortError') return row
+		}
+		if (signal?.aborted) return row
+		if (!text) {
+			summaryFailed.set(row.id, row.messages.length)
+			return row
+		}
+		summaryFailed.delete(row.id)
+		return conversations.setSummary(userId, row.id, {text, upTo: cut})
+	}
+
 	async function runTurn({userId, role, message, conversationId, keyId, signal, emit, continue: resume}) {
 		const say = (event, data) => {
 			if (typeof emit === 'function') emit({event, data})
@@ -422,7 +453,10 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			}
 			const auth = {userId, role}
 			if (!resume) row = await conversations.append(userId, row.id, {role: 'user', content: String(message ?? ''), at: stamp()})
-			const system = await facts(role, auth)
+			row = await summarizeIfLong(row, key, userId, signal)
+			if (signal?.aborted) return finish(row.id)
+			const summary = summaryOf(row)
+			const system = summary ? `${await facts(role, auth)}\n\n${summaryNote(summary.text)}` : await facts(role, auth)
 			let catalog = []
 			try {
 				catalog = await mcpCatalog(signal)
@@ -455,7 +489,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			let streamRetries = 0
 			for (;;) {
 				if (signal?.aborted) return finish(row.id)
-				const history = providerHistory(row.messages, row.actions)
+				const history = providerHistory(unsummarized(row), row.actions)
 				if (key.provider === 'anthropic') {
 					for (const m of history) {
 						const blocks = m.role === 'assistant' && m.tool_calls?.length ? thinkingByCall.get(m.tool_calls[0].id) : null

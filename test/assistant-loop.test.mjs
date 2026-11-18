@@ -475,9 +475,9 @@ test('sixteen lookups stop the turn', async () => {
 	}
 })
 
-test('the prompt keeps the last 40 messages and a new chat title is the first line', async () => {
+test('a long chat sends a summary and the latest messages; a new chat title is the first line', async () => {
 	const {runProcedure} = factsProcedure()
-	const {seen, fetchImpl} = scripted([textSse('ok'), textSse('ok')])
+	const {seen, fetchImpl} = scripted([textSse('ok'), textSse('They said old-0 to old-25.'), textSse('ok')])
 	const box = await withAssistant({runProcedure, fetchImpl})
 	try {
 		const long = `${'N'.repeat(60)}\nsecond line`
@@ -486,10 +486,12 @@ test('the prompt keeps the last 40 messages and a new chat title is the first li
 		assert.equal(conv.title, 'N'.repeat(48))
 		for (let i = 0; i < 45; i++) await box.asst.conversations.append('owner', conv.id, {role: 'user', content: `old-${i}`, at: i})
 		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'new-one', conversationId: conv.id, emit: () => {}})
-		const body = seen[1].body
+		assert.match(seen[1].body.messages[1].content, /Person: old-0\b/)
+		const body = seen[2].body
+		assert.match(body.messages[0].content, /They said old-0 to old-25\./)
 		const users = body.messages.filter((m) => m.role === 'user').map((m) => m.content)
-		assert.equal(body.messages.filter((m) => m.role !== 'system').length, 40)
-		assert.equal(users[0], 'old-6')
+		assert.equal(body.messages.filter((m) => m.role !== 'system').length, 20)
+		assert.equal(users[0], 'old-26')
 		assert.equal(users.at(-1), 'new-one')
 		assert.equal(users.includes('old-0'), false)
 		assert.equal((await box.asst.conversations.get('owner', conv.id)).title, 'N'.repeat(48))
