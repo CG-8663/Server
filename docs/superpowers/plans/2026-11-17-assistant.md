@@ -20,7 +20,7 @@
 - Keys never appear in query output, stream events, logs, or conversation files. Persist with `writeAtomic(..., {mode: 0o600})`.
 - Provider HTTP is `POST {baseUrl}/chat/completions` with `stream: true`, `tools`, `parallel_tool_calls: false`. SpaceXAI `baseUrl` is `https://api.x.ai/v1`. Default model `grok-4.7` (re-check https://docs.x.ai/developers/models when implementing).
 - Tool list and Approve use the same owner/member rules as the UI. Members see the Home tile.
-- Work on `feat/assistant` in `/home/joseph/.worktrees/omarchy-server-assistant`. Commit after every task. Do not push until asked.
+- Work on `feat/assistant` from `upstream/main`. Do not add local clone-path wiring.
 - Tests: `node --test --test-concurrency=1 test/assistant-*.test.mjs`. Full `npm test` before a PR. The known `connector.test.mjs` theme-set fail on machines with `omarchy-theme-set` is unrelated.
 - `node_modules` is a symlink to the main clone; do not install a second copy.
 
