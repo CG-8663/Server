@@ -4,11 +4,12 @@ import {join} from 'node:path'
 
 import {writeAtomic} from '../atomic.mjs'
 import {RpcError} from '../rpc.mjs'
+import {ANTHROPIC} from './anthropic.mjs'
 
 const SPACEXAI = 'https://api.x.ai/v1'
 const OPENAI = 'https://api.openai.com/v1'
 // Fixed addresses of the named providers; a custom endpoint brings its own.
-export const presetBaseUrl = (provider) => ({spacexai: SPACEXAI, openai: OPENAI})[provider] ?? null
+export const presetBaseUrl = (provider) => ({spacexai: SPACEXAI, openai: OPENAI, anthropic: ANTHROPIC})[provider] ?? null
 // Which API the assistant streams from. OpenAI recommends Responses; the others default to Chat
 // Completions, and a key can switch (most local servers now serve both).
 const APIS = ['chat', 'responses']
@@ -64,8 +65,8 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 		async add(actor, input) {
 			await loaded
 			const ownerUserId = actor.userId
-			const provider = ['openai-compatible', 'spacexai', 'openai'].includes(input?.provider) ? input.provider : null
-			if (!provider) throw new RpcError('BAD_REQUEST', 'Choose Grok, OpenAI or an OpenAI-compatible endpoint')
+			const provider = ['openai-compatible', 'spacexai', 'openai', 'anthropic'].includes(input?.provider) ? input.provider : null
+			if (!provider) throw new RpcError('BAD_REQUEST', 'Choose Grok, OpenAI, Anthropic or an OpenAI-compatible endpoint')
 			// A custom endpoint makes omarchyd send requests to any address it can reach (your network
 			// included), so only the server's owner can add one.
 			if (provider === 'openai-compatible' && actor.role !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can add a custom endpoint')
@@ -74,8 +75,8 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			if (provider !== 'openai-compatible' && apiKey.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')
 			const model = String(input?.model ?? '').trim()
 			if (!model || model.length > 80) throw new RpcError('BAD_REQUEST', 'Enter a model id')
-			const name = String(input?.name ?? '').trim().slice(0, 48) || ({spacexai: 'Grok', openai: 'OpenAI'}[provider] ?? 'API')
-			let baseUrl = provider === 'spacexai' ? SPACEXAI : provider === 'openai' ? OPENAI : normalizeBaseUrl(input?.baseUrl)
+			const name = String(input?.name ?? '').trim().slice(0, 48) || ({spacexai: 'Grok', openai: 'OpenAI', anthropic: 'Anthropic'}[provider] ?? 'API')
+			let baseUrl = presetBaseUrl(provider) ?? normalizeBaseUrl(input?.baseUrl)
 			if (provider === 'openai-compatible') {
 				if (!/^https?:\/\/[^\s]+/i.test(baseUrl) || baseUrl.length > 200) throw new RpcError('BAD_REQUEST', 'Enter the API base URL')
 			}

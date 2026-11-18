@@ -429,12 +429,14 @@ function Field({id, label, hint, ...input}: {id: string; label: string; hint?: s
 const PROVIDER_LABEL: Record<AssistantProvider, string> = {
 	spacexai: 'Grok (SpaceXAI)',
 	openai: 'OpenAI API',
+	anthropic: 'Anthropic API',
 	'openai-compatible': 'Custom endpoint',
 }
 
 const MODEL_PLACEHOLDER: Record<AssistantProvider, string> = {
 	spacexai: 'grok-4.7',
 	openai: 'gpt-5.5',
+	anthropic: 'claude-sonnet-5-5',
 	'openai-compatible': 'llama3.2',
 }
 
@@ -763,6 +765,7 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 				options={[
 					{id: 'spacexai', label: 'Grok'},
 					{id: 'openai', label: 'OpenAI'},
+					{id: 'anthropic', label: 'Anthropic'},
 					// A custom address makes the server send requests anywhere it can reach: owner only.
 					...(owner ? [{id: 'openai-compatible' as const, label: 'Custom'}] : []),
 				]}

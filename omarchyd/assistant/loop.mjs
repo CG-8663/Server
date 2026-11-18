@@ -1,4 +1,5 @@
 import {callMcpTool, forgetMcpTools, listMcpTools} from './mcp.mjs'
+import {streamAnthropic} from './anthropic.mjs'
 import {apiOf} from './keys.mjs'
 import {streamChat, streamResponses} from './providers.mjs'
 import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
@@ -452,7 +453,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				const toolCalls = []
 				let providerError = null
 				try {
-					const stream = apiOf(key) === 'responses' ? streamResponses : streamChat
+					const stream = key.provider === 'anthropic' ? streamAnthropic : apiOf(key) === 'responses' ? streamResponses : streamChat
 					for await (const ev of stream({
 						baseUrl: key.baseUrl,
 						apiKey: key.apiKey,

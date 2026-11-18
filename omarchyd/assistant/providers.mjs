@@ -1,5 +1,7 @@
 import {randomBytes} from 'node:crypto'
 
+import {anthropicHeaders} from './anthropic.mjs'
+
 const completeArgs = (s) => {
 	if (!s) return false
 	try {
@@ -326,7 +328,10 @@ export function isChatModel(id) {
 
 const trimBase = (baseUrl) => String(baseUrl ?? '').replace(/\/+$/, '')
 const bearer = (apiKey) => (apiKey ? {authorization: `Bearer ${apiKey}`} : {})
-const listRequest = (provider, baseUrl, apiKey) => ({url: `${trimBase(baseUrl)}/models`, headers: bearer(apiKey)})
+const listRequest = (provider, baseUrl, apiKey) =>
+	provider === 'anthropic'
+		? {url: `${trimBase(baseUrl)}/models?limit=1000`, headers: apiKey ? anthropicHeaders(apiKey) : {}}
+		: {url: `${trimBase(baseUrl)}/models`, headers: bearer(apiKey)}
 
 const withTimeout = (signal, ms) => {
 	const t = AbortSignal.timeout(ms)

@@ -237,7 +237,7 @@ export type ActiveSession = {
 	client: {type: 'native'; id?: string; platform?: string; deviceClass?: string; appVersion?: string} | {type: 'browser'; userAgent?: string}
 }
 
-export type AssistantProvider = 'spacexai' | 'openai' | 'openai-compatible'
+export type AssistantProvider = 'spacexai' | 'openai' | 'anthropic' | 'openai-compatible'
 // Which endpoint the assistant streams from: /chat/completions or /responses.
 export type AssistantApi = 'chat' | 'responses'
 export type AssistantCheck = {ok: boolean; status: string; message: string; at: number}

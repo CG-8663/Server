@@ -223,7 +223,7 @@ export async function startFakeserverd({
 	}
 	const accountOf = (userId) => (userId === 'sam' ? {userId: 'sam', name: 'Sam', role: 'member'} : {userId: 'owner', name: 'Chris', role: 'owner'})
 	const SPACEXAI = 'https://api.x.ai/v1'
-	const FAKE_MODELS = ['grok-4.7', 'grok-4.7-mini', 'gpt-5.5', 'llama3.2']
+	const FAKE_MODELS = ['grok-4.7', 'grok-4.7-mini', 'gpt-5.5', 'claude-sonnet-5-5', 'llama3.2']
 	const OPENAI = 'https://api.openai.com/v1'
 	const normalizeBaseUrl = (raw) => {
 		const s = String(raw ?? '').trim().replace(/\/+$/, '')
@@ -637,8 +637,8 @@ export async function startFakeserverd({
 		'assistant.addKey': {
 			kind: 'mutation',
 			run: (input, auth) => {
-				const provider = ['openai-compatible', 'spacexai', 'openai'].includes(input?.provider) ? input.provider : null
-				if (!provider) return {error: ['BAD_REQUEST', 'Choose Grok, OpenAI or an OpenAI-compatible endpoint']}
+				const provider = ['openai-compatible', 'spacexai', 'openai', 'anthropic'].includes(input?.provider) ? input.provider : null
+				if (!provider) return {error: ['BAD_REQUEST', 'Choose Grok, OpenAI, Anthropic or an OpenAI-compatible endpoint']}
 				const role = accountOf(auth.userId).role
 				if (provider === 'openai-compatible' && role !== 'owner') return {error: ['FORBIDDEN', 'Only the server’s owner can add a custom endpoint']}
 				const apiKey = String(input?.apiKey ?? '').trim()
@@ -646,8 +646,8 @@ export async function startFakeserverd({
 				if (provider !== 'openai-compatible' && apiKey.length < 4) return {error: ['BAD_REQUEST', 'Enter an API key']}
 				const model = String(input?.model ?? '').trim()
 				if (!model || model.length > 80) return {error: ['BAD_REQUEST', 'Enter a model id']}
-				const name = String(input?.name ?? '').trim().slice(0, 48) || ({spacexai: 'Grok', openai: 'OpenAI'}[provider] ?? 'API')
-				let baseUrl = provider === 'spacexai' ? SPACEXAI : provider === 'openai' ? OPENAI : normalizeBaseUrl(input?.baseUrl)
+				const name = String(input?.name ?? '').trim().slice(0, 48) || ({spacexai: 'Grok', openai: 'OpenAI', anthropic: 'Anthropic'}[provider] ?? 'API')
+				let baseUrl = provider === 'spacexai' ? SPACEXAI : provider === 'openai' ? OPENAI : provider === 'anthropic' ? 'https://api.anthropic.com/v1' : normalizeBaseUrl(input?.baseUrl)
 				if (provider === 'openai-compatible') {
 					if (!/^https?:\/\/[^\s]+/i.test(baseUrl) || baseUrl.length > 200) return {error: ['BAD_REQUEST', 'Enter the API base URL']}
 				}
