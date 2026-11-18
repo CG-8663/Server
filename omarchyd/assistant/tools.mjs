@@ -34,7 +34,7 @@ export const READ_TOOLS = [
 		q: {type: 'string'},
 		limit: {type: 'integer'},
 	}),
-	tool('omarchy_listBackgrounds', 'omarchy.backgrounds', 'List wallpaper images grouped by Omarchy theme', {
+	tool('omarchy_listBackgrounds', 'omarchy.backgrounds', 'List this machine’s wallpaper and background images, grouped by Omarchy theme. Use this when they ask which wallpapers exist.', {
 		theme: {type: 'string', description: 'Theme slug; omit for every theme'},
 	}),
 	tool('notifications_get', 'notifications.get', 'Notifications waiting on this server'),
@@ -81,8 +81,8 @@ export const WRITE_TOOLS = [
 		theme: {type: 'string'},
 	}, true),
 	mutation('swarm_rename', 'swarm.rename', 'Rename a swarm computer', {id: {type: 'string'}, name: {type: 'string'}}, true),
-	mutation('omarchy_setTheme', 'omarchy.setTheme', 'Set the Omarchy desktop theme colours. After this, propose omarchy_setBackground so they can pick a wallpaper.', {slug: {type: 'string'}}, true),
-	mutation('omarchy_setBackground', 'omarchy.setBackground', 'Set the desktop wallpaper and the web app background. Pass the theme slug; the person picks the picture on the Approve card.', {
+	mutation('omarchy_setTheme', 'omarchy.setTheme', 'Set this machine’s Omarchy theme colours. After this, propose omarchy_setBackground so they can pick a wallpaper.', {slug: {type: 'string'}}, true),
+	mutation('omarchy_setBackground', 'omarchy.setBackground', 'Change this machine’s desktop wallpaper and the web app background. Use this whenever they ask to change the wallpaper, background, backdrop, or picture. Pass the theme slug (for example nord). The person picks the image on the Approve card.', {
 		theme: {type: 'string', description: 'Theme slug whose pictures to show'},
 		id: {type: 'string', description: 'Background id to pre-select (16 hex characters)'},
 	}, true),

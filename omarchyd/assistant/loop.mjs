@@ -2,7 +2,7 @@ import {callMcpTool, forgetMcpTools, listMcpTools} from './mcp.mjs'
 import {streamChat} from './providers.mjs'
 import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
-export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Stay on this host.'
+export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Theme colours: omarchy_setTheme. Wallpaper and background: omarchy_listBackgrounds then omarchy_setBackground. Stay on this host.'
 
 const LIMIT = 'I hit the lookup limit for this turn.'
 const KEY_REJECTED = 'That API key was rejected. Replace it in Settings → Assistant.'
