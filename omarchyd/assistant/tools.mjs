@@ -34,6 +34,9 @@ export const READ_TOOLS = [
 		q: {type: 'string'},
 		limit: {type: 'integer'},
 	}),
+	tool('omarchy_listBackgrounds', 'omarchy.backgrounds', 'List wallpaper images grouped by Omarchy theme', {
+		theme: {type: 'string', description: 'Theme slug; omit for every theme'},
+	}),
 	tool('notifications_get', 'notifications.get', 'Notifications waiting on this server'),
 ]
 
@@ -78,7 +81,11 @@ export const WRITE_TOOLS = [
 		theme: {type: 'string'},
 	}, true),
 	mutation('swarm_rename', 'swarm.rename', 'Rename a swarm computer', {id: {type: 'string'}, name: {type: 'string'}}, true),
-	mutation('omarchy_setTheme', 'omarchy.setTheme', 'Set the Omarchy theme', {slug: {type: 'string'}}, true),
+	mutation('omarchy_setTheme', 'omarchy.setTheme', 'Set the Omarchy desktop theme colours. After this, propose omarchy_setBackground so they can pick a wallpaper.', {slug: {type: 'string'}}, true),
+	mutation('omarchy_setBackground', 'omarchy.setBackground', 'Set the desktop wallpaper and the web app background. Pass the theme slug; the person picks the picture on the Approve card.', {
+		theme: {type: 'string', description: 'Theme slug whose pictures to show'},
+		id: {type: 'string', description: 'Background id to pre-select (16 hex characters)'},
+	}, true),
 	mutation('omarchy_installPlugin', 'omarchy.installPlugin', 'Install an Omarchy plugin', {id: {type: 'string'}}, true),
 	mutation('omarchy_removePlugin', 'omarchy.removePlugin', 'Remove an Omarchy plugin', {id: {type: 'string'}}, true),
 	mutation('system_restart', 'system.restart', 'Restart this server', {}, true),

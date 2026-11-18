@@ -260,6 +260,7 @@ export type AssistantAction = {
 	title: string
 	detail: string
 	error?: string
+	picker?: {theme: string | null; selected: string | null}
 }
 
 export type FileEntry = {

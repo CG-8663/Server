@@ -207,6 +207,7 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 		'machines_capabilities',
 		'swarm_list',
 		'omarchy_plugins',
+		'omarchy_listBackgrounds',
 		'notifications_get',
 	])
 	assert.deepEqual(READ_TOOLS.find((t) => t.name === 'system_diskUsage'), {
@@ -222,6 +223,14 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 	assert.equal(READ_TOOLS.find((t) => t.name === 'machines_details').parameters.properties.id.type, 'string')
 	assert.ok(READ_TOOLS.find((t) => t.name === 'omarchy_plugins').parameters.properties.q)
 	assert.ok(READ_TOOLS.find((t) => t.name === 'appStore_search').parameters.properties.limit)
+	assert.equal(READ_TOOLS.find((t) => t.name === 'omarchy_listBackgrounds').rpc, 'omarchy.backgrounds')
+	assert.ok(READ_TOOLS.find((t) => t.name === 'omarchy_listBackgrounds').parameters.properties.theme)
+	assert.equal(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').rpc, 'omarchy.setBackground')
+	assert.equal(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').ownerOnly, true)
+	assert.ok(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').parameters.properties.id)
+	assert.ok(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').parameters.properties.theme)
+	assert.equal(toolsFor('member').some((t) => t.name === 'omarchy_setBackground'), false)
+	assert.equal(toolsFor('owner').some((t) => t.name === 'omarchy_setBackground'), true)
 	assert.equal(toolsFor('member').some((t) => t.name === 'swarm_list'), false)
 	assert.equal(toolsFor('owner').some((t) => t.name === 'swarm_list'), true)
 	assert.equal([...READ_TOOLS, ...WRITE_TOOLS].some((t) => /shell|podman|web_search|x_search/i.test(t.name)), false)
@@ -948,6 +957,30 @@ test('a member cannot approve swarm.action', async () => {
 		assert.equal(ALLOWED['assistant.approve'], 'mutation')
 	} finally {
 		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
+test('approving a wallpaper uses the chosen background id', async () => {
+	const {calls, runProcedure} = factsProcedure()
+	const {fetchImpl} = scripted([toolSse('call_bg', 'omarchy_setBackground', JSON.stringify({theme: 'tokyo-night', id: 'aaaaaaaaaaaaaaaa'}))])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'change wallpaper', emit: (e) => events.push(e)})
+		const action = events.find((e) => e.event === 'action')?.data
+		assert.equal(action?.toolName, 'omarchy_setBackground')
+		assert.match(action.title, /wallpaper/i)
+		assert.equal(action.detail, 'tokyo-night')
+		assert.deepEqual(action.picker, {theme: 'tokyo-night', selected: 'aaaaaaaaaaaaaaaa'})
+		assert.equal(calls.some((c) => c.name === 'omarchy.setBackground'), false)
+		await box.asst.procedures['assistant.approve'].run({actionId: action.id, id: 'bbbbbbbbbbbbbbbb'}, {auth: {userId: 'owner'}})
+		const bg = calls.find((c) => c.name === 'omarchy.setBackground')
+		assert.equal(bg?.input.id, 'bbbbbbbbbbbbbbbb')
+		assert.equal(bg.input.theme, 'tokyo-night')
+		assert.equal(ALLOWED['omarchy.backgrounds'], 'query')
+		assert.equal(ALLOWED['omarchy.setBackground'], 'mutation')
+	} finally {
+		await box.close()
 	}
 })
 

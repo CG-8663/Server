@@ -126,7 +126,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'user.logout': {kind: 'mutation', run: async (_i, {auth}) => (await accounts.logout(auth), true)},
 		// ---- the Omarchy desktop's themes (Settings → Appearance → Omarchy) ---------------------------
 		'omarchy.themes': {kind: 'query', run: () => omarchyTheme.themes()},
+		'omarchy.backgrounds': {kind: 'query', run: (input) => omarchyTheme.backgrounds(input ?? {})},
 		'omarchy.setTheme': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth), themeCall(() => omarchyTheme.setTheme(String(input?.slug ?? ''))))},
+		'omarchy.setBackground': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth), themeCall(() => omarchyTheme.setBackground(String(input?.id ?? ''))))},
 		'omarchy.installTheme': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth), themeCall(() => omarchyTheme.installTheme(String(input?.slug ?? ''))))},
 		'omarchy.removeTheme': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth), themeCall(() => omarchyTheme.removeTheme(String(input?.slug ?? ''))))},
 		// Verified plugins from the Omarchy plugin registry (see omarchy-plugins.mjs).

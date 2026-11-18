@@ -246,6 +246,8 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 							setAssistantOpen(false)
 							go('settings')
 						}}
+						prefs={prefs}
+						setPrefs={setPrefs}
 					/>
 				</Suspense>
 			)}

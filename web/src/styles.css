@@ -8079,9 +8079,50 @@ html.page-locked body {
 	line-height: 1.4;
 	overflow-wrap: anywhere;
 }
-.assistant-card > div {
+.assistant-card .assistant-actions {
 	display: flex;
 	gap: 8px;
+}
+.assistant-bg-pick {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	max-height: 240px;
+	overflow: auto;
+	margin: 2px 0;
+}
+.assistant-bg-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 0;
+	padding: 6px 8px;
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	cursor: pointer;
+}
+.assistant-bg-row.on {
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.assistant-bg-row input {
+	flex: none;
+	accent-color: var(--accent);
+}
+.assistant-bg-row img {
+	width: 72px;
+	height: 45px;
+	object-fit: cover;
+	border-radius: 8px;
+	background: #1a1b26;
+	flex: none;
+}
+.assistant-bg-row span {
+	font-size: 13px;
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 .assistant-card .btn {
 	flex: 1;

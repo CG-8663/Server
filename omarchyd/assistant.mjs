@@ -55,6 +55,7 @@ function ownerMessage(toolName) {
 	if (toolName === 'system_shutdown') return 'Only the server’s owner can shut down the server'
 	if (toolName === 'omarchy_installPlugin') return 'Only the server’s owner can install Omarchy plugins'
 	if (toolName === 'omarchy_removePlugin') return 'Only the server’s owner can remove Omarchy plugins'
+	if (toolName === 'omarchy_setBackground') return 'Only the server’s owner can change the wallpaper'
 	if (String(toolName ?? '').startsWith('swarm_')) return 'Only the server’s owner can manage the local swarm'
 	return 'Only the server’s owner can change the desktop’s theme'
 }
@@ -137,15 +138,20 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 				await conversations.saveAction(who.userId, {...action, status: 'error', error, resolvedAt: stamp()})
 				throw new RpcError('FORBIDDEN', error)
 			}
-			const running = {...action, status: 'running'}
+			const path = action.rpc?.path || spec?.rpc
+			const rpcInput = {...(action.rpc?.input && typeof action.rpc.input === 'object' && !Array.isArray(action.rpc.input) ? action.rpc.input : {})}
+			delete rpcInput.password
+			if (action.toolName === 'omarchy_setBackground') {
+				const chosen = String(input?.id ?? rpcInput.id ?? '').trim()
+				if (!/^[0-9a-f]{16}$/.test(chosen)) throw new RpcError('BAD_REQUEST', 'Pick a wallpaper first')
+				rpcInput.id = chosen
+			}
+			const running = {...action, status: 'running', rpc: action.rpc ? {...action.rpc, input: {...rpcInput}} : action.rpc}
 			await conversations.saveAction(who.userId, running)
 			// Await so the in-flight lock stays until the MCP call finishes. A bare return would run finally first.
 			if (action.kind === 'mcp') return await approveMcp(who, action, running)
-			const path = action.rpc?.path || spec?.rpc
 			// Generated here, passed only into the RPC. The card and the model never see it.
 			const secret = action.toolName === 'machines_create' || path === 'machines.create' ? randomBytes(12).toString('base64url') : ''
-			const rpcInput = {...(action.rpc?.input && typeof action.rpc.input === 'object' && !Array.isArray(action.rpc.input) ? action.rpc.input : {})}
-			delete rpcInput.password
 			if (secret) rpcInput.password = secret
 			let result
 			try {

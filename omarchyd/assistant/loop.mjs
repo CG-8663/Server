@@ -33,12 +33,20 @@ function redactToolResult(name, result) {
 	return stripSecrets(result)
 }
 
+const BACKGROUND_ID = /^[0-9a-f]{16}$/
+
 export function publicAction(action) {
 	if (!action || typeof action !== 'object') return action
 	const copy = {...action}
 	delete copy.password
 	if (action.rpc && typeof action.rpc === 'object') copy.rpc = {path: action.rpc.path, input: plainInput(action.rpc.input)}
 	if (action.mcp && typeof action.mcp === 'object') copy.mcp = {...action.mcp, arguments: stripSecrets(action.mcp.arguments)}
+	if (action.toolName === 'omarchy_setBackground') {
+		const input = copy.rpc?.input && typeof copy.rpc.input === 'object' ? copy.rpc.input : {}
+		const theme = String(input.theme ?? action.detail ?? '').trim() || null
+		const selected = BACKGROUND_ID.test(String(input.id ?? '')) ? String(input.id) : null
+		copy.picker = {theme, selected}
+	}
 	return copy
 }
 
@@ -89,6 +97,10 @@ function cardFor(name, args) {
 	}
 	if (name === 'swarm_rename') return {title: a.name ? `Rename swarm computer to ${a.name}` : 'Rename a swarm computer', detail: [a.id, a.name].filter(Boolean).join(' · ')}
 	if (name === 'omarchy_setTheme') return {title: a.slug ? `Set theme ${a.slug}` : 'Set the Omarchy theme', detail: String(a.slug ?? '')}
+	if (name === 'omarchy_setBackground') {
+		const theme = String(a.theme ?? '').trim()
+		return {title: theme ? `Set wallpaper for ${theme}` : 'Set the wallpaper', detail: theme || String(a.id ?? '')}
+	}
 	if (name === 'omarchy_installPlugin') return {title: a.id ? `Install plugin ${a.id}` : 'Install an Omarchy plugin', detail: String(a.id ?? '')}
 	if (name === 'omarchy_removePlugin') return {title: a.id ? `Remove plugin ${a.id}` : 'Remove an Omarchy plugin', detail: String(a.id ?? '')}
 	if (name === 'system_restart') return {title: 'Restart this server', detail: 'The server restarts when you approve'}

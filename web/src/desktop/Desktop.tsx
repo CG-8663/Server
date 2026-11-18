@@ -2447,6 +2447,8 @@ const WindowContent = memo(
 								sessionStorage.setItem('omarchy-server:settings-page', 'assistant')
 								desk.open('settings')
 							}}
+							prefs={prefs}
+							setPrefs={setPrefs}
 						/>
 					)
 				case 'terminal':

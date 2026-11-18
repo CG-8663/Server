@@ -1,12 +1,12 @@
 import {useEffect, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
-import {useQuery} from '@tanstack/react-query'
+import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {ApiError, mutate, query, type AssistantAction, type AssistantKey} from '../api'
 import {cardAction, markReopenAssistant, streamAssistant, threadItems, type AssistantConversation, type AssistantConversationSummary, type AssistantItem, type AssistantStreamBody} from '../assistant'
 import {useUser} from '../data'
 import {Icon} from '../icons'
-import {haptic, usePortalRoot} from '../ui'
+import {haptic, omarchyBackgroundUrl, useOmarchyThemes, usePortalRoot, type Prefs} from '../ui'
 
 const prettyTool = (name: string) => name.replaceAll('_', ' ')
 
@@ -82,17 +82,64 @@ const statusText = (action: AssistantAction) => {
 	return null
 }
 
-function ActionCard({action, onDecide}: {action: AssistantAction; onDecide: (actionId: string, path: 'assistant.approve' | 'assistant.reject') => void}) {
+function WallpaperPicker({
+	action,
+	selected,
+	disabled,
+	onChange,
+}: {
+	action: AssistantAction
+	selected: string
+	disabled: boolean
+	onChange: (id: string) => void
+}) {
+	const themes = useOmarchyThemes()
+	const groups = themes.data?.groups ?? []
+	const want = (action.picker?.theme || action.detail || themes.data?.theme || '').trim()
+	const group = groups.find((g) => g.theme === want) ?? groups.find((g) => g.theme === themes.data?.theme) ?? groups[0]
+	const items = group?.items ?? []
+	const fallback = (action.picker?.selected && items.some((it) => it.id === action.picker?.selected) ? action.picker.selected : items[0]?.id) ?? ''
+	useEffect(() => {
+		if (fallback && (!selected || !items.some((it) => it.id === selected))) onChange(fallback)
+	}, [fallback, items, selected, onChange])
+	if (themes.isLoading) return <p>Looking for wallpapers…</p>
+	if (!items.length) return <p>No pictures for this theme.</p>
+	return (
+		<div className="assistant-bg-pick" role="radiogroup" aria-label="Wallpaper">
+			{items.map((it) => {
+				const on = selected === it.id
+				return (
+					<label key={it.id} className={`assistant-bg-row${on ? ' on' : ''}`}>
+						<input type="radio" name={`bg-${action.id}`} checked={on} disabled={disabled} onChange={() => onChange(it.id)} />
+						<img src={omarchyBackgroundUrl(it.id)} alt="" loading="lazy" decoding="async" />
+						<span>{it.name}</span>
+					</label>
+				)
+			})}
+		</div>
+	)
+}
+
+function ActionCard({
+	action,
+	onDecide,
+}: {
+	action: AssistantAction
+	onDecide: (actionId: string, path: 'assistant.approve' | 'assistant.reject', extra?: {id?: string}) => void
+}) {
 	const running = action.status === 'running'
 	const pending = action.status === 'pending' || running
 	const status = statusText(action)
+	const wallpaper = action.toolName === 'omarchy_setBackground'
+	const [chosen, setChosen] = useState(action.picker?.selected ?? '')
 	return (
 		<div className="assistant-card glass" role="group" aria-label={action.title || 'Approval'}>
 			<b>{action.title || 'Approve this step'}</b>
-			{action.detail ? <p>{action.detail}</p> : null}
+			{wallpaper ? null : action.detail ? <p>{action.detail}</p> : null}
+			{wallpaper && pending ? <WallpaperPicker action={action} selected={chosen} disabled={running} onChange={setChosen} /> : null}
 			{pending ? (
-				<div>
-					<button type="button" className="btn primary" disabled={running} onClick={() => onDecide(action.id, 'assistant.approve')}>
+				<div className="assistant-actions">
+					<button type="button" className="btn primary" disabled={running || (wallpaper && !chosen)} onClick={() => onDecide(action.id, 'assistant.approve', wallpaper ? {id: chosen} : undefined)}>
 						Approve
 					</button>
 					<button type="button" className="btn" disabled={running} onClick={() => onDecide(action.id, 'assistant.reject')}>
@@ -106,7 +153,7 @@ function ActionCard({action, onDecide}: {action: AssistantAction; onDecide: (act
 	)
 }
 
-export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettings: () => void}) {
+export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () => void; onSettings: () => void; prefs?: Prefs; setPrefs?: (p: Prefs) => void}) {
 	const portalRoot = usePortalRoot()
 	const screenRef = useRef<HTMLDivElement>(null)
 	const threadRef = useRef<HTMLDivElement>(null)
@@ -123,6 +170,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 	const pumping = useRef(false)
 	const focused = useRef(false)
 	const user = useUser()
+	const qc = useQueryClient()
 	const member = user.data?.role === 'member'
 	const keys = useQuery({queryKey: ['assistant.keys', undefined], queryFn: () => query<AssistantKey[]>('assistant.keys'), retry: false, staleTime: 15_000})
 	const hasKeys = (keys.data?.length ?? 0) > 0
@@ -348,7 +396,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 		}
 	}
 
-	const decide = async (actionId: string, path: 'assistant.approve' | 'assistant.reject') => {
+	const decide = async (actionId: string, path: 'assistant.approve' | 'assistant.reject', extra?: {id?: string}) => {
 		if (deciding.current.has(actionId)) return
 		const conversationId = conversationIdRef.current
 		if (!conversationId) {
@@ -372,7 +420,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 		let reloadTheme: string | null = null
 		let reloadAfterRestart = false
 		try {
-			const updated = await mutate<AssistantAction>(path, {actionId})
+			const updated = await mutate<AssistantAction>(path, extra?.id ? {actionId, id: extra.id} : {actionId})
 			if (!alive.current || own.signal.aborted) return
 			setItems((bs) =>
 				bs?.map((b) => {
@@ -386,6 +434,15 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 			const ok = !status || status === 'done'
 			if (path === 'assistant.approve' && ok && cur.action.toolName === 'omarchy_setTheme') reloadTheme = cur.action.detail || ''
 			if (path === 'assistant.approve' && ok && cur.action.toolName === 'system_restart') reloadAfterRestart = true
+			if (path === 'assistant.approve' && ok && cur.action.toolName === 'omarchy_setBackground' && extra?.id && setPrefs && prefs) {
+				setPrefs({
+					...prefs,
+					omarchyBackground: extra.id,
+					solidColor: null,
+					theme: prefs.theme === 'horizon' ? 'horizon' : 'omarchy',
+				})
+				void qc.invalidateQueries({queryKey: ['omarchy-themes']})
+			}
 		} catch (err) {
 			if (!alive.current || own.signal.aborted) return
 			if (err instanceof ApiError) {
@@ -492,7 +549,7 @@ export function Assistant({onClose, onSettings}: {onClose?: () => void; onSettin
 							<div className="assistant-thread-end">
 								{items.map((b) =>
 									b.kind === 'card' ? (
-										<ActionCard key={b.id} action={b.action} onDecide={(id, path) => void decide(id, path)} />
+										<ActionCard key={b.id} action={b.action} onDecide={(id, path, extra) => void decide(id, path, extra)} />
 									) : (
 										<div key={b.id} className={`bubble ${b.role}${b.streaming ? ' live' : ''}`}>
 											{b.role === 'assistant' ? <BubbleMarkdown text={b.content} /> : b.content}

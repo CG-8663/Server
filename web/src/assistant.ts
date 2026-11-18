@@ -30,6 +30,7 @@ export function consumeReopenAssistant() {
 const STATUSES: readonly AssistantAction['status'][] = ['pending', 'rejected', 'running', 'done', 'error']
 const SECRET_JSON = /"(password|apiKey|credentials|defaultPassword)"\s*:\s*(?:"(?:\\.|[^"\\])*"|\{[^{}]*\}|\[[^\[\]]*\]|[^,\n\r}\]]+)/gi
 const SECRET_PAIR = /\b(password|apiKey|credentials|defaultPassword)\b(\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|\S+)/gi
+const BACKGROUND_ID = /^[0-9a-f]{16}$/
 
 const isStatus = (v: unknown): v is AssistantAction['status'] => STATUSES.includes(v as AssistantAction['status'])
 
@@ -38,17 +39,32 @@ function scrubSecrets(text: string) {
 	return text.replace(SECRET_JSON, '"$1":"…"').replace(SECRET_PAIR, '$1$2…')
 }
 
+function wallpaperPicker(a: Record<string, unknown>, toolName: string): AssistantAction['picker'] | undefined {
+	if (toolName !== 'omarchy_setBackground') return undefined
+	const fromPicker = a.picker && typeof a.picker === 'object' && !Array.isArray(a.picker) ? (a.picker as Record<string, unknown>) : null
+	const rpc = a.rpc && typeof a.rpc === 'object' && !Array.isArray(a.rpc) ? (a.rpc as Record<string, unknown>) : null
+	const input = rpc?.input && typeof rpc.input === 'object' && !Array.isArray(rpc.input) ? (rpc.input as Record<string, unknown>) : null
+	const themeRaw = fromPicker?.theme ?? input?.theme ?? a.detail
+	const theme = typeof themeRaw === 'string' && themeRaw.trim() ? themeRaw.trim() : null
+	const selectedRaw = fromPicker?.selected ?? input?.id
+	const selected = typeof selectedRaw === 'string' && BACKGROUND_ID.test(selectedRaw) ? selectedRaw : null
+	return {theme, selected}
+}
+
 export function cardAction(raw: unknown): AssistantAction {
 	const a = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
 	const error = typeof a.error === 'string' ? scrubSecrets(a.error) : ''
+	const toolName = typeof a.toolName === 'string' ? a.toolName : ''
+	const picker = wallpaperPicker(a, toolName)
 	return {
 		id: typeof a.id === 'string' ? a.id : '',
 		status: isStatus(a.status) ? a.status : 'pending',
 		kind: a.kind === 'mcp' ? 'mcp' : 'rpc',
-		toolName: typeof a.toolName === 'string' ? a.toolName : '',
+		toolName,
 		title: scrubSecrets(typeof a.title === 'string' ? a.title : ''),
 		detail: scrubSecrets(typeof a.detail === 'string' ? a.detail : ''),
 		...(error ? {error} : {}),
+		...(picker ? {picker} : {}),
 	}
 }
 
