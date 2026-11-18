@@ -4,6 +4,8 @@
 import {useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties} from 'react'
 
 import {useAssistantActivity, useAssistantAnimationState, type CharacterState} from '../assistantActivity'
+import {assistantIconBadge} from '../assistantLive'
+import {useAssistantTurn} from '../assistantTurn'
 import {Icon} from '../icons'
 import {Row, Segmented, Switch, haptic} from '../ui'
 import {AssistantCharacter, DEFAULT_LOOK, lookName, NAME_MAX, useAssistantLook, type AssistantLook} from './AssistantCharacter'
@@ -53,6 +55,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 	const {look, setLook} = useAssistantLook()
 	const activity = useAssistantActivity()
+	const unread = useAssistantTurn().unread
 	const [hover, setHover] = useState(false)
 	const [dragging, setDragging] = useState(false)
 	const state = useAssistantAnimationState({hover: hover || dragging, reactions: look.reactions})
@@ -134,7 +137,15 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 	if (!look.floating) return null
 	const name = lookName(look)
 	const waiting = activity.pending
-	const label = `${name}${waiting ? `, ${waiting} step${waiting === 1 ? '' : 's'} waiting for you` : activity.phase === 'error' ? ', something went wrong' : ''}. Opens the assistant; drag or use the arrow keys to move it.`
+	const badge = assistantIconBadge({unread, pending: waiting, phase: activity.phase})
+	const extra = unread > 0
+		? `, ${unread} unread`
+		: waiting
+			? `, ${waiting} step${waiting === 1 ? '' : 's'} waiting for you`
+			: activity.phase === 'error'
+				? ', something went wrong'
+				: ''
+	const label = `${name}${extra}. Opens the assistant; drag or use the arrow keys to move it.`
 	return (
 		<button
 			ref={ref}
@@ -213,11 +224,11 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 			}}
 		>
 			<AssistantCharacter id={look.character} state={state} size={size} animate={look.animate} intensity={look.intensity} shadow />
-			{waiting > 0 ? (
+			{badge && 'count' in badge ? (
 				<span className="ac-dot" aria-hidden="true">
-					{waiting}
+					{badge.count}
 				</span>
-			) : activity.phase === 'error' ? (
+			) : badge && 'warn' in badge ? (
 				<span className="ac-dot warn" aria-hidden="true">
 					!
 				</span>
