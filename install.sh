@@ -42,6 +42,35 @@ UNITS="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Isolation: OMARCHY_SERVER_SOURCE / OMARCHY_SERVER_APP_STORE, if set, must be absolute git
+# directories. A bad path is an error (the installer does not fall back to GitHub).
+trim_env() { printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
+require_local_git() {
+	local name="$1" path="$2" hint
+	case "$name" in
+		OMARCHY_SERVER_APP_STORE) hint='use the GitHub app store' ;;
+		*) hint='update from GitHub' ;;
+	esac
+	case "$path" in
+		/*) ;;
+		*) die "$name is set to \"$path\" but must be an absolute path. Unset it to $hint, or point it at a local clone." ;;
+	esac
+	if [ ! -e "$path/.git" ]; then
+		die "$name is set to \"$path\" but that path is not a git repository. Unset it to $hint, or point it at a local clone."
+	fi
+}
+SOURCE="$(trim_env "${OMARCHY_SERVER_SOURCE-}")"
+APP_STORE="$(trim_env "${OMARCHY_SERVER_APP_STORE-}")"
+[ -z "$SOURCE" ] || require_local_git OMARCHY_SERVER_SOURCE "$SOURCE"
+[ -z "$APP_STORE" ] || require_local_git OMARCHY_SERVER_APP_STORE "$APP_STORE"
+if [ -z "${OMARCHY_SERVER_REPO-}" ] && [ -n "$SOURCE" ]; then
+	REPO="$SOURCE"
+fi
+case "$REPO" in
+	https://*|http://*|git@*|ssh://*) ;;
+	*) require_local_git OMARCHY_SERVER_REPO "$REPO" ;;
+esac
+
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not with sudo. It asks for sudo only to install packages."
 if ! command -v pacman >/dev/null; then
 	found=$( (. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-$ID}") || uname -s)
@@ -82,6 +111,7 @@ node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)
 
 # 2. Code: fresh clone, or update in place.
 mkdir -p "$BASE"
+local_repo() { [ -e "$1/.git" ]; }
 if [ -d "$APP/.git" ]; then
 	say "Updating Omarchy Server"
 	# Installed from somewhere else before (e.g. omarchy-server, now the dev copy, or back): follow this
@@ -90,13 +120,24 @@ if [ -d "$APP/.git" ]; then
 		say "Switching to $REPO"
 		git -C "$APP" remote set-url origin "$REPO"
 	fi
-	# Name where the branch lands: a shallow clone only tracks the branch it was cloned from, so a plain
-	# `fetch origin <other branch>` would leave origin/<other branch> missing and the reset would fail.
-	git -C "$APP" fetch --depth 1 origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
-	git -C "$APP" reset --hard "origin/$BRANCH"
+	if local_repo "$REPO"; then
+		git -C "$APP" fetch --depth 1 "$REPO" HEAD
+		git -C "$APP" reset --hard FETCH_HEAD
+	else
+		# Name where the branch lands: a shallow clone only tracks the branch it was cloned from, so a plain
+		# `fetch origin <other branch>` would leave origin/<other branch> missing and the reset would fail.
+		git -C "$APP" fetch --depth 1 origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+		git -C "$APP" reset --hard "origin/$BRANCH"
+	fi
 else
 	say "Downloading Omarchy Server"
-	git clone --depth 1 --branch "$BRANCH" "$REPO" "$APP"
+	if local_repo "$REPO"; then
+		git clone --depth 1 "$REPO" "$APP"
+		git -C "$APP" fetch --depth 1 "$REPO" HEAD
+		git -C "$APP" reset --hard FETCH_HEAD
+	else
+		git clone --depth 1 --branch "$BRANCH" "$REPO" "$APP"
+	fi
 fi
 
 say "Building (a minute or two the first time)"
@@ -260,12 +301,19 @@ fi
 # 4. Services, started now and at every boot.
 mkdir -p "$UNITS"
 NODE="$(command -v node)"
+# Persist isolation env only when the installer was given those variables (do not invent paths).
+SOURCE_ENV=""
+if [ -n "$SOURCE" ]; then SOURCE_ENV="${SOURCE_ENV}Environment=OMARCHY_SERVER_SOURCE=$SOURCE
+"; fi
+if [ -n "$APP_STORE" ]; then SOURCE_ENV="${SOURCE_ENV}Environment=OMARCHY_SERVER_APP_STORE=$APP_STORE
+"; fi
 cat >"$UNITS/omarchyd.service" <<EOF
 [Unit]
 Description=Omarchy Server backend (localhost only)
 After=network-online.target
 
 [Service]
+$SOURCE_ENV
 ExecStart=$NODE $APP/omarchyd/cli.mjs serve --port 2021 --web-port $PORT --data $BASE/omarchyd
 Restart=on-failure
 RestartSec=3

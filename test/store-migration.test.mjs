@@ -24,6 +24,30 @@ test('the Umbrel store is removed once; TouchWorkStation stays; installed apps a
 	apps.close()
 })
 
+test('the GitHub store is replaced by a local clone when that is the default', async () => {
+	const data = join(root, 'local-data')
+	await mkdir(join(data, 'apps'), {recursive: true})
+	const github = 'https://github.com/TouchWorkStation/app-store'
+	const local = `file://${join(root, 'app-store')}`
+	await writeFile(join(data, 'apps', 'apps.json'), JSON.stringify({defaultsAdded: true, umbrelStoreRemoved: true, stores: [{url: github}], apps: [{id: 'jellyfin', store: github}]}))
+	const apps = createApps({dataDir: data, home: join(root, 'home'), run: async () => '', defaultStores: [{url: local}]})
+	await apps.ready
+	const saved = JSON.parse(await readFile(join(data, 'apps', 'apps.json'), 'utf8'))
+	assert.deepEqual(saved.stores.map((s) => s.url), [local])
+	assert.equal(saved.apps[0].store, local)
+	apps.close()
+})
+
+test('a local default store does not let members add a different file:// store', async () => {
+	const data = join(root, 'tight-data')
+	await mkdir(join(data, 'apps'), {recursive: true})
+	const local = `file://${join(root, 'app-store')}`
+	const apps = createApps({dataDir: data, home: join(root, 'home'), run: async () => '', defaultStores: [{url: local}]})
+	await apps.ready
+	await assert.rejects(apps.procedures['appStore.addRepository'].run({url: `file://${join(root, 'other-store')}`}), /https:\/\//)
+	apps.close()
+})
+
 test('apps installed before the wider access checks keep their access, so they still run and update', async () => {
 	const data = join(root, 'data2')
 	await mkdir(join(data, 'apps', 'installed', 'home-assistant'), {recursive: true})

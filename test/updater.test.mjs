@@ -1,6 +1,6 @@
 // Software update: comparing versions, release notes, the check against GitHub, and the update steps.
 import assert from 'node:assert/strict'
-import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, before, test} from 'node:test'
@@ -150,6 +150,116 @@ test('installer prompt: needed after an update the installer hasn’t been run f
 	// After beta (or in a dev run), never asked.
 	await writeFile(join(data, 'installer-revision'), '1\n')
 	assert.deepEqual(await make({installerCheck: false}).procedures['system.installerStatus'].run(), {needed: false, reasons: []})
+})
+
+async function writeSource(src, {version, helper = 'helper v2', install = 'for pkg in nodejs wayvnc; do x; done'} = {}) {
+	const {mkdir} = await import('node:fs/promises')
+	await mkdir(join(src, 'web/src'), {recursive: true})
+	await mkdir(join(src, 'helper'), {recursive: true})
+	await writeFile(join(src, 'package.json'), JSON.stringify({version}))
+	await writeFile(join(src, 'web/src/changelog.ts'), changelog)
+	await writeFile(join(src, 'helper/helper.mjs'), helper)
+	await writeFile(join(src, 'install.sh'), install)
+}
+
+test('createUpdater does not take sourceDir from the environment', async () => {
+	const src = join(dir, 'env-src')
+	await writeSource(src, {version: '9.9.9'})
+	const prev = process.env.OMARCHY_SERVER_SOURCE
+	process.env.OMARCHY_SERVER_SOURCE = src
+	try {
+		let fetched = 0
+		const u = createUpdater({
+			autoCheck: false,
+			appDir: '/app',
+			dataDir: join(dir, 'env-data'),
+			currentVersion: '0.5.0',
+			run: async () => '',
+			fetchImpl: async (url) => {
+				fetched++
+				return remote('0.6.1')(url)
+			},
+			helperPath: '/nonexistent',
+		})
+		const c = await u.procedures['system.checkUpdate'].run()
+		u.stop()
+		assert.ok(fetched > 0, 'must still check GitHub when sourceDir is not passed')
+		assert.equal(c.version, '0.6.1')
+	} finally {
+		if (prev === undefined) delete process.env.OMARCHY_SERVER_SOURCE
+		else process.env.OMARCHY_SERVER_SOURCE = prev
+	}
+})
+
+test('check: reads the local clone, not GitHub', async () => {
+	const src = join(dir, 'local-src')
+	await writeSource(src, {version: '0.6.1'})
+	let fetched = 0
+	const helperPath = join(dir, 'local-helper.mjs')
+	await writeFile(helperPath, 'helper v1')
+	const run = async (cmd, args) => {
+		if (cmd === 'git' && args.includes('rev-parse')) return args.includes(src) ? 'srcsha\n' : 'appsha\n'
+		if (cmd === 'pacman') throw new Error('not found')
+		return ''
+	}
+	const u = createUpdater({
+		autoCheck: false,
+		appDir: join(dir, 'app'),
+		dataDir: join(dir, 'local-data'),
+		currentVersion: '0.5.0',
+		sourceDir: src,
+		helperPath,
+		run,
+		fetchImpl: async () => {
+			fetched++
+			return new Response('', {status: 503})
+		},
+	})
+	const c = await u.procedures['system.checkUpdate'].run()
+	u.stop()
+	assert.equal(fetched, 0, 'must not call GitHub')
+	assert.equal(c.available, true)
+	assert.equal(c.version, '0.6.1')
+	assert.match(c.releaseNotes, /0\.6\.1 · Fixes/)
+	assert.match(c.releaseNotes, /OMARCHY_SERVER_REPO=/)
+	assert.ok(c.releaseNotes.includes(`bash ${join(src, 'install.sh')}`))
+})
+
+test('check: same version with a different clone commit is an update', async () => {
+	const src = join(dir, 'same-ver-src')
+	await writeSource(src, {version: '0.5.0'})
+	const run = async (cmd, args) => (cmd === 'git' && args.includes('rev-parse') ? (args.includes(src) ? 'aaa\n' : 'bbb\n') : '')
+	const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: join(dir, 'same-ver-data'), currentVersion: '0.5.0', sourceDir: src, helperPath: '/nonexistent', run, fetchImpl: async () => new Response('', {status: 503})})
+	const c = await u.procedures['system.checkUpdate'].run()
+	u.stop()
+	assert.equal(c.available, true)
+	assert.equal(c.version, '0.5.0')
+})
+
+test('check: same version and the same clone commit is up to date', async () => {
+	const src = join(dir, 'same-sha-src')
+	await writeSource(src, {version: '0.5.0'})
+	const run = async (cmd) => (cmd === 'git' ? 'same\n' : '')
+	const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: join(dir, 'same-sha-data'), currentVersion: '0.5.0', sourceDir: src, helperPath: '/nonexistent', run, fetchImpl: async () => new Response('', {status: 503})})
+	const c = await u.procedures['system.checkUpdate'].run()
+	u.stop()
+	assert.equal(c.available, false)
+})
+
+test('update: fetches the local clone instead of origin', async () => {
+	const src = join(dir, 'fetch-src')
+	const data = join(dir, 'fetch-data')
+	await mkdir(data, {recursive: true})
+	await writeSource(src, {version: '0.6.1'})
+	const calls = []
+	const run = async (cmd, args) => (calls.push([cmd, ...args].join(' ')), cmd === 'git' && args[2] === 'rev-parse' ? 'abc123\n' : '')
+	const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: data, currentVersion: '0.5.0', sourceDir: src, run, helperPath: '/nonexistent'})
+	await u.procedures['system.update'].run()
+	await until(() => calls.some((c) => c.startsWith('systemd-run')))
+	u.stop()
+	assert.ok(calls.some((c) => c === `git -C /app fetch --depth 1 ${src} HEAD`))
+	assert.ok(calls.some((c) => c === 'git -C /app reset --hard FETCH_HEAD'))
+	assert.ok(!calls.some((c) => c.includes(' origin ')))
 })
 
 test('the installer ships a revision, stamps it when it finishes, and defers its restart when run from the app', async () => {

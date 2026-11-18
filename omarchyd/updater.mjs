@@ -1,4 +1,5 @@
-// Software update for omarchyd: check GitHub for a newer Omarchy Server, and update in place.
+// Software update for omarchyd: check a source tree for a newer Omarchy Server, and update in place.
+// Source: a local clone (`sourceDir`) when the caller passes one, otherwise GitHub on `main`.
 //
 // Check: the version in package.json on the main branch, compared with the one installed. Release notes
 // come from the What's New list (web/src/changelog.ts) for every version you don't have yet.
@@ -16,6 +17,7 @@ import {RpcError} from './rpc.mjs'
 
 export const REPO_RAW = 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server'
 export const INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash'
+export const installCommand = (sourceDir) => (sourceDir ? `OMARCHY_SERVER_REPO=${sourceDir} bash ${join(sourceDir, 'install.sh')}` : INSTALL_COMMAND)
 // Where this copy came from: the GitHub repository it was installed from (its git origin), so a copy
 // installed from omarchy-server-dev checks and updates from there, and one from omarchy-server from there.
 export function rawFromOrigin(url) {
@@ -86,13 +88,16 @@ export function createUpdater({
 	helperPath = HELPER,
 	restartDelay = '2s',
 	webPort = 7780,
+	// Callers pass sourceDir (startOmarchyd). Do not default it from OMARCHY_SERVER_SOURCE here:
+	// tests mock GitHub and would otherwise read the live clone.
+	sourceDir,
 	// Only a copy the installer set up (running as a systemd service) is checked; not a dev run.
 	installerCheck = BETA_INSTALLER_PROMPT && !!process.env.INVOCATION_ID,
 }) {
 	let rawBase = raw
 	const source = async () =>
 		(rawBase ??= await run('git', ['-C', appDir, 'remote', 'get-url', 'origin'], {timeout: 10_000}).then(rawFromOrigin, () => null).then((r) => r ?? REPO_RAW))
-	const installCommand = async () => `curl -fsSL ${await source()}/${branch}/install.sh | bash`
+	const installerHint = async () => (sourceDir ? installCommand(sourceDir) : `curl -fsSL ${await source()}/${branch}/install.sh | bash`)
 	const statusFile = join(dataDir, 'update.json')
 	let status = {running: false, progress: 0, description: '', error: false}
 	let cache = null
@@ -109,17 +114,25 @@ export function createUpdater({
 				status =
 					compareVersions(currentVersion, saved.target) >= 0
 						? {running: false, progress: 100, description: `Updated to ${saved.target}`, error: false}
-						: {running: false, progress: 0, description: '', error: `The update to ${saved.target} didn’t take effect. Run the installer: ${await installCommand()}`}
+						: {running: false, progress: 0, description: '', error: `The update to ${saved.target} didn’t take effect. Run the installer: ${await installerHint()}`}
 				await save()
 			}
 		} catch {}
 	})()
 
 	const get = async (path) => {
+		if (sourceDir) {
+			try {
+				return await readFile(join(sourceDir, path), 'utf8')
+			} catch (error) {
+				throw new Error(`${join(sourceDir, path)}: ${error.message}`)
+			}
+		}
 		const res = await fetchImpl(`${await source()}/${branch}/${path}?t=${Date.now()}`, {signal: AbortSignal.timeout(15_000), headers: {'cache-control': 'no-cache'}})
 		if (!res.ok) throw new Error(`GitHub answered ${res.status}`)
 		return res.text()
 	}
+	const head = async (dir) => (await run('git', ['-C', dir, 'rev-parse', 'HEAD'], {timeout: 10_000})).trim()
 
 	// Would the new version need the installer (root-level changes)?
 	async function needsInstaller() {
@@ -150,12 +163,16 @@ export function createUpdater({
 			throw new RpcError('BAD_GATEWAY', `Couldn’t check for updates: ${error.message}`)
 		}
 		const latest = String(pkg.version ?? '')
-		const available = compareVersions(latest, currentVersion) > 0
+		let available = compareVersions(latest, currentVersion) > 0
+		if (!available && sourceDir && compareVersions(latest, currentVersion) === 0) {
+			const [src, app] = await Promise.all([head(sourceDir).catch(() => ''), head(appDir).catch(() => '')])
+			if (src && app && src !== app) available = true
+		}
 		let notes = ''
 		if (available) {
 			notes = await get('web/src/changelog.ts').then((t) => releaseNotes(t, currentVersion), () => '')
 			const reasons = await needsInstaller()
-			if (reasons.length) notes = `**After updating, run the installer on the server** (${reasons.join('; ')}):\n\n    ${await installCommand()}\n\n${notes}`
+			if (reasons.length) notes = `**After updating, run the installer on the server** (${reasons.join('; ')}):\n\n    ${await installerHint()}\n\n${notes}`
 		}
 		const value = {available, version: available ? latest : currentVersion, name: `Omarchy Server ${available ? latest : currentVersion}`, ...(notes ? {releaseNotes: notes} : {})}
 		cache = {at: Date.now(), value}
@@ -172,7 +189,7 @@ export function createUpdater({
 		if (busy) throw new RpcError('CONFLICT', 'An update is already running')
 		const {available, version} = await check({force: true})
 		if (!available) throw new RpcError('BAD_REQUEST', 'Omarchy Server is already up to date')
-		if (!(await run('git', ['-C', appDir, 'rev-parse', 'HEAD']).then(() => true, () => false))) throw new RpcError('PRECONDITION_FAILED', `This copy can’t update itself. Run the installer: ${await installCommand()}`)
+		if (!(await run('git', ['-C', appDir, 'rev-parse', 'HEAD']).then(() => true, () => false))) throw new RpcError('PRECONDITION_FAILED', `This copy can’t update itself. Run the installer: ${await installerHint()}`)
 		busy = true
 		status = {running: true, progress: 2, description: 'Starting', error: false, target: version}
 		await save()
@@ -180,9 +197,14 @@ export function createUpdater({
 			const previous = (await run('git', ['-C', appDir, 'rev-parse', 'HEAD'])).trim()
 			try {
 				await step(10, 'Downloading')
-				// Name where it lands: a shallow clone of another branch doesn't track this one otherwise.
-				await run('git', ['-C', appDir, 'fetch', '--depth', '1', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`])
-				await run('git', ['-C', appDir, 'reset', '--hard', `origin/${branch}`])
+				if (sourceDir) {
+					await run('git', ['-C', appDir, 'fetch', '--depth', '1', sourceDir, 'HEAD'])
+					await run('git', ['-C', appDir, 'reset', '--hard', 'FETCH_HEAD'])
+				} else {
+					// Name where it lands: a shallow clone of another branch doesn't track this one otherwise.
+					await run('git', ['-C', appDir, 'fetch', '--depth', '1', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`])
+					await run('git', ['-C', appDir, 'reset', '--hard', `origin/${branch}`])
+				}
 				await step(35, 'Installing parts')
 				// Packages only when they changed (npm ci needs a lot of memory).
 				await run(process.execPath, ['scripts/deps.mjs'], {cwd: appDir})
@@ -227,7 +249,9 @@ export function createUpdater({
 			if (missing.length) reasons.push(`New system packages are needed: ${missing.join(', ')}.`)
 		}
 		const value = reasons.length
-			? {needed: true, reasons, command: `curl -fsSL ${await source()}/${branch}/install.sh | OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=${Number(webPort) || 7780} bash`}
+			? {needed: true, reasons, command: sourceDir
+				? `OMARCHY_SERVER_REPO=${sourceDir} OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=${Number(webPort) || 7780} bash ${join(sourceDir, 'install.sh')}`
+				: `curl -fsSL ${await source()}/${branch}/install.sh | OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=${Number(webPort) || 7780} bash`}
 			: {needed: false, reasons: []}
 		installerCache = {at: Date.now(), value}
 		return value

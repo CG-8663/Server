@@ -13,8 +13,39 @@ import WebSocket from 'ws'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
 import {cloudUserData, isWindowsClientLabel, omarchyConfiguration, windowsAnswerFile} from '../omarchyd/machine-media.mjs'
-import {findChecksum} from '../omarchyd/machines.mjs'
+import {createMachines, findChecksum} from '../omarchyd/machines.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
+
+test('catalog: reads a local file:// catalog without GitHub', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-cat-'))
+	after(() => rm(root, {recursive: true, force: true}))
+	const arch = os.arch() === 'arm64' ? 'arm64' : 'amd64'
+	const catalog = join(root, 'catalog.json')
+	await writeFile(
+		catalog,
+		JSON.stringify({
+			version: 1,
+			images: [{id: 'local-os', familyId: 'debian', name: 'LocalOS', version: '1', arch, kind: 'cloud', url: 'https://example.test/os.qcow2', checksums: {url: 'https://example.test/SHA256SUMS', algorithm: 'sha256'}, sizeMb: 1, adminGroup: 'sudo'}],
+		}),
+	)
+	let fetched = 0
+	const m = createMachines({
+		dataDir: join(root, 'data'),
+		catalogUrl: `file://${catalog}`,
+		fetchImpl: async () => {
+			fetched++
+			return new Response('', {status: 503})
+		},
+		run: async () => '',
+		kvmDevice: join(root, 'kvm'),
+	})
+	await m.ready
+	const images = await m.procedures['machines.osImages'].run()
+	assert.equal(fetched, 0, 'must not call GitHub')
+	assert.equal(images.length, 1)
+	assert.equal(images[0].id, 'local-os')
+	assert.equal(images[0].name, 'LocalOS')
+})
 
 test('findChecksum reads GNU and BSD checksum lists', () => {
 	const h = 'a'.repeat(64)

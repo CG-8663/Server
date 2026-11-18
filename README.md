@@ -35,6 +35,21 @@ and files are kept. Logs: `journalctl --user -u omarchyd -u omarchy-server-web -
 
 Want ZFS pools too? Add `--zfs` (see [Storage](#storage-and-nas)).
 
+To keep Software update and the App Store on local clones you sync yourself (no automatic GitHub
+fetches), set these on the installer and they are written onto `omarchyd.service`:
+
+```sh
+OMARCHY_SERVER_SOURCE=/path/to/omarchy-server \
+OMARCHY_SERVER_APP_STORE=/path/to/app-store \
+bash install.sh
+```
+
+Each value must be an absolute path to a git repository. If either is set but invalid, omarchyd
+refuses to start instead of falling back to GitHub. Unset them to use GitHub as usual. You can also
+put them in a systemd drop-in (`~/.config/systemd/user/omarchyd.service.d/local.conf`). Optional:
+`OMARCHY_SERVER_REPO` is the URL or local path the installer clones from (defaults to SOURCE when
+SOURCE is set, otherwise GitHub).
+
 To remove it, run `omarchy-server uninstall`. Your account, apps and machines stay, so installing again picks up
 where you left off; add `--purge` to delete those too.
 
