@@ -369,6 +369,23 @@ export async function startFakeserverd({
 			}),
 		},
 		'system.batteryUsage': {kind: 'query', run: () => ({batteries: []})},
+		'system.stats': {
+			kind: 'query',
+			run: () => ({
+				cpu: {threads: 16, totalUsed: 18.4, system: 9.1, apps: [{id: 'immich', used: 6.2}, {id: 'nextcloud', used: 3.1}], machines: []},
+				memory: {size: 16 * gb, totalUsed: 6.2 * gb, system: 2 * gb, apps: [{id: 'immich', used: 2.1 * gb}], machines: []},
+				disk: {size: 1000 * gb, totalUsed: 720 * gb, available: 280 * gb, system: 40 * gb, files: 300 * gb, apps: [{id: 'immich', used: 210 * gb}], machines: []},
+				temp: {warning: 'normal', temperature: 52},
+				gpu: {
+					gpus: [
+						{id: 'GPU-aaa', index: 0, name: 'NVIDIA GeForce RTX 3060', used: 32, memoryUsed: 1.4 * gb, memoryTotal: 12 * gb, temperature: 39},
+						{id: 'GPU-bbb', index: 1, name: 'NVIDIA GeForce RTX 3060', used: 4, memoryUsed: 0.2 * gb, memoryTotal: 12 * gb, temperature: 36},
+					],
+				},
+				battery: {batteries: []},
+				uptime: 1_234_567,
+			}),
+		},
 		'system.installerStatus': {kind: 'query', run: () => ({needed: false, reasons: []})},
 		'apps.list': {kind: 'query', run: () => apps},
 		'apps.state': {kind: 'query', run: ({appId}) => apps.find((a) => a.id === appId) ?? {state: 'not-installed', progress: 0}},
