@@ -8142,112 +8142,54 @@ html.page-locked body {
 }
 
 /* ---- The assistant's character ------------------------------------------------------------------
-   SVG drawn by web/src/character. Colours come from the character (theme tokens); motion is CSS, scaled
-   by intensity, and stops for reduced motion, when turned off, or while the tab is in the background. */
+   Frames from the character sheet (web/public/assistant), moved gently by CSS. Intensity scales the
+   motion; it stops for reduced motion, when turned off, or while the tab is in the background. */
 .ac {
 	--amp: 1;
-	display: block;
+	position: relative;
+	display: inline-block;
 	flex: none;
-	overflow: visible;
-	filter: drop-shadow(0 2px 6px color-mix(in srgb, var(--ac-1) 30%, transparent));
+	line-height: 0;
 }
 .ac.ac-minimal { --amp: 0.45; }
 .ac.ac-playful { --amp: 1.7; }
-.ac .f-1 { fill: var(--ac-1); }
-.ac .f-2 { fill: var(--ac-2); }
-.ac .s-1 { stroke: var(--ac-1); }
-.ac .s-2 { stroke: var(--ac-2); }
-.ac .f-body { fill: var(--ac-body); }
-.ac .s-body { stroke: var(--ac-body); }
-.ac .f-dark { fill: #0d0d10; }
-.ac .s-dark { stroke: #0d0d10; }
-.ac .f-screen { fill: #0b0c10; }
-.ac .f-metal { fill: #a3a8b4; }
-.ac .s-edge { stroke: rgba(0, 0, 0, 0.35); }
-/* a soft, lighter edge so a dark character still shows on a dark background */
-.ac .ac-fur { stroke: color-mix(in srgb, var(--ac-body) 72%, #fff 28%); }
-.ac .s-band { stroke: color-mix(in srgb, var(--ac-body) 70%, #fff 30%); }
-.ac .f-badge { fill: #0d0d10; stroke: var(--ac-1); stroke-width: 1.4; }
-.ac .s-badge { stroke: #0d0d10; }
-.ac .f-warn { fill: var(--peach, #e0af68); }
-.ac .f-badge-ink { fill: #0d0d10; }
-.ac .ac-glass { fill-opacity: 0.32; }
-.ac .ac-glow { fill: var(--ac-1); opacity: 0.16; }
-/* Only the animated parts (never one with its own transform attribute, which CSS would replace). */
-.ac :is(.ac-float, .ac-bounce, .ac-face, .ac-eyes, .ac-look, .ac-talk, .ac-dots circle, .ac-spin, .ac-pop, .ac-spark, .ac-zz text, .ac-glow, .ac-bits, .ac-tool, .ac-wave, .ac-phones, .ac-led rect, .ac-beacon) {
-	transform-box: fill-box;
-	transform-origin: center;
+.ac .ac-img {
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+	user-select: none;
+	-webkit-user-drag: none;
+	pointer-events: none;
+	animation: ac-breathe 3.6s ease-in-out infinite;
 }
+@keyframes ac-breathe { 50% { transform: translateY(calc(-2.5% * var(--amp))) scale(calc(1 + 0.015 * var(--amp))); } }
+/* hover or tap: a hop */
+.ac.is-hover .ac-img { animation: ac-hop 0.6s ease-out, ac-breathe 3.6s ease-in-out 0.6s infinite; }
+@keyframes ac-hop { 40% { transform: translateY(calc(-9% * var(--amp))) scale(1.04); } 70% { transform: translateY(calc(1.5% * var(--amp))); } }
+/* listening: a soft glow in time */
+.ac.is-listening .ac-img { animation: ac-breathe 3.6s ease-in-out infinite, ac-glow 1.8s ease-in-out infinite; }
+@keyframes ac-glow { 50% { filter: drop-shadow(0 0 calc(6px * var(--amp)) color-mix(in srgb, var(--ac-1) 70%, transparent)); } }
+/* thinking: a slow, curious tilt */
+.ac.is-thinking .ac-img { animation: ac-ponder 2.4s ease-in-out infinite; }
+@keyframes ac-ponder { 25% { transform: rotate(calc(-3deg * var(--amp))) translateY(-1%); } 75% { transform: rotate(calc(3deg * var(--amp))) translateY(-1%); } }
+/* answering: a little bob while the mouth moves (frames) */
+.ac.is-responding .ac-img { animation: ac-bob 0.46s ease-in-out infinite alternate; }
+@keyframes ac-bob { to { transform: translateY(calc(-2% * var(--amp))); } }
+/* working: busy, with a glow */
+.ac.is-working .ac-img { animation: ac-busy 0.9s ease-in-out infinite, ac-glow 1.2s ease-in-out infinite; }
+@keyframes ac-busy { 50% { transform: translateY(calc(-1.5% * var(--amp))) rotate(calc(1.5deg * var(--amp))); } }
+/* success (only after a step the server confirmed): a happy bounce */
+.ac.is-success .ac-img { animation: ac-hop 0.7s ease-out 2, ac-breathe 3.6s ease-in-out 1.4s infinite; }
+/* error: a small shake, then still */
+.ac.is-error .ac-img { animation: ac-shake 0.45s ease-in-out; }
+@keyframes ac-shake { 25% { transform: translateX(-4%); } 75% { transform: translateX(4%); } }
+/* sleeping: slow breathing */
+.ac.is-sleeping .ac-img { animation-duration: 6s; }
 
-/* idle: breathing, blinking, a little head movement; the small working parts tick over slowly */
-.ac .ac-float { animation: ac-breathe 3.6s ease-in-out infinite; }
-.ac .ac-face { animation: ac-tilt 8s ease-in-out infinite; }
-.ac .ac-eyes { animation: ac-blink 5.4s infinite; }
-.ac .ac-led rect { animation: ac-led 2.4s steps(2, jump-none) infinite; }
-.ac .ac-beat { stroke-dasharray: 120; animation: ac-beat 2.6s linear infinite; }
-.ac .ac-bits { animation: ac-drift 6s ease-in-out infinite; }
-.ac .ac-beacon { animation: ac-led 2.2s ease-in-out infinite; }
-.ac g.ac-wave { transform-origin: 0% 100%; }
-@keyframes ac-breathe { 50% { transform: translateY(calc(-1.8px * var(--amp))) scale(calc(1 + 0.012 * var(--amp))); } }
-@keyframes ac-tilt { 0%, 70%, 100% { transform: rotate(0); } 80% { transform: rotate(calc(-3deg * var(--amp))); } 90% { transform: rotate(calc(2deg * var(--amp))); } }
-@keyframes ac-blink { 0%, 93%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.12); } }
-@keyframes ac-led { 50% { opacity: 0.35; } }
-@keyframes ac-beat { from { stroke-dashoffset: 240; } to { stroke-dashoffset: 0; } }
-@keyframes ac-drift { 50% { transform: translateY(calc(-3px * var(--amp))) rotate(calc(4deg * var(--amp))); } }
-
-/* hover or tap: a hop and a wave */
-.ac.is-hover .ac-bounce { animation: ac-hop 0.6s ease-out; }
-.ac.is-hover .ac-wave, .ac.is-success .ac-wave { animation: ac-wave 0.5s ease-in-out 3 alternate; }
-@keyframes ac-hop { 40% { transform: translateY(calc(-6px * var(--amp))); } 70% { transform: translateY(calc(1px * var(--amp))); } }
-@keyframes ac-wave { from { transform: rotate(0); } to { transform: rotate(calc(-26deg * var(--amp))); } }
-
-/* listening: attentive eyes, a soft glow in time */
-.ac.is-listening .ac-glow { animation: ac-glow 1.8s ease-in-out infinite; }
-@keyframes ac-glow { 50% { opacity: 0.32; transform: scale(1.05); } }
-
-/* thinking: eyes looking around, dots coming and going */
-.ac.is-thinking .ac-look { animation: ac-look 2.4s ease-in-out infinite; }
-.ac.is-thinking .ac-dots circle { animation: ac-dot 1.2s ease-in-out infinite; }
-.ac.is-thinking .ac-dots circle:nth-child(2) { animation-delay: 0.2s; }
-.ac.is-thinking .ac-dots circle:nth-child(3) { animation-delay: 0.4s; }
-@keyframes ac-look { 0%, 100% { transform: translate(0, 0); } 30% { transform: translate(3px, -2px); } 65% { transform: translate(-2px, -2px); } }
-@keyframes ac-dot { 0%, 100% { opacity: 0.25; transform: scale(0.7); } 50% { opacity: 1; transform: scale(1.1); } }
-
-/* responding: talking */
-.ac.is-responding .ac-talk { animation: ac-talk 0.26s ease-in-out infinite alternate; }
-@keyframes ac-talk { from { transform: scaleY(0.35); } to { transform: scaleY(1.05); } }
-
-/* working: focused, a spinner, and each character's own busy bit */
-.ac.is-working .ac-spin { animation: ac-spin 0.9s linear infinite; }
-.ac.is-working .ac-tool { animation: ac-wrench 0.5s ease-in-out infinite alternate; transform-origin: 20% 80%; }
-.ac.is-working .ac-led rect { animation-duration: 0.5s; }
-.ac.is-working .ac-beat { animation-duration: 1s; }
-.ac.is-working .ac-bits { animation-duration: 1.6s; }
-.ac.is-working .ac-beacon { animation-duration: 0.6s; }
-.ac.is-working .ac-phones { animation: ac-led 1s ease-in-out infinite; }
-@keyframes ac-spin { to { transform: rotate(360deg); } }
-@keyframes ac-wrench { from { transform: rotate(-10deg); } to { transform: rotate(14deg); } }
-
-/* success (only after a step the server confirmed): a happy bounce, a check and a sparkle */
-.ac.is-success .ac-bounce { animation: ac-hop 0.7s ease-out 2; }
-.ac.is-success .ac-pop { animation: ac-pop 0.4s cubic-bezier(0.3, 1.6, 0.6, 1) both; }
-.ac.is-success .ac-spark { animation: ac-dot 0.9s ease-in-out infinite; }
-@keyframes ac-pop { from { transform: scale(0); } }
-
-/* error: a worried look and a small shake */
-.ac.is-error .ac-bounce { animation: ac-shake 0.45s ease-in-out; }
-@keyframes ac-shake { 25% { transform: translateX(-2px); } 75% { transform: translateX(2px); } }
-
-/* sleeping: slow breathing, drifting z's */
-.ac.is-sleeping .ac-float { animation-duration: 6s; }
-.ac.is-sleeping .ac-zz text { animation: ac-zz 2.8s ease-in-out infinite; }
-.ac.is-sleeping .ac-zz text + text { animation-delay: 1.4s; }
-@keyframes ac-zz { 0% { opacity: 0; transform: translate(0, 4px); } 40% { opacity: 1; } 100% { opacity: 0; transform: translate(3px, -6px); } }
-
-.ac.still *, html.ac-paused .ac * { animation-play-state: paused !important; }
-.ac.still * { animation: none !important; }
+.ac.still .ac-img { animation: none !important; }
+html.ac-paused .ac .ac-img { animation-play-state: paused !important; }
 @media (prefers-reduced-motion: reduce) {
-	.ac * { animation: none !important; }
+	.ac .ac-img { animation: none !important; }
 }
 
 /* ---- the floating character: opens the assistant ----------------------------------------------- */
@@ -8310,63 +8252,99 @@ html:not(.desk-mode) body:has(.upload-panel) .ac-widget {
 .assistant .assistant-msg > .bubble { max-width: min(82vw - 40px, 520px); }
 .assistant-head .ac { margin: -4px 0; }
 
-/* settings: the picker and the live preview */
-.ac-picker {
-	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
-	gap: 10px;
+/* settings: "Choose Your AI Assistant" — the grid and the panel beside it */
+.ac-title { margin: 6px 0 4px; font-size: 26px; font-weight: 750; letter-spacing: -0.01em; }
+.ac-title em { font-style: normal; color: var(--green, #a3e635); }
+.ac-lead { margin: 0 0 14px; color: var(--muted); font-size: 14px; line-height: 1.45; }
+.ac-choose { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.ac-choose > .ac-panel { order: -1; }
+@media (min-width: 900px) {
+	.ac-choose { grid-template-columns: minmax(0, 1.55fr) minmax(260px, 1fr); }
+	.ac-choose > .ac-panel { order: 0; }
 }
+.win-body .ac-choose { grid-template-columns: minmax(0, 1fr); }
+.win-body .ac-choose > .ac-panel { order: -1; }
+.ac-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 380px) { .ac-picker { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .ac-pick {
 	position: relative;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
-	gap: 4px;
-	padding: 12px 6px 10px;
+	gap: 2px;
+	padding: 10px 6px 12px;
 	border-radius: 16px;
 	border: 1.5px solid var(--line);
-	background: var(--glass-2);
+	background: color-mix(in srgb, #000 35%, var(--glass-2));
 	color: var(--fg);
 	text-align: center;
 	cursor: pointer;
+	transition: border-color 0.15s, box-shadow 0.15s;
 }
-.ac-pick b { font-size: 14px; }
-.ac-pick span { font-size: 11.5px; color: var(--muted); line-height: 1.25; }
+.ac-pick .ac { width: min(88px, 100%) !important; height: auto !important; aspect-ratio: 1; }
+.ac-pick b { font-size: 15px; margin-top: 2px; }
+.ac-pick span:not(.ac):not(.ac-check) { font-size: 11.5px; color: var(--muted); line-height: 1.25; }
 .ac-pick[aria-checked='true'] {
-	border-color: var(--green, var(--accent));
-	box-shadow: 0 0 0 3px color-mix(in srgb, var(--green, var(--accent)) 25%, transparent);
+	border-color: var(--ac-1);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--ac-1) 22%, transparent), 0 0 22px color-mix(in srgb, var(--ac-1) 25%, transparent);
 }
 .ac-pick .ac-check {
 	position: absolute;
 	top: 8px;
 	right: 8px;
+	z-index: 1;
 	display: grid;
 	place-items: center;
 	width: 22px;
 	height: 22px;
 	border-radius: 50%;
-	background: var(--green, var(--accent));
+	background: var(--green, #a3e635);
 	color: #111;
 }
-.ac-preview {
-	display: flex;
+.ac-panel { display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 16px; }
+.ac-panel > .ac { align-self: center; width: min(180px, 60%) !important; height: auto !important; aspect-ratio: 1; }
+.ac-panel-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ac-panel-head b { font-size: 28px; font-weight: 750; }
+.ac-pill {
+	display: inline-flex;
 	align-items: center;
-	gap: 16px;
-	padding: 16px;
+	gap: 5px;
+	padding: 3px 12px 3px 8px;
+	border-radius: 999px;
+	border: 1px solid var(--green, #a3e635);
+	color: var(--green, #a3e635);
+	background: color-mix(in srgb, var(--green, #a3e635) 12%, transparent);
+	font-size: 13px;
+	font-weight: 600;
 }
-.ac-preview .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.ac-preview .main b { font-size: 20px; }
-.ac-preview .main p { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.4; }
-.ac-preview .states { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.ac-preview .states button {
+.ac-panel p { margin: 0; color: var(--fg); opacity: 0.85; font-size: 14.5px; line-height: 1.45; }
+.ac-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.ac-chips span {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 7px 12px;
+	border-radius: 999px;
+	background: var(--glass-2);
+	border: 1px solid var(--line);
+	font-size: 13px;
+}
+.ac-chips span svg { color: var(--green, #a3e635); }
+.ac-panel .states { display: flex; flex-wrap: wrap; gap: 6px; }
+.ac-panel .states button {
 	padding: 4px 10px;
 	border-radius: 999px;
 	border: 1px solid var(--line);
-	background: var(--glass-2);
-	color: var(--fg);
+	background: transparent;
+	color: var(--muted);
 	font-size: 12px;
 	cursor: pointer;
 }
-.ac-preview .states button[aria-pressed='true'] { border-color: var(--green, var(--accent)); color: var(--green, var(--accent)); }
+.ac-panel .states button[aria-pressed='true'] { border-color: var(--ac-1); color: var(--ac-1); }
+.ac-panel-actions { display: grid; grid-template-columns: 1.4fr 1fr; gap: 10px; margin-top: 2px; }
+.ac-panel-actions .btn { justify-content: center; gap: 8px; white-space: nowrap; }
+.ac-use { background: var(--green, #a3e635) !important; color: #111 !important; font-weight: 700; }
+.ac-use:disabled { opacity: 0.85; }
+
 /* room under the last thing on a page, so the floating character never hides it */
 html:not(.desk-mode) body:has(.ac-widget) .shell { padding-bottom: calc(var(--dock-h) + var(--safe-b) + 44px + 64px); }

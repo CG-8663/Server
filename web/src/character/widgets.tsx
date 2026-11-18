@@ -65,120 +65,161 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 	)
 }
 
-// Pick a character: a grid of live previews, one checked.
-export function AssistantCharacterPicker({value, onChange, animate, intensity}: {value: string; onChange: (id: string) => void; animate: boolean; intensity: AssistantLook['intensity']}) {
+// Pick a character: a grid of them (hover says hello). `value` is the one in use (checked); `focus`
+// is the one shown in the panel beside the grid.
+export function AssistantCharacterPicker({value, focus, onFocus, animate, intensity}: {value: string; focus: string; onFocus: (id: string) => void; animate: boolean; intensity: AssistantLook['intensity']}) {
 	const [hover, setHover] = useState<string | null>(null)
 	return (
-		<div className="ac-picker" role="radiogroup" aria-label="Character">
-			{CHARACTERS.map((c) => {
-				const on = c.id === value
-				return (
-					<button
-						key={c.id}
-						type="button"
-						role="radio"
-						aria-checked={on}
-						className="ac-pick"
-						onPointerEnter={() => setHover(c.id)}
-						onPointerLeave={() => setHover(null)}
-						onClick={() => {
-							haptic(6)
-							onChange(c.id)
-						}}
-					>
-						{on && (
-							<span className="ac-check" aria-hidden="true">
-								<Icon name="check" size={14} stroke={3} />
-							</span>
-						)}
-						<AssistantCharacter id={c.id} state={hover === c.id ? 'hover' : 'idle'} size={64} animate={animate} intensity={intensity} />
-						<b>{c.name}</b>
-						<span>{c.tagline}</span>
-					</button>
-				)
-			})}
+		<div className="ac-picker" role="radiogroup" aria-label="Characters">
+			{CHARACTERS.map((c) => (
+				<button
+					key={c.id}
+					type="button"
+					role="radio"
+					aria-checked={c.id === focus}
+					className={`ac-pick${c.id === value ? ' in-use' : ''}`}
+					style={{'--ac-1': c.accent} as CSSProperties}
+					onPointerEnter={() => setHover(c.id)}
+					onPointerLeave={() => setHover(null)}
+					onClick={() => {
+						haptic(6)
+						onFocus(c.id)
+					}}
+				>
+					{c.id === value && (
+						<span className="ac-check" aria-label="Selected">
+							<Icon name="check" size={14} stroke={3} />
+						</span>
+					)}
+					<AssistantCharacter id={c.id} state={hover === c.id ? 'hover' : 'idle'} size={88} animate={animate} intensity={intensity} />
+					<b>{c.name}</b>
+					<span>{c.tagline}</span>
+				</button>
+			))}
 		</div>
 	)
 }
 
 const PREVIEW_STATES: {id: CharacterState; label: string}[] = [
 	{id: 'idle', label: 'Idle'},
+	{id: 'hover', label: 'Hover'},
 	{id: 'listening', label: 'Listening'},
 	{id: 'thinking', label: 'Thinking'},
 	{id: 'responding', label: 'Responding'},
 	{id: 'working', label: 'Working'},
-	{id: 'success', label: 'Done'},
-	{id: 'error', label: 'Problem'},
+	{id: 'success', label: 'Success'},
+	{id: 'error', label: 'Error'},
 	{id: 'sleeping', label: 'Sleeping'},
 ]
 
-// The chosen character, large, with its states to try.
-export function AssistantCharacterPreview({look}: {look: AssistantLook}) {
+// The panel beside the grid: the character, large, and how to use it.
+export function AssistantCharacterPreview({id, look, inUse, onUse, onCustomize}: {id: string; look: AssistantLook; inUse: boolean; onUse: () => void; onCustomize: () => void}) {
 	const [state, setState] = useState<CharacterState>('idle')
-	const c = characterById(look.character)
+	useEffect(() => setState('idle'), [id])
+	const c = characterById(id)
+	const name = inUse ? lookName(look) : c.name
 	return (
-		<div className="glass ac-preview">
-			<AssistantCharacter id={c.id} state={state} size={112} animate={look.animate} intensity={look.intensity} label={`${lookName(look)}, ${state}`} />
-			<div className="main">
-				<b>{lookName(look)}</b>
-				<p>{c.description}</p>
-				<div className="states" role="group" aria-label="Try a state">
-					{PREVIEW_STATES.map((s) => (
-						<button key={s.id} type="button" aria-pressed={state === s.id} onClick={() => setState(s.id)}>
-							{s.label}
-						</button>
-					))}
-				</div>
+		<div className="glass ac-panel" style={{'--ac-1': c.accent} as CSSProperties}>
+			<AssistantCharacter id={c.id} state={state} size={180} animate={look.animate} intensity={look.intensity} label={`${name}, ${state}`} />
+			<div className="ac-panel-head">
+				<b>{name}</b>
+				{inUse && (
+					<span className="ac-pill">
+						<Icon name="check" size={13} stroke={3} /> Selected
+					</span>
+				)}
+			</div>
+			<p>{c.description}</p>
+			<div className="ac-chips" aria-label="What it does">
+				<span>
+					<Icon name="terminal" size={15} /> Chat &amp; Commands
+				</span>
+				<span>
+					<Icon name="server" size={15} /> Manage Systems
+				</span>
+				<span>
+					<Icon name="bolt" size={15} /> Run Automations
+				</span>
+			</div>
+			<div className="states" role="group" aria-label="Preview a state">
+				{PREVIEW_STATES.map((s) => (
+					<button key={s.id} type="button" aria-pressed={state === s.id} onClick={() => setState(s.id)}>
+						{s.label}
+					</button>
+				))}
+			</div>
+			<div className="ac-panel-actions">
+				<button type="button" className="btn primary ac-use" disabled={inUse} onClick={() => (haptic(8), onUse())}>
+					<Icon name="check" size={17} stroke={2.6} /> {inUse ? `Using ${c.name}` : `Use ${c.name}`}
+				</button>
+				<button type="button" className="btn" onClick={() => (haptic(6), onCustomize())}>
+					<Icon name="settings" size={17} /> Customize
+				</button>
 			</div>
 		</div>
 	)
 }
 
-// Settings → Assistant → Assistant Appearance. Saved per account; applies straight away.
+// Settings → Assistant → Assistant Appearance ("Choose Your AI Assistant"). Saved per account.
 export function AssistantAppearanceSettings() {
 	const {look, setLook} = useAssistantLook()
+	const [focus, setFocus] = useState(look.character)
 	const [name, setName] = useState(look.name)
+	const [custom, setCustom] = useState(false)
 	useEffect(() => setName(look.name), [look.name])
 	const set = (patch: Partial<AssistantLook>) => setLook({...look, ...patch})
 	const isDefault = JSON.stringify(look) === JSON.stringify(DEFAULT_LOOK)
+	const customize = () => {
+		setCustom(true)
+		requestAnimationFrame(() => document.getElementById('ac-customize')?.scrollIntoView({behavior: 'smooth', block: 'start'}))
+	}
 	return (
 		<section className="ac-settings" aria-labelledby="ac-settings-title">
 			<div className="section-head" style={{marginTop: 22}}>
-				<h2 id="ac-settings-title">Assistant Appearance</h2>
+				<h2 id="ac-settings-label">Assistant Appearance</h2>
 			</div>
-			<AssistantCharacterPreview look={look} />
-			<div style={{height: 12}} />
-			<AssistantCharacterPicker value={look.character} onChange={(character) => set({character})} animate={look.animate} intensity={look.intensity} />
-			<div className="glass group" style={{marginTop: 14, padding: '12px 14px'}}>
-				<div className="field">
-					<label htmlFor="ac-name">Name</label>
-					<input
-						id="ac-name"
-						value={name}
-						maxLength={NAME_MAX}
-						placeholder={characterById(look.character).name}
-						onChange={(e) => setName(e.target.value)}
-						onBlur={() => name !== look.name && set({name})}
-						onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
-					/>
-				</div>
-				<div className="field">
-					<label>Size</label>
-					<Segmented label="Size" value={look.size} onChange={(size) => set({size})} options={[{id: 'small', label: 'Small'}, {id: 'medium', label: 'Medium'}, {id: 'large', label: 'Large'}]} />
-				</div>
-				<div className="field">
-					<label>Animation</label>
-					<Segmented label="Animation" value={look.intensity} onChange={(intensity) => set({intensity})} options={[{id: 'minimal', label: 'Minimal'}, {id: 'normal', label: 'Normal'}, {id: 'playful', label: 'Playful'}]} />
-				</div>
+			<h2 className="ac-title" id="ac-settings-title">
+				Choose Your <em>AI Assistant</em>
+			</h2>
+			<p className="ac-lead">Pick a mascot for your Omarchy Server widget. Your assistant lives in the UI, helps you manage your home lab, and keeps everything running smoothly.</p>
+			<div className="ac-choose">
+				<AssistantCharacterPicker value={look.character} focus={focus} onFocus={setFocus} animate={look.animate} intensity={look.intensity} />
+				<AssistantCharacterPreview id={focus} look={look} inUse={focus === look.character} onUse={() => set({character: focus})} onCustomize={customize} />
 			</div>
-			<div className="glass group" style={{marginTop: 12, '--inset': '62px'} as CSSProperties}>
-				<Row icon="sparkle" color="var(--green)" label="Animate" sub="Off: the character stays still" trailing={<Switch on={look.animate} label="Animate" onChange={(animate) => set({animate})} />} />
-				<Row icon="bolt" color="var(--peach)" label="Reactions" sub="Thinking, working, done and problems" trailing={<Switch on={look.reactions} label="Reactions" onChange={(reactions) => set({reactions})} />} />
-				<Row icon="eye" color="var(--blue)" label="Floating character" sub="Off: open it from Home or the desktop" trailing={<Switch on={look.floating} label="Floating character" onChange={(floating) => set({floating})} />} />
-			</div>
-			<button type="button" className="btn block" style={{marginTop: 12}} disabled={isDefault} onClick={() => (haptic(6), setLook(DEFAULT_LOOK))}>
-				Restore default appearance
-			</button>
+			{custom && (
+				<div id="ac-customize">
+					<div className="glass group" style={{marginTop: 14, padding: '12px 14px'}}>
+						<div className="field">
+							<label htmlFor="ac-name">Name</label>
+							<input
+								id="ac-name"
+								value={name}
+								maxLength={NAME_MAX}
+								placeholder={characterById(look.character).name}
+								onChange={(e) => setName(e.target.value)}
+								onBlur={() => name !== look.name && set({name})}
+								onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
+							/>
+						</div>
+						<div className="field">
+							<label>Size</label>
+							<Segmented label="Size" value={look.size} onChange={(size) => set({size})} options={[{id: 'small', label: 'Small'}, {id: 'medium', label: 'Medium'}, {id: 'large', label: 'Large'}]} />
+						</div>
+						<div className="field">
+							<label>Animation</label>
+							<Segmented label="Animation" value={look.intensity} onChange={(intensity) => set({intensity})} options={[{id: 'minimal', label: 'Minimal'}, {id: 'normal', label: 'Normal'}, {id: 'playful', label: 'Playful'}]} />
+						</div>
+					</div>
+					<div className="glass group" style={{marginTop: 12, '--inset': '62px'} as CSSProperties}>
+						<Row icon="sparkle" color="var(--green)" label="Animate" sub="Off: the character stays still" trailing={<Switch on={look.animate} label="Animate" onChange={(animate) => set({animate})} />} />
+						<Row icon="bolt" color="var(--peach)" label="Reactions" sub="Thinking, working, done and problems" trailing={<Switch on={look.reactions} label="Reactions" onChange={(reactions) => set({reactions})} />} />
+						<Row icon="eye" color="var(--blue)" label="Floating character" sub="Off: open it from Home or the desktop" trailing={<Switch on={look.floating} label="Floating character" onChange={(floating) => set({floating})} />} />
+					</div>
+					<button type="button" className="btn block" style={{marginTop: 12}} disabled={isDefault} onClick={() => (haptic(6), setLook(DEFAULT_LOOK), setFocus(DEFAULT_LOOK.character))}>
+						Restore default appearance
+					</button>
+				</div>
+			)}
 		</section>
 	)
 }

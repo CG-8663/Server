@@ -38,15 +38,24 @@ test('reactions off: the character stays idle (and still says hello on hover)', 
 	assert.equal(at({phase: 'error'}, {reactions: false, hover: true}), 'hover')
 })
 
-test('the registry: six characters, Oma first and the default, each complete and unique', async () => {
+test('the registry: six characters from the sheet, Oma first and the default, each with all nine frames', async () => {
 	const src = await readFile(new URL('../web/src/character/registry.tsx', import.meta.url), 'utf8')
 	const ids = [...src.matchAll(/^\t\tid: '([a-z0-9-]+)',$/gm)].map((m) => m[1])
 	assert.deepEqual(ids, ['oma', 'patch', 'pixel', 'stack', 'pulse', 'orbit'])
 	assert.match(src, /export const DEFAULT_CHARACTER = 'oma'/)
-	for (const field of ['name', 'tagline', 'description', 'colors', 'theme', 'face', 'states', 'back']) {
+	const names = [...src.matchAll(/^\t\tname: '([^']+)',$/gm)].map((m) => m[1])
+	assert.deepEqual(names, ['Oma', 'Patch', 'Pixel', 'Stack', 'Pulse', 'Orbit'])
+	for (const field of ['tagline', 'description', 'accent', 'states', 'frame']) {
 		assert.equal([...src.matchAll(new RegExp(`^\\t\\t${field}: `, 'gm'))].length, ids.length, `every character has ${field}`)
 	}
-	// Bundled drawings only: nothing fetched from elsewhere.
+	// Bundled frames only: every state of every character is in web/public/assistant, nothing remote.
+	for (const id of ids) {
+		for (const state of ['idle', 'hover', 'listening', 'thinking', 'responding', 'working', 'success', 'error', 'sleeping']) {
+			const file = new URL(`../web/public/assistant/${id}/${state}.webp`, import.meta.url)
+			const head = (await readFile(file)).subarray(0, 12).toString('latin1')
+			assert.ok(head.startsWith('RIFF') && head.endsWith('WEBP'), `${id}/${state}.webp is a WebP`)
+		}
+	}
 	assert.doesNotMatch(src, /https?:\/\//)
 	const comp = await readFile(new URL('../web/src/character/AssistantCharacter.tsx', import.meta.url), 'utf8')
 	assert.doesNotMatch(comp, /https?:\/\/|fetch\(/)
