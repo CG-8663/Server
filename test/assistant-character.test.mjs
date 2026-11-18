@@ -60,3 +60,12 @@ test('the registry: six characters from the sheet, Oma first and the default, ea
 	const comp = await readFile(new URL('../web/src/character/AssistantCharacter.tsx', import.meta.url), 'utf8')
 	assert.doesNotMatch(comp, /https?:\/\/|fetch\(/)
 })
+
+test('the frames have no background: every one is a WebP with an alpha channel', async () => {
+	for (const id of ['oma', 'patch', 'pixel', 'stack', 'pulse', 'orbit']) {
+		const b = await readFile(new URL(`../web/public/assistant/${id}/idle.webp`, import.meta.url))
+		// VP8X (extended) with the alpha flag set, or VP8L (lossless, alpha in the bitstream)
+		const chunk = b.subarray(12, 16).toString('latin1')
+		assert.ok(chunk === 'VP8X' ? (b[20] & 0x10) !== 0 : chunk === 'VP8L', `${id}: transparent`)
+	}
+})

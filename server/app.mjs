@@ -20,7 +20,7 @@ import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.40'
+export const VERSION = '0.9.41'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -45,7 +45,23 @@ export function cleanAssistantLook(v) {
 		size: one(v.size, ['small', 'medium', 'large'], 'medium'),
 		floating: v.floating !== false,
 		reactions: v.reactions !== false,
+		position: spots(v.position),
 	}
+}
+// Where the floating character sits, per layout, as fractions of the screen.
+function spots(v) {
+	const out = {}
+	if (!v || typeof v !== 'object' || Array.isArray(v)) return out
+	for (const k of ['phone', 'desktop']) {
+		const p = v[k]
+		if (!p || typeof p !== 'object') continue
+		const x = Number(p.x)
+		const y = Number(p.y)
+		if (typeof p.x !== 'number' || typeof p.y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) continue
+		const c = (n) => Math.round(Math.min(1, Math.max(0, n)) * 1e4) / 1e4
+		out[k] = {x: c(x), y: c(y)}
+	}
+	return out
 }
 
 export const ALLOWED = {

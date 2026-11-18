@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.41',
+		date: '2026-11-18',
+		title: 'Put your assistant anywhere',
+		added: [
+			'Drag the floating character anywhere on the screen. It follows your finger or mouse, leans as it moves, settles where you drop it, and stays there on every device (phone and desktop each keep their own spot). Arrow keys move it too.',
+			'The characters have no background now, just the character, with smoother motion: gentle breathing, springy hops, and frames that blend into each other.',
+		],
+	},
+	{
 		version: '0.9.40',
 		date: '2026-11-18',
 		title: 'Meet Oma',
