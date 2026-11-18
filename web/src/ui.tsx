@@ -3,6 +3,7 @@ import {createContext, useCallback, useContext, useEffect, useId, useLayoutEffec
 
 import {useQuery} from '@tanstack/react-query'
 import type {AppState, Machine, Wallpaper} from './api'
+import {AssistantAvatar, cleanLook, type AssistantLook} from './character/AssistantCharacter'
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
@@ -674,6 +675,8 @@ export type Prefs = {
 	omarchyBackground?: string | null
 	/** A plain colour behind everything instead of a picture (#rrggbb), or null for the picture. */
 	solidColor?: string | null
+	/** How the assistant looks (character, name, motion); see character/AssistantCharacter. */
+	assistantLook?: AssistantLook | null
 }
 // New installs start on the Omarchy theme (the Omarchy desktop's own colours and background). Anyone
 // who already chose a theme keeps it: their choice is saved on the server and wins over this default.
@@ -705,7 +708,7 @@ function clean(p: Partial<Prefs> | null | undefined): Prefs {
 	const theme = THEMES.some((t) => t.id === p?.theme) ? p!.theme! : DEFAULT_PREFS.theme
 	const accent = (ACCENTS as readonly string[]).includes(p?.accent as string) ? p!.accent! : DEFAULT_PREFS.accent
 	const omarchyBackground = typeof p?.omarchyBackground === 'string' && /^[0-9a-f]{16}$/.test(p.omarchyBackground) ? p.omarchyBackground : null
-	return {theme, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null}
+	return {theme, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null}
 }
 export function readPrefs(): Prefs {
 	try {
@@ -874,7 +877,7 @@ export function usePrefs(brandHsl: string | null | undefined, signedIn: boolean)
 			const before = now.current
 			setLocal(next)
 			if (!signedIn) return
-			const patch = Object.fromEntries((['theme', 'accent', 'customBrandHsl', 'omarchyBackground', 'solidColor'] as const).filter((k) => (next[k] ?? null) !== (before[k] ?? null)).map((k) => [k, next[k] ?? null])) as Partial<Prefs>
+			const patch = Object.fromEntries((['theme', 'accent', 'customBrandHsl', 'omarchyBackground', 'solidColor', 'assistantLook'] as const).filter((k) => JSON.stringify(next[k] ?? null) !== JSON.stringify(before[k] ?? null)).map((k) => [k, next[k] ?? null])) as Partial<Prefs>
 			if (!Object.keys(patch).length) return
 			saving.current++
 			savePrefs(patch)
@@ -887,7 +890,7 @@ export function usePrefs(brandHsl: string | null | undefined, signedIn: boolean)
 }
 function savePrefs(p: Partial<Prefs>): Promise<(Prefs & {rev?: number}) | null> {
 	const body: Record<string, unknown> = {}
-	for (const k of ['theme', 'accent', 'customBrandHsl', 'omarchyBackground', 'solidColor'] as const) if (k in p) body[k] = p[k] ?? null
+	for (const k of ['theme', 'accent', 'customBrandHsl', 'omarchyBackground', 'solidColor', 'assistantLook'] as const) if (k in p) body[k] = p[k] ?? null
 	return fetch('/api/prefs', {
 		method: 'POST',
 		credentials: 'same-origin',
@@ -997,10 +1000,11 @@ export function TerminalIcon({size = 56}: {size?: number}) {
 	)
 }
 
+// The assistant's icon is its character (Settings → Assistant → Assistant Appearance).
 export function AssistantIcon({size = 56}: {size?: number}) {
 	return (
-		<span className="app-icon assistant-icon sys-ico" style={{width: size, height: size, '--grad': 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', '--tone': 'var(--mauve)'} as CSSProperties}>
-			<Icon name="sparkle" size={size * 0.5} stroke={1.8} />
+		<span className="app-icon assistant-icon sys-ico ac-icon" style={{width: size, height: size} as CSSProperties}>
+			<AssistantAvatar size={size} />
 		</span>
 	)
 }

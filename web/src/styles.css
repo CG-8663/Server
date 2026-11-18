@@ -8140,3 +8140,233 @@ html.page-locked body {
 	font-size: 14px;
 	font-weight: 700;
 }
+
+/* ---- The assistant's character ------------------------------------------------------------------
+   SVG drawn by web/src/character. Colours come from the character (theme tokens); motion is CSS, scaled
+   by intensity, and stops for reduced motion, when turned off, or while the tab is in the background. */
+.ac {
+	--amp: 1;
+	display: block;
+	flex: none;
+	overflow: visible;
+	filter: drop-shadow(0 2px 6px color-mix(in srgb, var(--ac-1) 30%, transparent));
+}
+.ac.ac-minimal { --amp: 0.45; }
+.ac.ac-playful { --amp: 1.7; }
+.ac .f-1 { fill: var(--ac-1); }
+.ac .f-2 { fill: var(--ac-2); }
+.ac .s-1 { stroke: var(--ac-1); }
+.ac .s-2 { stroke: var(--ac-2); }
+.ac .f-body { fill: var(--ac-body); }
+.ac .s-body { stroke: var(--ac-body); }
+.ac .f-dark { fill: #0d0d10; }
+.ac .s-dark { stroke: #0d0d10; }
+.ac .f-screen { fill: #0b0c10; }
+.ac .f-metal { fill: #a3a8b4; }
+.ac .s-edge { stroke: rgba(0, 0, 0, 0.35); }
+/* a soft, lighter edge so a dark character still shows on a dark background */
+.ac .ac-fur { stroke: color-mix(in srgb, var(--ac-body) 72%, #fff 28%); }
+.ac .s-band { stroke: color-mix(in srgb, var(--ac-body) 70%, #fff 30%); }
+.ac .f-badge { fill: #0d0d10; stroke: var(--ac-1); stroke-width: 1.4; }
+.ac .s-badge { stroke: #0d0d10; }
+.ac .f-warn { fill: var(--peach, #e0af68); }
+.ac .f-badge-ink { fill: #0d0d10; }
+.ac .ac-glass { fill-opacity: 0.32; }
+.ac .ac-glow { fill: var(--ac-1); opacity: 0.16; }
+/* Only the animated parts (never one with its own transform attribute, which CSS would replace). */
+.ac :is(.ac-float, .ac-bounce, .ac-face, .ac-eyes, .ac-look, .ac-talk, .ac-dots circle, .ac-spin, .ac-pop, .ac-spark, .ac-zz text, .ac-glow, .ac-bits, .ac-tool, .ac-wave, .ac-phones, .ac-led rect, .ac-beacon) {
+	transform-box: fill-box;
+	transform-origin: center;
+}
+
+/* idle: breathing, blinking, a little head movement; the small working parts tick over slowly */
+.ac .ac-float { animation: ac-breathe 3.6s ease-in-out infinite; }
+.ac .ac-face { animation: ac-tilt 8s ease-in-out infinite; }
+.ac .ac-eyes { animation: ac-blink 5.4s infinite; }
+.ac .ac-led rect { animation: ac-led 2.4s steps(2, jump-none) infinite; }
+.ac .ac-beat { stroke-dasharray: 120; animation: ac-beat 2.6s linear infinite; }
+.ac .ac-bits { animation: ac-drift 6s ease-in-out infinite; }
+.ac .ac-beacon { animation: ac-led 2.2s ease-in-out infinite; }
+.ac g.ac-wave { transform-origin: 0% 100%; }
+@keyframes ac-breathe { 50% { transform: translateY(calc(-1.8px * var(--amp))) scale(calc(1 + 0.012 * var(--amp))); } }
+@keyframes ac-tilt { 0%, 70%, 100% { transform: rotate(0); } 80% { transform: rotate(calc(-3deg * var(--amp))); } 90% { transform: rotate(calc(2deg * var(--amp))); } }
+@keyframes ac-blink { 0%, 93%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.12); } }
+@keyframes ac-led { 50% { opacity: 0.35; } }
+@keyframes ac-beat { from { stroke-dashoffset: 240; } to { stroke-dashoffset: 0; } }
+@keyframes ac-drift { 50% { transform: translateY(calc(-3px * var(--amp))) rotate(calc(4deg * var(--amp))); } }
+
+/* hover or tap: a hop and a wave */
+.ac.is-hover .ac-bounce { animation: ac-hop 0.6s ease-out; }
+.ac.is-hover .ac-wave, .ac.is-success .ac-wave { animation: ac-wave 0.5s ease-in-out 3 alternate; }
+@keyframes ac-hop { 40% { transform: translateY(calc(-6px * var(--amp))); } 70% { transform: translateY(calc(1px * var(--amp))); } }
+@keyframes ac-wave { from { transform: rotate(0); } to { transform: rotate(calc(-26deg * var(--amp))); } }
+
+/* listening: attentive eyes, a soft glow in time */
+.ac.is-listening .ac-glow { animation: ac-glow 1.8s ease-in-out infinite; }
+@keyframes ac-glow { 50% { opacity: 0.32; transform: scale(1.05); } }
+
+/* thinking: eyes looking around, dots coming and going */
+.ac.is-thinking .ac-look { animation: ac-look 2.4s ease-in-out infinite; }
+.ac.is-thinking .ac-dots circle { animation: ac-dot 1.2s ease-in-out infinite; }
+.ac.is-thinking .ac-dots circle:nth-child(2) { animation-delay: 0.2s; }
+.ac.is-thinking .ac-dots circle:nth-child(3) { animation-delay: 0.4s; }
+@keyframes ac-look { 0%, 100% { transform: translate(0, 0); } 30% { transform: translate(3px, -2px); } 65% { transform: translate(-2px, -2px); } }
+@keyframes ac-dot { 0%, 100% { opacity: 0.25; transform: scale(0.7); } 50% { opacity: 1; transform: scale(1.1); } }
+
+/* responding: talking */
+.ac.is-responding .ac-talk { animation: ac-talk 0.26s ease-in-out infinite alternate; }
+@keyframes ac-talk { from { transform: scaleY(0.35); } to { transform: scaleY(1.05); } }
+
+/* working: focused, a spinner, and each character's own busy bit */
+.ac.is-working .ac-spin { animation: ac-spin 0.9s linear infinite; }
+.ac.is-working .ac-tool { animation: ac-wrench 0.5s ease-in-out infinite alternate; transform-origin: 20% 80%; }
+.ac.is-working .ac-led rect { animation-duration: 0.5s; }
+.ac.is-working .ac-beat { animation-duration: 1s; }
+.ac.is-working .ac-bits { animation-duration: 1.6s; }
+.ac.is-working .ac-beacon { animation-duration: 0.6s; }
+.ac.is-working .ac-phones { animation: ac-led 1s ease-in-out infinite; }
+@keyframes ac-spin { to { transform: rotate(360deg); } }
+@keyframes ac-wrench { from { transform: rotate(-10deg); } to { transform: rotate(14deg); } }
+
+/* success (only after a step the server confirmed): a happy bounce, a check and a sparkle */
+.ac.is-success .ac-bounce { animation: ac-hop 0.7s ease-out 2; }
+.ac.is-success .ac-pop { animation: ac-pop 0.4s cubic-bezier(0.3, 1.6, 0.6, 1) both; }
+.ac.is-success .ac-spark { animation: ac-dot 0.9s ease-in-out infinite; }
+@keyframes ac-pop { from { transform: scale(0); } }
+
+/* error: a worried look and a small shake */
+.ac.is-error .ac-bounce { animation: ac-shake 0.45s ease-in-out; }
+@keyframes ac-shake { 25% { transform: translateX(-2px); } 75% { transform: translateX(2px); } }
+
+/* sleeping: slow breathing, drifting z's */
+.ac.is-sleeping .ac-float { animation-duration: 6s; }
+.ac.is-sleeping .ac-zz text { animation: ac-zz 2.8s ease-in-out infinite; }
+.ac.is-sleeping .ac-zz text + text { animation-delay: 1.4s; }
+@keyframes ac-zz { 0% { opacity: 0; transform: translate(0, 4px); } 40% { opacity: 1; } 100% { opacity: 0; transform: translate(3px, -6px); } }
+
+.ac.still *, html.ac-paused .ac * { animation-play-state: paused !important; }
+.ac.still * { animation: none !important; }
+@media (prefers-reduced-motion: reduce) {
+	.ac * { animation: none !important; }
+}
+
+/* ---- the floating character: opens the assistant ----------------------------------------------- */
+.ac-widget {
+	position: fixed;
+	z-index: 30;
+	display: grid;
+	place-items: center;
+	padding: 0;
+	border: 0;
+	border-radius: 22px;
+	background: none;
+	color: inherit;
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+	transition: transform 0.18s var(--ease, ease);
+}
+.ac-widget:active { transform: scale(0.94); }
+.ac-widget:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.ac-widget .ac-dot {
+	position: absolute;
+	top: 2px;
+	right: 2px;
+	min-width: 18px;
+	height: 18px;
+	padding: 0 5px;
+	border-radius: 9px;
+	background: var(--red, #f7768e);
+	color: #fff;
+	font-size: 11px;
+	font-weight: 700;
+	line-height: 18px;
+	box-shadow: 0 0 0 2px var(--bg);
+}
+.ac-widget .ac-dot.warn { background: var(--peach, #e0af68); color: #111; }
+/* phone: above the dock, on the right, out of the way of a page's own button */
+html:not(.desk-mode) .ac-widget {
+	right: max(16px, calc(50% - 240px + 6px));
+	bottom: calc(var(--safe-b) + var(--dock-h) + 22px - var(--ios-gap, 0px));
+}
+html:not(.desk-mode) body:has(.fab) .ac-widget,
+html:not(.desk-mode) body:has(.select-bar) .ac-widget,
+html:not(.desk-mode) body:has(.upload-panel) .ac-widget {
+	bottom: calc(var(--safe-b) + var(--dock-h) + 92px - var(--ios-gap, 0px));
+}
+/* desktop: bottom right, clear of the dock wherever it is */
+.desk .ac-widget { z-index: 99990; right: 22px; bottom: 96px; }
+.desk.dock-top .ac-widget, .desk.dock-left .ac-widget { bottom: 22px; }
+.desk.dock-right .ac-widget { right: 104px; bottom: 22px; }
+
+/* in the chat: the character beside its replies */
+.assistant .assistant-msg {
+	display: flex;
+	align-items: flex-end;
+	gap: 6px;
+	align-self: flex-start;
+	max-width: 100%;
+}
+.assistant .assistant-msg > .ac { margin-bottom: 2px; }
+.assistant .assistant-msg > .bubble { max-width: min(82vw - 40px, 520px); }
+.assistant-head .ac { margin: -4px 0; }
+
+/* settings: the picker and the live preview */
+.ac-picker {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+	gap: 10px;
+}
+.ac-pick {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	padding: 12px 6px 10px;
+	border-radius: 16px;
+	border: 1.5px solid var(--line);
+	background: var(--glass-2);
+	color: var(--fg);
+	text-align: center;
+	cursor: pointer;
+}
+.ac-pick b { font-size: 14px; }
+.ac-pick span { font-size: 11.5px; color: var(--muted); line-height: 1.25; }
+.ac-pick[aria-checked='true'] {
+	border-color: var(--green, var(--accent));
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--green, var(--accent)) 25%, transparent);
+}
+.ac-pick .ac-check {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	display: grid;
+	place-items: center;
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	background: var(--green, var(--accent));
+	color: #111;
+}
+.ac-preview {
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	padding: 16px;
+}
+.ac-preview .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.ac-preview .main b { font-size: 20px; }
+.ac-preview .main p { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.4; }
+.ac-preview .states { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.ac-preview .states button {
+	padding: 4px 10px;
+	border-radius: 999px;
+	border: 1px solid var(--line);
+	background: var(--glass-2);
+	color: var(--fg);
+	font-size: 12px;
+	cursor: pointer;
+}
+.ac-preview .states button[aria-pressed='true'] { border-color: var(--green, var(--accent)); color: var(--green, var(--accent)); }
+/* room under the last thing on a page, so the floating character never hides it */
+html:not(.desk-mode) body:has(.ac-widget) .shell { padding-bottom: calc(var(--dock-h) + var(--safe-b) + 44px + 64px); }

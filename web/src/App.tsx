@@ -1,4 +1,4 @@
-import {lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties} from 'react'
+import {lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {getBootstrap, query, type Bootstrap, type User, type UserApp} from './api'
@@ -16,6 +16,8 @@ import {Backdrop, Sheet, SheetHeader, haptic, useLayout, usePrefs, type Prefs} f
 import {WhatsNewOnUpdate} from './WhatsNew'
 import {InstallerPrompt} from './InstallerPrompt'
 import {consumeReopenAssistant} from './assistant'
+import {AssistantLookContext, cleanLook, DEFAULT_LOOK, type AssistantLook} from './character/AssistantCharacter'
+import {AssistantCharacterWidget} from './character/widgets'
 
 const Files = lazy(() => import('./screens/Files').then((m) => ({default: m.Files})))
 const Machines = lazy(() => import('./screens/Machines').then((m) => ({default: m.Machines})))
@@ -56,6 +58,9 @@ export function App() {
 	const account = boot.data?.accounts.find((a) => a.userId === (signedIn ? boot.data?.session?.accountId : loginId)) ?? boot.data?.accounts[0]
 	const wallpaper = (signedIn ? user.data?.wallpaper : null) ?? account?.wallpaper ?? null
 	const [prefs, setPrefs] = usePrefs(wallpaper?.brandColorHsl, signedIn)
+	// The assistant's look (character, name, motion), saved with this account's preferences.
+	const look = useMemo(() => cleanLook(prefs.assistantLook ?? DEFAULT_LOOK), [prefs.assistantLook])
+	const lookValue = useMemo(() => ({look, setLook: (next: AssistantLook) => setPrefs({...prefs, assistantLook: next})}), [look, prefs, setPrefs])
 	const refresh = useCallback(() => qc.invalidateQueries({queryKey: ['bootstrap']}), [qc])
 	const layout = useLayout()
 	const reopenAssistant = useRef(consumeReopenAssistant()).current
@@ -95,9 +100,11 @@ export function App() {
 	else
 		content = (
 			<BootstrapContext.Provider value={b}>
+			<AssistantLookContext.Provider value={lookValue}>
 				{layout.desktop ? <Desktop boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} reopenAssistant={reopenAssistant} /> : <Shell boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} reopenAssistant={reopenAssistant} />}
 				<WhatsNewOnUpdate version={b.touch.version} onDone={() => setWhatsNewDone(true)} />
 				<InstallerPrompt ready={whatsNewDone} />
+			</AssistantLookContext.Provider>
 			</BootstrapContext.Provider>
 		)
 
@@ -236,6 +243,15 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 				<Suspense fallback={<ScreenFallback />}>
 					<TerminalScreen app={terminal.app} input={terminal.input} onClose={() => setTerminal(null)} />
 				</Suspense>
+			)}
+			{/* Not over Settings, which has its own preview of the character (and forms it would cover). */}
+			{!assistantOpen && !terminal && !viewing && tab !== 'settings' && (
+				<AssistantCharacterWidget
+					onOpen={() => {
+						setAppId(null)
+						setAssistantOpen(true)
+					}}
+				/>
 			)}
 			{assistantOpen && (
 				<Suspense fallback={<ScreenFallback />}>

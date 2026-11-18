@@ -20,13 +20,34 @@ import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.39'
+export const VERSION = '0.9.40'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
 
 // Every omarchyd procedure the UI may reach, with its tRPC kind. Anything else
 // (factory reset, password changes, repositories, network config…) is refused.
+// Settings → Assistant → Assistant Appearance, saved with the account's other preferences.
+export function cleanAssistantLook(v) {
+	if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+	const one = (x, ok, d) => (ok.includes(x) ? x : d)
+	if (typeof v.character !== 'string' || !/^[a-z0-9-]{1,24}$/.test(v.character)) return null
+	const name = String(v.name ?? '')
+		.replace(/[\u0000-\u001f\u007f<>]/g, '')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.slice(0, 24)
+	return {
+		character: v.character,
+		name,
+		animate: v.animate !== false,
+		intensity: one(v.intensity, ['minimal', 'normal', 'playful'], 'normal'),
+		size: one(v.size, ['small', 'medium', 'large'], 'medium'),
+		floating: v.floating !== false,
+		reactions: v.reactions !== false,
+	}
+}
+
 export const ALLOWED = {
 	'user.revokeAppPasses': 'mutation',
 	'system.desktopSignIn': 'mutation',
@@ -718,8 +739,15 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	api.post('/prefs', async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		const {theme, accent, customBrandHsl, omarchyBackground, solidColor} = req.body ?? {}
+		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook} = req.body ?? {}
 		const patch = {}
+		// How the assistant looks for this account (character, name, motion). Appearance only: it never
+		// reaches the assistant itself. Checked field by field; anything else is dropped.
+		if (assistantLook !== undefined) {
+			const look = cleanAssistantLook(assistantLook)
+			if (assistantLook !== null && !look) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad assistant appearance'}})
+			patch.assistantLook = look
+		}
 		if (solidColor !== undefined) {
 			if (solidColor !== null && !/^#[0-9a-f]{6}$/i.test(String(solidColor))) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad colour'}})
 			patch.solidColor = solidColor === null ? null : String(solidColor).toLowerCase()

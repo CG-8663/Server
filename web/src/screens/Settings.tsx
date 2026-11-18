@@ -7,6 +7,7 @@ import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
 import {Appearance} from './More'
+import {AssistantAppearanceSettings} from '../character/widgets'
 import {OmarchyThemes} from '../OmarchyThemes'
 import {StoragePage} from './Storage'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
@@ -547,6 +548,8 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 					Ask the owner to share a key, or add your own.
 				</p>
 			)}
+
+			<AssistantAppearanceSettings />
 
 			<AddKeySheet open={add} onClose={() => setAdd(false)} />
 			<ShareKeySheet open={!!share} keyRow={share} accounts={boot.accounts} self={self} onClose={() => setShare(null)} />
