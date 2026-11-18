@@ -94,6 +94,16 @@ const sse = (text) => ({
 const toolSse = (id, name, args = '{}') => sse(`data: ${JSON.stringify({choices: [{delta: {tool_calls: [{index: 0, id, function: {name, arguments: args}}]}}]})}\n\ndata: [DONE]\n\n`)
 const textSse = (text) => sse(`data: ${JSON.stringify({choices: [{delta: {content: text}}]})}\n\ndata: [DONE]\n\n`)
 
+test('streamChat treats Qwen XML split across tokens as a tool call', async () => {
+	const pieces = ['<function', '=', 'system', '_memory', 'Usage', '>', '\n</', 'function', '>', '\n</tool_call>']
+	const body = pieces.map((p) => `data: ${JSON.stringify({choices: [{delta: {content: p}}]})}\n\n`).join('') + 'data: [DONE]\n\n'
+	const out = []
+	for await (const ev of streamChat({baseUrl: 'http://127.0.0.1/v1', apiKey: 'k', model: 'm', messages: [], tools: [], fetchImpl: async () => sse(body)})) out.push(ev)
+	assert.deepEqual(out.map((e) => e.type), ['tool'])
+	assert.equal(out[0].name, 'system_memoryUsage')
+	assert.equal(out[0].arguments, '{}')
+})
+
 test('streamChat treats Qwen XML content as a tool call', async () => {
 	const xml = '<function=system_diskUsage>\n</function>\n</tool_call>'
 	const out = []
