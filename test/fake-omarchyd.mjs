@@ -239,6 +239,7 @@ export async function startFakeserverd({
 		provider: k.provider,
 		baseUrl: k.baseUrl,
 		model: k.model,
+		api: k.api ?? (k.provider === 'openai' ? 'responses' : 'chat'),
 		check: k.check ?? null,
 		last4: k.last4,
 		ownerUserId: k.ownerUserId,
@@ -656,6 +657,7 @@ export async function startFakeserverd({
 					name,
 					provider,
 					baseUrl,
+					...(input?.api === 'chat' || input?.api === 'responses' ? {api: input.api} : {}),
 					model,
 					apiKey,
 					last4: apiKey.slice(-4),
@@ -685,6 +687,7 @@ export async function startFakeserverd({
 				if (k.ownerUserId === auth.userId) {
 					if (typeof input?.name === 'string') k.name = input.name.trim().slice(0, 48) || k.name
 					if (typeof input?.model === 'string' && input.model.trim()) k.model = input.model.trim().slice(0, 80)
+					if (input?.api === 'chat' || input?.api === 'responses') k.api = input.api
 					if (typeof input?.apiKey === 'string') {
 						const next = input.apiKey.trim()
 						if (next.length > 512) return {error: ['BAD_REQUEST', 'Enter an API key']}

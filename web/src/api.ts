@@ -238,6 +238,8 @@ export type ActiveSession = {
 }
 
 export type AssistantProvider = 'spacexai' | 'openai' | 'openai-compatible'
+// Which endpoint the assistant streams from: /chat/completions or /responses.
+export type AssistantApi = 'chat' | 'responses'
 export type AssistantCheck = {ok: boolean; status: string; message: string; at: number}
 export type AssistantModel = {id: string; name?: string}
 // A live check: the stored check plus the models the endpoint serves.
@@ -248,6 +250,7 @@ export type AssistantKey = {
 	provider: AssistantProvider
 	baseUrl: string
 	model: string
+	api: AssistantApi
 	check: AssistantCheck | null
 	last4: string
 	ownerUserId: string

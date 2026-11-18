@@ -205,6 +205,113 @@ export async function* streamChat({baseUrl, apiKey, model, messages, tools, fetc
 	}
 }
 
+// ---- The Responses API ---------------------------------------------------------------------------
+// POST {base}/responses with store:false and stream:true. The loop speaks Chat Completions, so its
+// messages and tools are converted here and the stream comes back as the same {text | tool | error}
+// events. The system message becomes `instructions`; tool calls and results pair up by call_id.
+// (Named and shaped like #51's ChatGPT path, which can call this with its access token.)
+export function responsesInput(messages) {
+	let instructions = ''
+	const input = []
+	for (const m of messages ?? []) {
+		if (!m) continue
+		if (m.role === 'system') instructions += (instructions ? '\n\n' : '') + String(m.content ?? '')
+		else if (m.role === 'user') input.push({role: 'user', content: String(m.content ?? '')})
+		else if (m.role === 'assistant') {
+			if (m.content) input.push({role: 'assistant', content: String(m.content)})
+			for (const t of m.tool_calls ?? []) input.push({type: 'function_call', call_id: t.id, name: t.function?.name, arguments: t.function?.arguments || '{}'})
+		} else if (m.role === 'tool') input.push({type: 'function_call_output', call_id: m.tool_call_id, output: String(m.content ?? '')})
+	}
+	return {instructions, input}
+}
+
+export const responsesTools = (tools) =>
+	(tools ?? []).map((t) => ({type: 'function', name: t.function?.name, description: t.function?.description ?? '', parameters: t.function?.parameters ?? {type: 'object', properties: {}}}))
+
+export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', apiKey, accessToken, model, messages, tools, fetchImpl = fetch, signal}) {
+	const {instructions, input} = responsesInput(messages)
+	const token = accessToken ?? apiKey
+	const body = {model, input, store: false, stream: true}
+	if (instructions) body.instructions = instructions
+	const fnTools = responsesTools(tools)
+	if (fnTools.length) Object.assign(body, {tools: fnTools, tool_choice: 'auto', parallel_tool_calls: false})
+	const res = await fetchImpl(`${String(baseUrl).replace(/\/+$/, '')}/responses`, {
+		method: 'POST',
+		headers: {'content-type': 'application/json', accept: 'text/event-stream', ...(token ? {authorization: `Bearer ${token}`} : {})},
+		body: JSON.stringify(body),
+		signal,
+	})
+	if (!res.ok) {
+		let raw = ''
+		try {
+			raw = await res.text()
+		} catch {}
+		yield {type: 'error', message: errorMessage(raw, res.status), status: res.status}
+		return
+	}
+	const calls = new Map() // function_call items by item id, arguments filled in from deltas
+	const emitted = new Set()
+	let contentBuf = ''
+	let finished = false
+	const toolEvent = (id, name, args) => {
+		emitted.add(id)
+		return {type: 'tool', id, name, arguments: completeArgs(args) ? args : '{}'}
+	}
+	const handle = function* (event, final) {
+		const data = event.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).replace(/^ /, '')).join('\n')
+		let ev = null
+		if (data && data !== '[DONE]') {
+			try {
+				ev = JSON.parse(data)
+			} catch {}
+		}
+		if (ev?.type === 'response.output_text.delta' && typeof ev.delta === 'string') contentBuf += ev.delta
+		// Some local servers put Qwen-style XML tool calls in the text, as with Chat Completions.
+		const next = takeXmlTools(contentBuf, final)
+		contentBuf = next.rest
+		if (next.text) yield {type: 'text', text: next.text}
+		for (const t of next.tools) yield t
+		if (!ev) return
+		const item = ev.item
+		if (ev.type === 'response.output_item.added' && item?.type === 'function_call') {
+			calls.set(item.id ?? item.call_id, {id: item.call_id || callId(), name: item.name ?? '', arguments: item.arguments ?? ''})
+		} else if (ev.type === 'response.function_call_arguments.delta') {
+			const row = calls.get(ev.item_id)
+			if (row && typeof ev.delta === 'string') row.arguments += ev.delta
+		} else if (ev.type === 'response.output_item.done' && item?.type === 'function_call') {
+			const row = calls.get(item.id ?? item.call_id) ?? {id: item.call_id || callId(), name: '', arguments: ''}
+			calls.delete(item.id ?? item.call_id)
+			const id = item.call_id || row.id
+			const name = item.name || row.name
+			if (name && !emitted.has(id)) yield toolEvent(id, name, typeof item.arguments === 'string' && item.arguments ? item.arguments : row.arguments)
+		} else if (ev.type === 'response.completed') finished = true
+		else if (ev.type === 'response.failed' || ev.type === 'response.incomplete' || ev.type === 'error') {
+			finished = true
+			const err = ev.response?.error ?? ev.error ?? ev
+			const why = ev.response?.incomplete_details?.reason
+			yield {type: 'error', message: String(err?.message || (why ? `The answer stopped early (${why})` : 'The assistant did not answer')), status: Number(err?.status) || 0}
+		}
+	}
+	const decoder = new TextDecoder()
+	let buf = ''
+	if (res.body) {
+		for await (const chunk of res.body) {
+			buf += (typeof chunk === 'string' ? chunk : decoder.decode(chunk, {stream: true})).replace(/\r\n/g, '\n')
+			let idx
+			while ((idx = buf.indexOf('\n\n')) >= 0) {
+				const event = buf.slice(0, idx)
+				buf = buf.slice(idx + 2)
+				yield* handle(event, false)
+			}
+		}
+	}
+	buf += decoder.decode()
+	if (buf.trim()) yield* handle(buf.replace(/\r\n/g, '\n'), false)
+	yield* handle('', true)
+	// An interrupted stream is a failure, not an answer.
+	if (!finished && !signal?.aborted) yield {type: 'error', message: 'The answer was cut off; try again'}
+}
+
 // ---- Live checks and model lists ----------------------------------------------------------------
 // GET {base}/models is cheap: it proves the address is right and the key is accepted, and it says
 // which models the endpoint serves.

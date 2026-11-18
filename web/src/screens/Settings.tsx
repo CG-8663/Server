@@ -2,7 +2,7 @@
 import {useContext, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {logout, mutate, query, type ActiveSession, type AssistantCheck, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
+import {logout, mutate, query, type ActiveSession, type AssistantApi, type AssistantCheck, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
@@ -495,6 +495,14 @@ function useEndpointCheck(target: Record<string, unknown> | null, model: string)
 	return {busy, check, models}
 }
 
+const API_OPTIONS: {id: AssistantApi; label: string}[] = [
+	{id: 'chat', label: 'Chat Completions'},
+	{id: 'responses', label: 'Responses'},
+]
+// OpenAI and most local servers (Ollama, vLLM, LM Studio) serve both.
+const pickApi = (provider: AssistantProvider) => provider === 'openai' || provider === 'openai-compatible'
+const defaultApi = (provider: AssistantProvider): AssistantApi => (provider === 'openai' ? 'responses' : 'chat')
+
 function ModelField({id, value, onChange, models, provider}: {id: string; value: string; onChange: (v: string) => void; models: AssistantModel[]; provider: AssistantProvider}) {
 	const listId = `${id}-models`
 	return (
@@ -614,6 +622,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 							<b style={{fontWeight: 550}}>{PROVIDER_LABEL[k.provider] ?? k.provider}</b>
 							<span>
 								{k.model}
+								{k.api === 'responses' ? ' · Responses' : ''}
 								{k.last4 ? ` · …${k.last4}` : ''}
 							</span>
 						</span>
@@ -691,6 +700,8 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 		setBaseUrl('')
 	}, [open])
 	const qc = useQueryClient()
+	const [api, setApi] = useState<AssistantApi>('chat')
+	useEffect(() => setApi(defaultApi(provider)), [provider, open])
 	const custom = provider === 'openai-compatible'
 	const keyOk = custom || apiKey.trim().length >= 4
 	const urlOk = !custom || /^https?:\/\/[^\s]+/i.test(baseUrl.trim())
@@ -723,6 +734,7 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 							model: model.trim(),
 							apiKey: apiKey.trim(),
 							...(provider === 'openai-compatible' ? {baseUrl: baseUrl.trim()} : {}),
+							...(pickApi(provider) ? {api} : {}),
 						},
 						done: 'Provider added',
 						refresh: ['assistant.keys'],
@@ -781,6 +793,7 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 			/>
 			<CheckLine check={live.check} busy={live.busy} />
 			<ModelField id="ask-model" value={model} onChange={setModel} models={live.models} provider={provider} />
+			{pickApi(provider) && <Segmented label="API" value={api} onChange={setApi} options={API_OPTIONS} />}
 		</FormSheet>
 	)
 }
@@ -789,8 +802,13 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 function EditKeySheet({open, keyRow, onClose}: {open: boolean; keyRow: AssistantKey | null; onClose: () => void}) {
 	const save = useSave()
 	const [model, setModel] = useState('')
-	useEffect(() => setModel(keyRow?.model ?? ''), [keyRow, open])
+	const [api, setApi] = useState<AssistantApi>('chat')
+	useEffect(() => {
+		setModel(keyRow?.model ?? '')
+		setApi(keyRow?.api ?? 'chat')
+	}, [keyRow, open])
 	const live = useEndpointCheck(open && keyRow ? {id: keyRow.id} : null, model)
+	const canPick = !!keyRow && pickApi(keyRow.provider)
 	return (
 		<FormSheet
 			open={open}
@@ -799,13 +817,15 @@ function EditKeySheet({open, keyRow, onClose}: {open: boolean; keyRow: Assistant
 			onClose={onClose}
 			submit="Save"
 			busy={save.isPending}
-			disabled={!keyRow || !model.trim() || model.trim() === keyRow.model}
+			disabled={!keyRow || !model.trim() || (model.trim() === keyRow.model && api === keyRow.api)}
 			onSubmit={() =>
-				keyRow && save.mutate({path: 'assistant.updateKey', input: {id: keyRow.id, model: model.trim()}, done: 'Model saved', refresh: ['assistant.keys']}, {onSuccess: onClose})
+				keyRow &&
+				save.mutate({path: 'assistant.updateKey', input: {id: keyRow.id, model: model.trim(), ...(canPick ? {api} : {})}, done: 'Saved', refresh: ['assistant.keys']}, {onSuccess: onClose})
 			}
 		>
 			<CheckLine check={live.check} busy={live.busy} />
 			{keyRow && <ModelField id="edit-model" value={model} onChange={setModel} models={live.models} provider={keyRow.provider} />}
+			{canPick && <Segmented label="API" value={api} onChange={setApi} options={API_OPTIONS} />}
 		</FormSheet>
 	)
 }
