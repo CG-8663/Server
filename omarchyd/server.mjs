@@ -93,6 +93,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			uptime: async () => Math.round(os.uptime()),
 			breakdown: async () => {
 				try {
+					apps.refreshUsage?.()
 					return {apps: apps.usage?.() ?? [], machines: machines.usage?.() ?? []}
 				} catch {
 					return {apps: [], machines: []}

@@ -462,7 +462,17 @@ export async function startFakeserverd({
 		'usb.attach': {kind: 'mutation', run: () => ({needsRestart: false})},
 		'usb.detach': {kind: 'mutation', run: () => ({needsRestart: false})},
 		'machines.details': {kind: 'query', run: ({id}) => machineDetails(machines.find((m) => m.id === id))},
-		'machines.stats': {kind: 'query', run: ({id}) => ({memoryMb: 2048, vcpus: 2, points: machines.find((m) => m.id === id)?.state === 'running' ? statPoints() : []})},
+		'machines.stats': {
+			kind: 'query',
+			run: (input) => {
+				const one = (m) => {
+					const points = m?.state === 'running' ? statPoints() : []
+					return {memoryMb: 2048, vcpus: 2, points, last: points.at(-1) ?? null}
+				}
+				if (!input?.id) return Object.fromEntries(machines.map((m) => [m.id, one(m)]))
+				return one(machines.find((m) => m.id === input.id))
+			},
+		},
 		'machines.node': {
 			kind: 'query',
 			run: () => ({hostname: 'omarchy', cpuModel: 'Intel(R) Xeon(R) CPU E5-2470 v2 @ 2.40GHz', threads: 8, loadAverage: [0.42, 0.51, 0.47], memoryTotalMb: 32768, memoryFreeMb: 21000, uptimeSeconds: 400_000, storage: {totalGb: 930, freeGb: 610}, libvirtVersion: '11.2.0', qemuVersion: '10.0.2', hostArchitecture: 'amd64', libvirtAvailable: true, kvmAvailable: true, videoModels: ['vga', 'bochs', 'none'], cpuTypes: ['host', 'host-model', 'max', 'qemu64'], nicModels: ['virtio', 'e1000e', 'e1000', 'rtl8139'], diskBuses: ['virtio', 'sata', 'scsi', 'ide'], diskCaches: ['default', 'none', 'writeback', 'writethrough', 'directsync', 'unsafe'], counts: {total: machines.length, running: machines.filter((m) => m.state === 'running').length}}),

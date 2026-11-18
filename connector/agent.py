@@ -567,21 +567,151 @@ def _check_updates(pkg):
         _updates["busy"] = False
 
 
-def metrics(pkg):
-    mem, swap = meminfo()
+DEFAULT_INTERVALS = {
+    "cpu": 1,
+    "memory": 1,
+    "gpu": 1,
+    "temp": 5,
+    "battery": 5,
+    "disk": 30,
+    "uptime": 60,
+}
+_TICK = 0.25
+
+
+def empty_snapshot():
     return {
-        "cpu": cpu_percent(),
+        "cpu": None,
         "cores": os.cpu_count(),
-        "load": list(os.getloadavg()),
-        "mem": mem,
-        "swap": swap,
-        "disks": disks(),
-        "gpus": gpus(),
-        "batteries": batteries(),
-        "temp": temperature(),
-        "uptime": float(read("/proc/uptime", "0").split()[0] or 0),
-        "updates": updates_waiting(pkg),
+        "load": [],
+        "mem": {},
+        "swap": {},
+        "disks": [],
+        "gpus": [],
+        "batteries": [],
+        "temp": None,
+        "uptime": 0,
+        "updates": None,
     }
+
+
+def default_reads():
+    return {
+        "cpu": cpu_percent,
+        "memory": meminfo,
+        "gpu": gpus,
+        "temp": temperature,
+        "battery": batteries,
+        "disk": disks,
+        "uptime": lambda: float(read("/proc/uptime", "0").split()[0] or 0),
+    }
+
+
+class Sampler:
+    def __init__(self, now=time.time, intervals=None, read=None):
+        self._now = now
+        self._intervals = {**DEFAULT_INTERVALS, **(intervals or {})}
+        self._read = read or default_reads()
+        self._last = {}
+        self._snap = empty_snapshot()
+        self._stopped = False
+        self._thread = None
+        self._stop = threading.Event()
+
+    def _due(self, key):
+        return self._last.get(key) is None or self._now() - self._last[key] >= self._intervals.get(key, DEFAULT_INTERVALS[key])
+
+    def _take(self, key, apply, t):
+        if not self._due(key) or key not in self._read:
+            return
+        try:
+            apply(self._read[key]())
+            self._last[key] = t
+        except Exception:
+            pass
+
+    def tick(self, wait_gpu=True):
+        if self._stopped:
+            return self._snap
+        t = self._now()
+        self._take("cpu", lambda v: self._snap.update(cpu=v, cores=os.cpu_count(), load=list(os.getloadavg())), t)
+        def mem(v):
+            if isinstance(v, tuple):
+                self._snap["mem"], self._snap["swap"] = v
+            else:
+                self._snap["mem"] = v
+        self._take("memory", mem, t)
+        self._take("temp", lambda v: self._snap.update(temp=v), t)
+        self._take("battery", lambda v: self._snap.update(batteries=v), t)
+        self._take("disk", lambda v: self._snap.update(disks=v), t)
+        self._take("uptime", lambda v: self._snap.update(uptime=v), t)
+        if self._due("gpu") and "gpu" in self._read:
+            self._last["gpu"] = t
+
+            def run_gpu():
+                try:
+                    self._snap["gpus"] = self._read["gpu"]()
+                except Exception:
+                    pass
+
+            if wait_gpu:
+                run_gpu()
+            else:
+                threading.Thread(target=run_gpu, daemon=True).start()
+        return self._snap
+
+    def snapshot(self):
+        return self._snap
+
+    def get(self):
+        if self._stopped:
+            return self._snap
+        if self._last.get("cpu") is None:
+            self.tick(wait_gpu=False)
+        return self._snap
+
+    def start(self):
+        if self._thread is not None:
+            return
+        self._stopped = False
+        self._stop.clear()
+        if "cpu" in self._read:
+            try:
+                self._read["cpu"]()
+            except Exception:
+                pass
+        self.get()
+
+        def loop():
+            while not self._stop.wait(_TICK):
+                self.tick(wait_gpu=False)
+
+        self._thread = threading.Thread(target=loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stopped = True
+        self._stop.set()
+        self._thread = None
+
+
+def create_sampler(now=time.time, intervals=None, read=None):
+    return Sampler(now=now, intervals=intervals, read=read)
+
+
+_process_sampler = None
+
+
+def metrics(pkg, sampler=None):
+    global _process_sampler
+    s = sampler
+    if s is None:
+        if _process_sampler is None:
+            _process_sampler = create_sampler()
+        s = _process_sampler
+    snap = s.get()
+    snap["updates"] = updates_waiting(pkg)
+    return snap
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1259,16 +1389,21 @@ class Connection:
         self.send({"op": "hello", "info": info(), "abilities": self.allowed})
         stop = threading.Event()
 
+        global _process_sampler
+        if _process_sampler is None:
+            _process_sampler = create_sampler()
+        live_sampler = _process_sampler
+        live_sampler.start()
+        self.send({"op": "metrics", "metrics": metrics(self.pkg, sampler=live_sampler)})
+
         def report():
-            cpu_percent()
-            while not stop.wait(10):
-                self.send({"op": "metrics", "metrics": metrics(self.pkg)})
+            while not stop.wait(3):
+                self.send({"op": "metrics", "metrics": metrics(self.pkg, sampler=live_sampler)})
                 # Facts change now and then (plugins, theme, a desktop session starting).
                 if int(time.time()) % 300 < 10:
                     self.send({"op": "hello", "info": info(), "abilities": self.allowed})
 
         threading.Thread(target=report, daemon=True).start()
-        self.send({"op": "metrics", "metrics": metrics(self.pkg)})
         try:
             while True:
                 op, data = self.ws.recv()
@@ -1281,6 +1416,7 @@ class Connection:
                 self.handle(json.loads(data))
         finally:
             stop.set()
+            live_sampler.stop()
             for ch in list(self.channels.values()):
                 ch.close()
             self.channels.clear()

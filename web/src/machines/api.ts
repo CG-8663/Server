@@ -60,14 +60,20 @@ export type NodeInfo = {
 	counts: {total: number; running: number}
 }
 export type StatPoint = {t: number; cpu: number; memMb: number; netIn: number; netOut: number; diskRead: number; diskWrite: number}
-export type Stats = {memoryMb: number; vcpus: number; points: StatPoint[]}
+export type Stats = {memoryMb: number; vcpus: number; points: StatPoint[]; last?: StatPoint | null}
 export type Backup = {id: string; name: string; vmid: number; sourceId: string; createdAt: number; notes: string; live: boolean; sizeBytes: number; path: string}
 
 export const useMachineDetails = (id: string | null) =>
 	useQuery({queryKey: ['machines.details', id], queryFn: () => query<MachineDetails>('machines.details', {id}), enabled: !!id, refetchInterval: 5000})
 export const useNode = () => useQuery({queryKey: ['machines.node'], queryFn: () => query<NodeInfo>('machines.node'), refetchInterval: 15_000, staleTime: 10_000})
 export const useStats = (id: string | null, enabled = true) =>
-	useQuery({queryKey: ['machines.stats', id], queryFn: () => query<Stats>('machines.stats', {id}), enabled: !!id && enabled, refetchInterval: 10_000})
+	useQuery({
+		queryKey: ['machines.stats'] as const,
+		queryFn: () => query<Record<string, Stats>>('machines.stats'),
+		select: (all) => (id ? all[id] : undefined),
+		enabled: !!id && enabled,
+		refetchInterval: 3000,
+	})
 export const useBackups = (id?: string | null) => useQuery({queryKey: ['machines.backups', id ?? 'all'], queryFn: () => query<Backup[]>('machines.backups', id ? {id} : {}), refetchInterval: 15_000})
 export const useAllTasks = () => useQuery({queryKey: ['machines.tasks'], queryFn: () => query<Task[]>('machines.tasks'), refetchInterval: 5000})
 

@@ -2,6 +2,7 @@
 """Fake sysfs for the connector's GPU and battery collectors."""
 import os
 import sys
+import threading
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "connector"))
@@ -275,6 +276,97 @@ class Gpus(unittest.TestCase):
             return ""
 
         self.assertEqual(agent.gpus(run=run, list_dir=lambda p: [], read_file=lambda p, d="": d), [])
+
+
+class Sampler(unittest.TestCase):
+    def readers(self):
+        counts = {k: 0 for k in ("cpu", "memory", "gpu", "temp", "battery", "disk", "uptime")}
+
+        def bump(key, value):
+            def read():
+                counts[key] += 1
+                return value(counts[key])
+
+            return read
+
+        read = {
+            "cpu": bump("cpu", lambda n: n * 1.5),
+            "memory": bump("memory", lambda n: ({"total": 16e9, "used": n * 1e9}, {"total": 0, "used": 0})),
+            "gpu": bump("gpu", lambda n: [{"id": "g0", "index": 0, "name": "GPU", "used": n}]),
+            "temp": bump("temp", lambda n: 40 + n),
+            "battery": bump("battery", lambda n: []),
+            "disk": bump("disk", lambda n: [{"mount": "/", "total": 1e12, "used": n * 1e9}]),
+            "uptime": bump("uptime", lambda n: n * 60.0),
+        }
+        return counts, read
+
+    def test_first_tick_samples_every_field(self):
+        counts, read = self.readers()
+        s = agent.create_sampler(now=lambda: 0, read=read)
+        s.tick()
+        self.assertEqual(counts["cpu"], 1)
+        self.assertEqual(counts["gpu"], 1)
+        self.assertEqual(counts["disk"], 1)
+        self.assertEqual(s.snapshot()["cpu"], 1.5)
+        self.assertEqual(s.snapshot()["gpus"][0]["used"], 1)
+        self.assertEqual(s.snapshot()["uptime"], 60.0)
+
+    def test_each_field_is_resampled_only_when_its_interval_has_elapsed(self):
+        counts, read = self.readers()
+        t = {"n": 0}
+        s = agent.create_sampler(now=lambda: t["n"], intervals={**agent.DEFAULT_INTERVALS, "cpu": 1, "memory": 1, "gpu": 3, "temp": 5, "disk": 30, "uptime": 60}, read=read)
+        s.tick()
+        t["n"] = 1
+        s.tick()
+        self.assertEqual(counts["cpu"], 2)
+        self.assertEqual(counts["gpu"], 1)
+        t["n"] = 3
+        s.tick()
+        self.assertEqual(counts["gpu"], 2)
+        self.assertEqual(counts["cpu"], 3)
+        self.assertEqual(counts["temp"], 1)
+        t["n"] = 5
+        s.tick()
+        self.assertEqual(counts["temp"], 2)
+
+    def test_snapshot_does_not_read_hardware(self):
+        counts, read = self.readers()
+        s = agent.create_sampler(now=lambda: 0, read=read)
+        s.tick()
+        s.snapshot()
+        s.snapshot()
+        self.assertEqual(counts["cpu"], 1)
+
+    def test_get_returns_cpu_without_waiting_for_slow_gpu(self):
+        started = {"gpu": False}
+        release = threading.Event()
+
+        def gpu():
+            started["gpu"] = True
+            release.wait(1)
+            return [{"id": "g0", "index": 0, "name": "GPU", "used": 9}]
+
+        s = agent.create_sampler(now=lambda: 0, read={"cpu": lambda: 7.0, "memory": lambda: ({"total": 1, "used": 1}, {"total": 0, "used": 0}), "gpu": gpu})
+        got = s.get()
+        self.assertEqual(got["cpu"], 7.0)
+        self.assertEqual(got["gpus"], [])
+        self.assertTrue(started["gpu"])
+        release.set()
+
+    def test_metrics_uses_the_last_snapshot(self):
+        n = {"cpu": 0}
+
+        def cpu():
+            n["cpu"] += 1
+            return n["cpu"]
+
+        s = agent.create_sampler(now=lambda: 0, read={"cpu": cpu})
+        s.tick()
+        first = agent.metrics("pacman", sampler=s)
+        second = agent.metrics("pacman", sampler=s)
+        self.assertEqual(first["cpu"], 1)
+        self.assertEqual(second["cpu"], 1)
+        self.assertEqual(n["cpu"], 1)
 
 
 if __name__ == "__main__":

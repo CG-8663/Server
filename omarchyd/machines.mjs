@@ -78,7 +78,7 @@ function validCatalog(data) {
 	return ok.length ? ok : null
 }
 
-export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null}) {
+export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, statsIntervalMs = 1_000, seriesIntervalMs = 10_000}) {
 	const base = join(dataDir, 'machines')
 	const imagesDir = join(base, 'images')
 	const vmsDir = join(base, 'vms')
@@ -714,8 +714,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (m.state === 'error' || busy.get(m.id)?.state === 'installing') throw new RpcError('PRECONDITION_FAILED', `${m.name} isn’t set up yet`)
 	}
 
-	// Live usage, sampled every 10 seconds for running machines; the last hour is kept (in memory).
+	// Live usage: sampled often for the last reading; the hour chart keeps a coarser series.
 	const series = new Map() // id -> [{t, cpu, memMb, netIn, netOut, diskRead, diskWrite}]
+	const lastPoint = new Map()
 	const lastRaw = new Map() // id -> {t, cpuNs, rx, tx, rd, wr}
 	async function sample() {
 		const running = machines.filter((m) => !isBusy(m.id))
@@ -753,22 +754,31 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				diskRead: Math.round((raw.rd - prev.rd) / secs),
 				diskWrite: Math.round((raw.wr - prev.wr) / secs),
 			}
+			lastPoint.set(m.id, point)
 			const list = series.get(m.id) ?? []
-			list.push(point)
-			if (list.length > 360) list.splice(0, list.length - 360)
-			series.set(m.id, list)
+			const kept = list.at(-1)
+			if (!kept || now - kept.t >= seriesIntervalMs) {
+				list.push(point)
+				if (list.length > 360) list.splice(0, list.length - 360)
+				series.set(m.id, list)
+			}
 		}
 	}
 	let sampler = null
 	function startSampler() {
 		if (sampler) return
-		sampler = setInterval(() => sample().catch(() => {}), 10_000)
+		void sample().catch(() => {})
+		sampler = setInterval(() => sample().catch(() => {}), statsIntervalMs)
 		sampler.unref?.()
+	}
+	function packStats(m) {
+		const points = series.get(m.id) ?? []
+		return {memoryMb: m.memoryMb, vcpus: (m.sockets ?? 1) * m.cores, points, last: lastPoint.get(m.id) ?? points.at(-1) ?? null}
 	}
 	async function statsFor(input) {
 		await ready
-		const m = find(input?.id)
-		return {memoryMb: m.memoryMb, vcpus: (m.sockets ?? 1) * m.cores, points: series.get(m.id) ?? []}
+		if (!input?.id) return Object.fromEntries(machines.map((m) => [m.id, packStats(m)]))
+		return packStats(find(input.id))
 	}
 
 	// Machines set to start with the server, in their start order, with each one's delay.
@@ -1463,7 +1473,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		startSampler()
 		const out = []
 		for (const m of machines) {
-			const last = (series.get(m.id) ?? []).at(-1)
+			const last = lastPoint.get(m.id) ?? (series.get(m.id) ?? []).at(-1)
 			if (!last || Date.now() - last.t > 30_000) continue
 			out.push({id: `machine:${m.id}`, name: m.name, cpuShare: (last.cpu / 100) * (m.sockets ?? 1) * m.cores, memBytes: last.memMb * 1024 * 1024})
 		}

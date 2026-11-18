@@ -1753,8 +1753,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		appUsage = {at: Date.now(), list: [...by].map(([id, u]) => ({id, ...u})), running: null}
 	}
 	function usage() {
-		if (!appUsage.running && Date.now() - appUsage.at > 5000) appUsage.running = measureApps().catch(() => (appUsage.running = null))
 		return appUsage.list
+	}
+	function refreshUsage() {
+		if (!appUsage.running) appUsage.running = measureApps().catch(() => (appUsage.running = null))
 	}
 
 	// Running installed apps that declared mcp:. Loopback only; never an openPort.
@@ -1776,6 +1778,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	return {
 		ready,
 		usage,
+		refreshUsage,
 		mcpTargets,
 		shellFor,
 		checkSession,
