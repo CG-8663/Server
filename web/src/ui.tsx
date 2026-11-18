@@ -4,6 +4,8 @@ import {createContext, useCallback, useContext, useEffect, useId, useLayoutEffec
 import {useQuery} from '@tanstack/react-query'
 import type {AppState, Machine, Wallpaper} from './api'
 import {AssistantAvatar, cleanLook, type AssistantLook} from './character/AssistantCharacter'
+import {detectDesktop, LAYOUT_POINTER} from './layout'
+export {detectDesktop}
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
@@ -1020,12 +1022,17 @@ export function StoreIcon({size = 56}: {size?: number}) {
 	)
 }
 
-// ---- layout: phone or desktop ---------------------------------------------------------------
-// Stored per device (a phone and a PC signed into the same account want different layouts).
-// Auto picks the desktop on a wide screen with a mouse or trackpad.
+// ---- layout: phone or desktop (detection in layout.ts) ---------------------------------------
+// Stored per device (a phone and a PC signed into the same account want different layouts). Each
+// device is asked once, at its first sign-in (LayoutChooser); Automatic is still there.
+//
+// Automatic: the desktop on a big enough screen that has a mouse or trackpad anywhere (a touchscreen
+// PC or a touch laptop still counts), never on a phone. It changes only on a clear change of size
+// (above 1000 px wide to switch to the desktop, below 860 px to switch back), so snapping a window to
+// half the screen or a scrollbar appearing doesn't flip it.
 export type LayoutPref = 'auto' | 'desktop' | 'phone'
 const LAYOUT_KEY = 'omarchy-server:layout'
-const WIDE = '(min-width: 1000px) and (min-height: 600px) and (pointer: fine)'
+const ASKED_KEY = 'omarchy-server:layout-asked'
 function readLayoutPref(): LayoutPref {
 	try {
 		const v = localStorage.getItem(LAYOUT_KEY)
@@ -1038,26 +1045,37 @@ export function setLayoutPref(p: LayoutPref) {
 	try {
 		if (p === 'auto') localStorage.removeItem(LAYOUT_KEY)
 		else localStorage.setItem(LAYOUT_KEY, p)
+		localStorage.setItem(ASKED_KEY, '1')
 	} catch {
 		/* private mode: applies for this visit only */
 	}
 	window.dispatchEvent(new CustomEvent('touch:layout', {detail: p}))
 }
-export function useLayout(): {desktop: boolean; pref: LayoutPref} {
+// Has this device chosen (or been asked) yet? A device that already picked Desktop or Phone counts.
+export function layoutAsked(): boolean {
+	try {
+		return localStorage.getItem(ASKED_KEY) === '1' || localStorage.getItem(LAYOUT_KEY) !== null
+	} catch {
+		return true
+	}
+}
+export function useLayout(): {desktop: boolean; pref: LayoutPref; detected: boolean} {
 	const [pref, setPref] = useState<LayoutPref>(readLayoutPref)
-	const [wide, setWide] = useState(() => matchMedia(WIDE).matches)
+	const [wide, setWide] = useState(() => detectDesktop())
 	useEffect(() => {
-		const mq = matchMedia(WIDE)
-		const onMq = () => setWide(mq.matches)
+		const mq = matchMedia(LAYOUT_POINTER)
+		const check = () => setWide((was) => detectDesktop(was))
 		const onPref = (e: Event) => setPref((e as CustomEvent<LayoutPref>).detail ?? readLayoutPref())
-		mq.addEventListener('change', onMq)
+		mq.addEventListener('change', check)
+		window.addEventListener('resize', check)
 		window.addEventListener('touch:layout', onPref)
 		return () => {
-			mq.removeEventListener('change', onMq)
+			mq.removeEventListener('change', check)
+			window.removeEventListener('resize', check)
 			window.removeEventListener('touch:layout', onPref)
 		}
 	}, [])
-	return {desktop: pref === 'desktop' || (pref === 'auto' && wide), pref}
+	return {desktop: pref === 'desktop' || (pref === 'auto' && wide), pref, detected: wide}
 }
 
 // ---- iOS keyboard viewport repair -------------------------------------------------------------

@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.42',
+		date: '2026-11-18',
+		title: 'Desktop or phone, your choice',
+		added: ['The first time you sign in on a device, choose Desktop or Phone & tablet (the one that suits the screen is marked), or let it decide automatically. Change it any time in Settings → Layout.'],
+		fixed: [
+			'Automatic now picks the desktop on a touchscreen PC or touch laptop with a mouse or trackpad, and always the phone layout on a phone.',
+			'Automatic no longer flips between desktop and phone when a window is snapped to half the screen or resized a little.',
+			'The desktop’s “Right-click the desktop” tip can be closed, and stays gone once you’ve closed it, opened a window or used the desktop menu.',
+		],
+	},
+	{
 		version: '0.9.41',
 		date: '2026-11-18',
 		title: 'Put your assistant anywhere',

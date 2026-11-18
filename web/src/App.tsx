@@ -12,8 +12,9 @@ import {Apps} from './screens/Apps'
 import {Connect, Login} from './screens/Auth'
 import {Home} from './screens/Home'
 import {Desktop} from './desktop/Desktop'
-import {Backdrop, Sheet, SheetHeader, haptic, useLayout, usePrefs, type Prefs} from './ui'
+import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
+import {LayoutChooser} from './LayoutChooser'
 import {InstallerPrompt} from './InstallerPrompt'
 import {consumeReopenAssistant} from './assistant'
 import {AssistantLookContext, cleanLook, DEFAULT_LOOK, type AssistantLook} from './character/AssistantCharacter'
@@ -63,6 +64,8 @@ export function App() {
 	const lookValue = useMemo(() => ({look, setLook: (next: AssistantLook) => setPrefs({...prefs, assistantLook: next})}), [look, prefs, setPrefs])
 	const refresh = useCallback(() => qc.invalidateQueries({queryKey: ['bootstrap']}), [qc])
 	const layout = useLayout()
+	// The first time anyone signs in on this device: Desktop or Phone & tablet (then What's New).
+	const [askLayout, setAskLayout] = useState(() => !layoutAsked())
 	const reopenAssistant = useRef(consumeReopenAssistant()).current
 
 	useEffect(() => {
@@ -102,7 +105,7 @@ export function App() {
 			<BootstrapContext.Provider value={b}>
 			<AssistantLookContext.Provider value={lookValue}>
 				{layout.desktop ? <Desktop boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} reopenAssistant={reopenAssistant} /> : <Shell boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} reopenAssistant={reopenAssistant} />}
-				<WhatsNewOnUpdate version={b.touch.version} onDone={() => setWhatsNewDone(true)} />
+				{askLayout ? <LayoutChooser onDone={() => setAskLayout(false)} /> : <WhatsNewOnUpdate version={b.touch.version} onDone={() => setWhatsNewDone(true)} />}
 				<InstallerPrompt ready={whatsNewDone} />
 			</AssistantLookContext.Provider>
 			</BootstrapContext.Provider>
