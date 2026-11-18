@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.39',
+		date: '2026-11-18',
+		title: 'Assistant',
+		added: [
+			'Assistant: ask about this server and your swarm, and have it install, start or update apps, manage machines and change the look. Lookups run straight away; anything that changes something waits for you to tap Approve. Add a SpaceXAI (Grok) or OpenAI-compatible API key in Settings → Assistant.',
+			'Pick a wallpaper and theme together from one card.',
+		],
+		fixed: ['On a phone, a machine’s Hibernate, Stop and Clone buttons stay visible when its Summary or Hardware panel is tall.'],
+	},
+	{
 		version: '0.9.38',
 		date: '2026-11-17',
 		title: 'Finish updates that need the installer',
