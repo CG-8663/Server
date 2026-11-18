@@ -1094,6 +1094,20 @@ export function nudgeViewport() {
 		root.style.minHeight = prev
 	})
 }
+// If the page was zoomed in anyway (a pinch, or a field from an older build), put it back at 1×
+// when a full-screen view like the assistant closes. Capping the scale for a moment and then
+// lifting the cap resets it; pinch-to-zoom works again straight after.
+export function resetZoom() {
+	const vv = window.visualViewport
+	if (!vv || vv.scale <= 1.01) return
+	const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]')
+	if (!meta) return
+	const content = meta.content
+	meta.content = `${content.replace(/,\s*maximum-scale=[^,]*/g, '')}, maximum-scale=1`
+	window.setTimeout(() => {
+		meta.content = content
+	}, 300)
+}
 let viewportTimers: number[] = []
 export function settleViewport() {
 	viewportTimers.forEach(window.clearTimeout)

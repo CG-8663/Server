@@ -1343,3 +1343,36 @@ test('aborting a turn stops the tool call so Approve stays done', async () => {
 		await box.close()
 	}
 })
+
+test('only one reply runs per chat at a time', async () => {
+	const {fetchImpl: scriptedFetch} = scripted([textSse('First.'), textSse('Second.'), textSse('Third.')])
+	let gate = null
+	const fetchImpl = async (...args) => {
+		if (gate) await gate.promise
+		return scriptedFetch(...args)
+	}
+	const box = await withAssistant({runProcedure: async () => ({}), fetchImpl})
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: () => {}})
+		let release
+		gate = {promise: new Promise((r) => (release = r))}
+		const a = streamPair({conversationId: out.conversationId, message: 'again'})
+		const running = box.asst.handleStream(a.req, a.res, {userId: 'owner'})
+		await new Promise((r) => setTimeout(r, 20))
+		const b = streamPair({conversationId: out.conversationId, message: 'and again'})
+		await box.asst.handleStream(b.req, b.res, {userId: 'owner'})
+		assert.match(b.chunks.join(''), /event: error\ndata: \{"message":"This chat is still answering/)
+		gate = null
+		release()
+		await running
+		assert.match(a.chunks.join(''), /event: done/)
+		// Once the first reply ends, the chat takes a new message again.
+		const c = streamPair({conversationId: out.conversationId, message: 'once more'})
+		await box.asst.handleStream(c.req, c.res, {userId: 'owner'})
+		assert.match(c.chunks.join(''), /event: done/)
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		assert.deepEqual(saved.messages.filter((m) => m.role === 'user').map((m) => m.content), ['hi', 'again', 'once more'])
+	} finally {
+		await box.close()
+	}
+})

@@ -23,7 +23,7 @@ import {
 } from '../assistantTurn'
 import {AssistantCharacter, lookName, useAssistantLook} from '../character/AssistantCharacter'
 import {patchDeskConfig} from '../desktop/config'
-import {haptic, omarchyBackgroundUrl, useOmarchyThemes, usePortalRoot, useScreenLock, type Prefs} from '../ui'
+import {haptic, omarchyBackgroundUrl, resetZoom, useOmarchyThemes, usePortalRoot, useScreenLock, type Prefs} from '../ui'
 
 const prettyTool = (name: string) => name.replaceAll('_', ' ')
 
@@ -276,6 +276,15 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 			vv.removeEventListener('scroll', apply)
 		}
 	}, [onClose])
+
+	// Closing the chat while zoomed in would leave the screen behind it zoomed. The chat stays mounted
+	// after it closes (so a reply can finish), so this runs when it stops being the active view.
+	const wasActive = useRef(active)
+	useEffect(() => {
+		if (wasActive.current && !active && onClose) resetZoom()
+		wasActive.current = active
+	}, [active, onClose])
+	useEffect(() => () => resetZoom(), [])
 
 	useEffect(() => {
 		if (!onClose || !active) return

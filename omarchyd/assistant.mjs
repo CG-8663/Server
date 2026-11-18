@@ -204,9 +204,13 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 	}
 	// IncomingMessage 'close' fires when the body is consumed, so that would cancel every turn.
 	// Closing the chat window (Super+W) hangs up SSE; lookups must still finish and be saved.
+	// A reply now keeps running after the chat closes, so a reload could start a second turn on the
+	// same chat while the first is still writing to it. Only one turn runs per chat at a time.
+	const turning = new Set()
 	async function handleStream(req, res, auth) {
 		const who = actor(auth)
 		const ac = new AbortController()
+		let lock = null
 		try {
 			const body = await readJson(req, 100_000)
 			if (ac.signal.aborted) return
@@ -220,6 +224,16 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 					/* client hung up */
 				}
 			}
+			const conversationId = body.conversationId ? String(body.conversationId) : ''
+			if (conversationId) {
+				const key = `${who.userId}\u0000${conversationId}`
+				if (turning.has(key)) {
+					emit({event: 'error', data: {message: 'This chat is still answering. Wait for it to finish, then try again.'}})
+					return
+				}
+				turning.add(key)
+				lock = key
+			}
 			const turn = body.continue === true ? runTurnContinue : runTurn
 			await turn({
 				userId: who.userId,
@@ -231,6 +245,7 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 				emit,
 			})
 		} finally {
+			if (lock) turning.delete(lock)
 			if (res.headersSent && !res.writableEnded && !res.destroyed) {
 				try {
 					res.end()
