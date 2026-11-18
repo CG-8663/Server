@@ -181,7 +181,7 @@ function ActionCard({
 	)
 }
 
-export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () => void; onSettings: () => void; prefs?: Prefs; setPrefs?: (p: Prefs) => void}) {
+export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}: {onClose?: () => void; onSettings: () => void; prefs?: Prefs; setPrefs?: (p: Prefs) => void; active?: boolean}) {
 	const portalRoot = usePortalRoot()
 	const screenRef = useRef<HTMLDivElement>(null)
 	const threadRef = useRef<HTMLDivElement>(null)
@@ -246,7 +246,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 	// Full screen on a phone: hold the page behind still. Otherwise iOS Safari sends a drag over the
 	// chat to the page underneath (Home, scrolled) instead of the messages. Touches aren't blocked,
 	// so the chat, the message box and the cards still scroll themselves.
-	useScreenLock(screenRef, false, !!onClose)
+	useScreenLock(screenRef, false, !!onClose && active)
 
 	useEffect(() => {
 		if (!onClose) return
@@ -268,13 +268,13 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 	}, [onClose])
 
 	useEffect(() => {
-		if (!onClose) return
+		if (!onClose || !active) return
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === 'Escape') onClose()
 		}
 		window.addEventListener('keydown', onKey)
 		return () => window.removeEventListener('keydown', onKey)
-	}, [onClose])
+	}, [onClose, active])
 
 	useEffect(() => {
 		if (items !== null || streaming || !keys.isSuccess || !hasKeys) return
@@ -650,7 +650,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 	)
 	if (!onClose) return column
 	return createPortal(
-		<div ref={screenRef} className="assistant-screen">
+		<div ref={screenRef} className="assistant-screen" hidden={!active} aria-hidden={!active}>
 			{column}
 		</div>,
 		portalRoot,

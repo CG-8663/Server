@@ -82,6 +82,12 @@ export function closeAssistantView() {
 	setAssistantActivity({open: false, composing: false, ...(state.streaming ? {} : {phase: 'idle'})})
 }
 
+// Super+W / the window X must not unmount the chat while a turn is still talking to the model.
+export function keepAssistantWindow(kind?: string) {
+	if (!state.streaming) return false
+	return kind == null || kind === 'assistant'
+}
+
 export function openAssistantView() {
 	set({...state, open: true, unread: 0})
 	setAssistantActivity({open: true})

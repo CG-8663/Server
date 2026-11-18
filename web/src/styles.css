@@ -7883,6 +7883,9 @@ html.page-locked body {
 	backdrop-filter: blur(10px);
 	-webkit-backdrop-filter: blur(10px);
 }
+.assistant-screen[hidden] {
+	display: none;
+}
 .assistant-screen.kbd-open {
 	padding-bottom: 10px;
 }

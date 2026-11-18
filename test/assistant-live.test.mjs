@@ -10,6 +10,7 @@ import {
 	beginAssistantTurn,
 	closeAssistantView,
 	finishAssistantTurn,
+	keepAssistantWindow,
 	openAssistantView,
 	resetAssistantTurn,
 } from '../web/src/assistantTurn.ts'
@@ -37,6 +38,19 @@ test('closing the assistant view does not abort the in-flight turn', () => {
 	assert.equal(ac.signal.aborted, false)
 	assert.equal(assistantTurn().open, false)
 	assert.equal(assistantTurn().streaming, true)
+})
+
+test('Super+W keeps the assistant window mounted while it is still working', () => {
+	resetAssistantTurn()
+	assert.equal(keepAssistantWindow('assistant'), false)
+	const ac = new AbortController()
+	beginAssistantTurn(ac)
+	assert.equal(keepAssistantWindow('assistant'), true)
+	assert.equal(keepAssistantWindow('files'), false)
+	closeAssistantView()
+	assert.equal(keepAssistantWindow('assistant'), true)
+	finishAssistantTurn(ac)
+	assert.equal(keepAssistantWindow('assistant'), false)
 })
 
 test('a reply that finishes while closed counts as unread until the chat is opened', () => {
