@@ -9,6 +9,8 @@
 //   ping                              is the helper installed and allowed?
 //   smart DEV                         drive health (smartctl JSON)
 //   sleep DEV MINUTES                 spin-down time for a hard drive (0 = never), kept across boots
+//   usb-allow SERIAL                  udev uaccess so the owner’s session can open that USB serial
+//   usb-forget SERIAL                 drop that serial from the USB udev rule
 //   pool-create NAME PROFILE DEV...   new Btrfs pool on BLANK drives only, mounted at ~/Pools/NAME
 //   pool-add NAME DEV                 add a BLANK drive to a pool, then rebalance in the background
 //   pool-import NAME UUID             mount an existing Btrfs filesystem at ~/Pools/NAME (no changes to it)
@@ -54,6 +56,8 @@ const SMB_CONF = '/etc/samba/smb.conf'
 const SMB_INCLUDE = '/etc/samba/omarchy-server-shares.conf'
 const SMB_MARK = '# Managed by Omarchy Server'
 const UDEV_SLEEP = '/etc/udev/rules.d/69-omarchy-server-sleep.rules'
+const UDEV_USB = '/etc/udev/rules.d/69-omarchy-server-usb.rules'
+const USB_SERIAL = /^[A-Za-z0-9._-]{1,128}$/
 // One-time sign-in to the Omarchy desktop (the same drop-in Omarchy's own first boot writes, removed again
 // as soon as the session starts).
 const SDDM_ONCE = '/etc/sddm.conf.d/zz-omarchy-server-sign-in.conf'
@@ -293,6 +297,26 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			const lines = (await fs.readFile(UDEV_SLEEP, 'utf8').catch(() => '')).split('\n').filter((l) => l && !l.startsWith('#') && !l.includes(`ENV{ID_SERIAL_SHORT}=="${d.serial}"`))
 			if (m) lines.push(`ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_SERIAL_SHORT}=="${d.serial}", RUN+="/usr/bin/hdparm -S ${SLEEP_MINUTES[m]} /dev/%k"`)
 			await writeAtomic(UDEV_SLEEP, lines.length ? `# Drive sleep, set by Omarchy Server\n${lines.join('\n')}\n` : '')
+			return 'ok'
+		},
+
+		'usb-allow': async ([serial]) => {
+			if (!USB_SERIAL.test(serial ?? '')) fail('Use the USB serial, letters numbers . _ - only')
+			const keep = (await fs.readFile(UDEV_USB, 'utf8').catch(() => '')).split('\n').filter((l) => l && !l.startsWith('#') && !l.includes(`=="${serial}"`))
+			keep.push(
+				`SUBSYSTEM=="tty", ENV{ID_USB_SERIAL_SHORT}=="${serial}", TAG+="uaccess"`,
+				`SUBSYSTEM=="tty", ENV{ID_SERIAL_SHORT}=="${serial}", TAG+="uaccess"`,
+			)
+			await writeAtomic(UDEV_USB, `# USB serial access, set by Omarchy Server\n${keep.join('\n')}\n`)
+			await run('udevadm', ['control', '--reload']).catch(() => {})
+			await run('udevadm', ['trigger']).catch(() => {})
+			return 'ok'
+		},
+		'usb-forget': async ([serial]) => {
+			if (!USB_SERIAL.test(serial ?? '')) fail('Use the USB serial, letters numbers . _ - only')
+			const keep = (await fs.readFile(UDEV_USB, 'utf8').catch(() => '')).split('\n').filter((l) => l && !l.startsWith('#') && !l.includes(`=="${serial}"`))
+			await writeAtomic(UDEV_USB, keep.length ? `# USB serial access, set by Omarchy Server\n${keep.join('\n')}\n` : '')
+			await run('udevadm', ['control', '--reload']).catch(() => {})
 			return 'ok'
 		},
 

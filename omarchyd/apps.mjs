@@ -30,6 +30,7 @@ import YAML from 'yaml'
 import {RpcError} from './rpc.mjs'
 import {SYSTEM_PERMISSIONS} from './system-apps.mjs'
 import {dualProtocolServer, tlsContext, wantsUpgrade} from './tls.mjs'
+import {usbComposeOverlay} from './usb.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
 // Every cookie Omarchy Server itself sets (and any it may set later under these prefixes).
@@ -1002,7 +1003,21 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			await symlink(join(home, 'Downloads'), link).catch(() => {})
 		}
 	}
-	const compose = (app, ...args) => run('docker-compose', ['-p', project(app.id), '-f', join(appDir(app.id), 'compose.omarchy.yml'), ...args], {env: composeEnv(app), cwd: appDir(app.id)})
+	const usbFile = (id) => join(appDir(id), 'compose.usb.yml')
+	async function writeUsbOverlay(app) {
+		const path = usbFile(app.id)
+		const text = await readFile(join(appDir(app.id), 'compose.omarchy.yml'), 'utf8').catch(() => '')
+		const names = Object.keys((YAML.parse(text) ?? {}).services ?? {})
+		const overlay = usbComposeOverlay(names, app.usbDevices ?? [])
+		if (!overlay) await rm(path, {force: true})
+		else await writeFile(path, overlay, {mode: 0o600})
+	}
+	async function compose(app, ...args) {
+		const files = ['-f', join(appDir(app.id), 'compose.omarchy.yml')]
+		const extra = usbFile(app.id)
+		if (await exists(extra)) files.push('-f', extra)
+		return run('docker-compose', ['-p', project(app.id), ...files, ...args], {env: composeEnv(app), cwd: appDir(app.id)})
+	}
 
 	// Bind-mount sources that don't exist yet are folders the app expects to own (Podman won't
 	// create them the way Docker does).
@@ -1608,9 +1623,16 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (busy.has(app.id)) throw new RpcError('CONFLICT', `${app.name} is busy`)
 		busy.set(app.id, {state: pending})
 		try {
+			if (!app.system && (args[0] === 'up' || args[0] === 'restart')) await writeUsbOverlay(app)
 			if (app.system) await systemApps[{up: 'start', stop: 'stop', restart: 'restart'}[args[0]]](app)
 			else await compose(app, ...args)
-			if (args[0] === 'up' || args[0] === 'restart') markStarted(app.id)
+			if (args[0] === 'up' || args[0] === 'restart') {
+				markStarted(app.id)
+				if (!app.system) {
+					app.usbApplied = (app.usbDevices ?? []).map((d) => d.id)
+					await save()
+				}
+			}
 		} finally {
 			busy.delete(app.id)
 		}
@@ -1772,6 +1794,33 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			systemApps?.close()
 			secure.close()
 			for (const id of [...gateways.keys()]) closeGateway(id)
+		},
+		async usbBindings() {
+			await ready
+			const live = await liveStates().catch(() => new Map())
+			return state.apps.map((a) => ({
+				kind: 'app',
+				id: a.id,
+				name: a.name,
+				devices: a.usbDevices ?? [],
+				running: (live.get(a.id) ?? a.state) === 'running',
+				liveIds: Array.isArray(a.usbApplied) && a.usbApplied.length && (a.usbDevices ?? []).every((d) => a.usbApplied.includes(d.id)) && a.usbApplied.length === (a.usbDevices ?? []).length ? a.usbApplied : [],
+			}))
+		},
+		async bindUsb(id, rec) {
+			await ready
+			const app = findInstalled(id)
+			if (app.system) throw new RpcError('PRECONDITION_FAILED', `${app.name} runs on the server itself, not in a container.`)
+			if (!(app.usbDevices ?? []).some((d) => d.id === rec.id)) app.usbDevices = [...(app.usbDevices ?? []), rec]
+			await save()
+			return app
+		},
+		async unbindUsb(id, deviceId) {
+			await ready
+			const app = findInstalled(id)
+			app.usbDevices = (app.usbDevices ?? []).filter((d) => d.id !== deviceId)
+			await save()
+			return app
 		},
 		procedures: {
 			'apps.list': {kind: 'query', run: list},

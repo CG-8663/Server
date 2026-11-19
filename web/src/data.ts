@@ -97,6 +97,7 @@ export function useAction() {
 				qc.invalidateQueries({queryKey: ['apps.updates']})
 			}
 			if (domain === 'machines') qc.invalidateQueries({queryKey: ['machines.list']})
+			if (domain === 'usb') qc.invalidateQueries({queryKey: ['usb.list']})
 			if (domain === 'notifications') qc.invalidateQueries({queryKey: ['notifications.get']})
 		},
 	})
