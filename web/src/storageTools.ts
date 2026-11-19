@@ -19,3 +19,7 @@ export function canFormat(d: {role: string; mounted: boolean}) {
 export function canUnmount(d: {role: string; mounted: boolean}) {
 	return (d.role === 'data' || d.role === 'blank') && d.mounted
 }
+
+export function canMount(d: {role: string; mounted: boolean}) {
+	return d.role === 'data' && !d.mounted
+}

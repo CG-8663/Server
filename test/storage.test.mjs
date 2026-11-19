@@ -549,6 +549,80 @@ errors: No known data errors
 		assert.equal(await h.handle('umount', ['/dev/sde']), 'ok')
 		assert.ok(log.some((l) => l[0] === 'umount' && l[1] === '/run/media/chris/stick'))
 	})
+
+	test('mount: extra data disk only, one filesystem each at /run/media/$USER', async () => {
+		const log = []
+		const mkdirs = []
+		const chowns = []
+		const lsblkMount = {
+			blockdevices: [
+				...lsblk.blockdevices,
+				{
+					name: 'sde',
+					path: '/dev/sde',
+					type: 'disk',
+					size: 32e9,
+					rota: false,
+					tran: 'usb',
+					serial: 'USB1',
+					model: 'SanDisk',
+					children: [{name: 'sde1', path: '/dev/sde1', type: 'part', fstype: 'exfat', mountpoints: ['/run/media/chris/stick']}],
+				},
+				{
+					name: 'sdf',
+					path: '/dev/sdf',
+					type: 'disk',
+					size: 1e9,
+					children: [
+						{name: 'sdf1', path: '/dev/sdf1', type: 'part', fstype: 'crypto_LUKS', mountpoints: [null]},
+						{name: 'sdf2', path: '/dev/sdf2', type: 'part', fstype: 'swap', mountpoints: [null]},
+					],
+				},
+				{
+					name: 'sdg',
+					path: '/dev/sdg',
+					type: 'disk',
+					size: 8e9,
+					fstype: 'ext4',
+					uuid: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+					label: 'My Disk / 2',
+					mountpoints: [null],
+				},
+			],
+		}
+		const run = async (cmd, args) => {
+			log.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(lsblkMount)
+			if (cmd === 'wipefs') return JSON.stringify({signatures: []})
+			return ''
+		}
+		const fs = fakeFs({
+			'/etc/fstab': 'UUID=22222222-2222-2222-2222-222222222222 /home/chris/Pools/media btrfs d 0 0 # omarchy-server pool media\n',
+		})
+		fs.mkdir = async (p) => void mkdirs.push(p)
+		fs.chown = async (p, uid, gid) => void chowns.push([p, uid, gid])
+		const h = createHelper({user, run, fs})
+		await assert.rejects(h.handle('mount', ['/dev/nvme0n1']), /holds the system/)
+		await assert.rejects(h.handle('mount', ['/dev/sdd']), /pool|in a pool/)
+		await assert.rejects(h.handle('mount', ['/dev/sda']), /Nothing to mount/)
+		await assert.rejects(h.handle('mount', ['/dev/sde']), /already mounted/)
+		await assert.rejects(h.handle('mount', ['/dev/sdf']), /Nothing to mount/)
+		await assert.rejects(h.handle('mount', ['/etc/passwd']), /Not a drive/)
+		assert.ok(!log.some((l) => l[0] === 'mount'))
+
+		log.length = 0
+		mkdirs.length = 0
+		chowns.length = 0
+		assert.equal(await h.handle('mount', ['/dev/sdc']), 'ok')
+		assert.ok(log.some((l) => l[0] === 'mount' && l.includes('-o') && l.includes('uid=1000,gid=1000') && l.includes('/dev/sdc1') && l.includes('/run/media/chris/sdc1')))
+		assert.ok(mkdirs.includes('/run/media/chris/sdc1'))
+		assert.ok(chowns.some((c) => c[0] === '/run/media/chris/sdc1' && c[1] === 1000 && c[2] === 1000))
+
+		log.length = 0
+		assert.equal(await h.handle('mount', ['/dev/sdg']), 'ok')
+		assert.ok(log.some((l) => l[0] === 'mount' && l.includes('/dev/sdg') && l.includes('/run/media/chris/My_Disk_2')))
+		assert.ok(!log.some((l) => l[0] === 'mount' && l.includes('-o')))
+	})
 })
 
 describe('omarchyd storage', () => {
@@ -658,7 +732,7 @@ describe('omarchyd storage', () => {
 				const verb = args[2]
 				if (verb === 'ping') return 'ok\n'
 				if (verb === 'smart') return JSON.stringify({smart_status: {passed: true}, temperature: {current: 34}})
-				if (verb === 'format' || verb === 'umount') return 'ok\n'
+				if (verb === 'format' || verb === 'umount' || verb === 'mount') return 'ok\n'
 				return 'ok\n'
 			}
 			return ''
@@ -680,6 +754,8 @@ describe('omarchyd storage', () => {
 		assert.deepEqual(calls.filter((a) => a[0] === 'format').at(-1), ['format', '/dev/sdc', 'ext4'])
 		await s.procedures['storage.unmount'].run({device: '/dev/sdc'})
 		assert.deepEqual(calls.filter((a) => a[0] === 'umount').at(-1), ['umount', '/dev/sdc'])
+		await s.procedures['storage.mount'].run({device: '/dev/sdc'})
+		assert.deepEqual(calls.filter((a) => a[0] === 'mount').at(-1), ['mount', '/dev/sdc'])
 		await assert.rejects(s.procedures['storage.format'].run({device: '/dev/sdc', filesystem: 'ntfs'}), /blank, ext4 or exfat/)
 	})
 })

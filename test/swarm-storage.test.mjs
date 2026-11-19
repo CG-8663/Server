@@ -39,6 +39,7 @@ test('swarm.storage.status: missing computer is NOT_FOUND, offline is PRECONDITI
 		await assert.rejects(() => c.procedures['swarm.storage.disks'].run({id}), /offline/)
 		await assert.rejects(() => c.procedures['swarm.storage.format'].run({id, device: '/dev/sdc', filesystem: 'blank'}), /offline/)
 		await assert.rejects(() => c.procedures['swarm.storage.unmount'].run({id, device: '/dev/sdc'}), /offline/)
+		await assert.rejects(() => c.procedures['swarm.storage.mount'].run({id, device: '/dev/sdc'}), /offline/)
 		await assert.rejects(() => c.procedures['swarm.storage.pools'].run({id}), /offline/)
 		await assert.rejects(() => c.procedures['swarm.storage.importable'].run({id}), /offline/)
 		await assert.rejects(() => c.procedures['swarm.storage.createPool'].run({id, name: 'tank', profile: 'single', devices: ['/dev/sda']}), /offline/)

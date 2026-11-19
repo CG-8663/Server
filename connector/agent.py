@@ -11,7 +11,7 @@ server can't widen):
   desktop   your screen (wayvnc on Hyprland/Sway and other wlroots desktops, x11vnc on X11),
             shared only through a private socket in your runtime folder
   manage    a short fixed list: Omarchy plugins (verified, pinned), Omarchy theme, restart
-  storage   extra disks: list, unmount, format, pools, sleep (helper)
+  storage   extra disks: list, mount, unmount, format, pools, sleep (helper)
 
 Standard library only, so it runs on any distribution with Python 3.8+.
 """
@@ -806,6 +806,11 @@ def storage_unmount(args):
     return True
 
 
+def storage_mount(args):
+    helper("mount", args["device"])
+    return True
+
+
 def storage_format(args):
     fs = args.get("filesystem")
     if fs not in ("blank", "ext4", "exfat"):
@@ -873,6 +878,7 @@ STORAGE_ACTIONS = {
     "storage-status": storage_status,
     "storage-disks": storage_disks,
     "storage-unmount": storage_unmount,
+    "storage-mount": storage_mount,
     "storage-format": storage_format,
     "storage-pools": storage_pools,
     "storage-importable": storage_importable,

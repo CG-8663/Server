@@ -12,6 +12,7 @@
 //   usb-allow SERIAL                  udev uaccess so the owner’s session can open that USB serial
 //   usb-forget SERIAL                 drop that serial from the USB udev rule
 //   umount DEV                        unmount every mountpoint on a non-system, non-pool whole disk
+//   mount DEV                         mount each filesystem on a non-system, non-pool extra disk at /run/media/$USER
 //   format DEV FS                     wipe a non-system, non-pool, unmounted whole disk (FS is blank, ext4 or exfat)
 //   pool-create NAME PROFILE DEV...   new Btrfs pool on BLANK drives only, mounted at ~/Pools/NAME
 //   pool-add NAME DEV                 add a BLANK drive to a pool, then rebalance in the background
@@ -45,6 +46,13 @@ const BY_ID = /^\/dev\/disk\/by-id\/[A-Za-z0-9._:+-]+$/
 const NAME = /^[a-z][a-z0-9-]{0,31}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SYSTEM_MOUNTS = new Set(['/', '/boot', '/efi', '/boot/efi', '/home', '/var', '/usr', '[SWAP]'])
+const SKIP_FS = new Set(['crypto_LUKS', 'swap', 'LVM2_member', 'linux_raid_member', 'zfs_member'])
+const FAT_FS = new Set(['vfat', 'exfat', 'ntfs', 'msdos', 'fuseblk'])
+function safeMountName(s) {
+	const n = String(s ?? '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[._-]+|[._-]+$/g, '')
+	if (!n || n === '.' || n === '..') return ''
+	return n.slice(0, 64)
+}
 const FSTAB_MARK = '# omarchy-server pool'
 // nosuid,nodev: a program or device file on a pool (an imported drive could carry one) can never
 // gain root.
@@ -341,6 +349,29 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${d.path} holds the system`)
 			if (await poolMember(d)) fail(`${d.path} is in a pool`)
 			for (const m of mounts(d)) await run('umount', [m])
+			return 'ok'
+		},
+		mount: async ([path]) => {
+			const d = await resolveDisk(path)
+			if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${d.path} holds the system`)
+			if (await poolMember(d)) fail(`${d.path} is in a pool`)
+			if (mounts(d).length) fail(`${d.path} is already mounted`)
+			const nodes = (d.children ?? []).length ? flat(d).filter((x) => x !== d) : [d]
+			const targets = nodes.filter((x) => x.fstype && !SKIP_FS.has(x.fstype))
+			if (!targets.length) fail('Nothing to mount')
+			const used = new Set()
+			for (const t of targets) {
+				let name = safeMountName(t.label) || safeMountName(t.uuid) || safeMountName(t.name) || 'disk'
+				const base = name
+				let n = 2
+				while (used.has(name)) name = `${base}-${n++}`
+				used.add(name)
+				const dest = join('/run/media', user.name, name)
+				await fs.mkdir(dest, {recursive: true})
+				const opts = FAT_FS.has(t.fstype) ? ['-o', `uid=${user.uid},gid=${user.gid}`] : []
+				await run('mount', [...opts, t.path, dest])
+				await fs.chown(dest, user.uid, user.gid)
+			}
 			return 'ok'
 		},
 		format: async ([path, fsKind]) => {

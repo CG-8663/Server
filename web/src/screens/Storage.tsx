@@ -3,13 +3,14 @@
 // can be shared on the network from Files.
 //
 // Safety: pools are only ever created on blank drives. Format a data drive (choose blank) to make it
-// pool-eligible. Format and Unmount refuse the system disk, pool members, and (for Format) mounted disks.
+// pool-eligible. Format, Mount and Unmount refuse the system disk and pool members. Format also
+// refuses a mounted disk; Mount only offers unmounted extra disks that already have a filesystem.
 import {useState, type CSSProperties, type ReactNode} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from '../api'
 import {Icon} from '../icons'
-import {canFormat, canUnmount, formatConfirmToken, formatPhraseMatches, type FormatKind} from '../storageTools'
+import {canFormat, canMount, canUnmount, formatConfirmToken, formatPhraseMatches, type FormatKind} from '../storageTools'
 import {Card, KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
 
 type Health = {passed: boolean | null; temperature: number | null; powerOnHours: number | null; lifetimeUsed: number | null; reallocated: number | null; pending: number | null}
@@ -376,6 +377,20 @@ function DriveSheet({d, onClose, onChanged, rpc, args}: {d: Drive | null; onClos
 			setBusy(false)
 		}
 	}
+	const mount = async () => {
+		if (!d) return
+		setBusy(true)
+		try {
+			await mutate(rpc('mount'), args({device}))
+			toast('Drive mounted')
+			onChanged()
+			close()
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setBusy(false)
+		}
+	}
 	const format = async (filesystem: FormatKind) => {
 		if (!d) return
 		setBusy(true)
@@ -440,6 +455,12 @@ function DriveSheet({d, onClose, onChanged, rpc, args}: {d: Drive | null; onClos
 							<button className="btn block" disabled={busy} onClick={() => (haptic(6), unmount())}>
 								{busy ? <span className="spinner" /> : null}
 								Unmount
+							</button>
+						)}
+						{canMount(d) && (
+							<button className="btn block" disabled={busy} onClick={() => (haptic(6), mount())}>
+								{busy ? <span className="spinner" /> : null}
+								Mount
 							</button>
 						)}
 						{canFormat(d) && (

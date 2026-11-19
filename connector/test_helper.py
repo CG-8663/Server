@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import sys
@@ -25,14 +26,15 @@ LSBLK = {
 
 
 class Fake:
-    def __init__(self):
+    def __init__(self, lsblk=None):
         self.log = []
         self.files = {"/etc/fstab": "UUID=1111 / btrfs defaults 0 0\n"}
+        self.lsblk = lsblk if lsblk is not None else LSBLK
 
     def run(self, cmd, args):
         self.log.append([cmd, *args])
         if cmd == "lsblk":
-            return json.dumps(LSBLK)
+            return json.dumps(self.lsblk)
         if cmd == "wipefs":
             return json.dumps({"signatures": []})
         if cmd == "blkid":
@@ -139,6 +141,58 @@ class Helper(unittest.TestCase):
         self.assertEqual(p["folder"], "/Home/Pools/tank")
         found = json.loads(self.handle("importable", [], **self.kw))
         self.assertTrue(any(i["kind"] == "btrfs" and i["uuid"] == "44444444-4444-4444-4444-444444444444" for i in found))
+
+    def test_mount_refuses_system_pool_blank_mounted_and_junk(self):
+        with self.assertRaisesRegex(Exception, "holds the system"):
+            self.handle("mount", ["/dev/nvme0n1"], **self.kw)
+        self.fake.files["/etc/fstab"] = "UUID=44444444-4444-4444-4444-444444444444 /home/chris/Pools/old btrfs d 0 0 # omarchy-connector pool old\n"
+        with self.assertRaisesRegex(Exception, "is in a pool"):
+            self.handle("mount", ["/dev/sde"], **self.kw)
+        with self.assertRaisesRegex(Exception, "Nothing to mount"):
+            self.handle("mount", ["/dev/sdb"], **self.kw)
+        with self.assertRaisesRegex(Exception, "Not a drive"):
+            self.handle("mount", ["/etc/passwd"], **self.kw)
+        mounted = copy.deepcopy(LSBLK)
+        mounted["blockdevices"][3]["children"][0]["mountpoints"] = ["/run/media/chris/WINDOWS"]
+        fake = Fake(mounted)
+        kw = dict(run=fake.run, user=self.kw["user"], files=fake.files)
+        with self.assertRaisesRegex(Exception, "already mounted"):
+            self.handle("mount", ["/dev/sdc"], **kw)
+        self.assertFalse(any(x[0] == "mount" for x in fake.log))
+
+    def test_mount_ntfs_and_btrfs_at_run_media(self):
+        self.assertEqual(self.handle("mount", ["/dev/sdc"], **self.kw), "ok")
+        self.assertIn(["mount", "-o", "uid=1000,gid=1000", "/dev/sdc1", "/run/media/chris/sdc1"], self.fake.log)
+        self.fake.log.clear()
+        self.assertEqual(self.handle("mount", ["/dev/sde"], **self.kw), "ok")
+        self.assertIn(["mount", "/dev/sde1", "/run/media/chris/old"], self.fake.log)
+        self.assertFalse(any(x[0] == "mount" and "-o" in x for x in self.fake.log))
+
+    def test_mount_skips_luks_and_swap(self):
+        lsblk = copy.deepcopy(LSBLK)
+        lsblk["blockdevices"].append({
+            "name": "sdf", "path": "/dev/sdf", "type": "disk", "size": 1000000000, "children": [
+                {"name": "sdf1", "path": "/dev/sdf1", "type": "part", "fstype": "crypto_LUKS", "mountpoints": [None]},
+                {"name": "sdf2", "path": "/dev/sdf2", "type": "part", "fstype": "swap", "mountpoints": [None]},
+                {"name": "sdf3", "path": "/dev/sdf3", "type": "part", "fstype": "LVM2_member", "mountpoints": [None]},
+            ]
+        })
+        fake = Fake(lsblk)
+        kw = dict(run=fake.run, user=self.kw["user"], files=fake.files)
+        with self.assertRaisesRegex(Exception, "Nothing to mount"):
+            self.handle("mount", ["/dev/sdf"], **kw)
+        self.assertFalse(any(x[0] == "mount" for x in fake.log))
+
+    def test_mount_sanitizes_label(self):
+        lsblk = copy.deepcopy(LSBLK)
+        lsblk["blockdevices"].append({
+            "name": "sdg", "path": "/dev/sdg", "type": "disk", "size": 1000000000, "fstype": "ext4",
+            "uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "label": "My Disk / 2", "mountpoints": [None], "children": [],
+        })
+        fake = Fake(lsblk)
+        kw = dict(run=fake.run, user=self.kw["user"], files=fake.files)
+        self.assertEqual(self.handle("mount", ["/dev/sdg"], **kw), "ok")
+        self.assertIn(["mount", "/dev/sdg", "/run/media/chris/My_Disk_2"], fake.log)
 
     def test_pool_add_forget_and_scrub(self):
         self.handle("pool-create", ["tank", "single", "/dev/sda"], **self.kw)

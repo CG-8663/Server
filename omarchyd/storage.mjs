@@ -317,6 +317,10 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 				kind: 'mutation',
 				run: async (input) => (await helper('umount', [String(input?.device ?? '')]), true),
 			},
+			'storage.mount': {
+				kind: 'mutation',
+				run: async (input) => (await helper('mount', [String(input?.device ?? '')]), true),
+			},
 			'storage.format': {
 				kind: 'mutation',
 				run: async (input) => {

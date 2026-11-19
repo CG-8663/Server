@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
-import {canFormat, canUnmount, formatConfirmToken, formatPhraseMatches} from '../web/src/storageTools.ts'
+import {canFormat, canMount, canUnmount, formatConfirmToken, formatPhraseMatches} from '../web/src/storageTools.ts'
 
 const disk = (over) => ({path: '/dev/sdb', name: 'sdb', model: 'SanDisk Ultra', serial: 'AA11BB22', role: 'data', mounted: false, pool: null, ...over})
 
@@ -30,4 +30,12 @@ test('canUnmount only for mounted non-system non-pool disks', () => {
 	assert.equal(canUnmount(disk({mounted: false})), false)
 	assert.equal(canUnmount(disk({mounted: true, role: 'system'})), false)
 	assert.equal(canUnmount(disk({mounted: true, role: 'pool'})), false)
+})
+
+test('canMount only for unmounted data disks that already have a filesystem', () => {
+	assert.equal(canMount(disk({})), true)
+	assert.equal(canMount(disk({role: 'blank'})), false)
+	assert.equal(canMount(disk({role: 'system'})), false)
+	assert.equal(canMount(disk({role: 'pool', pool: 'media'})), false)
+	assert.equal(canMount(disk({mounted: true})), false)
 })

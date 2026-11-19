@@ -402,6 +402,18 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 					}
 				},
 			},
+			'swarm.storage.mount': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-mount', {device: String(input?.device ?? '')})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
 			'swarm.storage.format': {
 				kind: 'mutation',
 				run: async (input) => {

@@ -8,6 +8,7 @@ hostile. Verbs:
   ping           is the helper installed and allowed?
   smart DEV      drive health (smartctl JSON)
   umount DEV     unmount every mountpoint on a non-system, non-pool whole disk
+  mount DEV      mount each filesystem on a non-system, non-pool extra disk at /run/media/$USER
   format DEV FS  wipe a non-system, non-pool, unmounted whole disk (FS is blank, ext4 or exfat)
   sleep DEV MIN  spin-down time for a hard drive (0 = never)
   pool-*         Btrfs pools at ~/Pools/NAME (create, add, import, forget, scrub, status)
@@ -26,6 +27,17 @@ BY_ID = re.compile(r"^/dev/disk/by-id/[A-Za-z0-9._:+-]+$")
 NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 SYSTEM_MOUNTS = frozenset(["/", "/boot", "/efi", "/boot/efi", "/home", "/var", "/usr", "[SWAP]"])
+SKIP_FS = frozenset(["crypto_LUKS", "swap", "LVM2_member", "linux_raid_member", "zfs_member"])
+FAT_FS = frozenset(["vfat", "exfat", "ntfs", "msdos", "fuseblk"])
+
+
+def safe_mount_name(s):
+    n = re.sub(r"[^A-Za-z0-9._-]+", "_", str(s or "")).strip("._-")
+    if not n or n in (".", ".."):
+        return ""
+    return n[:64]
+
+
 PROTECTED = ["/", "/boot", "/efi", "/etc", "/usr", "/var", "/home", "/root", "/opt", "/srv", "/bin", "/sbin", "/lib", "/lib64", "/dev", "/proc", "/sys", "/run", "/tmp"]
 FSTAB_MARK = "# omarchy-connector pool"
 ZFS_MARK = "# omarchy-connector zfs"
@@ -383,6 +395,35 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             fail("%s is in a pool" % d["path"])
         for m in mounts(d):
             run("umount", [m])
+        return "ok"
+    if verb == "mount":
+        d = resolve_disk(args[0] if args else "")
+        if any(m in SYSTEM_MOUNTS for m in mounts(d)):
+            fail("%s holds the system" % d["path"])
+        if pool_member(d):
+            fail("%s is in a pool" % d["path"])
+        if mounts(d):
+            fail("%s is already mounted" % d["path"])
+        nodes = [x for x in flat(d) if x is not d] if d.get("children") else [d]
+        targets = [x for x in nodes if x.get("fstype") and x["fstype"] not in SKIP_FS]
+        if not targets:
+            fail("Nothing to mount")
+        used = set()
+        for t in targets:
+            name = safe_mount_name(t.get("label")) or safe_mount_name(t.get("uuid")) or safe_mount_name(t.get("name")) or "disk"
+            base = name
+            n = 2
+            while name in used:
+                name = "%s-%s" % (base, n)
+                n += 1
+            used.add(name)
+            dest = os.path.join("/run/media", user["name"], name)
+            mkdir_p(dest)
+            if t.get("fstype") in FAT_FS:
+                run("mount", ["-o", "uid=%s,gid=%s" % (uid, gid), t["path"], dest])
+            else:
+                run("mount", [t["path"], dest])
+            chown_path(dest)
         return "ok"
     if verb == "format":
         fs_kind = args[1] if len(args) > 1 else ""
