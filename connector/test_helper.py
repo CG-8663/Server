@@ -162,11 +162,30 @@ class Helper(unittest.TestCase):
 
     def test_mount_ntfs_and_btrfs_at_run_media(self):
         self.assertEqual(self.handle("mount", ["/dev/sdc"], **self.kw), "ok")
-        self.assertIn(["mount", "-o", "uid=1000,gid=1000", "/dev/sdc1", "/run/media/chris/sdc1"], self.fake.log)
+        self.assertIn(["mount", "-o", "nosuid,nodev,uid=1000,gid=1000", "/dev/sdc1", "/run/media/chris/sdc1"], self.fake.log)
         self.fake.log.clear()
         self.assertEqual(self.handle("mount", ["/dev/sde"], **self.kw), "ok")
-        self.assertIn(["mount", "/dev/sde1", "/run/media/chris/old"], self.fake.log)
-        self.assertFalse(any(x[0] == "mount" and "-o" in x for x in self.fake.log))
+        self.assertIn(["mount", "-o", "nosuid,nodev", "/dev/sde1", "/run/media/chris/old"], self.fake.log)
+
+    def test_mount_fat_chown_after_mount_is_skipped(self):
+        mounted = set()
+        chowns = []
+
+        def run(cmd, args):
+            if cmd == "mount":
+                mounted.add(args[-1])
+            return self.fake.run(cmd, args)
+
+        def chown(path, uid, gid):
+            if path in mounted:
+                raise OSError(1, "Operation not permitted")
+            chowns.append((path, uid, gid))
+
+        kw = dict(self.kw, run=run, chown=chown)
+        self.assertEqual(self.handle("mount", ["/dev/sdc"], **kw), "ok")
+        self.assertIn(("/run/media/chris/sdc1", 1000, 1000), chowns)
+        self.assertIn(("/run/media/chris", 1000, 1000), chowns)
+
 
     def test_mount_skips_luks_and_swap(self):
         lsblk = copy.deepcopy(LSBLK)
@@ -192,7 +211,7 @@ class Helper(unittest.TestCase):
         fake = Fake(lsblk)
         kw = dict(run=fake.run, user=self.kw["user"], files=fake.files)
         self.assertEqual(self.handle("mount", ["/dev/sdg"], **kw), "ok")
-        self.assertIn(["mount", "/dev/sdg", "/run/media/chris/My_Disk_2"], fake.log)
+        self.assertIn(["mount", "-o", "nosuid,nodev", "/dev/sdg", "/run/media/chris/My_Disk_2"], fake.log)
 
     def test_pool_add_forget_and_scrub(self):
         self.handle("pool-create", ["tank", "single", "/dev/sda"], **self.kw)

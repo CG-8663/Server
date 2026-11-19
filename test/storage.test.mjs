@@ -614,14 +614,42 @@ errors: No known data errors
 		mkdirs.length = 0
 		chowns.length = 0
 		assert.equal(await h.handle('mount', ['/dev/sdc']), 'ok')
-		assert.ok(log.some((l) => l[0] === 'mount' && l.includes('-o') && l.includes('uid=1000,gid=1000') && l.includes('/dev/sdc1') && l.includes('/run/media/chris/sdc1')))
+		assert.ok(log.some((l) => l[0] === 'mount' && l.includes('/dev/sdc1') && l.includes('/run/media/chris/sdc1') && l.some((a) => String(a).includes('uid=1000,gid=1000'))))
 		assert.ok(mkdirs.includes('/run/media/chris/sdc1'))
 		assert.ok(chowns.some((c) => c[0] === '/run/media/chris/sdc1' && c[1] === 1000 && c[2] === 1000))
 
 		log.length = 0
 		assert.equal(await h.handle('mount', ['/dev/sdg']), 'ok')
 		assert.ok(log.some((l) => l[0] === 'mount' && l.includes('/dev/sdg') && l.includes('/run/media/chris/My_Disk_2')))
-		assert.ok(!log.some((l) => l[0] === 'mount' && l.includes('-o')))
+		assert.ok(log.some((l) => l[0] === 'mount' && l.includes('-o') && l.includes('nosuid,nodev') && l.includes('/dev/sdg')))
+		assert.ok(!log.some((l) => l[0] === 'mount' && String(l).includes('uid=')))
+	})
+
+	test('mount: FAT chown after mount is skipped so a USB stick still mounts', async () => {
+		const log = []
+		const chowns = []
+		const mounted = new Set()
+		const run = async (cmd, args) => {
+			log.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(lsblk)
+			if (cmd === 'mount') {
+				mounted.add(args.at(-1))
+				return ''
+			}
+			return ''
+		}
+		const fs = fakeFs({'/etc/fstab': ''})
+		fs.chown = async (p, uid, gid) => {
+			if (mounted.has(p)) throw Object.assign(new Error('EPERM: Operation not permitted'), {code: 'EPERM'})
+			chowns.push([p, uid, gid])
+		}
+		const h = createHelper({user, run, fs})
+		assert.equal(await h.handle('mount', ['/dev/sdc']), 'ok')
+		assert.ok(chowns.some((c) => c[0] === '/run/media/chris/sdc1' && c[1] === 1000 && c[2] === 1000))
+		assert.ok(chowns.some((c) => c[0] === '/run/media/chris' && c[1] === 1000 && c[2] === 1000))
+		const call = log.find((l) => l[0] === 'mount' && l.includes('/dev/sdc1'))
+		assert.ok(call)
+		assert.match(call.find((a) => String(a).includes('uid=')) ?? '', /nosuid,nodev/)
 	})
 })
 

@@ -366,11 +366,15 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 				let n = 2
 				while (used.has(name)) name = `${base}-${n++}`
 				used.add(name)
-				const dest = join('/run/media', user.name, name)
+				const parent = join('/run/media', user.name)
+				const dest = join(parent, name)
 				await fs.mkdir(dest, {recursive: true})
-				const opts = FAT_FS.has(t.fstype) ? ['-o', `uid=${user.uid},gid=${user.gid}`] : []
-				await run('mount', [...opts, t.path, dest])
+				await fs.chown(parent, user.uid, user.gid).catch(() => {})
 				await fs.chown(dest, user.uid, user.gid)
+				const flags = ['nosuid', 'nodev']
+				if (FAT_FS.has(t.fstype)) flags.push(`uid=${user.uid}`, `gid=${user.gid}`)
+				await run('mount', ['-o', flags.join(','), t.path, dest])
+				if (!FAT_FS.has(t.fstype)) await fs.chown(dest, user.uid, user.gid)
 			}
 			return 'ok'
 		},

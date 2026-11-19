@@ -65,7 +65,7 @@ def default_run(cmd, args):
     return r.stdout
 
 
-def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, files=None):
+def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, files=None, chown=None):
     run = run or default_run
     realpath = realpath or os.path.realpath
     if not user or not user.get("name") or not isinstance(user.get("uid"), int) or user.get("uid") == 0 or not str(user.get("home") or "").startswith("/"):
@@ -140,6 +140,9 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         os.makedirs(path, exist_ok=True)
 
     def chown_path(path):
+        if chown is not None:
+            chown(path, uid, gid)
+            return
         if files is not None:
             return
         os.chown(path, uid, gid)
@@ -417,13 +420,20 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 name = "%s-%s" % (base, n)
                 n += 1
             used.add(name)
-            dest = os.path.join("/run/media", user["name"], name)
+            parent = os.path.join("/run/media", user["name"])
+            dest = os.path.join(parent, name)
             mkdir_p(dest)
-            if t.get("fstype") in FAT_FS:
-                run("mount", ["-o", "uid=%s,gid=%s" % (uid, gid), t["path"], dest])
-            else:
-                run("mount", [t["path"], dest])
+            try:
+                chown_path(parent)
+            except OSError:
+                pass
             chown_path(dest)
+            flags = ["nosuid", "nodev"]
+            if t.get("fstype") in FAT_FS:
+                flags.extend(["uid=%s" % uid, "gid=%s" % gid])
+            run("mount", ["-o", ",".join(flags), t["path"], dest])
+            if t.get("fstype") not in FAT_FS:
+                chown_path(dest)
         return "ok"
     if verb == "format":
         fs_kind = args[1] if len(args) > 1 else ""
@@ -845,7 +855,7 @@ def main():
             fail("Unknown user")
         if pw.pw_uid != uid:
             fail("Unknown user")
-        sys.stdout.write("%s\n" % handle(verb, args, user={"name": name, "uid": uid, "home": pw.pw_dir}))
+        sys.stdout.write("%s\n" % handle(verb, args, user={"name": name, "uid": uid, "gid": pw.pw_gid, "home": pw.pw_dir}))
     except HelperError as e:
         sys.stderr.write("%s\n" % e)
         sys.exit(2)
