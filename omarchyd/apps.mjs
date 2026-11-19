@@ -74,6 +74,9 @@ const APP_UID = 1000
 // explicit permission when installing; plain apps need none.
 // Where apps that are part of the server itself (system-apps.mjs) are listed.
 const BUILTIN_STORE = 'builtin:omarchy-server'
+// Apps brought over by the Unraid importer (unraid.mjs): listings it writes on this server, never
+// fetched from anywhere, so they're listed and installed like any store's.
+const IMPORTED_STORE = 'local:imported'
 
 export const PERMISSIONS = {
 	containers: {label: 'Control your containers', detail: 'It can start, stop, create and delete every container you run (and see their settings and data). Container managers need this.'},
@@ -895,6 +898,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				if (!prev || prev.id !== loaded.meta.id || prev.name !== loaded.meta.name) dirty = true
 				list.push(loaded)
 			} catch {}
+		}
+		try {
+			if ((await readdir(storeDir(IMPORTED_STORE))).length) list.push(await loadStore(IMPORTED_STORE))
+		} catch {
+			/* nothing imported */
 		}
 		// Apps that are part of the server itself (Tailscale) come first, so a store can't stand in for them.
 		if (systemApps) list.unshift({url: BUILTIN_STORE, meta: {id: 'omarchy-server', name: 'Omarchy Server'}, apps: systemApps.listings()})
@@ -1794,6 +1802,25 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			systemApps?.close()
 			secure.close()
 			for (const id of [...gateways.keys()]) closeGateway(id)
+		},
+		// For the Unraid importer: where its listings go, and installing one of them with the access its
+		// listing asks for (the owner reviewed each app before the import started). Folders Omarchy Server
+		// never gives an app stay refused.
+		importedStoreDir: storeDir(IMPORTED_STORE),
+		appDirFor: (id) => appDir(id),
+		installed: (id) => state.apps.some((a) => a.id === id),
+		async installImported(id) {
+			registryCache = null
+			const plan = await installPlan(id)
+			const grant = new Set()
+			for (const a of plan) for (const p of await permissionsOf({...a, folderIds: [], folders: {}})) grant.add(p.id)
+			if (grant.has('refused')) throw new RpcError('FORBIDDEN', 'It uses folders Omarchy Server never gives an app')
+			await install({appId: id, grant: [...grant]})
+		},
+		importState(id) {
+			const a = state.apps.find((x) => x.id === id)
+			if (!a) return {done: true, error: 'It wasn’t installed'}
+			return {done: a.state !== 'installing' && !busy.has(id), error: a.state === 'error' ? a.error || 'It didn’t install' : null}
 		},
 		// For backups: installed container apps, where their files are, and whether each is running.
 		async backupTargets() {

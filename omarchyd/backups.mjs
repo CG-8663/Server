@@ -114,7 +114,7 @@ function smbMessage(errors) {
 	return `The NAS said ${e || 'no'}.`
 }
 
-function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 60_000} = {}) {
+export function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 60_000, split = /\n/} = {}) {
 	return new Promise((resolve, reject) => {
 		const child = spawn(cmd, args, {env, stdio: ['pipe', 'pipe', 'pipe']})
 		let out = ''
@@ -127,7 +127,7 @@ function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 60_000}
 			if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024)
 			if (onLine) {
 				buf += s
-				const lines = buf.split('\n')
+				const lines = buf.split(split)
 				buf = lines.pop()
 				for (const l of lines) onLine(l)
 			}

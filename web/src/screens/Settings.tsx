@@ -11,6 +11,7 @@ import {AssistantAppearanceSettings} from '../character/widgets'
 import {OmarchyThemes} from '../OmarchyThemes'
 import {StoragePage} from './Storage'
 import {BackupsPage} from '../backups'
+import {UnraidPage} from '../unraid'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 
 function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false; staleTime?: number; refetchOnWindowFocus?: boolean; refetchOnReconnect?: boolean} = {}) {
@@ -92,7 +93,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const [sheet, setSheet] = useState<SheetId>(null)
 	const inWindow = useContext(InWindow)
 	const layout = useLayout()
-	type Page = 'main' | 'appearance' | 'storage' | 'backups' | 'omarchy-themes' | 'assistant'
+	type Page = 'main' | 'appearance' | 'storage' | 'backups' | 'unraid' | 'omarchy-themes' | 'assistant'
 	const [page, setPage] = useState<Page>(() => (sessionStorage.getItem('omarchy-server:settings-page') as Page) || 'main')
 	const openPage = (p: Page) => {
 		haptic(5)
@@ -166,6 +167,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 
 	if (page === 'storage') return <StoragePage onBack={() => openPage('main')} />
 	if (page === 'backups' && owner) return <BackupsPage onBack={() => openPage('main')} />
+	if (page === 'unraid' && owner) return <UnraidPage onBack={() => openPage('main')} />
 	if (page === 'assistant') return <AssistantPage onBack={() => openPage('main')} />
 	if (page === 'omarchy-themes')
 		return (
@@ -261,6 +263,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					<Row icon="palette" color="var(--pink, #ec4899)" label="Appearance" onClick={() => openPage('appearance')} />
 					{owner && <Row icon="disk" color="var(--teal)" label="Storage" onClick={() => openPage('storage')} />}
 					{owner && <Row icon="history" color="var(--green)" label="Backups" onClick={() => openPage('backups')} />}
+					{owner && <Row icon="move" color="var(--orange, #f59e0b)" label="Move from Unraid" onClick={() => openPage('unraid')} />}
 				</div>
 			</div>
 
