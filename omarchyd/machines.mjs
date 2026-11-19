@@ -1392,6 +1392,24 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (!name || name.length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
 		return adopt(meta.machine, {name, keepIds: true, copyDisk: (d, dst) => run('qemu-img', ['convert', '-O', 'qcow2', join(dir, `${d.id}.qcow2`), dst], {timeout: 6 * 60 * 60_000})})
 	}
+	// A VM brought over from another server (the Unraid importer): its settings, and disk images
+	// already copied to this server (raw or qcow2), each converted into the machine's own qcow2.
+	async function importVm(spec = {}) {
+		await ready
+		const name = uniqueName(String(spec.name ?? 'Imported').trim().slice(0, 64) || 'Imported')
+		const disks = (spec.disks ?? []).map((d, i) => ({id: i === 0 ? 'disk0' : `disk${i}`, file: String(d.file), device: 'disk', bus: ['virtio', 'sata', 'scsi'].includes(d.bus) ? (d.bus === 'scsi' ? 'sata' : d.bus) : 'sata', format: d.format === 'qcow2' ? 'qcow2' : 'raw'}))
+		if (!disks.length) throw new RpcError('BAD_REQUEST', 'That VM has no disks to bring over')
+		const memoryMb = Math.max(256, Math.min(Number(spec.memoryMb) || 2048, 1024 * 1024))
+		const source = {
+			name,
+			osId: 'imported',
+			cores: Math.max(1, Math.min(Number(spec.cores) || 2, os.cpus().length || 2)),
+			memoryMb,
+			memoryGb: Math.max(1, Math.round(memoryMb / 1024)),
+			layout: {firmware: spec.firmware === 'efi' ? 'efi' : 'bios', machineType: spec.machineType === 'pc' ? 'pc' : 'q35', nic: spec.nic === 'e1000e' ? 'e1000e' : 'virtio', video: 'vga', disks},
+		}
+		return adopt(source, {name, keepIds: false, copyDisk: (d, dst) => run('qemu-img', ['convert', '-f', d.format, '-O', 'qcow2', d.file, dst], {timeout: 12 * 60 * 60_000})})
+	}
 	async function clone(input = {}) {
 		await ready
 		const m = find(input.id)
@@ -1524,6 +1542,13 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		ready,
 		usage,
 		uninstallAll,
+		importVm,
+		// For the importer: whether an imported machine has finished copying, and how it went.
+		importState(id) {
+			const m = machines.find((x) => x.id === id)
+			if (!m) return {done: true, error: 'It was removed'}
+			return {done: !busy.has(id) && m.state !== 'installing', error: m.state === 'error' ? m.errorMessage || 'It didn’t work' : null, name: m.name}
+		},
 		vncSocket,
 		usbBindings,
 		bindUsb,

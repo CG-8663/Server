@@ -4,6 +4,18 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.47',
+		date: '2026-11-19',
+		title: 'Move from Unraid',
+		added: [
+			'Settings › Move from Unraid: connect to your Unraid server, tick what to bring over, and watch it come across. Unraid keeps running and isn’t changed.',
+			'Shares are copied into Home (or a storage pool) and shared on your network again with the same names. Copies pick up where they left off if anything stops them.',
+			'Docker containers become apps, with the same image, settings, ports and files from appdata. Folders they used from your shares point at the copied shares.',
+			'VMs come over with their disks and settings (shut them down on Unraid first).',
+		],
+		fixed: ['The installer now makes sure rsync and ssh are on the server (needed to move from Unraid). Run it once more when it asks.'],
+	},
+	{
 		version: '0.9.46',
 		date: '2026-11-19',
 		title: 'Backups to your NAS',

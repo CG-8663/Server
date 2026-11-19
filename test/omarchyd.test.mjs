@@ -43,7 +43,7 @@ describe('omarchyd', () => {
 		const r = await call('query', 'system.version')
 		assert.equal(r.status, 200)
 		const v = r.body.result.data
-		assert.equal(v.version, '0.9.46')
+		assert.equal(v.version, '0.9.47')
 		assert.equal(typeof v.startedAt, 'number')
 		assert.ok(v.startedAt <= Date.now() && Date.now() - v.startedAt < 60_000)
 		assert.match(String(v.revision ?? ''), /^[0-9a-f]{7,40}$/)
@@ -190,7 +190,7 @@ describe('network shares are owner-only', () => {
 		assert.equal((await call('query', 'files.shares', undefined, owner)).status, 200)
 		assert.equal((await call('query', 'files.list', {path: '/Home'}, member)).status, 200, 'members can still use Files')
 	})
-	test('backups are owner-only: a member is refused every backups.* RPC', async () => {
+	test('backups and moving from Unraid are owner-only: a member is refused every backups.* and unraid.* RPC', async () => {
 		const rpcs = [
 			['query', 'backups.status'],
 			['query', 'backups.discover'],
@@ -202,6 +202,13 @@ describe('network shares are owner-only', () => {
 			['mutation', 'backups.runNow'],
 			['mutation', 'backups.restoreApp', {snapshotId: 'abcdef12', appId: 'notes'}],
 			['mutation', 'backups.connectExisting', {}],
+			['query', 'unraid.status'],
+			['mutation', 'unraid.connect', {host: 'tower.local', password: 'x'}],
+			['mutation', 'unraid.scan'],
+			['mutation', 'unraid.start', {}],
+			['mutation', 'unraid.cancel'],
+			['mutation', 'unraid.disconnect'],
+			['mutation', 'unraid.forgetHost', {host: 'tower.local'}],
 		]
 		for (const [kind, path, input] of rpcs) {
 			const r = await call(kind, path, input, member)

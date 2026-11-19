@@ -12,6 +12,7 @@ import {dirname, extname, join} from 'node:path'
 import {openAccounts} from './accounts.mjs'
 import {createAssistant} from './assistant.mjs'
 import {createBackups} from './backups.mjs'
+import {createUnraid} from './unraid.mjs'
 import {APP_COOKIE, createApps} from './apps.mjs'
 import {createFiles} from './files.mjs'
 import {createMachines} from './machines.mjs'
@@ -28,9 +29,9 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.46'
+export const OMARCHYD_VERSION = '0.9.47'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
 	const startedAt = Date.now()
 	const revision = await new Promise((resolve) => {
@@ -57,6 +58,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	// Backups need apps: to pause them while their files are saved, and to know where those files are.
 	// …and the local swarm's connector (created further down), for computers that back up here.
 	const backups = createBackups({dataDir, home, files, apps, swarm: {agents: () => connector.backup.agents(), call: (...a) => connector.backup.call(...a), progress: (id) => connector.backup.progress(id)}, ...backupOptions})
+	// Move from Unraid: its shares, containers and VMs, brought over SSH.
+	const unraid = createUnraid({dataDir, files, apps, machines, storage, ...unraidOptions})
 	const usb = createUsb({
 		enumerate: () => listHostUsb(usbOptions),
 		guests: {
@@ -354,6 +357,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			),
 		),
 		...Object.fromEntries(Object.entries(backups.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage backups'), p.run(input))}])),
+		...Object.fromEntries(Object.entries(unraid.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'move from Unraid'), p.run(input))}])),
 		...updater.procedures,
 		// Running the installer needs sudo on the server: only the owner is asked.
 		'system.installerStatus': {
@@ -744,7 +748,7 @@ WantedBy=graphical-session.target
 		}
 	}, 20_000).unref?.()
 
-	return {url: `http://${host}:${server.address().port}`, accounts, terminals, close: () => (apps.close(), backups.close(), updater.stop(), connector.close(), terminals.close(), new Promise((r) => server.close(r)))}
+	return {url: `http://${host}:${server.address().port}`, accounts, terminals, close: () => (apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), terminals.close(), new Promise((r) => server.close(r)))}
 }
 
 // The "always use the secure address" choice made while omarchyd kept its own certificate folder.

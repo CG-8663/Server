@@ -27,7 +27,7 @@ done
 
 # Raise this when a change needs the installer run again (packages, the storage helper, services,
 # firewall rules). While Omarchy Server is in beta, the app asks the owner to run it at their next sign-in.
-INSTALLER_REVISION=2
+INSTALLER_REVISION=3
 # Started from the app's "run the installer" prompt, in its own terminal: that terminal runs inside
 # omarchyd, so restarting omarchyd here would stop this script partway. Restart once it's done instead.
 FROM_APP="${OMARCHY_SERVER_FROM_APP:-0}"
@@ -56,7 +56,7 @@ arch=$(uname -m)
 #    (libisoburn) for cloud-init seeds. Apps: rootless Podman driven by docker-compose. NAS: Btrfs,
 #    drive health (smartmontools), drive sleep (hdparm) and network shares (samba).
 need=()
-for pkg in nodejs npm git openssl wayvnc bubblewrap qemu-base libvirt passt libisoburn edk2-ovmf podman docker-compose btrfs-progs smartmontools hdparm samba; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
+for pkg in nodejs npm git openssl wayvnc bubblewrap qemu-base libvirt passt libisoburn edk2-ovmf podman docker-compose btrfs-progs smartmontools hdparm samba rsync openssh; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
 # Arch doesn't support installing packages from a newer package list without updating the rest
 # ("partial upgrade"): a new package can need newer libraries than the ones installed. That's how
 # Samba ended up half-updated (samba 4.25 with its libraries, smbclient and libwbclient, at 4.24).
