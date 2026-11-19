@@ -416,10 +416,9 @@ def _engine_busy_percent(card, list_dir, read_file, now):
             return None
         return (busy[name] - prev[1][name]) / dt_ns * 100
 
-    for name in ("rcs0", "ccs0"):
-        p = pct(name)
-        if p is not None:
-            return min(100, max(0, p))
+    render_compute = [p for p in (pct("rcs0"), pct("ccs0")) if p is not None]
+    if render_compute:
+        return min(100, max(0, max(render_compute)))
     ps = [p for p in (pct(n) for n in busy) if p is not None]
     return min(100, max(0, max(ps))) if ps else None
 
@@ -468,7 +467,7 @@ def _drm_gpus(list_dir, read_file, skip_vendors=None, now=time.monotonic):
             used = _num(read_file(f"/sys/class/drm/{card}/device/gpu_busy_percent"))
         product = (read_file(f"/sys/class/drm/{card}/device/product_name") or "").strip()
         name = product or _drm_fallback_name(vendor, card)
-        if not vendor and used is None and not product:
+        if used is None and vendor != _VENDOR_INTEL:
             continue
         gpus.append({"id": f"drm-{card}", "index": int(card[4:]), "name": name, "used": None if used is None else int(round(used))})
     return gpus

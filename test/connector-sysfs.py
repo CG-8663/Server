@@ -187,6 +187,43 @@ class Gpus(unittest.TestCase):
         second = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=read_file, now=lambda: clock["t"])
         self.assertEqual(second[0]["used"], 40)
 
+    def test_intel_compute_busy_not_hidden_by_idle_render(self):
+        files = {
+            "/sys/class/drm/card1/device/vendor": "0x8086\n",
+            "/sys/class/drm/card1/engine/rcs0/busy": "0\n",
+            "/sys/class/drm/card1/engine/ccs0/busy": "0\n",
+        }
+        clock = {"t": 10.0}
+
+        def list_dir(path):
+            if path == "/sys/class/drm":
+                return ["card1"]
+            if path == "/sys/class/drm/card1/engine":
+                return ["rcs0", "ccs0"]
+            return []
+
+        first = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=lambda p, d="": files.get(p, d), now=lambda: clock["t"])
+        self.assertIsNone(first[0]["used"])
+        files["/sys/class/drm/card1/engine/ccs0/busy"] = str(int(0.4 * 1e9)) + "\n"
+        clock["t"] = 11.0
+        second = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=lambda p, d="": files.get(p, d), now=lambda: clock["t"])
+        self.assertEqual(second[0]["used"], 40)
+
+    def test_bmc_and_virtio_without_busy_percent_are_not_listed(self):
+        files = {
+            "/sys/class/drm/card0/device/vendor": "0x1a03\n",
+            "/sys/class/drm/card0/device/product_name": "ASPEED Graphics Family\n",
+            "/sys/class/drm/card1/device/vendor": "0x8086\n",
+            "/sys/class/drm/card1/device/product_name": "Intel Graphics\n",
+        }
+
+        def list_dir(path):
+            return ["card0", "card1"] if path == "/sys/class/drm" else []
+
+        gpus = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=lambda p, d="": files.get(p, d))
+        self.assertEqual([g["id"] for g in gpus], ["drm-card1"])
+        self.assertIsNone(gpus[0]["used"])
+
     def test_intel_rc6_when_engine_has_no_busy_file(self):
         # Broadwell i915: engine dirs exist, no busy files, no gpu_busy_percent.
         # RC6 residency is idle time; GPU use is the wall time not spent in RC6.
