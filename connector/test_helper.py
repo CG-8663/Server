@@ -10,9 +10,10 @@ LSBLK = {
         {"name": "nvme0n1", "path": "/dev/nvme0n1", "type": "disk", "size": 512000000000, "children": [
             {"name": "nvme0n1p2", "path": "/dev/nvme0n1p2", "type": "part", "fstype": "btrfs", "uuid": "11111111-1111-1111-1111-111111111111", "mountpoints": ["/", "/home"]}
         ]},
-        {"name": "sdc", "path": "/dev/sdc", "type": "disk", "size": 2000000000000, "children": [
+        {"name": "sdc", "path": "/dev/sdc", "type": "disk", "size": 2000000000000, "model": "WDC  ", "serial": "WD123", "rota": True, "tran": "sata", "children": [
             {"name": "sdc1", "path": "/dev/sdc1", "type": "part", "fstype": "ntfs", "mountpoints": [None]}
         ]},
+        {"name": "loop0", "path": "/dev/loop0", "type": "disk", "size": 1000000, "children": []},
     ]
 }
 
@@ -51,6 +52,23 @@ class Helper(unittest.TestCase):
         self.fake.log.clear()
         self.handle("format", ["/dev/sdc", "ext4"], **self.kw)
         self.assertTrue(any(x[0] == "mkfs.ext4" for x in self.fake.log))
+
+    def test_disks_roles_and_skips_loop(self):
+        out = json.loads(self.handle("disks", [], **self.kw))
+        names = [d["name"] for d in out]
+        self.assertNotIn("loop0", names)
+        by = {d["name"]: d for d in out}
+        self.assertEqual(by["nvme0n1"]["role"], "system")
+        self.assertTrue(by["nvme0n1"]["mounted"])
+        self.assertIn("/", by["nvme0n1"]["mounts"])
+        self.assertEqual(by["sdc"]["role"], "data")
+        self.assertFalse(by["sdc"]["mounted"])
+        self.assertEqual(by["sdc"]["path"], "/dev/sdc")
+        self.assertTrue(by["sdc"]["id"])
+        self.assertEqual(by["sdc"]["model"], "WDC")
+        self.assertEqual(by["sdc"]["kind"], "hdd")
+        self.assertIn("mounted", by["sdc"])
+        self.assertIn("health", by["sdc"])
 
 
 if __name__ == "__main__":

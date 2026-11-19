@@ -8,6 +8,7 @@ import {mutate, query} from '../api'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
+import {StoragePage} from '../screens/Storage'
 import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, levelColor, useConfirm, useToast} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
@@ -87,8 +88,10 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 	const [adding, setAdding] = useState(false)
 	const [terminal, setTerminal] = useState<{agent: Agent; input?: string} | null>(null)
 	const [screen, setScreen] = useState<Agent | null>(null)
+	const [storage, setStorage] = useState<Agent | null>(null)
 	const selected = list.find((a) => a.id === selectedId) ?? null
 	const online = list.filter((a) => a.online).length
+	if (storage) return <StoragePage onBack={() => setStorage(null)} target={{agentId: storage.id, name: storage.name}} />
 	return (
 		<section className="swarm">
 			{heading && (
@@ -136,6 +139,7 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 					onClose={() => setSelectedId(null)}
 					onTerminal={(input) => setTerminal({agent: selected, input})}
 					onDesktop={() => setScreen(selected)}
+					onStorage={() => setStorage(selected)}
 				/>
 			)}
 			{adding && <AddComputer before={list.map((a) => a.id)} onClose={() => setAdding(false)} onJoined={(id) => (setAdding(false), setSelectedId(id))} />}
@@ -251,7 +255,7 @@ function Group({title, children}: {title: string; children: ReactNode}) {
 	)
 }
 
-function AgentSheet({a, onClose, onTerminal, onDesktop}: {a: Agent; onClose: () => void; onTerminal: (input?: string) => void; onDesktop: () => void}) {
+function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; onClose: () => void; onTerminal: (input?: string) => void; onDesktop: () => void; onStorage: () => void}) {
 	const os = look(a)
 	const act = useSwarmAction()
 	const confirm = useConfirm()
@@ -289,6 +293,16 @@ function AgentSheet({a, onClose, onTerminal, onDesktop}: {a: Agent; onClose: () 
 			{a.online && may(a, 'desktop') && desk && !desk.ok && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>{desk.why}</p>}
 
 			{a.online && m && <SwarmGauges metrics={m} />}
+			<Group title="Disks">
+				<Row
+					icon="disk"
+					color="var(--teal)"
+					label="Storage"
+					sub={offline ? undefined : may(a, 'storage') ? 'Drives, format extra disks, and pools on this computer' : 'Pair this computer again with Storage switched on.'}
+					onClick={a.online && may(a, 'storage') ? () => (haptic(8), onStorage()) : undefined}
+					disabled={offline}
+				/>
+			</Group>
 			{a.online && m && (extraDisks(m.disks).length > 0 || typeof m.temp === 'number' || m.uptime !== undefined) && (
 				<Group title="Now">
 					{extraDisks(m.disks).map((d) => (

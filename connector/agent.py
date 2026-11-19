@@ -797,7 +797,11 @@ def storage_status(_args):
     return {"helperAvailable": ok, "zfsAvailable": zfs}
 
 
-STORAGE_ACTIONS = {"storage-status": storage_status}
+def storage_disks(_args):
+    return json.loads(helper("disks"))
+
+
+STORAGE_ACTIONS = {"storage-status": storage_status, "storage-disks": storage_disks}
 
 
 # ---------------------------------------------------------------------------------------------

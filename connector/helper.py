@@ -126,6 +126,90 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None):
         if fs_kind == "exfat":
             run("mkfs.exfat", [d["path"]])
         return "ok"
+    if verb == "disks":
+        skip = re.compile(r"^(zram|loop|sr|ram)")
+
+        def disk_id(path):
+            try:
+                names = os.listdir("/dev/disk/by-id")
+            except OSError:
+                return path
+            for name in names:
+                if re.search(r"-part\d+$", name):
+                    continue
+                full = "/dev/disk/by-id/" + name
+                try:
+                    if realpath(full) == path:
+                        return full
+                except OSError:
+                    continue
+            return path
+
+        def health(path):
+            try:
+                j = json.loads(run("smartctl", ["-j", "-a", path]))
+                attrs = {a.get("id"): (a.get("raw") or {}).get("value") for a in ((j.get("ata_smart_attributes") or {}).get("table") or [])}
+                nvme_log = j.get("nvme_smart_health_information_log") or {}
+                return {
+                    "passed": (j.get("smart_status") or {}).get("passed"),
+                    "temperature": (j.get("temperature") or {}).get("current") if j.get("temperature") else nvme_log.get("temperature"),
+                    "powerOnHours": (j.get("power_on_time") or {}).get("hours") if j.get("power_on_time") else nvme_log.get("power_on_hours"),
+                    "lifetimeUsed": nvme_log.get("percentage_used"),
+                    "reallocated": attrs.get(5),
+                    "pending": attrs.get(197),
+                }
+            except Exception:
+                return None
+
+        def pool_name(d):
+            for m in mounts(d):
+                if "/Pools/" in m:
+                    return m.rsplit("/Pools/", 1)[-1].split("/")[0] or None
+            uuids = {x.get("uuid") for x in flat(d) if x.get("uuid")}
+            for l in fstab():
+                if FSTAB_MARK in l and any(u in l for u in uuids):
+                    return (l[l.index(FSTAB_MARK) + len(FSTAB_MARK) :].strip() or None)
+            zmember = next((x for x in flat(d) if x.get("fstype") == "zfs_member"), None)
+            if zmember and zmember.get("label"):
+                return zmember["label"]
+            return None
+
+        out = []
+        for d in block_devices():
+            name = d.get("name") or ""
+            if d.get("type") != "disk" or skip.match(name) or not int(d.get("size") or 0):
+                continue
+            allp = flat(d)
+            mnt = [m for x in allp for m in (x.get("mountpoints") or []) if m]
+            btrfs = next((x for x in allp if x.get("fstype") == "btrfs"), None)
+            zmember = next((x for x in allp if x.get("fstype") == "zfs_member"), None)
+            pool = pool_name(d)
+            system = any(m in SYSTEM_MOUNTS for m in mnt)
+            blank = not d.get("fstype") and not (d.get("children") or []) and not mnt
+            nvme = d.get("tran") == "nvme" or name.startswith("nvme")
+            rota = d.get("rota") in (True, 1, "1")
+            role = "system" if system else "pool" if pool else "blank" if blank else "data"
+            path = d.get("path")
+            out.append({
+                "path": path,
+                "id": disk_id(path),
+                "name": name,
+                "model": (d.get("model") or "").strip() or None,
+                "serial": d.get("serial"),
+                "size": int(d.get("size") or 0),
+                "kind": "nvme" if nvme else "hdd" if rota else "ssd",
+                "transport": d.get("tran"),
+                "removable": d.get("rm") in (True, 1, "1") or d.get("hotplug") in (True, 1, "1"),
+                "role": role,
+                "pool": pool if role == "pool" else None,
+                "mounted": len(mnt) > 0,
+                "mounts": mnt,
+                "btrfs": {"uuid": btrfs.get("uuid"), "label": btrfs.get("label"), "mounted": any(btrfs.get("mountpoints") or [])} if btrfs and role != "pool" else None,
+                "zfs": {"pool": zmember.get("label")} if zmember and role != "pool" else None,
+                "sleepMinutes": None,
+                "health": health(path),
+            })
+        return json.dumps(out)
     fail("Unknown action: %s" % verb)
 
 

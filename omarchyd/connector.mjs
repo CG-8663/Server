@@ -194,6 +194,15 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 	}
 	const may = (a, ability) => a.allowed[ability] && a.on[ability]
 
+	async function requireAgent(input, needStorage) {
+		await loaded
+		const a = find(String(input?.id ?? ''))
+		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		if (!live.has(a.id)) throw new RpcError('PRECONDITION_FAILED', 'That computer is offline right now')
+		if (needStorage && !may(a, 'storage')) throw new RpcError('FORBIDDEN', `Pair ${a.name} again with Storage switched on`)
+		return a
+	}
+
 	function call(id, name, args = {}, timeout = 10 * 60_000) {
 		const l = live.get(id)
 		if (!l) return Promise.reject(new RpcError('PRECONDITION_FAILED', 'That computer is offline right now'))
@@ -355,6 +364,32 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			'swarm.rename': {kind: 'mutation', run: rename},
 			'swarm.setAbilities': {kind: 'mutation', run: setAbilities},
 			'swarm.action': {kind: 'mutation', run: action},
+			'swarm.storage.status': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAgent(input, false)
+					const storageAllowed = may(a, 'storage')
+					if (!storageAllowed) return {helperAvailable: false, zfsAvailable: false, storageAllowed: false}
+					try {
+						const s = await call(a.id, 'storage-status', {})
+						return {helperAvailable: !!s?.helperAvailable, zfsAvailable: !!s?.zfsAvailable, storageAllowed: true}
+					} catch (e) {
+						if (/allow Storage|doesn’t allow/i.test(e.message)) return {helperAvailable: false, zfsAvailable: false, storageAllowed: false}
+						throw new RpcError('PRECONDITION_FAILED', `Run the connector install again on ${a.name}.`)
+					}
+				},
+			},
+			'swarm.storage.disks': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						return await call(a.id, 'storage-disks', {})
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', /offline/i.test(e.message) ? e.message : `Run the connector install again on ${a.name}.`)
+					}
+				},
+			},
 			// Before showing a computer's screen: can it, and if not, why (in words, not a socket code).
 			'swarm.desktopCheck': {
 				kind: 'query',

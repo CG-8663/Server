@@ -163,7 +163,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	}
 
 
-	if (page === 'storage') return <StoragePage onBack={() => openPage('main')} />
+	if (page === 'storage') return <StoragePage onBack={() => openPage('main')} target="host" />
 	if (page === 'assistant') return <AssistantPage onBack={() => openPage('main')} />
 	if (page === 'omarchy-themes')
 		return (
