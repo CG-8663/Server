@@ -4,6 +4,12 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.44',
+		date: '2026-11-18',
+		title: 'Installer fix',
+		fixed: ['On a fresh install, the installer could stop right after installing packages with “cannot touch …/.widget-offered”, skipping the download and build. It now runs every step.'],
+	},
+	{
 		version: '0.9.43',
 		date: '2026-11-18',
 		title: 'A smarter assistant, more providers',

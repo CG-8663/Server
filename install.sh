@@ -9,6 +9,14 @@
 # Add ZFS (optional) with:  curl -fsSL …/install.sh | bash -s -- --zfs
 set -euo pipefail
 
+# Run as `curl … | bash`, bash reads this script from the pipe a piece at a time while it runs, and
+# anything that reads input (pacman, `omarchy update`, sudo's helpers) can swallow the rest of the
+# script. Bash then carries on from wherever the pipe had got to: steps are skipped and it fails
+# somewhere odd (e.g. "touch: cannot touch …/.widget-offered"). So everything is inside main(),
+# which bash reads in full before running any of it, and the steps read the terminal, not the pipe.
+main() {
+if (: </dev/tty) 2>/dev/null; then exec </dev/tty; else exec </dev/null; fi
+
 ZFS=0
 for arg in "$@"; do
 	case "$arg" in
@@ -358,3 +366,7 @@ if systemctl --user is-active --quiet omarchy-server-web.service && systemctl --
 else
 	die "A service didn't start. See: journalctl --user -u omarchyd -u omarchy-server-web -n 50"
 fi
+}
+
+# On one line, so bash has read it all before main starts, and stops when main ends.
+main "$@"; exit
