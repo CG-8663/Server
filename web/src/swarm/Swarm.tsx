@@ -8,6 +8,7 @@ import {mutate, query} from '../api'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
+import {newlyJoined} from './join'
 import {StoragePage} from '../screens/Storage'
 import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, levelColor, useConfirm, useToast} from '../ui'
 
@@ -494,6 +495,7 @@ function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 
 // ---- Add a computer: what it may do → the command → step by step → it appears. ----------------
 function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: () => void; onJoined: (id: string) => void}) {
+	const [beforeIds] = useState(before)
 	const [allow, setAllow] = useState<Abilities>({terminal: true, desktop: true, manage: true, storage: false})
 	const [pairing, setPairing] = useState<Pairing | null>(null)
 	const [host, setHost] = useState('')
@@ -516,8 +518,8 @@ function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: ()
 		const t = setInterval(() => setNow(Date.now()), 1000)
 		return () => clearInterval(t)
 	}, [pairing])
-	// The new computer, once it shows up.
-	const joined = (swarm.data ?? []).find((a) => !before.includes(a.id))
+	// The new computer, once it shows up. beforeIds is frozen at open so a live swarm.list cannot hide it.
+	const joined = newlyJoined(swarm.data ?? [], beforeIds)
 	const left = pairing ? Math.max(0, Math.round((pairing.expiresAt - now) / 1000)) : 0
 	const list = (Object.keys(allow) as Ability[]).filter((k) => allow[k]).join(',')
 	const command = useMemo(() => {
