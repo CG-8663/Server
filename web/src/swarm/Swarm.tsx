@@ -13,7 +13,7 @@ import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, dura
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 
-type Abilities = {terminal: boolean; desktop: boolean; manage: boolean}
+type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean}
 type Ability = keyof Abilities
 export type Agent = {
 	id: string
@@ -59,6 +59,7 @@ const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = 
 	terminal: {label: 'Terminal', icon: 'terminal', what: 'A shell on it, as the person who installed the connector'},
 	desktop: {label: 'Desktop', icon: 'devices', what: 'See and use its screen (Hyprland, Sway or an X11 desktop)'},
 	manage: {label: 'Manage', icon: 'settings', what: 'Omarchy plugins (verified only) and themes, updates, restart'},
+	storage: {label: 'Storage', icon: 'disk', what: 'See its drives, format extra disks, and manage pools on that computer'},
 }
 const may = (a: Agent, k: Ability) => a.allowed[k] && a.on[k]
 const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((100 * u.used) / u.total) : null)
@@ -479,7 +480,7 @@ function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 
 // ---- Add a computer: what it may do → the command → step by step → it appears. ----------------
 function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: () => void; onJoined: (id: string) => void}) {
-	const [allow, setAllow] = useState<Abilities>({terminal: true, desktop: true, manage: true})
+	const [allow, setAllow] = useState<Abilities>({terminal: true, desktop: true, manage: true, storage: false})
 	const [pairing, setPairing] = useState<Pairing | null>(null)
 	const [host, setHost] = useState('')
 	const [copied, setCopied] = useState('')

@@ -11,6 +11,7 @@ server can't widen):
   desktop   your screen (wayvnc on Hyprland/Sway and other wlroots desktops, x11vnc on X11),
             shared only through a private socket in your runtime folder
   manage    a short fixed list: Omarchy plugins (verified, pinned), Omarchy theme, restart
+  storage   extra disks: list, unmount, format (helper)
 
 Standard library only, so it runs on any distribution with Python 3.8+.
 """
@@ -772,6 +773,32 @@ def reboot(_args):
 
 ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "theme-set": theme_set, "reboot": reboot}
 
+HELPER = "/usr/local/libexec/omarchy-connector/helper.py"
+
+
+def helper(verb, *args):
+    r = subprocess.run(["sudo", "-n", HELPER, verb, *args], capture_output=True, text=True, timeout=600)
+    if r.returncode:
+        raise RuntimeError((r.stderr or r.stdout or "Storage helper failed").strip().split("\n")[-1][:300])
+    return r.stdout.strip()
+
+
+def storage_status(_args):
+    try:
+        ok = helper("ping") == "ok"
+    except Exception:
+        ok = False
+    zfs = False
+    if ok:
+        try:
+            zfs = helper("zfs-available") == "yes"
+        except Exception:
+            zfs = False
+    return {"helperAvailable": ok, "zfsAvailable": zfs}
+
+
+STORAGE_ACTIONS = {"storage-status": storage_status}
+
 
 # ---------------------------------------------------------------------------------------------
 class Connection:
@@ -853,12 +880,20 @@ class Connection:
     def call(self, msg):
         name = msg.get("name")
         try:
-            if not self.allowed.get("manage"):
-                raise RuntimeError("This computer doesn’t allow managing")
-            fn = ACTIONS.get(name)
-            if not fn:
-                raise RuntimeError("Unknown action")
-            data = fn(msg.get("args") or {})
+            if name in STORAGE_ACTIONS or str(name).startswith("storage-"):
+                if not self.allowed.get("storage"):
+                    raise RuntimeError("This computer doesn’t allow Storage")
+                fn = STORAGE_ACTIONS.get(name)
+                if not fn:
+                    raise RuntimeError("Unknown action")
+                data = fn(msg.get("args") or {})
+            else:
+                if not self.allowed.get("manage"):
+                    raise RuntimeError("This computer doesn’t allow managing")
+                fn = ACTIONS.get(name)
+                if not fn:
+                    raise RuntimeError("Unknown action")
+                data = fn(msg.get("args") or {})
             self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})
             if name in ("plugin-install", "plugin-remove", "theme-set"):
                 self.send({"op": "hello", "info": info(), "abilities": self.allowed})
@@ -898,7 +933,7 @@ def main():
     args = sys.argv[1:]
     if args[:1] == ["enroll"]:
         server, token = args[1], args[2]
-        abilities = {k: k in args[3].split(",") for k in ("terminal", "desktop", "manage")} if len(args) > 3 else {}
+        abilities = {k: k in args[3].split(",") for k in ("terminal", "desktop", "manage", "storage")} if len(args) > 3 else {}
         r = enroll(server, token, abilities)
         os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
         cfg = {"server": server, "id": r["id"], "key": r["key"], "abilities": abilities}

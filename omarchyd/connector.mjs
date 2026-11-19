@@ -3,7 +3,7 @@
 // server's own certificate authority), so the other computer opens no ports.
 //
 // Joining: the owner makes a one-time pairing code (15 minutes, used once) with the abilities they
-// allow (watching is always on; terminal, desktop and manage are optional). The connector trades
+// allow (watching is always on; terminal, desktop, manage and storage are optional). The connector trades
 // it for its own id and key; only a hash of the key is kept here.
 //
 // Two limits on what a computer does: the abilities chosen when pairing, which the connector also
@@ -22,7 +22,7 @@ import {writeAtomic} from './atomic.mjs'
 import {RpcError} from './rpc.mjs'
 import {parseResize} from './terminal.mjs'
 
-const ABILITIES = ['terminal', 'desktop', 'manage']
+const ABILITIES = ['terminal', 'desktop', 'manage', 'storage']
 const PAIR_TTL = 15 * 60_000
 const sha = (s) => createHash('sha256').update(String(s)).digest('hex')
 const sameHash = (a, b) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))
