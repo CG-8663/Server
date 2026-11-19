@@ -70,6 +70,8 @@ if has storage; then
 	command -v smartctl >/dev/null || pkgs+=(smartmontools)
 	command -v mkfs.ext4 >/dev/null || pkgs+=(e2fsprogs)
 	command -v mkfs.exfat >/dev/null || pkgs+=(exfatprogs)
+	command -v mkfs.btrfs >/dev/null || pkgs+=(btrfs-progs)
+	command -v hdparm >/dev/null || pkgs+=(hdparm)
 fi
 if [ ${#pkgs[@]} -gt 0 ]; then
 	say "Installing ${pkgs[*]} (sudo needed)"

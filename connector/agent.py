@@ -11,7 +11,7 @@ server can't widen):
   desktop   your screen (wayvnc on Hyprland/Sway and other wlroots desktops, x11vnc on X11),
             shared only through a private socket in your runtime folder
   manage    a short fixed list: Omarchy plugins (verified, pinned), Omarchy theme, restart
-  storage   extra disks: list, unmount, format (helper)
+  storage   extra disks: list, unmount, format, pools, sleep (helper)
 
 Standard library only, so it runs on any distribution with Python 3.8+.
 """
@@ -814,11 +814,74 @@ def storage_format(args):
     return True
 
 
+def storage_pools(_args):
+    return json.loads(helper("pools"))
+
+
+def storage_importable(_args):
+    return json.loads(helper("importable"))
+
+
+def storage_create_pool(args):
+    name = args.get("name")
+    profile = args.get("profile")
+    devices = args.get("devices") or []
+    if args.get("fs") == "zfs":
+        helper("zfs-create", name, profile, *devices)
+    else:
+        helper("pool-create", name, profile, *devices)
+    return True
+
+
+def storage_add_to_pool(args):
+    helper("pool-add", args.get("name"), args.get("device"))
+    return True
+
+
+def storage_import_pool(args):
+    uuid = str(args.get("uuid") or "")
+    if uuid.startswith("zfs:"):
+        extra = ["force"] if args.get("force") is True else []
+        helper("zfs-import", uuid[4:], *extra)
+    else:
+        helper("pool-import", args.get("name"), uuid)
+    return True
+
+
+def storage_forget_pool(args):
+    if args.get("kind") == "zfs":
+        helper("zfs-export", args.get("name"))
+    else:
+        helper("pool-forget", args.get("name"))
+    return True
+
+
+def storage_scrub(args):
+    if args.get("kind") == "zfs":
+        helper("zfs-scrub", args.get("name"))
+    else:
+        helper("pool-scrub", args.get("name"))
+    return True
+
+
+def storage_set_sleep(args):
+    helper("sleep", args.get("device"), str(args.get("minutes")))
+    return True
+
+
 STORAGE_ACTIONS = {
     "storage-status": storage_status,
     "storage-disks": storage_disks,
     "storage-unmount": storage_unmount,
     "storage-format": storage_format,
+    "storage-pools": storage_pools,
+    "storage-importable": storage_importable,
+    "storage-createPool": storage_create_pool,
+    "storage-addToPool": storage_add_to_pool,
+    "storage-importPool": storage_import_pool,
+    "storage-forgetPool": storage_forget_pool,
+    "storage-scrub": storage_scrub,
+    "storage-setSleep": storage_set_sleep,
 }
 
 

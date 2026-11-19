@@ -416,6 +416,105 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 					}
 				},
 			},
+			'swarm.storage.pools': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						return await call(a.id, 'storage-pools', {})
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', /offline/i.test(e.message) ? e.message : `Run the connector install again on ${a.name}.`)
+					}
+				},
+			},
+			'swarm.storage.importable': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						return await call(a.id, 'storage-importable', {})
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', /offline/i.test(e.message) ? e.message : `Run the connector install again on ${a.name}.`)
+					}
+				},
+			},
+			'swarm.storage.createPool': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-createPool', {
+							name: String(input?.name ?? ''),
+							fs: input?.fs,
+							profile: String(input?.profile ?? ''),
+							devices: Array.isArray(input?.devices) ? input.devices.map(String) : [],
+						})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.addToPool': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-addToPool', {name: String(input?.name ?? ''), device: String(input?.device ?? '')})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.importPool': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-importPool', {name: String(input?.name ?? ''), uuid: String(input?.uuid ?? ''), force: input?.force === true})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.forgetPool': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-forgetPool', {name: String(input?.name ?? ''), kind: input?.kind})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.scrub': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-scrub', {name: String(input?.name ?? ''), kind: input?.kind})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.setSleep': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-setSleep', {device: String(input?.device ?? ''), minutes: Number(input?.minutes)})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
 			// Before showing a computer's screen: can it, and if not, why (in words, not a socket code).
 			'swarm.desktopCheck': {
 				kind: 'query',

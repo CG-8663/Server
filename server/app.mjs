@@ -125,8 +125,16 @@ export const ALLOWED = {
 	'swarm.action': 'mutation',
 	'swarm.storage.status': 'query',
 	'swarm.storage.disks': 'query',
+	'swarm.storage.pools': 'query',
+	'swarm.storage.importable': 'query',
 	'swarm.storage.unmount': 'mutation',
 	'swarm.storage.format': 'mutation',
+	'swarm.storage.createPool': 'mutation',
+	'swarm.storage.addToPool': 'mutation',
+	'swarm.storage.importPool': 'mutation',
+	'swarm.storage.forgetPool': 'mutation',
+	'swarm.storage.scrub': 'mutation',
+	'swarm.storage.setSleep': 'mutation',
 	'assistant.keys': 'query',
 	'assistant.addKey': 'mutation',
 	'assistant.updateKey': 'mutation',
@@ -265,7 +273,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-const SLOW = new Set(['storage.growSystem', 'storage.unmount', 'storage.format', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.format', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
+const SLOW = new Set(['storage.growSystem', 'storage.unmount', 'storage.format', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
 
 function parseCookies(header = '') {
 	const out = {}

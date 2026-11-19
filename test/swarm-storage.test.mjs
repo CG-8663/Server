@@ -39,6 +39,14 @@ test('swarm.storage.status: missing computer is NOT_FOUND, offline is PRECONDITI
 		await assert.rejects(() => c.procedures['swarm.storage.disks'].run({id}), /offline/)
 		await assert.rejects(() => c.procedures['swarm.storage.format'].run({id, device: '/dev/sdc', filesystem: 'blank'}), /offline/)
 		await assert.rejects(() => c.procedures['swarm.storage.unmount'].run({id, device: '/dev/sdc'}), /offline/)
+		await assert.rejects(() => c.procedures['swarm.storage.pools'].run({id}), /offline/)
+		await assert.rejects(() => c.procedures['swarm.storage.importable'].run({id}), /offline/)
+		await assert.rejects(() => c.procedures['swarm.storage.createPool'].run({id, name: 'tank', profile: 'single', devices: ['/dev/sda']}), /offline/)
+		await assert.rejects(() => c.procedures['swarm.storage.addToPool'].run({id, name: 'tank', device: '/dev/sdb'}), /offline/)
+		await assert.rejects(() => c.procedures['swarm.storage.importPool'].run({id, name: 'old', uuid: '44444444-4444-4444-4444-444444444444'}), /offline/)
+		await assert.rejects(() => c.procedures['swarm.storage.forgetPool'].run({id, name: 'tank'}), /offline/)
+		await assert.rejects(() => c.procedures['swarm.storage.scrub'].run({id, name: 'tank'}), /offline/)
+		await assert.rejects(() => c.procedures['swarm.storage.setSleep'].run({id, device: '/dev/sda', minutes: 20}), /offline/)
 	} finally {
 		await rm(dataDir, {recursive: true, force: true})
 	}

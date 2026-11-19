@@ -134,8 +134,8 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 
 	const status = useQuery({queryKey: [rpc('status'), args()], queryFn: () => query<{helperAvailable: boolean; zfsAvailable?: boolean}>(rpc('status'), args())})
 	const disksQ = useQuery({queryKey: [rpc('disks'), args()], queryFn: () => query<Drive[]>(rpc('disks'), args()), refetchInterval: 30_000})
-	const poolsQ = useQuery({queryKey: [rpc('pools'), args()], queryFn: () => query<Pool[]>(rpc('pools'), args()), refetchInterval: 10_000, enabled: !swarm})
-	const importQ = useQuery({queryKey: [rpc('importable'), args()], queryFn: () => query<Importable[]>(rpc('importable'), args()), enabled: !swarm})
+	const poolsQ = useQuery({queryKey: [rpc('pools'), args()], queryFn: () => query<Pool[]>(rpc('pools'), args()), refetchInterval: 10_000})
+	const importQ = useQuery({queryKey: [rpc('importable'), args()], queryFn: () => query<Importable[]>(rpc('importable'), args())})
 	const drives = disksQ.data ?? []
 	const pools = poolsQ.data ?? []
 	const blank = drives.filter((d) => d.role === 'blank')
@@ -166,12 +166,12 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 		const ok = await confirm(
 			i.otherSystem
 				? {title: `Import “${i.label}” anyway?`, body: `This ZFS pool was last used by another system. Only continue if that system is off or no longer using these drives: two systems using one pool at once can destroy it.${i.note && !/another system/i.test(i.note) ? ` ${i.note}` : ''}`, confirm: 'Import anyway', danger: true}
-				: {title: `Import “${i.label}”?`, body: 'The ZFS pool is imported as it is, with nothing on it changed, and shows up in Files under Home → Pools.', confirm: 'Import', icon: 'download'},
+				: {title: `Import “${i.label}”?`, body: swarm ? 'The ZFS pool is imported as it is, with nothing on it changed, and is mounted at ~/Pools on this computer.' : 'The ZFS pool is imported as it is, with nothing on it changed, and shows up in Files under Home → Pools.', confirm: 'Import', icon: 'download'},
 		)
 		if (ok) act('importPool', {uuid: i.uuid, force: !!i.otherSystem}, `${i.label} imported`)
 	}
 	const forget = async (p: Pool) => {
-		if (await confirm({title: `Remove “${p.name}” from Omarchy Server?`, body: `The pool is ${p.kind === 'zfs' ? 'exported' : 'unmounted'} and no longer mounted at startup. Nothing on its drives is erased, and you can import it again later. Stop apps and shares that use it first.`, confirm: 'Remove', danger: true}))
+		if (await confirm({title: swarm ? `Remove “${p.name}” from this computer?` : `Remove “${p.name}” from Omarchy Server?`, body: `The pool is ${p.kind === 'zfs' ? 'exported' : 'unmounted'} and no longer mounted at startup. Nothing on its drives is erased, and you can import it again later. Stop apps and shares that use it first.`, confirm: 'Remove', danger: true}))
 			act('forgetPool', {name: p.name, kind: p.kind}, `${p.name} removed`)
 	}
 
@@ -201,7 +201,7 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 				</Card>
 			)}
 
-			{!swarm && <Section
+			<Section
 				title="Pools"
 				right={
 					<button className="link-btn" onClick={() => setCreating(true)} disabled={!ready || !blank.length}>
@@ -210,9 +210,13 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 				}
 				footer={
 					pools.length
-						? 'Pools are in Files under Home → Pools. Share any folder in them from Files.'
+						? swarm
+							? 'Pools are mounted at ~/Pools on this computer.'
+							: 'Pools are in Files under Home → Pools. Share any folder in them from Files.'
 						: blank.length
-							? 'A pool turns one or more blank drives into space for your files, mirrored if you like. It shows up in Files under Home → Pools.'
+							? swarm
+								? 'A pool turns one or more blank drives into space for your files, mirrored if you like. It is mounted at ~/Pools on this computer.'
+								: 'A pool turns one or more blank drives into space for your files, mirrored if you like. It shows up in Files under Home → Pools.'
 							: 'Connect a blank drive to make a pool. Drives that already hold data are listed below with how to free them.'
 				}
 			>
@@ -284,9 +288,9 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 						)
 					})
 				)}
-			</Section>}
+			</Section>
 
-			{!swarm && (importQ.data ?? []).length > 0 && (
+			{(importQ.data ?? []).length > 0 && (
 				<Section title="Existing pools found" footer="These drives already hold a pool. Importing it changes nothing on the drives.">
 					{importQ.data!.map((i) => (
 						<div key={i.uuid} className="row static">
