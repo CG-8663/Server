@@ -17,7 +17,7 @@
 - Do not bump `package.json` version, `OMARCHYD_VERSION`, `VERSION` in `server/app.mjs`, or `web/src/changelog.ts`.
 - Do not add local clone paths, `OMARCHY_SERVER_SOURCE`, or `file://` app-store wiring.
 - Do not mix isolation overlay, appearance_list, or live-turn into this branch.
-- Work in `/home/joseph/.worktrees/omarchy-server-usb-passthrough` on `feat/usb-passthrough` (already cut from `upstream/main` `75778d0`). `node_modules` is a symlink to the main clone; do not install a second copy.
+- Work on `feat/usb-passthrough` cut from `upstream/main`. `node_modules` may be a symlink to the main clone; do not install a second copy.
 - RpcError codes in this repo are `PRECONDITION_FAILED` (HTTP 412), `CONFLICT`, `NOT_FOUND`, `FORBIDDEN`, `BAD_REQUEST`. The spec’s “FAILED_PRECONDITION” is this code.
 - Owner-only writes: wrap `usb.attach` / `usb.detach` with `ownerOnly(auth, 'attach USB devices')` in `omarchyd/server.mjs`. Members may call `usb.list`.
 - Never auto-restart a VM or app. Never add assistant tools in this feature.
