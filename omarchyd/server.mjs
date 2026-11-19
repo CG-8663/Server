@@ -18,6 +18,7 @@ import {createOmarchyTheme} from './omarchy-theme.mjs'
 import {createOmarchyPlugins} from './omarchy-plugins.mjs'
 import {createConnector} from './connector.mjs'
 import {createStorage} from './storage.mjs'
+import {createUsb, listHostUsb} from './usb.mjs'
 import {createTerminalSessions} from './terminal.mjs'
 import {createUpdater} from './updater.mjs'
 import {createSystemApps} from './system-apps.mjs'
@@ -28,7 +29,7 @@ import {WebSocketServer} from 'ws'
 
 export const OMARCHYD_VERSION = '0.9.43'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
 	const startedAt = Date.now()
 	const revision = await new Promise((resolve) => {
@@ -52,6 +53,11 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	// Apps that are part of the server itself (Tailscale), installed through the root helper.
 	const systemApps = appOptions.systemApps !== undefined ? appOptions.systemApps || null : createSystemApps({helper: storage.helper})
 	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions, systemApps, tlsDir, secure})
+	const usb = createUsb({
+		enumerate: () => listHostUsb(usbOptions),
+		guests: {bindings: () => []},
+		helper: async () => 'ok',
+	})
 	// Security settings kept by omarchyd itself (the https setting lives with the certificates,
 	// where the web server reads it too).
 	const securityFile = join(dataDir, 'security.json')
@@ -332,6 +338,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		),
 		...machines.procedures,
 		...apps.procedures,
+		...usb.procedures,
 		...updater.procedures,
 		// Running the installer needs sudo on the server: only the owner is asked.
 		'system.installerStatus': {

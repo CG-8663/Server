@@ -441,6 +441,7 @@ export async function startFakeserverd({
 			},
 		},
 		'machines.list': {kind: 'query', run: () => machines},
+		'usb.list': {kind: 'query', run: () => ({devices: []})},
 		'machines.details': {kind: 'query', run: ({id}) => machineDetails(machines.find((m) => m.id === id))},
 		'machines.stats': {kind: 'query', run: ({id}) => ({memoryMb: 2048, vcpus: 2, points: machines.find((m) => m.id === id)?.state === 'running' ? statPoints() : []})},
 		'machines.node': {

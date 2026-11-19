@@ -104,6 +104,7 @@ export const ALLOWED = {
 	'appStore.app': 'query',
 	'appStore.repositories': 'query',
 	'machines.list': 'query',
+	'usb.list': 'query',
 	'notifications.get': 'query',
 	'apps.start': 'mutation',
 	'apps.stop': 'mutation',
