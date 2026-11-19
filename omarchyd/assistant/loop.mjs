@@ -120,6 +120,43 @@ function guestLabel(a, names) {
 	return lookup(names.apps, id, 'this app')
 }
 
+function indexById(rows) {
+	const out = {}
+	if (!Array.isArray(rows)) return out
+	for (const row of rows) {
+		const id = row?.id
+		const label = typeof row?.name === 'string' ? row.name.trim() : ''
+		if (id != null && id !== '' && label) out[id] = label
+	}
+	return out
+}
+
+function boundGuestName(bound, names) {
+	if (!bound || typeof bound !== 'object') return ''
+	const fromBound = typeof bound.name === 'string' ? bound.name.trim() : ''
+	if (fromBound) return fromBound
+	if (bound.kind === 'machine') return lookup(names.machines, bound.id, 'this virtual machine')
+	if (bound.kind === 'app') return lookup(names.apps, bound.id, 'this app')
+	return ''
+}
+
+export function namesFromInventory({apps, machines, swarm, usb, os} = {}) {
+	const names = {
+		apps: indexById(apps),
+		machines: indexById(machines),
+		swarm: indexById(swarm),
+		usb: {},
+		usbBound: {},
+		os: os && typeof os === 'object' && !Array.isArray(os) ? os : {},
+	}
+	for (const d of usb?.devices ?? []) {
+		if (d?.id && d?.name) names.usb[d.id] = String(d.name).trim()
+		const guest = boundGuestName(d?.bound, names)
+		if (d?.id && guest) names.usbBound[d.id] = guest
+	}
+	return names
+}
+
 export function cardFor(name, args, names = {}) {
 	const a = args && typeof args === 'object' ? args : {}
 	const maps = names && typeof names === 'object' ? names : {}
@@ -189,7 +226,9 @@ export function cardFor(name, args, names = {}) {
 	}
 	if (name === 'usb_detach') {
 		const stick = lookup(maps.usb, a.deviceId, '')
-		return {title: stick ? `Stop sharing the ${stick} stick` : 'Stop sharing this USB stick', detail: ''}
+		const guest = lookup(maps.usbBound, a.deviceId, 'this guest')
+		const left = stick ? `the ${stick} stick` : 'this USB stick'
+		return {title: `Stop sharing ${left} with ${guest}`, detail: ''}
 	}
 	return {title: 'Approve this step', detail: ''}
 }
@@ -316,30 +355,14 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		}
 	}
 
-	function indexById(rows) {
-		const out = {}
-		if (!Array.isArray(rows)) return out
-		for (const row of rows) {
-			const id = row?.id
-			const label = typeof row?.name === 'string' ? row.name.trim() : ''
-			if (id != null && id !== '' && label) out[id] = label
-		}
-		return out
-	}
-
 	async function actionNames(auth, toolName, args) {
 		const a = args && typeof args === 'object' ? args : {}
-		const names = {
-			apps: indexById(await grab('apps.list', auth)),
-			machines: indexById(await grab('machines.list', auth)),
-			swarm: indexById(await grab('swarm.list', auth)),
-			usb: {},
-			os: {},
-		}
-		const usb = await grab('usb.list', auth)
-		for (const d of usb?.devices ?? []) {
-			if (d?.id && d?.name) names.usb[d.id] = String(d.name).trim()
-		}
+		const names = namesFromInventory({
+			apps: await grab('apps.list', auth),
+			machines: await grab('machines.list', auth),
+			swarm: await grab('swarm.list', auth),
+			usb: await grab('usb.list', auth),
+		})
 		if (String(toolName).startsWith('apps_') && a.appId && !names.apps[a.appId]) {
 			const listing = await grab('appStore.app', auth, {appId: a.appId})
 			if (listing?.name) names.apps[a.appId] = String(listing.name).trim()

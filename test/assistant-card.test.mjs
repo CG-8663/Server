@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
-import {cardFor, cardForMcp} from '../omarchyd/assistant/loop.mjs'
+import {cardFor, cardForMcp, namesFromInventory} from '../omarchyd/assistant/loop.mjs'
 
 const names = {
 	apps: {homeassistant: 'Home Assistant', 'demo-app': 'Demo App'},
 	machines: {abcd1234: 'Family NAS'},
 	swarm: {abc: 'kitchen-pi'},
 	usb: {'usb-Nabu_Casa_SkyConnect_v2': 'SkyConnect'},
+	usbBound: {'usb-Nabu_Casa_SkyConnect_v2': 'Home Assistant'},
 	os: {'ubuntu-2404': 'Ubuntu 24.04'},
 }
 
@@ -40,7 +41,8 @@ test('approve cards name the action and skip ids', () => {
 		{name: 'system_shutdown', args: {}, title: 'Shut down this server', detail: 'The server shuts down when you approve'},
 		{name: 'usb_attach', args: {deviceId: 'usb-Nabu_Casa_SkyConnect_v2', guest: {kind: 'app', id: 'homeassistant'}}, title: 'Give the SkyConnect stick to Home Assistant', detail: ''},
 		{name: 'usb_attach', args: {deviceId: 'usb-Nabu_Casa_SkyConnect_v2', guest: {kind: 'machine', id: 'abcd1234'}}, title: 'Give the SkyConnect stick to Family NAS', detail: ''},
-		{name: 'usb_detach', args: {deviceId: 'usb-Nabu_Casa_SkyConnect_v2'}, title: 'Stop sharing the SkyConnect stick', detail: ''},
+		{name: 'usb_detach', args: {deviceId: 'usb-Nabu_Casa_SkyConnect_v2'}, title: 'Stop sharing the SkyConnect stick with Home Assistant', detail: ''},
+		{name: 'usb_detach', args: {deviceId: 'other-stick'}, title: 'Stop sharing this USB stick with this guest', detail: ''},
 		{name: 'usb_attach', args: {deviceId: 'missing', guest: {kind: 'app', id: 'gone'}}, title: 'Give this USB stick to this app', detail: ''},
 		{name: 'mystery_tool', args: {id: 'abcd1234'}, title: 'Approve this step', detail: ''},
 	]
@@ -62,4 +64,36 @@ test('MCP cards use the app name, the tool description, and argument values', ()
 	assert.equal(got.title, 'Rename something in Demo')
 	assert.equal(got.detail, 'Cabinet')
 	assert.doesNotMatch(got.detail, /deadbeef|title:/)
+})
+
+test('usb inventory names the bound guest so detach can show both sides', () => {
+	const got = namesFromInventory({
+		apps: [{id: 'homeassistant', name: 'Home Assistant'}],
+		machines: [{id: 'abcd1234', name: 'Family NAS'}],
+		usb: {
+			devices: [
+				{id: 'usb-1', name: 'SkyConnect', bound: {kind: 'app', id: 'homeassistant', name: 'Home Assistant'}},
+				{id: 'usb-2', name: 'Zigbee', bound: {kind: 'machine', id: 'abcd1234'}},
+			],
+		},
+	})
+	assert.equal(cardFor('usb_detach', {deviceId: 'usb-1'}, got).title, 'Stop sharing the SkyConnect stick with Home Assistant')
+	assert.equal(cardFor('usb_detach', {deviceId: 'usb-2'}, got).title, 'Stop sharing the Zigbee stick with Family NAS')
+})
+
+test('pair cards name both items being joined or split', () => {
+	const pairs = [
+		{name: 'usb_attach', args: {deviceId: 'usb-Nabu_Casa_SkyConnect_v2', guest: {kind: 'app', id: 'homeassistant'}}, a: 'SkyConnect', b: 'Home Assistant'},
+		{name: 'usb_attach', args: {deviceId: 'usb-Nabu_Casa_SkyConnect_v2', guest: {kind: 'machine', id: 'abcd1234'}}, a: 'SkyConnect', b: 'Family NAS'},
+		{name: 'usb_detach', args: {deviceId: 'usb-Nabu_Casa_SkyConnect_v2'}, a: 'SkyConnect', b: 'Home Assistant'},
+		{name: 'swarm_action', args: {id: 'abc', name: 'plugin-install', pluginId: 'omarchy-nvim'}, a: 'Omarchy Nvim', b: 'kitchen-pi'},
+		{name: 'swarm_action', args: {id: 'abc', name: 'plugin-remove', pluginId: 'omarchy-nvim'}, a: 'Omarchy Nvim', b: 'kitchen-pi'},
+		{name: 'swarm_action', args: {id: 'abc', name: 'theme-set', theme: 'tokyo-night'}, a: 'Tokyo Night', b: 'kitchen-pi'},
+		{name: 'swarm_rename', args: {id: 'abc', name: 'Kitchen'}, a: 'kitchen-pi', b: 'Kitchen'},
+	]
+	for (const c of pairs) {
+		const title = cardFor(c.name, c.args, names).title
+		assert.match(title, new RegExp(c.a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), c.name)
+		assert.match(title, new RegExp(c.b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${c.name} ${c.b}`)
+	}
 })
