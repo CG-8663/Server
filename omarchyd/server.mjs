@@ -62,7 +62,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			liveAttach: (guest, rec) => (guest.kind === 'machine' ? machines.attachHostdev(guest.id, rec) : false),
 			liveDetach: (guest, rec) => (guest.kind === 'machine' ? machines.detachHostdev(guest.id, rec) : false),
 		},
-		helper: async () => 'ok',
+		helper: (verb, args) => storage.helper(verb, args),
 	})
 	// Security settings kept by omarchyd itself (the https setting lives with the certificates,
 	// where the web server reads it too).

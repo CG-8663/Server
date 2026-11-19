@@ -19,7 +19,7 @@ done
 
 # Raise this when a change needs the installer run again (packages, the storage helper, services,
 # firewall rules). While Omarchy Server is in beta, the app asks the owner to run it at their next sign-in.
-INSTALLER_REVISION=1
+INSTALLER_REVISION=2
 # Started from the app's "run the installer" prompt, in its own terminal: that terminal runs inside
 # omarchyd, so restarting omarchyd here would stop this script partway. Restart once it's done instead.
 FROM_APP="${OMARCHY_SERVER_FROM_APP:-0}"

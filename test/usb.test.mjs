@@ -5,6 +5,7 @@ import os from 'node:os'
 import {dirname, join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
 
+import {createHelper} from '../helper/helper.mjs'
 import {openAccounts} from '../omarchyd/accounts.mjs'
 import {createMachines} from '../omarchyd/machines.mjs'
 import {RpcError} from '../omarchyd/rpc.mjs'
@@ -12,6 +13,22 @@ import {startOmarchyd} from '../omarchyd/server.mjs'
 import YAML from 'yaml'
 
 import {createUsb, hostdevXml, listHostUsb, usbComposeOverlay} from '../omarchyd/usb.mjs'
+
+function fakeFs(initial = {}) {
+	const files = new Map(Object.entries(initial))
+	return {
+		files,
+		readFile: async (p) => {
+			if (!files.has(p)) throw Object.assign(new Error('ENOENT'), {code: 'ENOENT'})
+			return files.get(p)
+		},
+		writeFile: async (p, t) => void files.set(p, t),
+		rename: async (a, b) => void (files.set(b, files.get(a)), files.delete(a)),
+		mkdir: async () => {},
+		chown: async () => {},
+		realpath: async (p) => p,
+	}
+}
 
 async function writeTree(root, files) {
 	for (const [p, v] of Object.entries(files)) {
@@ -465,4 +482,35 @@ describe('app USB compose', () => {
 		assert.equal(listed.devices.find((d) => d.id === stick.id).needsRestart, false)
 		assert.equal(calls.some((c) => c.args?.includes('up') || c.args?.includes('restart')), false)
 	})
+})
+
+test('usb-allow writes uaccess; usb-forget removes it; traversal is rejected', async () => {
+	const user = {name: 'chris', uid: 1000, gid: 1000, home: '/home/chris'}
+	const fs = fakeFs()
+	const log = []
+	const h = createHelper({
+		user,
+		fs,
+		run: async (cmd, args) => (log.push([cmd, ...args]), ''),
+	})
+	await h.handle('usb-allow', ['a8e5c3c0'])
+	const rules = fs.files.get('/etc/udev/rules.d/69-omarchy-server-usb.rules')
+	assert.match(rules, /ID_USB_SERIAL_SHORT}=="a8e5c3c0".*TAG\+="uaccess"/)
+	assert.ok(log.some((l) => l[0] === 'udevadm' && l[1] === 'control'))
+	await assert.rejects(h.handle('usb-allow', ['../../etc/passwd']), /serial/i)
+	await h.handle('usb-forget', ['a8e5c3c0'])
+	assert.equal(fs.files.get('/etc/udev/rules.d/69-omarchy-server-usb.rules'), '')
+})
+
+test('attach persists when the helper is missing', async () => {
+	const g = memoryGuests()
+	const usb = createUsb({
+		enumerate: async () => [stick],
+		guests: g.guests,
+		helper: async () => {
+			throw new Error('Unknown action: usb-allow')
+		},
+	})
+	await usb.procedures['usb.attach'].run({deviceId: stick.id, guest: {kind: 'app', id: 'homeassistant'}})
+	assert.equal(g.apps[0].usbDevices.some((d) => d.id === stick.id), true)
 })
