@@ -59,8 +59,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			bindings: async () => [...(await machines.usbBindings()), ...(await apps.usbBindings())],
 			bind: (guest, rec) => (guest.kind === 'machine' ? machines.bindUsb(guest.id, rec) : apps.bindUsb(guest.id, rec)),
 			unbind: (guest, deviceId) => (guest.kind === 'machine' ? machines.unbindUsb(guest.id, deviceId) : apps.unbindUsb(guest.id, deviceId)),
-			liveAttach: async () => false,
-			liveDetach: async () => false,
+			liveAttach: (guest, rec) => (guest.kind === 'machine' ? machines.attachHostdev(guest.id, rec) : false),
+			liveDetach: (guest, rec) => (guest.kind === 'machine' ? machines.detachHostdev(guest.id, rec) : false),
 		},
 		helper: async () => 'ok',
 	})

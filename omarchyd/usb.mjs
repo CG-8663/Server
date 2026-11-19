@@ -78,6 +78,22 @@ export async function listHostUsb({
 }
 
 const USB_SERIAL = /^[A-Za-z0-9._-]{1,128}$/
+const xml = (s) => String(s).replace(/[<>&'"]/g, (c) => ({'<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;'})[c])
+
+export function hostdevXml({vendorId, productId, serial}) {
+	const ser = serial && USB_SERIAL.test(serial) ? `<serial>${xml(serial)}</serial>` : ''
+	return `<hostdev mode='subsystem' type='usb' managed='yes'><source><vendor id='0x${vendorId}'/><product id='0x${productId}'/>${ser}</source></hostdev>`
+}
+
+export function parseUsbLive(xmlText, devices = []) {
+	const live = []
+	for (const d of devices) {
+		const vendor = new RegExp(`<vendor id='0x${d.vendorId}'\\s*/>`)
+		const product = new RegExp(`<product id='0x${d.productId}'\\s*/>`)
+		if (vendor.test(xmlText) && product.test(xmlText)) live.push(d.id)
+	}
+	return live
+}
 
 function boundOf(g) {
 	return {kind: g.kind, id: g.id, name: g.name}
@@ -130,10 +146,12 @@ export function createUsb({enumerate = listHostUsb, guests = {bindings: () => []
 		await guests.bind(guest, {id: rec.id, vendorId: rec.vendorId, productId: rec.productId, serial: rec.serial, path: rec.path, name: rec.name})
 		const after = (await guests.bindings()).find((g) => g.kind === kind && g.id === id)
 		const running = !!after?.running
-		const live = running ? await liveAttach(guest, rec) : false
+		const liveResult = running ? await liveAttach(guest, rec) : true
+		const live = liveResult === true
 		if (rec.serial && USB_SERIAL.test(rec.serial)) await helper('usb-allow', [rec.serial]).catch(() => {})
 		const needsRestart = running && !live
-		return {needsRestart, ...(needsRestart ? {message: `Restart ${after.name} to use this stick.`} : {})}
+		const qemu = typeof liveResult === 'string' ? liveResult : ''
+		return {needsRestart, ...(needsRestart ? {message: `Restart ${after.name} to use this stick.${qemu ? ` ${qemu}` : ''}`} : {})}
 	}
 	async function detach(input) {
 		const deviceId = String(input?.deviceId ?? '')

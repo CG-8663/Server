@@ -5,9 +5,10 @@ import {dirname, join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
+import {createMachines} from '../omarchyd/machines.mjs'
 import {RpcError} from '../omarchyd/rpc.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
-import {createUsb, listHostUsb} from '../omarchyd/usb.mjs'
+import {createUsb, hostdevXml, listHostUsb} from '../omarchyd/usb.mjs'
 
 async function writeTree(root, files) {
 	for (const [p, v] of Object.entries(files)) {
@@ -246,5 +247,103 @@ describe('usb owner-only', () => {
 		assert.match(attach.body.error.message, /Only the server’s owner can attach USB devices/)
 		const missing = await call('mutation', 'usb.attach', {deviceId: stick.id, guest: {kind: 'machine', id: 'missing'}}, owner)
 		assert.equal(missing.status, 404)
+	})
+})
+
+test('hostdevXml is a managed USB hostdev with vid/pid', () => {
+	const xml = hostdevXml({vendorId: '10c4', productId: 'ea60', serial: '0001'})
+	assert.match(xml, /<hostdev mode='subsystem' type='usb' managed='yes'>/)
+	assert.match(xml, /<vendor id='0x10c4'\/>/)
+	assert.match(xml, /<product id='0xea60'\/>/)
+	assert.match(xml, /<serial>0001<\/serial>/)
+})
+
+describe('machine USB hostdev', () => {
+	test('define writes hostdev; live attach failure still persists and needsRestart', async () => {
+		const root = await mkdtemp(join(os.tmpdir(), 'usb-vm-'))
+		const dataDir = join(root, 'data')
+		const kvm = join(root, 'kvm')
+		await writeFile(kvm, '')
+		const calls = []
+		const run = async (cmd, args) => {
+			calls.push([cmd, ...(args[0] === '-c' ? args.slice(2) : args)].join(' '))
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (cmd === 'virsh' && a[0] === 'define') return ''
+			if (cmd === 'virsh' && a[0] === 'list') return ' Id   Name   State\n------------------\n -    omarchy-abcd1234   running\n'
+			if (cmd === 'virsh' && a[0] === 'dumpxml') return '<domain></domain>'
+			if (cmd === 'virsh' && a[0] === 'attach-device') throw new Error('qemu: unexpected error: usb device not supported')
+			if (cmd === 'virsh' && a[0] === 'detach-device') return ''
+			if (cmd === 'virsh' && a[0] === 'version') return 'QEMU 9.0.0\n'
+			if (cmd === 'qemu-img') return ''
+			return ''
+		}
+		await mkdir(join(dataDir, 'machines', 'vms', 'abcd1234'), {recursive: true})
+		await writeFile(
+			join(dataDir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [{id: 'abcd1234', name: 'Box', osId: 'testos-amd64', cores: 1, memoryGb: 1, memoryMb: 1024, diskSizeGb: 10, portForwards: [], state: 'running', createdAt: 1}],
+			}),
+		)
+		const machines = createMachines({dataDir, run, kvmDevice: kvm, catalogUrl: 'https://example.invalid/catalog.json', fetchImpl: async () => ({ok: false})})
+		await machines.ready
+		const rec = {id: stick.id, vendorId: '10c4', productId: 'ea60', serial: '0001', path: stick.path, name: 'CP210x'}
+		const usb = createUsb({
+			enumerate: async () => [{...stick, vendorId: '10c4', productId: 'ea60', serial: '0001'}],
+			guests: {
+				bindings: () => machines.usbBindings(),
+				bind: (g, r) => machines.bindUsb(g.id, r),
+				unbind: (g, id) => machines.unbindUsb(g.id, id),
+				liveAttach: (g, r) => machines.attachHostdev(g.id, r),
+				liveDetach: (g, r) => machines.detachHostdev(g.id, r),
+			},
+			helper: async () => 'ok',
+		})
+		const result = await usb.procedures['usb.attach'].run({deviceId: stick.id, guest: {kind: 'machine', id: 'abcd1234'}})
+		assert.equal(result.needsRestart, true)
+		assert.match(result.message, /Restart Box/)
+		assert.ok(calls.some((c) => c.includes('attach-device')))
+		assert.match(await readFile(join(dataDir, 'machines', 'vms', 'abcd1234', 'domain.xml'), 'utf8'), /<hostdev mode='subsystem' type='usb' managed='yes'>/)
+		const listed = await usb.procedures['usb.list'].run()
+		assert.equal(listed.devices.find((d) => d.id === stick.id).needsRestart, true)
+		assert.equal(listed.devices.find((d) => d.id === stick.id).bound.name, 'Box')
+		await rm(root, {recursive: true, force: true})
+	})
+
+	test('live attach success clears needsRestart', async () => {
+		const root = await mkdtemp(join(os.tmpdir(), 'usb-vm-ok-'))
+		const dataDir = join(root, 'data')
+		const kvm = join(root, 'kvm')
+		await writeFile(kvm, '')
+		const run = async (cmd, args) => {
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (cmd === 'virsh' && a[0] === 'list') return ' Id   Name   State\n------------------\n -    omarchy-abcd1234   running\n'
+			if (cmd === 'virsh' && (a[0] === 'define' || a[0] === 'attach-device' || a[0] === 'detach-device')) return ''
+			return ''
+		}
+		await mkdir(join(dataDir, 'machines', 'vms', 'abcd1234'), {recursive: true})
+		await writeFile(
+			join(dataDir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [{id: 'abcd1234', name: 'Box', osId: 'testos-amd64', cores: 1, memoryGb: 1, memoryMb: 1024, diskSizeGb: 10, portForwards: [], state: 'running', createdAt: 1}],
+			}),
+		)
+		const machines = createMachines({dataDir, run, kvmDevice: kvm, catalogUrl: 'https://example.invalid/catalog.json', fetchImpl: async () => ({ok: false})})
+		await machines.ready
+		const usb = createUsb({
+			enumerate: async () => [{...stick, vendorId: '10c4', productId: 'ea60', serial: '0001'}],
+			guests: {
+				bindings: () => machines.usbBindings(),
+				bind: (g, r) => machines.bindUsb(g.id, r),
+				unbind: (g, id) => machines.unbindUsb(g.id, id),
+				liveAttach: (g, r) => machines.attachHostdev(g.id, r),
+				liveDetach: (g, r) => machines.detachHostdev(g.id, r),
+			},
+			helper: async () => 'ok',
+		})
+		const result = await usb.procedures['usb.attach'].run({deviceId: stick.id, guest: {kind: 'machine', id: 'abcd1234'}})
+		assert.equal(result.needsRestart, false)
+		const listed = await usb.procedures['usb.list'].run()
+		assert.equal(listed.devices.find((d) => d.id === stick.id).needsRestart, false)
+		await rm(root, {recursive: true, force: true})
 	})
 })

@@ -23,6 +23,7 @@ import {fileURLToPath} from 'node:url'
 
 import {PUBLIC_KEY, cloudMetaData, cloudUserData, hostnameFor, isWindowsClientLabel, isWindowsLabel, omarchyConfiguration, omarchyCredentials, windowsAnswerFile} from './machine-media.mjs'
 import {RpcError} from './rpc.mjs'
+import {hostdevXml, parseUsbLive} from './usb.mjs'
 
 export const CATALOG_URL = 'https://raw.githubusercontent.com/TouchWorkStation/app-store/main/machines/catalog.json'
 const BUNDLED_CATALOG = fileURLToPath(new URL('./machine-catalog.json', import.meta.url))
@@ -350,6 +351,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
     <graphics type='vnc' socket='${xml(join(dir, 'vnc.sock'))}'/>
     <video><model type='${layout.video}'/></video>${o.tablet === false ? '' : "\n    <input type='tablet' bus='usb'/>"}${o.agent ? "\n    <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>" : ''}
     <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
+    ${(m.usbDevices ?? []).map((d) => hostdevXml(d)).join('\n    ')}
   </devices>
 </domain>
 `
@@ -1453,28 +1455,69 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function usbBindings() {
 		await ready
 		const states = await domainStates()
-		return machines.map((m) => ({
-			kind: 'machine',
-			id: m.id,
-			name: m.name,
-			devices: m.usbDevices ?? [],
-			running: STATE[states.get(domain(m.id))] === 'running',
-			liveIds: m.usbLive ?? [],
-		}))
+		const out = []
+		for (const m of machines) {
+			const running = STATE[states.get(domain(m.id))] === 'running'
+			let liveIds = m.usbLive ?? []
+			if (running) {
+				try {
+					liveIds = parseUsbLive(await virsh('dumpxml', domain(m.id)), m.usbDevices ?? [])
+					if (!liveIds.length && (m.usbLive ?? []).length) liveIds = m.usbLive
+				} catch {
+					liveIds = m.usbLive ?? []
+				}
+			}
+			out.push({kind: 'machine', id: m.id, name: m.name, devices: m.usbDevices ?? [], running, liveIds})
+		}
+		return out
 	}
 	async function bindUsb(id, rec) {
 		await ready
 		const m = find(id)
 		if (!(m.usbDevices ?? []).some((d) => d.id === rec.id)) m.usbDevices = [...(m.usbDevices ?? []), rec]
 		await save()
+		await define(m).catch(() => {})
 		return m
 	}
 	async function unbindUsb(id, deviceId) {
 		await ready
 		const m = find(id)
 		m.usbDevices = (m.usbDevices ?? []).filter((d) => d.id !== deviceId)
+		m.usbLive = (m.usbLive ?? []).filter((x) => x !== deviceId)
 		await save()
+		await define(m).catch(() => {})
 		return m
+	}
+	async function attachHostdev(id, rec) {
+		await ready
+		const m = find(id)
+		const file = join(vmsDir, m.id, 'usb-hostdev.xml')
+		await writeFile(file, hostdevXml(rec), {mode: 0o600})
+		try {
+			await virsh('attach-device', domain(m.id), file, '--live')
+			m.usbLive = [...new Set([...(m.usbLive ?? []), rec.id])]
+			delete m.lastUsbError
+			await save()
+			return true
+		} catch (error) {
+			m.lastUsbError = error.message
+			await save()
+			return error.message || false
+		}
+	}
+	async function detachHostdev(id, rec) {
+		await ready
+		const m = find(id)
+		const file = join(vmsDir, m.id, 'usb-hostdev.xml')
+		await writeFile(file, hostdevXml(rec), {mode: 0o600})
+		try {
+			await virsh('detach-device', domain(m.id), file, '--live')
+			m.usbLive = (m.usbLive ?? []).filter((x) => x !== rec.id)
+			await save()
+			return true
+		} catch {
+			return false
+		}
 	}
 
 	return {
@@ -1485,6 +1528,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		usbBindings,
 		bindUsb,
 		unbindUsb,
+		attachHostdev,
+		detachHostdev,
 		procedures: {
 			'machines.capabilities': {kind: 'query', run: capabilities},
 			'machines.osImages': {kind: 'query', run: osImages},
