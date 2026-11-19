@@ -86,56 +86,175 @@ function storedMcpArguments(raw) {
 	}
 }
 
-function cardFor(name, args) {
+function prettySlug(value) {
+	const s = String(value ?? '').trim()
+	if (!s) return ''
+	return s.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function isTechnicalId(value) {
+	const s = String(value ?? '').trim()
+	if (!s) return true
+	if (/^usb-/i.test(s)) return true
+	if (/^[0-9a-f]{6,}$/i.test(s)) return true
+	if (/^[0-9a-f-]{8,}$/i.test(s) && !/[g-z]/i.test(s)) return true
+	return false
+}
+
+function lookup(map, id, fallback) {
+	const hit = map?.[id]
+	if (typeof hit === 'string' && hit.trim()) return hit.trim()
+	return fallback
+}
+
+function slugLabel(value, fallback) {
+	const s = String(value ?? '').trim()
+	if (!s || isTechnicalId(s)) return fallback
+	return prettySlug(s) || fallback
+}
+
+function guestLabel(a, names) {
+	const kind = a?.guest?.kind
+	const id = a?.guest?.id
+	if (kind === 'machine') return lookup(names.machines, id, 'this virtual machine')
+	return lookup(names.apps, id, 'this app')
+}
+
+function indexById(rows) {
+	const out = {}
+	if (!Array.isArray(rows)) return out
+	for (const row of rows) {
+		const id = row?.id
+		const label = typeof row?.name === 'string' ? row.name.trim() : ''
+		if (id != null && id !== '' && label) out[id] = label
+	}
+	return out
+}
+
+function boundGuestName(bound, names) {
+	if (!bound || typeof bound !== 'object') return ''
+	const fromBound = typeof bound.name === 'string' ? bound.name.trim() : ''
+	if (fromBound) return fromBound
+	if (bound.kind === 'machine') return lookup(names.machines, bound.id, 'this virtual machine')
+	if (bound.kind === 'app') return lookup(names.apps, bound.id, 'this app')
+	return ''
+}
+
+export function namesFromInventory({apps, machines, swarm, usb, os} = {}) {
+	const names = {
+		apps: indexById(apps),
+		machines: indexById(machines),
+		swarm: indexById(swarm),
+		usb: {},
+		usbBound: {},
+		os: os && typeof os === 'object' && !Array.isArray(os) ? os : {},
+	}
+	for (const d of usb?.devices ?? []) {
+		if (d?.id && d?.name) names.usb[d.id] = String(d.name).trim()
+		const guest = boundGuestName(d?.bound, names)
+		if (d?.id && guest) names.usbBound[d.id] = guest
+	}
+	return names
+}
+
+export function cardFor(name, args, names = {}) {
 	const a = args && typeof args === 'object' ? args : {}
+	const maps = names && typeof names === 'object' ? names : {}
 	const appId = String(a.appId ?? '').trim()
 	const apps = {apps_install: 'Install', apps_start: 'Start', apps_stop: 'Stop', apps_restart: 'Restart', apps_uninstall: 'Uninstall', apps_update: 'Update'}
-	if (apps[name]) return {title: appId ? `${apps[name]} ${appId}` : `${apps[name]} an app`, detail: appId || name}
+	if (apps[name]) {
+		const app = lookup(maps.apps, appId, '') || slugLabel(appId, 'this app')
+		return {title: `${apps[name]} ${app}`, detail: ''}
+	}
 	if (name === 'machines_create') {
 		const vm = String(a.name ?? '').trim()
 		const bits = []
-		if (a.osId) bits.push(String(a.osId))
+		const os = lookup(maps.os, a.osId, '') || slugLabel(a.osId, '')
+		if (os) bits.push(os)
 		if (a.cores != null && a.cores !== '') bits.push(`${a.cores} cores`)
 		if (a.memoryGb != null && a.memoryGb !== '') bits.push(`${a.memoryGb} GB memory`)
 		if (a.diskSizeGb != null && a.diskSizeGb !== '') bits.push(`${a.diskSizeGb} GB disk`)
 		if (a.username) bits.push(`user ${a.username}`)
 		bits.push('You type its password when you approve')
-		return {title: vm ? `Create VM “${vm}”` : 'Create a virtual machine', detail: bits.join(' · ')}
+		return {title: vm ? `Create virtual machine “${vm}”` : 'Create a virtual machine', detail: bits.join(' · ')}
 	}
 	const id = String(a.id ?? '').trim()
 	const vmVerb = {machines_start: 'Start', machines_stop: 'Stop', machines_restart: 'Restart', machines_uninstall: 'Remove'}[name]
-	if (vmVerb) return {title: id ? `${vmVerb} VM ${id}` : `${vmVerb} a virtual machine`, detail: id || name}
+	if (vmVerb) {
+		const vm = lookup(maps.machines, id, 'this virtual machine')
+		return {title: vm === 'this virtual machine' ? `${vmVerb} this virtual machine` : `${vmVerb} virtual machine “${vm}”`, detail: ''}
+	}
 	if (name === 'machines_updateSettings') {
+		const vm = lookup(maps.machines, id, 'this virtual machine')
 		const n = Array.isArray(a.portForwards) ? a.portForwards.length : 0
-		return {title: id ? `Update settings for ${id}` : 'Update virtual machine settings', detail: n ? `${n} port forward${n === 1 ? '' : 's'}` : 'Settings'}
+		return {title: `Change port forwards on ${vm}`, detail: n ? `${n} port forward${n === 1 ? '' : 's'}` : ''}
 	}
 	if (name === 'swarm_action') {
-		const labels = {'plugin-install': 'Install a swarm plugin', 'plugin-remove': 'Remove a swarm plugin', 'theme-set': 'Set a swarm theme', reboot: 'Reboot a swarm computer'}
-		return {title: labels[a.name] || 'Swarm action', detail: [a.id, a.name, a.pluginId, a.theme].filter((v) => v != null && v !== '').map(String).join(' · ')}
+		const host = lookup(maps.swarm, a.id, 'this computer')
+		if (a.name === 'reboot') return {title: `Restart ${host}`, detail: ''}
+		if (a.name === 'theme-set') return {title: `Set ${slugLabel(a.theme, 'a theme')} on ${host}`, detail: ''}
+		if (a.name === 'plugin-install') return {title: `Install ${slugLabel(a.pluginId, 'a plugin')} on ${host}`, detail: ''}
+		if (a.name === 'plugin-remove') return {title: `Remove ${slugLabel(a.pluginId, 'a plugin')} from ${host}`, detail: ''}
+		return {title: `Manage ${host}`, detail: ''}
 	}
-	if (name === 'swarm_rename') return {title: a.name ? `Rename swarm computer to ${a.name}` : 'Rename a swarm computer', detail: [a.id, a.name].filter(Boolean).join(' · ')}
+	if (name === 'swarm_rename') {
+		const host = lookup(maps.swarm, a.id, 'this computer')
+		const next = String(a.name ?? '').trim()
+		return {title: next ? `Rename ${host} to ${next}` : `Rename ${host}`, detail: ''}
+	}
 	if (name === 'desktop_setLayout') {
-		const shell = coerceDeskShell(a.shell)
+		const shell = String(a.shell ?? '').trim()
 		const label = shell === 'hyprland' ? 'Hyprland' : shell === 'gnome' ? 'Ubuntu' : 'desktop'
-		return {title: `Switch to ${label} layout`, detail: label}
+		return {title: `Switch to ${label} layout`, detail: label === 'desktop' ? '' : label}
 	}
-	if (name === 'omarchy_setTheme') return {title: a.slug ? `Set theme ${a.slug}` : 'Set the Omarchy theme', detail: String(a.slug ?? '')}
+	if (name === 'omarchy_setTheme') {
+		const slug = String(a.slug ?? '').trim()
+		return {title: slug ? `Set the ${prettySlug(slug)} colours` : 'Set the Omarchy theme', detail: slug}
+	}
 	if (name === 'omarchy_setBackground') {
 		const theme = String(a.theme ?? '').trim()
-		return {title: theme ? `Set wallpaper for ${theme}` : 'Set the wallpaper', detail: theme || String(a.id ?? '')}
+		return {title: theme ? `Set the ${prettySlug(theme)} wallpaper` : 'Set the wallpaper', detail: theme}
 	}
-	if (name === 'omarchy_installPlugin') return {title: a.id ? `Install plugin ${a.id}` : 'Install an Omarchy plugin', detail: String(a.id ?? '')}
-	if (name === 'omarchy_removePlugin') return {title: a.id ? `Remove plugin ${a.id}` : 'Remove an Omarchy plugin', detail: String(a.id ?? '')}
+	if (name === 'omarchy_installPlugin') return {title: `Install ${slugLabel(a.id, 'an Omarchy plugin')}`, detail: ''}
+	if (name === 'omarchy_removePlugin') return {title: `Remove ${slugLabel(a.id, 'an Omarchy plugin')}`, detail: ''}
 	if (name === 'system_restart') return {title: 'Restart this server', detail: 'The server restarts when you approve'}
 	if (name === 'system_shutdown') return {title: 'Shut down this server', detail: 'The server shuts down when you approve'}
-	return {title: name, detail: ''}
+	if (name === 'usb_attach') {
+		const stick = lookup(maps.usb, a.deviceId, '')
+		const guest = guestLabel(a, maps)
+		return {title: stick ? `Give the ${stick} stick to ${guest}` : `Give this USB stick to ${guest}`, detail: ''}
+	}
+	if (name === 'usb_detach') {
+		const stick = lookup(maps.usb, a.deviceId, '')
+		const guest = lookup(maps.usbBound, a.deviceId, 'this guest')
+		const left = stick ? `the ${stick} stick` : 'this USB stick'
+		return {title: `Stop sharing ${left} with ${guest}`, detail: ''}
+	}
+	return {title: 'Approve this step', detail: ''}
 }
 
-function cardForMcp(spec, args) {
+function skipArgKey(key) {
+	return key === 'id' || key === 'password' || key === 'apiKey' || key === 'credentials' || /Id$/i.test(key)
+}
+
+function humanArgValue(value) {
+	if (typeof value === 'string') return value.trim()
+	if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+	if (typeof value === 'boolean') return value ? 'yes' : 'no'
+	return ''
+}
+
+export function cardForMcp(spec, args) {
 	const shown = plainInput(args)
 	const bits = []
-	for (const [k, v] of Object.entries(shown)) bits.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v ?? null)}`)
-	return {title: `${spec.appName}: ${spec.mcpName}`, detail: bits.join(' · ') || spec.description || ''}
+	for (const [k, v] of Object.entries(shown)) {
+		if (skipArgKey(k)) continue
+		const text = humanArgValue(v)
+		if (text) bits.push(text)
+	}
+	const action = String(spec?.description ?? '').trim().replace(/\.+$/, '') || prettySlug(spec?.mcpName) || 'Use a tool'
+	const app = String(spec?.appName ?? '').trim()
+	return {title: app ? `${action} in ${app}` : action, detail: bits.join(' · ')}
 }
 
 function pendingNote(actions) {
@@ -236,6 +355,26 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		}
 	}
 
+	async function actionNames(auth, toolName, args) {
+		const a = args && typeof args === 'object' ? args : {}
+		const names = namesFromInventory({
+			apps: await grab('apps.list', auth),
+			machines: await grab('machines.list', auth),
+			swarm: await grab('swarm.list', auth),
+			usb: await grab('usb.list', auth),
+		})
+		if (String(toolName).startsWith('apps_') && a.appId && !names.apps[a.appId]) {
+			const listing = await grab('appStore.app', auth, {appId: a.appId})
+			if (listing?.name) names.apps[a.appId] = String(listing.name).trim()
+		}
+		if (toolName === 'machines_create' && a.osId) {
+			const images = await grab('machines.osImages', auth)
+			const img = (Array.isArray(images) ? images : []).find((i) => i?.id === a.osId)
+			if (img?.name) names.os[a.osId] = String(img.name).trim()
+		}
+		return names
+	}
+
 	async function facts(role, auth) {
 		const owner = role === 'owner'
 		const hostname = await grab('system.getHostname', auth)
@@ -333,7 +472,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				return {content: 'Theme and wallpaper were already applied for this request. Do not call omarchy_setTheme or omarchy_setBackground again unless they ask for a different look.', state: 'done'}
 			}
 		}
-		const card = cardFor(spec.name, args)
+		const card = cardFor(spec.name, args, await actionNames(auth, spec.name, args))
 		const action = await conversations.putAction(auth.userId, conversationId, {
 			kind: 'rpc',
 			toolName: spec.name,
