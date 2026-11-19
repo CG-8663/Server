@@ -368,7 +368,63 @@ def _nvidia_gpus(run):
     return gpus
 
 
-def _drm_gpus(list_dir, read_file):
+_VENDOR_NVIDIA = "0x10de"
+_VENDOR_AMD = "0x1002"
+_VENDOR_INTEL = "0x8086"
+
+
+def _drm_fallback_name(vendor, card):
+    if vendor == _VENDOR_INTEL:
+        return "Intel Graphics"
+    if vendor == _VENDOR_AMD:
+        return "AMD Graphics"
+    if vendor == _VENDOR_NVIDIA:
+        return "NVIDIA Graphics"
+    return card
+
+
+_last_engine = {}
+
+
+def _engine_busy_percent(card, list_dir, read_file, now):
+    # i915/Xe: each engine's busy file is cumulative nanoseconds. gpu_busy_percent is AMD's.
+    engines_dir = f"/sys/class/drm/{card}/engine"
+    try:
+        names = list_dir(engines_dir)
+    except OSError:
+        return None
+    busy = {}
+    for n in names:
+        v = _num(read_file(f"{engines_dir}/{n}/busy"))
+        if v is not None:
+            busy[n] = v
+    if not busy:
+        return None
+    t = now()
+    prev = _last_engine.get(card)
+    _last_engine[card] = (t, busy)
+    if not prev:
+        return None
+    dt = t - prev[0]
+    if dt <= 0:
+        return None
+    dt_ns = dt * 1e9
+
+    def pct(name):
+        if name not in busy or name not in prev[1]:
+            return None
+        return (busy[name] - prev[1][name]) / dt_ns * 100
+
+    for name in ("rcs0", "ccs0"):
+        p = pct(name)
+        if p is not None:
+            return min(100, max(0, p))
+    ps = [p for p in (pct(n) for n in busy) if p is not None]
+    return min(100, max(0, max(ps))) if ps else None
+
+
+def _drm_gpus(list_dir, read_file, skip_vendors=None, now=time.monotonic):
+    skip_vendors = skip_vendors or set()
     try:
         names = list_dir("/sys/class/drm")
     except OSError:
@@ -376,11 +432,18 @@ def _drm_gpus(list_dir, read_file):
     cards = sorted(n for n in names if n.startswith("card") and n[4:].isdigit())
     gpus = []
     for card in cards:
-        used = _num(read_file(f"/sys/class/drm/{card}/device/gpu_busy_percent"))
-        if used is None:
+        vendor = (read_file(f"/sys/class/drm/{card}/device/vendor") or "").strip().lower()
+        if vendor in skip_vendors:
             continue
-        name = read_file(f"/sys/class/drm/{card}/device/product_name").strip() or card
-        gpus.append({"id": f"drm-{card}", "index": int(card[4:]), "name": name, "used": int(round(used))})
+        if vendor == _VENDOR_INTEL:
+            used = _engine_busy_percent(card, list_dir, read_file, now)
+        else:
+            used = _num(read_file(f"/sys/class/drm/{card}/device/gpu_busy_percent"))
+        product = (read_file(f"/sys/class/drm/{card}/device/product_name") or "").strip()
+        name = product or _drm_fallback_name(vendor, card)
+        if not vendor and used is None and not product:
+            continue
+        gpus.append({"id": f"drm-{card}", "index": int(card[4:]), "name": name, "used": None if used is None else int(round(used))})
     return gpus
 
 
@@ -405,7 +468,7 @@ def nvidia_asleep(list_dir=os.listdir, read_file=read, root="/sys/bus/pci/device
     return found
 
 
-def gpus(run=None, list_dir=os.listdir, read_file=read):
+def gpus(run=None, list_dir=os.listdir, read_file=read, now=time.monotonic):
     def _run(cmd, args):
         try:
             return subprocess.run([cmd, *args], capture_output=True, text=True, timeout=8).stdout or ""
@@ -414,12 +477,12 @@ def gpus(run=None, list_dir=os.listdir, read_file=read):
 
     global _last_nvidia
     if _last_nvidia and nvidia_asleep(list_dir, read_file):
-        return [dict(g, used=0) for g in _last_nvidia]
+        idle = [dict(g, used=0) for g in _last_nvidia]
+        return idle + _drm_gpus(list_dir, read_file, skip_vendors={_VENDOR_NVIDIA}, now=now)
     nvidia = _nvidia_gpus(run or _run)
     _last_nvidia = nvidia or None
-    if nvidia:
-        return nvidia
-    return _drm_gpus(list_dir, read_file)
+    skip = {_VENDOR_NVIDIA} if nvidia else set()
+    return nvidia + _drm_gpus(list_dir, read_file, skip_vendors=skip, now=now)
 
 
 def temperature():
