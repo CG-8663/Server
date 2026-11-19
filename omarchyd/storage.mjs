@@ -98,8 +98,10 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 				const system = mounts.some((m) => SYSTEM_MOUNTS.has(m))
 				const blank = !d.fstype && !(d.children ?? []).length && !mounts.length
 				const nvme = d.tran === 'nvme' || d.name.startsWith('nvme')
+				const mountList = mounts.filter(Boolean)
 				return {
 					path: d.path,
+					id: d.path,
 					name: d.name,
 					model: (d.model ?? '').trim() || null,
 					serial: d.serial ?? null,
@@ -109,6 +111,8 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					removable: truthy(d.rm) || truthy(d.hotplug),
 					role: system ? 'system' : pool ? 'pool' : blank ? 'blank' : 'data',
 					pool,
+					mounted: mountList.length > 0,
+					mounts: mountList,
 					btrfs: btrfs && !pool ? {uuid: btrfs.uuid, label: btrfs.label ?? null, mounted: !!(btrfs.mountpoints ?? []).some(Boolean)} : null,
 					zfs: zmember && !pool ? {pool: zmember.label ?? null} : null,
 					sleepMinutes: d.serial && sleep[d.serial] !== undefined ? sleep[d.serial] : null,
@@ -306,6 +310,19 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 						sleep[d.serial] = minutes
 						await writeJson(sleepFile, sleep)
 					}
+					return true
+				},
+			},
+			'storage.unmount': {
+				kind: 'mutation',
+				run: async (input) => (await helper('umount', [String(input?.device ?? '')]), true),
+			},
+			'storage.format': {
+				kind: 'mutation',
+				run: async (input) => {
+					const filesystem = String(input?.filesystem ?? '')
+					if (!['blank', 'ext4', 'exfat'].includes(filesystem)) throw new RpcError('BAD_REQUEST', 'Choose blank, ext4 or exfat')
+					await helper('format', [String(input?.device ?? ''), filesystem])
 					return true
 				},
 			},

@@ -96,7 +96,7 @@ describe('helper', () => {
 		await assert.rejects(h.handle('pool-create', ['tank', 'raid5', '/dev/sda', '/dev/sdb']), /single, raid1 or raid10/)
 		await assert.rejects(h.handle('pool-create', ['tank', 'raid1', '/dev/sda']), /at least 2/)
 		await assert.rejects(h.handle('pool-create', ['tank', 'single', '/dev/nvme0n1']), /holds the system/)
-		await assert.rejects(h.handle('pool-create', ['tank', 'single', '/dev/sdc']), /isn’t blank.*wipefs -a \/dev\/sdc/)
+		await assert.rejects(h.handle('pool-create', ['tank', 'single', '/dev/sdc']), /isn’t blank.*Format this drive first/)
 		await assert.rejects(h.handle('pool-create', ['tank', 'single', '/dev/sda;reboot']), /Not a drive/)
 		await assert.rejects(h.handle('pool-create', ['tank', 'single', '/etc/passwd']), /Not a drive/)
 		assert.ok(!log.some((l) => l[0] === 'mkfs.btrfs'), 'nothing formatted by refused requests')
@@ -488,6 +488,67 @@ errors: No known data errors
 		assert.equal(now, 53, 'never raised again by another app')
 		await assert.rejects(h.handle('low-ports', ['0']), /Bad port/)
 	})
+
+	test('umount and format: refuse system, pool, mounted, and junk paths; format wipes then mkfs', async () => {
+		const log = []
+		const lsblkMounted = {
+			blockdevices: [
+				...lsblk.blockdevices,
+				{
+					name: 'sde',
+					path: '/dev/sde',
+					type: 'disk',
+					size: 32e9,
+					rota: false,
+					tran: 'usb',
+					serial: 'USB1',
+					model: 'SanDisk',
+					children: [{name: 'sde1', path: '/dev/sde1', type: 'part', fstype: 'exfat', mountpoints: ['/run/media/chris/stick']}],
+				},
+			],
+		}
+		const run = async (cmd, args) => {
+			log.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(lsblkMounted)
+			if (cmd === 'wipefs') return JSON.stringify({signatures: []})
+			return ''
+		}
+		const fs = fakeFs({
+			'/etc/fstab': 'UUID=22222222-2222-2222-2222-222222222222 /home/chris/Pools/media btrfs d 0 0 # omarchy-server pool media\n',
+			'/dev/disk/by-id/usb-SanDisk_USB1': '/dev/sde',
+		})
+		fs.realpath = async (p) => {
+			if (p === '/dev/disk/by-id/usb-SanDisk_USB1') return '/dev/sde'
+			if (p.includes('..')) throw new Error('ENOENT')
+			return p
+		}
+		const h = createHelper({user, run, fs})
+		await assert.rejects(h.handle('umount', ['/dev/nvme0n1']), /holds the system/)
+		await assert.rejects(h.handle('format', ['/dev/nvme0n1', 'blank']), /holds the system/)
+		await assert.rejects(h.handle('format', ['/dev/sdd', 'blank']), /pool|in a pool/)
+		await assert.rejects(h.handle('format', ['/dev/sde', 'ext4']), /in use|Unmount/)
+		await assert.rejects(h.handle('format', ['/etc/passwd', 'blank']), /Not a drive/)
+		await assert.rejects(h.handle('format', ['/dev/disk/by-id/../passwd', 'blank']), /Not a drive/)
+		await assert.rejects(h.handle('format', ['/dev/sda', 'ntfs']), /blank, ext4 or exfat/)
+		assert.ok(!log.some((l) => l[0] === 'wipefs' && l[1] === '-a'), 'refused format never wipes')
+		assert.ok(!log.some((l) => l[0] === 'umount'))
+
+		const log2 = []
+		const h2 = createHelper({user, run: fakeRun(log2), fs: fakeFs()})
+		assert.equal(await h2.handle('format', ['/dev/sdc', 'blank']), 'ok')
+		assert.ok(log2.some((l) => l[0] === 'wipefs' && l[1] === '-a' && l[2] === '/dev/sdc'))
+		assert.ok(!log2.some((l) => l[0] === 'mkfs.ext4' || l[0] === 'mkfs.exfat'))
+		log2.length = 0
+		assert.equal(await h2.handle('format', ['/dev/sdc', 'ext4']), 'ok')
+		assert.ok(log2.some((l) => l[0] === 'mkfs.ext4' && l.includes('-F') && l.includes('/dev/sdc')))
+		log2.length = 0
+		assert.equal(await h2.handle('format', ['/dev/sdc', 'exfat']), 'ok')
+		assert.ok(log2.some((l) => l[0] === 'mkfs.exfat' && l.includes('/dev/sdc')))
+
+		log.length = 0
+		assert.equal(await h.handle('umount', ['/dev/sde']), 'ok')
+		assert.ok(log.some((l) => l[0] === 'umount' && l[1] === '/run/media/chris/stick'))
+	})
 })
 
 describe('omarchyd storage', () => {
@@ -586,5 +647,39 @@ describe('omarchyd storage', () => {
 		assert.equal((await s2.procedures['files.shareOptions'].run()).samba.problem, 'missing')
 		assert.equal((await s2.procedures['files.shareOptions'].run()).samba.command, 'omarchy update && omarchy pkg add samba')
 		await assert.rejects(s2.procedures['files.addShare'].run({path: '/Home/Pictures'}), /isn’t installed/)
+	})
+
+	test('storage.format and storage.unmount go through the helper; disks report mounts', async () => {
+		const calls = []
+		const run = async (cmd, args) => {
+			if (cmd === 'lsblk') return JSON.stringify(lsblk)
+			if (cmd === 'sudo') {
+				calls.push(args.slice(2))
+				const verb = args[2]
+				if (verb === 'ping') return 'ok\n'
+				if (verb === 'smart') return JSON.stringify({smart_status: {passed: true}, temperature: {current: 34}})
+				if (verb === 'format' || verb === 'umount') return 'ok\n'
+				return 'ok\n'
+			}
+			return ''
+		}
+		const files = {resolve: async (p) => ({real: p.replace('/Home', '/home/chris'), top: p.startsWith('/Home') ? 'Home' : 'Trash'})}
+		const data = join(root, 'format-data')
+		await mkdir(data)
+		const s = createStorage({dataDir: data, home: '/home/chris', files, run, fstabPath: fstab, smbConf: join(root, 'format-smb.conf')})
+		const disks = await s.procedures['storage.disks'].run()
+		const sdc = disks.find((d) => d.name === 'sdc')
+		assert.equal(sdc.role, 'data')
+		assert.equal(sdc.mounted, false)
+		assert.deepEqual(sdc.mounts, [])
+		assert.ok(sdc.id)
+		const sys = disks.find((d) => d.name === 'nvme0n1')
+		assert.equal(sys.mounted, true)
+		assert.ok(sys.mounts.includes('/'))
+		await s.procedures['storage.format'].run({device: '/dev/sdc', filesystem: 'ext4'})
+		assert.deepEqual(calls.filter((a) => a[0] === 'format').at(-1), ['format', '/dev/sdc', 'ext4'])
+		await s.procedures['storage.unmount'].run({device: '/dev/sdc'})
+		assert.deepEqual(calls.filter((a) => a[0] === 'umount').at(-1), ['umount', '/dev/sdc'])
+		await assert.rejects(s.procedures['storage.format'].run({device: '/dev/sdc', filesystem: 'ntfs'}), /blank, ext4 or exfat/)
 	})
 })

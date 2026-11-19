@@ -2,18 +2,20 @@
 // grown, checked for errors), and drive sleep. Pools appear in Files under Home → Pools, and any folder
 // can be shared on the network from Files.
 //
-// Safety: pools are only ever created on blank drives. A drive that holds anything is shown with the
-// one terminal command that erases it, so erasing data is always a deliberate step by a person.
+// Safety: pools are only ever created on blank drives. Format a data drive (choose blank) to make it
+// pool-eligible. Format and Unmount refuse the system disk, pool members, and (for Format) mounted disks.
 import {useState, type CSSProperties, type ReactNode} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from '../api'
 import {Icon} from '../icons'
+import {canFormat, canUnmount, formatConfirmToken, formatPhraseMatches, type FormatKind} from '../storageTools'
 import {Card, KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
 
 type Health = {passed: boolean | null; temperature: number | null; powerOnHours: number | null; lifetimeUsed: number | null; reallocated: number | null; pending: number | null}
 export type Drive = {
 	path: string
+	id: string
 	name: string
 	model: string | null
 	serial: string | null
@@ -23,6 +25,8 @@ export type Drive = {
 	removable: boolean
 	role: 'system' | 'pool' | 'blank' | 'data'
 	pool: string | null
+	mounted: boolean
+	mounts: string[]
 	btrfs: {uuid: string; label: string | null; mounted: boolean} | null
 	zfs: {pool: string | null} | null
 	sleepMinutes: number | null
@@ -294,7 +298,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 				</Section>
 			)}
 
-			<Section title="Drives" footer={drives.some((d) => d.role === 'data' && !d.btrfs) ? 'A drive that has data can’t be used for a pool until it’s erased. Open it to see how.' : undefined}>
+			<Section title="Drives" footer={drives.some((d) => d.role === 'data' && !d.btrfs) ? 'A drive that has data can’t be used for a pool until you format it (choose blank).' : undefined}>
 				{disksQ.isLoading ? <div className="row static muted">Loading…</div> : drives.map((d) => <DriveRow key={d.path} d={d} onClick={() => setDrive(d)} />)}
 			</Section>
 
@@ -321,9 +325,18 @@ const SLEEP = [
 function DriveSheet({d, onClose, onChanged}: {d: Drive | null; onClose: () => void; onChanged: () => void}) {
 	const toast = useToast()
 	const [sleep, setSleep] = useState<string | null>(null)
+	const [formatting, setFormatting] = useState(false)
+	const [busy, setBusy] = useState(false)
 	const h = d?.health
 	const issues = d ? driveIssues(d) : []
 	const current = sleep ?? String(d?.sleepMinutes ?? 0)
+	const device = d ? d.id || d.path : ''
+	const close = () => {
+		setSleep(null)
+		setFormatting(false)
+		setBusy(false)
+		onClose()
+	}
 	const setSleepTo = async (v: string) => {
 		if (!d) return
 		setSleep(v)
@@ -336,11 +349,39 @@ function DriveSheet({d, onClose, onChanged}: {d: Drive | null; onClose: () => vo
 			toast((e as Error).message, true)
 		}
 	}
+	const unmount = async () => {
+		if (!d) return
+		setBusy(true)
+		try {
+			await mutate('storage.unmount', {device})
+			toast('Drive unmounted')
+			onChanged()
+			close()
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setBusy(false)
+		}
+	}
+	const format = async (filesystem: FormatKind) => {
+		if (!d) return
+		setBusy(true)
+		try {
+			await mutate('storage.format', {device, filesystem})
+			toast(filesystem === 'blank' ? 'Drive wiped' : `Drive formatted as ${filesystem === 'exfat' ? 'exFAT' : filesystem}`)
+			onChanged()
+			close()
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setBusy(false)
+		}
+	}
 	return (
-		<Sheet open={!!d} onClose={() => (setSleep(null), onClose())} label="Drive">
+		<Sheet open={!!d} onClose={close} label="Drive">
 			{d && (
 				<>
-					<SheetHeader title={d.model ?? d.name} subtitle={`${KIND[d.kind]} · ${tb(d.size)} · ${d.path}`} onClose={() => (setSleep(null), onClose())} />
+					<SheetHeader title={d.model ?? d.name} subtitle={`${KIND[d.kind]} · ${tb(d.size)} · ${d.path}`} onClose={close} />
 					{issues.length > 0 && (
 						<div className="error" style={{marginBottom: 14}}>
 							<Icon name="alert" size={18} />
@@ -366,19 +407,81 @@ function DriveSheet({d, onClose, onChanged}: {d: Drive | null; onClose: () => vo
 							<Segmented label="Sleep when idle" value={(SLEEP.some((s) => s.id === current) ? current : '0') as (typeof SLEEP)[number]['id']} options={[...SLEEP]} onChange={setSleepTo} />
 						</div>
 					)}
-					{d.role === 'data' && !d.btrfs && (
-						<Card style={{marginTop: 18}}>
-							<b style={{fontSize: 14}}>Use this drive for a pool</b>
-							<p className="muted" style={{fontSize: 13, margin: '6px 0 8px'}}>
-								It has data on it. Omarchy Server never erases a drive by itself. If you’re sure nothing on it is needed, erase it in a terminal on the server:
+					<div style={{marginTop: 18}}>
+						{d.role === 'system' && (
+							<p className="muted" style={{fontSize: 13, margin: 0}}>
+								This is the system disk.
 							</p>
-							<code className="mono" style={{display: 'block', fontSize: 13, userSelect: 'all'}}>
-								sudo wipefs -a {d.path}
-							</code>
-						</Card>
-					)}
+						)}
+						{d.role === 'pool' && (
+							<p className="muted" style={{fontSize: 13, margin: 0}}>
+								In pool “{d.pool}”.
+							</p>
+						)}
+						{d.mounted && d.role !== 'system' && d.role !== 'pool' && (
+							<p className="muted" style={{fontSize: 13, margin: '0 0 10px'}}>
+								Unmount this drive before formatting.
+							</p>
+						)}
+						{canUnmount(d) && (
+							<button className="btn block" disabled={busy} onClick={() => (haptic(6), unmount())}>
+								{busy ? <span className="spinner" /> : null}
+								Unmount
+							</button>
+						)}
+						{canFormat(d) && (
+							<button className="btn block danger" disabled={busy} onClick={() => (haptic(6), setFormatting(true))}>
+								Format
+							</button>
+						)}
+					</div>
+					{formatting && <FormatDialog d={d} busy={busy} onClose={() => setFormatting(false)} onConfirm={format} />}
 				</>
 			)}
+		</Sheet>
+	)
+}
+
+const FORMAT_FS: {id: FormatKind; label: string}[] = [
+	{id: 'blank', label: 'Blank'},
+	{id: 'ext4', label: 'ext4'},
+	{id: 'exfat', label: 'exFAT'},
+]
+
+function FormatDialog({d, busy, onClose, onConfirm}: {d: Drive; busy: boolean; onClose: () => void; onConfirm: (fs: FormatKind) => void}) {
+	const [filesystem, setFilesystem] = useState<FormatKind>('blank')
+	const [typed, setTyped] = useState('')
+	const token = formatConfirmToken(d)
+	const ok = formatPhraseMatches(d, typed)
+	const about = filesystem === 'blank' ? 'Wipes the drive. Use this before adding it to a pool.' : filesystem === 'ext4' ? 'A Linux filesystem. Fine for files on this computer.' : 'Works with Windows and macOS too.'
+	return (
+		<Sheet open onClose={onClose} label="Format">
+			<SheetHeader title="Format this drive?" subtitle={`${d.model ?? d.name} · ${tb(d.size)}`} onClose={onClose} />
+			<p className="muted" style={{fontSize: 14, marginTop: 0}}>
+				This erases everything on the drive. There is no undo.
+			</p>
+			<Segmented label="Filesystem" value={filesystem} options={FORMAT_FS} onChange={setFilesystem} />
+			<p className="muted" style={{fontSize: 13, margin: '10px 0 0'}}>
+				{about}
+			</p>
+			<label className="field-label" htmlFor="format-confirm" style={{marginTop: 16}}>
+				Type “{token}” to confirm
+			</label>
+			<input
+				id="format-confirm"
+				className="field"
+				style={{width: '100%'}}
+				value={typed}
+				autoCapitalize="off"
+				autoCorrect="off"
+				spellCheck={false}
+				placeholder={token}
+				onChange={(e) => setTyped(e.target.value)}
+			/>
+			<button className="btn block danger solid" style={{marginTop: 16}} disabled={busy || !ok} onClick={() => onConfirm(filesystem)}>
+				{busy ? <span className="spinner" /> : null}
+				{busy ? 'Formatting…' : 'Format'}
+			</button>
 		</Sheet>
 	)
 }
