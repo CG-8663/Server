@@ -28,7 +28,7 @@ import {
 	type Task,
 } from './api'
 
-export type PanelId = 'summary' | 'console' | 'hardware' | 'cloudinit' | 'options' | 'network' | 'snapshots' | 'backups' | 'history' | 'monitor'
+export type PanelId = 'summary' | 'console' | 'hardware' | 'cloudinit' | 'options' | 'network' | 'usb' | 'snapshots' | 'backups' | 'history' | 'monitor'
 export const PANELS: {id: PanelId; label: string; icon: IconName}[] = [
 	{id: 'summary', label: 'Summary', icon: 'activity'},
 	{id: 'console', label: 'Console', icon: 'terminal'},
@@ -36,6 +36,7 @@ export const PANELS: {id: PanelId; label: string; icon: IconName}[] = [
 	{id: 'cloudinit', label: 'Cloud-Init', icon: 'key'},
 	{id: 'options', label: 'Options', icon: 'settings'},
 	{id: 'network', label: 'Port forwarding', icon: 'networking'},
+	{id: 'usb', label: 'Devices', icon: 'usb'},
 	{id: 'snapshots', label: 'Snapshots', icon: 'history'},
 	{id: 'backups', label: 'Backup', icon: 'save'},
 	{id: 'history', label: 'Task History', icon: 'list'},
