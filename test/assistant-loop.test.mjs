@@ -180,12 +180,34 @@ function factsProcedure(extra) {
 		}
 		if (name === 'system.getHostname') return 'box'
 		if (name === 'system.device') return {device: 'ThinkPad', os: 'Omarchy'}
-		if (name === 'apps.list') return [{id: 'files', credentials: {defaultPassword: 'app-secret'}}]
-		if (name === 'swarm.list') return [{name: 'nas'}]
+		if (name === 'apps.list') return [{id: 'files', name: 'Files', credentials: {defaultPassword: 'app-secret'}}]
+		if (name === 'swarm.list') return [{id: 'abc', name: 'nas'}]
+		if (name === 'machines.list') return []
+		if (name === 'usb.list') return {devices: []}
 		return null
 	}
 	return {calls, runProcedure}
 }
+
+test('approve cards look up app names instead of showing the tool name or id', async () => {
+	const {runProcedure} = factsProcedure(async (name) => {
+		if (name === 'apps.list') return [{id: 'homeassistant', name: 'Home Assistant'}]
+	})
+	const {fetchImpl} = scripted([toolSse('call_s', 'apps_start', JSON.stringify({appId: 'homeassistant'}))])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'start home assistant', emit: (e) => events.push(e)})
+		const action = events.find((e) => e.event === 'action')?.data
+		assert.equal(action?.toolName, 'apps_start')
+		assert.equal(action.title, 'Start Home Assistant')
+		assert.equal(action.detail, '')
+		assert.equal(action.title.includes('apps_start'), false)
+		assert.equal(JSON.stringify(action).includes('homeassistant') && action.title.includes('homeassistant'), false)
+	} finally {
+		await box.close()
+	}
+})
 
 test('read tools are the curated list and members do not get swarm_list', () => {
 	assert.deepEqual(READ_TOOLS.map((t) => t.name), [
