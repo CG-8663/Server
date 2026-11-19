@@ -1,6 +1,7 @@
 // Host USB enumerator and passthrough RPCs for omarchyd.
 import {readdir as fsReaddir, readFile as fsReadFile, realpath as fsRealpath} from 'node:fs/promises'
 import {join} from 'node:path'
+import YAML from 'yaml'
 
 import {RpcError} from './rpc.mjs'
 
@@ -93,6 +94,15 @@ export function parseUsbLive(xmlText, devices = []) {
 		if (vendor.test(xmlText) && product.test(xmlText)) live.push(d.id)
 	}
 	return live
+}
+
+const SERIAL_PATH = /^\/dev\/(serial\/by-id\/usb-[A-Za-z0-9._+-]+|ttyUSB[0-9]+|ttyACM[0-9]+)$/
+
+export function usbComposeOverlay(serviceNames, devices) {
+	const binds = (devices ?? []).map((d) => d.path).filter((p) => SERIAL_PATH.test(p)).map((p) => `${p}:${p}`)
+	if (!binds.length) return ''
+	const services = Object.fromEntries(serviceNames.map((name) => [name, {devices: binds}]))
+	return YAML.stringify({services})
 }
 
 function boundOf(g) {

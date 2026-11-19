@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {execFileSync} from 'node:child_process'
 import {mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {dirname, join} from 'node:path'
@@ -8,7 +9,9 @@ import {openAccounts} from '../omarchyd/accounts.mjs'
 import {createMachines} from '../omarchyd/machines.mjs'
 import {RpcError} from '../omarchyd/rpc.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
-import {createUsb, hostdevXml, listHostUsb} from '../omarchyd/usb.mjs'
+import YAML from 'yaml'
+
+import {createUsb, hostdevXml, listHostUsb, usbComposeOverlay} from '../omarchyd/usb.mjs'
 
 async function writeTree(root, files) {
 	for (const [p, v] of Object.entries(files)) {
@@ -345,5 +348,121 @@ describe('machine USB hostdev', () => {
 		const listed = await usb.procedures['usb.list'].run()
 		assert.equal(listed.devices.find((d) => d.id === stick.id).needsRestart, false)
 		await rm(root, {recursive: true, force: true})
+	})
+})
+
+test('usbComposeOverlay injects path:path on every service', () => {
+	const text = usbComposeOverlay(['homeassistant', 'db'], [{path: '/dev/serial/by-id/usb-x'}, {path: null}])
+	const doc = YAML.parse(text)
+	assert.deepEqual(doc.services.homeassistant.devices, ['/dev/serial/by-id/usb-x:/dev/serial/by-id/usb-x'])
+	assert.deepEqual(doc.services.db.devices, ['/dev/serial/by-id/usb-x:/dev/serial/by-id/usb-x'])
+})
+
+test('usbComposeOverlay ignores a path that is not a serial node', () => {
+	const text = usbComposeOverlay(['web'], [{path: '/etc/passwd'}])
+	assert.equal(!text.trim() || !YAML.parse(text).services?.web?.devices?.length, true)
+})
+
+describe('app USB compose', () => {
+	let root, data, d, auth, calls
+	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
+	before(async () => {
+		root = await mkdtemp(join(os.tmpdir(), 'usb-app-'))
+		data = join(root, 'data')
+		calls = []
+		const sock = join(root, 'podman.sock')
+		await writeFile(sock, '')
+		process.env.DOCKER_HOST = `unix://${sock}`
+		const store = join(root, 'store')
+		await mkdir(join(store, 'demo-app'), {recursive: true})
+		await writeFile(join(store, 'omarchy-app-store.yml'), 'id: demo\nname: Demo Store\n')
+		await writeFile(join(store, 'demo-app/omarchy-app.yml'), 'manifestVersion: 1\nid: demo-app\nname: Demo App\ntagline: Says hello\nversion: "1.0"\nport: 18080\nicon: https://example.com/i.svg\ndefaultPassword: ""\n')
+		await writeFile(join(store, 'demo-app/docker-compose.yml'), 'version: "3.7"\nservices:\n  app_proxy:\n    environment:\n      APP_HOST: demo-app_web_1\n      APP_PORT: 8080\n  web:\n    image: example/demo:1\n    volumes:\n      - ${APP_DATA_DIR}/data:/data\n')
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'store'], store)
+		await writeTree(root, {
+			'sys/bus/usb/devices/2-1/idVendor': '1a86\n',
+			'sys/bus/usb/devices/2-1/idProduct': '55d4\n',
+			'sys/bus/usb/devices/2-1/serial': 'a8e5c3c0\n',
+			'sys/bus/usb/devices/2-1/product': 'SONOFF Zigbee 3.0 USB Dongle Plus V2\n',
+			'sys/bus/usb/devices/2-1/bDeviceClass': '02\n',
+			'dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_a8e5c3c0-if00-port0': {link: join(root, 'dev/ttyACM0')},
+			'dev/ttyACM0': '',
+		})
+		const accounts = await openAccounts(data)
+		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+		const up = new Set()
+		const run = async (cmd, args, opts = {}) => {
+			if (cmd === 'git') return git(args, opts.cwd)
+			if (cmd === 'docker-compose') {
+				calls.push({args})
+				const p = args[1]
+				if (args[0] === 'version') return 'Docker Compose version v2.30.0'
+				if (args.includes('up') || args.includes('restart')) up.add(p)
+				if (args.includes('stop') || args.includes('down')) up.delete(p)
+				if (args.includes('ps')) return JSON.stringify([{Service: 'web', State: up.has(p) ? 'running' : 'exited'}])
+				return ''
+			}
+			if (cmd === 'podman') {
+				if (args[0] === 'ps') return ''
+				if (args[0] === 'network' && args[1] === 'exists') throw new Error('no such network')
+				return ''
+			}
+			if (cmd === 'setfacl' || cmd === 'bwrap') return ''
+			return ''
+		}
+		d = await startOmarchyd({
+			port: 0,
+			dataDir: data,
+			home: join(root, 'home'),
+			webPort: 7798,
+			usbOptions: {sysfs: join(root, 'sys/bus/usb/devices'), serialById: join(root, 'dev/serial/by-id')},
+			machineOptions: {run: async () => '', kvmDevice: join(root, 'kvm')},
+			appOptions: {run, allowFileStores: true, gatewayHost: '127.0.0.1', defaultStores: [{url: `file://${store}`}], systemApps: null},
+			updaterOptions: {autoCheck: false},
+		})
+		const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
+		auth = {authorization: `Bearer ${login.result.data.accessToken}`}
+	})
+	after(async () => {
+		await d.close()
+		await rm(root, {recursive: true, force: true})
+	})
+	const call = async (path, input, kind = 'mutation') => {
+		const url = new URL(`${d.url}/trpc/${path}`)
+		const init = {method: kind === 'mutation' ? 'POST' : 'GET', headers: {...auth}}
+		if (kind === 'mutation') Object.assign(init.headers, {'content-type': 'application/json'}), (init.body = JSON.stringify(input ?? null))
+		else if (input !== undefined) url.searchParams.set('input', JSON.stringify(input))
+		const body = await (await fetch(url, init)).json()
+		if (body.error) throw new Error(body.error.message)
+		return body.result.data
+	}
+	const until = async (fn, ms = 8000) => {
+		const end = Date.now() + ms
+		for (;;) {
+			const v = await fn()
+			if (v) return v
+			if (Date.now() > end) throw new Error('timed out')
+			await new Promise((r) => setTimeout(r, 40))
+		}
+	}
+	test('start injects serial devices; a running app is not recreated', async () => {
+		await call('apps.install', {appId: 'demo-app'})
+		await until(async () => (await call('apps.list', undefined, 'query')).find((a) => a.id === 'demo-app' && a.state === 'running'))
+		await call('apps.stop', {appId: 'demo-app'})
+		await call('usb.attach', {deviceId: stick.id, guest: {kind: 'app', id: 'demo-app'}})
+		calls.length = 0
+		await call('apps.start', {appId: 'demo-app'})
+		const up = calls.find((c) => c.args?.includes('up'))
+		assert.ok(up.args.includes(join(data, 'apps/installed/demo-app/compose.usb.yml')))
+		const overlay = YAML.parse(await readFile(join(data, 'apps/installed/demo-app/compose.usb.yml'), 'utf8'))
+		assert.deepEqual(overlay.services.web.devices, [`${stick.path}:${stick.path}`])
+		calls.length = 0
+		const again = await call('usb.attach', {deviceId: stick.id, guest: {kind: 'app', id: 'demo-app'}})
+		assert.equal(again.needsRestart, false)
+		const listed = await call('usb.list', undefined, 'query')
+		assert.equal(listed.devices.find((d) => d.id === stick.id).needsRestart, false)
+		assert.equal(calls.some((c) => c.args?.includes('up') || c.args?.includes('restart')), false)
 	})
 })
