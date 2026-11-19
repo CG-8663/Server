@@ -186,6 +186,12 @@ export const ALLOWED = {
 	'backups.runNow': 'mutation',
 	'backups.restoreApp': 'mutation',
 	'backups.connectExisting': 'mutation',
+	'backups.computers': 'query',
+	'backups.computerFolders': 'mutation',
+	'backups.setComputer': 'mutation',
+	'backups.runComputer': 'mutation',
+	'backups.computerSnapshots': 'query',
+	'backups.restoreComputer': 'mutation',
 	'machines.clone': 'mutation',
 	'machines.monitor': 'mutation',
 	// Storage (NAS): drives, pools, sleep
@@ -270,7 +276,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-const SLOW = new Set(['storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
+const SLOW = new Set(['backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
 
 function parseCookies(header = '') {
 	const out = {}
@@ -385,6 +391,27 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		} catch {
 			res.status(502).json({error: 'The server isn’t answering right now'})
 		}
+	})
+	// A computer in the local swarm backing up to this server: its restic's requests, streamed to
+	// omarchyd as they are (omarchyd checks the connector's key and keeps them to its own store).
+	app.all('/connector/backup/*', (req, res) => {
+		const backend = getClient()
+		if (!backend) return res.status(503).end()
+		const target = new URL(req.originalUrl, backend.baseUrl)
+		const headers = {}
+		for (const h of ['authorization', 'content-type', 'content-length', 'range', 'accept']) if (req.headers[h]) headers[h] = req.headers[h]
+		const up = http.request(target, {method: req.method, headers}, (ur) => {
+			const out = {}
+			for (const h of ['content-type', 'content-length', 'content-range', 'cache-control']) if (ur.headers[h]) out[h] = ur.headers[h]
+			res.writeHead(ur.statusCode ?? 502, out)
+			ur.pipe(res)
+		})
+		up.setTimeout(10 * 60_000, () => up.destroy())
+		up.on('error', () => {
+			if (!res.headersSent) res.writeHead(502, {'content-type': 'text/plain'})
+			res.end()
+		})
+		req.pipe(up)
 	})
 	const api = express.Router()
 	api.use(express.json({limit: '64kb'}))

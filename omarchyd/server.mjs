@@ -55,7 +55,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const systemApps = appOptions.systemApps !== undefined ? appOptions.systemApps || null : createSystemApps({helper: storage.helper})
 	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions, systemApps, tlsDir, secure})
 	// Backups need apps: to pause them while their files are saved, and to know where those files are.
-	const backups = createBackups({dataDir, home, files, apps, ...backupOptions})
+	// …and the local swarm's connector (created further down), for computers that back up here.
+	const backups = createBackups({dataDir, home, files, apps, swarm: {agents: () => connector.backup.agents(), call: (...a) => connector.backup.call(...a), progress: (id) => connector.backup.progress(id)}, ...backupOptions})
 	const usb = createUsb({
 		enumerate: () => listHostUsb(usbOptions),
 		guests: {
@@ -591,6 +592,12 @@ WantedBy=graphical-session.target
 			}
 			if (url.pathname.startsWith('/trpc/')) return await handleRpc(req, res, url, procedures, (r) => accounts.authenticate(r))
 			if (url.pathname === '/assets/wallpapers/1.jpg' && req.method === 'GET') return await wallpaper(res)
+			// A computer's backup uploading to its own store (its connector's key; add-only, see backups.mjs).
+			if (url.pathname.startsWith('/connector/backup/')) {
+				const agentId = connector.backup.authenticate(req)
+				if (!agentId) return sendJson(res, 401, {error: 'unauthorized'})
+				return await backups.handleUpload(req, res, agentId, url.pathname.slice('/connector/backup/'.length))
+			}
 			// A connector trading its one-time pairing code for its own id and key.
 			if (url.pathname === '/connector/enroll' && req.method === 'POST') {
 				let size = 0

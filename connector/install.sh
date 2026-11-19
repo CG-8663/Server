@@ -3,7 +3,7 @@
 #
 # Get the exact command (with a one-time pairing code) from your server: Machines → Local swarm →
 # Add a computer. It looks like:
-#   curl -fsSL <source>/main/connector/install.sh | bash -s -- --server https://<server>:7780 --ca <fingerprint> --token <code> --allow terminal,desktop,manage
+#   curl -fsSL <source>/main/connector/install.sh | bash -s -- --server https://<server>:7780 --ca <fingerprint> --token <code> --allow terminal,desktop,manage,backup
 #
 # Run it as your normal user (it asks for sudo only to install packages and to keep the connector
 # running while you're signed out). Works on any Linux with systemd: Debian, Ubuntu, Fedora, Arch,

@@ -12,6 +12,8 @@ export const CHANGELOG: Release[] = [
 			'Backups run every night (or weekly, at the time you choose). Only what changed is sent, and the last 7 days, 4 weeks and 6 months are kept.',
 			'Everything is encrypted with a recovery key that only you have. Save it somewhere safe, away from the server.',
 			'Restore any app to how it was in an earlier backup, or open your NAS backups on a new server with the recovery key.',
+			'Back up your other computers too: add them in Machines › Local swarm with Backups on, then in Settings › Backups tick the folders to save and when. A computer that’s off at backup time catches up when it’s back, and it can add backups but never delete them.',
+			'Restore a computer’s folders into a new Restored folder on it, without touching what’s there now.',
 		],
 	},
 	{

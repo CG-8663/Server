@@ -195,12 +195,12 @@ test('setup makes the backup folder, and a setup that fails leaves nothing half-
 		},
 	}
 	let initFails = true
-	const run = async (cmd, args) => {
+	const run = async (cmd, args, opts = {}) => {
 		if (cmd === 'smbclient') return {stdout: '  .omarchy-server-check   A  10  Thu Nov 19 14:48:56 2026\n', stderr: ''}
 		if (args[0] === 'version') return {stdout: 'restic 0.18.1 compiled with go1.25.1 on linux/amd64\n', stderr: ''}
 		if (args[0] === 'init') {
 			if (initFails) throw new Error('restic: disk full')
-			await writeFile(join(home, 'Backups', 'Omarchy Server', 'config'), 'x')
+			await writeFile(join(opts.env.RESTIC_REPOSITORY, 'config'), 'x')
 		}
 		return {stdout: '', stderr: ''}
 	}
@@ -216,7 +216,7 @@ test('setup makes the backup folder, and a setup that fails leaves nothing half-
 		const ok = await b.procedures['backups.configure'].run({nas})
 		assert.equal(ok.configured, true)
 		assert.ok(ok.recoveryKey)
-		assert.ok((await stat(join(home, 'Backups', 'Omarchy Server'))).isDirectory())
+		assert.ok((await stat(join(home, 'Backups', 'Omarchy Server', 'server', 'config'))).isFile())
 		// A second setup change keeps the same key (none is shown again).
 		const again = await b.procedures['backups.configure'].run({schedule: {frequency: 'weekly', hour: 2, weekday: 6}})
 		assert.equal(again.recoveryKey, undefined)

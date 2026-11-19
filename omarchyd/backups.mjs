@@ -108,7 +108,8 @@ function smbMessage(errors) {
 	if (/LOGON_FAILURE|WRONG_PASSWORD|ACCOUNT_RESTRICTION/.test(e)) return 'The NAS didn’t accept that username and password.'
 	if (/ACCESS_DENIED/.test(e)) return 'The NAS account can’t write to that share. Give it write access on the NAS.'
 	if (/BAD_NETWORK_NAME/.test(e)) return 'That share doesn’t exist on the NAS.'
-	if (/HOST_UNREACHABLE|CONNECTION_REFUSED|IO_TIMEOUT|NETWORK_UNREACHABLE|NOT_FOUND|RESOLVE/.test(e)) return 'Couldn’t reach the NAS. Check its name or address, and that it’s on.'
+	if (/HOST_UNREACHABLE|CONNECTION_REFUSED|IO_TIMEOUT|NETWORK_UNREACHABLE|BAD_NETWORK_PATH|INVALID_ADDRESS|NOT_FOUND$/.test(e) && !/OBJECT_(NAME|PATH)_NOT_FOUND/.test(e)) return `Couldn’t reach the NAS. Check its name or address, and that it’s on. (${e})`
+	if (/OBJECT_(NAME|PATH)_NOT_FOUND/.test(e)) return `A folder on the NAS couldn’t be made or found (${e}).`
 	if (/DISK_FULL/.test(e)) return 'The NAS share is full.'
 	return `The NAS said ${e || 'no'}.`
 }
@@ -147,7 +148,7 @@ function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 60_000}
 	})
 }
 
-export function createBackups({dataDir, home = os.homedir(), serverDataDir = join(home, '.config', 'omarchy-server'), files, apps, run = defaultSpawn, fetchImpl = globalThis.fetch, arch = os.arch() === 'arm64' ? 'arm64' : 'amd64', resticPath = null, unshare = true, now = () => Date.now(), timers = true}) {
+export function createBackups({dataDir, home = os.homedir(), serverDataDir = join(home, '.config', 'omarchy-server'), files, apps, swarm = null, run = defaultSpawn, fetchImpl = globalThis.fetch, arch = os.arch() === 'arm64' ? 'arm64' : 'amd64', resticPath = null, unshare = true, now = () => Date.now(), timers = true}) {
 	const dir = join(dataDir, 'backups')
 	const configFile = join(dir, 'config.json')
 	const secretFile = join(dir, 'secrets.json')
@@ -245,9 +246,14 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		})
 		return real
 	}
-	async function restic(args, {inside = false, onLine, timeout} = {}) {
+	// The backup folder holds one restic store per source: server/ for this server, and
+	// computers/<id>/ for each computer in the local swarm.
+	const serverRepo = async () => join(await repoReal(), 'server')
+	const computerRepo = async (id) => join(await repoReal(), 'computers', id)
+	const computerKey = (id) => join(dir, 'computers', `${id}.key`)
+	async function restic(args, {inside = false, onLine, timeout, repo = null, passwordFile = keyFile} = {}) {
 		const {path} = await ensureEngine()
-		const env = {...baseEnv(), RESTIC_REPOSITORY: await repoReal(), RESTIC_PASSWORD_FILE: keyFile, RESTIC_CACHE_DIR: join(dir, 'cache'), RESTIC_PROGRESS_FPS: '0.5'}
+		const env = {...baseEnv(), RESTIC_REPOSITORY: repo ?? (await serverRepo()), RESTIC_PASSWORD_FILE: passwordFile, RESTIC_CACHE_DIR: join(dir, 'cache'), RESTIC_PROGRESS_FPS: '0.5'}
 		if (inside && unshare) return run('podman', ['unshare', path, ...args], {env, onLine, timeout})
 		return run(path, args, {env, onLine, timeout})
 	}
@@ -321,18 +327,23 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	// Copy the store to the NAS: new files first (pack data, then indexes, then the snapshots that point at
 	// them), then remove what the NAS has that the store no longer does. Locks never leave the server.
 	const ORDER = ['config', 'keys', 'data', 'index', 'snapshots']
+	// A path inside one of the stores: server/<part>/… or computers/<id>/<part>/…
+	const part = (p) => {
+		const seg = p.split('/')
+		return seg[0] === 'server' ? seg[1] : seg[0] === 'computers' ? seg[2] : null
+	}
 	const rank = (p) => {
-		const i = ORDER.indexOf(p.split('/')[0])
+		const i = ORDER.indexOf(part(p))
 		return i < 0 ? ORDER.length : i
 	}
 	async function mirror(onProgress = () => {}) {
 		const nas = config.nas
 		const root = await repoReal()
 		const local = await localFiles(root)
-		for (const k of [...local.keys()]) if (k.startsWith('locks/')) local.delete(k)
+		for (const k of [...local.keys()]) if (!ORDER.includes(part(k))) local.delete(k)
 		const remote = await remoteFiles(nas, secrets.nasPassword)
 		const send = [...local].filter(([p, size]) => remote.get(p) !== size).sort((a, b) => rank(a[0]) - rank(b[0]))
-		const drop = [...remote.keys()].filter((p) => !local.has(p) && ORDER.includes(p.split('/')[0])).sort((a, b) => rank(b) - rank(a))
+		const drop = [...remote.keys()].filter((p) => !local.has(p) && ORDER.includes(part(p))).sort((a, b) => rank(b) - rank(a))
 		const total = send.reduce((t, [, s]) => t + s, 0) || 1
 		let sent = 0
 		const dirs = [...new Set(send.map(([p]) => dirname(p)).filter((d) => d !== '.'))]
@@ -460,7 +471,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				}
 				job = {...job, step: 'Copying to the NAS', progress: 0.8}
 				try {
-					const m = await mirror((f) => (job = {...job, progress: 0.8 + 0.2 * f}))
+					const m = await mirrorOnce((f) => (job = {...job, progress: 0.8 + 0.2 * f}))
 					entry.nas = {ok: true, ...m}
 				} catch (e) {
 					entry.nas = {ok: false, error: e.message}
@@ -482,10 +493,312 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 
 	async function ensureRepo() {
 		const real = await repoReal()
-		if (await exists(join(real, 'config'))) return
+		const repo = join(real, 'server')
+		if (await exists(join(repo, 'config'))) return
 		await mkdir(real, {recursive: true, mode: 0o700})
-		if ((await readdir(real)).length) throw new RpcError('PRECONDITION_FAILED', `${config.repo} isn’t empty. Choose an empty folder for the backups.`)
-		await restic(['init'])
+		if ((await readdir(real)).some((n) => n !== 'server' && n !== 'computers')) throw new RpcError('PRECONDITION_FAILED', `${config.repo} isn’t empty. Choose an empty folder for the backups.`)
+		await mkdir(repo, {recursive: true, mode: 0o700})
+		await restic(['init'], {repo})
+	}
+	// A computer's own store: its own password (which it's sent for each backup, never kept), plus
+	// the recovery key as a second key, so the one recovery key opens everything.
+	async function ensureComputerRepo(id) {
+		const repo = await computerRepo(id)
+		if ((await exists(join(repo, 'config'))) && (await exists(computerKey(id)))) return repo
+		await mkdir(join(dir, 'computers'), {recursive: true, mode: 0o700})
+		const fresh = !(await exists(computerKey(id)))
+		if (fresh) await writePrivate(computerKey(id), `${randomBytes(24).toString('base64url')}\n`)
+		if (!(await exists(join(repo, 'config')))) {
+			await mkdir(repo, {recursive: true, mode: 0o700})
+			await restic(['init'], {repo, passwordFile: computerKey(id)})
+			await restic(['key', 'add', '--new-password-file', keyFile, '--host', 'omarchy-server'], {repo, passwordFile: computerKey(id)})
+		} else if (fresh) {
+			// Its store is here but its key isn't (a rebuilt server): open it with the recovery key and add one.
+			await restic(['key', 'add', '--new-password-file', computerKey(id), '--host', 'omarchy-server'], {repo, passwordFile: keyFile})
+		}
+		return repo
+	}
+
+	// ---- computers in the local swarm -----------------------------------------------------------
+	// Each computer backs up the folders chosen here, on its own schedule. The server starts each run:
+	// it sends the computer its store's password and the folders, and the computer's restic uploads
+	// through its connector to /connector/backup (add-only, see handleUpload). If a computer is off at
+	// the time, it catches up when it next connects. Pruning and the NAS copy happen here, afterwards.
+	const FOLDER = /^(?!\.\.?(?:\/|$))(?!.*\/\.\.?(?:\/|$))[^\x00-\x1f/][^\x00-\x1f]{0,199}$/
+	const computerJobs = new Map() // id -> {step, progress, startedAt}
+	let mirrorChain = Promise.resolve()
+	// One NAS copy at a time; a run that finishes while another copy is going waits for it.
+	const mirrorOnce = (onProgress) => (mirrorChain = mirrorChain.catch(() => {}).then(() => mirror(onProgress)))
+	const DEFAULT_COMPUTER = {enabled: false, folders: [], schedule: {frequency: 'daily', hour: 1, weekday: 0}, lastSuccessAt: 0, lastAttemptAt: 0}
+	const computerConfig = (id) => ({...structuredClone(DEFAULT_COMPUTER), ...(config.computers?.[id] ?? {})})
+	const periodOf = (sc) => (sc.frequency === 'weekly' ? 7 : 1) * 86400_000
+	// The latest time the schedule said "back up" (at or before now).
+	function latestSlot(sc, at) {
+		if (!sc || sc.frequency === 'off') return null
+		let t = nextRun(sc, at - periodOf(sc))
+		while (t > at) t -= periodOf(sc)
+		return t
+	}
+
+	function cleanFolders(list) {
+		if (!Array.isArray(list) || list.length > 32) throw new RpcError('BAD_REQUEST', 'Choose up to 32 folders')
+		const out = [...new Set(list.map((f) => String(f).trim().replace(/\/+$/, '')))]
+		for (const f of out) if (!FOLDER.test(f)) throw new RpcError('BAD_REQUEST', `“${f.slice(0, 60)}” isn’t a folder in the home folder`)
+		return out
+	}
+
+	async function computers() {
+		await ready
+		if (!swarm) return []
+		const agents = await swarm.agents()
+		return agents.map((a) => {
+			const c = computerConfig(a.id)
+			const last = history.find((h) => h.computer === a.id && h.endedAt)
+			const sc = c.schedule
+			return {
+				id: a.id,
+				name: a.name,
+				online: a.online,
+				allowed: a.allowed,
+				on: a.on,
+				enabled: c.enabled,
+				folders: c.folders,
+				schedule: sc,
+				running: computerJobs.get(a.id) ?? null,
+				last: last ? {at: last.endedAt, ok: last.ok, error: last.error, added: last.added} : null,
+				nextRunAt: c.enabled && sc.frequency !== 'off' ? nextRun(sc, Math.max(now(), c.lastSuccessAt)) : null,
+				lastRestore: c.lastRestore ?? null,
+			}
+		})
+	}
+
+	async function agentOf(id) {
+		const a = (await swarm?.agents())?.find((x) => x.id === String(id ?? ''))
+		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		return a
+	}
+
+	async function computerFolders(input = {}) {
+		await ready
+		const a = await agentOf(input.id)
+		if (!a.on) throw new RpcError('FORBIDDEN', `Backups aren’t switched on for ${a.name}. Add it to the swarm again with Backups allowed.`)
+		if (!a.online) throw new RpcError('PRECONDITION_FAILED', `${a.name} is offline right now`)
+		return swarm.call(a.id, 'backup-folders', {}, 30_000)
+	}
+
+	async function setComputer(input = {}) {
+		await ready
+		const a = await agentOf(input.id)
+		if (!config.nas || !(await hasKey())) throw new RpcError('PRECONDITION_FAILED', 'Set up backups for this server first')
+		const c = computerConfig(a.id)
+		if (input.folders !== undefined) c.folders = cleanFolders(input.folders)
+		if (input.schedule) c.schedule = cleanOptions({schedule: input.schedule}).schedule
+		if (input.enabled !== undefined) {
+			if (input.enabled === true && !a.on) throw new RpcError('FORBIDDEN', `Backups aren’t switched on for ${a.name}. Add it to the swarm again with Backups allowed.`)
+			c.enabled = input.enabled === true
+		}
+		if (c.enabled && !c.folders.length) throw new RpcError('BAD_REQUEST', 'Choose at least one folder to back up')
+		if (c.enabled) await ensureComputerRepo(a.id)
+		config.computers = {...(config.computers ?? {}), [a.id]: c}
+		await saveConfig()
+		return (await computers()).find((x) => x.id === a.id)
+	}
+
+	async function runComputer(id, reason = 'manual') {
+		await ready
+		const a = await agentOf(id)
+		const c = computerConfig(a.id)
+		if (computerJobs.has(a.id)) throw new RpcError('CONFLICT', `${a.name} is already backing up`)
+		if (!c.enabled || !c.folders.length) throw new RpcError('PRECONDITION_FAILED', `Choose ${a.name}’s folders first`)
+		if (!a.on) throw new RpcError('FORBIDDEN', `Backups aren’t switched on for ${a.name}`)
+		if (!a.online) throw new RpcError('PRECONDITION_FAILED', `${a.name} is offline right now`)
+		const entry = {id: randomBytes(4).toString('hex'), computer: a.id, name: a.name, reason, startedAt: now(), endedAt: null, ok: false, error: null, items: [], added: 0, nas: null}
+		history.unshift(entry)
+		c.lastAttemptAt = now()
+		config.computers = {...(config.computers ?? {}), [a.id]: c}
+		await saveConfig()
+		await saveHistory()
+		computerJobs.set(a.id, {step: 'Getting ready', progress: 0, startedAt: entry.startedAt})
+		const poll = setInterval(() => {
+			const p = swarm.progress(a.id)
+			if (p && computerJobs.has(a.id) && now() - p.at < 30_000) computerJobs.set(a.id, {...computerJobs.get(a.id), step: p.step || 'Backing up', progress: 0.85 * p.percent})
+		}, 1000)
+		poll.unref?.()
+		const done = (async () => {
+			try {
+				const repo = await ensureComputerRepo(a.id)
+				const password = (await readFile(computerKey(a.id), 'utf8')).trim()
+				computerJobs.set(a.id, {...computerJobs.get(a.id), step: 'Backing up'})
+				const r = await swarm.call(a.id, 'backup-run', {password, folders: c.folders}, 12 * 60 * 60_000)
+				entry.added = Number(r?.added) || 0
+				entry.items.push({kind: 'computer', id: a.id, name: a.name, ok: true, added: entry.added, files: Number(r?.files) || 0, skipped: Array.isArray(r?.skipped) ? r.skipped.slice(0, 20).map(String) : []})
+				clearInterval(poll)
+				computerJobs.set(a.id, {...computerJobs.get(a.id), step: 'Tidying old backups', progress: 0.88})
+				const k = config.keep
+				await restic(['forget', '--group-by', 'host,paths', '--keep-daily', String(k.daily), '--keep-weekly', String(k.weekly), '--keep-monthly', String(k.monthly), '--keep-last', '1', '--prune'], {repo, passwordFile: computerKey(a.id)})
+				computerJobs.set(a.id, {...computerJobs.get(a.id), step: 'Copying to the NAS', progress: 0.92})
+				try {
+					entry.nas = {ok: true, ...(await mirrorOnce())}
+				} catch (e) {
+					entry.nas = {ok: false, error: e.message}
+				}
+				entry.ok = !!entry.nas?.ok
+				entry.error = entry.ok ? null : `Saved on this server, but not copied to the NAS: ${entry.nas.error}`
+				const cc = computerConfig(a.id)
+				cc.lastSuccessAt = entry.startedAt
+				config.computers = {...(config.computers ?? {}), [a.id]: cc}
+				await saveConfig()
+			} catch (e) {
+				entry.ok = false
+				entry.error = e.message
+			} finally {
+				clearInterval(poll)
+				entry.endedAt = now()
+				computerJobs.delete(a.id)
+				await saveHistory().catch(() => {})
+			}
+		})()
+		return {id: entry.id, done}
+	}
+
+	async function computerSnapshots(input = {}) {
+		await ready
+		const a = await agentOf(input.id)
+		const repo = await computerRepo(a.id)
+		if (!(await exists(join(repo, 'config'))) || !(await exists(computerKey(a.id)))) return []
+		const {stdout} = await restic(['snapshots', '--json'], {repo, passwordFile: computerKey(a.id), timeout: 120_000})
+		return JSON.parse(stdout || '[]')
+			.map((sn) => ({id: sn.id, shortId: sn.short_id ?? sn.id.slice(0, 8), time: Date.parse(sn.time), paths: sn.paths ?? [], size: sn.summary?.total_bytes_processed ?? null}))
+			.sort((x, y) => y.time - x.time)
+	}
+
+	// Files from a backup go back onto the computer in a new folder (~/Restored/<date>), never over
+	// what's there now.
+	async function restoreComputer(input = {}) {
+		await ready
+		const a = await agentOf(input.id)
+		const snapshotId = String(input.snapshotId ?? '')
+		if (!SNAPSHOT.test(snapshotId)) throw new RpcError('BAD_REQUEST', 'Bad restore')
+		if (!(await computerSnapshots({id: a.id})).some((x) => x.id === snapshotId)) throw new RpcError('NOT_FOUND', 'That backup isn’t there')
+		if (computerJobs.has(a.id)) throw new RpcError('CONFLICT', `${a.name} is busy`)
+		if (!a.online) throw new RpcError('PRECONDITION_FAILED', `${a.name} is offline right now`)
+		computerJobs.set(a.id, {step: 'Restoring', progress: 0, startedAt: now()})
+		// Big folders take a while: it runs in the background, and the result shows on the computer.
+		const poll = setInterval(() => {
+			const p = swarm.progress(a.id)
+			if (p && computerJobs.has(a.id) && now() - p.at < 30_000) computerJobs.set(a.id, {...computerJobs.get(a.id), step: 'Restoring', progress: p.percent})
+		}, 1000)
+		poll.unref?.()
+		const done = (async () => {
+			const c = computerConfig(a.id)
+			try {
+				const password = (await readFile(computerKey(a.id), 'utf8')).trim()
+				const r = await swarm.call(a.id, 'backup-restore', {password, snapshot: snapshotId}, 12 * 60 * 60_000)
+				c.lastRestore = {at: now(), ok: true, folder: String(r?.folder ?? '').slice(0, 300)}
+			} catch (e) {
+				c.lastRestore = {at: now(), ok: false, error: e.message}
+			} finally {
+				clearInterval(poll)
+				computerJobs.delete(a.id)
+				config.computers = {...(config.computers ?? {}), [a.id]: {...computerConfig(a.id), lastRestore: c.lastRestore}}
+				await saveConfig().catch(() => {})
+			}
+		})()
+		return {started: true, done}
+	}
+
+	// The store's HTTP side for computers: restic's REST protocol, scoped to the asking computer's own
+	// store, and add-only (only lock files can be removed), so a computer can never delete or rewrite
+	// its backups. Pruning happens here, with the server's own copy of the password.
+	const TYPES = new Set(['data', 'keys', 'locks', 'snapshots', 'index'])
+	const OBJECT = /^[0-9a-f]{64}$/
+	const MAX_OBJECT = 1024 * 1024 * 1024
+	async function handleUpload(req, res, agentId, sub) {
+		const send = (code, body = '', type = 'text/plain') => {
+			res.writeHead(code, {'content-type': type, 'cache-control': 'no-store'})
+			res.end(body)
+		}
+		const repo = await computerRepo(agentId)
+		if (!(await exists(join(repo, 'config')))) return send(404, 'No backup store for this computer yet')
+		const parts = sub.split('/').filter(Boolean)
+		const method = req.method
+		if (parts.length === 0 && method === 'POST') return send(403, 'This store already exists')
+		if (parts.length === 1 && parts[0] === 'config') {
+			if (method === 'HEAD' || method === 'GET') return serveFile(req, res, join(repo, 'config'))
+			return send(403, 'Read-only')
+		}
+		const type = parts[0]
+		if (!TYPES.has(type) || parts.length > 2) return send(404)
+		const folderOf = (name) => (type === 'data' ? join(repo, 'data', name.slice(0, 2)) : join(repo, type))
+		if (parts.length === 1) {
+			if (method !== 'GET') return send(405)
+			const out = []
+			const dirs = type === 'data' ? (await readdir(join(repo, 'data')).catch(() => [])).map((d) => join(repo, 'data', d)) : [join(repo, type)]
+			for (const d of dirs) for (const name of await readdir(d).catch(() => [])) if (OBJECT.test(name)) out.push({name, size: (await stat(join(d, name))).size})
+			const v2 = String(req.headers.accept ?? '').includes('application/vnd.x.restic.rest.v2')
+			return send(200, JSON.stringify(v2 ? out : out.map((o) => o.name)), v2 ? 'application/vnd.x.restic.rest.v2' : 'application/vnd.x.restic.rest.v1')
+		}
+		const name = parts[1]
+		if (!OBJECT.test(name)) return send(404)
+		const file = join(folderOf(name), name)
+		if (method === 'HEAD' || method === 'GET') return serveFile(req, res, file)
+		if (method === 'DELETE') {
+			if (type !== 'locks') return send(403, 'Backups can only be added from a computer')
+			await rm(file, {force: true})
+			return send(200)
+		}
+		if (method !== 'POST') return send(405)
+		if (type !== 'locks' && (await exists(file))) return send(403, 'Already stored')
+		const length = Number(req.headers['content-length'])
+		if (Number.isFinite(length) && length > MAX_OBJECT) return send(413)
+		await mkdir(folderOf(name), {recursive: true, mode: 0o700})
+		const tmp = `${file}.${randomBytes(4).toString('hex')}.tmp`
+		const {createWriteStream} = await import('node:fs')
+		const out = createWriteStream(tmp, {mode: 0o600})
+		let size = 0
+		try {
+			await new Promise((resolve, reject) => {
+				req.on('data', (c) => {
+					size += c.length
+					if (size > MAX_OBJECT) req.destroy(new Error('Too large'))
+				})
+				req.on('error', reject)
+				out.on('error', reject)
+				out.on('finish', resolve)
+				req.pipe(out)
+			})
+			if (type !== 'locks' && (await exists(file))) {
+				await rm(tmp, {force: true})
+				return send(403, 'Already stored')
+			}
+			await rename(tmp, file)
+			return send(200)
+		} catch {
+			await rm(tmp, {force: true})
+			if (!res.headersSent) send(400, 'Upload failed')
+		}
+	}
+	async function serveFile(req, res, file) {
+		const st = await stat(file).catch(() => null)
+		if (!st?.isFile()) {
+			res.writeHead(404, {'content-type': 'text/plain'})
+			return res.end()
+		}
+		const range = /^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range ?? ''))
+		let start = 0
+		let end = st.size - 1
+		if (range) {
+			start = Number(range[1])
+			end = range[2] ? Math.min(Number(range[2]), st.size - 1) : st.size - 1
+			if (start > end || start >= st.size) {
+				res.writeHead(416, {'content-range': `bytes */${st.size}`})
+				return res.end()
+			}
+		}
+		res.writeHead(range ? 206 : 200, {'content-type': 'application/octet-stream', 'content-length': end - start + 1, ...(range ? {'content-range': `bytes ${start}-${end}/${st.size}`} : {})})
+		if (req.method === 'HEAD') return res.end()
+		const {createReadStream} = await import('node:fs')
+		createReadStream(file, {start, end}).pipe(res)
 	}
 
 	// ---- schedule ------------------------------------------------------------------------------
@@ -495,6 +808,16 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	}
 	async function tick() {
 		await ready
+		// Computers: due if a scheduled time has passed since its last good backup (so one that was
+		// off or asleep catches up when it's back), and it hasn't been tried in the last half hour.
+		if (swarm && config.nas && (await hasKey())) {
+			for (const a of await swarm.agents().catch(() => [])) {
+				const c = computerConfig(a.id)
+				if (!c.enabled || !a.on || !a.online || computerJobs.has(a.id)) continue
+				const slot = latestSlot(c.schedule, now())
+				if (slot && c.lastSuccessAt < slot && now() - c.lastAttemptAt > 30 * 60_000) runComputer(a.id, 'scheduled').catch(() => {})
+			}
+		}
 		if (!nextAt || job || now() < nextAt) return
 		plan()
 		await runBackup('scheduled').catch(() => {})
@@ -521,6 +844,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			keep: config.keep,
 			keySaved: !!config.keySaved,
 			running: job,
+			computersRunning: computerJobs.size,
 			nextRunAt: configured ? nextAt : null,
 			history: history.slice(0, 20),
 			engine: engine ? {version: engine.version} : null,
@@ -608,7 +932,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		const opts = cleanOptions(input)
 		let newKey = false
 		try {
-			if (opts.repo && opts.repo !== config.repo && (await hasKey()) && (await exists(join(await repoReal(), 'config')))) throw new RpcError('CONFLICT', 'The backup folder can’t move once backups exist')
+			if (opts.repo && opts.repo !== config.repo && (await hasKey()) && (await exists(join(await serverRepo(), 'config')))) throw new RpcError('CONFLICT', 'The backup folder can’t move once backups exist')
 			Object.assign(config, opts)
 			if (!config.nas) throw new RpcError('BAD_REQUEST', 'Connect a NAS first')
 			await ensureEngine()
@@ -623,7 +947,8 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		} catch (e) {
 			config = before
 			if (newKey) await rm(keyFile, {force: true})
-			throw e
+			if (e instanceof RpcError) throw e
+			throw new RpcError('INTERNAL_SERVER_ERROR', `Couldn’t set up the backup folder (${config.repo}): ${e.message}`)
 		}
 		if (nasPassword !== secrets.nasPassword) {
 			secrets.nasPassword = nasPassword
@@ -648,7 +973,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 
 	async function snapshots() {
 		await ready
-		if (!(await hasKey()) || !(await exists(join(await repoReal(), 'config')))) return []
+		if (!(await hasKey()) || !(await exists(join(await serverRepo(), 'config')))) return []
 		const {stdout} = await restic(['snapshots', '--json'], {timeout: 120_000})
 		const list = JSON.parse(stdout || '[]')
 		return list
@@ -728,7 +1053,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		job = {step: 'Copying the backup from the NAS', progress: 0, startedAt: now()}
 		try {
 			const remote = await remoteFiles(nas, password)
-			if (!remote.has('config')) throw new RpcError('NOT_FOUND', 'There’s no Omarchy Server backup in that folder')
+			if (!remote.has('server/config')) throw new RpcError('NOT_FOUND', 'There’s no Omarchy Server backup in that folder')
 			const r = await smb(nas, password, {lines: [...intoFolder(nas.folder), 'recurse ON', 'prompt OFF', `lcd ${q(real)}`, 'mget *']})
 			if (r.errors.length) throw new RpcError('PRECONDITION_FAILED', smbMessage(r.errors))
 			await writePrivate(keyFile, `${key}\n`)
@@ -762,6 +1087,8 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	return {
 		ready,
 		runBackup,
+		runComputer,
+		handleUpload,
 		mirror,
 		close() {
 			if (timer) clearInterval(timer)
@@ -777,6 +1104,12 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			'backups.runNow': {kind: 'mutation', run: runNow},
 			'backups.restoreApp': {kind: 'mutation', run: restoreApp},
 			'backups.connectExisting': {kind: 'mutation', run: connectExisting},
+			'backups.computers': {kind: 'query', run: computers},
+			'backups.computerFolders': {kind: 'mutation', run: computerFolders},
+			'backups.setComputer': {kind: 'mutation', run: setComputer},
+			'backups.runComputer': {kind: 'mutation', run: async (input) => ({id: (await runComputer(String(input?.id ?? ''), 'manual')).id})},
+			'backups.computerSnapshots': {kind: 'query', run: computerSnapshots},
+			'backups.restoreComputer': {kind: 'mutation', run: async (input) => ({started: (await restoreComputer(input)).started})},
 		},
 	}
 }
