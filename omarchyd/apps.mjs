@@ -1795,6 +1795,17 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			secure.close()
 			for (const id of [...gateways.keys()]) closeGateway(id)
 		},
+		// For backups: installed container apps, where their files are, and whether each is running.
+		async backupTargets() {
+			await ready
+			const live = await liveStates().catch(() => new Map())
+			return state.apps
+				.filter((a) => !a.system && a.state !== 'installing' && a.state !== 'error')
+				.map((a) => ({id: a.id, name: a.name, dir: appDir(a.id), running: (live.get(a.id) ?? a.state) === 'running'}))
+		},
+		// Stop or start an app around a backup or restore (the same path as its Stop and Start buttons).
+		pauseForBackup: (id) => lifecycle(['stop'], 'stopping')({appId: id}),
+		resumeAfterBackup: (id) => lifecycle(['up', '-d'], 'starting')({appId: id}),
 		async usbBindings() {
 			await ready
 			const live = await liveStates().catch(() => new Map())

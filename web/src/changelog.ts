@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.46',
+		date: '2026-11-19',
+		title: 'Backups to your NAS',
+		added: [
+			'Settings › Backups: back up your apps and server settings to a shared folder on your NAS. Pick the NAS, sign in, choose a share, and it’s on.',
+			'Backups run every night (or weekly, at the time you choose). Only what changed is sent, and the last 7 days, 4 weeks and 6 months are kept.',
+			'Everything is encrypted with a recovery key that only you have. Save it somewhere safe, away from the server.',
+			'Restore any app to how it was in an earlier backup, or open your NAS backups on a new server with the recovery key.',
+		],
+	},
+	{
 		version: '0.9.45',
 		date: '2026-11-18',
 		title: 'USB sticks for apps and VMs',

@@ -20,7 +20,7 @@ import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.45'
+export const VERSION = '0.9.46'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -175,6 +175,17 @@ export const ALLOWED = {
 	'machines.backup': 'mutation',
 	'machines.restoreBackup': 'mutation',
 	'machines.deleteBackup': 'mutation',
+	// Backups to a NAS (owner only, checked in omarchyd)
+	'backups.status': 'query',
+	'backups.discover': 'query',
+	'backups.snapshots': 'query',
+	'backups.shares': 'mutation',
+	'backups.configure': 'mutation',
+	'backups.recoveryKey': 'mutation',
+	'backups.keySaved': 'mutation',
+	'backups.runNow': 'mutation',
+	'backups.restoreApp': 'mutation',
+	'backups.connectExisting': 'mutation',
 	'machines.clone': 'mutation',
 	'machines.monitor': 'mutation',
 	// Storage (NAS): drives, pools, sleep
