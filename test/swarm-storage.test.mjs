@@ -37,6 +37,8 @@ test('swarm.storage.status: missing computer is NOT_FOUND, offline is PRECONDITI
 		await assert.rejects(() => c.procedures['swarm.storage.status'].run({id: 'nope'}), /isn’t in your swarm/)
 		await assert.rejects(() => c.procedures['swarm.storage.status'].run({id}), /offline/)
 		await assert.rejects(() => c.procedures['swarm.storage.disks'].run({id}), /offline/)
+		await assert.rejects(() => c.procedures['swarm.storage.format'].run({id, device: '/dev/sdc', filesystem: 'blank'}), /offline/)
+		await assert.rejects(() => c.procedures['swarm.storage.unmount'].run({id, device: '/dev/sdc'}), /offline/)
 	} finally {
 		await rm(dataDir, {recursive: true, force: true})
 	}

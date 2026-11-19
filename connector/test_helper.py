@@ -44,6 +44,8 @@ class Helper(unittest.TestCase):
             self.handle("format", ["/dev/nvme0n1", "blank"], **self.kw)
         with self.assertRaisesRegex(Exception, "Not a drive"):
             self.handle("format", ["../../etc/passwd", "blank"], **self.kw)
+        with self.assertRaisesRegex(Exception, "blank, ext4 or exfat"):
+            self.handle("format", ["/dev/sdc", "ntfs"], **self.kw)
         self.assertFalse(any(x[0] == "wipefs" for x in self.fake.log))
 
     def test_format_blank_then_ext4(self):

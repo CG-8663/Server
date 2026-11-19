@@ -147,7 +147,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'omarchy.plugins': {kind: 'query', run: (input) => themeCall(() => omarchyPlugins.list(input ?? {}))},
 		// Local swarm (connector.mjs): owner only.
 		...Object.fromEntries(
-			['swarm.list', 'swarm.pair', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks'].map((name) => [
+			['swarm.list', 'swarm.pair', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.format'].map((name) => [
 				name,
 				{kind: ['swarm.list', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks'].includes(name) ? 'query' : 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'manage the local swarm'), connector.procedures[name].run(input))},
 			]),

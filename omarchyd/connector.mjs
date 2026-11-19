@@ -390,6 +390,32 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 					}
 				},
 			},
+			'swarm.storage.unmount': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-unmount', {device: String(input?.device ?? '')})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.format': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					const filesystem = String(input?.filesystem ?? '')
+					if (!['blank', 'ext4', 'exfat'].includes(filesystem)) throw new RpcError('BAD_REQUEST', 'Choose blank, ext4 or exfat')
+					try {
+						await call(a.id, 'storage-format', {device: String(input?.device ?? ''), filesystem})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
 			// Before showing a computer's screen: can it, and if not, why (in words, not a socket code).
 			'swarm.desktopCheck': {
 				kind: 'query',

@@ -801,7 +801,25 @@ def storage_disks(_args):
     return json.loads(helper("disks"))
 
 
-STORAGE_ACTIONS = {"storage-status": storage_status, "storage-disks": storage_disks}
+def storage_unmount(args):
+    helper("umount", args["device"])
+    return True
+
+
+def storage_format(args):
+    fs = args.get("filesystem")
+    if fs not in ("blank", "ext4", "exfat"):
+        raise RuntimeError("Choose blank, ext4 or exfat")
+    helper("format", args["device"], fs)
+    return True
+
+
+STORAGE_ACTIONS = {
+    "storage-status": storage_status,
+    "storage-disks": storage_disks,
+    "storage-unmount": storage_unmount,
+    "storage-format": storage_format,
+}
 
 
 # ---------------------------------------------------------------------------------------------
