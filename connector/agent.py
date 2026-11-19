@@ -384,6 +384,7 @@ def _drm_fallback_name(vendor, card):
 
 
 _last_engine = {}
+_last_rc6 = {}
 
 
 def _engine_busy_percent(card, list_dir, read_file, now):
@@ -423,6 +424,30 @@ def _engine_busy_percent(card, list_dir, read_file, now):
     return min(100, max(0, max(ps))) if ps else None
 
 
+def _rc6_busy_percent(card, read_file, now):
+    # i915 without engine busy files: RC6 residency is cumulative idle milliseconds.
+    enable = _num(read_file(f"/sys/class/drm/{card}/gt/gt0/rc6_enable"))
+    raw = read_file(f"/sys/class/drm/{card}/gt/gt0/rc6_residency_ms")
+    if not str(raw or "").strip():
+        enable = enable if enable is not None else _num(read_file(f"/sys/class/drm/{card}/device/power/rc6_enable"))
+        raw = read_file(f"/sys/class/drm/{card}/device/power/rc6_residency_ms")
+    if enable == 0:
+        return None
+    rc6 = _num(raw)
+    if rc6 is None:
+        return None
+    t = now()
+    prev = _last_rc6.get(card)
+    _last_rc6[card] = (t, rc6)
+    if not prev:
+        return None
+    dt_ms = (t - prev[0]) * 1000
+    if dt_ms <= 0:
+        return None
+    idle = (rc6 - prev[1]) / dt_ms * 100
+    return min(100, max(0, 100 - idle))
+
+
 def _drm_gpus(list_dir, read_file, skip_vendors=None, now=time.monotonic):
     skip_vendors = skip_vendors or set()
     try:
@@ -437,6 +462,8 @@ def _drm_gpus(list_dir, read_file, skip_vendors=None, now=time.monotonic):
             continue
         if vendor == _VENDOR_INTEL:
             used = _engine_busy_percent(card, list_dir, read_file, now)
+            if used is None:
+                used = _rc6_busy_percent(card, read_file, now)
         else:
             used = _num(read_file(f"/sys/class/drm/{card}/device/gpu_busy_percent"))
         product = (read_file(f"/sys/class/drm/{card}/device/product_name") or "").strip()

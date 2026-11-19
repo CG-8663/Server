@@ -72,6 +72,7 @@ class Gpus(unittest.TestCase):
     def setUp(self):
         agent._last_nvidia = None
         agent._last_engine = {}
+        agent._last_rc6 = {}
 
     def test_nvidia_csv(self):
         csv = "0, NVIDIA GeForce RTX 3060, GPU-aaa, 32, 1477, 12288, 39\n1, NVIDIA GeForce RTX 3060, GPU-bbb, 0, 2, 12288, 36\n"
@@ -182,6 +183,34 @@ class Gpus(unittest.TestCase):
         self.assertEqual(first[0]["name"], "Intel Graphics")
         self.assertIsNone(first[0]["used"])
         files["/sys/class/drm/card1/engine/rcs0/busy"] = str(int(0.4 * 1e9)) + "\n"
+        clock["t"] = 11.0
+        second = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=read_file, now=lambda: clock["t"])
+        self.assertEqual(second[0]["used"], 40)
+
+    def test_intel_rc6_when_engine_has_no_busy_file(self):
+        # Broadwell i915: engine dirs exist, no busy files, no gpu_busy_percent.
+        # RC6 residency is idle time; GPU use is the wall time not spent in RC6.
+        files = {
+            "/sys/class/drm/card1/device/vendor": "0x8086\n",
+            "/sys/class/drm/card1/gt/gt0/rc6_enable": "1\n",
+            "/sys/class/drm/card1/gt/gt0/rc6_residency_ms": "0\n",
+        }
+        clock = {"t": 10.0}
+
+        def list_dir(path):
+            if path == "/sys/class/drm":
+                return ["card1", "card1-eDP-1"]
+            if path == "/sys/class/drm/card1/engine":
+                return ["rcs0", "bcs0", "vcs0", "vecs0"]
+            return []
+
+        def read_file(path, default=""):
+            return files.get(path, default)
+
+        first = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=read_file, now=lambda: clock["t"])
+        self.assertEqual(first[0]["id"], "drm-card1")
+        self.assertIsNone(first[0]["used"])
+        files["/sys/class/drm/card1/gt/gt0/rc6_residency_ms"] = "600\n"
         clock["t"] = 11.0
         second = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=read_file, now=lambda: clock["t"])
         self.assertEqual(second[0]["used"], 40)

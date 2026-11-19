@@ -46,3 +46,14 @@ test('cleanMetrics: a non-array gpu list is empty, not an error', () => {
 	assert.deepEqual(cleanMetrics({gpus: 'all of them'}).gpus, [])
 	assert.deepEqual(cleanMetrics({batteries: null}).batteries, [])
 })
+
+test('cleanMetrics: unknown GPU use stays null; 0 stays 0', () => {
+	const m = cleanMetrics({
+		gpus: [
+			{id: 'drm-card1', index: 1, name: 'Intel Graphics', used: null},
+			{id: 'GPU-aaa', index: 0, name: 'NVIDIA', used: 0},
+		],
+	})
+	assert.equal(m.gpus[0].used, null)
+	assert.equal(m.gpus[1].used, 0)
+})
