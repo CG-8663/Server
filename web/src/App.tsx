@@ -17,6 +17,7 @@ import {WhatsNewOnUpdate} from './WhatsNew'
 import {LayoutChooser} from './LayoutChooser'
 import {InstallerPrompt} from './InstallerPrompt'
 import {consumeReopenAssistant} from './assistant'
+import {closeAssistantView, openAssistantView, useAssistantTurn} from './assistantTurn'
 import {AssistantLookContext, cleanLook, DEFAULT_LOOK, type AssistantLook} from './character/AssistantCharacter'
 import {AssistantCharacterWidget} from './character/widgets'
 
@@ -132,6 +133,8 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	const [bellOpen, setBellOpen] = useState(false)
 	const [terminal, setTerminal] = useState<{app?: {id: string; name?: string; icon?: string}; input?: string} | null>(null)
 	const [assistantOpen, setAssistantOpen] = useState(() => !!reopenAssistant)
+	const turn = useAssistantTurn()
+	const keepAssistant = assistantOpen || turn.streaming
 	const user = useUser()
 	// omarchyd only gives the owner a shell.
 	const openTerminal = user.data?.role === 'member' ? undefined : (app?: {id: string; name?: string; icon?: string}, input?: string) => {
@@ -217,6 +220,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 									haptic(8)
 									setAppId(null)
 									setAssistantOpen(true)
+									openAssistantView()
 								}}
 							/>
 						)}
@@ -253,15 +257,21 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 					onOpen={() => {
 						setAppId(null)
 						setAssistantOpen(true)
+						openAssistantView()
 					}}
 				/>
 			)}
-			{assistantOpen && (
+			{keepAssistant && (
 				<Suspense fallback={<ScreenFallback />}>
 					<Assistant
-						onClose={() => setAssistantOpen(false)}
+						active={assistantOpen}
+						onClose={() => {
+							closeAssistantView()
+							setAssistantOpen(false)
+						}}
 						onSettings={() => {
 							sessionStorage.setItem('omarchy-server:settings-page', 'assistant')
+							closeAssistantView()
 							setAssistantOpen(false)
 							go('settings')
 						}}

@@ -7,10 +7,30 @@ import {cardAction, markReopenAssistant, streamAssistant, threadItems, type Assi
 import {useUser} from '../data'
 import {Icon} from '../icons'
 import {setAssistantActivity, useAssistantAnimationState} from '../assistantActivity'
+import {liveBubbleMark} from '../assistantLive'
+import {
+	abortAssistantTurn,
+	assistantTurn,
+	beginAssistantTurn,
+	closeAssistantView,
+	finishAssistantTurn,
+	openAssistantView,
+	setTurnActivity,
+	setTurnConversationId,
+	setTurnError,
+	setTurnItems,
+	useAssistantTurn,
+} from '../assistantTurn'
 import {AssistantCharacter, lookName, useAssistantLook} from '../character/AssistantCharacter'
-import {haptic, omarchyBackgroundUrl, useOmarchyThemes, usePortalRoot, useScreenLock, type Prefs} from '../ui'
+import {patchDeskConfig} from '../desktop/config'
+import {haptic, omarchyBackgroundUrl, resetZoom, useOmarchyThemes, usePortalRoot, useScreenLock, type Prefs} from '../ui'
 
 const prettyTool = (name: string) => name.replaceAll('_', ' ')
+
+// Survive unmount: a second send after closing the window must not reuse live-1 while the first
+// turn is still writing, and New session still cancels a send that is looking up the thread id.
+let liveSeq = 0
+let sendGen = 0
 
 async function waitForDesktopTheme(slug: string) {
 	const want = slug.trim().toLowerCase()
@@ -45,6 +65,13 @@ async function renderMarkdown(src: string) {
 	const [{marked}, {default: DOMPurify}] = await Promise.all([import('marked'), import('dompurify')])
 	const html = await marked.parse(src, {gfm: true, breaks: true})
 	return DOMPurify.sanitize(html, {FORBID_TAGS: ['style', 'form', 'input'], USE_PROFILES: {html: true}})
+}
+
+function LiveMark({streaming, content}: {streaming?: boolean; content?: string}) {
+	const mark = liveBubbleMark({streaming, content})
+	if (mark === 'spinner') return <span className="spinner" aria-label="Working" />
+	if (mark === 'ellipsis') return <span className="typing" aria-hidden="true">…</span>
+	return null
 }
 
 function BubbleMarkdown({text}: {text: string}) {
@@ -127,21 +154,30 @@ function ActionCard({
 	onDecide,
 }: {
 	action: AssistantAction
-	onDecide: (actionId: string, path: 'assistant.approve' | 'assistant.reject', extra?: {id?: string}) => void
+	onDecide: (actionId: string, path: 'assistant.approve' | 'assistant.reject', extra?: {id?: string; password?: string}) => void
 }) {
 	const running = action.status === 'running'
 	const pending = action.status === 'pending' || running
 	const status = statusText(action)
 	const wallpaper = action.toolName === 'omarchy_setBackground'
 	const [chosen, setChosen] = useState(action.picker?.selected ?? '')
+	// A new machine's password is typed here and sent only with Approve: the model and the chat never see it.
+	const vm = action.toolName === 'machines_create'
+	const [password, setPassword] = useState('')
 	return (
 		<div className="assistant-card glass" role="group" aria-label={action.title || 'Approval'}>
 			<b>{action.title || 'Approve this step'}</b>
 			{wallpaper ? null : action.detail ? <p>{action.detail}</p> : null}
 			{wallpaper && pending ? <WallpaperPicker action={action} selected={chosen} disabled={running} onChange={setChosen} /> : null}
+			{vm && action.status === 'pending' ? (
+				<label className="field assistant-password">
+					<span>Password for the machine</span>
+					<input type="password" autoComplete="new-password" value={password} maxLength={256} onChange={(e) => setPassword(e.target.value)} />
+				</label>
+			) : null}
 			{pending ? (
 				<div className="assistant-actions">
-					<button type="button" className="btn primary" disabled={running || (wallpaper && !chosen)} onClick={() => onDecide(action.id, 'assistant.approve', wallpaper ? {id: chosen} : undefined)}>
+					<button type="button" className="btn primary" disabled={running || (wallpaper && !chosen) || (vm && !password)} onClick={() => onDecide(action.id, 'assistant.approve', wallpaper ? {id: chosen} : vm ? {password} : undefined)}>
 						Approve
 					</button>
 					<button type="button" className="btn" disabled={running} onClick={() => onDecide(action.id, 'assistant.reject')}>
@@ -155,17 +191,12 @@ function ActionCard({
 	)
 }
 
-export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () => void; onSettings: () => void; prefs?: Prefs; setPrefs?: (p: Prefs) => void}) {
+export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}: {onClose?: () => void; onSettings: () => void; prefs?: Prefs; setPrefs?: (p: Prefs) => void; active?: boolean}) {
 	const portalRoot = usePortalRoot()
 	const screenRef = useRef<HTMLDivElement>(null)
 	const threadRef = useRef<HTMLDivElement>(null)
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 	const stick = useRef(true)
-	const acRef = useRef<AbortController | null>(null)
-	const alive = useRef(true)
-	const conversationIdRef = useRef<string | undefined>(undefined)
-	const seq = useRef(0)
-	const turn = useRef(0)
 	const deciding = useRef(new Set<string>())
 	const decisionAbort = useRef(new Map<string, AbortController>())
 	const followQueued = useRef(false)
@@ -191,12 +222,8 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 		retry: false,
 		staleTime: 0,
 	})
-	const [items, setItems] = useState<AssistantItem[] | null>(null)
-	const itemsRef = useRef<AssistantItem[] | null>(null)
-	itemsRef.current = items
+	const {items, activity, error: turnError, streaming} = useAssistantTurn()
 	const [draft, setDraft] = useState('')
-	const [activity, setActivity] = useState<string | null>(null)
-	const [turnError, setTurnError] = useState<string | null>(null)
 	const [decidingCount, setDecidingCount] = useState(0)
 	const noteDeciding = () => setDecidingCount(deciding.current.size)
 	const {look} = useAssistantLook()
@@ -216,29 +243,20 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 			cardStatus.current.set(c.action.id, c.action.status)
 		}
 		const running = cards.some((c) => c.action.status === 'running')
-		const phase = turnError ? 'error' : running || (live && activity) ? 'working' : live ? (live.kind === 'text' && live.content ? 'responding' : 'thinking') : 'idle'
+		const phase = turnError ? 'error' : running || (live && activity) ? 'working' : live ? (live.kind === 'text' && live.content ? 'responding' : 'thinking') : streaming ? 'thinking' : 'idle'
 		setAssistantActivity({phase, pending: cards.filter((c) => c.action.status === 'pending').length, composing, ...(successAt ? {successAt} : {})})
-	}, [items, activity, turnError, composing])
+	}, [items, activity, turnError, composing, streaming])
 	useEffect(() => {
-		setAssistantActivity({open: true})
-		return () => setAssistantActivity({open: false, composing: false, phase: 'idle'})
+		openAssistantView()
+		return () => closeAssistantView()
 	}, [])
 	const faceState = useAssistantAnimationState({reactions: look.reactions})
 	const name = lookName(look)
 
-	useEffect(() => {
-		alive.current = true
-		return () => {
-			alive.current = false
-			acRef.current?.abort()
-			for (const ac of decisionAbort.current.values()) ac.abort()
-		}
-	}, [])
-
 	// Full screen on a phone: hold the page behind still. Otherwise iOS Safari sends a drag over the
 	// chat to the page underneath (Home, scrolled) instead of the messages. Touches aren't blocked,
 	// so the chat, the message box and the cards still scroll themselves.
-	useScreenLock(screenRef, false, !!onClose)
+	useScreenLock(screenRef, false, !!onClose && active)
 
 	useEffect(() => {
 		if (!onClose) return
@@ -259,36 +277,45 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 		}
 	}, [onClose])
 
+	// Closing the chat while zoomed in would leave the screen behind it zoomed. The chat stays mounted
+	// after it closes (so a reply can finish), so this runs when it stops being the active view.
+	const wasActive = useRef(active)
 	useEffect(() => {
-		if (!onClose) return
+		if (wasActive.current && !active && onClose) resetZoom()
+		wasActive.current = active
+	}, [active, onClose])
+	useEffect(() => () => resetZoom(), [])
+
+	useEffect(() => {
+		if (!onClose || !active) return
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === 'Escape') onClose()
 		}
 		window.addEventListener('keydown', onKey)
 		return () => window.removeEventListener('keydown', onKey)
-	}, [onClose])
+	}, [onClose, active])
 
 	useEffect(() => {
-		if (items !== null || !keys.isSuccess || !hasKeys) return
+		if (items !== null || streaming || !keys.isSuccess || !hasKeys) return
 		if (convs.isError) {
-			setItems([])
+			setTurnItems([])
 			setTurnError((convs.error as Error).message)
 			return
 		}
 		if (!convs.isSuccess) return
 		if (!convs.data.length) {
-			setItems([])
+			setTurnItems([])
 			return
 		}
 		if (thread.isError) {
-			setItems([])
+			setTurnItems([])
 			setTurnError((thread.error as Error).message)
 			return
 		}
 		if (!thread.isSuccess) return
-		conversationIdRef.current = thread.data.id
-		setItems(threadItems(thread.data))
-	}, [items, keys.isSuccess, hasKeys, convs.isError, convs.isSuccess, convs.data, convs.error, thread.isError, thread.isSuccess, thread.data, thread.error])
+		setTurnConversationId(thread.data.id)
+		setTurnItems(threadItems(thread.data))
+	}, [items, streaming, keys.isSuccess, hasKeys, convs.isError, convs.isSuccess, convs.data, convs.error, thread.isError, thread.isSuccess, thread.data, thread.error])
 
 	useEffect(() => {
 		const el = threadRef.current
@@ -312,19 +339,19 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 		let sawAction = false
 		try {
 			await streamAssistant(body, (e) => {
-				if (!alive.current || ac.signal.aborted) return
+				if (ac.signal.aborted) return
 				if (e.event === 'text') {
-					setActivity(null)
-					setItems((bs) => bs?.map((b) => (b.kind === 'text' && b.id === aid ? {...b, content: b.content + e.data.text} : b)) ?? bs)
+					setTurnActivity(null)
+					setTurnItems((bs) => bs?.map((b) => (b.kind === 'text' && b.id === aid ? {...b, content: b.content + e.data.text} : b)) ?? bs)
 				} else if (e.event === 'tool') {
 					const name = prettyTool(e.data.name)
-					setActivity(e.data.state === 'error' ? `Couldn’t check ${name}` : `Checked ${name}`)
+					setTurnActivity(e.data.state === 'error' ? `Couldn’t check ${name}` : `Checked ${name}`)
 				} else if (e.event === 'action') {
 					sawAction = true
 					const action = cardAction(e.data)
 					if (!action.id) return
-					setActivity(null)
-					setItems((bs) => {
+					setTurnActivity(null)
+					setTurnItems((bs) => {
 						if (!bs) return bs
 						const card: AssistantItem = {id: `card-${action.id}`, kind: 'card', action}
 						const idx = bs.findIndex((b) => b.kind === 'card' && b.action.id === action.id)
@@ -338,7 +365,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 						return [...bs, card]
 					})
 				} else if (e.event === 'done') {
-					conversationIdRef.current = e.data.conversationId
+					setTurnConversationId(e.data.conversationId)
 				} else if (e.event === 'error') {
 					failed = true
 					setTurnError(e.data.message)
@@ -351,8 +378,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 				setTurnError(err instanceof Error ? err.message : 'The assistant did not answer')
 			}
 		} finally {
-			if (!alive.current) return
-			setItems((bs) => {
+			setTurnItems((bs) => {
 				if (!bs) return bs
 				return bs.flatMap((b) => {
 					if (b.kind !== 'text' || b.id !== aid) return [b]
@@ -360,18 +386,16 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 					return [{...b, streaming: false}]
 				})
 			})
-			if (acRef.current === ac) setActivity(null)
+			finishAssistantTurn(ac)
 		}
 	}
 
 	const newSession = () => {
 		haptic(6)
-		acRef.current?.abort()
-		acRef.current = null
-		turn.current++
-		conversationIdRef.current = undefined
-		setItems([])
-		setActivity(null)
+		abortAssistantTurn()
+		sendGen++
+		setTurnConversationId(undefined)
+		setTurnItems([])
 		setTurnError(null)
 		setDraft('')
 		if (inputRef.current) inputRef.current.style.height = 'auto'
@@ -380,82 +404,81 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 	const send = async () => {
 		const text = draft.trim()
 		if (!text || items === null || deciding.current.size > 0) return
-		const token = ++turn.current
-		const previous = acRef.current
-		previous?.abort()
-		let conversationId = conversationIdRef.current
+		const token = ++sendGen
+		const hadTurn = assistantTurn().streaming
+		let conversationId = assistantTurn().conversationId
 		// The id arrives on `done`. A second send before that stays on the thread just created.
-		if (previous && !conversationId) {
+		if (hadTurn && !conversationId) {
 			const list = await query<AssistantConversationSummary[]>('assistant.conversations').catch(() => null)
 			const found = list?.[0]?.id
 			if (found) {
 				conversationId = found
-				conversationIdRef.current = found
+				setTurnConversationId(found)
 			}
 		}
-		if (turn.current !== token || !alive.current || deciding.current.size > 0) return
+		if (sendGen !== token || deciding.current.size > 0) return
 		const ac = new AbortController()
-		acRef.current = ac
-		const id = ++seq.current
+		beginAssistantTurn(ac)
+		const id = ++liveSeq
 		const aid = `live-${id}`
 		setDraft('')
 		if (inputRef.current) inputRef.current.style.height = 'auto'
 		setTurnError(null)
-		setActivity(null)
+		setTurnActivity(null)
 		stick.current = true
-		setItems((bs) => [...(bs ?? []), {id: `user-${id}`, kind: 'text', role: 'user', content: text}, {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
+		setTurnItems((bs) => [...(bs ?? []), {id: `user-${id}`, kind: 'text', role: 'user', content: text}, {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
 		await runStream(conversationId ? {conversationId, message: text} : {message: text}, ac, aid)
 	}
 
 	const pumpFollow = async () => {
-		if (pumping.current || deciding.current.size > 0 || !followQueued.current || !alive.current) return
+		if (pumping.current || deciding.current.size > 0 || !followQueued.current) return
 		pumping.current = true
 		followQueued.current = false
-		const conversationId = conversationIdRef.current
-		acRef.current?.abort()
+		const conversationId = assistantTurn().conversationId
 		const ac = new AbortController()
-		acRef.current = ac
-		const id = ++seq.current
+		beginAssistantTurn(ac)
+		const id = ++liveSeq
 		const aid = `live-${id}`
 		stick.current = true
 		setTurnError(null)
-		setActivity(null)
-		if (conversationId) setItems((bs) => [...(bs ?? []), {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
+		setTurnActivity(null)
+		if (conversationId) setTurnItems((bs) => [...(bs ?? []), {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
 		try {
 			if (conversationId) await runStream({conversationId, continue: true}, ac, aid)
+			else finishAssistantTurn(ac)
 		} finally {
 			pumping.current = false
-			if (followQueued.current && deciding.current.size === 0 && alive.current) void pumpFollow()
+			if (followQueued.current && deciding.current.size === 0) void pumpFollow()
 		}
 	}
 
-	const decide = async (actionId: string, path: 'assistant.approve' | 'assistant.reject', extra?: {id?: string}) => {
+	const decide = async (actionId: string, path: 'assistant.approve' | 'assistant.reject', extra?: {id?: string; password?: string}) => {
 		if (deciding.current.has(actionId)) return
-		const conversationId = conversationIdRef.current
+		const conversationId = assistantTurn().conversationId
 		if (!conversationId) {
 			setTurnError('That chat isn’t here')
 			return
 		}
-		const cur = itemsRef.current?.find((b) => b.kind === 'card' && b.action.id === actionId)
+		const cur = assistantTurn().items?.find((b) => b.kind === 'card' && b.action.id === actionId)
 		if (!cur || cur.kind !== 'card' || cur.action.status !== 'pending') return
 		const own = new AbortController()
 		decisionAbort.current.set(actionId, own)
 		deciding.current.add(actionId)
 		noteDeciding()
 		// Drop a send that is still resolving the thread id. The follow-up does not use this token.
-		++turn.current
-		acRef.current?.abort()
+		sendGen++
+		abortAssistantTurn()
 		haptic(6)
 		setTurnError(null)
-		setActivity(null)
-		setItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: {...b.action, status: 'running'}} : b)) ?? bs)
+		setTurnActivity(null)
+		setTurnItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: {...b.action, status: 'running'}} : b)) ?? bs)
 		let follow = false
 		let reloadTheme: string | null = null
 		let reloadAfterRestart = false
 		try {
-			const updated = await mutate<AssistantAction>(path, extra?.id ? {actionId, id: extra.id} : {actionId})
-			if (!alive.current || own.signal.aborted) return
-			setItems((bs) =>
+			const updated = await mutate<AssistantAction>(path, {actionId, ...(extra?.id ? {id: extra.id} : {}), ...(extra?.password ? {password: extra.password} : {})})
+			if (own.signal.aborted) return
+			setTurnItems((bs) =>
 				bs?.map((b) => {
 					if (b.kind !== 'card' || b.action.id !== actionId) return b
 					const extra = updated && typeof updated === 'object' && !Array.isArray(updated) ? updated : {}
@@ -467,6 +490,11 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 			const ok = !status || status === 'done'
 			if (path === 'assistant.approve' && ok && cur.action.toolName === 'omarchy_setTheme') reloadTheme = cur.action.detail || ''
 			if (path === 'assistant.approve' && ok && cur.action.toolName === 'system_restart') reloadAfterRestart = true
+			if (path === 'assistant.approve' && ok && cur.action.toolName === 'desktop_setLayout') {
+				const label = String((updated && typeof updated === 'object' && 'detail' in updated ? updated.detail : cur.action.detail) ?? '').toLowerCase()
+				if (label.includes('hyprland')) patchDeskConfig({shell: 'hyprland'})
+				else if (label.includes('ubuntu')) patchDeskConfig({shell: 'gnome'})
+			}
 			if (path === 'assistant.approve' && ok && cur.action.toolName === 'omarchy_setBackground' && extra?.id && setPrefs && prefs) {
 				setPrefs({
 					...prefs,
@@ -479,25 +507,25 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 				if (theme) reloadTheme = theme
 			}
 		} catch (err) {
-			if (!alive.current || own.signal.aborted) return
+			if (own.signal.aborted) return
 			if (err instanceof ApiError) {
-				setItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: cardAction({...b.action, id: actionId, status: 'error', error: err.message})} : b)) ?? bs)
+				setTurnItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: cardAction({...b.action, id: actionId, status: 'error', error: err.message})} : b)) ?? bs)
 			} else {
-				setItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId && b.action.status === 'running' ? {...b, action: {...b.action, status: 'pending'}} : b)) ?? bs)
+				setTurnItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId && b.action.status === 'running' ? {...b, action: {...b.action, status: 'pending'}} : b)) ?? bs)
 				setTurnError(err instanceof Error ? err.message : 'That step didn’t finish')
 			}
 		} finally {
 			deciding.current.delete(actionId)
 			decisionAbort.current.delete(actionId)
-			if (alive.current) noteDeciding()
+			noteDeciding()
 			if (follow) followQueued.current = true
-			if (followQueued.current && deciding.current.size === 0 && alive.current) {
+			if (followQueued.current && deciding.current.size === 0) {
 				if (reloadAfterRestart) {
 					markReopenAssistant()
-					setActivity('Waiting for the server to come back…')
+					setTurnActivity('Waiting for the server to come back…')
 					void (async () => {
 						await waitForServer()
-						if (alive.current) location.reload()
+						location.reload()
 					})()
 				} else if (reloadTheme != null) {
 					markReopenAssistant()
@@ -505,9 +533,8 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 						try {
 							await pumpFollow()
 						} finally {
-							if (!alive.current) return
 							await waitForDesktopTheme(reloadTheme)
-							if (alive.current) location.reload()
+							location.reload()
 						}
 					})()
 				} else {
@@ -590,7 +617,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 											<AssistantCharacter id={look.character} state={b.streaming ? faceState : 'idle'} size={28} animate={look.animate && !!b.streaming} intensity={look.intensity} />
 											<div className={`bubble ${b.role}${b.streaming ? ' live' : ''}`}>
 												<BubbleMarkdown text={b.content} />
-												{b.streaming && <span className="cursor" aria-hidden="true" />}
+												<LiveMark streaming={b.streaming} content={b.content} />
 											</div>
 										</div>
 									) : (
@@ -647,7 +674,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs}: {onClose?: () 
 	)
 	if (!onClose) return column
 	return createPortal(
-		<div ref={screenRef} className="assistant-screen">
+		<div ref={screenRef} className="assistant-screen" hidden={!active} aria-hidden={!active}>
 			{column}
 		</div>,
 		portalRoot,

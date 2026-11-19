@@ -1,13 +1,21 @@
 import {callMcpTool, forgetMcpTools, listMcpTools} from './mcp.mjs'
-import {streamChat} from './providers.mjs'
-import {filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
+import {streamAnthropic} from './anthropic.mjs'
+import {apiOf, effortOf} from './keys.mjs'
+import {chatOrResponses, streamResponses, withToolFallback} from './providers.mjs'
+import {backoffMs, retryableStreamError, retryingFetch, sleepFor} from './retry.mjs'
+import {needsSummary, pickCut, summaryNote, summaryOf, unsummarized, writeSummary} from './summary.mjs'
+import {appearanceCatalog, coerceDeskShell, filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
-export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
+export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Ubuntu vs Hyprland layout on this server: desktop_setLayout. App chrome (Appearance, glass): appearance_list. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
 
 const LIMIT = 'I hit the lookup limit for this turn.'
 const KEY_REJECTED = 'That API key was rejected. Replace it in Settings → Assistant.'
 const MAX_CALLS = 16
 const MAX_MESSAGES = 40
+// Fresh requests after the provider reports itself busy mid-stream, before any of the answer arrived.
+const STREAM_RETRIES = 2
+// After a summary fails, wait for this many more messages before trying again.
+const SUMMARY_RETRY_AFTER = 10
 
 const textOf = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
 
@@ -91,7 +99,7 @@ function cardFor(name, args) {
 		if (a.memoryGb != null && a.memoryGb !== '') bits.push(`${a.memoryGb} GB memory`)
 		if (a.diskSizeGb != null && a.diskSizeGb !== '') bits.push(`${a.diskSizeGb} GB disk`)
 		if (a.username) bits.push(`user ${a.username}`)
-		bits.push('Password will be set when you approve')
+		bits.push('You type its password when you approve')
 		return {title: vm ? `Create VM “${vm}”` : 'Create a virtual machine', detail: bits.join(' · ')}
 	}
 	const id = String(a.id ?? '').trim()
@@ -106,6 +114,11 @@ function cardFor(name, args) {
 		return {title: labels[a.name] || 'Swarm action', detail: [a.id, a.name, a.pluginId, a.theme].filter((v) => v != null && v !== '').map(String).join(' · ')}
 	}
 	if (name === 'swarm_rename') return {title: a.name ? `Rename swarm computer to ${a.name}` : 'Rename a swarm computer', detail: [a.id, a.name].filter(Boolean).join(' · ')}
+	if (name === 'desktop_setLayout') {
+		const shell = coerceDeskShell(a.shell)
+		const label = shell === 'hyprland' ? 'Hyprland' : shell === 'gnome' ? 'Ubuntu' : 'desktop'
+		return {title: `Switch to ${label} layout`, detail: label}
+	}
 	if (name === 'omarchy_setTheme') return {title: a.slug ? `Set theme ${a.slug}` : 'Set the Omarchy theme', detail: String(a.slug ?? '')}
 	if (name === 'omarchy_setBackground') {
 		const theme = String(a.theme ?? '').trim()
@@ -209,8 +222,10 @@ function watchAbort(signal, pending) {
 	})
 }
 
-export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now = () => Date.now()}) {
+export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now = () => Date.now(), sleep = sleepFor}) {
 	const stamp = () => now()
+	// Provider requests wait and try again when the provider is busy; MCP and lookups do not go through this.
+	const providerFetch = retryingFetch(fetchImpl ?? fetch, {sleep})
 
 	async function grab(name, auth, input = {}) {
 		if (!runProcedure) return null
@@ -305,6 +320,11 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			name = 'omarchy_setBackground'
 			args = {theme: slug, ...(BACKGROUND_ID.test(String(args.id ?? '')) ? {id: String(args.id)} : {})}
 		}
+		if (name === 'desktop_setLayout') {
+			const shell = coerceDeskShell(args.shell)
+			if (!shell) return {content: 'Use gnome (Ubuntu) or hyprland', state: 'error'}
+			args = {shell}
+		}
 		const spec = writeTool(name)
 		if (!spec || (spec.ownerOnly && auth.role !== 'owner')) return {content: 'unknown tool', state: 'done'}
 		if (name === 'omarchy_setBackground') {
@@ -376,6 +396,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		}
 		try {
 			if (signal?.aborted) throw abortError()
+			if (read.name === 'appearance_list') return {content: textOf(appearanceCatalog()), state: 'done'}
 			if (!runProcedure) return {content: 'tool failed', state: 'error'}
 			const pending = read.name === 'appStore_search' ? runProcedure('appStore.registry', {}, auth, signal) : runProcedure(read.rpc, args, auth, signal)
 			const raw = await watchAbort(signal, pending)
@@ -386,6 +407,34 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			if (signal?.aborted || e?.name === 'AbortError') throw e?.name === 'AbortError' ? e : abortError()
 			return {content: e?.message || 'tool failed', state: 'error'}
 		}
+	}
+
+	// Once a chat is long, have the model summarize its older part, so later turns send the summary and
+	// the recent messages rather than silently losing the start. A failed summary changes nothing.
+	// Chats whose summary just failed, by how many messages they had then: don't ask again every turn.
+	const summaryFailed = new Map()
+	async function summarizeIfLong(row, key, userId, signal) {
+		if (!needsSummary(row)) return row
+		if (row.messages.length - (summaryFailed.get(row.id) ?? -Infinity) < SUMMARY_RETRY_AFTER) return row
+		const from = summaryOf(row)?.upTo ?? 0
+		const cut = pickCut(row.messages, from)
+		if (cut < 0) return row
+		const openAiStyle = apiOf(key) === 'responses' ? streamResponses : chatOrResponses
+		const base = key.provider === 'anthropic' ? streamAnthropic : openAiStyle
+		const stream = (opts) => base({baseUrl: key.baseUrl, apiKey: key.apiKey, model: key.model, fetchImpl: providerFetch, ...opts})
+		let text = null
+		try {
+			text = await writeSummary({stream, previous: summaryOf(row)?.text, messages: row.messages.slice(from, cut), actions: row.actions, signal})
+		} catch (e) {
+			if (signal?.aborted || e?.name === 'AbortError') return row
+		}
+		if (signal?.aborted) return row
+		if (!text) {
+			summaryFailed.set(row.id, row.messages.length)
+			return row
+		}
+		summaryFailed.delete(row.id)
+		return conversations.setSummary(userId, row.id, {text, upTo: cut})
 	}
 
 	async function runTurn({userId, role, message, conversationId, keyId, signal, emit, continue: resume}) {
@@ -415,7 +464,10 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			}
 			const auth = {userId, role}
 			if (!resume) row = await conversations.append(userId, row.id, {role: 'user', content: String(message ?? ''), at: stamp()})
-			const system = await facts(role, auth)
+			row = await summarizeIfLong(row, key, userId, signal)
+			if (signal?.aborted) return finish(row.id)
+			const summary = summaryOf(row)
+			const system = summary ? `${await facts(role, auth)}\n\n${summaryNote(summary.text)}` : await facts(role, auth)
 			let catalog = []
 			try {
 				catalog = await mcpCatalog(signal)
@@ -442,22 +494,37 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				if (text) row = await conversations.append(userId, row.id, {role: 'assistant', content: text, at: stamp()})
 			}
 
+			// Anthropic thinking from this run of the tool loop, by the tool call it led to. Kept in memory
+			// only: it is valid to send back within this run, never after the history changes.
+			const thinkingByCall = new Map()
+			let streamRetries = 0
 			for (;;) {
 				if (signal?.aborted) return finish(row.id)
-				const history = providerHistory(row.messages, row.actions)
+				const history = providerHistory(unsummarized(row), row.actions)
+				if (key.provider === 'anthropic') {
+					for (const m of history) {
+						const blocks = m.role === 'assistant' && m.tool_calls?.length ? thinkingByCall.get(m.tool_calls[0].id) : null
+						if (blocks) m.thinking = blocks
+					}
+				}
 				const note = pendingNote(row.actions)
 				const messages = [{role: 'system', content: note ? `${system}\n\n${note}` : system}, ...history]
 				let text = ''
 				const toolCalls = []
+				const thinking = []
 				let providerError = null
 				try {
-					for await (const ev of streamChat({
+					// OpenAI-style endpoints fall back to tools-as-text when a model can't take native tools.
+					const openAiStyle = apiOf(key) === 'responses' ? streamResponses : chatOrResponses
+					const stream = key.provider === 'anthropic' ? streamAnthropic : (opts) => withToolFallback(openAiStyle, opts)
+					for await (const ev of stream({
 						baseUrl: key.baseUrl,
 						apiKey: key.apiKey,
 						model: key.model,
+						effort: effortOf(key),
 						messages,
 						tools,
-						fetchImpl,
+						fetchImpl: providerFetch,
 						signal,
 					})) {
 						if (signal?.aborted) break
@@ -465,6 +532,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 							text += ev.text
 							say('text', {text: ev.text})
 						} else if (ev.type === 'tool') toolCalls.push(ev)
+						else if (ev.type === 'thinking') thinking.push(ev.block)
 						else if (ev.type === 'error') {
 							providerError = ev
 							break
@@ -480,8 +548,17 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 					await stopped(text)
 					return finish(row.id)
 				}
+				if (providerError && retryableStreamError(providerError) && !text && !toolCalls.length && streamRetries < STREAM_RETRIES) {
+					try {
+						await sleep(backoffMs(streamRetries++), signal)
+					} catch {
+						return finish(row.id)
+					}
+					continue
+				}
 				if (providerError) {
 					await stopped(text)
+					if (providerError.status === 401) await keys.recordCheck?.(key.id, {ok: false, status: 'rejected', message: 'The provider rejected this key'}).catch(() => {})
 					say('error', {message: providerError.status === 401 ? KEY_REJECTED : (providerError.message || 'The assistant did not answer')})
 					return finish(row.id)
 				}
@@ -498,6 +575,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 					}
 				}
 				const batch = toolCalls.slice(0, end)
+				if (thinking.length) thinkingByCall.set(batch[0].id, thinking)
 				row = await conversations.append(userId, row.id, {
 					role: 'assistant',
 					content: text,

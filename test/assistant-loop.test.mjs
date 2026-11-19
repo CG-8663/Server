@@ -9,7 +9,7 @@ import {createAssistant} from '../omarchyd/assistant.mjs'
 import {createConversations} from '../omarchyd/assistant/conversations.mjs'
 import {SYSTEM_PROMPT} from '../omarchyd/assistant/loop.mjs'
 import {streamChat} from '../omarchyd/assistant/providers.mjs'
-import {READ_TOOLS, WRITE_TOOLS, filterAppStore, toolsFor} from '../omarchyd/assistant/tools.mjs'
+import {READ_TOOLS, WRITE_TOOLS, appearanceCatalog, coerceDeskShell, filterAppStore, toolsFor} from '../omarchyd/assistant/tools.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 import {ALLOWED} from '../server/app.mjs'
 
@@ -159,7 +159,7 @@ function scripted(responses) {
 async function withAssistant(opts) {
 	const dataDir = await mkdtemp(join(os.tmpdir(), 'al-'))
 	const asst = createAssistant({dataDir, accounts: fakeAccounts(), now: () => 50, ...opts})
-	const key = await asst.keys.add('owner', {name: 'k', provider: 'spacexai', apiKey: SECRET, model: 'grok-4.7'})
+	const key = await asst.keys.add({userId: 'owner', role: 'owner'}, {name: 'k', provider: 'spacexai', apiKey: SECRET, model: 'grok-4.7'})
 	return {
 		dataDir,
 		asst,
@@ -208,6 +208,7 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 		'swarm_list',
 		'omarchy_plugins',
 		'omarchy_listBackgrounds',
+		'appearance_list',
 		'notifications_get',
 	])
 	assert.deepEqual(READ_TOOLS.find((t) => t.name === 'system_diskUsage'), {
@@ -234,6 +235,20 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 	assert.match(SYSTEM_PROMPT, /omarchy_setBackground/)
 	assert.match(SYSTEM_PROMPT, /wallpaper/i)
 	assert.match(SYSTEM_PROMPT, /only omarchy_setBackground|not also call omarchy_setTheme|Do not call both/i)
+	assert.match(SYSTEM_PROMPT, /appearance_list/)
+	assert.match(SYSTEM_PROMPT, /desktop_setLayout/)
+	assert.match(SYSTEM_PROMPT, /glass|Appearance/i)
+	assert.equal(READ_TOOLS.find((t) => t.name === 'appearance_list').ownerOnly, false)
+	assert.match(READ_TOOLS.find((t) => t.name === 'appearance_list').description, /Appearance|glass/i)
+	assert.equal(toolsFor('member').some((t) => t.name === 'appearance_list'), true)
+	const layout = WRITE_TOOLS.find((t) => t.name === 'desktop_setLayout')
+	assert.equal(layout.ownerOnly, false)
+	assert.deepEqual(layout.parameters.properties.shell.enum, ['gnome', 'hyprland'])
+	assert.match(layout.description, /Ubuntu|Hyprland/)
+	assert.match(layout.description, /rounded|square|tiling|floating/i)
+	assert.match(layout.description, /not a swarm/i)
+	assert.equal(toolsFor('member').some((t) => t.name === 'desktop_setLayout'), true)
+	assert.match(WRITE_TOOLS.find((t) => t.name === 'swarm_action').description, /swarm computer|another computer|not this/i)
 	assert.match(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').description, /wallpaper|background/i)
 	assert.match(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').description, /theme/i)
 	assert.equal(toolsFor('member').some((t) => t.name === 'swarm_list'), false)
@@ -260,6 +275,80 @@ test('appStore_search keeps a short listing, not the registry dump', () => {
 	assert.equal(filterAppStore(registry, {limit: 100}).length, 24)
 	assert.deepEqual(filterAppStore(registry, {q: 'app 4', category: 'files'}).map((a) => a.id), ['a4'])
 	assert.equal(JSON.stringify(defaults).includes('secret-compose'), false)
+})
+
+test('appearance_list names where to change glass and lists the theme cards', () => {
+	const cat = appearanceCatalog()
+	assert.match(cat.appearance.where, /Settings → Appearance/)
+	assert.equal(cat.themes.find((t) => t.id === 'omarchy').name, 'Omarchy')
+	assert.match(cat.themes.find((t) => t.id === 'omarchy').look, /square|solid|no blur/i)
+	for (const id of ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte']) {
+		assert.match(cat.themes.find((t) => t.id === id).look, /round|glass/i, id)
+	}
+	assert.equal(cat.themes.find((t) => t.id === 'custom').name, 'Your photo')
+	assert.match(cat.panelStyle.where, /Personalize → Panel style/)
+	assert.deepEqual(cat.panelStyle.styles.map((s) => s.id), ['yaru', 'glass', 'graphite', 'daylight'])
+	assert.match(cat.panelStyle.styles.find((s) => s.id === 'glass').note, /frost|see-through|blur/i)
+	assert.match(cat.layout.where, /Personalize → Layout/)
+	assert.match(cat.layout.note, /Ubuntu|floating|rounded/i)
+	assert.match(cat.layout.note, /Hyprland|tiling|square/i)
+	assert.deepEqual(cat.layout.options.map((o) => o.id), ['gnome', 'hyprland'])
+})
+
+test('layout aliases map to Ubuntu or Hyprland', () => {
+	assert.equal(coerceDeskShell('ubuntu'), 'gnome')
+	assert.equal(coerceDeskShell('rounded'), 'gnome')
+	assert.equal(coerceDeskShell('floating'), 'gnome')
+	assert.equal(coerceDeskShell('hyprland'), 'hyprland')
+	assert.equal(coerceDeskShell('square'), 'hyprland')
+	assert.equal(coerceDeskShell('tiling'), 'hyprland')
+	assert.equal(coerceDeskShell('glass'), null)
+	assert.equal(coerceDeskShell('rounded corners'), 'gnome')
+	assert.equal(coerceDeskShell('round corners'), 'gnome')
+	assert.equal(coerceDeskShell('floating windows'), 'gnome')
+	assert.equal(coerceDeskShell('Ubuntu layout'), 'gnome')
+	assert.equal(coerceDeskShell('square corners'), 'hyprland')
+	assert.equal(coerceDeskShell('tiling wm'), 'hyprland')
+	assert.equal(coerceDeskShell('Hyprland layout'), 'hyprland')
+})
+
+test('desktop_setLayout is an Approve on this server, not a swarm theme RPC', async () => {
+	const {calls, runProcedure} = factsProcedure()
+	const {seen, fetchImpl} = scripted([toolSse('call_lay', 'desktop_setLayout', JSON.stringify({shell: 'rounded'}))])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'switch to rounded corners', emit: (e) => events.push(e)})
+		const action = events.find((e) => e.event === 'action')?.data
+		assert.equal(action?.toolName, 'desktop_setLayout')
+		assert.match(action.title, /Ubuntu/i)
+		assert.equal(action.rpc?.input?.shell, 'gnome')
+		assert.equal(calls.some((c) => c.name === 'swarm.action' || c.name === 'omarchy.setTheme'), false)
+		const before = calls.length
+		const done = await box.asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}})
+		assert.equal(done.status, 'done')
+		assert.equal(done.rpc?.input?.shell, 'gnome')
+		assert.equal(calls.length, before, 'Approve does not call omarchyd or swarm')
+		assert.equal(seen.filter((s) => s.url.includes('/chat/completions')).length, 1)
+	} finally {
+		await box.close()
+	}
+})
+
+test('appearance_list runs without an omarchyd RPC', async () => {
+	const {calls, runProcedure} = factsProcedure(async () => null)
+	const {seen, fetchImpl} = scripted([toolSse('call_a', 'appearance_list', '{}'), textSse('Settings → Appearance')])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'rounded corners', emit: () => {}})
+		assert.equal(calls.some((c) => c.name === 'appearance.list' || c.name === 'appearance_list'), false)
+		const tool = seen[1].body.messages.find((m) => m.role === 'tool')
+		const cat = JSON.parse(tool.content)
+		assert.match(cat.appearance.where, /Settings → Appearance/)
+		assert.equal(cat.themes.some((t) => t.id === 'omarchy'), true)
+	} finally {
+		await box.close()
+	}
 })
 
 test('runTurn runs a read tool then streams the reply', async () => {
@@ -475,9 +564,9 @@ test('sixteen lookups stop the turn', async () => {
 	}
 })
 
-test('the prompt keeps the last 40 messages and a new chat title is the first line', async () => {
+test('a long chat sends a summary and the latest messages; a new chat title is the first line', async () => {
 	const {runProcedure} = factsProcedure()
-	const {seen, fetchImpl} = scripted([textSse('ok'), textSse('ok')])
+	const {seen, fetchImpl} = scripted([textSse('ok'), textSse('They said old-0 to old-25.'), textSse('ok')])
 	const box = await withAssistant({runProcedure, fetchImpl})
 	try {
 		const long = `${'N'.repeat(60)}\nsecond line`
@@ -486,10 +575,12 @@ test('the prompt keeps the last 40 messages and a new chat title is the first li
 		assert.equal(conv.title, 'N'.repeat(48))
 		for (let i = 0; i < 45; i++) await box.asst.conversations.append('owner', conv.id, {role: 'user', content: `old-${i}`, at: i})
 		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'new-one', conversationId: conv.id, emit: () => {}})
-		const body = seen[1].body
+		assert.match(seen[1].body.messages[1].content, /Person: old-0\b/)
+		const body = seen[2].body
+		assert.match(body.messages[0].content, /They said old-0 to old-25\./)
 		const users = body.messages.filter((m) => m.role === 'user').map((m) => m.content)
-		assert.equal(body.messages.filter((m) => m.role !== 'system').length, 40)
-		assert.equal(users[0], 'old-6')
+		assert.equal(body.messages.filter((m) => m.role !== 'system').length, 20)
+		assert.equal(users[0], 'old-26')
 		assert.equal(users.at(-1), 'new-one')
 		assert.equal(users.includes('old-0'), false)
 		assert.equal((await box.asst.conversations.get('owner', conv.id)).title, 'N'.repeat(48))
@@ -697,6 +788,7 @@ test('omarchyd streams a turn as server-sent events', async () => {
 
 function streamPair(body) {
 	const chunks = []
+	const close = []
 	const req = {
 		socket: {on() {}, off() {}, setNoDelay() {}},
 		async *[Symbol.asyncIterator]() {
@@ -714,7 +806,12 @@ function streamPair(body) {
 		end() {
 			this.writableEnded = true
 		},
-		on() {},
+		on(ev, fn) {
+			if (ev === 'close') close.push(fn)
+		},
+		hangup() {
+			for (const fn of close) fn()
+		},
 		chunks,
 	}
 	return {req, res, chunks}
@@ -770,7 +867,7 @@ test('a user message while a write is pending keeps a valid tool list', async ()
 		assert.equal(saved.actions[0].status, 'pending')
 		assert.equal(saved.messages.some((m) => m.role === 'tool'), false)
 		assert.equal(calls.some((c) => c.name === 'machines.create'), false)
-		await box.asst.procedures['assistant.approve'].run({actionId: saved.actions[0].id}, {auth: {userId: 'owner'}})
+		await box.asst.procedures['assistant.approve'].run({actionId: saved.actions[0].id, password: 'pick-one'}, {auth: {userId: 'owner'}})
 		assert.equal(calls.filter((c) => c.name === 'machines.create').length, 1)
 		assert.equal((await box.asst.conversations.get('owner', out.conversationId)).actions[0].status, 'done')
 		await box.asst.runTurn({userId: 'owner', role: 'owner', conversationId: out.conversationId, continue: true, emit: () => {}})
@@ -810,7 +907,7 @@ test('overlapping Approves run the RPC once', async () => {
 		const events = []
 		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'add ubuntu vm', emit: (e) => events.push(e)})
 		const id = events.find((e) => e.event === 'action').data.id
-		const approve = () => box.asst.procedures['assistant.approve'].run({actionId: id}, {auth: {userId: 'owner'}})
+		const approve = () => box.asst.procedures['assistant.approve'].run({actionId: id, password: 'pick-one'}, {auth: {userId: 'owner'}})
 		const first = approve()
 		const second = approve()
 		const settled = Promise.allSettled([first, second])
@@ -852,8 +949,8 @@ test('a write tool becomes pending and Approve runs the RPC once', async () => {
 		assert.equal(actionEv.data.status, 'pending')
 		assert.equal(actionEv.data.kind, 'rpc')
 		assert.equal(actionEv.data.toolName, 'machines_create')
-		assert.match(actionEv.data.detail, /Password will be set when you approve/)
-		assert.equal(JSON.stringify(actionEv.data).includes('password'), false)
+		assert.match(actionEv.data.detail, /You type its password when you approve/)
+		assert.equal(JSON.stringify(actionEv.data).includes('"password"'), false)
 		assert.equal(events.at(-1).event, 'done')
 		assert.equal(calls.some((c) => c.name === 'machines.create'), false)
 		assert.equal(seen.length, 1)
@@ -861,7 +958,11 @@ test('a write tool becomes pending and Approve runs the RPC once', async () => {
 		assert.equal(schema.function.parameters.properties.password, undefined)
 		assert.equal(seen[0].body.tools.some((t) => t.function.name === 'swarm_action'), true)
 		const providerCalls = seen.length
-		await box.asst.procedures['assistant.approve'].run({actionId: actionEv.data.id}, {auth: {userId: 'owner'}})
+		// Approve needs the password typed on the card; without it nothing runs and the step stays open.
+		await assert.rejects(box.asst.procedures['assistant.approve'].run({actionId: actionEv.data.id}, {auth: {userId: 'owner'}}), /Enter a password for the machine/)
+		assert.equal(calls.some((c) => c.name === 'machines.create'), false)
+		assert.equal((await box.asst.conversations.get('owner', out.conversationId)).actions[0].status, 'pending')
+		await box.asst.procedures['assistant.approve'].run({actionId: actionEv.data.id, password: 'Typed-on-the-card 9'}, {auth: {userId: 'owner'}})
 		assert.equal(seen.length, providerCalls, 'Approve runs the RPC without calling the model')
 		const created = calls.filter((c) => c.name === 'machines.create')
 		assert.equal(created.length, 1)
@@ -871,8 +972,7 @@ test('a write tool becomes pending and Approve runs the RPC once', async () => {
 		assert.equal(created[0].input.memoryGb, 4)
 		assert.equal(created[0].input.diskSizeGb, 32)
 		assert.equal(created[0].input.username, 'chris')
-		assert.equal(created[0].input.password.length, 16)
-		assert.match(created[0].input.password, /^[A-Za-z0-9_-]+$/)
+		assert.equal(created[0].input.password, 'Typed-on-the-card 9')
 		assert.equal(created[0].auth.role, 'owner')
 		const password = created[0].input.password
 		assert.equal(JSON.stringify(events).includes(password), false)
@@ -1020,7 +1120,27 @@ test('a theme write is one wallpaper Approve, not a second card after follow-up'
 	}
 })
 
-test('closing the assistant stream aborts the provider call', async () => {
+test('hanging up the assistant stream still runs a lookup', async () => {
+	const {calls, runProcedure} = factsProcedure(async (name) => {
+		if (name === 'system.diskUsage') return {free: '12 GB'}
+	})
+	const {fetchImpl} = scripted([toolSse('call_d', 'system_diskUsage', '{}'), textSse('12 GB free')])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	try {
+		const {req, res} = streamPair({message: 'how much disk'})
+		const head = res.writeHead.bind(res)
+		res.writeHead = (...args) => {
+			head(...args)
+			queueMicrotask(() => res.hangup())
+		}
+		await box.asst.handleStream(req, res, {userId: 'owner'})
+		assert.equal(calls.some((c) => c.name === 'system.diskUsage'), true)
+	} finally {
+		await box.close()
+	}
+})
+
+test('closing the assistant stream still lets the provider finish', async () => {
 	let providerAborted = false
 	const srv = http.createServer(async (req, res) => {
 		const chunks = []
@@ -1061,7 +1181,7 @@ test('closing the assistant stream aborts the provider call', async () => {
 			assert.match(first, /event: text/)
 			await reader.cancel()
 			await new Promise((r) => setTimeout(r, 300))
-			assert.equal(providerAborted, true)
+			assert.equal(providerAborted, false)
 		} finally {
 			await d.close()
 		}
@@ -1131,12 +1251,12 @@ test('a stale save cannot undo Approve', async () => {
 			rpc: {path: 'machines.create', input: {name: 'ubuntu', username: 'chris'}},
 		})
 		const snap = await asst.conversations.get('owner', conv.id)
-		await asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}})
+		await asst.procedures['assistant.approve'].run({actionId: action.id, password: 'pick-one'}, {auth: {userId: 'owner'}})
 		assert.equal(calls.filter((n) => n === 'machines.create').length, 1)
 		await asst.conversations.saveAction('owner', snap.actions[0])
 		await asst.conversations.append('owner', conv.id, {role: 'tool', toolCallId: 'call_x', name: 'machines_create', content: 'late', at: 9})
 		await assert.rejects(
-			asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}}),
+			asst.procedures['assistant.approve'].run({actionId: action.id, password: 'pick-one'}, {auth: {userId: 'owner'}}),
 			(e) => e.code === 'CONFLICT' && e.message === 'That step was already handled',
 		)
 		assert.equal(calls.filter((n) => n === 'machines.create').length, 1)
@@ -1203,7 +1323,7 @@ test('aborting a turn stops the tool call so Approve stays done', async () => {
 		turnP = box.asst.runTurn({userId: 'owner', role: 'owner', message: 'how much disk', conversationId: conv.id, signal: ac.signal, emit: () => {}})
 		await started
 		ac.abort()
-		await box.asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}})
+		await box.asst.procedures['assistant.approve'].run({actionId: action.id, password: 'pick-one'}, {auth: {userId: 'owner'}})
 		const outcome = await Promise.race([turnP.then(() => 'ended', () => 'ended'), new Promise((resolve) => setTimeout(() => resolve('hung'), 400))])
 		assert.equal(outcome, 'ended')
 		assert.equal(toolAborted, true)
@@ -1211,7 +1331,7 @@ test('aborting a turn stops the tool call so Approve stays done', async () => {
 		assert.equal(creates, 1)
 		assert.equal((await box.asst.conversations.get('owner', conv.id)).actions[0].status, 'done')
 		await assert.rejects(
-			box.asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}}),
+			box.asst.procedures['assistant.approve'].run({actionId: action.id, password: 'pick-one'}, {auth: {userId: 'owner'}}),
 			(e) => e.code === 'CONFLICT',
 		)
 		assert.equal(creates, 1)
@@ -1220,6 +1340,39 @@ test('aborting a turn stops the tool call so Approve stays done', async () => {
 		releaseTool()
 		ac.abort()
 		if (turnP) await turnP.catch(() => {})
+		await box.close()
+	}
+})
+
+test('only one reply runs per chat at a time', async () => {
+	const {fetchImpl: scriptedFetch} = scripted([textSse('First.'), textSse('Second.'), textSse('Third.')])
+	let gate = null
+	const fetchImpl = async (...args) => {
+		if (gate) await gate.promise
+		return scriptedFetch(...args)
+	}
+	const box = await withAssistant({runProcedure: async () => ({}), fetchImpl})
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: () => {}})
+		let release
+		gate = {promise: new Promise((r) => (release = r))}
+		const a = streamPair({conversationId: out.conversationId, message: 'again'})
+		const running = box.asst.handleStream(a.req, a.res, {userId: 'owner'})
+		await new Promise((r) => setTimeout(r, 20))
+		const b = streamPair({conversationId: out.conversationId, message: 'and again'})
+		await box.asst.handleStream(b.req, b.res, {userId: 'owner'})
+		assert.match(b.chunks.join(''), /event: error\ndata: \{"message":"This chat is still answering/)
+		gate = null
+		release()
+		await running
+		assert.match(a.chunks.join(''), /event: done/)
+		// Once the first reply ends, the chat takes a new message again.
+		const c = streamPair({conversationId: out.conversationId, message: 'once more'})
+		await box.asst.handleStream(c.req, c.res, {userId: 'owner'})
+		assert.match(c.chunks.join(''), /event: done/)
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		assert.deepEqual(saved.messages.filter((m) => m.role === 'user').map((m) => m.content), ['hi', 'again', 'once more'])
+	} finally {
 		await box.close()
 	}
 })

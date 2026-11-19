@@ -4,6 +4,28 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.43',
+		date: '2026-11-18',
+		title: 'A smarter assistant, more providers',
+		added: [
+			'Anthropic (Claude) joins Grok and OpenAI in Settings → Assistant → Add.',
+			'Keys are checked with the provider before you save them, and the Model field lists the models it actually serves. Each key has Check connection.',
+			'Edit a saved provider: its name, key, model, API and address, without deleting and re-sharing it.',
+			'Choose how hard each key’s model thinks: Default, Low, Medium or High.',
+			'Long chats are summarized instead of forgetting how they started.',
+			'Ask the assistant to switch this server between the Ubuntu and Hyprland layouts.',
+			'Creating a VM from the assistant asks you for its password on the Approve card.',
+		],
+		fixed: [
+			'Closing the assistant no longer stops its reply. It finishes and is there when you come back.',
+			'Closing the assistant on a phone no longer leaves the screen zoomed in.',
+			'A busy or briefly unreachable provider is retried instead of ending the reply.',
+			'Models that can’t take tool calls (like Gemma on Ollama) work with the assistant.',
+			'Custom endpoints are owner-only, since they let the server reach any address.',
+			'Switching an installed server to another branch fetches that branch properly.',
+		],
+	},
+	{
 		version: '0.9.42',
 		date: '2026-11-18',
 		title: 'Desktop or phone, your choice',

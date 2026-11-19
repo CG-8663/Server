@@ -82,7 +82,9 @@ if [ -d "$APP/.git" ]; then
 		say "Switching to $REPO"
 		git -C "$APP" remote set-url origin "$REPO"
 	fi
-	git -C "$APP" fetch --depth 1 origin "$BRANCH"
+	# Name where the branch lands: a shallow clone only tracks the branch it was cloned from, so a plain
+	# `fetch origin <other branch>` would leave origin/<other branch> missing and the reset would fail.
+	git -C "$APP" fetch --depth 1 origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
 	git -C "$APP" reset --hard "origin/$BRANCH"
 else
 	say "Downloading Omarchy Server"

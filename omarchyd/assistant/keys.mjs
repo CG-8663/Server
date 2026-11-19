@@ -4,24 +4,41 @@ import {join} from 'node:path'
 
 import {writeAtomic} from '../atomic.mjs'
 import {RpcError} from '../rpc.mjs'
+import {ANTHROPIC} from './anthropic.mjs'
 
 const SPACEXAI = 'https://api.x.ai/v1'
+const OPENAI = 'https://api.openai.com/v1'
+// Fixed addresses of the named providers; a custom endpoint brings its own.
+export const presetBaseUrl = (provider) => ({spacexai: SPACEXAI, openai: OPENAI, anthropic: ANTHROPIC})[provider] ?? null
+// Which API the assistant streams from. OpenAI recommends Responses; the others default to Chat
+// Completions, and a key can switch (most local servers now serve both).
+const APIS = ['chat', 'responses']
+export const apiOf = (k) => (APIS.includes(k?.api) ? k.api : k?.provider === 'openai' ? 'responses' : 'chat')
+// How hard a reasoning model thinks. Empty leaves the model's own default and sends nothing.
+const EFFORTS = ['low', 'medium', 'high']
+export const effortOf = (k) => (EFFORTS.includes(k?.effort) ? k.effort : '')
 const ID = () => 'k_' + randomBytes(6).toString('hex')
 const last4 = (s) => String(s).slice(-4)
-const normalizeBaseUrl = (raw) => {
-	const s = String(raw ?? '').trim().replace(/\/+$/, '')
+// A pasted endpoint (…/v1/chat/completions, …/v1/responses, …/v1/models) is trimmed back to its base.
+export const normalizeBaseUrl = (raw) => {
+	const s = String(raw ?? '').trim().replace(/\/+$/, '').replace(/\/(?:chat\/completions|completions|responses|models)$/i, '')
 	try {
 		const u = new URL(s)
 		if (!u.pathname || u.pathname === '/') return `${u.origin}/v1`
 	} catch {}
 	return s
 }
+// The last live check of a key, so Settings can show whether it still works.
+const publicCheck = (c) => (c && typeof c === 'object' ? {ok: !!c.ok, status: String(c.status ?? ''), message: String(c.message ?? '').slice(0, 300), at: Number(c.at) || 0} : null)
 const publicOf = (k, userId) => ({
 	id: k.id,
 	name: k.name,
 	provider: k.provider,
 	baseUrl: k.baseUrl,
 	model: k.model,
+	api: apiOf(k),
+	effort: effortOf(k),
+	check: publicCheck(k.check),
 	last4: k.last4,
 	ownerUserId: k.ownerUserId,
 	sharedWith: k.sharedWith,
@@ -40,6 +57,8 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 		.then((t) => {
 			state = JSON.parse(t)
 			if (!Array.isArray(state.keys)) state.keys = []
+			// Custom endpoints saved with a pasted endpoint path (…/v1/responses) work without re-adding them.
+			for (const k of state.keys) if (k?.provider === 'openai-compatible' && k.baseUrl) k.baseUrl = normalizeBaseUrl(k.baseUrl)
 		})
 		.catch(() => {})
 	const save = () => writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600})
@@ -50,22 +69,26 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			await loaded
 			return state.keys.filter((k) => canUse(k, userId)).map((k) => publicOf(k, userId))
 		},
-		async add(ownerUserId, input) {
+		async add(actor, input) {
 			await loaded
-			const provider = input?.provider === 'openai-compatible' ? 'openai-compatible' : input?.provider === 'spacexai' ? 'spacexai' : null
-			if (!provider) throw new RpcError('BAD_REQUEST', 'Choose SpaceXAI or an OpenAI-compatible endpoint')
+			const ownerUserId = actor.userId
+			const provider = ['openai-compatible', 'spacexai', 'openai', 'anthropic'].includes(input?.provider) ? input.provider : null
+			if (!provider) throw new RpcError('BAD_REQUEST', 'Choose Grok, OpenAI, Anthropic or an OpenAI-compatible endpoint')
+			// A custom endpoint makes omarchyd send requests to any address it can reach (your network
+			// included), so only the server's owner can add one.
+			if (provider === 'openai-compatible' && actor.role !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can add a custom endpoint')
 			const apiKey = String(input?.apiKey ?? '').trim()
 			if (apiKey.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
-			if (provider === 'spacexai' && apiKey.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+			if (provider !== 'openai-compatible' && apiKey.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')
 			const model = String(input?.model ?? '').trim()
 			if (!model || model.length > 80) throw new RpcError('BAD_REQUEST', 'Enter a model id')
-			const name = String(input?.name ?? '').trim().slice(0, 48) || (provider === 'spacexai' ? 'SpaceXAI' : 'API')
-			let baseUrl = provider === 'spacexai' ? SPACEXAI : normalizeBaseUrl(input?.baseUrl)
+			const name = String(input?.name ?? '').trim().slice(0, 48) || ({spacexai: 'Grok', openai: 'OpenAI', anthropic: 'Anthropic'}[provider] ?? 'API')
+			let baseUrl = presetBaseUrl(provider) ?? normalizeBaseUrl(input?.baseUrl)
 			if (provider === 'openai-compatible') {
 				if (!/^https?:\/\/[^\s]+/i.test(baseUrl) || baseUrl.length > 200) throw new RpcError('BAD_REQUEST', 'Enter the API base URL')
 			}
 			const t = now()
-			const row = {id: ID(), ownerUserId, name, provider, baseUrl, model, apiKey, last4: last4(apiKey), sharedWith: [], systemDefault: false, createdAt: t, updatedAt: t}
+			const row = {id: ID(), ownerUserId, name, provider, baseUrl, api: apiOf({provider, api: input?.api}), effort: effortOf(input), model, apiKey, last4: last4(apiKey), sharedWith: [], systemDefault: false, createdAt: t, updatedAt: t}
 			state.keys.push(row)
 			await save()
 			return publicOf(row, ownerUserId)
@@ -81,25 +104,35 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			} else if (input?.systemDefault === false && k.ownerUserId === actor.userId && actor.role !== 'member') {
 				k.systemDefault = false
 			}
-			if (k.ownerUserId !== actor.userId && input?.sharedWith === undefined && input?.name === undefined && input?.model === undefined && input?.apiKey === undefined && input?.baseUrl === undefined && input?.systemDefault === undefined) {
+			if (k.ownerUserId !== actor.userId && input?.sharedWith === undefined && input?.name === undefined && input?.model === undefined && input?.apiKey === undefined && input?.baseUrl === undefined && input?.api === undefined && input?.effort === undefined && input?.systemDefault === undefined) {
 				throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
 			}
-			if (k.ownerUserId !== actor.userId && (input?.sharedWith || input?.name || input?.model || input?.apiKey || input?.baseUrl)) {
+			if (k.ownerUserId !== actor.userId && (input?.sharedWith || input?.name || input?.model || input?.apiKey || input?.baseUrl || input?.api || input?.effort !== undefined)) {
 				throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
 			}
 			if (k.ownerUserId === actor.userId) {
 				if (typeof input?.name === 'string') k.name = input.name.trim().slice(0, 48) || k.name
-				if (typeof input?.model === 'string' && input.model.trim()) k.model = input.model.trim().slice(0, 80)
+				if (typeof input?.model === 'string' && input.model.trim() && input.model.trim() !== k.model) {
+					k.model = input.model.trim().slice(0, 80)
+					delete k.check
+				}
+				if (APIS.includes(input?.api)) k.api = input.api
+				if (input?.effort === '' || EFFORTS.includes(input?.effort)) k.effort = input.effort
 				if (typeof input?.apiKey === 'string') {
 					const next = input.apiKey.trim()
 					if (next.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
-					if (k.provider === 'spacexai' && next.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+					if (k.provider !== 'openai-compatible' && next.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')
 					if (k.provider === 'openai-compatible' || next.length >= 4) {
 						k.apiKey = next
 						k.last4 = last4(k.apiKey)
+						delete k.check
 					}
 				}
-				if (k.provider === 'openai-compatible' && typeof input?.baseUrl === 'string') k.baseUrl = normalizeBaseUrl(input.baseUrl)
+				if (k.provider === 'openai-compatible' && typeof input?.baseUrl === 'string') {
+					if (actor.role !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can change a custom endpoint')
+					k.baseUrl = normalizeBaseUrl(input.baseUrl)
+					delete k.check
+				}
 				if (Array.isArray(input?.sharedWith)) k.sharedWith = [...new Set(input.sharedWith.map((id) => String(id)).filter((id) => id && id !== k.ownerUserId))].slice(0, 32)
 			}
 			k.updatedAt = now()
@@ -114,6 +147,14 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			state.keys = state.keys.filter((x) => x.id !== id)
 			await save()
 			return true
+		},
+		async recordCheck(id, check) {
+			await loaded
+			const k = find(id)
+			if (!k) return null
+			k.check = {...publicCheck(check), at: now()}
+			await save()
+			return publicCheck(k.check)
 		},
 		async getSecret(id) {
 			await loaded
