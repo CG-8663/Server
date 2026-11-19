@@ -105,6 +105,8 @@ export const ALLOWED = {
 	'appStore.repositories': 'query',
 	'machines.list': 'query',
 	'usb.list': 'query',
+	'usb.attach': 'mutation',
+	'usb.detach': 'mutation',
 	'notifications.get': 'query',
 	'apps.start': 'mutation',
 	'apps.stop': 'mutation',

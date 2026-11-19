@@ -55,7 +55,13 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions, systemApps, tlsDir, secure})
 	const usb = createUsb({
 		enumerate: () => listHostUsb(usbOptions),
-		guests: {bindings: () => []},
+		guests: {
+			bindings: async () => [...(await machines.usbBindings()), ...(await apps.usbBindings())],
+			bind: (guest, rec) => (guest.kind === 'machine' ? machines.bindUsb(guest.id, rec) : apps.bindUsb(guest.id, rec)),
+			unbind: (guest, deviceId) => (guest.kind === 'machine' ? machines.unbindUsb(guest.id, deviceId) : apps.unbindUsb(guest.id, deviceId)),
+			liveAttach: async () => false,
+			liveDetach: async () => false,
+		},
 		helper: async () => 'ok',
 	})
 	// Security settings kept by omarchyd itself (the https setting lives with the certificates,
@@ -338,7 +344,11 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		),
 		...machines.procedures,
 		...apps.procedures,
-		...usb.procedures,
+		...Object.fromEntries(
+			Object.entries(usb.procedures).map(([name, p]) =>
+				name === 'usb.list' ? [name, p] : [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'attach USB devices'), p.run(input))}],
+			),
+		),
 		...updater.procedures,
 		// Running the installer needs sudo on the server: only the owner is asked.
 		'system.installerStatus': {

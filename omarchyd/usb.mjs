@@ -77,23 +77,85 @@ export async function listHostUsb({
 	}))
 }
 
+const USB_SERIAL = /^[A-Za-z0-9._-]{1,128}$/
+
+function boundOf(g) {
+	return {kind: g.kind, id: g.id, name: g.name}
+}
+
+function decorate(h, g) {
+	return {
+		...h,
+		bound: g ? boundOf(g) : null,
+		needsRestart: !!(g?.running && !(g.liveIds ?? []).includes(h.id)),
+	}
+}
+
 export function createUsb({enumerate = listHostUsb, guests = {bindings: () => []}, helper = async () => 'ok'} = {}) {
+	const liveAttach = guests.liveAttach ?? (async () => false)
+	const liveDetach = guests.liveDetach ?? (async () => false)
+	async function list() {
+		const host = await enumerate()
+		const bindings = await guests.bindings()
+		const byDevice = new Map()
+		for (const g of bindings) for (const d of g.devices ?? []) byDevice.set(d.id, g)
+		const seen = new Set()
+		const devices = []
+		for (const h of host) {
+			seen.add(h.id)
+			devices.push(decorate(h, byDevice.get(h.id)))
+		}
+		for (const g of bindings) {
+			for (const d of g.devices ?? []) {
+				if (seen.has(d.id)) continue
+				seen.add(d.id)
+				devices.push(decorate({id: d.id, name: d.name ?? d.id, vendorId: d.vendorId ?? '', productId: d.productId ?? '', serial: d.serial ?? null, path: null, node: null}, g))
+			}
+		}
+		return {devices}
+	}
+	async function attach(input) {
+		const deviceId = String(input?.deviceId ?? '')
+		if (!deviceId) throw new RpcError('BAD_REQUEST', 'Choose a USB device')
+		const kind = input?.guest?.kind
+		const id = String(input?.guest?.id ?? '')
+		if ((kind !== 'machine' && kind !== 'app') || !id) throw new RpcError('BAD_REQUEST', 'Choose a machine or an app')
+		const rec = (await enumerate()).find((d) => d.id === deviceId)
+		if (!rec) throw new RpcError('PRECONDITION_FAILED', 'Plug that stick in, then try again')
+		const bindings = await guests.bindings()
+		const current = bindings.find((g) => (g.devices ?? []).some((d) => d.id === deviceId))
+		if (current && current.kind === kind && current.id === id) return {needsRestart: false}
+		if (current) throw new RpcError('CONFLICT', `That stick is already used by ${current.name}`)
+		const guest = {kind, id}
+		await guests.bind(guest, {id: rec.id, vendorId: rec.vendorId, productId: rec.productId, serial: rec.serial, path: rec.path, name: rec.name})
+		const after = (await guests.bindings()).find((g) => g.kind === kind && g.id === id)
+		const running = !!after?.running
+		const live = running ? await liveAttach(guest, rec) : false
+		if (rec.serial && USB_SERIAL.test(rec.serial)) await helper('usb-allow', [rec.serial]).catch(() => {})
+		const needsRestart = running && !live
+		return {needsRestart, ...(needsRestart ? {message: `Restart ${after.name} to use this stick.`} : {})}
+	}
+	async function detach(input) {
+		const deviceId = String(input?.deviceId ?? '')
+		if (!deviceId) throw new RpcError('BAD_REQUEST', 'Choose a USB device')
+		const bindings = await guests.bindings()
+		const current = bindings.find((g) => (g.devices ?? []).some((d) => d.id === deviceId))
+		if (!current) return {needsRestart: false}
+		const rec = current.devices.find((d) => d.id === deviceId)
+		const guest = {kind: current.kind, id: current.id}
+		const running = !!current.running
+		const live = running ? await liveDetach(guest, rec) : false
+		await guests.unbind(guest, deviceId)
+		const leftover = (await guests.bindings()).some((g) => (g.devices ?? []).some((d) => d.serial && d.serial === rec.serial))
+		if (rec.serial && USB_SERIAL.test(rec.serial) && !leftover) await helper('usb-forget', [rec.serial]).catch(() => {})
+		const needsRestart = running && !live
+		return {needsRestart, ...(needsRestart ? {message: `Restart ${current.name} to apply`} : {})}
+	}
 	return {
 		procedures: {
-			'usb.list': {
-				kind: 'query',
-				run: async () => {
-					const host = await enumerate()
-					await guests.bindings()
-					return {devices: host.map((h) => ({...h, bound: null, needsRestart: false}))}
-				},
-			},
-			'usb.attach': {kind: 'mutation', run: async () => {
-				throw new RpcError('NOT_FOUND', 'That stick isn’t plugged in')
-			}},
-			'usb.detach': {kind: 'mutation', run: async () => {
-				throw new RpcError('NOT_FOUND', 'That stick isn’t plugged in')
-			}},
+			'usb.list': {kind: 'query', run: list},
+			'usb.attach': {kind: 'mutation', run: attach},
+			'usb.detach': {kind: 'mutation', run: detach},
 		},
 	}
 }

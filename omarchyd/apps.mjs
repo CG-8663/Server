@@ -1773,6 +1773,33 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			secure.close()
 			for (const id of [...gateways.keys()]) closeGateway(id)
 		},
+		async usbBindings() {
+			await ready
+			const live = await liveStates().catch(() => new Map())
+			return state.apps.map((a) => ({
+				kind: 'app',
+				id: a.id,
+				name: a.name,
+				devices: a.usbDevices ?? [],
+				running: (live.get(a.id) ?? a.state) === 'running',
+				liveIds: Array.isArray(a.usbApplied) && a.usbApplied.length && (a.usbDevices ?? []).every((d) => a.usbApplied.includes(d.id)) && a.usbApplied.length === (a.usbDevices ?? []).length ? a.usbApplied : [],
+			}))
+		},
+		async bindUsb(id, rec) {
+			await ready
+			const app = findInstalled(id)
+			if (app.system) throw new RpcError('PRECONDITION_FAILED', `${app.name} runs on the server itself, not in a container.`)
+			if (!(app.usbDevices ?? []).some((d) => d.id === rec.id)) app.usbDevices = [...(app.usbDevices ?? []), rec]
+			await save()
+			return app
+		},
+		async unbindUsb(id, deviceId) {
+			await ready
+			const app = findInstalled(id)
+			app.usbDevices = (app.usbDevices ?? []).filter((d) => d.id !== deviceId)
+			await save()
+			return app
+		},
 		procedures: {
 			'apps.list': {kind: 'query', run: list},
 			'apps.install': {kind: 'mutation', run: install},

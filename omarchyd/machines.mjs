@@ -256,6 +256,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		m.tasks ??= []
 		m.snapshots ??= []
 		m.mac ??= randomMac()
+		m.usbDevices = Array.isArray(m.usbDevices) ? m.usbDevices : []
 		if (m.layout) {
 			m.layout.machineType ??= 'q35'
 			let disks = 0
@@ -1449,11 +1450,41 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return out
 	}
 
+	async function usbBindings() {
+		await ready
+		const states = await domainStates()
+		return machines.map((m) => ({
+			kind: 'machine',
+			id: m.id,
+			name: m.name,
+			devices: m.usbDevices ?? [],
+			running: STATE[states.get(domain(m.id))] === 'running',
+			liveIds: m.usbLive ?? [],
+		}))
+	}
+	async function bindUsb(id, rec) {
+		await ready
+		const m = find(id)
+		if (!(m.usbDevices ?? []).some((d) => d.id === rec.id)) m.usbDevices = [...(m.usbDevices ?? []), rec]
+		await save()
+		return m
+	}
+	async function unbindUsb(id, deviceId) {
+		await ready
+		const m = find(id)
+		m.usbDevices = (m.usbDevices ?? []).filter((d) => d.id !== deviceId)
+		await save()
+		return m
+	}
+
 	return {
 		ready,
 		usage,
 		uninstallAll,
 		vncSocket,
+		usbBindings,
+		bindUsb,
+		unbindUsb,
 		procedures: {
 			'machines.capabilities': {kind: 'query', run: capabilities},
 			'machines.osImages': {kind: 'query', run: osImages},
