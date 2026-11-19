@@ -2,13 +2,14 @@
 // Watch them, open a terminal or their desktop, and manage them (Omarchy plugins and themes, updates,
 // restart), each only as far as that computer allowed when it joined.
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode} from 'react'
+import {lazy, memo, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {mutate, query} from '../api'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
 import {newlyJoined} from './join'
+import {sameThemePicker} from './themePicker'
 import {StoragePage} from '../screens/Storage'
 import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, levelColor, useConfirm, useToast} from '../ui'
 
@@ -328,7 +329,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 					)}
 					{a.info?.omarchy && (
 						<>
-							<Row icon="palette" color="#a855f7" label="Theme" trailing={<ThemePicker a={a} disabled={!manage || act.isPending} onPick={(theme) => action({name: 'theme-set', theme}, `Setting ${theme} on ${a.name}…`)} />} />
+							<Row icon="palette" color="#a855f7" label="Theme" trailing={<ThemePicker themes={a.info?.themes ?? []} theme={a.info?.theme ?? ''} disabled={!manage || act.isPending} onPick={(theme) => action({name: 'theme-set', theme}, `Setting ${theme} on ${a.name}…`)} />} />
 							<Row icon="puzzle" color="var(--accent)" label="Omarchy plugins" sub={`${a.info.plugins?.length ?? 0} installed`} onClick={manage ? () => setPlugins(true) : undefined} />
 						</>
 					)}
@@ -405,9 +406,8 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 	)
 }
 
-function ThemePicker({a, disabled, onPick}: {a: Agent; disabled: boolean; onPick: (theme: string) => void}) {
-	const themes = a.info?.themes ?? []
-	const current = themes.find((t) => t.toLowerCase().replace(/\s+/g, '-') === (a.info?.theme ?? '').toLowerCase()) ?? a.info?.theme ?? ''
+const ThemePicker = memo(function ThemePicker({themes, theme, disabled, onPick}: {themes: string[]; theme: string; disabled: boolean; onPick: (theme: string) => void}) {
+	const current = themes.find((t) => t.toLowerCase().replace(/\s+/g, '-') === theme.toLowerCase()) ?? theme
 	if (!themes.length) return <span className="muted">{current || '–'}</span>
 	return (
 		<select aria-label="Theme" value={current} disabled={disabled} onChange={(e) => e.target.value && onPick(e.target.value)} style={{maxWidth: 170}}>
@@ -417,7 +417,7 @@ function ThemePicker({a, disabled, onPick}: {a: Agent; disabled: boolean; onPick
 			))}
 		</select>
 	)
-}
+}, (p, n) => sameThemePicker(p, n))
 
 type Plugin = {id: string; name: string; description?: string; author?: string}
 function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
