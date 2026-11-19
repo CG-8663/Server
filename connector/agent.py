@@ -11,10 +11,16 @@ server can't widen):
   desktop   your screen (wayvnc on Hyprland/Sway and other wlroots desktops, x11vnc on X11),
             shared only through a private socket in your runtime folder
   manage    a short fixed list: Omarchy plugins (verified, pinned), Omarchy theme, restart
+  backup    back up the folders in your home folder that you choose on the server, on its schedule,
+            encrypted (restic), to the server. It can only add backups there, never delete them.
+            Restores go into a new ~/Restored folder, never over your files.
 
 Standard library only, so it runs on any distribution with Python 3.8+.
 """
 import base64
+import bz2
+import http.client
+import http.server
 import fcntl
 import hashlib
 import json
@@ -42,6 +48,15 @@ CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduse
 CONFIG = os.path.join(CONFIG_DIR, "config.json")
 CA_FILE = os.path.join(CONFIG_DIR, "server-ca.crt")
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+DATA_DIR = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "omarchy-connector")
+
+# restic, the backup engine: this computer's own if it's new enough, otherwise its official build,
+# downloaded once and checked against these SHA-256s (from restic's SHA256SUMS for 0.18.1).
+RESTIC_VERSION = "0.18.1"
+RESTIC_SHA256 = {
+    "amd64": "680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d",
+    "arm64": "87f53fddde38764095e9c058a3b31834052c37e5826d2acf34e18923c006bd45",
+}
 VNC_SOCK = os.path.join(RUNTIME, "omarchy-connector", "vnc.sock")
 
 
@@ -774,6 +789,248 @@ ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "th
 
 
 # ---------------------------------------------------------------------------------------------
+# Backups (ability "backup"). The server says which folders and sends the store's password for each
+# run (it's never kept here). restic talks to a small relay on 127.0.0.1, reachable only under a
+# random path for this run, which forwards to the server over the same pinned connection the
+# connector uses, signed with this computer's key.
+def _restic_arch():
+    m = os.uname().machine
+    return {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(m)
+
+
+def _restic_version(path):
+    try:
+        out = subprocess.run([path, "version"], capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"restic (\d+)\.(\d+)\.(\d+)", out)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def restic_path(fetch=None):
+    system = shutil.which("restic")
+    if system and (_restic_version(system) or (0, 0)) >= (0, 14):
+        return system
+    mine = os.path.join(DATA_DIR, f"restic-{RESTIC_VERSION}")
+    if _restic_version(mine):
+        return mine
+    arch = _restic_arch()
+    if not arch:
+        raise RuntimeError("Install restic on this computer (its package is called restic), then try again")
+    url = f"https://github.com/restic/restic/releases/download/v{RESTIC_VERSION}/restic_{RESTIC_VERSION}_linux_{arch}.bz2"
+    packed = fetch(url) if fetch else urllib.request.urlopen(url, timeout=120).read()
+    if hashlib.sha256(packed).hexdigest() != RESTIC_SHA256[arch]:
+        raise RuntimeError("The downloaded backup engine didn’t match its published checksum, so it wasn’t used")
+    os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
+    tmp = f"{mine}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700)
+    with os.fdopen(fd, "wb") as f:
+        f.write(bz2.decompress(packed))
+    os.replace(tmp, mine)
+    if not _restic_version(mine):
+        raise RuntimeError("The backup engine (restic) didn’t start on this computer")
+    return mine
+
+
+FOLDER = re.compile(r"^[^\x00-\x1f/][^\x00-\x1f]{0,199}$")
+
+
+def home_folder(rel):
+    """A folder in the home folder, by its relative name; refuses anything that leads outside it."""
+    rel = str(rel).strip().rstrip("/")
+    if not FOLDER.match(rel) or any(p in ("..", ".") for p in rel.split("/")):
+        raise RuntimeError(f"“{rel[:60]}” isn’t a folder in your home folder")
+    home = os.path.realpath(os.path.expanduser("~"))
+    full = os.path.realpath(os.path.join(home, rel))
+    if full != home and not full.startswith(home + os.sep):
+        raise RuntimeError(f"“{rel[:60]}” leads outside your home folder")
+    return full
+
+
+def backup_folders(_args):
+    home = os.path.expanduser("~")
+    out = []
+    for name in sorted(os.listdir(home), key=str.lower):
+        if name.startswith(".") or not os.path.isdir(os.path.join(home, name)):
+            continue
+        out.append({"name": name})
+    return {"home": home, "folders": out[:200]}
+
+
+class _Relay(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+
+def start_relay(cfg):
+    u = urllib.parse.urlsplit(cfg["server"])
+    ctx = ssl.create_default_context(cafile=CA_FILE)
+    ctx.check_hostname = False  # pinned to the server's own authority, as for the WebSocket
+    secret = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
+    auth = f"Bearer {cfg['id']}:{cfg['key']}"
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def _forward(self):
+            prefix = f"/{secret}/"
+            if not self.path.startswith(prefix):
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            rest = self.path[len(prefix):]
+            headers = {"Authorization": auth}
+            for h in ("Content-Type", "Content-Length", "Range", "Accept"):
+                if self.headers.get(h):
+                    headers[h] = self.headers[h]
+            length = int(self.headers.get("Content-Length") or 0)
+            conn = http.client.HTTPSConnection(u.hostname, u.port or 443, context=ctx, timeout=600)
+            try:
+                conn.putrequest(self.command, "/connector/backup/" + rest, skip_accept_encoding=True)
+                for k, v in headers.items():
+                    conn.putheader(k, v)
+                conn.endheaders()
+                left = length
+                while left > 0:
+                    chunk = self.rfile.read(min(1 << 20, left))
+                    if not chunk:
+                        break
+                    conn.send(chunk)
+                    left -= len(chunk)
+                r = conn.getresponse()
+                self.send_response(r.status)
+                body_len = r.getheader("Content-Length")
+                for h in ("Content-Type", "Content-Length", "Content-Range"):
+                    if r.getheader(h):
+                        self.send_header(h, r.getheader(h))
+                if body_len is None:
+                    data = r.read()
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+                self.end_headers()
+                while True:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            except OSError:
+                try:
+                    self.send_response(502)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                except OSError:
+                    pass
+            finally:
+                conn.close()
+
+        do_GET = do_HEAD = do_POST = do_DELETE = _forward
+
+    server = _Relay(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"rest:http://127.0.0.1:{server.server_address[1]}/{secret}/"
+
+
+def _restic_env(repo, password):
+    runtime = os.path.join(RUNTIME, "omarchy-connector") if os.path.isdir(RUNTIME) else DATA_DIR
+    os.makedirs(runtime, mode=0o700, exist_ok=True)
+    pw = os.path.join(runtime, f"backup-{os.urandom(6).hex()}")
+    fd = os.open(pw, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(password)
+    keep = ("PATH", "HOME", "USER", "LANG", "TMPDIR")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "omarchy-connector", "restic")
+    env.update(RESTIC_REPOSITORY=repo, RESTIC_PASSWORD_FILE=pw, RESTIC_CACHE_DIR=cache, RESTIC_PROGRESS_FPS="0.5")
+    return env, pw
+
+
+def _run_restic(conn, call_id, args, repo, password, step):
+    env, pw = _restic_env(repo, password)
+    last = [0.0]
+    summary = {}
+    errors = []
+    try:
+        p = subprocess.Popen([restic_path()] + args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        def drain_err():
+            for line in p.stderr:
+                errors.append(line.strip())
+                del errors[:-20]
+        threading.Thread(target=drain_err, daemon=True).start()
+        for line in p.stdout:
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            kind = m.get("message_type")
+            if kind == "status" and time.time() - last[0] > 2:
+                last[0] = time.time()
+                conn.send({"op": "progress", "id": call_id, "percent": m.get("percent_done", 0), "step": step})
+            elif kind == "summary":
+                summary = m
+        code = p.wait()
+    finally:
+        try:
+            os.unlink(pw)
+        except OSError:
+            pass
+    # restic: 3 means some files couldn't be read (the rest is saved).
+    if code not in (0, 3):
+        raise RuntimeError(next((e for e in reversed(errors) if e), f"restic stopped ({code})")[:300])
+    return summary, code, errors
+
+
+def backup_run(conn, call_id, args, cfg):
+    password = str(args.get("password", ""))
+    if not password or "\n" in password:
+        raise RuntimeError("No password for the backup store")
+    folders, skipped = [], []
+    for rel in args.get("folders") or []:
+        full = home_folder(rel)
+        (folders if os.path.isdir(full) else skipped).append(full if os.path.isdir(full) else rel)
+    if not folders:
+        raise RuntimeError("None of the chosen folders are on this computer")
+    restic_path()
+    server, repo = start_relay(cfg)
+    try:
+        host = socket.gethostname() or "computer"
+        cache_excludes = ["--exclude-caches", "--exclude", "**/.cache", "--exclude", "**/.Trash-*", "--exclude", "**/node_modules/.cache"]
+        summary, code, errors = _run_restic(conn, call_id, ["backup", "--json", "--host", host, "--tag", "computer"] + cache_excludes + folders, repo, password, "Backing up")
+    finally:
+        server.shutdown()
+    return {"added": summary.get("data_added", 0), "files": summary.get("total_files_processed", 0), "skipped": skipped, "unreadable": code == 3}
+
+
+def backup_restore(conn, call_id, args, cfg):
+    password = str(args.get("password", ""))
+    snap = str(args.get("snapshot", ""))
+    if not re.match(r"^[0-9a-f]{8,64}$", snap) or not password:
+        raise RuntimeError("Bad restore")
+    home = os.path.realpath(os.path.expanduser("~"))
+    target = os.path.join(home, "Restored", time.strftime("%Y-%m-%d %H%M"))
+    n = 2
+    while os.path.exists(target):
+        target = os.path.join(home, "Restored", time.strftime("%Y-%m-%d %H%M") + f" ({n})")
+        n += 1
+    os.makedirs(target, mode=0o700)
+    restic_path()
+    server, repo = start_relay(cfg)
+    try:
+        # Only what was under the home folder, laid out as it was there (Restored/<date>/Documents…).
+        _run_restic(conn, call_id, ["restore", f"{snap}:{home}", "--target", target, "--json"], repo, password, "Restoring")
+    finally:
+        server.shutdown()
+    return {"folder": target}
+
+
+BACKUP_ACTIONS = {"backup-folders": lambda conn, cid, args, cfg: backup_folders(args), "backup-run": backup_run, "backup-restore": backup_restore}
+
+
+# ---------------------------------------------------------------------------------------------
 class Connection:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -853,6 +1110,11 @@ class Connection:
     def call(self, msg):
         name = msg.get("name")
         try:
+            if name in BACKUP_ACTIONS:
+                if not self.allowed.get("backup"):
+                    raise RuntimeError("This computer doesn’t allow backups")
+                data = BACKUP_ACTIONS[name](self, msg.get("id"), msg.get("args") or {}, self.cfg)
+                return self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})
             if not self.allowed.get("manage"):
                 raise RuntimeError("This computer doesn’t allow managing")
             fn = ACTIONS.get(name)
@@ -898,7 +1160,7 @@ def main():
     args = sys.argv[1:]
     if args[:1] == ["enroll"]:
         server, token = args[1], args[2]
-        abilities = {k: k in args[3].split(",") for k in ("terminal", "desktop", "manage")} if len(args) > 3 else {}
+        abilities = {k: k in args[3].split(",") for k in ("terminal", "desktop", "manage", "backup")} if len(args) > 3 else {}
         r = enroll(server, token, abilities)
         os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
         cfg = {"server": server, "id": r["id"], "key": r["key"], "abilities": abilities}

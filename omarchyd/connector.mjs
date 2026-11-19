@@ -22,7 +22,9 @@ import {writeAtomic} from './atomic.mjs'
 import {RpcError} from './rpc.mjs'
 import {parseResize} from './terminal.mjs'
 
-const ABILITIES = ['terminal', 'desktop', 'manage']
+// backup: the computer backs up folders you choose to this server (see backups.mjs). Its restic
+// uploads through the connector's own pinned connection, and can only add backups, never delete them.
+const ABILITIES = ['terminal', 'desktop', 'manage', 'backup']
 const PAIR_TTL = 15 * 60_000
 const sha = (s) => createHash('sha256').update(String(s)).digest('hex')
 const sameHash = (a, b) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))
@@ -294,6 +296,9 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 				} else if (msg.op === 'closed') {
 					const ch = l.channels.get(Number(msg.ch))
 					if (ch) (l.channels.delete(Number(msg.ch)), ch.ws.close(msg.code === 1011 ? 1011 : 1000, clip(msg.reason, 120)))
+				} else if (msg.op === 'progress') {
+					// A long call (a backup) saying how far it's got.
+					l.progress = {call: Number(msg.id), percent: Math.max(0, Math.min(1, num(msg.percent) ?? 0)), step: clip(msg.step, 80), at: now()}
 				} else if (msg.op === 'result') {
 					const c = l.calls.get(Number(msg.id))
 					if (!c) return
@@ -347,7 +352,31 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		browserWs.on('error', end)
 	}
 
+	// For backups.mjs: the computers that may back up, and calls to their connector's backup side.
+	const backupCalls = new Set(['backup-folders', 'backup-run', 'backup-restore'])
+	const backup = {
+		async agents() {
+			await loaded
+			return state.agents.map((a) => ({id: a.id, name: a.name, online: live.has(a.id), allowed: !!a.allowed.backup, on: may(a, 'backup'), user: a.info?.user ?? '', hostname: a.info?.hostname ?? ''}))
+		},
+		async call(id, name, args, timeout) {
+			await loaded
+			const a = find(id)
+			if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+			if (!backupCalls.has(name)) throw new RpcError('BAD_REQUEST', 'Unknown action')
+			if (!may(a, 'backup')) throw new RpcError('FORBIDDEN', `Backups aren’t switched on for ${a.name}`)
+			return call(a.id, name, args, timeout)
+		},
+		progress: (id) => live.get(id)?.progress ?? null,
+		// The backup store's HTTP side: which computer is asking (its own key), if it may back up.
+		authenticate(req) {
+			const a = authAgent(req)
+			return a && may(a, 'backup') ? a.id : null
+		},
+	}
+
 	return {
+		backup,
 		procedures: {
 			'swarm.list': {kind: 'query', run: list},
 			'swarm.pair': {kind: 'mutation', run: pair},

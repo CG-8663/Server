@@ -50,7 +50,10 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 			await new Promise((r) => setTimeout(r, 100))
 		}
 	}
-	const agentEnv = () => ({...process.env, HOME: agentHome, XDG_CONFIG_HOME: join(agentHome, '.config'), XDG_DATA_HOME: join(agentHome, '.local/share'), XDG_RUNTIME_DIR: join(agentHome, 'run')})
+	// The backup test (opt in, like test/backups.test.mjs): a real restic and an SMB share.
+	const backupIt = process.env.OMARCHY_BACKUP_IT === '1' && process.env.OMARCHY_BACKUP_RESTIC
+	const resticDir = backupIt ? join(os.tmpdir(), `restic-bin-${process.pid}`) : null
+	const agentEnv = () => ({...process.env, ...(resticDir ? {PATH: `${resticDir}:${process.env.PATH}`} : {}), HOME: agentHome, XDG_CONFIG_HOME: join(agentHome, '.config'), XDG_DATA_HOME: join(agentHome, '.local/share'), XDG_RUNTIME_DIR: join(agentHome, 'run')})
 	// Async: the servers under test run in this process, so a blocking call would stall them.
 	const runAgent = async (args) => {
 		try {
@@ -104,12 +107,17 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		await mkdir(data, {recursive: true})
 		const accounts = await openAccounts(data)
 		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
-		d = await startOmarchyd({port: 0, dataDir: data, tlsDir, home: root, webPort, appOptions: {run: async () => '', allowFileStores: true, defaultStores: [], systemApps: null}, updaterOptions: {autoCheck: false, raw: 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server'}})
+		if (resticDir) {
+			await mkdir(resticDir, {recursive: true})
+			await import('node:fs/promises').then((f) => f.symlink(process.env.OMARCHY_BACKUP_RESTIC, join(resticDir, 'restic')).catch(() => {}))
+		}
+		d = await startOmarchyd({port: 0, dataDir: data, tlsDir, home: root, webPort, backupOptions: {unshare: false, ...(backupIt ? {resticPath: process.env.OMARCHY_BACKUP_RESTIC} : {})}, appOptions: {run: async () => '', allowFileStores: true, defaultStores: [], systemApps: null}, updaterOptions: {autoCheck: false, raw: 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server'}})
 		await store.setConfig({backendUrl: d.url})
 		const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
 		auth = {authorization: `Bearer ${login.result.data.accessToken}`}
 	})
 	after(async () => {
+		if (resticDir) await rm(resticDir, {recursive: true, force: true})
 		agentProc?.kill()
 		await d?.close()
 		web?.close()
@@ -135,11 +143,11 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		assert.equal(name, os.hostname())
 		const cfg = JSON.parse(await readFile(join(agentHome, '.config/omarchy-connector/config.json'), 'utf8'))
 		assert.equal((await stat(join(agentHome, '.config/omarchy-connector/config.json'))).mode & 0o777, 0o600)
-		assert.deepEqual(cfg.abilities, {terminal: true, desktop: false, manage: true})
+		assert.deepEqual(cfg.abilities, {terminal: true, desktop: false, manage: true, backup: false})
 		// The same code again: refused.
 		await assert.rejects(runAgent(['enroll', server(), p.token, 'terminal']), /isn’t valid any more|already used|expired/)
 		const [a] = await q('swarm.list')
-		assert.deepEqual(a.allowed, {terminal: true, desktop: false, manage: true})
+		assert.deepEqual(a.allowed, {terminal: true, desktop: false, manage: true, backup: false})
 		assert.equal(a.online, false)
 	})
 
@@ -245,5 +253,67 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		// The VNC server listens only on a socket in the connector's private runtime folder, no port.
 		const sockDir = join(agentHome, 'run/omarchy-connector')
 		assert.equal((await stat(sockDir)).mode & 0o777, 0o700)
+	})
+	test('backups: a computer backs up chosen folders to the server, can’t delete them, and restores into ~/Restored', {skip: !backupIt && 'set OMARCHY_BACKUP_IT=1, OMARCHY_BACKUP_RESTIC and OMARCHY_BACKUP_SMB', timeout: 300_000}, async () => {
+		const [hostport, share, username, password] = String(process.env.OMARCHY_BACKUP_SMB).split(' ')
+		const folder = `Omarchy Swarm IT ${Date.now()}`
+		agentProc?.kill()
+		await rm(join(agentHome, '.config/omarchy-connector/config.json'), {force: true})
+		await mkdir(join(agentHome, 'Documents', 'Taxes'), {recursive: true})
+		await mkdir(join(agentHome, 'Music'), {recursive: true})
+		await writeFile(join(agentHome, 'Documents', 'Taxes', '2026.txt'), 'refund: yes\n')
+		await writeFile(join(agentHome, 'Music', 'song.txt'), 'not chosen\n')
+		const p = await pair({backup: true})
+		await trust(p.ca)
+		await runAgent(['enroll', server(), p.token, 'backup'])
+		startAgent()
+		const a = await until(async () => (await q('swarm.list')).find((x) => x.online && x.allowed.backup))
+		try {
+			// No NAS yet: the server's own backups come first.
+			await assert.rejects(call('backups.setComputer', {id: a.id, folders: ['Documents'], enabled: true}), /this server first/)
+			await call('backups.configure', {nas: {host: hostport, share, folder, username, password}})
+			const list = await call('backups.computerFolders', {id: a.id})
+			assert.ok(list.folders.some((f) => f.name === 'Documents'))
+			await assert.rejects(call('backups.setComputer', {id: a.id, folders: ['../etc'], enabled: true}), /isn’t a folder/)
+			await call('backups.setComputer', {id: a.id, folders: ['Documents'], enabled: true})
+			await call('backups.runComputer', {id: a.id})
+			const done = await until(async () => {
+				const c = (await q('backups.computers')).find((x) => x.id === a.id)
+				return c && !c.running && c.last ? c : null
+			}, 240_000)
+			assert.equal(done.last.ok, true, done.last.error)
+			const snaps = await q('backups.computerSnapshots', {id: a.id})
+			assert.equal(snaps.length, 1)
+			assert.ok(snaps[0].paths.some((x) => x.endsWith('/Documents')))
+			assert.ok(!snaps[0].paths.some((x) => x.endsWith('/Music')))
+
+			// Add-only: with its own key, the computer can read and add, but not delete or replace.
+			const cfg = JSON.parse(await readFile(join(agentHome, '.config/omarchy-connector/config.json'), 'utf8'))
+			const asAgent = (method, path, body) => fetch(`http://127.0.0.1:${webPort}/connector/backup/${path}`, {method, body, headers: {authorization: `Bearer ${cfg.id}:${cfg.key}`}})
+			const snapsList = await (await asAgent('GET', 'snapshots/')).json()
+			assert.equal(snapsList.length, 1)
+			assert.equal((await asAgent('DELETE', `snapshots/${snapsList[0]}`)).status, 403)
+			assert.equal((await asAgent('POST', `snapshots/${snapsList[0]}`, 'x')).status, 403)
+			assert.equal((await asAgent('POST', '')).status, 403)
+			assert.equal((await fetch(`http://127.0.0.1:${webPort}/connector/backup/keys/`)).status, 401)
+
+			// Restore: into a new folder, never over the files that are there.
+			await writeFile(join(agentHome, 'Documents', 'Taxes', '2026.txt'), 'changed since\n')
+			await call('backups.restoreComputer', {id: a.id, snapshotId: snaps[0].id})
+			const restored = await until(async () => (await q('backups.computers')).find((x) => x.id === a.id && x.lastRestore)?.lastRestore, 120_000)
+			assert.equal(restored.ok, true, restored.error)
+			assert.equal(await readFile(join(restored.folder, 'Documents', 'Taxes', '2026.txt'), 'utf8'), 'refund: yes\n')
+			assert.equal(await readFile(join(agentHome, 'Documents', 'Taxes', '2026.txt'), 'utf8'), 'changed since\n')
+
+			// Backups switched off for it here: the server refuses, and so would the computer.
+			await call('swarm.setAbilities', {id: a.id, backup: false})
+			await assert.rejects(call('backups.runComputer', {id: a.id}), /aren’t switched on/)
+		} finally {
+			try {
+				execFileSync('smbclient', [`//${hostport.split(':')[0]}/${share}`, '-U', `${username}%${password}`, ...(hostport.includes(':') ? ['-p', hostport.split(':')[1]] : []), '-c', `deltree "${folder}"`], {stdio: 'ignore'})
+			} catch {
+				/* best effort */
+			}
+		}
 	})
 })

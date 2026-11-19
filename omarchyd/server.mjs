@@ -11,6 +11,7 @@ import {dirname, extname, join} from 'node:path'
 
 import {openAccounts} from './accounts.mjs'
 import {createAssistant} from './assistant.mjs'
+import {createBackups} from './backups.mjs'
 import {APP_COOKIE, createApps} from './apps.mjs'
 import {createFiles} from './files.mjs'
 import {createMachines} from './machines.mjs'
@@ -27,9 +28,9 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.45'
+export const OMARCHYD_VERSION = '0.9.46'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
 	const startedAt = Date.now()
 	const revision = await new Promise((resolve) => {
@@ -53,6 +54,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	// Apps that are part of the server itself (Tailscale), installed through the root helper.
 	const systemApps = appOptions.systemApps !== undefined ? appOptions.systemApps || null : createSystemApps({helper: storage.helper})
 	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions, systemApps, tlsDir, secure})
+	// Backups need apps: to pause them while their files are saved, and to know where those files are.
+	// …and the local swarm's connector (created further down), for computers that back up here.
+	const backups = createBackups({dataDir, home, files, apps, swarm: {agents: () => connector.backup.agents(), call: (...a) => connector.backup.call(...a), progress: (id) => connector.backup.progress(id)}, ...backupOptions})
 	const usb = createUsb({
 		enumerate: () => listHostUsb(usbOptions),
 		guests: {
@@ -349,6 +353,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 				name === 'usb.list' ? [name, p] : [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'attach USB devices'), p.run(input))}],
 			),
 		),
+		...Object.fromEntries(Object.entries(backups.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage backups'), p.run(input))}])),
 		...updater.procedures,
 		// Running the installer needs sudo on the server: only the owner is asked.
 		'system.installerStatus': {
@@ -587,6 +592,12 @@ WantedBy=graphical-session.target
 			}
 			if (url.pathname.startsWith('/trpc/')) return await handleRpc(req, res, url, procedures, (r) => accounts.authenticate(r))
 			if (url.pathname === '/assets/wallpapers/1.jpg' && req.method === 'GET') return await wallpaper(res)
+			// A computer's backup uploading to its own store (its connector's key; add-only, see backups.mjs).
+			if (url.pathname.startsWith('/connector/backup/')) {
+				const agentId = connector.backup.authenticate(req)
+				if (!agentId) return sendJson(res, 401, {error: 'unauthorized'})
+				return await backups.handleUpload(req, res, agentId, url.pathname.slice('/connector/backup/'.length))
+			}
 			// A connector trading its one-time pairing code for its own id and key.
 			if (url.pathname === '/connector/enroll' && req.method === 'POST') {
 				let size = 0
@@ -733,7 +744,7 @@ WantedBy=graphical-session.target
 		}
 	}, 20_000).unref?.()
 
-	return {url: `http://${host}:${server.address().port}`, accounts, terminals, close: () => (apps.close(), updater.stop(), connector.close(), terminals.close(), new Promise((r) => server.close(r)))}
+	return {url: `http://${host}:${server.address().port}`, accounts, terminals, close: () => (apps.close(), backups.close(), updater.stop(), connector.close(), terminals.close(), new Promise((r) => server.close(r)))}
 }
 
 // The "always use the secure address" choice made while omarchyd kept its own certificate folder.
