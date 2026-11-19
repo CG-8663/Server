@@ -409,7 +409,7 @@ test('readOnly MCP tools auto-run; others become pending', async () => {
 		assert.equal(action.status, 'pending')
 		assert.equal(action.toolName, 'app__demo__rename')
 		assert.equal(action.title, 'Rename something in Demo')
-		assert.equal(action.detail, 'Cabinet')
+		assert.equal(action.detail, 'Demo · rename · title: Cabinet')
 		assert.equal(action.rpc, null)
 		assert.deepEqual(action.mcp, {appId: 'demo', tool: 'rename', arguments: {title: 'Cabinet'}})
 		assert.equal(JSON.stringify(action).includes('bad.name'), false)

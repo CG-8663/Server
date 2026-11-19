@@ -233,10 +233,6 @@ export function cardFor(name, args, names = {}) {
 	return {title: 'Approve this step', detail: ''}
 }
 
-function skipArgKey(key) {
-	return key === 'id' || key === 'password' || key === 'apiKey' || key === 'credentials' || /Id$/i.test(key)
-}
-
 function humanArgValue(value) {
 	if (typeof value === 'string') return value.trim()
 	if (typeof value === 'number' && Number.isFinite(value)) return String(value)
@@ -244,17 +240,26 @@ function humanArgValue(value) {
 	return ''
 }
 
+// An app's tools describe themselves, and the Approve card is the person's one check before the step runs.
+// So the headline uses the app's description only as a short first sentence, and the card always names the
+// app and the real tool and shows every argument (ids included: they often say what gets changed or
+// deleted). Only secrets are left off.
+const MCP_SECRET = /^(password|passphrase|secret|token|apiKey|api_key|credentials?)$/i
 export function cardForMcp(spec, args) {
 	const shown = plainInput(args)
 	const bits = []
 	for (const [k, v] of Object.entries(shown)) {
-		if (skipArgKey(k)) continue
+		if (MCP_SECRET.test(k)) continue
 		const text = humanArgValue(v)
-		if (text) bits.push(text)
+		if (text) bits.push(`${k}: ${text.length > 80 ? `${text.slice(0, 79)}…` : text}`)
 	}
-	const action = String(spec?.description ?? '').trim().replace(/\.+$/, '') || prettySlug(spec?.mcpName) || 'Use a tool'
+	const first = String(spec?.description ?? '').trim().split(/(?<=[.!?])\s|\n/)[0].replace(/[.!?]+$/, '').trim()
+	const said = first.length > 80 ? `${first.slice(0, 79).trimEnd()}…` : first
+	const action = said || prettySlug(spec?.mcpName) || 'Use a tool'
 	const app = String(spec?.appName ?? '').trim()
-	return {title: app ? `${action} in ${app}` : action, detail: bits.join(' · ')}
+	const tool = String(spec?.mcpName ?? '').trim()
+	const source = [app, tool].filter(Boolean).join(' · ')
+	return {title: app ? `${action} in ${app}` : action, detail: [source, ...bits].filter(Boolean).join(' · ')}
 }
 
 function pendingNote(actions) {
@@ -357,12 +362,8 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 
 	async function actionNames(auth, toolName, args) {
 		const a = args && typeof args === 'object' ? args : {}
-		const names = namesFromInventory({
-			apps: await grab('apps.list', auth),
-			machines: await grab('machines.list', auth),
-			swarm: await grab('swarm.list', auth),
-			usb: await grab('usb.list', auth),
-		})
+		const [apps, machines, swarm, usb] = await Promise.all(['apps.list', 'machines.list', 'swarm.list', 'usb.list'].map((p) => grab(p, auth)))
+		const names = namesFromInventory({apps, machines, swarm, usb})
 		if (String(toolName).startsWith('apps_') && a.appId && !names.apps[a.appId]) {
 			const listing = await grab('appStore.app', auth, {appId: a.appId})
 			if (listing?.name) names.apps[a.appId] = String(listing.name).trim()

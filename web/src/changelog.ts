@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.45',
+		date: '2026-11-18',
+		title: 'USB sticks for apps and VMs',
+		added: [
+			'Give a USB serial or Zigbee stick plugged into this server to one virtual machine or app, from its Devices tab or by asking the assistant. Home Assistant and similar apps then see it. Owner only.',
+			'Approve cards say what will happen in plain words, with the names of the things involved, like “Give the SkyConnect stick to Home Assistant”.',
+		],
+		fixed: ['Approve cards from apps always show the app, the real tool and every value it will use, so a step can’t hide behind its own description.'],
+	},
+	{
 		version: '0.9.44',
 		date: '2026-11-18',
 		title: 'Installer fix',

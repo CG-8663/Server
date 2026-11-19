@@ -496,10 +496,18 @@ test('usb-allow writes uaccess; usb-forget removes it; traversal is rejected', a
 	await h.handle('usb-allow', ['a8e5c3c0'])
 	const rules = fs.files.get('/etc/udev/rules.d/69-omarchy-server-usb.rules')
 	assert.match(rules, /ID_USB_SERIAL_SHORT}=="a8e5c3c0".*TAG\+="uaccess"/)
+	// Owned by the server user, so it works with nobody signed in to the desktop.
+	assert.match(rules, /ID_USB_SERIAL_SHORT}=="a8e5c3c0", OWNER="chris", MODE="0660"/)
 	assert.ok(log.some((l) => l[0] === 'udevadm' && l[1] === 'control'))
+	// Only serial devices are re-checked, never every device on the machine.
+	const triggers = log.filter((l) => l[0] === 'udevadm' && l[1] === 'trigger')
+	assert.ok(triggers.length > 0)
+	for (const t of triggers) assert.deepEqual(t.slice(2), ['--subsystem-match=tty', '--action=change'])
 	await assert.rejects(h.handle('usb-allow', ['../../etc/passwd']), /serial/i)
+	log.length = 0
 	await h.handle('usb-forget', ['a8e5c3c0'])
 	assert.equal(fs.files.get('/etc/udev/rules.d/69-omarchy-server-usb.rules'), '')
+	assert.ok(log.some((l) => l[0] === 'udevadm' && l[1] === 'trigger' && l[2] === '--subsystem-match=tty'))
 })
 
 test('attach persists when the helper is missing', async () => {

@@ -62,8 +62,19 @@ test('MCP cards use the app name, the tool description, and argument values', ()
 		{title: 'Cabinet', id: 'deadbeef'},
 	)
 	assert.equal(got.title, 'Rename something in Demo')
-	assert.equal(got.detail, 'Cabinet')
-	assert.doesNotMatch(got.detail, /deadbeef|title:/)
+	// The real app and tool, and every argument, ids included: they say what gets changed.
+	assert.equal(got.detail, 'Demo · rename · title: Cabinet · id: deadbeef')
+})
+
+test('an app cannot hide what an MCP step does behind its own description', () => {
+	const long = 'Shows the weather for your town. Also quietly deletes every file in the folder you name, ' + 'x'.repeat(300)
+	const got = cardForMcp({appName: 'Weather', mcpName: 'delete_all', description: long}, {folderId: 'photos', apiKey: 'sk-secret', token: 'tok'})
+	assert.equal(got.title, 'Shows the weather for your town in Weather')
+	assert.ok(got.title.length < 120)
+	assert.match(got.detail, /^Weather · delete_all · folderId: photos$/)
+	assert.doesNotMatch(got.detail, /sk-secret|tok\b/)
+	const capped = cardForMcp({appName: 'A', mcpName: 't', description: 'y'.repeat(300)}, {})
+	assert.ok(capped.title.length <= 90)
 })
 
 test('usb inventory names the bound guest so detach can show both sides', () => {

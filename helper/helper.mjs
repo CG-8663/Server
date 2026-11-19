@@ -303,13 +303,16 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		'usb-allow': async ([serial]) => {
 			if (!USB_SERIAL.test(serial ?? '')) fail('Use the USB serial, letters numbers . _ - only')
 			const keep = (await fs.readFile(UDEV_USB, 'utf8').catch(() => '')).split('\n').filter((l) => l && !l.startsWith('#') && !l.includes(`=="${serial}"`))
+			// OWNER makes the stick the server user's even with nobody signed in to the desktop (a headless
+			// server), which is where its apps and VMs run; uaccess alone only reaches the signed-in seat.
 			keep.push(
-				`SUBSYSTEM=="tty", ENV{ID_USB_SERIAL_SHORT}=="${serial}", TAG+="uaccess"`,
-				`SUBSYSTEM=="tty", ENV{ID_SERIAL_SHORT}=="${serial}", TAG+="uaccess"`,
+				`SUBSYSTEM=="tty", ENV{ID_USB_SERIAL_SHORT}=="${serial}", OWNER="${user.name}", MODE="0660", TAG+="uaccess"`,
+				`SUBSYSTEM=="tty", ENV{ID_SERIAL_SHORT}=="${serial}", OWNER="${user.name}", MODE="0660", TAG+="uaccess"`,
 			)
 			await writeAtomic(UDEV_USB, `# USB serial access, set by Omarchy Server\n${keep.join('\n')}\n`)
 			await run('udevadm', ['control', '--reload']).catch(() => {})
-			await run('udevadm', ['trigger']).catch(() => {})
+			// Only serial devices: re-checking every device on the machine could disturb disks and network.
+			await run('udevadm', ['trigger', '--subsystem-match=tty', '--action=change']).catch(() => {})
 			return 'ok'
 		},
 		'usb-forget': async ([serial]) => {
@@ -317,6 +320,8 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			const keep = (await fs.readFile(UDEV_USB, 'utf8').catch(() => '')).split('\n').filter((l) => l && !l.startsWith('#') && !l.includes(`=="${serial}"`))
 			await writeAtomic(UDEV_USB, keep.length ? `# USB serial access, set by Omarchy Server\n${keep.join('\n')}\n` : '')
 			await run('udevadm', ['control', '--reload']).catch(() => {})
+			// Hand the stick back to its default owner straight away, not at the next replug.
+			await run('udevadm', ['trigger', '--subsystem-match=tty', '--action=change']).catch(() => {})
 			return 'ok'
 		},
 
