@@ -7,6 +7,7 @@ import {appUrl, useAction, useBootstrap} from './data'
 import {useDesktop} from './desktop/Desktop'
 import {Icon, type IconName} from './icons'
 import {AppIcon, KV, Sheet, SheetHeader, StatusPill, appStatus, haptic, isAppBusy, useConfirm, useToast} from './ui'
+import {DevicesPanel} from './usb'
 
 type Props = {app: UserApp | null; update?: {version: string}; onClose: () => void; onOpenApp?: (app: UserApp) => void; onTerminal?: (app: {id: string; name?: string; icon?: string}) => void}
 type A = {id: string; label: string; icon: IconName; onClick: () => void; disabled?: boolean}
@@ -18,6 +19,7 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	const confirm = useConfirm()
 	const toast = useToast()
 	const [logsOpen, setLogsOpen] = useState(false)
+	const [tab, setTab] = useState<'overview' | 'usb'>('overview')
 	const [waiting, setWaiting] = useState<number | null>(null)
 	const [problem, setProblem] = useState<string | null>(null)
 	const waitCtrl = useRef<AbortController | null>(null)
@@ -32,6 +34,7 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 		retry: false,
 	})
 	useEffect(() => setLogsOpen(false), [app?.id])
+	useEffect(() => setTab('overview'), [app?.id])
 
 	if (!app) return null
 	const status = appStatus(app.state, !!update)
@@ -158,6 +161,19 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 					}
 					onClose={onClose}
 				/>
+				<div className="mx-tabs" role="tablist" aria-label={`${name} sections`}>
+					<button type="button" role="tab" aria-selected={tab === 'overview'} className={`chip${tab === 'overview' ? ' on' : ''}`} onClick={() => (haptic(5), setTab('overview'))}>
+						Overview
+					</button>
+					<button type="button" role="tab" aria-selected={tab === 'usb'} className={`chip${tab === 'usb' ? ' on' : ''}`} onClick={() => (haptic(5), setTab('usb'))}>
+						<Icon name="usb" size={15} />
+						Devices
+					</button>
+				</div>
+				{tab === 'usb' ? (
+					<DevicesPanel guest={{kind: 'app', id: app.id, name}} />
+				) : (
+				<>
 				{app.error && (
 					<div className="error" style={{marginBottom: 14, display: 'block'}}>
 						<div style={{display: 'flex', gap: 8, alignItems: 'flex-start'}}>
@@ -193,6 +209,8 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 					<Icon name="trash" size={19} />
 					Uninstall
 				</button>
+				</>
+				)}
 			</Sheet>
 			{logsOpen && <LogsSheet appId={app.id} name={name} icon={app.icon} onClose={() => setLogsOpen(false)} />}
 		</>

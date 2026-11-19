@@ -335,3 +335,16 @@ export type UsbDrive = {
 	size: number
 	partitions: {id: string; label?: string; size: number; mountpoints: string[]}[]
 }
+export type UsbBound = {kind: 'machine' | 'app'; id: string; name: string}
+export type UsbDevice = {
+	id: string
+	name: string
+	vendorId: string
+	productId: string
+	serial: string | null
+	path: string | null
+	node: string | null
+	bound: UsbBound | null
+	needsRestart: boolean
+}
+export type UsbList = {devices: UsbDevice[]}

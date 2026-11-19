@@ -180,12 +180,34 @@ function factsProcedure(extra) {
 		}
 		if (name === 'system.getHostname') return 'box'
 		if (name === 'system.device') return {device: 'ThinkPad', os: 'Omarchy'}
-		if (name === 'apps.list') return [{id: 'files', credentials: {defaultPassword: 'app-secret'}}]
-		if (name === 'swarm.list') return [{name: 'nas'}]
+		if (name === 'apps.list') return [{id: 'files', name: 'Files', credentials: {defaultPassword: 'app-secret'}}]
+		if (name === 'swarm.list') return [{id: 'abc', name: 'nas'}]
+		if (name === 'machines.list') return []
+		if (name === 'usb.list') return {devices: []}
 		return null
 	}
 	return {calls, runProcedure}
 }
+
+test('approve cards look up app names instead of showing the tool name or id', async () => {
+	const {runProcedure} = factsProcedure(async (name) => {
+		if (name === 'apps.list') return [{id: 'homeassistant', name: 'Home Assistant'}]
+	})
+	const {fetchImpl} = scripted([toolSse('call_s', 'apps_start', JSON.stringify({appId: 'homeassistant'}))])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'start home assistant', emit: (e) => events.push(e)})
+		const action = events.find((e) => e.event === 'action')?.data
+		assert.equal(action?.toolName, 'apps_start')
+		assert.equal(action.title, 'Start Home Assistant')
+		assert.equal(action.detail, '')
+		assert.equal(action.title.includes('apps_start'), false)
+		assert.equal(JSON.stringify(action).includes('homeassistant') && action.title.includes('homeassistant'), false)
+	} finally {
+		await box.close()
+	}
+})
 
 test('read tools are the curated list and members do not get swarm_list', () => {
 	assert.deepEqual(READ_TOOLS.map((t) => t.name), [
@@ -205,6 +227,7 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 		'machines_details',
 		'machines_osImages',
 		'machines_capabilities',
+		'usb_list',
 		'swarm_list',
 		'omarchy_plugins',
 		'omarchy_listBackgrounds',
@@ -255,6 +278,34 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 	assert.equal(toolsFor('owner').some((t) => t.name === 'swarm_list'), true)
 	assert.equal([...READ_TOOLS, ...WRITE_TOOLS].some((t) => /shell|podman|web_search|x_search/i.test(t.name)), false)
 	assert.equal(WRITE_TOOLS.some((t) => t.name === 'apps_install'), true)
+})
+
+test('usb tools wrap usb.list/attach/detach and attach is owner-only', () => {
+	const list = READ_TOOLS.find((t) => t.name === 'usb_list')
+	assert.equal(list.rpc, 'usb.list')
+	assert.equal(list.ownerOnly, false)
+	assert.match(list.description, /serial|Zigbee|stick/i)
+	assert.equal(toolsFor('member').some((t) => t.name === 'usb_list'), true)
+
+	const attach = WRITE_TOOLS.find((t) => t.name === 'usb_attach')
+	assert.equal(attach.kind, 'mutation')
+	assert.equal(attach.rpc, 'usb.attach')
+	assert.equal(attach.ownerOnly, true)
+	assert.equal(attach.parameters.properties.deviceId.type, 'string')
+	assert.deepEqual(attach.parameters.properties.guest.properties.kind.enum, ['machine', 'app'])
+	assert.equal(attach.parameters.properties.guest.properties.id.type, 'string')
+	assert.match(attach.description, /restart/i)
+
+	const detach = WRITE_TOOLS.find((t) => t.name === 'usb_detach')
+	assert.equal(detach.kind, 'mutation')
+	assert.equal(detach.rpc, 'usb.detach')
+	assert.equal(detach.ownerOnly, true)
+	assert.equal(detach.parameters.properties.deviceId.type, 'string')
+	assert.match(detach.description, /restart/i)
+
+	assert.equal(toolsFor('member').some((t) => t.name === 'usb_attach' || t.name === 'usb_detach'), false)
+	assert.equal(toolsFor('owner').some((t) => t.name === 'usb_attach'), true)
+	assert.equal(toolsFor('owner').some((t) => t.name === 'usb_detach'), true)
 })
 
 test('appStore_search keeps a short listing, not the registry dump', () => {

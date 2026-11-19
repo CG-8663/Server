@@ -6,6 +6,7 @@ import {useMachines, useUser} from '../data'
 import {useMachineDetails} from '../machines/api'
 import {PortForwarding} from '../machines/PortForwarding'
 import {BackupsPanel, CloudInitPanel, HardwarePanel, HistoryPanel, MonitorPanel, OptionsPanel, PANELS, SnapshotsPanel, SummaryPanel, usePowerActions, type PanelId} from '../machines/panels'
+import {DevicesPanel} from '../usb'
 import {Icon} from '../icons'
 import {osLook} from '../osLook'
 import {Sheet, SheetHeader, StatChip, StatusPill, haptic, machineStatus} from '../ui'
@@ -273,6 +274,8 @@ function MachineSheet({machine: m, onClose, onConsole}: {machine: Machine; onClo
 					<OptionsPanel d={d} />
 				) : tab === 'network' ? (
 					<PortForwarding machine={m} />
+				) : tab === 'usb' ? (
+					<DevicesPanel guest={{kind: 'machine', id: m.id, name: m.name}} />
 				) : tab === 'snapshots' ? (
 					<SnapshotsPanel d={d} />
 				) : tab === 'backups' ? (

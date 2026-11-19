@@ -29,6 +29,7 @@ export const READ_TOOLS = [
 	tool('machines_details', 'machines.details', 'One virtual machine', {id: {type: 'string', description: 'Machine id'}}),
 	tool('machines_osImages', 'machines.osImages', 'Operating system images available for a new machine'),
 	tool('machines_capabilities', 'machines.capabilities', 'What this server can give a virtual machine'),
+	tool('usb_list', 'usb.list', 'USB serial and Zigbee sticks plugged into this server, and which app or virtual machine holds each one'),
 	tool('swarm_list', 'swarm.list', 'Computers in the Local swarm', {}, true),
 	tool('omarchy_plugins', 'omarchy.plugins', 'Omarchy plugins that can be installed', {
 		q: {type: 'string'},
@@ -75,6 +76,19 @@ export const WRITE_TOOLS = [
 			},
 		},
 	}),
+	mutation('usb_attach', 'usb.attach', 'Bind a host USB serial or Zigbee stick to one virtual machine or app on this server. Exclusive: only one guest can hold a stick. A running app may need a restart.', {
+		deviceId: {type: 'string', description: 'Stable USB id from usb_list'},
+		guest: {
+			type: 'object',
+			properties: {
+				kind: {type: 'string', enum: ['machine', 'app'], description: 'machine = VM, app = container'},
+				id: {type: 'string', description: 'Machine or app id'},
+			},
+		},
+	}, true),
+	mutation('usb_detach', 'usb.detach', 'Unbind a host USB stick from the app or virtual machine that holds it. A running app may need a restart.', {
+		deviceId: {type: 'string', description: 'Stable USB id from usb_list'},
+	}, true),
 	mutation('swarm_action', 'swarm.action', 'Install a plugin, set a theme, or reboot another Local swarm computer — not this server’s Ubuntu vs Hyprland layout', {
 		id: {type: 'string'},
 		name: {type: 'string', enum: ['plugin-install', 'plugin-remove', 'theme-set', 'reboot']},

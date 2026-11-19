@@ -11,6 +11,7 @@ import {LocalSwarm, useSwarm} from '../swarm/Swarm'
 import {bytes, duration, haptic, useConfirm} from '../ui'
 import {mib, useAllTasks, useBackups, useMachineAction, useMachineDetails, useNode, when} from './api'
 import {PortForwarding} from './PortForwarding'
+import {DevicesPanel} from '../usb'
 import {
 	BackupsPanel,
 	CloudInitPanel,
@@ -371,6 +372,10 @@ function VmView({m, host, panel, setPanel, onGone}: {m: Machine; host: string; p
 					) : panel === 'network' ? (
 						<div className="mx-panel">
 							<PortForwarding machine={m} />
+						</div>
+					) : panel === 'usb' ? (
+						<div className="mx-panel">
+							<DevicesPanel guest={{kind: 'machine', id: m.id, name: m.name}} />
 						</div>
 					) : panel === 'snapshots' ? (
 						<SnapshotsPanel d={d} />

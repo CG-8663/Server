@@ -18,6 +18,7 @@ import {createOmarchyTheme} from './omarchy-theme.mjs'
 import {createOmarchyPlugins} from './omarchy-plugins.mjs'
 import {createConnector} from './connector.mjs'
 import {createStorage} from './storage.mjs'
+import {createUsb, listHostUsb} from './usb.mjs'
 import {createTerminalSessions} from './terminal.mjs'
 import {createUpdater} from './updater.mjs'
 import {createSystemApps} from './system-apps.mjs'
@@ -26,9 +27,9 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.44'
+export const OMARCHYD_VERSION = '0.9.45'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
 	const startedAt = Date.now()
 	const revision = await new Promise((resolve) => {
@@ -52,6 +53,17 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	// Apps that are part of the server itself (Tailscale), installed through the root helper.
 	const systemApps = appOptions.systemApps !== undefined ? appOptions.systemApps || null : createSystemApps({helper: storage.helper})
 	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions, systemApps, tlsDir, secure})
+	const usb = createUsb({
+		enumerate: () => listHostUsb(usbOptions),
+		guests: {
+			bindings: async () => [...(await machines.usbBindings()), ...(await apps.usbBindings())],
+			bind: (guest, rec) => (guest.kind === 'machine' ? machines.bindUsb(guest.id, rec) : apps.bindUsb(guest.id, rec)),
+			unbind: (guest, deviceId) => (guest.kind === 'machine' ? machines.unbindUsb(guest.id, deviceId) : apps.unbindUsb(guest.id, deviceId)),
+			liveAttach: (guest, rec) => (guest.kind === 'machine' ? machines.attachHostdev(guest.id, rec) : false),
+			liveDetach: (guest, rec) => (guest.kind === 'machine' ? machines.detachHostdev(guest.id, rec) : false),
+		},
+		helper: (verb, args) => storage.helper(verb, args),
+	})
 	// Security settings kept by omarchyd itself (the https setting lives with the certificates,
 	// where the web server reads it too).
 	const securityFile = join(dataDir, 'security.json')
@@ -332,6 +344,11 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		),
 		...machines.procedures,
 		...apps.procedures,
+		...Object.fromEntries(
+			Object.entries(usb.procedures).map(([name, p]) =>
+				name === 'usb.list' ? [name, p] : [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'attach USB devices'), p.run(input))}],
+			),
+		),
 		...updater.procedures,
 		// Running the installer needs sudo on the server: only the owner is asked.
 		'system.installerStatus': {
