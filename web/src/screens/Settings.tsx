@@ -1020,8 +1020,12 @@ function PasswordSheet({open, onClose, onSignedOut}: {open: boolean; onClose: ()
 						onSuccess: async () => {
 							onClose()
 							// Omarchy Server may sign every session out after a password change.
+							// This fetch does not go through the client that fires touch:signed-out, so clear the chat here.
 							const still = await fetch('/api/rpc/user.get', {credentials: 'same-origin'}).catch(() => null)
-							if (still?.status === 401) onSignedOut()
+							if (still?.status === 401) {
+								resetAssistantTurn()
+								onSignedOut()
+							}
 						},
 					},
 				)
