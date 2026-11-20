@@ -20,7 +20,7 @@ import {dirname, join, relative, sep} from 'node:path'
 
 import {pipeline} from 'node:stream/promises'
 
-import {writeAtomic} from './atomic.mjs'
+import {removeAtomic, writeAtomic} from './atomic.mjs'
 import {RpcError} from './rpc.mjs'
 
 export const RESTIC_VERSION = '0.18.1'
@@ -193,10 +193,36 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		for (const h of history) if (h && typeof h === 'object' && !h.endedAt) Object.assign(h, {endedAt: h.startedAt, ok: false, error: 'Stopped when the server restarted'})
 	})()
 
-	const writePrivate = (file, text) => writeAtomic(file, text, {mode: 0o600})
-	const saveConfig = () => writePrivate(configFile, JSON.stringify(config, null, '\t'))
-	const saveSecrets = () => writePrivate(secretFile, JSON.stringify(secrets))
-	const saveHistory = () => writePrivate(historyFile, JSON.stringify(history.slice(0, 40), null, '\t'))
+	// Factory reset bumps this so a password write queued before the reset does not recreate the file.
+	let epoch = 0
+	const passwordWrites = new Map()
+	const isPasswordFile = (file) => {
+		if (file === keyFile) return true
+		const rel = relative(dir, file)
+		if (rel.startsWith(`smb-auth-`) && !rel.includes(sep)) return true
+		const parts = rel.split(sep)
+		return parts.length === 2 && parts[0] === 'computers' && parts[1].endsWith('.key')
+	}
+	const trackPassword = (file) => passwordWrites.set(file, (passwordWrites.get(file) ?? 0) + 1)
+	const untrackPassword = (file) => {
+		const n = (passwordWrites.get(file) ?? 1) - 1
+		if (n <= 0) passwordWrites.delete(file)
+		else passwordWrites.set(file, n)
+	}
+	const remember = (file) => {
+		if (isPasswordFile(file)) trackPassword(file)
+		return epoch
+	}
+	const privateText = (file, seen, text) => {
+		if (seen !== epoch && isPasswordFile(file)) return null
+		return typeof text === 'function' ? text() : text
+	}
+	const writePrivate = (file, text) => writeAtomic(file, ((seen) => () => privateText(file, seen, text))(remember(file)), {mode: 0o600}).finally(() => {
+		if (isPasswordFile(file)) untrackPassword(file)
+	})
+	const saveConfig = () => writePrivate(configFile, () => JSON.stringify(config, null, '\t'))
+	const saveSecrets = () => writePrivate(secretFile, () => JSON.stringify(secrets))
+	const saveHistory = () => writePrivate(historyFile, () => JSON.stringify(history.slice(0, 40), null, '\t'))
 	const hasKey = () => exists(keyFile)
 
 	// ---- the restic engine ----------------------------------------------------------------------
@@ -298,7 +324,8 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	async function smb(nas, password, {share = nas.share, lines = [], list = false, timeout = 6 * 60 * 60_000} = {}) {
 		if (typeof password !== 'string' || /[\r\n]/.test(password)) throw new RpcError('BAD_REQUEST', 'That password isn’t valid')
 		const auth = join(dir, `smb-auth-${randomBytes(6).toString('hex')}`)
-		await writeFile(auth, `username=${nas.username}\npassword=${password}\n${nas.domain ? `domain=${nas.domain}\n` : ''}`, {mode: 0o600})
+		await writePrivate(auth, `username=${nas.username}\npassword=${password}\n${nas.domain ? `domain=${nas.domain}\n` : ''}`)
+		if (!(await exists(auth))) throw new RpcError('PRECONDITION_FAILED', 'Backups were reset')
 		try {
 			const args = list ? ['-L', `//${nas.host}`, '-g'] : [`//${nas.host}/${share}`]
 			args.push('-A', auth, '-m', 'SMB3', '-t', '60')
@@ -313,7 +340,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			const text = `${out.stdout}\n${out.stderr}`
 			return {text, errors: smbErrors(text)}
 		} finally {
-			await rm(auth, {force: true})
+			await removeAtomic(auth)
 		}
 	}
 	const q = (s) => `"${s}"`
@@ -1105,11 +1132,20 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	// default on the next start, and the copy in memory must match so a later save cannot put them back.
 	async function clearSettings() {
 		await ready
+		epoch++
 		config = structuredClone(DEFAULTS)
 		secrets = {}
-		await rm(configFile, {force: true})
-		await rm(secretFile, {force: true})
-		await rm(keyFile, {force: true})
+		const pending = [...passwordWrites.keys()]
+		await removeAtomic(configFile)
+		await removeAtomic(secretFile)
+		await removeAtomic(keyFile)
+		for (const file of pending) await removeAtomic(file)
+		for (const name of await readdir(join(dir, 'computers')).catch(() => [])) {
+			if (name.endsWith('.key')) await removeAtomic(join(dir, 'computers', name))
+		}
+		for (const name of await readdir(dir).catch(() => [])) {
+			if (name.startsWith('smb-auth-')) await removeAtomic(join(dir, name))
+		}
 	}
 
 	return {

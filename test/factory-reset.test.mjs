@@ -1,12 +1,16 @@
 // Factory reset promises a first-time server. The next owner must not inherit the previous
 // owner's assistant keys, chats, swarm computers, NAS password, or share password.
 import assert from 'node:assert/strict'
-import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises'
+import fs from 'node:fs'
+import {mkdtemp, mkdir, readFile, readdir, rm, writeFile} from 'node:fs/promises'
+import {syncBuiltinESMExports} from 'node:module'
 import os from 'node:os'
 import {join} from 'node:path'
 import {test} from 'node:test'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
+import {createConversations} from '../omarchyd/assistant/conversations.mjs'
+import {createKeyStore} from '../omarchyd/assistant/keys.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 const exists = (p) => readFile(p).then(() => true, () => false)
@@ -33,10 +37,15 @@ test('factory reset drops keys, chats, swarm computers, backup secrets and share
 	await writeFile(join(data, 'swarm.json'), JSON.stringify({
 		agents: [{id: 'computer-1', name: 'nixnet', keyHash: 'enrolled-key', allowed: {terminal: true}, on: {terminal: true}, enrolledAt: 1}],
 	}))
-	await mkdir(join(data, 'backups'), {recursive: true})
+	await mkdir(join(data, 'backups/computers'), {recursive: true})
 	await writeFile(join(data, 'backups/config.json'), JSON.stringify({nas: {host: 'nas.home', share: 'backups', username: 'chris'}}))
 	await writeFile(join(data, 'backups/secrets.json'), JSON.stringify({nasPassword: 'nas-secret'}))
 	await writeFile(join(data, 'backups/recovery-key'), 'restic-recovery-secret\n')
+	await writeFile(join(data, 'backups/history.json'), '[{"id":"keep-history"}]')
+	await writeFile(join(data, 'backups/computers/abc.key'), 'computer-restic-password\n')
+	await writeFile(join(data, 'backups/computers/notes.txt'), 'keep-me\n')
+	await writeFile(join(data, 'backups/smb-auth-test'), 'password=nas-password-file\n')
+	await writeFile(join(data, 'backups/keep.txt'), 'not a secret\n')
 	await writeFile(join(data, 'shares.json'), JSON.stringify([{name: 'Docs', path: '/Home/Documents'}]))
 	await writeFile(join(data, 'share-password'), 'share-secret')
 	const d = await startOmarchyd({
@@ -79,9 +88,163 @@ test('factory reset drops keys, chats, swarm computers, backup secrets and share
 		assert.equal(await exists(join(data, 'backups/secrets.json')), false, 'the NAS password is gone')
 		assert.equal(await exists(join(data, 'backups/config.json')), false, 'the NAS address is gone')
 		assert.equal(await exists(join(data, 'backups/recovery-key')), false, 'the recovery key is gone')
+		assert.equal(await exists(join(data, 'backups/computers/abc.key')), false, 'the computer restic key is gone')
+		assert.equal(await exists(join(data, 'backups/smb-auth-test')), false, 'the NAS auth file is gone')
+		assert.equal(await readFile(join(data, 'backups/computers/notes.txt'), 'utf8'), 'keep-me\n', 'a normal file beside the computer key stays')
+		assert.equal(await readFile(join(data, 'backups/keep.txt'), 'utf8'), 'not a secret\n', 'a normal file beside the NAS auth file stays')
+		assert.equal(await readFile(join(data, 'backups/history.json'), 'utf8'), '[{"id":"keep-history"}]', 'backup history stays')
 		assert.equal(await exists(join(data, 'share-password')), false, 'the share password is gone')
 		assert.equal(await exists(join(data, 'shares.json')), false, 'the share list is gone')
 	} finally {
+		await d.close()
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+// Pause writeAtomic while it is inside writeFile of the temp path, so reset runs before rename.
+function pauseAssistantTemps() {
+	const orig = fs.promises.writeFile
+	let waiting = []
+	let paused = 0
+	let hold = true
+	const match = (p) => p.endsWith('.tmp') && (p.includes('/assistant/keys.json.') || p.includes('/assistant/conversations/'))
+	fs.promises.writeFile = async (p, data, opts) => {
+		if (hold && match(String(p))) {
+			paused++
+			await new Promise((resolve) => waiting.push(resolve))
+		}
+		return orig(p, data, opts)
+	}
+	syncBuiltinESMExports()
+	return {
+		get paused() {
+			return paused
+		},
+		release() {
+			hold = false
+			const left = waiting
+			waiting = []
+			for (const resolve of left) resolve()
+		},
+		restore() {
+			hold = false
+			const left = waiting
+			waiting = []
+			for (const resolve of left) resolve()
+			fs.promises.writeFile = orig
+			syncBuiltinESMExports()
+		},
+	}
+}
+
+test('a key or chat write already in flight does not come back after reset', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-reset-race-'))
+	const data = join(root, 'data')
+	await mkdir(data, {recursive: true})
+	const keys = createKeyStore({dataDir: data})
+	const conversations = createConversations({dataDir: data})
+	const gate = pauseAssistantTemps()
+	const keyFile = join(data, 'assistant/keys.json')
+	const convDir = join(data, 'assistant/conversations')
+	try {
+		const keyWrite = keys.add({userId: 'owner', role: 'owner'}, {provider: 'openai', apiKey: 'sk-inflight-secret', model: 'm', name: 'K'})
+		const chatWrite = conversations.create('owner', {title: 'secret-chat-inflight'})
+		const blocked = Date.now() + 2000
+		while (gate.paused < 2 && Date.now() < blocked) await sleep(10)
+		assert.equal(gate.paused >= 2, true, 'the key and chat writes are blocked inside the queue')
+		const resets = Promise.all([keys.reset(), conversations.reset()])
+		// Give a reset that unlinks outside the queue time to finish while the write is still blocked.
+		await Promise.race([resets.then(() => {}), sleep(300)])
+		gate.release()
+		await resets
+		await Promise.allSettled([keyWrite, chatWrite])
+		const keyText = await readFile(keyFile, 'utf8').catch(() => '')
+		assert.equal(keyText.includes('sk-inflight-secret'), false, 'in-flight key write restored the secret')
+		assert.equal(await exists(keyFile), false, 'keys.json is absent after the queued write settles')
+		const names = (await readdir(convDir).catch(() => [])).filter((n) => n.endsWith('.json'))
+		assert.deepEqual(names, [], 'the chat json is absent after the queued write settles')
+	} finally {
+		gate.restore()
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('factory reset drops a key and a chat whose writes are still in flight', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-reset-live-'))
+	const home = join(root, 'home')
+	const data = join(root, 'data')
+	await mkdir(join(home, 'Documents'), {recursive: true})
+	const accounts = await openAccounts(data)
+	await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+	await mkdir(join(data, 'assistant'), {recursive: true})
+	await writeFile(join(data, 'assistant/keys.json'), JSON.stringify({
+		keys: [{
+			id: 'k_abcdef123456', ownerUserId: 'owner', name: 'Grok', provider: 'openai',
+			baseUrl: 'https://api.openai.com/v1', model: 'm', apiKey: 'sk-old', last4: 'k-old',
+			sharedWith: [], systemDefault: false, createdAt: 1, updatedAt: 1,
+		}],
+	}))
+	const fetchImpl = async () => ({ok: false, status: 401, headers: new Headers(), text: async () => '{"error":{"message":"no"}}'})
+	const d = await startOmarchyd({
+		port: 0, dataDir: data, home,
+		updaterOptions: {autoCheck: false},
+		appOptions: {systemApps: null, run: async () => ''},
+		machineOptions: {run: async () => ''},
+		backupOptions: {timers: false, unshare: false},
+		assistantOptions: {fetchImpl},
+	})
+	const gate = pauseAssistantTemps()
+	const keyFile = join(data, 'assistant/keys.json')
+	const convDir = join(data, 'assistant/conversations')
+	try {
+		const call = async (kind, path, input, headers = {}) => {
+			const url = new URL(`${d.url}/trpc/${path}`)
+			const init = {method: kind === 'mutation' ? 'POST' : 'GET', headers: {...headers}}
+			if (kind === 'mutation') {
+				init.headers['content-type'] = 'application/json'
+				init.body = JSON.stringify(input ?? null)
+			}
+			const r = await fetch(url, init)
+			return {status: r.status, body: await r.json()}
+		}
+		const login = await call('mutation', 'user.loginNative', {userId: 'owner', password: 'correct horse', client: {id: 't'}})
+		const owner = {authorization: `Bearer ${login.body.result.data.accessToken}`}
+		const keyWrite = call('mutation', 'assistant.updateKey', {id: 'k_abcdef123456', apiKey: 'sk-inflight-secret'}, owner)
+		const chatWrite = fetch(`${d.url}/assistant/stream`, {
+			method: 'POST',
+			headers: {...owner, 'content-type': 'application/json'},
+			body: JSON.stringify({message: 'secret-chat-inflight', keyId: 'k_abcdef123456'}),
+		})
+		const blocked = Date.now() + 3000
+		while (gate.paused < 2 && Date.now() < blocked) await sleep(10)
+		assert.equal(gate.paused >= 2, true, 'the key and chat writes are blocked inside the queue')
+		const reset = await call('mutation', 'system.factoryReset', {password: 'correct horse'}, owner)
+		assert.equal(reset.body.result.data, true)
+		const until = Date.now() + 2500
+		while (Date.now() < until) {
+			const text = await readFile(join(data, 'accounts.json'), 'utf8').catch(() => '')
+			if (text && JSON.parse(text).users.length === 0) break
+			await sleep(20)
+		}
+		gate.release()
+		for (let i = 0; i < 50; i++) {
+			const text = await readFile(join(data, 'accounts.json'), 'utf8').catch(() => '')
+			if (text && JSON.parse(text).users.length === 0) break
+			await sleep(100)
+		}
+		await Promise.allSettled([keyWrite, chatWrite.then((r) => r.text())])
+		await sleep(50)
+		const keyText = await readFile(keyFile, 'utf8').catch(() => '')
+		assert.equal(keyText.includes('sk-inflight-secret'), false, 'in-flight key write restored the secret')
+		assert.equal(await exists(keyFile), false, 'keys.json is absent after factory reset')
+		const chats = (await readdir(convDir).catch(() => [])).filter((n) => n.endsWith('.json'))
+		for (const name of chats) {
+			const text = await readFile(join(convDir, name), 'utf8')
+			assert.equal(text.includes('secret-chat-inflight'), false, 'in-flight chat write restored the secret')
+		}
+		assert.deepEqual(chats, [], 'the chat json is absent after factory reset')
+	} finally {
+		gate.restore()
 		await d.close()
 		await rm(root, {recursive: true, force: true})
 	}

@@ -1,8 +1,8 @@
-import {mkdir, readFile, rm} from 'node:fs/promises'
+import {mkdir, readFile} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
 import {join} from 'node:path'
 
-import {writeAtomic} from '../atomic.mjs'
+import {removeAtomic, writeAtomic} from '../atomic.mjs'
 import {RpcError} from '../rpc.mjs'
 import {ANTHROPIC} from './anthropic.mjs'
 
@@ -52,6 +52,9 @@ const canUse = (k, userId) => k.ownerUserId === userId || k.sharedWith.includes(
 export function createKeyStore({dataDir, now = () => Date.now()}) {
 	const file = join(dataDir, 'assistant', 'keys.json')
 	let state = {keys: []}
+	// Factory reset closes the store. A write already queued must see this when it runs, not the
+	// string it would have captured before the key list was cleared.
+	let closed = false
 	const loaded = mkdir(join(dataDir, 'assistant'), {recursive: true, mode: 0o700})
 		.then(() => readFile(file, 'utf8'))
 		.then((t) => {
@@ -61,7 +64,7 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			for (const k of state.keys) if (k?.provider === 'openai-compatible' && k.baseUrl) k.baseUrl = normalizeBaseUrl(k.baseUrl)
 		})
 		.catch(() => {})
-	const save = () => writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600})
+	const save = () => writeAtomic(file, () => (closed ? null : JSON.stringify(state, null, '\t')), {mode: 0o600})
 	const find = (id) => state.keys.find((k) => k.id === id)
 
 	return {
@@ -164,8 +167,9 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 		// does not inherit these keys and a later save cannot write them back.
 		async reset() {
 			await loaded
+			closed = true
 			state = {keys: []}
-			await rm(file, {force: true})
+			await removeAtomic(file)
 		},
 		async resolveForUser(userId, keyId) {
 			await loaded
