@@ -3,7 +3,7 @@
 // write its config and never starts.
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
@@ -13,6 +13,7 @@ import {startOmarchyd} from '../omarchyd/server.mjs'
 
 describe('app data under a hidden home folder', () => {
 	let root, home, data, d, auth, calls
+	const every = []
 	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
 	const run = async (cmd, args, opts = {}) => {
 		if (cmd === 'git') return git(args, opts.cwd)
@@ -23,6 +24,7 @@ describe('app data under a hidden home folder', () => {
 			return ''
 		}
 		if (cmd === 'podman') {
+			every.push(args.join(' '))
 			calls.push({podman: args})
 			return ''
 		}
@@ -42,12 +44,18 @@ describe('app data under a hidden home folder', () => {
 		const installed = join(data, 'apps/installed/jellyfin')
 		await mkdir(join(installed, 'data/config'), {recursive: true})
 		await mkdir(join(home, 'Videos'), {recursive: true})
+		// An app whose data folder was swapped for a link to your SSH keys.
+		const evil = join(data, 'apps/installed/evil')
+		await mkdir(join(home, '.ssh/keys'), {recursive: true})
+		await mkdir(evil, {recursive: true})
+		await symlink(join(home, '.ssh'), join(evil, 'data'))
+		await writeFile(join(evil, 'compose.omarchy.yml'), 'services:\n  evil:\n    image: evil/evil:latest\n    volumes:\n      - ./data/keys:/keys\n')
 		await writeFile(join(root, 'podman.sock'), '')
 		process.env.DOCKER_HOST = `unix://${join(root, 'podman.sock')}`
 		await writeFile(join(installed, 'compose.omarchy.yml'), 'services:\n  jellyfin:\n    image: jellyfin/jellyfin:latest\n    user: "1000:1000"\n    volumes:\n      - ${APP_DATA_DIR:-.}/data/config:/config\n      - ${APP_DATA_DIR:-.}/data/cache:/cache\n      - ${VIDEOS_DIR}:/media/videos\n    ports:\n      - "127.0.0.1:21456:8096"\n')
 		await writeFile(join(data, 'apps/apps.json'), JSON.stringify({
 			stores: [],
-			apps: [{id: 'jellyfin', name: 'Jellyfin', version: 'latest', port: 35111, path: '', permissions: [], dataDirs: [], userDirs: [], internalPort: 21456, installedAt: 1}],
+			apps: [{id: 'evil', name: 'Evil', version: '1', port: 35199, path: '', permissions: [], dataDirs: [], userDirs: [], internalPort: 21457, installedAt: 1}, {id: 'jellyfin', name: 'Jellyfin', version: 'latest', port: 35111, path: '', permissions: [], dataDirs: [], userDirs: [], internalPort: 21456, installedAt: 1}],
 			recent: [],
 			defaultsAdded: true,
 			umbrelStoreRemoved: true,
@@ -116,5 +124,10 @@ describe('app data under a hidden home folder', () => {
 		}
 		assert.match(handed, new RegExp(config.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
 		assert.doesNotMatch(handed, /\.ssh/)
+	})
+
+	test('a data folder that is a link to a hidden home folder is never handed over', async () => {
+		await call('apps.list', undefined, 'query')
+		assert.ok(!every.some((c) => c.startsWith('unshare chown') && (c.includes('.ssh') || c.includes('/evil/'))), every.join('\n'))
 	})
 })
