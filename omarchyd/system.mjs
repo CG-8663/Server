@@ -23,12 +23,16 @@ export function forgetCpu() {
 	lastCpuAt = -Infinity
 	lastCpuResult = null
 }
+// guest and guest_nice (columns 9 and 10) are already counted in user and nice.
+export function cpuFromStat(line) {
+	const n = line.trim().split(/\s+/).slice(1).map(Number)
+	const idle = (n[3] ?? 0) + (n[4] ?? 0)
+	const total = n.slice(0, 8).reduce((a, b) => a + (b || 0), 0)
+	return {idle, total}
+}
 async function cpuSample(readText) {
 	const line = (await readText('/proc/stat')).split('\n')[0]
-	const fields = line.trim().split(/\s+/).slice(1, 9).map(Number)
-	const idle = (fields[3] ?? 0) + (fields[4] ?? 0)
-	const total = fields.reduce((a, b) => a + (b || 0), 0)
-	return {idle, total}
+	return cpuFromStat(line)
 }
 function cpuResult(pct) {
 	const threads = os.cpus().length
