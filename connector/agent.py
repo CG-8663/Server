@@ -65,6 +65,20 @@ def log(*a):
     print("[connector]", *a, file=sys.stderr, flush=True)
 
 
+# HTTP 401 on the handshake only. Not a PermissionError: a local EACCES is that class too, and must retry.
+class Rejected(Exception):
+    pass
+
+
+def raise_for_handshake(status):
+    if " 101 " not in status + " ":
+        raise Rejected(status) if " 401" in status else ConnectionError(status)
+
+
+def reconnect_action(exc):
+    return "forget" if isinstance(exc, Rejected) else "retry"
+
+
 # ---------------------------------------------------------------------------------------------
 # A small WebSocket client (RFC 6455), enough for this: text and binary frames, ping/pong, close.
 class WS:
@@ -93,8 +107,7 @@ class WS:
             resp += chunk
         head, self.buf = resp.split(b"\r\n\r\n", 1)
         status = head.split(b"\r\n", 1)[0].decode(errors="replace")
-        if " 101 " not in status + " ":
-            raise PermissionError(status) if " 401" in status else ConnectionError(status)
+        raise_for_handshake(status)
         accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
         if accept.encode() not in head:
             raise ConnectionError("Bad handshake")
@@ -1397,12 +1410,12 @@ def main():
         try:
             Connection(cfg).run()
             delay = 2
-        except PermissionError:
-            # The server doesn't know this computer any more (removed from the swarm).
-            log("the server refused this computer's key; it was removed from the swarm")
-            forget()
         except Exception as e:  # noqa: BLE001
-            log("connection:", e)
+            if reconnect_action(e) == "forget":
+                log("the server refused this computer's key; it was removed from the swarm")
+                forget()
+            else:
+                log("connection:", e)
         time.sleep(delay)
         delay = min(60, delay * 2)
 
