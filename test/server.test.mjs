@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import {chmod, mkdtemp, readdir, readFile, stat} from 'node:fs/promises'
+import {chmod, mkdtemp, readdir, readFile, rm, stat} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
@@ -38,7 +38,18 @@ async function startTouch({backendUrl, appHosts, relayPortBase = 0} = {}) {
 		if (set) cookie = set.split(';')[0]
 		return {status: res.status, body: await res.json().catch(() => null), setCookie: set, setCookies: all}
 	}
-	return {dir, store, base, req, getCookie: () => cookie, close: () => (app.closeRelays(), new Promise((r) => server.close(r)))}
+	return {
+		dir,
+		store,
+		base,
+		req,
+		getCookie: () => cookie,
+		close: async () => {
+			app.closeRelays()
+			await new Promise((r) => server.close(r))
+			await rm(dir, {recursive: true, force: true})
+		},
+	}
 }
 
 describe('Omarchy Server server against an omarchyd stand-in', () => {
@@ -934,7 +945,9 @@ describe('always use the secure address', () => {
 			assert.equal((await (await fetch(`${base}/api/tls/status`)).json()).alwaysHttps, true)
 			assert.notEqual((await fetch(`${base}/settings`, {headers: {...nav, host: 'evil.example/"'}, redirect: 'manual'})).headers.get('location')?.includes('"'), true)
 		} finally {
-			server.close()
+			app.closeRelays()
+			await new Promise((r) => server.close(r))
+			await rm(dir, {recursive: true, force: true})
 		}
 	})
 })
