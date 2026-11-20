@@ -18,6 +18,9 @@ import {access, chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile} fr
 import os from 'node:os'
 import {dirname, join, relative, sep} from 'node:path'
 
+import {pipeline} from 'node:stream/promises'
+
+import {writeAtomic} from './atomic.mjs'
 import {RpcError} from './rpc.mjs'
 
 export const RESTIC_VERSION = '0.18.1'
@@ -185,15 +188,12 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		config = {...structuredClone(DEFAULTS), ...(await readBackupFile(configFile, {}, plainObject))}
 		secrets = await readBackupFile(secretFile, {}, plainObject)
 		history = await readBackupFile(historyFile, [], Array.isArray)
-		// A run that was going when the server stopped.
-		if (history[0] && !history[0].endedAt) Object.assign(history[0], {endedAt: history[0].startedAt, ok: false, error: 'Stopped when the server restarted'})
+		// Runs that were going when the server stopped (the server's own and any computer's at once).
+		// (Not written back here: startup leaves the files as they are, and the next run saves it.)
+		for (const h of history) if (h && typeof h === 'object' && !h.endedAt) Object.assign(h, {endedAt: h.startedAt, ok: false, error: 'Stopped when the server restarted'})
 	})()
 
-	const writePrivate = async (file, text) => {
-		const tmp = `${file}.${process.pid}.tmp`
-		await writeFile(tmp, text, {mode: 0o600})
-		await rename(tmp, file)
-	}
+	const writePrivate = (file, text) => writeAtomic(file, text, {mode: 0o600})
 	const saveConfig = () => writePrivate(configFile, JSON.stringify(config, null, '\t'))
 	const saveSecrets = () => writePrivate(secretFile, JSON.stringify(secrets))
 	const saveHistory = () => writePrivate(historyFile, JSON.stringify(history.slice(0, 40), null, '\t'))
@@ -814,7 +814,8 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		res.writeHead(range ? 206 : 200, {'content-type': 'application/octet-stream', 'content-length': end - start + 1, ...(range ? {'content-range': `bytes ${start}-${end}/${st.size}`} : {})})
 		if (req.method === 'HEAD') return res.end()
 		const {createReadStream} = await import('node:fs')
-		createReadStream(file, {start, end}).pipe(res)
+		// pipeline closes the file when the computer's connection goes away mid-download.
+		pipeline(createReadStream(file, {start, end}), res).catch(() => {})
 	}
 
 	// ---- schedule ------------------------------------------------------------------------------
