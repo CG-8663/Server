@@ -755,7 +755,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             lines = [l for l in fstab() if not l.endswith("%s %s" % (ZFS_MARK, name))]
             while lines and lines[-1] == "":
                 lines.pop()
-            lines.append("%s %s none bind,nosuid,nodev,nofail,x-systemd.requires=zfs-mount.service 0 0 %s %s" % (top, mount_of(pretty), ZFS_MARK, name))
+            lines.append("%s %s none rbind,nosuid,nodev,nofail,x-systemd.requires=zfs-mount.service 0 0 %s %s" % (top, mount_of(pretty), ZFS_MARK, name))
             lines.append("")
             write_text("/etc/fstab", "\n".join(lines))
             try:
@@ -776,7 +776,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         unmounted = False
         if bind_target:
             try:
-                run("umount", [bind_target])
+                run("umount", ["-R", bind_target])
                 unmounted = True
             except Exception as e:
                 if "not mounted" not in str(e).lower():

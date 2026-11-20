@@ -425,6 +425,29 @@ class Helper(unittest.TestCase):
             with self.assertRaisesRegex(HelperError, "Bad pool name"):
                 self.handle(verb, [too_long], **kw)
 
+    def test_zfs_import_uses_rbind_and_export_uses_recursive_umount(self):
+        imported = set()
+        files = {"/etc/fstab": ""}
+        log = []
+
+        def run(cmd, args):
+            log.append([cmd, *args])
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "\n".join(sorted(imported)) + ("\n" if imported else "")
+            if cmd == "zfs" and args[:1] == ["list"]:
+                return "tank\t/tank\ton\ntank/media\t/tank/media\ton\n"
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files=files)
+        self.assertEqual(self.handle("zfs-import", ["tank"], **kw), "ok")
+        self.assertRegex(files["/etc/fstab"], r"^/tank /home/chris/Pools/tank none rbind,nosuid,nodev,nofail,x-systemd\.requires=zfs-mount\.service 0 0 # omarchy-connector zfs tank\n$")
+        self.assertIn(["mount", "/home/chris/Pools/tank"], log)
+
+        imported.add("tank")
+        log.clear()
+        self.assertEqual(self.handle("zfs-export", ["tank"], **kw), "ok")
+        self.assertIn(["umount", "-R", "/home/chris/Pools/tank"], log)
+
 
 if __name__ == "__main__":
     unittest.main()
