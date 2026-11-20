@@ -163,12 +163,28 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	let engineInstall = null
 	let timer = null
 
+	const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+	// A missing file stays the default. Empty, invalid, or wrong-shaped JSON is left on disk
+	// (secrets.json is the NAS password) and the log names the file only.
+	const readBackupFile = async (file, fallback, accept) => {
+		const text = await readFile(file, 'utf8').catch(() => null)
+		if (text === null) return fallback
+		try {
+			const value = JSON.parse(text)
+			if (accept(value)) return value
+		} catch {
+			/* not JSON */
+		}
+		console.error('[omarchyd] backups: damaged file', file)
+		return fallback
+	}
+
 	const ready = (async () => {
 		await mkdir(dir, {recursive: true, mode: 0o700})
 		await chmod(dir, 0o700).catch(() => {})
-		config = {...structuredClone(DEFAULTS), ...JSON.parse((await readFile(configFile, 'utf8').catch(() => null)) ?? '{}')}
-		secrets = JSON.parse((await readFile(secretFile, 'utf8').catch(() => null)) ?? '{}')
-		history = JSON.parse((await readFile(historyFile, 'utf8').catch(() => null)) ?? '[]')
+		config = {...structuredClone(DEFAULTS), ...(await readBackupFile(configFile, {}, plainObject))}
+		secrets = await readBackupFile(secretFile, {}, plainObject)
+		history = await readBackupFile(historyFile, [], Array.isArray)
 		// A run that was going when the server stopped.
 		if (history[0] && !history[0].endedAt) Object.assign(history[0], {endedAt: history[0].startedAt, ok: false, error: 'Stopped when the server restarted'})
 	})()
@@ -828,7 +844,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			timer = setInterval(() => tick().catch(() => {}), 60_000)
 			timer.unref?.()
 		}
-	})
+	}).catch((e) => console.error('[omarchyd] backups', e.message))
 
 	// ---- procedures ----------------------------------------------------------------------------
 	async function status() {
