@@ -279,6 +279,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 	let session = null // {host, port, password, version, fingerprint, scannedAt, scan}
 	let job = null
 	let idle = null
+	const importedVms = new Map() // vmName -> machineId
 
 	const ready = (async () => {
 		await mkdir(dir, {recursive: true, mode: 0o700})
@@ -297,6 +298,9 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 			if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) console.error('[omarchyd] job.json is empty or invalid and was left unchanged')
 			else {
 				job = parsed
+				for (const item of job.items ?? []) {
+					if (item?.kind === 'vm' && item.status === 'done' && item.machineId) importedVms.set(item.key || item.name, item.machineId)
+				}
 				if (!job.endedAt) {
 					const paused = typeof job.paused === 'string' && job.paused ? job.paused : null
 					const stopped = paused
@@ -320,6 +324,18 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		}
 	})()
 	const saveJob = (record = job) => writeAtomic(jobFile, JSON.stringify(record, null, '\t'), {mode: 0o600})
+
+	function vmInstalled(name) {
+		if (machines?.importedVm?.(name)) return true
+		const id = importedVms.get(name)
+		if (!id) return false
+		const st = machines?.importState?.(id)
+		if (st && st.error === 'It was removed') {
+			importedVms.delete(name)
+			return false
+		}
+		return true
+	}
 
 	function baseEnv() {
 		const env = {LC_ALL: 'C'}
@@ -460,7 +476,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 				const [xml, st] = await Promise.all([remote(`virsh dumpxml ${sq(n)}`), remote(`virsh domstate ${sq(n)}`).catch(() => '')])
 				const plan = vmPlan(xml, st.trim())
 				const sizes = plan.disks.length ? await remote(`stat -c %s ${plan.disks.map((d) => sq(d.file)).join(' ')}`).catch(() => '') : ''
-				vms.push({...plan, size: sizes.split('\n').filter(Boolean).reduce((t, s) => t + Number(s), 0)})
+				vms.push({...plan, size: sizes.split('\n').filter(Boolean).reduce((t, s) => t + Number(s), 0), installed: vmInstalled(plan.name)})
 			}
 		}
 		session.scan = {shares, containers, vms, at: now()}
@@ -651,6 +667,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		if (!plan) throw new Error('It isn’t on the Unraid server any more')
 		const st = (await remote(`virsh domstate ${sq(plan.name)}`).catch(() => '')).trim()
 		if (st && st !== 'shut off') throw new Error(`Shut down ${plan.name} on Unraid first (it’s ${st}), then bring it over`)
+		if (vmInstalled(plan.name)) throw new Error('It’s already here')
 		const stage = join(stagingDir, `vm-${randomBytes(4).toString('hex')}`)
 		await mkdir(stage, {recursive: true, mode: 0o700})
 		try {
@@ -682,16 +699,26 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 			item.progress = 0.85
 			const {id} = await machines.importVm({...plan, disks: local})
 			const end = now() + 12 * 60 * 60_000
+			let finalState
 			for (;;) {
 				const s = machines.importState(id)
 				if (s.done) {
 					if (s.error) throw new Error(s.error)
+					finalState = s
 					break
 				}
 				if (now() > end) throw new Error('Making the machine took too long')
 				await new Promise((r) => setTimeout(r, 3000))
 			}
-			if (plan.notes.length) item.note = plan.notes.join(' ')
+			item.machineId = id
+			importedVms.set(plan.name, id)
+			const notes = [...plan.notes]
+			const finalName = finalState?.name || plan.name
+			if (finalName !== plan.name) {
+				item.machineName = finalName
+				notes.unshift(`Saved here as “${finalName}” because a machine named ${plan.name} already existed.`)
+			}
+			if (notes.length) item.note = notes.join(' ')
 		} finally {
 			await rm(stage, {recursive: true, force: true})
 		}

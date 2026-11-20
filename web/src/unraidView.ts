@@ -66,3 +66,7 @@ export function retryActionState(scanning: boolean) {
 		showSpinner: scanning,
 	}
 }
+
+export function defaultSelectedVms(vms: {name: string; state: string; problems: string[]; installed?: boolean}[]): string[] {
+	return vms.filter((v) => !v.installed && v.state === 'shut off' && !v.problems.length).map((v) => v.name)
+}

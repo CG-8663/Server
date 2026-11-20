@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 
-import {isKeyChangedError, itemStatusForView, jobSummary, retryActionState} from '../web/src/unraidView.ts'
+import {defaultSelectedVms, isKeyChangedError, itemStatusForView, jobSummary, retryActionState} from '../web/src/unraidView.ts'
 
 test('interrupted and cancelled Unraid jobs never say Everything came over or spin forever', async () => {
 	const interrupted = {
@@ -90,4 +90,20 @@ test('JobView shows retry scan progress and errors when Try the rest again runs'
 	assert.match(src, /retryActionState\(scanning\)/)
 	const jobViewSrc = src.slice(src.indexOf('function JobView'))
 	assert.match(jobViewSrc, /error && <p className="bk-err">\{error\}<\/p>/)
+})
+
+test('installed VMs are deselected by default and disabled in Choose', async () => {
+	assert.deepEqual(
+		defaultSelectedVms([
+			{name: 'Win11', state: 'shut off', problems: [], installed: true},
+			{name: 'Ubuntu', state: 'shut off', problems: [], installed: false},
+			{name: 'Running', state: 'running', problems: [], installed: false},
+			{name: 'NoDisk', state: 'shut off', problems: ['It has no disk image to copy']},
+		]),
+		['Ubuntu'],
+	)
+	const src = await readFile(new URL('../web/src/unraid.tsx', import.meta.url), 'utf8')
+	assert.match(src, /defaultSelectedVms\(scan\.vms\)/)
+	assert.match(src, /disabled=\{\!\!v\.installed \|\| \!\!v\.problems\.length\}/)
+	assert.match(src, /v\.installed \? 'Already here'/)
 })

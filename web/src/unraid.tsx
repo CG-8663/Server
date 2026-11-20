@@ -5,11 +5,11 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query, type Listing} from './api'
 import {Icon, type IconName} from './icons'
 import {Group, Row, Switch, haptic, useConfirm, useToast} from './ui'
-import {isKeyChangedError, itemStatusForView, jobSummary, retryActionState, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
+import {defaultSelectedVms, isKeyChangedError, itemStatusForView, jobSummary, retryActionState, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
 
 type Share = {name: string; size: number | null; kind: 'share' | 'appdata' | 'system' | 'domains' | 'isos'}
 type Container = {id: string; name: string; image: string; running: boolean; icon: string | null; web: {port: number} | null; copies: {from: string; to: string; file?: boolean}[]; shares: string[]; notes: string[]; problems: string[]; size: number; installed: boolean}
-type Vm = {name: string; state: string; cores: number; memoryMb: number; firmware: string; disks: {file: string}[]; notes: string[]; problems: string[]; size: number}
+type Vm = {name: string; state: string; cores: number; memoryMb: number; firmware: string; disks: {file: string}[]; notes: string[]; problems: string[]; size: number; installed?: boolean}
 type Scan = {shares: Share[]; containers: Container[]; vms: Vm[]; at: number}
 type Status = {connected: {host: string; version: string; fingerprint: string | null} | null; scanned: boolean; job: Job | null}
 
@@ -225,7 +225,7 @@ function ConnectCard({onConnected}: {onConnected: () => void}) {
 function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan: Scan; host: string; fingerprint: string | null; version: string; onStart: (input: Record<string, unknown>) => Promise<void>; onDisconnect: () => void}) {
 	const [shares, setShares] = useState<Set<string>>(() => new Set(scan.shares.filter((x) => x.kind === 'share').map((x) => x.name)))
 	const [containers, setContainers] = useState<Set<string>>(() => new Set(scan.containers.filter((c) => !c.installed && !c.problems.length).map((c) => c.id)))
-	const [vms, setVms] = useState<Set<string>>(() => new Set(scan.vms.filter((v) => v.state === 'shut off' && !v.problems.length).map((v) => v.name)))
+	const [vms, setVms] = useState<Set<string>>(() => new Set(defaultSelectedVms(scan.vms)))
 	const [shareOnNetwork, setShareOnNetwork] = useState(true)
 	const [pauseContainers, setPauseContainers] = useState(true)
 	const [destination, setDestination] = useState('/Home/Unraid')
@@ -311,13 +311,13 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 						const off = v.state === 'shut off'
 						return (
 							<div key={v.name}>
-								<button type="button" className="row" style={{minHeight: 60}} disabled={!!v.problems.length} onClick={() => flip(vms, setVms, v.name)}>
+								<button type="button" className="row" style={{minHeight: 60}} disabled={!!v.installed || !!v.problems.length} onClick={() => flip(vms, setVms, v.name)}>
 									<span className="row-ico" style={{'--c': vms.has(v.name) ? 'var(--accent)' : '#8e8e93'} as CSSProperties}>
 										<Check on={vms.has(v.name)} />
 									</span>
 									<span className="main">
 										<b style={{fontWeight: 550}}>{v.name}</b>
-										<span>{v.problems[0] ?? [`${v.cores} cores`, `${Math.round(v.memoryMb / 1024)} GB`, bytes(v.size), off ? '' : `${v.state} on Unraid: shut it down first`].filter(Boolean).join(' · ')}</span>
+										<span>{v.installed ? 'Already here' : (v.problems[0] ?? [`${v.cores} cores`, `${Math.round(v.memoryMb / 1024)} GB`, bytes(v.size), off ? '' : `${v.state} on Unraid: shut it down first`].filter(Boolean).join(' · '))}</span>
 									</span>
 								</button>
 								{v.notes.length > 0 && (

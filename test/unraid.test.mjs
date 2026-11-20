@@ -5,6 +5,7 @@ import {join} from 'node:path'
 import {mock, test} from 'node:test'
 import YAML from 'yaml'
 
+import {createMachines} from '../omarchyd/machines.mjs'
 import {containerPlan, createUnraid, rsyncProgress, slug, sq, unraidPath, vmPlan, webuiPort} from '../omarchyd/unraid.mjs'
 
 const plex = {
@@ -780,6 +781,134 @@ test('a paused Unraid container is restarted if docker stop fails and is reporte
 			}
 		} finally {
 			releaseStop?.()
+			u2?.close()
+			u1.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+})
+
+test('imported VMs are marked installed, blocked from duplicate import, and report renames', async () => {
+	const vmXml = `<domain type='kvm'><name>Win11</name><memory unit='KiB'>4194304</memory><vcpu>2</vcpu>
+<devices><disk type='file' device='disk'><driver name='qemu' type='raw'/><source file='/mnt/user/domains/Win11/vdisk1.img'/><target dev='hdc' bus='virtio'/></disk></devices></domain>`
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-virsh\n', stderr: ''}
+		if (remote.includes('/mnt/user/*')) return {stdout: 'domains\t100\n', stderr: ''}
+		if (remote.startsWith('virsh list')) return {stdout: 'Win11\n', stderr: ''}
+		if (remote.startsWith('virsh dumpxml')) return {stdout: vmXml, stderr: ''}
+		if (remote.startsWith('virsh domstate')) return {stdout: 'shut off\n', stderr: ''}
+		if (remote.startsWith('stat -c %s')) return {stdout: '1048576\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+
+	// 1. Counting stub: second scan marks installed, second start fails with Already here, removed VM becomes importable again, and rename is noted.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-vm-dup-'))
+		let importCalls = 0
+		let stateResult = {done: true, error: null, name: 'Win11 (2)'}
+		const machines = {
+			importVm: async () => {
+				importCalls++
+				return {id: 'vm-abc'}
+			},
+			importState: () => stateResult,
+		}
+		const u = createUnraid({dataDir: dir, files: {}, apps: {}, machines, storage: null, run})
+		try {
+			await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			const s1 = await u.procedures['unraid.scan'].run()
+			assert.equal(s1.vms[0].installed, false)
+
+			const start1 = await u.procedures['unraid.start'].run({vms: ['Win11']})
+			let st1
+			for (let i = 0; i < 200; i++) {
+				st1 = await u.procedures['unraid.status'].run()
+				const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (st1.job?.endedAt && saved.includes(`"id": "${start1.id}"`) && /"endedAt": \d/.test(saved)) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(st1.job.items[0].status, 'done')
+			assert.equal(st1.job.items[0].machineId, 'vm-abc')
+			assert.equal(st1.job.items[0].machineName, 'Win11 (2)')
+			assert.match(st1.job.items[0].note, /Win11 \(2\)/)
+
+			const s2 = await u.procedures['unraid.scan'].run()
+			assert.equal(s2.vms[0].installed, true)
+
+			const start2 = await u.procedures['unraid.start'].run({vms: ['Win11']})
+			let st2
+			for (let i = 0; i < 200; i++) {
+				st2 = await u.procedures['unraid.status'].run()
+				const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (st2.job?.endedAt && saved.includes(`"id": "${start2.id}"`) && /"endedAt": \d/.test(saved)) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(st2.job.items[0].status, 'failed')
+			assert.equal(st2.job.items[0].error, 'It’s already here')
+			assert.equal(importCalls, 1)
+
+			// Once removed from machines, it is no longer marked installed.
+			stateResult = {done: true, error: 'It was removed'}
+			const s3 = await u.procedures['unraid.scan'].run()
+			assert.equal(s3.vms[0].installed, false)
+		} finally {
+			u.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+
+	// 2. Real createMachines persists importedFrom across a fresh createUnraid even after job.json is removed and when renamed.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-vm-real-'))
+		await mkdir(join(dir, 'machines'), {recursive: true})
+		await writeFile(
+			join(dir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [
+					{
+						id: 'aaaa1111',
+						name: 'Win11',
+						osId: 'ubuntu-2404',
+						cores: 2,
+						memoryMb: 2048,
+						diskSizeGb: 16,
+						layout: {firmware: 'efi', machineType: 'q35', nic: 'virtio', video: 'vga', disks: [{id: 'disk0', file: '/tmp/x.qcow2', device: 'disk', bus: 'virtio'}]},
+					},
+				],
+			}),
+		)
+		const m1 = createMachines({dataDir: dir, kvmDevice: '/nonexistent', run: async () => ''})
+		await m1.ready
+		const u1 = createUnraid({dataDir: dir, files: {}, apps: {}, machines: m1, storage: null, run})
+		let u2
+		try {
+			await u1.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			const s1 = await u1.procedures['unraid.scan'].run()
+			assert.equal(s1.vms[0].installed, false)
+			const started = await u1.procedures['unraid.start'].run({vms: ['Win11']})
+			let st
+			for (let i = 0; i < 600; i++) {
+				st = await u1.procedures['unraid.status'].run()
+				const savedJob = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				const savedMachines = await readFile(join(dir, 'machines', 'machines.json'), 'utf8').catch(() => '')
+				if (st.job?.endedAt && savedJob.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(savedJob) && savedMachines.includes('Win11 (2)')) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(st.job.items[0].status, 'done')
+			assert.equal(st.job.items[0].machineName, 'Win11 (2)')
+			assert.match(st.job.items[0].note, /Win11 \(2\)/)
+
+			await rm(join(dir, 'unraid', 'job.json'), {force: true})
+			const m2 = createMachines({dataDir: dir, kvmDevice: '/nonexistent', run: async () => ''})
+			await m2.ready
+			assert.equal(m2.importedVm('Win11'), true)
+			u2 = createUnraid({dataDir: dir, files: {}, apps: {}, machines: m2, storage: null, run})
+			await u2.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			const s2 = await u2.procedures['unraid.scan'].run()
+			assert.equal(s2.vms[0].installed, true)
+		} finally {
 			u2?.close()
 			u1.close()
 			await rm(dir, {recursive: true, force: true})
