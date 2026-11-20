@@ -137,14 +137,35 @@ function serverAddresses() {
 export function createConnector({dataDir, tlsDir, plugins = null, source = async () => 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server', webPort = 7780, now = () => Date.now()}) {
 	const file = join(dataDir, 'swarm.json')
 	let state = {agents: []}
-	const loaded = readFile(file, 'utf8').then(
-		(t) => {
-			const s = JSON.parse(t)
-			if (Array.isArray(s?.agents)) state = s
-		},
-		() => {},
-	)
-	const save = () => writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600})
+	// Set when swarm.json exists but cannot be used. Nothing may write it until the owner repairs it.
+	let damaged = false
+	const agentOk = (a) => !!a && typeof a === 'object' && !Array.isArray(a) && typeof a.id === 'string' && !!a.allowed && typeof a.allowed === 'object' && !Array.isArray(a.allowed) && !!a.on && typeof a.on === 'object' && !Array.isArray(a.on)
+	// A missing file is no computers yet. A parse error used to reject this promise with nobody
+	// waiting, which ended the process. The file stays so its key hashes can be repaired.
+	const loaded = (async () => {
+		let text
+		try {
+			text = await readFile(file, 'utf8')
+		} catch (error) {
+			if (error.code === 'ENOENT') return
+			damaged = true
+			console.error('[omarchyd] couldn’t load swarm.json; leaving it unchanged')
+			return
+		}
+		let data
+		try {
+			data = JSON.parse(text)
+		} catch {
+			data = undefined
+		}
+		const ok = !!data && typeof data === 'object' && !Array.isArray(data) && Array.isArray(data.agents) && data.agents.every(agentOk)
+		if (ok) state = data
+		else {
+			damaged = true
+			console.error('[omarchyd] couldn’t load swarm.json; leaving it unchanged')
+		}
+	})()
+	const save = () => (damaged ? Promise.reject(new RpcError('PRECONDITION_FAILED', 'swarm.json is damaged and was left unchanged.')) : writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600}))
 	const pairings = new Map() // sha(token) -> {abilities, expires}
 	const live = new Map() // agentId -> {ws, metrics, info, channels: Map, nextCh, calls: Map, nextCall}
 	const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024})
@@ -292,6 +313,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 	const enrollTries = []
 	async function enroll(body) {
 		await loaded
+		if (damaged) throw new RpcError('PRECONDITION_FAILED', 'swarm.json is damaged and was left unchanged.')
 		// A handful of tries a minute is plenty for people; it stops guessing.
 		const t = now()
 		while (enrollTries.length && enrollTries[0] < t - 60_000) enrollTries.shift()

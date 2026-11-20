@@ -553,6 +553,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	const engineEnv = {DOCKER_HOST: process.env.DOCKER_HOST ?? `unix://${process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 1000}`}/podman/podman.sock`}
 
 	let state = {stores: [], apps: [], recent: []}
+	// Set when apps.json exists but cannot be used. Saves refuse, so a later install cannot
+	// replace the bytes the owner may still be able to repair.
+	let stateDamaged = false
 	let secret
 	const busy = new Map() // appId -> {state, progress}
 	let statesCache = new Map(), statesAt = 0, statesInFlight = null
@@ -571,9 +574,33 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	const ready = (async () => {
 		await mkdir(storesDir, {recursive: true, mode: 0o700})
 		await mkdir(installedDir, {recursive: true, mode: 0o700})
+		// Only a missing file is a new install. Empty, truncated, or wrong-shaped JSON must stay
+		// byte-for-byte: the migrations below would otherwise save an empty app list over it.
+		let text = null
 		try {
-			state = {...state, ...JSON.parse(await readFile(stateFile, 'utf8'))}
-		} catch {}
+			text = await readFile(stateFile, 'utf8')
+		} catch (error) {
+			if (error.code !== 'ENOENT') stateDamaged = true
+		}
+		if (text !== null && !stateDamaged) {
+			let data
+			try {
+				data = JSON.parse(text)
+			} catch {
+				data = undefined
+			}
+			const plain = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+			const ok =
+				plain(data) &&
+				Array.isArray(data.apps) &&
+				data.apps.every(plain) &&
+				Array.isArray(data.stores) &&
+				data.stores.every((s) => plain(s) && typeof s.url === 'string') &&
+				(data.recent === undefined || Array.isArray(data.recent))
+			if (ok) state = {...state, ...data, recent: Array.isArray(data.recent) ? data.recent : []}
+			else stateDamaged = true
+		}
+		if (stateDamaged) console.error('[omarchyd] couldn’t load apps.json; leaving it unchanged')
 		const sf = join(base, 'secret')
 		try {
 			secret = await readFile(sf)
@@ -581,6 +608,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			secret = randomBytes(32)
 			await writeFile(sf, secret, {mode: 0o600})
 		}
+		if (stateDamaged) return
 		// First start: add the default stores (they download the first time the App Store opens).
 		if (!state.defaultsAdded) {
 			for (const d of defaultStores) if (!state.stores.some((x) => x.url.toLowerCase() === d.url.toLowerCase())) state.stores.push({url: d.url, ...(d.name ? {name: d.name} : {}), syncedAt: 0})
@@ -661,7 +689,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		for (const a of state.apps) if (a.system && a.state !== 'error') systemApps?.resume(a)
 		for (const a of state.apps) if (a.port && a.state !== 'error') await openGateways(a).catch((e) => console.error('[omarchyd] gateway', a.id, e.message))
 	})()
-	const save = () => writeAtomic(stateFile, () => JSON.stringify(state))
+	const save = () => (stateDamaged ? Promise.reject(new RpcError('PRECONDITION_FAILED', 'apps.json is damaged and was left unchanged.')) : writeAtomic(stateFile, () => JSON.stringify(state)))
 	const appDir = (id) => join(installedDir, id)
 	const project = (id) => `omarchy-${id}`
 
@@ -1566,6 +1594,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 
 	async function install(input) {
 		await ready
+		if (stateDamaged) throw new RpcError('PRECONDITION_FAILED', 'apps.json is damaged and was left unchanged.')
 		const id = String(input?.appId ?? '')
 		const failed = state.apps.find((a) => a.id === id && a.state === 'error')
 		if (failed) {
