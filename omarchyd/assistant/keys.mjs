@@ -61,7 +61,7 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			for (const k of state.keys) if (k?.provider === 'openai-compatible' && k.baseUrl) k.baseUrl = normalizeBaseUrl(k.baseUrl)
 		})
 		.catch(() => {})
-	const save = (next = state) => writeAtomic(file, JSON.stringify(next, null, '\t'), {mode: 0o600})
+	const save = () => writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600})
 	const find = (id) => state.keys.find((k) => k.id === id)
 
 	return {
@@ -149,8 +149,9 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 					return makeDefault ? {...row, systemDefault: row.id === next.id} : row
 				}),
 			}
-			await save(nextState)
+			// Swap in before the write so a key added or removed meanwhile is not lost; every check is done.
 			state = nextState
+			await save()
 			return publicOf(state.keys[idx], actor.userId)
 		},
 		async remove(actor, id) {
