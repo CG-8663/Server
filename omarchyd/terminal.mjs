@@ -53,6 +53,167 @@ export function parseResize(data, isBinary) {
 const KEEP = 512 * 1024 // what's replayed when you come back: the most recent output, up to this much
 const MAX_SESSIONS = 12 // per person (your shell plus app shells); the oldest unused one goes first
 
+const GROUND = 0
+const ESC = 1
+const ESC_INTER = 2
+const CSI = 3
+const STRING = 4
+const STRING_ESC = 5
+const TRACKED_PRIVATE_MODES = new Set([1, 1000, 1002, 1003, 1004, 1006, 1015, 2004])
+const ALT_SCREEN_MODES = new Set([47, 1047, 1049])
+const MOUSE_TRACK_MODES = [1000, 1002, 1003]
+
+function resetModes(modes) {
+	modes.altScreen = null
+	modes.hideCursor = false
+	modes.privateModes.clear()
+}
+
+function applyCsiMode(modes, params, inter, finalByte) {
+	if (params === '' && inter === '!' && finalByte === 0x70) return void resetModes(modes)
+	if (inter !== '' || !params.startsWith('?') || (finalByte !== 0x68 && finalByte !== 0x6c)) return
+	const enable = finalByte === 0x68
+	for (const part of params.slice(1).split(';')) {
+		if (!/^\d+$/.test(part)) continue
+		const n = Number(part)
+		if (ALT_SCREEN_MODES.has(n)) {
+			modes.altScreen = enable ? n : null
+		} else if (n === 25) {
+			modes.hideCursor = !enable
+		} else if (TRACKED_PRIVATE_MODES.has(n)) {
+			if (enable) {
+				if (MOUSE_TRACK_MODES.includes(n)) for (const m of MOUSE_TRACK_MODES) modes.privateModes.delete(m)
+				modes.privateModes.add(n)
+			} else {
+				modes.privateModes.delete(n)
+			}
+		}
+	}
+}
+
+function createAnsiScanner(modes = null) {
+	let state = GROUND
+	let params = ''
+	let inter = ''
+	const enterEsc = () => {
+		state = ESC
+		params = ''
+		inter = ''
+	}
+	const stepEsc = (b) => {
+		if (b === 0x5b) {
+			state = CSI
+			params = ''
+			inter = ''
+		} else if (b === 0x5d || b === 0x50 || b === 0x58 || b === 0x5e || b === 0x5f) {
+			state = STRING
+		} else if (b >= 0x20 && b <= 0x2f) {
+			state = ESC_INTER
+		} else if (b >= 0x30 && b <= 0x7e) {
+			if (b === 0x63 && modes) resetModes(modes)
+			state = GROUND
+		} else if (b >= 0x80) {
+			state = GROUND
+		}
+	}
+	const step = (b) => {
+		if (state === STRING) {
+			if (b === 0x07 || b === 0x18 || b === 0x1a) state = GROUND
+			else if (b === 0x1b) state = STRING_ESC
+			return
+		}
+		if (state === STRING_ESC) {
+			if (b === 0x5c || b === 0x18 || b === 0x1a) state = GROUND
+			else if (b === 0x1b) enterEsc()
+			else {
+				enterEsc()
+				stepEsc(b)
+			}
+			return
+		}
+		if (b === 0x1b) return void enterEsc()
+		if (b === 0x18 || b === 0x1a) {
+			state = GROUND
+			params = ''
+			inter = ''
+			return
+		}
+		if (state === GROUND) return
+		if (state === ESC) return void stepEsc(b)
+		if (state === ESC_INTER) {
+			if ((b >= 0x30 && b <= 0x7e) || b >= 0x80) state = GROUND
+			return
+		}
+		if (state === CSI) {
+			if (b >= 0x30 && b <= 0x3f) {
+				if (inter === '' && params.length < 256) params += String.fromCharCode(b)
+			} else if (b >= 0x20 && b <= 0x2f) {
+				if (inter.length < 16) inter += String.fromCharCode(b)
+			} else if (b >= 0x40 && b <= 0x7e) {
+				if (modes) applyCsiMode(modes, params, inter, b)
+				state = GROUND
+				params = ''
+				inter = ''
+			} else if (b >= 0x80) {
+				state = GROUND
+				params = ''
+				inter = ''
+			}
+		}
+	}
+	return {step, inEscape: () => state !== GROUND}
+}
+
+function trimReplay(all, keep, modes) {
+	const target = Math.max(0, all.length - keep)
+	const scanner = createAnsiScanner(modes)
+	let i = 0
+	while (i < target) scanner.step(all[i++])
+	while (i < all.length && scanner.inEscape()) scanner.step(all[i++])
+	while (i < all.length && (all[i] & 0xc0) === 0x80) i++
+	const look = createAnsiScanner(null)
+	const limit = Math.min(all.length, i + 4096)
+	for (let j = i; j < limit; j++) {
+		if (all[j] === 10 && !look.inEscape()) {
+			while (i <= j) scanner.step(all[i++])
+			break
+		}
+		look.step(all[j])
+	}
+	return Buffer.from(all.subarray(i))
+}
+
+function formatModePrefix(modes) {
+	let out = ''
+	if (modes.altScreen) out += `\x1b[?${modes.altScreen}h`
+	for (const n of [...modes.privateModes].sort((a, b) => a - b)) out += `\x1b[?${n}h`
+	if (modes.hideCursor) out += '\x1b[?25l'
+	return out
+}
+
+// Rolling terminal output buffer that trims on escape/UTF-8 boundaries and remembers active modes.
+export function createReplayHistory(keep = KEEP) {
+	let chunks = []
+	let size = 0
+	const modes = {altScreen: null, hideCursor: false, privateModes: new Set()}
+	return {
+		push(d) {
+			if (!d?.length) return
+			chunks.push(d)
+			size += d.length
+			if (size > keep * 1.5) {
+				const trimmed = trimReplay(Buffer.concat(chunks), keep, modes)
+				chunks = trimmed.length ? [trimmed] : []
+				size = trimmed.length
+			}
+		},
+		snapshot() {
+			const prefix = formatModePrefix(modes)
+			return prefix ? Buffer.concat([Buffer.from(prefix, 'ascii'), ...chunks]) : Buffer.concat(chunks)
+		},
+	}
+}
+
 // Persistent shells, one per person and place (your own shell, or one per app).
 export function createTerminalSessions({exec = execFile} = {}) {
 	const sessions = new Map() // `${userId}:${appId || ''}` -> session
@@ -101,19 +262,9 @@ export function createTerminalSessions({exec = execFile} = {}) {
 		// A keystroke can meet a pipe the shell just closed, before stdin is marked not writable.
 		// Nothing else listens for that EPIPE, and it would take the whole daemon down.
 		child.stdin.on('error', () => {})
-		const s = {child, cols, rows, chunks: [], size: 0, sockets: new Set(), used: Date.now(), pty: null}
+		const s = {child, cols, rows, history: createReplayHistory(), sockets: new Set(), used: Date.now(), pty: null}
 		const out = (d) => {
-			s.chunks.push(d)
-			s.size += d.length
-			// Keep the most recent output, starting on a line boundary so nothing replays half-cut.
-			if (s.size > KEEP * 1.5) {
-				let all = Buffer.concat(s.chunks)
-				all = all.subarray(all.length - KEEP)
-				const nl = all.indexOf(10)
-				if (nl >= 0 && nl < 4096) all = all.subarray(nl + 1)
-				s.chunks = [all]
-				s.size = all.length
-			}
+			s.history.push(d)
 			for (const ws of s.sockets) if (ws.readyState === ws.OPEN) ws.send(d, {binary: true})
 		}
 		child.stdout.on('data', out)
@@ -170,7 +321,7 @@ export function createTerminalSessions({exec = execFile} = {}) {
 			// What was on screen, at the size it was drawn, then this device's size (the terminal
 			// reflows, and full-screen programs redraw for it).
 			tell(ws, {type: 'session', resumed: true, cols: session.cols, rows: session.rows})
-			const replay = Buffer.concat(session.chunks)
+			const replay = session.history.snapshot()
 			if (replay.length && ws.readyState === ws.OPEN) ws.send(replay, {binary: true})
 			session.sockets.add(ws) // from here on it gets what the shell writes, like any other
 			if (session.cols !== cols || session.rows !== rows) {
