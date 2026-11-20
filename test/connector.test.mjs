@@ -193,8 +193,12 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		const closed = await new Promise((r) => ws.once('close', (code, reason) => r({code, reason: String(reason)})))
 		assert.match(closed.reason, /isn’t switched on/)
 		await assert.rejects(call('swarm.setAbilities', {id: a.id, desktop: true}), /wasn’t allowed desktop when it joined/)
-		// Switching the terminal off here closes it off too.
+		// Switching the terminal off here closes it off too, including one that's already open (#289).
+		const open = await browserWs('terminal', {agentId: a.id, cols: '80', rows: '24'})
+		await new Promise((r, j) => (open.once('open', r), open.once('error', j)))
+		const ended = new Promise((r) => open.once('close', (code, reason) => r(String(reason))))
 		await call('swarm.setAbilities', {id: a.id, terminal: false})
+		assert.match(await ended, /switched off/)
 		const t = await browserWs('terminal', {agentId: a.id, cols: '80', rows: '24'})
 		const tc = await new Promise((r) => t.once('close', (code, reason) => r(String(reason))))
 		assert.match(tc, /isn’t switched on/)
@@ -222,8 +226,14 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 
 	test('#108 a frame for a channel that is already closed is ignored, not a crash', async () => {
 		const cfg = JSON.parse(await readFile(join(agentHome, '.config/omarchy-connector/config.json'), 'utf8'))
+		// #288: a terminal on the old connection ends when the computer connects again.
+		const [a0] = await q('swarm.list')
+		const term = await browserWs('terminal', {agentId: a0.id, cols: '80', rows: '24'})
+		await new Promise((r, j) => (term.once('open', r), term.once('error', j)))
+		const termEnded = new Promise((r) => term.once('close', (code, reason) => r(String(reason))))
 		const ws = new WebSocket(`wss://127.0.0.1:${webPort}/connector/ws`, {rejectUnauthorized: false, headers: {authorization: `Bearer ${cfg.id}:${cfg.key}`, 'user-agent': 'omarchy-connector/test'}})
 		await new Promise((r, j) => (ws.once('open', r), ws.once('error', j)))
+		assert.match(await termEnded, /reconnected/)
 		ws.send(Buffer.from([0, 0, 0, 9, 65, 66]), {binary: true})
 		await new Promise((r) => setTimeout(r, 300))
 		ws.close()

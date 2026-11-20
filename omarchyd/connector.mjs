@@ -227,6 +227,16 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			a.on[k] = input[k] === true && a.allowed[k]
 		}
 		await save()
+		// Switching something off ends what's already open, not just what opens next.
+		const l = live.get(a.id)
+		if (l) {
+			for (const [id, ch] of l.channels) {
+				if (!ch.ability || may(a, ch.ability)) continue
+				l.channels.delete(id)
+				if (l.ws.readyState === l.ws.OPEN) l.ws.send(JSON.stringify({op: 'close', ch: id}))
+				closeSocket(ch.ws, 1000, `${ch.ability === 'terminal' ? 'The terminal' : 'The desktop'} was switched off for ${a.name}`)
+			}
+		}
 		return true
 	}
 	const may = (a, ability) => a.allowed[ability] && a.on[ability]
@@ -309,8 +319,16 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			return socket.destroy()
 		}
 		wss.handleUpgrade(req, socket, head, (ws) => {
-			// One connection per computer: a new one replaces the old.
-			live.get(a.id)?.ws.terminate()
+			// One connection per computer: a new one replaces the old. Its viewers and waiting calls
+			// end now (its own close handler sees it's no longer the live one and skips this).
+			const old = live.get(a.id)
+			if (old) {
+				for (const ch of old.channels.values()) closeSocket(ch.ws, 1000, 'The computer reconnected')
+				for (const c of old.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'The computer reconnected')))
+				old.channels.clear()
+				old.calls.clear()
+				old.ws.terminate()
+			}
 			const l = {ws, metrics: a.metrics ?? null, channels: new Map(), nextCh: 0, calls: new Map(), nextCall: 0}
 			live.set(a.id, l)
 			const alive = setInterval(() => ws.readyState === ws.OPEN && ws.ping(), 25_000)
@@ -356,7 +374,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 				clearInterval(alive)
 				if (live.get(a.id)?.ws !== ws) return
 				live.delete(a.id)
-				for (const ch of l.channels.values()) ch.ws.close(1000, 'The computer went offline')
+				for (const ch of l.channels.values()) closeSocket(ch.ws, 1000, 'The computer went offline')
 				for (const c of l.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'The computer went offline')))
 				a.lastSeen = now()
 				await save().catch(() => {})
@@ -373,7 +391,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		const ability = kind === 'pty' ? 'terminal' : 'desktop'
 		if (!a || !l || !may(a, ability)) return closeSocket(browserWs, 1011, !a ? 'Unknown computer' : !l ? 'That computer is offline' : `${ability === 'terminal' ? 'The terminal' : 'The desktop'} isn’t switched on for ${a.name}`)
 		const ch = ++l.nextCh
-		l.channels.set(ch, {ws: browserWs})
+		l.channels.set(ch, {ws: browserWs, ability})
 		l.ws.send(JSON.stringify({op: 'open', ch, kind, cols: opts.cols, rows: opts.rows}))
 		const head = Buffer.alloc(4)
 		head.writeUInt32BE(ch)

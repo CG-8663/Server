@@ -304,6 +304,9 @@ export const ALLOWED = {
 // Long-running mutations: omarchyd answers when the operation finishes.
 const SLOW = new Set(['unraid.connect', 'unraid.scan', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub'])
 
+// An IPv6 address in a URL needs brackets; req.hostname and URL.hostname may already have them.
+const bracketHost = (h) => (String(h).includes(':') && !String(h).startsWith('[') ? `[${h}]` : String(h))
+
 // The host an Origin header names. "null" and other unparseable origins name none, so they never match.
 function hostOf(origin) {
 	try {
@@ -399,7 +402,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		if (!c) return null
 		const upstream = new URL(c.baseUrl).hostname
 		const host = isLoopback(upstream) ? req.hostname : upstream
-		return /^[a-z0-9.-]{1,253}$/i.test(host ?? '') ? host : null
+		return /^[a-z0-9.-]{1,253}$/i.test(host ?? '') || /^\[[0-9a-f:.]{2,45}\]$/i.test(host ?? '') ? host : null
 	}
 	// App subdomains (TOUCH_APP_HOSTS) are routed to their relay before Touch's own handling.
 	let hostRoute = null
@@ -474,6 +477,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		}
 		shareAppSession(req, res, store.getSession(req.sid))
 		if (req.sid) keepAppPassFresh(req.sid)
+		// Settings › Devices shows when each device was last used: note it, at most once a minute.
+		const seen = store.getSession(req.sid)
+		if (seen && Date.now() - (seen.lastSeenAt ?? 0) > 60_000) store.updateSession(req.sid, {lastSeenAt: Date.now()}).catch(() => {})
 		next()
 	})
 
@@ -558,6 +564,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			return await run(await accessTokenFor(req.sid, session))
 		} catch (error) {
 			if (!(error instanceof BackendError) || error.code !== 'UNAUTHORIZED') throw error
+			// A wrong password for this call (change password, factory reset, desktop sign-in) is not an
+			// expired token: sending it again would count as a second failed attempt.
+			if (/incorrect (password|2fa code)/i.test(error.message)) throw error
 			if (session.mode === 'legacy') {
 				await store.deleteSession(req.sid)
 				throw error
@@ -1026,13 +1035,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			throw await lostBrowserSession(sid, error)
 		}
 	}
+	// Errors (signed out, server not answering) are thrown, not turned into "not the owner".
 	async function sessionIsOwner(sid) {
-		try {
-			const me = await authedCall({sid}, 'user.get', 'query')
-			return me?.role === 'owner'
-		} catch {
-			return false
-		}
+		const me = await authedCall({sid}, 'user.get', 'query')
+		return me?.role === 'owner'
 	}
 
 	// ---- Files: downloads, previews, thumbnails and uploads ---------------------
@@ -1170,7 +1176,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	async function frameVerdict(app, serverHost, cookieHeader) {
 		if (!app?.port) return 'unknown'
 		if (app.requiresHttps) return 'tab'
-		const origin = `http://${serverHost.includes(':') ? `[${serverHost}]` : serverHost}:${app.port}`
+		const origin = `http://${bracketHost(serverHost)}:${app.port}`
 		let url = new URL(app.path || '/', origin)
 		for (let hop = 0; hop < 5; hop++) {
 			let r
@@ -1503,8 +1509,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					}
 					const key = `${id}:${app.port}:${cookieHeader ? 1 : 0}`
 					const hit = appFrameCache.get(key)
-					let verdict = hit && Date.now() - hit.at < 10 * 60 * 1000 ? hit.verdict : await frameVerdict(app, serverHost, cookieHeader)
-					if (verdict === 'window' || verdict === 'tab' || verdict === 'blocked') appFrameCache.set(key, {verdict, at: hit?.at ?? Date.now()})
+					const fresh = hit && Date.now() - hit.at < 10 * 60 * 1000
+					let verdict = fresh ? hit.verdict : await frameVerdict(app, serverHost, cookieHeader)
+					// A new answer starts a new 10 minutes.
+					if (!fresh && (verdict === 'window' || verdict === 'tab' || verdict === 'blocked')) appFrameCache.set(key, {verdict, at: Date.now()})
 					if (verdict === 'blocked') {
 						if (mode) relay[id] = true
 						verdict = mode ? 'window' : 'tab'
@@ -1526,7 +1534,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		if (!store.getSession(req.sid)) return res.redirect(302, '/')
 		try {
 			const {ticket, port} = await authedCall(req, 'apps.accessTicket', 'mutation', {appId: id, view: req.query.view === '1'})
-			const h = req.hostname.includes(':') ? `[${req.hostname}]` : req.hostname
+			const h = bracketHost(req.hostname)
 			res.redirect(302, `${req.protocol}://${h}:${port}/__omarchy/enter?t=${encodeURIComponent(ticket)}&r=${encodeURIComponent(r)}`)
 		} catch (error) {
 			if (error instanceof BackendError && error.code === 'UNAUTHORIZED') return res.redirect(302, '/')
@@ -1565,7 +1573,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			if (mode === 'port') {
 				const port = await relayFor(app, serverHost, ancestor)
 				if (!port) return res.status(503).json({error: {code: 'UNAVAILABLE', message: 'No free port for the app relay'}})
-				const h = req.hostname.includes(':') ? `[${req.hostname}]` : req.hostname
+				const h = bracketHost(req.hostname)
 				return res.json({url: `${req.protocol}://${h}:${port}${path}`, ping: `${req.protocol}://${h}:${port}/__touch/ping.gif`, address: `${req.protocol}://${h}:${port}${path}`})
 			}
 			res.status(409).json({error: {code: 'NEEDS_APP_HOSTS', message: 'Opening apps remotely needs app addresses (see the README)'}})
@@ -1669,7 +1677,15 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
 				}
 				const needsOwner = route === 'terminal' || params.machineId === 'desktop' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
-				if (needsOwner && !(await sessionIsOwner(sid))) return refuse('403 Forbidden')
+				if (needsOwner) {
+					let owner
+					try {
+						owner = await sessionIsOwner(sid)
+					} catch (error) {
+						return refuse(error?.code === 'UNAUTHORIZED' ? '401 Unauthorized' : '502 Bad Gateway')
+					}
+					if (!owner) return refuse('403 Forbidden')
+				}
 				const ticket = await consoleTicket(sid, route)
 				target.search = new URLSearchParams({...params, ticket}).toString()
 				const upstream = new WebSocket(target, route === 'machines' ? ['binary'] : [], {handshakeTimeout: 10_000})

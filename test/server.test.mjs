@@ -247,8 +247,11 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(fake.settings.hostname, 'nest')
 		assert.equal((await touch.req('POST', '/api/rpc/apps.setTorEnabled', {input: true})).status, 200)
 		assert.equal(fake.settings.tor, true)
+		const tries = fake.calls.filter((c) => c.path === 'user.changePassword').length
 		const wrong = await touch.req('POST', '/api/rpc/user.changePassword', {input: {oldPassword: 'nope', newPassword: 'abcdefg'}})
 		assert.equal(wrong.status, 401)
+		// #246: a wrong password is one attempt, not two.
+		assert.equal(fake.calls.filter((c) => c.path === 'user.changePassword').length, tries + 1)
 		// Signed-in devices are the browsers this web server holds sessions for.
 		const second = await fetch(`${touch.base}/api/auth/login`, {method: 'POST', headers: {'content-type': 'application/json', 'x-omarchy-server': '1', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0) Firefox/130.0'}, body: JSON.stringify({username: 'chris', password: 'correct horse'})})
 		assert.equal(second.status, 200)
@@ -637,6 +640,8 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		const evil = await cspFor('x.com;script-src *')
 		assert.doesNotMatch(evil, /script-src \*/)
 		assert.doesNotMatch(evil, /frame-src/)
+		// #249: an IPv6 address gets its frame-src too.
+		assert.match(await cspFor('[fd00::5]:7780'), /frame-src 'self' http:\/\/\[fd00::5\]:\* https:\/\/\[fd00::5\]:\*;/)
 	})
 
 	test('bootstrap says how a browser tab reaches apps: directly on this port, or not (a proxy) (#86)', async () => {
