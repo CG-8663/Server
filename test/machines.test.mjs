@@ -753,3 +753,193 @@ test('Start still finishes an error machine whose disks are already in its folde
 		await rm(root, {recursive: true, force: true})
 	}
 })
+
+test('A partial disk.qcow2.part left installing is not booted', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-part-'))
+	const dataDir = join(root, 'data')
+	const id = 'c1d2e3f4'
+	const vm = join(dataDir, 'machines', 'vms', id)
+	const disk0 = join(vm, 'disk.qcow2')
+	const virsh = []
+	try {
+		await mkdir(vm, {recursive: true})
+		await writeFile(join(vm, 'disk.qcow2.part'), 'partial')
+		await writeFile(
+			join(dataDir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [{
+					id,
+					name: 'CutOff',
+					osId: 'testos-amd64',
+					cores: 1,
+					memoryGb: 1,
+					diskSizeGb: 10,
+					state: 'installing',
+					portForwards: [],
+					createdAt: 1,
+					mac: '52:54:00:11:22:55',
+					boot: ['disk0'],
+					layout: {
+						firmware: 'bios',
+						machineType: 'q35',
+						nic: 'virtio',
+						video: 'vga',
+						disks: [{id: 'disk0', file: disk0, device: 'disk', bus: 'virtio', format: 'qcow2', sizeGb: 10}],
+					},
+				}],
+			}),
+		)
+		const kvmDevice = join(root, 'kvm')
+		await writeFile(kvmDevice, '')
+		const run = async (cmd, args) => {
+			if (cmd === 'virsh') {
+				const a = args[0] === '-c' ? args.slice(2) : args
+				virsh.push(a[0])
+				if (a[0] === 'list') return ' Id   Name   State\n------------------\n'
+			}
+			return ''
+		}
+		const machines = createMachines({dataDir, run, kvmDevice})
+		await machines.ready
+		const listed = (await machines.procedures['machines.list'].run()).find((m) => m.id === id)
+		assert.equal(listed.state, 'error')
+		assert.equal(listed.errorMessage, 'Setup was interrupted. Delete this machine and create it again.')
+		await assert.rejects(
+			() => machines.procedures['machines.start'].run({id}),
+			(err) => err instanceof RpcError && err.code === 'PRECONDITION_FAILED' && err.message === 'CutOff didn’t finish setting up. Delete it and create it again.',
+		)
+		assert.equal(virsh.includes('define') || virsh.includes('start'), false)
+		assert.equal(await readFile(join(vm, 'disk.qcow2.part'), 'utf8'), 'partial')
+		await assert.rejects(() => stat(disk0))
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+async function cloudCreate({root, run}) {
+	const dataDir = join(root, 'data')
+	const catalog = join(root, 'catalog.json')
+	await writeFile(
+		catalog,
+		JSON.stringify({
+			version: 1,
+			images: [{id: 'testos-amd64', name: 'TestOS', version: '1', arch: 'amd64', kind: 'cloud', url: 'https://example.test/test.qcow2', sha256: 'a'.repeat(64), sizeMb: 1, adminGroup: 'sudo'}],
+		}),
+	)
+	const kvmDevice = join(root, 'kvm')
+	await writeFile(kvmDevice, '')
+	const machines = createMachines({
+		dataDir,
+		catalogUrl: `file://${catalog}`,
+		fetchImpl: async () => {
+			throw new Error('catalog image should already be on disk')
+		},
+		run,
+		kvmDevice,
+	})
+	await machines.ready
+	await mkdir(join(dataDir, 'machines', 'images'), {recursive: true})
+	await writeFile(join(dataDir, 'machines', 'images', 'testos-amd64.qcow2'), 'cloud-image-bytes')
+	return machines
+}
+
+const untilMachine = async (machines, id, state) => {
+	const end = Date.now() + 5000
+	for (;;) {
+		const m = (await machines.procedures['machines.list'].run()).find((x) => x.id === id)
+		if (m?.state === state) return m
+		if (Date.now() > end) throw new Error(`machine did not reach ${state} (state ${m?.state})`)
+		await new Promise((r) => setTimeout(r, 20))
+	}
+}
+
+test('qemu-img convert failure keeps a partial disk off disk.qcow2', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-conv-'))
+	const defined = []
+	try {
+		const run = async (cmd, args, opts = {}) => {
+			if (cmd === 'openssl') return execFileSync('openssl', args, {input: opts.input}).toString()
+			if (cmd === 'xorriso') {
+				await writeFile(args[args.indexOf('-output') + 1], 'iso')
+				return ''
+			}
+			if (cmd === 'qemu-img' && args[0] === 'convert') {
+				await writeFile(args.at(-1), 'partial')
+				throw new Error('qemu-img: No space left on device')
+			}
+			if (cmd === 'virsh') {
+				const a = args[0] === '-c' ? args.slice(2) : args
+				if (a[0] === 'define') defined.push(await readFile(a[1], 'utf8'))
+				if (a[0] === 'list') return ' Id   Name   State\n------------------\n'
+				return ''
+			}
+			return ''
+		}
+		const machines = await cloudCreate({root, run})
+		const {id} = await machines.procedures['machines.create'].run({name: 'Half', osId: 'testos-amd64', cores: 1, memoryGb: 1, diskSizeGb: 10, username: 'chris', password: 'hunter2'})
+		const m = await untilMachine(machines, id, 'error')
+		assert.match(m.errorMessage, /No space left on device/)
+		const vm = join(root, 'data', 'machines', 'vms', id)
+		await assert.rejects(() => stat(join(vm, 'disk.qcow2')))
+		assert.equal(await readFile(join(vm, 'disk.qcow2.part'), 'utf8'), 'partial')
+		await assert.rejects(
+			() => machines.procedures['machines.start'].run({id}),
+			(err) => err instanceof RpcError && err.code === 'PRECONDITION_FAILED' && err.message === 'Half didn’t finish setting up. Delete it and create it again.',
+		)
+		assert.equal(defined.length, 0)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('Start finishes when define fails after the disk is no longer a partial disk', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-def-'))
+	const defined = []
+	let started = false
+	let defines = 0
+	try {
+		const run = async (cmd, args, opts = {}) => {
+			if (cmd === 'openssl') return execFileSync('openssl', args, {input: opts.input}).toString()
+			if (cmd === 'xorriso') {
+				await writeFile(args[args.indexOf('-output') + 1], 'iso')
+				return ''
+			}
+			if (cmd === 'qemu-img' && args[0] === 'convert') {
+				await writeFile(args.at(-1), 'finished-disk')
+				return ''
+			}
+			if (cmd === 'qemu-img' && args[0] === 'resize') return ''
+			if (cmd === 'virsh') {
+				const a = args[0] === '-c' ? args.slice(2) : args
+				if (a[0] === 'define') {
+					defines++
+					if (defines === 1) throw new Error('virsh define: unsupported configuration')
+					defined.push(await readFile(a[1], 'utf8'))
+					return ''
+				}
+				if (a[0] === 'start') {
+					started = true
+					return ''
+				}
+				if (a[0] === 'list') return started ? ' Id   Name   State\n------------------\n -    placeholder   running\n' : ' Id   Name   State\n------------------\n'
+				return ''
+			}
+			return ''
+		}
+		const machines = await cloudCreate({root, run})
+		const {id} = await machines.procedures['machines.create'].run({name: 'Almost', osId: 'testos-amd64', cores: 1, memoryGb: 1, diskSizeGb: 10, username: 'chris', password: 'hunter2'})
+		const m = await untilMachine(machines, id, 'error')
+		assert.match(m.errorMessage, /unsupported configuration/)
+		const vm = join(root, 'data', 'machines', 'vms', id)
+		const disk0 = join(vm, 'disk.qcow2')
+		assert.equal(await readFile(disk0, 'utf8'), 'finished-disk')
+		await assert.rejects(() => stat(join(vm, 'disk.qcow2.part')))
+		assert.equal(await machines.procedures['machines.start'].run({id}), true)
+		assert.equal(started, true)
+		assert.equal(defined.length, 1)
+		assert.ok(defined[0].includes(disk0))
+		assert.equal(defined[0].includes('disk.qcow2.part'), false)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
