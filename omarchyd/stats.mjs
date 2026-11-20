@@ -1,5 +1,8 @@
 // Background samples of live system stats. Each field has its own interval.
-// RPC handlers return snapshot() — a memory read — and do not hit hardware.
+// Sampling runs only while something is reading, and stops about 15s after the
+// last read. The next read returns the last snapshot immediately and refreshes.
+// snapshot() and get() are memory reads for the caller; they do not wait on hardware
+// except the very first get(), which waits for cpu so the first look is not empty.
 
 export const DEFAULT_INTERVALS = {
 	cpu: 1_000,
@@ -13,6 +16,7 @@ export const DEFAULT_INTERVALS = {
 }
 
 const TICK_MS = 250
+export const IDLE_MS = 15_000
 
 export function emptySnapshot() {
 	return {
@@ -47,6 +51,7 @@ export function createSampler({
 	read,
 	setIntervalFn = setInterval,
 	clearIntervalFn = clearInterval,
+	setTimeoutFn = setTimeout,
 } = {}) {
 	const lastAt = {}
 	let snap = emptySnapshot()
@@ -54,6 +59,7 @@ export function createSampler({
 	let timer = null
 	let inflight = null
 	let stopped = false
+	let lastRead = 0
 
 	const due = (key) => lastAt[key] == null || now() - lastAt[key] >= (intervals[key] ?? DEFAULT_INTERVALS[key])
 
@@ -104,13 +110,50 @@ export function createSampler({
 		return snap
 	}
 
+	function pause() {
+		if (timer == null) return
+		clearIntervalFn(timer)
+		timer = null
+	}
+
+	function arm() {
+		if (stopped || timer != null) return
+		const kick = () => {
+			if (stopped) return
+			if (now() - lastRead >= IDLE_MS) {
+				pause()
+				return
+			}
+			void tick({waitGpu: false})
+		}
+		timer = setIntervalFn(kick, TICK_MS)
+		timer?.unref?.()
+	}
+
+	// A read keeps the timer alive. Coming back from idle returns the snapshot the
+	// caller already has and refreshes on the next turn, without waiting.
+	function touch({refresh = true} = {}) {
+		lastRead = now()
+		if (stopped) return
+		const wasIdle = timer == null
+		arm()
+		if (!wasIdle || !refresh || lastAt.cpu == null) return
+		const later = setTimeoutFn(() => {
+			if (!stopped && timer != null && now() - lastRead < IDLE_MS) void tick({waitGpu: false})
+		}, 0)
+		later?.unref?.()
+	}
+
 	function snapshot() {
+		touch()
 		return snap
 	}
 
 	async function get() {
 		if (stopped) return snap
-		if (lastAt.cpu == null) {
+		const cold = lastAt.cpu == null
+		touch({refresh: !cold})
+		if (cold) {
 			inflight ??= tick({waitGpu: false}).finally(() => (inflight = null))
 			await inflight
 		}
@@ -118,18 +161,12 @@ export function createSampler({
 	}
 
 	function start() {
-		if (timer != null) return
 		stopped = false
-		void get().catch(() => {})
-		timer = setIntervalFn(() => void tick({waitGpu: false}), TICK_MS)
-		timer.unref?.()
 	}
 
 	function stop() {
 		stopped = true
-		if (timer == null) return
-		clearIntervalFn(timer)
-		timer = null
+		pause()
 	}
 
 	return {tick, snapshot, get, start, stop}

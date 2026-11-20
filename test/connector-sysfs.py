@@ -368,6 +368,59 @@ class Sampler(unittest.TestCase):
         self.assertEqual(second["cpu"], 1)
         self.assertEqual(n["cpu"], 1)
 
+    def test_idle_stops_sampling_until_the_next_read(self):
+        counts, read = self.readers()
+        t = {"n": 0}
+        spawned = []
+
+        def spawn(target):
+            spawned.append(target)
+            return object()
+
+        s = agent.create_sampler(now=lambda: t["n"], intervals={**agent.DEFAULT_INTERVALS, "cpu": 1}, read=read, spawn=spawn)
+        self.assertFalse(s.active())
+        first = s.get()
+        # A throwaway cpu read, then the first real sample.
+        self.assertEqual(counts["cpu"], 2)
+        self.assertEqual(first["cpu"], 3.0)
+        self.assertTrue(s.active())
+        self.assertEqual(len(spawned), 1)
+        t["n"] = 1
+        self.assertTrue(s.service())
+        self.assertEqual(counts["cpu"], 3)
+        t["n"] = 1 + agent.IDLE_S
+        self.assertFalse(s.service())
+        self.assertFalse(s.active())
+        self.assertEqual(counts["cpu"], 3)
+        again = s.get()
+        self.assertEqual(again["cpu"], 4.5)
+        self.assertEqual(counts["cpu"], 3)
+        self.assertEqual(len(spawned), 3)
+        spawned[-1]()
+        self.assertEqual(counts["cpu"], 4)
+        s.stop()
+        self.assertFalse(s.active())
+
+    def test_watch_sends_the_last_snapshot_without_sampling_again(self):
+        n = {"cpu": 0}
+
+        def cpu():
+            n["cpu"] += 1
+            return float(n["cpu"])
+
+        s = agent.create_sampler(now=lambda: 0, read={"cpu": cpu}, spawn=lambda target: object())
+        s.tick()
+        conn = agent.Connection({"abilities": {}})
+        conn.sampler = s
+        conn.pkg = "pacman"
+        sent = []
+        conn.send = sent.append
+        conn.handle({"op": "watch"})
+        self.assertEqual(sent[0]["op"], "metrics")
+        self.assertEqual(sent[0]["metrics"]["cpu"], 1.0)
+        self.assertEqual(n["cpu"], 1)
+        self.assertTrue(s.active())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

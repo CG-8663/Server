@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
-import {createSampler, DEFAULT_INTERVALS} from '../omarchyd/stats.mjs'
+import {createSampler, DEFAULT_INTERVALS, IDLE_MS} from '../omarchyd/stats.mjs'
 
 const cpu = (n) => ({threads: 8, totalUsed: n, system: n, apps: [], machines: []})
 const mem = (n) => ({size: 16e9, totalUsed: n, system: n, apps: [], machines: []})
@@ -120,33 +120,56 @@ test('get() returns cpu without waiting for a slow gpu sample', async () => {
 	assert.equal(s.snapshot().gpu.gpus[0].used, 9)
 })
 
-test('start() ticks on a timer; stop() ends it', async () => {
+test('a read starts the timer and it stops 15s after the last read', async () => {
 	const {counts, read} = readers()
 	let t = 0
 	const timers = []
+	const timeouts = []
 	const s = createSampler({
 		now: () => t,
 		intervals: {...DEFAULT_INTERVALS, cpu: 1000},
 		read,
 		setIntervalFn: (fn, ms) => {
-			timers.push({fn, ms})
-			return 1
+			const id = {fn, ms}
+			timers.push(id)
+			return id
 		},
 		clearIntervalFn: (id) => {
-			assert.equal(id, 1)
-			timers.length = 0
+			const i = timers.indexOf(id)
+			if (i >= 0) timers.splice(i, 1)
+		},
+		setTimeoutFn: (fn, ms) => {
+			const id = {fn, ms}
+			timeouts.push(id)
+			return id
 		},
 	})
 	s.start()
-	assert.equal(timers.length, 1)
-	assert.ok(timers[0].ms <= 1000)
-	await Promise.resolve()
+	assert.equal(timers.length, 0, 'starting omarchyd does not sample')
+	const first = await s.get()
+	assert.equal(first.cpu.totalUsed, 10)
 	assert.equal(counts.cpu, 1)
+	assert.equal(timers.length, 1)
+	assert.equal(timers[0].ms, 250)
 	t = 1000
 	await timers[0].fn()
 	assert.equal(counts.cpu, 2)
+	t = 1000 + IDLE_MS
+	await timers[0].fn()
+	assert.equal(timers.length, 0)
+	assert.equal(counts.cpu, 2)
+	const again = await s.get()
+	assert.equal(again.cpu.totalUsed, 20)
+	assert.equal(counts.cpu, 2, 'the read returns the last snapshot without waiting')
+	assert.equal(timeouts.length, 1)
+	assert.equal(timers.length, 1)
+	await timeouts[0].fn()
+	assert.equal(counts.cpu, 3)
 	s.stop()
 	assert.equal(timers.length, 0)
+	t += 1000
+	await s.get()
+	assert.equal(counts.cpu, 3)
 })
 
 test('stop() does not sample hardware on later ticks', async () => {

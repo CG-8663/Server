@@ -577,6 +577,7 @@ DEFAULT_INTERVALS = {
     "uptime": 60,
 }
 _TICK = 0.25
+IDLE_S = 15
 
 
 def empty_snapshot():
@@ -608,7 +609,7 @@ def default_reads():
 
 
 class Sampler:
-    def __init__(self, now=time.time, intervals=None, read=None):
+    def __init__(self, now=time.time, intervals=None, read=None, spawn=None):
         self._now = now
         self._intervals = {**DEFAULT_INTERVALS, **(intervals or {})}
         self._read = read or default_reads()
@@ -617,6 +618,11 @@ class Sampler:
         self._stopped = False
         self._thread = None
         self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._last_read = 0
+        self._primed = False
+        if spawn is not None:
+            self._spawn = spawn
 
     def _due(self, key):
         return self._last.get(key) is None or self._now() - self._last[key] >= self._intervals.get(key, DEFAULT_INTERVALS[key])
@@ -660,43 +666,86 @@ class Sampler:
                 threading.Thread(target=run_gpu, daemon=True).start()
         return self._snap
 
+    def _spawn(self, target):
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        return thread
+
+    def _prime_cpu(self):
+        # cpu percent needs one throwaway read before the first real sample.
+        if self._primed or "cpu" not in self._read:
+            return
+        self._primed = True
+        try:
+            self._read["cpu"]()
+        except Exception:
+            pass
+
+    def _ensure(self):
+        with self._lock:
+            if self._stopped or self._thread is not None:
+                return
+            self._stop.clear()
+            self._thread = self._spawn(self._loop)
+
+    def _loop(self):
+        while not self._stop.wait(_TICK):
+            if not self.service():
+                return
+
+    def service(self):
+        """One timer tick. False means nobody has read lately, so the timer stops."""
+        if self._stopped or self._now() - self._last_read >= IDLE_S:
+            with self._lock:
+                self._thread = None
+            self._stop.set()
+            return False
+        self.tick(wait_gpu=False)
+        return True
+
+    def _note(self, refresh):
+        self._last_read = self._now()
+        if self._stopped:
+            return
+        was_idle = self._thread is None
+        self._ensure()
+        if was_idle and refresh and self._last.get("cpu") is not None:
+            self._spawn(lambda: self.tick(wait_gpu=False))
+
+    def active(self):
+        return self._thread is not None and not self._stopped
+
+    def peek(self):
+        return self._snap
+
     def snapshot(self):
+        self._note(True)
         return self._snap
 
     def get(self):
         if self._stopped:
             return self._snap
-        if self._last.get("cpu") is None:
+        cold = self._last.get("cpu") is None
+        if cold:
+            self._prime_cpu()
+        self._note(not cold)
+        if cold:
             self.tick(wait_gpu=False)
         return self._snap
 
     def start(self):
-        if self._thread is not None:
-            return
+        # A connection coming back may sample again. A read is what starts the timer.
         self._stopped = False
-        self._stop.clear()
-        if "cpu" in self._read:
-            try:
-                self._read["cpu"]()
-            except Exception:
-                pass
-        self.get()
-
-        def loop():
-            while not self._stop.wait(_TICK):
-                self.tick(wait_gpu=False)
-
-        self._thread = threading.Thread(target=loop, daemon=True)
-        self._thread.start()
 
     def stop(self):
         self._stopped = True
         self._stop.set()
-        self._thread = None
+        with self._lock:
+            self._thread = None
 
 
-def create_sampler(now=time.time, intervals=None, read=None):
-    return Sampler(now=now, intervals=intervals, read=read)
+def create_sampler(now=time.time, intervals=None, read=None, spawn=None):
+    return Sampler(now=now, intervals=intervals, read=read, spawn=spawn)
 
 
 _process_sampler = None
@@ -1394,11 +1443,16 @@ class Connection:
             _process_sampler = create_sampler()
         live_sampler = _process_sampler
         live_sampler.start()
-        self.send({"op": "metrics", "metrics": metrics(self.pkg, sampler=live_sampler)})
+        self.sampler = live_sampler
 
         def report():
             while not stop.wait(3):
-                self.send({"op": "metrics", "metrics": metrics(self.pkg, sampler=live_sampler)})
+                # Push the last snapshot only while someone is reading. Calling metrics()
+                # here would count as a read and the sampler would never go idle.
+                if live_sampler.active():
+                    snap = dict(live_sampler.peek())
+                    snap["updates"] = updates_waiting(self.pkg)
+                    self.send({"op": "metrics", "metrics": snap})
                 # Facts change now and then (plugins, theme, a desktop session starting).
                 if int(time.time()) % 300 < 10:
                     self.send({"op": "hello", "info": info(), "abilities": self.allowed})
@@ -1444,6 +1498,10 @@ class Connection:
             ch = self.channels.pop(int(msg.get("ch", 0)), None)
             if ch:
                 ch.close()
+        elif op == "watch":
+            # The server asks while a screen is open. Return the last snapshot now and refresh.
+            if getattr(self, "sampler", None) is not None:
+                self.send({"op": "metrics", "metrics": metrics(self.pkg, sampler=self.sampler)})
         elif op == "call":
             threading.Thread(target=self.call, args=(msg,), daemon=True).start()
         elif op == "removed":

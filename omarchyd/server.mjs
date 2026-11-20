@@ -81,7 +81,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const release = await system.osRelease()
 	const settings = {hostname: os.hostname()}
 
-	// Live gauges: hardware is sampled on its own interval; RPCs return the last snapshot.
+	// Live gauges: hardware is sampled on its own interval while a screen is reading.
+	// The timer starts on the first read and stops about 15s after the last one,
+	// so an idle server is not running nvidia-smi or podman stats.
 	const sampler = createSampler({
 		read: {
 			cpu: () => system.cpuUsage(),
@@ -101,7 +103,6 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			},
 		},
 	})
-	sampler.start()
 
 	const ownerOnly = (auth, what = 'change the desktop’s theme') => {
 		if (accounts.getUser(auth.userId)?.role === 'member') throw new RpcError('FORBIDDEN', `Only the server’s owner can ${what}`)
