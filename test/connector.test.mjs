@@ -448,4 +448,70 @@ describe('swarm close reasons', () => {
 			}
 		})
 	})
+
+	test('turning Terminal or Desktop off ends sessions that are already open', async () => {
+		const allowed = {...abilities, terminal: true, desktop: true}
+		await withAgent({name: 'Study PC', allowed, on: {...allowed}}, async ({c, id, agentWs}) => {
+			const pty = await browserSocket()
+			const vnc = await browserSocket()
+			const closedOrStillOpen = (pending, label) => new Promise((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error(`${label} channel stayed open`)), 1000)
+				pending.then((v) => (clearTimeout(timer), resolve(v)), (e) => (clearTimeout(timer), reject(e)))
+			})
+			try {
+				const opens = []
+				const opened = new Promise((resolve) => {
+					const onMsg = (d, isBinary) => {
+						if (isBinary) return
+						const msg = JSON.parse(String(d))
+						if (msg.op !== 'open') return
+						opens.push(msg)
+						if (opens.length < 2) return
+						agentWs.off('message', onMsg)
+						resolve(opens)
+					}
+					agentWs.on('message', onMsg)
+				})
+				c.openChannel(id, 'pty', pty.serverSide, {cols: 80, rows: 24})
+				c.openChannel(id, 'vnc', vnc.serverSide)
+				const openMsgs = await opened
+				assert.equal(openMsgs.filter((m) => m.kind === 'pty').length, 1)
+				assert.equal(openMsgs.filter((m) => m.kind === 'vnc').length, 1)
+
+				const ptyClosed = closedAs(pty.client)
+				await c.procedures['swarm.setAbilities'].run({id, terminal: false})
+				const got = await closedOrStillOpen(ptyClosed, 'pty')
+				assert.equal(got.code, 1011)
+				assert.equal(got.reason.toString('utf8'), 'The terminal isn’t switched on for Study PC')
+
+				const binaries = []
+				const onBin = (d, isBinary) => {
+					if (isBinary) binaries.push(d)
+				}
+				agentWs.on('message', onBin)
+				try {
+					pty.serverSide.send(Buffer.from([1, 2, 3, 4]))
+				} catch {}
+				await new Promise((r) => setTimeout(r, 50))
+				assert.equal(binaries.length, 0)
+				agentWs.off('message', onBin)
+
+				assert.equal(vnc.client.readyState, WebSocket.OPEN)
+
+				const vncClosed = closedAs(vnc.client)
+				await c.procedures['swarm.setAbilities'].run({id, desktop: false})
+				const gotVnc = await closedOrStillOpen(vncClosed, 'vnc')
+				assert.equal(gotVnc.code, 1011)
+				assert.equal(gotVnc.reason.toString('utf8'), 'The desktop isn’t switched on for Study PC')
+			} finally {
+				// An open socket keeps the browser's server from finishing close, so the failure never reports.
+				pty.client.terminate()
+				pty.serverSide.terminate()
+				vnc.client.terminate()
+				vnc.serverSide.terminate()
+				await pty.close()
+				await vnc.close()
+			}
+		})
+	})
 })
