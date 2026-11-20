@@ -359,7 +359,17 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			const nodes = (d.children ?? []).length ? flat(d).filter((x) => x !== d) : [d]
 			const targets = nodes.filter((x) => x.fstype && !SKIP_FS.has(x.fstype))
 			if (!targets.length) fail('Nothing to mount')
+			// Names already mounted under /run/media/$USER, so a second stick with the same label
+			// is placed beside the first instead of on top of it. A path under that name counts too.
+			const media = join('/run/media', user.name)
 			const used = new Set()
+			for (const dev of await blockDevices()) {
+				for (const m of flat(dev).flatMap((x) => (x.mountpoints ?? []).filter(Boolean))) {
+					if (!m.startsWith(`${media}${sep}`)) continue
+					const name = m.slice(media.length + 1).split(sep)[0]
+					if (name) used.add(name)
+				}
+			}
 			for (const t of targets) {
 				let name = safeMountName(t.label) || safeMountName(t.uuid) || safeMountName(t.name) || 'disk'
 				const base = name
