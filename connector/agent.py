@@ -297,7 +297,7 @@ def disks():
         if len(p) < 3 or p[2] not in REAL_FS or p[0] in seen:
             continue
         mount = p[1].replace("\\040", " ")
-        if mount.startswith(("/boot", "/snap", "/var/lib/docker", "/var/lib/containers")):
+        if any(mount == p or mount.startswith(p + "/") for p in ("/boot", "/snap", "/var/lib/docker", "/var/lib/containers")):
             continue
         seen.add(p[0])
         try:
@@ -580,7 +580,8 @@ def _check_updates(pkg):
     cmd = {"apt": ["apt", "list", "--upgradable"], "dnf": ["dnf", "-q", "check-update"], "pacman": ["checkupdates"] if shutil.which("checkupdates") else ["pacman", "-Qu"], "zypper": ["zypper", "-q", "lu"]}.get(pkg)
     try:
         if cmd:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            # English output, so the header lines below are recognised whatever the system language.
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=dict(os.environ, LC_ALL="C", LANG="C"))
             _updates["n"] = len([l for l in r.stdout.splitlines() if l.strip() and not l.startswith(("Listing", "Last metadata", "S |", "--+", "Loading", "Repository", "Obsoleting"))])
     except (OSError, subprocess.SubprocessError):
         _updates["n"] = None
@@ -886,9 +887,16 @@ def vnc_start():
             if os.path.exists(VNC_SOCK):
                 break
             if _vnc["proc"].poll() is not None:
+                _vnc["proc"] = None
                 raise RuntimeError("The screen sharing program stopped straight away.")
             time.sleep(0.1)
         else:
+            # Still running but no socket: stop it, so a retry doesn't leave another one behind.
+            p, _vnc["proc"] = _vnc["proc"], None
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except OSError:
+                pass
             raise RuntimeError("The screen sharing program didn’t start.")
         _vnc["users"] = 1
 
@@ -1037,6 +1045,11 @@ class Screen(Channel):
         if self.closed:
             return
         self.closed = True
+        # shutdown() wakes the pump's blocked recv(); close() alone leaves the VNC connection open.
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         try:
             self.sock.close()
         except OSError:
@@ -1305,6 +1318,11 @@ def backup_folders(_args):
     for name in sorted(os.listdir(home), key=str.lower):
         if name.startswith(".") or not os.path.isdir(os.path.join(home, name)):
             continue
+        # A folder that is a link to somewhere outside the home folder can't be backed up from here.
+        try:
+            home_folder(name)
+        except RuntimeError:
+            continue
         out.append({"name": name})
     return {"home": home, "folders": out[:200]}
 
@@ -1442,7 +1460,12 @@ def backup_run(conn, call_id, args, cfg):
         raise RuntimeError("No password for the backup store")
     folders, skipped = [], []
     for rel in args.get("folders") or []:
-        full = home_folder(rel)
+        # One folder that can't be backed up is skipped and reported; the others still are.
+        try:
+            full = home_folder(rel)
+        except RuntimeError:
+            skipped.append(str(rel)[:200])
+            continue
         (folders if os.path.isdir(full) else skipped).append(full if os.path.isdir(full) else rel)
     if not folders:
         raise RuntimeError("None of the chosen folders are on this computer")
@@ -1468,14 +1491,22 @@ def backup_restore(conn, call_id, args, cfg):
     while os.path.exists(target):
         target = os.path.join(home, "Restored", time.strftime("%Y-%m-%d %H%M") + f" ({n})")
         n += 1
-    os.makedirs(target, mode=0o700)
     restic_path()
-    server, repo = start_relay(cfg)
+    os.makedirs(target, mode=0o700)
     try:
-        # Only what was under the home folder, laid out as it was there (Restored/<date>/Documents…).
-        _run_restic(conn, call_id, ["restore", f"{snap}:{home}", "--target", target, "--json"], repo, password, "Restoring")
-    finally:
-        server.shutdown()
+        server, repo = start_relay(cfg)
+        try:
+            # Only what was under the home folder, laid out as it was there (Restored/<date>/Documents…).
+            _run_restic(conn, call_id, ["restore", f"{snap}:{home}", "--target", target, "--json"], repo, password, "Restoring")
+        finally:
+            server.shutdown()
+    except BaseException:
+        # A restore that failed leaves no empty folder that looks like a finished one.
+        try:
+            os.rmdir(target)
+        except OSError:
+            pass
+        raise
     return {"folder": target}
 
 
