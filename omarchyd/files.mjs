@@ -194,8 +194,12 @@ export function createFiles({home, dataDir}) {
 		const {real: dest} = await resolve(toDirectory)
 		if (dest === real || dest.startsWith(real + sep)) throw new RpcError('BAD_REQUEST', '[subdir-of-self]')
 		let target = join(dest, basename(real))
-		// The destination folder is this item's own parent, so replace would delete the source.
-		if (target === real) return toVirtual(real)
+		// Only replace of this same file returns early. A directory symlink to the parent still
+		// names that file once both paths are real; a hard link in another folder does not.
+		if (collision === 'replace') {
+			const targetReal = await realpath(target).catch(() => null)
+			if (targetReal !== null && targetReal === (await realpath(real))) return toVirtual(real)
+		}
 		if (await lstat(target).then(() => true, () => false)) {
 			if (collision === 'error') throw new RpcError('CONFLICT', '[already-exists]')
 			if (collision === 'replace') await rm(target, {recursive: true, force: true})
