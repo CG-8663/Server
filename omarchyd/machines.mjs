@@ -609,8 +609,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const m = find(input?.id)
 		if (isBusy(m.id)) throw new RpcError('CONFLICT', `${m.name} is busy`)
 		if (m.state === 'error') {
-			// If setup got as far as the disk, Start finishes it: define the machine again and boot.
-			if (pending !== 'starting' || !(await exists(join(vmsDir, m.id, 'disk.qcow2')))) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish setting up. Delete it and create it again.`)
+			// If setup got as far as this machine's own disk, Start finishes it: define again and boot.
+			// A failed copy still names the source machine's files, and those must not be booted.
+			const own = `${join(vmsDir, m.id)}/`
+			const ownDisks = (m.layout?.disks ?? []).every((d) => d.device !== 'disk' || !d.file || d.file.startsWith(own))
+			if (pending !== 'starting' || !ownDisks || !(await exists(join(vmsDir, m.id, 'disk.qcow2')))) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish setting up. Delete it and create it again.`)
 			await define(m)
 			delete m.state
 			delete m.errorMessage
