@@ -14,6 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
+import {consoleDisconnectAction} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -211,10 +212,16 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				}, 300)
 			})
 			r.addEventListener('disconnect', (e) => {
-				if (disposed) return
-				if (closeCode === SUPERSEDED) return setState('superseded')
+				const action = consoleDisconnectAction({
+					disposed: disposed || rfbRef.current !== r,
+					superseded: closeCode === SUPERSEDED,
+					clean: (e as CustomEvent<{clean: boolean}>).detail?.clean,
+				})
+				if (action === 'ignore') return
+				if (action === 'superseded') return setState('superseded')
 				setState('lost')
-				if (!(e as CustomEvent<{clean: boolean}>).detail.clean) retry = window.setTimeout(connect, 1500)
+				window.clearTimeout(retry)
+				retry = window.setTimeout(connect, 1500)
 			})
 		}
 		connect()
