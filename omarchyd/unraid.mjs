@@ -456,7 +456,8 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 					for (const l of out.split('\n')) {
 						const [p, s, t] = l.split('\t')
 						if (!p) continue
-						appdataSizes.set(p, Number(s) || 0)
+						const rawSize = (s ?? '').trim()
+						appdataSizes.set(p, /^\d+$/.test(rawSize) ? Number(rawSize) : null)
 						if (t?.trim() === 'f') appdataFiles.add(p)
 					}
 				}
@@ -465,7 +466,10 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 					const img = byImage.get(c.Image)
 					const plan = containerPlan(c, {imageEnv: img?.Config?.Env ?? [], imageCmd: img?.Config?.Cmd ?? null, takenIds: taken, appdataFiles})
 					taken.add(plan.id)
-					return {...plan, size: plan.copies.reduce((t, cp) => t + (appdataSizes.get(cp.from) ?? 0), 0), installed: apps.installed(plan.id)}
+					const size = plan.copies.some((cp) => appdataSizes.get(cp.from) == null)
+						? null
+						: plan.copies.reduce((t, cp) => t + appdataSizes.get(cp.from), 0)
+					return {...plan, size, installed: apps.installed(plan.id)}
 				})
 			}
 		}

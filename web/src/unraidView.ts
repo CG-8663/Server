@@ -70,3 +70,27 @@ export function retryActionState(scanning: boolean) {
 export function defaultSelectedVms(vms: {name: string; state: string; problems: string[]; installed?: boolean}[]): string[] {
 	return vms.filter((v) => !v.installed && v.state === 'shut off' && !v.problems.length).map((v) => v.name)
 }
+
+export function formatBytes(n: number | null | undefined): string {
+	if (n == null) return 'size unknown'
+	if (n < 1024) return `${n} B`
+	const u = ['KB', 'MB', 'GB', 'TB']
+	let i = -1
+	let v = n
+	do {
+		v /= 1024
+		i++
+	} while (v >= 1024 && i < u.length - 1)
+	return `${v.toFixed(v < 10 ? 1 : 0)} ${u[i]}`
+}
+
+export function formatTotalSize(sizes: (number | null | undefined)[]): string {
+	let sum = 0
+	let unknown = false
+	for (const s of sizes) {
+		if (s == null) unknown = true
+		else sum += s
+	}
+	if (!unknown) return formatBytes(sum)
+	return sum > 0 ? `at least ${formatBytes(sum)}` : 'size unknown'
+}

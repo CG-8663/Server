@@ -5,26 +5,14 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query, type Listing} from './api'
 import {Icon, type IconName} from './icons'
 import {Group, Row, Switch, haptic, useConfirm, useToast} from './ui'
-import {defaultSelectedVms, isKeyChangedError, itemStatusForView, jobSummary, retryActionState, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
+import {defaultSelectedVms, formatBytes, formatTotalSize, isKeyChangedError, itemStatusForView, jobSummary, retryActionState, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
 
 type Share = {name: string; size: number | null; kind: 'share' | 'appdata' | 'system' | 'domains' | 'isos'}
-type Container = {id: string; name: string; image: string; running: boolean; icon: string | null; web: {port: number} | null; copies: {from: string; to: string; file?: boolean}[]; shares: string[]; notes: string[]; problems: string[]; size: number; installed: boolean}
+type Container = {id: string; name: string; image: string; running: boolean; icon: string | null; web: {port: number} | null; copies: {from: string; to: string; file?: boolean}[]; shares: string[]; notes: string[]; problems: string[]; size: number | null; installed: boolean}
 type Vm = {name: string; state: string; cores: number; memoryMb: number; firmware: string; disks: {file: string}[]; notes: string[]; problems: string[]; size: number; installed?: boolean}
 type Scan = {shares: Share[]; containers: Container[]; vms: Vm[]; at: number}
 type Status = {connected: {host: string; version: string; fingerprint: string | null} | null; scanned: boolean; job: Job | null}
 
-const bytes = (n: number | null | undefined) => {
-	if (n == null) return 'size unknown'
-	if (n < 1024) return `${n} B`
-	const u = ['KB', 'MB', 'GB', 'TB']
-	let i = -1
-	let v = n
-	do {
-		v /= 1024
-		i++
-	} while (v >= 1024 && i < u.length - 1)
-	return `${v.toFixed(v < 10 ? 1 : 0)} ${u[i]}`
-}
 const SHARE_NOTE: Record<Share['kind'], string> = {
 	share: '',
 	appdata: 'Your containers’ files. They come over with each container you choose.',
@@ -240,11 +228,13 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 		else n.add(key)
 		put(n)
 	}
-	const total = useMemo(
+	const totalLabel = useMemo(
 		() =>
-			scan.shares.filter((x) => shares.has(x.name)).reduce((t, x) => t + (x.size ?? 0), 0) +
-			scan.containers.filter((c) => containers.has(c.id)).reduce((t, c) => t + c.size, 0) +
-			scan.vms.filter((v) => vms.has(v.name)).reduce((t, v) => t + v.size, 0),
+			formatTotalSize([
+				...scan.shares.filter((x) => shares.has(x.name)).map((x) => x.size),
+				...scan.containers.filter((c) => containers.has(c.id)).map((c) => c.size),
+				...scan.vms.filter((v) => vms.has(v.name)).map((v) => v.size),
+			]),
 		[scan, shares, containers, vms],
 	)
 	const count = shares.size + containers.size + vms.size
@@ -272,7 +262,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 							</span>
 							<span className="main">
 								<b style={{fontWeight: 550}}>{x.name}</b>
-								<span>{[bytes(x.size), SHARE_NOTE[x.kind]].filter(Boolean).join(' · ')}</span>
+								<span>{[formatBytes(x.size), SHARE_NOTE[x.kind]].filter(Boolean).join(' · ')}</span>
 							</span>
 						</button>
 					)
@@ -289,7 +279,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 								</span>
 								<span className="main">
 									<b style={{fontWeight: 550}}>{c.name}</b>
-									<span>{c.installed ? 'Already here' : [c.image, bytes(c.size), c.notes.length ? `${c.notes.length} note${c.notes.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ')}</span>
+									<span>{c.installed ? 'Already here' : [c.image, formatBytes(c.size), c.notes.length ? `${c.notes.length} note${c.notes.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ')}</span>
 								</span>
 							</button>
 							{c.notes.length > 0 && (
@@ -317,7 +307,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 									</span>
 									<span className="main">
 										<b style={{fontWeight: 550}}>{v.name}</b>
-										<span>{v.installed ? 'Already here' : (v.problems[0] ?? [`${v.cores} cores`, `${Math.round(v.memoryMb / 1024)} GB`, bytes(v.size), off ? '' : `${v.state} on Unraid: shut it down first`].filter(Boolean).join(' · '))}</span>
+										<span>{v.installed ? 'Already here' : (v.problems[0] ?? [`${v.cores} cores`, `${Math.round(v.memoryMb / 1024)} GB`, formatBytes(v.size), off ? '' : `${v.state} on Unraid: shut it down first`].filter(Boolean).join(' · '))}</span>
 									</span>
 								</button>
 								{v.notes.length > 0 && (
@@ -362,7 +352,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 				}}
 			>
 				{busy && <span className="spinner" />}
-				Bring {count} thing{count === 1 ? '' : 's'} over · {bytes(total)}
+				Bring {count} thing{count === 1 ? '' : 's'} over · {totalLabel}
 			</button>
 			<button className="btn block ghost" style={{marginTop: 8}} onClick={onDisconnect}>
 				Disconnect
@@ -437,7 +427,7 @@ function JobView({job, connected, scanning, error, onCancel, onAgain, onDone}: {
 														: 'Here now'
 													: st === 'skipped'
 														? 'Skipped'
-														: bytes(i.size)}
+														: formatBytes(i.size)}
 									</span>
 								</span>
 							</div>

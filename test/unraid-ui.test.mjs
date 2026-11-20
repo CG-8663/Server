@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 
-import {defaultSelectedVms, isKeyChangedError, itemStatusForView, jobSummary, retryActionState} from '../web/src/unraidView.ts'
+import {defaultSelectedVms, formatBytes, formatTotalSize, isKeyChangedError, itemStatusForView, jobSummary, retryActionState} from '../web/src/unraidView.ts'
 
 test('interrupted and cancelled Unraid jobs never say Everything came over or spin forever', async () => {
 	const interrupted = {
@@ -106,4 +106,19 @@ test('installed VMs are deselected by default and disabled in Choose', async () 
 	assert.match(src, /defaultSelectedVms\(scan\.vms\)/)
 	assert.match(src, /disabled=\{\!\!v\.installed \|\| \!\!v\.problems\.length\}/)
 	assert.match(src, /v\.installed \? 'Already here'/)
+})
+
+test('unknown container sizes format as size unknown and mark totals as a minimum', async () => {
+	assert.equal(formatBytes(null), 'size unknown')
+	assert.equal(formatBytes(0), '0 B')
+	assert.equal(formatBytes(1024), '1.0 KB')
+	assert.equal(formatTotalSize([null]), 'size unknown')
+	assert.equal(formatTotalSize([0, null]), 'size unknown')
+	assert.equal(formatTotalSize([2 * 1024 ** 3, null]), 'at least 2.0 GB')
+	assert.equal(formatTotalSize([2 * 1024 ** 3, 1024 ** 3]), '3.0 GB')
+	assert.equal(formatTotalSize([]), '0 B')
+
+	const src = await readFile(new URL('../web/src/unraid.tsx', import.meta.url), 'utf8')
+	assert.match(src, /formatBytes\(/)
+	assert.match(src, /formatTotalSize\(/)
 })

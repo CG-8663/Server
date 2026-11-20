@@ -916,6 +916,66 @@ test('imported VMs are marked installed, blocked from duplicate import, and repo
 	}
 })
 
+test('unmeasured container appdata sizes are reported as null instead of 0', async () => {
+	const containers = [
+		{
+			Name: '/timed-out',
+			State: {Running: true},
+			Config: {Image: 'app:1', Env: [], Labels: {}},
+			HostConfig: {},
+			Mounts: [{Type: 'bind', Source: '/mnt/user/appdata/huge', Destination: '/config', RW: true}],
+		},
+		{
+			Name: '/partial',
+			State: {Running: true},
+			Config: {Image: 'app:1', Env: [], Labels: {}},
+			HostConfig: {},
+			Mounts: [
+				{Type: 'bind', Source: '/mnt/user/appdata/ok', Destination: '/ok', RW: true},
+				{Type: 'bind', Source: '/mnt/user/appdata/huge', Destination: '/huge', RW: true},
+			],
+		},
+		{
+			Name: '/empty-dir',
+			State: {Running: false},
+			Config: {Image: 'app:1', Env: [], Labels: {}},
+			HostConfig: {},
+			Mounts: [{Type: 'bind', Source: '/mnt/user/appdata/zero', Destination: '/zero', RW: true}],
+		},
+		{
+			Name: '/no-appdata',
+			State: {Running: false},
+			Config: {Image: 'app:1', Env: [], Labels: {}},
+			HostConfig: {},
+			Mounts: [],
+		},
+	]
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-du-null-'))
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+		if (remote.includes('/mnt/user/*')) return {stdout: 'appdata\t\n', stderr: ''}
+		if (remote.startsWith('docker ps')) return {stdout: 'timed-out\npartial\nempty-dir\nno-appdata\n', stderr: ''}
+		if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify(containers), stderr: ''}
+		if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/huge\t\td\n/mnt/user/appdata/ok\t4096\td\n/mnt/user/appdata/zero\t0\td\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const u = createUnraid({dataDir: dir, files: {}, apps: {installed: () => false}, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		const scan = await u.procedures['unraid.scan'].run()
+		const byId = Object.fromEntries(scan.containers.map((c) => [c.id, c]))
+		assert.equal(byId['unraid-timed-out'].size, null)
+		assert.equal(byId['unraid-partial'].size, null)
+		assert.equal(byId['unraid-empty-dir'].size, 0)
+		assert.equal(byId['unraid-no-appdata'].size, 0)
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
 test('a failed job save does not leave the import running', async () => {
 	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-job-ro-'))
 	const jobDir = join(dir, 'unraid')
