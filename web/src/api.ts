@@ -65,6 +65,13 @@ const SLOW_RPC = new Set([
 	'hardware.raid.scrub',
 ])
 
+const RESTARTING_MESSAGE = 'Omarchy Server is restarting or not answering. Wait a moment and try again.'
+const FRIENDLY_ERROR: Record<string, string> = {
+	UNREACHABLE: RESTARTING_MESSAGE,
+	BAD_RESPONSE: RESTARTING_MESSAGE,
+	NOT_CONFIGURED: RESTARTING_MESSAGE,
+}
+
 export class ApiError extends Error {
 	code: string
 	status: number
@@ -110,7 +117,15 @@ async function handle<T>(res: Response, signal?: AbortSignal): Promise<T> {
 	const hasError = body !== null && typeof body === 'object' && !Array.isArray(body) && 'error' in body && Boolean((body as {error?: unknown}).error)
 	if (!res.ok || hasError) {
 		const err = hasError ? (body as {error: {message?: string; code?: string}}).error : {}
-		const error = new ApiError(err.message ?? `Request failed (${res.status})`, err.code ?? 'ERROR', res.status)
+		const code = err.code ?? (!hasError && (res.status === 502 || res.status === 503 || res.status === 504) ? 'UNREACHABLE' : 'ERROR')
+		let message = err.message ?? `Request failed (${res.status})`
+		if (Object.hasOwn(FRIENDLY_ERROR, code)) {
+			if (err.message && err.message !== FRIENDLY_ERROR[code] && typeof console !== 'undefined') {
+				console.warn('[omarchy-server]', code, err.message)
+			}
+			message = FRIENDLY_ERROR[code]
+		}
+		const error = new ApiError(message, code, res.status)
 		// A mistyped password or authenticator code is also 401. Leave the person on the form.
 		const credentialMiss =
 			err.message === 'Incorrect password' ||
