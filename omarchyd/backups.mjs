@@ -1101,24 +1101,36 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		const password = String(input.nas?.password ?? '')
 		const key = String(input.recoveryKey ?? '').trim().toLowerCase()
 		if (!/^[a-z0-9]{4}(?:-[a-z0-9]{4}){7}$/.test(key)) throw new RpcError('BAD_REQUEST', 'Enter the recovery key, like abcd-efgh-…')
+		const before = structuredClone(config)
 		const opts = cleanOptions(input)
 		Object.assign(config, opts)
-		const real = await repoReal()
-		await mkdir(real, {recursive: true, mode: 0o700})
-		if ((await readdir(real)).length) throw new RpcError('PRECONDITION_FAILED', `${config.repo} isn’t empty. Choose an empty folder.`)
+		let real
+		try {
+			real = await repoReal()
+			await mkdir(real, {recursive: true, mode: 0o700})
+			if ((await readdir(real)).length) throw new RpcError('PRECONDITION_FAILED', `${config.repo} isn’t empty. Choose an empty folder.`)
+		} catch (e) {
+			config = before
+			throw e
+		}
 		job = {step: 'Copying the backup from the NAS', progress: 0, startedAt: now()}
 		try {
 			const remote = await remoteFiles(nas, password)
 			if (!remote.has('server/config')) throw new RpcError('NOT_FOUND', 'There’s no Omarchy Server backup in that folder')
+			await ensureEngine()
 			const r = await smb(nas, password, {lines: [...intoFolder(nas.folder), 'recurse ON', 'prompt OFF', `lcd ${q(real)}`, 'mget *']})
 			if (r.errors.length) throw new RpcError('PRECONDITION_FAILED', smbMessage(r.errors))
 			await writePrivate(keyFile, `${key}\n`)
 			try {
-				await ensureEngine()
 				await restic(['cat', 'config'], {timeout: 60_000})
-			} catch {
+			} catch (e) {
 				await rm(keyFile, {force: true})
-				throw new RpcError('FORBIDDEN', 'That recovery key doesn’t open this backup')
+				const out = `${e?.stderr ?? ''}\n${e?.message ?? ''}`
+				if (/wrong password|no key found/i.test(out)) {
+					throw new RpcError('FORBIDDEN', 'That recovery key doesn’t open this backup')
+				}
+				if (e instanceof RpcError) throw e
+				throw new RpcError('PRECONDITION_FAILED', `Couldn’t open the backup: ${e?.message || 'restic failed'}`)
 			}
 			config.nas = nas
 			config.keySaved = true
@@ -1128,6 +1140,8 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			plan()
 			return status()
 		} catch (e) {
+			config = before
+			await rm(keyFile, {force: true}).catch(() => {})
 			await rm(real, {recursive: true, force: true}).catch(() => {})
 			throw e
 		} finally {
