@@ -477,6 +477,10 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 				},
 			})
 		} catch (err) {
+			if (err?.code === 24) {
+				console.warn('[omarchyd] unraid rsync: some source files vanished while copying (exit 24)')
+				return
+			}
 			if (err.code === 'ENOENT') throw new RpcError('PRECONDITION_FAILED', 'This server needs rsync. Run Omarchy Server’s installer once more.')
 			throw new RpcError('INTERNAL_SERVER_ERROR', `Copying ${from} didn’t finish: ${String(err.message).replace(/^rsync: /, '').slice(0, 200)}`)
 		}

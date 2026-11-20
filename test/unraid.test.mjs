@@ -268,6 +268,71 @@ test('single-file appdata mounts are copied without a trailing slash', async () 
 	}
 })
 
+test('rsync exit code 24 (vanished files) finishes the pass while exit 23 fails it', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-rsync24-'))
+	await mkdir(join(dir, 'tree', 'Home'), {recursive: true})
+	const plexContainer = {...plex, Name: '/plex24', Id: 'p24'}
+	const fail23Container = {...plex, Name: '/plex23', Id: 'p23'}
+	let containerPass = 0
+	const installed = []
+	const warned = []
+	const origWarn = console.warn
+	console.warn = (...a) => warned.push(a.map(String).join(' '))
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync') {
+			const src = argv[argv.length - 2]
+			if (src.includes('/mnt/user/Media')) throw Object.assign(new Error('rsync: some files vanished before they could be transferred (code 24)'), {code: 24})
+			if (src.includes('/mnt/user/appdata/plex')) {
+				containerPass++
+				if (containerPass === 1) throw Object.assign(new Error('rsync: some files vanished before they could be transferred (code 24)'), {code: 24})
+				if (containerPass === 3) throw Object.assign(new Error('rsync: rsync error: some files/attrs were not transferred (code 23)'), {code: 23})
+			}
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+		if (remote.includes('/mnt/user/*')) return {stdout: 'Media\t100\n', stderr: ''}
+		if (remote.startsWith('docker ps')) return {stdout: 'plex24\nplex23\n', stderr: ''}
+		if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([plexContainer, fail23Container]), stderr: ''}
+		if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/plex\t100\td\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	const apps = {
+		importedStoreDir: join(dir, 'store'),
+		appDirFor: (id) => join(dir, 'apps', id),
+		installed: () => false,
+		installImported: async (id) => installed.push(id),
+		importState: () => ({done: true, error: null}),
+	}
+	const u = createUnraid({dataDir: dir, files, apps, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		const started = await u.procedures['unraid.start'].run({shares: ['Media'], containers: ['unraid-plex24', 'unraid-plex23']})
+		let st
+		for (let i = 0; i < 200; i++) {
+			st = await u.procedures['unraid.status'].run()
+			const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+			if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		const byKey = Object.fromEntries(st.job.items.map((x) => [x.key, x]))
+		assert.equal(byKey.Media.status, 'done')
+		assert.equal(byKey['unraid-plex24'].status, 'done')
+		assert.equal(byKey['unraid-plex23'].status, 'failed')
+		assert.match(byKey['unraid-plex23'].error, /didn’t finish/)
+		assert.deepEqual(installed, ['unraid-plex24'])
+		assert.ok(containerPass >= 3)
+		assert.ok(warned.some((w) => w.includes('24')))
+	} finally {
+		console.warn = origWarn
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
 test('imported container version ignores registry ports and image digests', () => {
 	const digest = 'a'.repeat(64)
 	const cases = [
