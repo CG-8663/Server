@@ -328,18 +328,35 @@ test('a failed job save does not leave the import running', async () => {
 		assert.equal(typeof started.id, 'string')
 		assert.notEqual(started.id, 'old')
 		let done
+		let saved = ''
 		for (let i = 0; i < 50; i++) {
 			await new Promise((r) => setImmediate(r))
 			done = await u.procedures['unraid.status'].run()
-			if (done.job?.endedAt && done.job.id !== 'old') break
+			saved = await readFile(file, 'utf8').catch(() => '')
+			// endedAt is visible in memory before the last save finishes. That save creates a
+			// temporary file beside job.json, and removing the directory in the meantime throws
+			// ENOTEMPTY. Wait until the saved job is the one that just finished.
+			if (done.job?.endedAt && done.job.id === started.id && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
 		}
+		assert.equal(done.job?.id, started.id)
 		assert.ok(done.job?.endedAt)
+		assert.match(saved, new RegExp(`"id": "${started.id}"`))
+		assert.match(saved, /"endedAt": \d/)
 		assert.equal(rsyncs, 1)
 		assert.equal((await stat(file)).mode & 0o777, 0o600)
 	} finally {
 		await chmod(jobDir, 0o700).catch(() => {})
+		await chmod(file, 0o600).catch(() => {})
 		u.close()
-		await rm(dir, {recursive: true, force: true})
+		for (let i = 0; i < 20; i++) {
+			try {
+				await rm(dir, {recursive: true, force: true})
+				break
+			} catch (error) {
+				if (error?.code !== 'ENOTEMPTY' || i === 19) throw error
+				await new Promise((r) => setTimeout(r, 15))
+			}
+		}
 	}
 })
 
