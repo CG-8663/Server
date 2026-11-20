@@ -521,6 +521,72 @@ test('a write tool is not run until Approve', async () => {
 	}
 })
 
+test('approving an install does not send grant or folders the card never showed', async () => {
+	const {calls, runProcedure} = factsProcedure(async (name) => {
+		if (name === 'apps.list') return [{id: 'jellyfin', name: 'Jellyfin'}]
+	})
+	const args = JSON.stringify({appId: 'jellyfin', grant: ['containers', 'devices', 'host-files'], folders: {config: '/Home/.ssh'}})
+	const {fetchImpl} = scripted([toolSse('call_g', 'apps_install', args)])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'install jellyfin', emit: (e) => events.push(e)})
+		const card = events.find((e) => e.event === 'action')
+		assert.equal(card.data.title, 'Install Jellyfin')
+		assert.equal(card.data.detail, '')
+		assert.deepEqual(card.data.rpc.input, {appId: 'jellyfin'})
+		await box.asst.procedures['assistant.approve'].run({actionId: card.data.id}, {auth: {userId: 'owner'}})
+		const sent = calls.filter((c) => c.name === 'apps.install')
+		assert.equal(sent.length, 1)
+		assert.deepEqual(sent[0].input, {appId: 'jellyfin'})
+	} finally {
+		await box.close()
+	}
+})
+
+test('approving an update does not send grant the card never showed', async () => {
+	const {calls, runProcedure} = factsProcedure(async (name) => {
+		if (name === 'apps.list') return [{id: 'jellyfin', name: 'Jellyfin'}]
+	})
+	const {fetchImpl} = scripted([toolSse('call_u', 'apps_update', JSON.stringify({appId: 'jellyfin', grant: ['privileged', 'host-network']}))])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'update jellyfin', emit: (e) => events.push(e)})
+		const card = events.find((e) => e.event === 'action')
+		assert.equal(card.data.title, 'Update Jellyfin')
+		assert.equal(card.data.detail, '')
+		assert.deepEqual(card.data.rpc.input, {appId: 'jellyfin'})
+		await box.asst.procedures['assistant.approve'].run({actionId: card.data.id}, {auth: {userId: 'owner'}})
+		const sent = calls.filter((c) => c.name === 'apps.update')
+		assert.equal(sent.length, 1)
+		assert.deepEqual(sent[0].input, {appId: 'jellyfin'})
+	} finally {
+		await box.close()
+	}
+})
+
+test('approving a stored install drops grant that was saved on the action', async () => {
+	const {calls, runProcedure} = factsProcedure()
+	const box = await withAssistant({runProcedure, fetchImpl: fetch})
+	try {
+		const conv = await box.asst.conversations.create('owner', {title: 'install'})
+		const action = await box.asst.conversations.putAction('owner', conv.id, {
+			kind: 'rpc',
+			toolName: 'apps_install',
+			title: 'Install Jellyfin',
+			detail: '',
+			rpc: {path: 'apps.install', input: {appId: 'jellyfin', grant: ['containers', 'host-files'], folders: {config: '/Home/.ssh'}}},
+		})
+		await box.asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}})
+		const sent = calls.filter((c) => c.name === 'apps.install')
+		assert.equal(sent.length, 1)
+		assert.deepEqual(sent[0].input, {appId: 'jellyfin'})
+	} finally {
+		await box.close()
+	}
+})
+
 test('appStore_search filters the registry inside the turn', async () => {
 	const {calls, runProcedure} = factsProcedure(async (name) => {
 		if (name === 'appStore.registry') {

@@ -201,6 +201,16 @@ export function writeTool(name) {
 	return writeByName.get(name) ?? null
 }
 
+// Fields this tool declares. The Approve card does not show anything else, so those keys are not sent.
+export function declaredArgs(spec, args) {
+	const props = spec?.parameters?.properties
+	const src = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
+	if (!props || typeof props !== 'object') return {}
+	const out = {}
+	for (const key of Object.keys(props)) if (Object.hasOwn(src, key)) out[key] = src[key]
+	return out
+}
+
 export function isWriteTool(name) {
 	return writeByName.has(name)
 }

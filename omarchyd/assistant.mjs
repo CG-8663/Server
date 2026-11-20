@@ -3,7 +3,7 @@ import {createKeyStore, normalizeBaseUrl, presetBaseUrl} from './assistant/keys.
 import {createLoop, publicAction} from './assistant/loop.mjs'
 import {callMcpTool} from './assistant/mcp.mjs'
 import {verifyKey} from './assistant/providers.mjs'
-import {coerceDeskShell, writeTool} from './assistant/tools.mjs'
+import {coerceDeskShell, declaredArgs, writeTool} from './assistant/tools.mjs'
 import {RpcError} from './rpc.mjs'
 
 async function readJson(req, limit) {
@@ -140,6 +140,10 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			const path = action.rpc?.path || spec?.rpc
 			const rpcInput = {...(action.rpc?.input && typeof action.rpc.input === 'object' && !Array.isArray(action.rpc.input) ? action.rpc.input : {})}
 			delete rpcInput.password
+			if (spec) {
+				const kept = declaredArgs(spec, rpcInput)
+				for (const key of Object.keys(rpcInput)) if (!Object.hasOwn(kept, key)) delete rpcInput[key]
+			}
 			if (action.toolName === 'omarchy_setBackground') {
 				const chosen = String(input?.id ?? rpcInput.id ?? '').trim()
 				if (!/^[0-9a-f]{16}$/.test(chosen)) throw new RpcError('BAD_REQUEST', 'Pick a wallpaper first')
