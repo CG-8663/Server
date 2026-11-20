@@ -173,23 +173,119 @@ EOS
 	exit 0
 }
 
-case "${1:-status}" in
+usage() {
+	case "${1:-}" in
+		status) echo "Use: omarchy-server [status]" ;;
+		open) echo "Use: omarchy-server open" ;;
+		start | stop | restart) echo "Use: omarchy-server $1" ;;
+		logs) echo "Use: omarchy-server logs [-f|--follow] [-n N] [--since TIME]" ;;
+		waybar) echo "Use: omarchy-server waybar" ;;
+		widget) echo "Use: omarchy-server widget on|off" ;;
+		uninstall) echo "Use: omarchy-server uninstall [--purge] [-y]" ;;
+		*)
+			cat <<'EOF'
+omarchy-server: check, open, start, stop and restart Omarchy Server on this machine.
+  omarchy-server              status and address
+  omarchy-server open         open the web app
+  omarchy-server restart      restart both services (also: start, stop)
+  omarchy-server logs [-f|--follow] [-n N] [--since TIME]  recent log lines
+  omarchy-server widget on    add the status icon to the top bar (off to remove)
+  omarchy-server uninstall    remove Omarchy Server, keeping your data (--purge deletes that too)
+EOF
+			;;
+	esac
+}
+
+wants_help() {
+	local a
+	for a in "$@"; do
+		case "$a" in -h | --help) return 0 ;; esac
+	done
+	return 1
+}
+
+no_extra_args() {
+	local cmd=$1
+	shift
+	if wants_help "$@"; then
+		usage "$cmd"
+		exit 0
+	fi
+	if [ $# -gt 0 ]; then
+		echo "Use: omarchy-server $cmd" >&2
+		exit 2
+	fi
+}
+
+if [ $# -eq 0 ]; then
+	cmd=status
+else
+	cmd=$1
+	shift
+fi
+
+case "$cmd" in
 	status)
+		no_extra_args status "$@"
 		for u in "${UNITS[@]}" "$DESKTOP_UNIT"; do printf '%-34s %s\n' "$u" "$(systemctl --user is-active "$u" 2>/dev/null)"; done
 		running && printf '\nOpen http://%s:%s (or http://localhost:%s on this machine)\n' "$(ip_addr)" "$PORT" "$PORT"
 		;;
-	open) xdg-open "http://localhost:$PORT" >/dev/null 2>&1 & ;;
+	open)
+		no_extra_args open "$@"
+		xdg-open "http://localhost:$PORT" >/dev/null 2>&1 &
+		;;
 	start | stop | restart)
-		systemctl --user "$1" "${UNITS[@]}"
+		no_extra_args "$cmd" "$@"
+		systemctl --user "$cmd" "${UNITS[@]}"
 		# Desktop sharing only runs inside a signed-in Omarchy session.
-		systemctl --user is-active --quiet graphical-session.target 2>/dev/null && systemctl --user "$1" "$DESKTOP_UNIT" 2>/dev/null
+		systemctl --user is-active --quiet graphical-session.target 2>/dev/null && systemctl --user "$cmd" "$DESKTOP_UNIT" 2>/dev/null
 		sleep 1
-		if [ "$1" = stop ]; then notify "Stopped"; elif running; then notify "Running at http://$(ip_addr):$PORT"; else notify "Didn't start. See: omarchy-server logs"; fi
+		if [ "$cmd" = stop ]; then notify "Stopped"; elif running; then notify "Running at http://$(ip_addr):$PORT"; else notify "Didn't start. See: omarchy-server logs"; fi
 		;;
 	logs)
-		if [ "${2:-}" = -f ]; then journalctl --user -u omarchyd -u omarchy-server-web -f; else journalctl --user -u omarchyd -u omarchy-server-web -n 80 --no-pager; fi
+		if wants_help "$@"; then usage logs; exit 0; fi
+		follow=0
+		has_lines=0
+		lines=80
+		since=
+		while [ $# -gt 0 ]; do
+			case "$1" in
+				-f | --follow) follow=1; shift ;;
+				-n | --lines)
+					[ $# -ge 2 ] || { echo "Use: omarchy-server logs [-f|--follow] [-n N] [--since TIME]" >&2; exit 2; }
+					case "$2" in '' | *[!0-9]*) echo "Use: omarchy-server logs [-f|--follow] [-n N] [--since TIME]" >&2; exit 2 ;; esac
+					lines="$2"; has_lines=1; shift 2 ;;
+				-n[0-9]*)
+					n="${1#-n}"
+					case "$n" in '' | *[!0-9]*) echo "Use: omarchy-server logs [-f|--follow] [-n N] [--since TIME]" >&2; exit 2 ;; esac
+					lines="$n"; has_lines=1; shift ;;
+				--lines=*)
+					n="${1#--lines=}"
+					case "$n" in '' | *[!0-9]*) echo "Use: omarchy-server logs [-f|--follow] [-n N] [--since TIME]" >&2; exit 2 ;; esac
+					lines="$n"; has_lines=1; shift ;;
+				--since)
+					[ $# -ge 2 ] && [ -n "$2" ] || { echo "Use: omarchy-server logs [-f|--follow] [-n N] [--since TIME]" >&2; exit 2; }
+					since="$2"; shift 2 ;;
+				--since=*)
+					since="${1#--since=}"
+					[ -n "$since" ] || { echo "Use: omarchy-server logs [-f|--follow] [-n N] [--since TIME]" >&2; exit 2; }
+					shift ;;
+				*) echo "Use: omarchy-server logs [-f|--follow] [-n N] [--since TIME]" >&2; exit 2 ;;
+			esac
+		done
+		jargs=(--user -u omarchyd -u omarchy-server-web)
+		[ -n "$since" ] && jargs+=(--since "$since")
+		if [ "$follow" = 1 ]; then
+			[ "$has_lines" = 1 ] && jargs+=(-n "$lines")
+			jargs+=(-f)
+		else
+			if [ "$has_lines" = 1 ] || [ -z "$since" ]; then jargs+=(-n "$lines"); fi
+			jargs+=(--no-pager)
+		fi
+		journalctl "${jargs[@]}"
 		;;
 	waybar)
+		no_extra_args waybar "$@"
 		# One line of JSON for Waybar's custom module.
 		if running; then
 			printf '{"text":"󰒋","class":"running","tooltip":"Omarchy Server is running\\nhttp://%s:%s\\n\\nClick: open · Right-click: restart"}\n' "$(ip_addr)" "$PORT"
@@ -198,12 +294,19 @@ case "${1:-status}" in
 		fi
 		;;
 	widget)
+		if wants_help "$@"; then usage widget; exit 0; fi
+		[ $# -le 1 ] || { echo "Use: omarchy-server widget on|off" >&2; exit 2; }
+		mode="${1:-on}"
+		case "$mode" in
+			on | off) ;;
+			*) echo "Use: omarchy-server widget on|off" >&2; exit 2 ;;
+		esac
 		# Current Omarchy draws its own top bar (omarchy-shell, configured in ~/.config/omarchy/shell.json);
 		# older Omarchy used Waybar. The icon goes into whichever this desktop has.
 		SHELL_JSON="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json"
 		OM_PATH="${OMARCHY_PATH:-}"; [ -z "$OM_PATH" ] && for d in /usr/share/omarchy "$HOME/.local/share/omarchy"; do [ -d "$d" ] && { OM_PATH=$d; break; }; done
 		if [ -f "$SHELL_JSON" ] || [ -f "$OM_PATH/config/omarchy/shell.json" ]; then
-			node - "${2:-on}" "$SHELL_JSON" "$OM_PATH/config/omarchy/shell.json" "$HOME/.local/bin/omarchy-server" <<'EOF' || { echo "Couldn't update the top bar; your bar settings are unchanged."; exit 1; }
+			node - "$mode" "$SHELL_JSON" "$OM_PATH/config/omarchy/shell.json" "$HOME/.local/bin/omarchy-server" <<'EOF' || { echo "Couldn't update the top bar; your bar settings are unchanged."; exit 1; }
 const fs = require('node:fs')
 const [mode, file, defaults, bin] = process.argv.slice(2)
 const read = (f) => JSON.parse(fs.readFileSync(f, 'utf8'))
@@ -231,7 +334,7 @@ EOF
 			exit 0
 		fi
 		[ -f "$WAYBAR" ] || { echo "No Omarchy top bar settings found (shell.json or Waybar)."; exit 1; }
-		case "${2:-on}" in
+		case "$mode" in
 			on)
 				grep -q "$MARK" "$WAYBAR" && { echo "The widget is already on."; exit 0; }
 				cp "$WAYBAR" "$WAYBAR.omarchy-server.bak"
@@ -256,21 +359,38 @@ EOF
 				reload_bar
 				echo "Removed the Omarchy Server icon."
 				;;
-			*) echo "Use: omarchy-server widget on|off"; exit 2 ;;
+			*) echo "Use: omarchy-server widget on|off" >&2; exit 2 ;;
 		esac
 		;;
 	uninstall)
-		shift
+		if wants_help "$@"; then usage uninstall; exit 0; fi
 		purge=0 yes=0
 		for a in "$@"; do
 			case "$a" in
 				--purge) purge=1 ;;
 				-y | --yes) yes=1 ;;
-				*) echo "Use: omarchy-server uninstall [--purge] [-y]"; exit 2 ;;
+				*) echo "Use: omarchy-server uninstall [--purge] [-y]" >&2; exit 2 ;;
 			esac
 		done
 		do_uninstall "$purge" "$yes"
 		;;
-	-h | --help | help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' ;;
-	*) echo "Unknown command: $1 (try: omarchy-server help)"; exit 2 ;;
+	-h | --help | help)
+		if [ "$cmd" = help ] && [ $# -gt 0 ]; then
+			if [ $# -eq 1 ]; then
+				case "$1" in
+					-h | --help | help) usage ;;
+					status | open | start | stop | restart | logs | waybar | widget | uninstall) usage "$1" ;;
+					*) printf 'Unknown command: %s (try: omarchy-server help)\n' "$1" >&2; exit 2 ;;
+				esac
+			elif wants_help "$@"; then
+				usage
+			else
+				echo "Use: omarchy-server help [command]" >&2
+				exit 2
+			fi
+		else
+			usage
+		fi
+		;;
+	*) printf 'Unknown command: %s (try: omarchy-server help)\n' "$cmd" >&2; exit 2 ;;
 esac
