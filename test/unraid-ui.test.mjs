@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 
-import {itemStatusForView, jobSummary} from '../web/src/unraidView.ts'
+import {isKeyChangedError, itemStatusForView, jobSummary} from '../web/src/unraidView.ts'
 
 test('interrupted and cancelled Unraid jobs never say Everything came over or spin forever', async () => {
 	const interrupted = {
@@ -66,4 +66,16 @@ test('interrupted and cancelled Unraid jobs never say Everything came over or sp
 	assert.match(src, /from '\.\/unraidView'/)
 	assert.match(src, /jobSummary\(/)
 	assert.match(src, /itemStatusForView\(/)
+})
+
+test('connect form shows a Forget this server’s key button for host key changes', async () => {
+	assert.equal(isKeyChangedError('That server isn’t the one you connected to before (its key changed). If you reinstalled Unraid, choose Forget this server’s key and connect again.'), true)
+	assert.equal(isKeyChangedError(null), false)
+	assert.equal(isKeyChangedError('Unraid didn’t accept that password'), false)
+	assert.equal(isKeyChangedError('Couldn’t reach that server.'), false)
+
+	const src = await readFile(new URL('../web/src/unraid.tsx', import.meta.url), 'utf8')
+	assert.match(src, /isKeyChangedError\(/)
+	assert.match(src, /mutate\('unraid\.forgetHost'/)
+	assert.match(src, /Forget this server’s key/)
 })

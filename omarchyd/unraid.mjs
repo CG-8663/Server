@@ -365,23 +365,28 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 			const msg = String(e.message)
 			if (e.code === 'ENOENT') throw new RpcError('PRECONDITION_FAILED', 'This server needs ssh. Run Omarchy Server’s installer once more.')
 			if (/Permission denied|Authentication failed/i.test(msg)) throw new RpcError('FORBIDDEN', 'Unraid didn’t accept that password (it’s the root password, the one you sign in to Unraid’s web page with).')
-			if (/Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(msg)) throw new RpcError('FORBIDDEN', 'That server isn’t the one you connected to before (its key changed). If you reinstalled Unraid, choose Forget it and connect again.')
+			if (/Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(msg)) throw new RpcError('FORBIDDEN', 'That server isn’t the one you connected to before (its key changed). If you reinstalled Unraid, choose Forget this server’s key and connect again.')
 			if (/Connection refused/i.test(msg)) throw new RpcError('PRECONDITION_FAILED', 'Unraid isn’t accepting SSH. Turn it on in Unraid: Settings › Management Access › Use SSH.')
 			if (/timed out|No route|Could not resolve|Name or service not known/i.test(msg)) throw new RpcError('PRECONDITION_FAILED', 'Couldn’t reach that server. Check its name or address, and that it’s on.')
 			throw new RpcError('INTERNAL_SERVER_ERROR', msg.replace(/^ssh: /, '').slice(0, 300))
 		}
 	}
 
-	// ---- connect and look around ---------------------------------------------------------------
-	async function connect(input = {}) {
-		await ready
-		if (job && !job.endedAt) throw new RpcError('CONFLICT', 'An import is running')
+	function parseHostPort(input = {}) {
 		let host = String(input.host ?? '').trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
 		let port = 22
 		const hp = /^(.+):(\d{1,5})$/.exec(host)
 		if (hp) [host, port] = [hp[1], Number(hp[2])]
-		if (input.port) port = Number(input.port)
-		if (!HOST.test(host) || !(port > 0 && port < 65536)) throw new RpcError('BAD_REQUEST', 'Enter your Unraid server’s name or address, like tower.local or 192.168.1.10')
+		if (input.port !== undefined && input.port !== null && input.port !== '') port = Number(input.port)
+		return {host, port}
+	}
+
+	// ---- connect and look around ---------------------------------------------------------------
+	async function connect(input = {}) {
+		await ready
+		if (job && !job.endedAt) throw new RpcError('CONFLICT', 'An import is running')
+		const {host, port} = parseHostPort(input)
+		if (!HOST.test(host) || !Number.isInteger(port) || !(port > 0 && port < 65536)) throw new RpcError('BAD_REQUEST', 'Enter your Unraid server’s name or address, like tower.local or 192.168.1.10')
 		const password = String(input.password ?? '')
 		if (!password || /[\r\n]/.test(password) || password.length > 512) throw new RpcError('BAD_REQUEST', 'Enter Unraid’s root password')
 		forget()
@@ -402,9 +407,10 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 
 	async function forgetHost(input = {}) {
 		await ready
-		const host = String(input.host ?? '').trim()
-		if (!HOST.test(host)) throw new RpcError('BAD_REQUEST', 'Bad host')
-		await run('ssh-keygen', ['-R', host, '-f', knownHosts], {env: baseEnv(), timeout: 10_000}).catch(() => {})
+		const {host, port} = parseHostPort(input)
+		if (!HOST.test(host) || !Number.isInteger(port) || !(port > 0 && port < 65536)) throw new RpcError('BAD_REQUEST', 'Bad host')
+		const target = port === 22 ? host : `[${host}]:${port}`
+		await run('ssh-keygen', ['-R', target, '-f', knownHosts], {env: baseEnv(), timeout: 10_000}).catch(() => {})
 		return true
 	}
 

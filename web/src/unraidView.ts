@@ -54,3 +54,7 @@ export function jobSummary(job: Pick<UnraidJob, 'host' | 'endedAt' | 'items' | '
 		canRetry: incomplete && connected,
 	}
 }
+
+export function isKeyChangedError(message: string | null): boolean {
+	return Boolean(message && /key changed/i.test(message))
+}

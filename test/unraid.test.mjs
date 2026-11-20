@@ -416,6 +416,41 @@ test('bad details never reach ssh', async () => {
 	}
 })
 
+test('forgetHost removes non-default port entries and host-key errors match the button label', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-forget-'))
+	const keygenCalls = []
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'ssh-keygen') {
+			keygenCalls.push(argv)
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh') throw new Error('ssh: Host key verification failed.')
+		return {stdout: '', stderr: ''}
+	}
+	const u = createUnraid({dataDir: dir, files: {}, apps: {}, machines: {}, storage: null, run})
+	try {
+		const knownHosts = join(dir, 'unraid', 'known_hosts')
+		await assert.rejects(u.procedures['unraid.connect'].run({host: 'tower.local', password: 'x'}), /Forget this server’s key/)
+		await assert.rejects(u.procedures['unraid.forgetHost'].run({host: 'tower.local', port: 70000}), /Bad host/)
+		await assert.rejects(u.procedures['unraid.forgetHost'].run({host: 'bad; host'}), /Bad host/)
+		assert.equal(keygenCalls.length, 0)
+
+		await u.procedures['unraid.forgetHost'].run({host: 'tower.local'})
+		await u.procedures['unraid.forgetHost'].run({host: 'tower.local:2222'})
+		await u.procedures['unraid.forgetHost'].run({host: 'tower.local', port: 2222})
+		await u.procedures['unraid.forgetHost'].run({host: 'https://tower.local:2222/Main'})
+		assert.deepEqual(keygenCalls, [
+			['-R', 'tower.local', '-f', knownHosts],
+			['-R', '[tower.local]:2222', '-f', knownHosts],
+			['-R', '[tower.local]:2222', '-f', knownHosts],
+			['-R', '[tower.local]:2222', '-f', knownHosts],
+		])
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
 test('the idle timer forgets the Unraid password after an import ends', async () => {
 	// The idle clock is a real timer, not the injected `now`, so only mock timers can move it.
 	mock.timers.enable({apis: ['setTimeout', 'setInterval', 'Date']})

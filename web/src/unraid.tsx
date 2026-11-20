@@ -5,7 +5,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query, type Listing} from './api'
 import {Icon, type IconName} from './icons'
 import {Group, Row, Switch, haptic, useConfirm, useToast} from './ui'
-import {itemStatusForView, jobSummary, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
+import {isKeyChangedError, itemStatusForView, jobSummary, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
 
 type Share = {name: string; size: number | null; kind: 'share' | 'appdata' | 'system' | 'domains' | 'isos'}
 type Container = {id: string; name: string; image: string; running: boolean; icon: string | null; web: {port: number} | null; copies: {from: string; to: string; file?: boolean}[]; shares: string[]; notes: string[]; problems: string[]; size: number; installed: boolean}
@@ -151,9 +151,11 @@ export function UnraidPage({onBack}: {onBack: () => void}) {
 }
 
 function ConnectCard({onConnected}: {onConnected: () => void}) {
+	const toast = useToast()
 	const [host, setHost] = useState('tower.local')
 	const [password, setPassword] = useState('')
 	const [busy, setBusy] = useState(false)
+	const [forgetting, setForgetting] = useState(false)
 	const [error, setError] = useState<string | null>(null)
 	const go = async (e: FormEvent) => {
 		e.preventDefault()
@@ -167,6 +169,18 @@ function ConnectCard({onConnected}: {onConnected: () => void}) {
 			setError((err as Error).message)
 		} finally {
 			setBusy(false)
+		}
+	}
+	const forget = async () => {
+		setForgetting(true)
+		try {
+			await mutate('unraid.forgetHost', {host})
+			setError(null)
+			toast('Forgot this server’s key. Connect again.')
+		} catch (err) {
+			setError((err as Error).message)
+		} finally {
+			setForgetting(false)
 		}
 	}
 	return (
@@ -189,7 +203,13 @@ function ConnectCard({onConnected}: {onConnected: () => void}) {
 						{error}
 					</div>
 				)}
-				<button className="btn block primary" disabled={busy || !host || !password} style={{marginTop: 6}}>
+				{isKeyChangedError(error) && (
+					<button type="button" className="btn block" disabled={busy || forgetting || !host} onClick={forget} style={{marginBottom: 8}}>
+						{forgetting && <span className="spinner" />}
+						Forget this server’s key
+					</button>
+				)}
+				<button className="btn block primary" disabled={busy || forgetting || !host || !password} style={{marginTop: 6}}>
 					{busy && <span className="spinner" />}
 					Connect
 				</button>
