@@ -206,8 +206,9 @@ export function createUpdater({
 		status = {running: true, progress: 2, description: 'Starting', error: false, target: version}
 		await save()
 		;(async () => {
-			const previous = (await run('git', ['-C', appDir, 'rev-parse', 'HEAD'])).trim()
+			let previous = ''
 			try {
+				previous = (await run('git', ['-C', appDir, 'rev-parse', 'HEAD'])).trim()
 				await step(10, 'Downloading')
 				if (sourceDir) {
 					await run('git', ['-C', appDir, 'fetch', '--depth', '1', sourceDir, 'HEAD'])
@@ -226,11 +227,13 @@ export function createUpdater({
 				// A separate, short-lived unit restarts both services, so this process can be replaced.
 				await run('systemd-run', ['--user', '--collect', `--on-active=${restartDelay}`, `--unit=omarchy-server-update-${Date.now()}`, 'systemctl', '--user', 'restart', 'omarchyd.service', 'omarchy-server-web.service'])
 			} catch (error) {
-				// Put the previous version back so the services keep working.
-				await run('git', ['-C', appDir, 'reset', '--hard', previous]).catch(() => {})
-				await run(process.execPath, ['scripts/deps.mjs'], {cwd: appDir}).catch(() => {})
-				await run('npm', ['run', 'build'], {cwd: appDir, env: {...process.env, NODE_OPTIONS: '--max-old-space-size=1024'}}).catch(() => {})
-				status = {running: false, progress: 0, description: '', error: `The update failed and nothing changed: ${error.message}`}
+				// Put the previous version back so the services keep working. Say so if that fails too.
+				let restored = true
+				if (previous) {
+					const back = (p) => p.then(() => true, () => false)
+					restored = (await back(run('git', ['-C', appDir, 'reset', '--hard', previous]))) && (await back(run(process.execPath, ['scripts/deps.mjs'], {cwd: appDir}))) && (await back(run('npm', ['run', 'build'], {cwd: appDir, env: {...process.env, NODE_OPTIONS: '--max-old-space-size=1024'}})))
+				}
+				status = {running: false, progress: 0, description: '', error: restored ? `The update failed and nothing changed: ${error.message}` : `The update failed, and putting the previous version back failed too. Run the installer: ${await installerHint().catch(() => 'see the README')}. (${error.message})`}
 				await save().catch(() => {})
 			} finally {
 				busy = false

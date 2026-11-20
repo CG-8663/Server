@@ -18,6 +18,7 @@ import {access, chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile} fr
 import os from 'node:os'
 import {dirname, join, relative, sep} from 'node:path'
 
+import {writeAtomic} from './atomic.mjs'
 import {RpcError} from './rpc.mjs'
 
 export const RESTIC_VERSION = '0.18.1'
@@ -185,15 +186,13 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		config = {...structuredClone(DEFAULTS), ...(await readBackupFile(configFile, {}, plainObject))}
 		secrets = await readBackupFile(secretFile, {}, plainObject)
 		history = await readBackupFile(historyFile, [], Array.isArray)
-		// A run that was going when the server stopped.
-		if (history[0] && !history[0].endedAt) Object.assign(history[0], {endedAt: history[0].startedAt, ok: false, error: 'Stopped when the server restarted'})
+		// Runs that were going when the server stopped (the server's own and any computer's at once).
+		let stopped = false
+		for (const h of history) if (h && typeof h === 'object' && !h.endedAt) (Object.assign(h, {endedAt: h.startedAt, ok: false, error: 'Stopped when the server restarted'}), (stopped = true))
+		if (stopped) await saveHistory().catch(() => {})
 	})()
 
-	const writePrivate = async (file, text) => {
-		const tmp = `${file}.${process.pid}.tmp`
-		await writeFile(tmp, text, {mode: 0o600})
-		await rename(tmp, file)
-	}
+	const writePrivate = (file, text) => writeAtomic(file, text, {mode: 0o600})
 	const saveConfig = () => writePrivate(configFile, JSON.stringify(config, null, '\t'))
 	const saveSecrets = () => writePrivate(secretFile, JSON.stringify(secrets))
 	const saveHistory = () => writePrivate(historyFile, JSON.stringify(history.slice(0, 40), null, '\t'))
