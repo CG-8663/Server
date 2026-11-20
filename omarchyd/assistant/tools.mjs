@@ -31,6 +31,9 @@ export const READ_TOOLS = [
 	tool('machines_capabilities', 'machines.capabilities', 'What this server can give a virtual machine'),
 	tool('usb_list', 'usb.list', 'USB serial and Zigbee sticks plugged into this server, and which app or virtual machine holds each one'),
 	tool('swarm_list', 'swarm.list', 'Computers in the Local swarm', {}, true),
+	tool('swarm_storage_disks', 'swarm.storage.disks', 'Live disks on a Local swarm computer, including unmounted extra drives. Use this for mount state; swarm_list metrics only show mounted filesystems.', {
+		id: {type: 'string', description: 'Computer id from swarm_list'},
+	}, true),
 	tool('omarchy_plugins', 'omarchy.plugins', 'Omarchy plugins that can be installed', {
 		q: {type: 'string'},
 		limit: {type: 'integer'},

@@ -11,6 +11,9 @@
 //   sleep DEV MINUTES                 spin-down time for a hard drive (0 = never), kept across boots
 //   usb-allow SERIAL                  udev uaccess so the owner’s session can open that USB serial
 //   usb-forget SERIAL                 drop that serial from the USB udev rule
+//   umount DEV                        unmount every mountpoint on a non-system, non-pool whole disk
+//   mount DEV                         mount each filesystem on a non-system, non-pool extra disk at /run/media/$USER
+//   format DEV FS                     wipe a non-system, non-pool, unmounted whole disk (FS is blank, ext4 or exfat)
 //   pool-create NAME PROFILE DEV...   new Btrfs pool on BLANK drives only, mounted at ~/Pools/NAME
 //   pool-add NAME DEV                 add a BLANK drive to a pool, then rebalance in the background
 //   pool-import NAME UUID             mount an existing Btrfs filesystem at ~/Pools/NAME (no changes to it)
@@ -34,17 +37,22 @@
 //   tailscale-setup                   install Tailscale as Omarchy's menu does (official package, the
 //                                     tailscaled service) and make the owner its operator
 //   tailscale-remove                  sign this server out of Tailscale, stop it and remove the package
-//
-// Drives that hold anything (partitions or filesystem signatures) are never erased by this helper.
-// Wiping one is left to a person at a terminal (`sudo wipefs -a /dev/sdX`).
 import {execFile} from 'node:child_process'
 import {chown, mkdir, readdir, readFile, realpath, rename, writeFile} from 'node:fs/promises'
 import {join, sep} from 'node:path'
 
 const DEV = /^\/dev\/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|hd[a-z])$/
+const BY_ID = /^\/dev\/disk\/by-id\/[A-Za-z0-9._:+-]+$/
 const NAME = /^[a-z][a-z0-9-]{0,31}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SYSTEM_MOUNTS = new Set(['/', '/boot', '/efi', '/boot/efi', '/home', '/var', '/usr', '[SWAP]'])
+const SKIP_FS = new Set(['crypto_LUKS', 'swap', 'LVM2_member', 'linux_raid_member', 'zfs_member'])
+const FAT_FS = new Set(['vfat', 'exfat', 'ntfs', 'msdos', 'fuseblk'])
+function safeMountName(s) {
+	const n = String(s ?? '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[._-]+|[._-]+$/g, '')
+	if (!n || n === '.' || n === '..') return ''
+	return n.slice(0, 64)
+}
 const FSTAB_MARK = '# omarchy-server pool'
 // nosuid,nodev: a program or device file on a pool (an imported drive could carry one) can never
 // gain root.
@@ -97,14 +105,25 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		if (!d) fail(`No drive at ${path}`)
 		return d
 	}
+	async function resolveDisk(path) {
+		let p = String(path ?? '')
+		if (BY_ID.test(p) && !/-part\d+$/.test(p)) p = await fs.realpath(p).catch(() => fail(`No drive at ${path}`))
+		return disk(p)
+	}
+	async function poolMember(d) {
+		if (mounts(d).some((m) => /\/Pools\//.test(m))) return true
+		const text = await fstab()
+		const uuids = new Set(flat(d).map((x) => x.uuid).filter(Boolean))
+		return text.some((l) => l.includes(FSTAB_MARK) && [...uuids].some((u) => l.includes(u)))
+	}
 	// Blank: no partitions, no filesystem or RAID signature, nothing mounted, not the system drive.
 	async function blankDisk(path) {
 		const d = await disk(path)
 		if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${path} holds the system`)
 		if (mounts(d).length) fail(`${path} is in use`)
-		if ((d.children ?? []).length || d.fstype) fail(`${path} isn’t blank. To use it, first erase it yourself in a terminal: sudo wipefs -a ${path}`)
+		if ((d.children ?? []).length || d.fstype) fail(`${path} isn’t blank. Format this drive first (choose blank).`)
 		const sig = (await run('wipefs', ['--no-act', '--json', path]).catch(() => '')).trim()
-		if (sig && (JSON.parse(sig).signatures ?? []).length) fail(`${path} isn’t blank. To use it, first erase it yourself in a terminal: sudo wipefs -a ${path}`)
+		if (sig && (JSON.parse(sig).signatures ?? []).length) fail(`${path} isn’t blank. Format this drive first (choose blank).`)
 		return d
 	}
 
@@ -322,6 +341,55 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			await run('udevadm', ['control', '--reload']).catch(() => {})
 			// Hand the stick back to its default owner straight away, not at the next replug.
 			await run('udevadm', ['trigger', '--subsystem-match=tty', '--action=change']).catch(() => {})
+			return 'ok'
+		},
+
+		umount: async ([path]) => {
+			const d = await resolveDisk(path)
+			if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${d.path} holds the system`)
+			if (await poolMember(d)) fail(`${d.path} is in a pool`)
+			for (const m of mounts(d)) await run('umount', [m])
+			return 'ok'
+		},
+		mount: async ([path]) => {
+			const d = await resolveDisk(path)
+			if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${d.path} holds the system`)
+			if (await poolMember(d)) fail(`${d.path} is in a pool`)
+			if (mounts(d).length) fail(`${d.path} is already mounted`)
+			const nodes = (d.children ?? []).length ? flat(d).filter((x) => x !== d) : [d]
+			const targets = nodes.filter((x) => x.fstype && !SKIP_FS.has(x.fstype))
+			if (!targets.length) fail('Nothing to mount')
+			const used = new Set()
+			for (const t of targets) {
+				let name = safeMountName(t.label) || safeMountName(t.uuid) || safeMountName(t.name) || 'disk'
+				const base = name
+				let n = 2
+				while (used.has(name)) name = `${base}-${n++}`
+				used.add(name)
+				const parent = join('/run/media', user.name)
+				const dest = join(parent, name)
+				await fs.mkdir(dest, {recursive: true})
+				await fs.chown(parent, user.uid, user.gid).catch(() => {})
+				await fs.chown(dest, user.uid, user.gid)
+				const flags = ['nosuid', 'nodev']
+				if (FAT_FS.has(t.fstype)) flags.push(`uid=${user.uid}`, `gid=${user.gid}`)
+				await run('mount', ['-o', flags.join(','), t.path, dest])
+				if (!FAT_FS.has(t.fstype)) await fs.chown(dest, user.uid, user.gid)
+			}
+			return 'ok'
+		},
+		format: async ([path, fsKind]) => {
+			if (!['blank', 'ext4', 'exfat'].includes(fsKind)) fail('Choose blank, ext4 or exfat')
+			const d = await resolveDisk(path)
+			if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${d.path} holds the system`)
+			if (await poolMember(d)) fail(`${d.path} is in a pool`)
+			if (mounts(d).length) fail(`${d.path} is in use. Unmount it first.`)
+			// Unlocked encryption, LVM or a running RAID array on it (lsblk shows them as its children),
+			// even with nothing mounted: those are in use.
+			if (flat(d).some((x) => x !== d && x.type !== 'part')) fail(`${d.path} is in use by encryption, LVM or RAID. Stop that first.`)
+			await run('wipefs', ['-a', d.path])
+			if (fsKind === 'ext4') await run('mkfs.ext4', ['-F', d.path])
+			if (fsKind === 'exfat') await run('mkfs.exfat', [d.path])
 			return 'ok'
 		},
 

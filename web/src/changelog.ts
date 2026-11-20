@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.49',
+		date: '2026-11-19',
+		title: 'Format, unmount and mount extra disks',
+		added: [
+			'Settings › Storage: format an extra disk (blank, ext4 or exFAT), unmount it, and mount it again. Drives that hold the system, are in a pool, or are in use by encryption, LVM or RAID are never touched.',
+			'The same for computers in your swarm, from their Storage page, plus pools and drive sleep there. Add a computer with Storage switched on (it’s off by default, as it can format disks).',
+			'The assistant can see a swarm computer’s drives, including ones that are unmounted.',
+		],
+		fixed: ['A computer you add shows up as soon as it joins, and the theme menu on a swarm computer stays open while its numbers update.'],
+	},
+	{
 		version: '0.9.48',
 		date: '2026-11-19',
 		title: 'Security fixes',

@@ -22,6 +22,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+      # The swarm computers' root helper (connector/helper.py) can format disks: its checks are tested here.
+      - run: python3 -m unittest discover -s connector -p 'test_*.py'
       # For the local swarm's desktop test (a virtual X screen shared by x11vnc).
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb x11vnc
       - run: npm test

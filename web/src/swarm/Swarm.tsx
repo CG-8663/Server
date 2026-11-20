@@ -2,18 +2,21 @@
 // Watch them, open a terminal or their desktop, and manage them (Omarchy plugins and themes, updates,
 // restart), each only as far as that computer allowed when it joined.
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode} from 'react'
+import {lazy, memo, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {mutate, query} from '../api'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
+import {newlyJoined} from './join'
+import {sameThemePicker} from './themePicker'
+import {StoragePage} from '../screens/Storage'
 import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, levelColor, useConfirm, useToast} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 
-type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; backup: boolean}
+type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean}
 type Ability = keyof Abilities
 export type Agent = {
 	id: string
@@ -59,6 +62,7 @@ const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = 
 	terminal: {label: 'Terminal', icon: 'terminal', what: 'A shell on it, as the person who installed the connector'},
 	desktop: {label: 'Desktop', icon: 'devices', what: 'See and use its screen (Hyprland, Sway or an X11 desktop)'},
 	manage: {label: 'Manage', icon: 'settings', what: 'Omarchy plugins (verified only) and themes, updates, restart'},
+	storage: {label: 'Storage', icon: 'disk', what: 'See its drives, format extra disks, and manage pools on that computer'},
 	backup: {label: 'Backups', icon: 'history', what: 'Back up folders you choose to this server, on a schedule (Settings › Backups). It can add backups, never delete them.'},
 }
 const may = (a: Agent, k: Ability) => a.allowed[k] && a.on[k]
@@ -87,8 +91,10 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 	const [adding, setAdding] = useState(false)
 	const [terminal, setTerminal] = useState<{agent: Agent; input?: string} | null>(null)
 	const [screen, setScreen] = useState<Agent | null>(null)
+	const [storage, setStorage] = useState<Agent | null>(null)
 	const selected = list.find((a) => a.id === selectedId) ?? null
 	const online = list.filter((a) => a.online).length
+	if (storage) return <StoragePage onBack={() => setStorage(null)} target={{agentId: storage.id, name: storage.name}} />
 	return (
 		<section className="swarm">
 			{heading && (
@@ -136,6 +142,7 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 					onClose={() => setSelectedId(null)}
 					onTerminal={(input) => setTerminal({agent: selected, input})}
 					onDesktop={() => setScreen(selected)}
+					onStorage={() => setStorage(selected)}
 				/>
 			)}
 			{adding && <AddComputer before={list.map((a) => a.id)} onClose={() => setAdding(false)} onJoined={(id) => (setAdding(false), setSelectedId(id))} />}
@@ -251,7 +258,7 @@ function Group({title, children}: {title: string; children: ReactNode}) {
 	)
 }
 
-function AgentSheet({a, onClose, onTerminal, onDesktop}: {a: Agent; onClose: () => void; onTerminal: (input?: string) => void; onDesktop: () => void}) {
+function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; onClose: () => void; onTerminal: (input?: string) => void; onDesktop: () => void; onStorage: () => void}) {
 	const os = look(a)
 	const act = useSwarmAction()
 	const confirm = useConfirm()
@@ -289,6 +296,16 @@ function AgentSheet({a, onClose, onTerminal, onDesktop}: {a: Agent; onClose: () 
 			{a.online && may(a, 'desktop') && desk && !desk.ok && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>{desk.why}</p>}
 
 			{a.online && m && <SwarmGauges metrics={m} />}
+			<Group title="Disks">
+				<Row
+					icon="disk"
+					color="var(--teal)"
+					label="Storage"
+					sub={offline ? undefined : may(a, 'storage') ? 'Drives, format extra disks, and pools on this computer' : 'Pair this computer again with Storage switched on.'}
+					onClick={a.online && may(a, 'storage') ? () => (haptic(8), onStorage()) : undefined}
+					disabled={offline}
+				/>
+			</Group>
 			{a.online && m && (extraDisks(m.disks).length > 0 || typeof m.temp === 'number' || m.uptime !== undefined) && (
 				<Group title="Now">
 					{extraDisks(m.disks).map((d) => (
@@ -313,7 +330,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop}: {a: Agent; onClose: () 
 					)}
 					{a.info?.omarchy && (
 						<>
-							<Row icon="palette" color="#a855f7" label="Theme" trailing={<ThemePicker a={a} disabled={!manage || act.isPending} onPick={(theme) => action({name: 'theme-set', theme}, `Setting ${theme} on ${a.name}…`)} />} />
+							<Row icon="palette" color="#a855f7" label="Theme" trailing={<ThemePicker themes={a.info?.themes ?? []} theme={a.info?.theme ?? ''} disabled={!manage || act.isPending} onPick={(theme) => action({name: 'theme-set', theme}, `Setting ${theme} on ${a.name}…`)} />} />
 							<Row icon="puzzle" color="var(--accent)" label="Omarchy plugins" sub={`${a.info.plugins?.length ?? 0} installed`} onClick={manage ? () => setPlugins(true) : undefined} />
 						</>
 					)}
@@ -390,9 +407,8 @@ function AgentSheet({a, onClose, onTerminal, onDesktop}: {a: Agent; onClose: () 
 	)
 }
 
-function ThemePicker({a, disabled, onPick}: {a: Agent; disabled: boolean; onPick: (theme: string) => void}) {
-	const themes = a.info?.themes ?? []
-	const current = themes.find((t) => t.toLowerCase().replace(/\s+/g, '-') === (a.info?.theme ?? '').toLowerCase()) ?? a.info?.theme ?? ''
+const ThemePicker = memo(function ThemePicker({themes, theme, disabled, onPick}: {themes: string[]; theme: string; disabled: boolean; onPick: (theme: string) => void}) {
+	const current = themes.find((t) => t.toLowerCase().replace(/\s+/g, '-') === theme.toLowerCase()) ?? theme
 	if (!themes.length) return <span className="muted">{current || '–'}</span>
 	return (
 		<select aria-label="Theme" value={current} disabled={disabled} onChange={(e) => e.target.value && onPick(e.target.value)} style={{maxWidth: 170}}>
@@ -402,7 +418,7 @@ function ThemePicker({a, disabled, onPick}: {a: Agent; disabled: boolean; onPick
 			))}
 		</select>
 	)
-}
+}, (p, n) => sameThemePicker(p, n))
 
 type Plugin = {id: string; name: string; description?: string; author?: string}
 function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
@@ -480,7 +496,9 @@ function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 
 // ---- Add a computer: what it may do → the command → step by step → it appears. ----------------
 function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: () => void; onJoined: (id: string) => void}) {
-	const [allow, setAllow] = useState<Abilities>({terminal: true, desktop: true, manage: true, backup: true})
+	const [beforeIds] = useState(before)
+	// Storage can format disks there, so it's a choice you make; backups are on by default.
+	const [allow, setAllow] = useState<Abilities>({terminal: true, desktop: true, manage: true, storage: false, backup: true})
 	const [pairing, setPairing] = useState<Pairing | null>(null)
 	const [host, setHost] = useState('')
 	const [copied, setCopied] = useState('')
@@ -502,8 +520,8 @@ function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: ()
 		const t = setInterval(() => setNow(Date.now()), 1000)
 		return () => clearInterval(t)
 	}, [pairing])
-	// The new computer, once it shows up.
-	const joined = (swarm.data ?? []).find((a) => !before.includes(a.id))
+	// The new computer, once it shows up. beforeIds is frozen at open so a live swarm.list cannot hide it.
+	const joined = newlyJoined(swarm.data ?? [], beforeIds)
 	const left = pairing ? Math.max(0, Math.round((pairing.expiresAt - now) / 1000)) : 0
 	const list = (Object.keys(allow) as Ability[]).filter((k) => allow[k]).join(',')
 	const command = useMemo(() => {

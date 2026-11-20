@@ -11,6 +11,7 @@ server can't widen):
   desktop   your screen (wayvnc on Hyprland/Sway and other wlroots desktops, x11vnc on X11),
             shared only through a private socket in your runtime folder
   manage    a short fixed list: Omarchy plugins (verified, pinned), Omarchy theme, restart
+  storage   extra disks: list, mount, unmount, format, pools, sleep (helper)
   backup    back up the folders in your home folder that you choose on the server, on its schedule,
             encrypted (restic), to the server. It can only add backups there, never delete them.
             Restores go into a new ~/Restored folder, never over your files.
@@ -876,6 +877,123 @@ def reboot(_args):
 
 ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "theme-set": theme_set, "reboot": reboot}
 
+HELPER = "/usr/local/libexec/omarchy-connector/helper.py"
+
+
+def helper(verb, *args):
+    r = subprocess.run(["sudo", "-n", HELPER, verb, *args], capture_output=True, text=True, timeout=600)
+    if r.returncode:
+        raise RuntimeError((r.stderr or r.stdout or "Storage helper failed").strip().split("\n")[-1][:300])
+    return r.stdout.strip()
+
+
+def storage_status(_args):
+    try:
+        ok = helper("ping") == "ok"
+    except Exception:
+        ok = False
+    zfs = False
+    if ok:
+        try:
+            zfs = helper("zfs-available") == "yes"
+        except Exception:
+            zfs = False
+    return {"helperAvailable": ok, "zfsAvailable": zfs}
+
+
+def storage_disks(_args):
+    return json.loads(helper("disks"))
+
+
+def storage_unmount(args):
+    helper("umount", args["device"])
+    return True
+
+
+def storage_mount(args):
+    helper("mount", args["device"])
+    return True
+
+
+def storage_format(args):
+    fs = args.get("filesystem")
+    if fs not in ("blank", "ext4", "exfat"):
+        raise RuntimeError("Choose blank, ext4 or exfat")
+    helper("format", args["device"], fs)
+    return True
+
+
+def storage_pools(_args):
+    return json.loads(helper("pools"))
+
+
+def storage_importable(_args):
+    return json.loads(helper("importable"))
+
+
+def storage_create_pool(args):
+    name = args.get("name")
+    profile = args.get("profile")
+    devices = args.get("devices") or []
+    if args.get("fs") == "zfs":
+        helper("zfs-create", name, profile, *devices)
+    else:
+        helper("pool-create", name, profile, *devices)
+    return True
+
+
+def storage_add_to_pool(args):
+    helper("pool-add", args.get("name"), args.get("device"))
+    return True
+
+
+def storage_import_pool(args):
+    uuid = str(args.get("uuid") or "")
+    if uuid.startswith("zfs:"):
+        extra = ["force"] if args.get("force") is True else []
+        helper("zfs-import", uuid[4:], *extra)
+    else:
+        helper("pool-import", args.get("name"), uuid)
+    return True
+
+
+def storage_forget_pool(args):
+    if args.get("kind") == "zfs":
+        helper("zfs-export", args.get("name"))
+    else:
+        helper("pool-forget", args.get("name"))
+    return True
+
+
+def storage_scrub(args):
+    if args.get("kind") == "zfs":
+        helper("zfs-scrub", args.get("name"))
+    else:
+        helper("pool-scrub", args.get("name"))
+    return True
+
+
+def storage_set_sleep(args):
+    helper("sleep", args.get("device"), str(args.get("minutes")))
+    return True
+
+
+STORAGE_ACTIONS = {
+    "storage-status": storage_status,
+    "storage-disks": storage_disks,
+    "storage-unmount": storage_unmount,
+    "storage-mount": storage_mount,
+    "storage-format": storage_format,
+    "storage-pools": storage_pools,
+    "storage-importable": storage_importable,
+    "storage-createPool": storage_create_pool,
+    "storage-addToPool": storage_add_to_pool,
+    "storage-importPool": storage_import_pool,
+    "storage-forgetPool": storage_forget_pool,
+    "storage-scrub": storage_scrub,
+    "storage-setSleep": storage_set_sleep,
+}
+
 
 # ---------------------------------------------------------------------------------------------
 # Backups (ability "backup"). The server says which folders and sends the store's password for each
@@ -1204,12 +1322,20 @@ class Connection:
                     raise RuntimeError("This computer doesn’t allow backups")
                 data = BACKUP_ACTIONS[name](self, msg.get("id"), msg.get("args") or {}, self.cfg)
                 return self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})
-            if not self.allowed.get("manage"):
-                raise RuntimeError("This computer doesn’t allow managing")
-            fn = ACTIONS.get(name)
-            if not fn:
-                raise RuntimeError("Unknown action")
-            data = fn(msg.get("args") or {})
+            if name in STORAGE_ACTIONS or str(name).startswith("storage-"):
+                if not self.allowed.get("storage"):
+                    raise RuntimeError("This computer doesn’t allow Storage")
+                fn = STORAGE_ACTIONS.get(name)
+                if not fn:
+                    raise RuntimeError("Unknown action")
+                data = fn(msg.get("args") or {})
+            else:
+                if not self.allowed.get("manage"):
+                    raise RuntimeError("This computer doesn’t allow managing")
+                fn = ACTIONS.get(name)
+                if not fn:
+                    raise RuntimeError("Unknown action")
+                data = fn(msg.get("args") or {})
             self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})
             if name in ("plugin-install", "plugin-remove", "theme-set"):
                 self.send({"op": "hello", "info": info(), "abilities": self.allowed})
@@ -1249,7 +1375,7 @@ def main():
     args = sys.argv[1:]
     if args[:1] == ["enroll"]:
         server, token = args[1], args[2]
-        abilities = {k: k in args[3].split(",") for k in ("terminal", "desktop", "manage", "backup")} if len(args) > 3 else {}
+        abilities = {k: k in args[3].split(",") for k in ("terminal", "desktop", "manage", "storage", "backup")} if len(args) > 3 else {}
         r = enroll(server, token, abilities)
         os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
         cfg = {"server": server, "id": r["id"], "key": r["key"], "abilities": abilities}
