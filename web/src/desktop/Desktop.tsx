@@ -16,7 +16,7 @@ import {osLook} from '../osLook'
 import {closeAssistantView, keepAssistantWindow, openAssistantView} from '../assistantTurn'
 import {AssistantCharacterWidget} from '../character/widgets'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
-import {SYSTEM_DOCK, WALLPAPERS, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
+import {SYSTEM_DOCK, WALLPAPERS, resetDeskConfig, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
 import {Cheatsheet} from './hyprland/Cheatsheet'
 import {injectConsoleKey, keysymFromEvent, lastMinimizedOn, releaseConsoleSuper, topVisibleWindow} from './hyprland/consoleBridge'
@@ -771,6 +771,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		if (!(await confirm({title: 'Sign out?', body: 'This browser is signed out and removed from your server’s devices.', confirm: 'Sign out', icon: 'signout'}))) return
 		await logout().catch(() => {})
 		qc.clear()
+		resetDeskConfig()
 		onSignedOut()
 	}
 
