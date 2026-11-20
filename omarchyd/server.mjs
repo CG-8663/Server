@@ -10,6 +10,7 @@ import os from 'node:os'
 import {dirname, extname, join} from 'node:path'
 
 import {openAccounts} from './accounts.mjs'
+import {writeAtomic} from './atomic.mjs'
 import {createAssistant} from './assistant.mjs'
 import {createBackups} from './backups.mjs'
 import {createUnraid} from './unraid.mjs'
@@ -41,6 +42,26 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		})
 	})
 	const accounts = await openAccounts(dataDir)
+	// Security settings kept by omarchyd itself (the https setting lives with the certificates,
+	// where the web server reads it too). Only a plain object is settings: a string or array is
+	// valid JSON, but spreading it would pollute this object and the next save would overwrite the
+	// file. An empty, invalid, or non-object file starts locked and is not rewritten. Any other
+	// read error stops startup. The log names the file only, never its path or contents.
+	// Read this before apps and machines start: they write state in the background, and an
+	// unreadable file must fail before those writes are in flight.
+	const securityFile = join(dataDir, 'security.json')
+	let saved = {}
+	let badSecurity = false
+	try {
+		const parsed = JSON.parse(await readFile(securityFile, 'utf8'))
+		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) saved = parsed
+		else badSecurity = true
+	} catch (e) {
+		if (e instanceof SyntaxError) badSecurity = true
+		else if (e.code !== 'ENOENT') throw e
+	}
+	if (badSecurity) console.error('[omarchyd] security.json is empty or invalid and was left unchanged')
+	const security = {lockAfterRemote: true, ...saved}
 	const files = createFiles({home, dataDir})
 	const machines = createMachines({dataDir, files, ...machineOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
@@ -71,10 +92,6 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		},
 		helper: (verb, args) => storage.helper(verb, args),
 	})
-	// Security settings kept by omarchyd itself (the https setting lives with the certificates,
-	// where the web server reads it too).
-	const securityFile = join(dataDir, 'security.json')
-	const security = {lockAfterRemote: true, ...JSON.parse((await readFile(securityFile, 'utf8').catch(() => null)) ?? '{}')}
 	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).
 	const tickets = new Map()
 	const release = await system.osRelease()
@@ -295,7 +312,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 				}
 				if (typeof input?.lockAfterRemote === 'boolean') {
 					security.lockAfterRemote = input.lockAfterRemote
-					await writeFile(securityFile, JSON.stringify(security), {mode: 0o600})
+					await writeAtomic(securityFile, JSON.stringify(security), {mode: 0o600})
 				}
 				return true
 			},
