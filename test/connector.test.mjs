@@ -3,6 +3,7 @@
 // terminal, and leaving again when removed.
 import assert from 'node:assert/strict'
 import {execFile, execFileSync, spawn} from 'node:child_process'
+import {createHash, randomBytes} from 'node:crypto'
 import {promisify} from 'node:util'
 import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises'
 import http from 'node:http'
@@ -11,9 +12,10 @@ import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
 import {fileURLToPath} from 'node:url'
 
-import WebSocket from 'ws'
+import WebSocket, {WebSocketServer} from 'ws'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
+import {closeReason, createConnector} from '../omarchyd/connector.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 import {dualProtocolServer, ensureTls, tlsContext} from '../omarchyd/tls.mjs'
 import {createApp} from '../server/app.mjs'
@@ -320,5 +322,130 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 				/* best effort */
 			}
 		}
+	})
+})
+
+describe('swarm close reasons', () => {
+	test('closeReason: 50 ideographs stay within 123 bytes and round-trip', () => {
+		const reason = closeReason('あ'.repeat(50))
+		const buf = Buffer.from(reason)
+		assert.ok(buf.length <= 123)
+		assert.equal(buf.toString('utf8'), reason)
+		assert.equal(reason.includes('\uFFFD'), false)
+		assert.equal(reason, 'あ'.repeat(41))
+		// A cut that lands inside a character walks back to the start of it.
+		const skewed = closeReason(`x${'あ'.repeat(50)}`)
+		assert.equal(Buffer.byteLength(skewed) <= 123, true)
+		assert.equal(Buffer.from(skewed).toString('utf8'), skewed)
+		assert.equal(skewed.includes('\uFFFD'), false)
+		assert.equal(skewed, `x${'あ'.repeat(40)}`)
+		const emoji = closeReason('😀'.repeat(40))
+		assert.equal(Buffer.byteLength(emoji) <= 123, true)
+		assert.equal(Buffer.from(emoji).toString('utf8'), emoji)
+		assert.equal(emoji.includes('\uFFFD'), false)
+		// What already fits is kept, including the real short close text. Controls become spaces.
+		const short = 'The desktop isn’t switched on for Study PC'
+		assert.equal(closeReason(short), short)
+		assert.equal(closeReason('a'.repeat(123)), 'a'.repeat(123))
+		assert.equal(closeReason('a'.repeat(124)), 'a'.repeat(123))
+		assert.equal(closeReason('a\u0000b\u001fc\u007fd'), 'a b c d')
+		assert.equal(closeReason(null), '')
+		assert.equal(closeReason(undefined), '')
+	})
+
+	const abilities = {terminal: false, desktop: false, manage: false, storage: false, backup: false}
+	async function withAgent(agent, run) {
+		const dataDir = await mkdtemp(join(os.tmpdir(), 'swarm-close-'))
+		const id = 'aabbccddeeff'
+		const key = randomBytes(32).toString('base64url')
+		await writeFile(
+			join(dataDir, 'swarm.json'),
+			JSON.stringify({
+				agents: [{id, name: agent.name, keyHash: createHash('sha256').update(key).digest('hex'), allowed: agent.allowed, on: agent.on ?? agent.allowed, enrolledAt: 1, lastSeen: null, info: {hostname: 'pc'}}],
+			}),
+		)
+		const c = createConnector({dataDir, tlsDir: dataDir})
+		const server = http.createServer()
+		server.on('upgrade', (req, socket, head) => {
+			c.upgradeAgent(req, socket, head).catch(() => socket.destroy())
+		})
+		await new Promise((r) => server.listen(0, '127.0.0.1', r))
+		const agentWs = new WebSocket(`ws://127.0.0.1:${server.address().port}/`, {headers: {authorization: `Bearer ${id}:${key}`}})
+		try {
+			await new Promise((resolve, reject) => (agentWs.once('open', resolve), agentWs.once('error', reject)))
+			await run({c, id, agentWs})
+		} finally {
+			agentWs.terminate()
+			c.close()
+			await new Promise((r) => server.close(r))
+			await rm(dataDir, {recursive: true, force: true})
+		}
+	}
+	async function browserSocket() {
+		const wss = new WebSocketServer({port: 0, host: '127.0.0.1'})
+		await new Promise((r) => (wss.address() ? r() : wss.once('listening', r)))
+		const client = new WebSocket(`ws://127.0.0.1:${wss.address().port}`)
+		const serverSide = await new Promise((r) => wss.once('connection', r))
+		serverSide.on('error', () => {})
+		client.on('error', () => {})
+		await new Promise((resolve, reject) => (client.once('open', resolve), client.once('error', reject)))
+		return {client, serverSide, close: () => new Promise((r) => wss.close(r))}
+	}
+	const closedAs = (client) => new Promise((r) => client.once('close', (code, reason) => r({code, reason: Buffer.from(reason)})))
+
+	test('a long unicode computer name closes the socket instead of throwing', async () => {
+		const name = 'あ'.repeat(48)
+		await withAgent({name, allowed: abilities}, async ({c, id}) => {
+			const browser = await browserSocket()
+			try {
+				const closed = closedAs(browser.client)
+				c.openChannel(id, 'vnc', browser.serverSide)
+				const got = await closed
+				const text = got.reason.toString('utf8')
+				assert.equal(got.code, 1011)
+				assert.ok(got.reason.length <= 123)
+				assert.equal(Buffer.from(text).toString('utf8'), text)
+				assert.equal(text.includes('\uFFFD'), false)
+				assert.match(text, /^The desktop isn’t switched on for あ/)
+				// A name that already fits is the whole sentence, not a shortened one.
+				await c.procedures['swarm.rename'].run({id, name: 'Study PC'})
+				const again = await browserSocket()
+				try {
+					const full = closedAs(again.client)
+					c.openChannel(id, 'vnc', again.serverSide)
+					const kept = await full
+					assert.equal(kept.code, 1011)
+					assert.equal(kept.reason.toString('utf8'), 'The desktop isn’t switched on for Study PC')
+				} finally {
+					await again.close()
+				}
+			} finally {
+				await browser.close()
+			}
+		})
+	})
+
+	test('a long connector close reason is forwarded without throwing', async () => {
+		await withAgent({name: 'pc', allowed: {...abilities, terminal: true}, on: {...abilities, terminal: true}}, async ({c, id, agentWs}) => {
+			const browser = await browserSocket()
+			try {
+				const opened = new Promise((r) => agentWs.once('message', (d) => r(JSON.parse(String(d)))))
+				c.openChannel(id, 'pty', browser.serverSide, {cols: 80, rows: 24})
+				const open = await opened
+				assert.equal(open.op, 'open')
+				const closed = closedAs(browser.client)
+				agentWs.send(JSON.stringify({op: 'closed', ch: open.ch, code: 1011, reason: `\u0000${'あ'.repeat(50)}`}))
+				const got = await closed
+				const text = got.reason.toString('utf8')
+				assert.equal(got.code, 1011)
+				assert.ok(got.reason.length <= 123)
+				assert.equal(Buffer.from(text).toString('utf8'), text)
+				assert.equal(text.includes('\uFFFD'), false)
+				assert.equal(text.includes('\u0000'), false)
+				assert.match(text, /^ あ/)
+			} finally {
+				await browser.close()
+			}
+		})
 	})
 })
