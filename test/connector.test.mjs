@@ -450,7 +450,10 @@ describe('swarm close reasons', () => {
 		await withAgent({name: 'pc', allowed: {...abilities, terminal: true}, on: {...abilities, terminal: true}}, async ({c, id, agentWs}) => {
 			const browser = await browserSocket()
 			try {
-				const opened = new Promise((r) => agentWs.once('message', (d) => r(JSON.parse(String(d)))))
+				const opened = new Promise((r) => agentWs.on('message', function onOpen(d) {
+					const m = JSON.parse(String(d))
+					if (m.op === 'open') (agentWs.off('message', onOpen), r(m))
+				}))
 				c.openChannel(id, 'pty', browser.serverSide, {cols: 80, rows: 24})
 				const open = await opened
 				assert.equal(open.op, 'open')

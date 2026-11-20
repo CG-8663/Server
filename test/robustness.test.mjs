@@ -41,7 +41,7 @@ const files = (home) => ({async resolve(v) {
 	return {real: join(home, v.slice('/Home'.length)), top: 'Home'}
 }})
 
-test('#96 backups: every run that was going at a restart is marked stopped, and that is saved', async () => {
+test('#96 backups: every run that was going at a restart is marked stopped', async () => {
 	const dir = await tmp()
 	try {
 		await mkdir(join(dir, 'backups'), {recursive: true})
@@ -58,8 +58,6 @@ test('#96 backups: every run that was going at a restart is marked stopped, and 
 			assert.ok(h.endedAt, id)
 			assert.equal(h.ok, false)
 		}
-		const saved = JSON.parse(await readFile(join(dir, 'backups/history.json'), 'utf8'))
-		assert.ok(saved.every((h) => h.endedAt))
 		b.close?.()
 	} finally {
 		await rm(dir, {recursive: true, force: true})

@@ -189,9 +189,8 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		secrets = await readBackupFile(secretFile, {}, plainObject)
 		history = await readBackupFile(historyFile, [], Array.isArray)
 		// Runs that were going when the server stopped (the server's own and any computer's at once).
-		let stopped = false
-		for (const h of history) if (h && typeof h === 'object' && !h.endedAt) (Object.assign(h, {endedAt: h.startedAt, ok: false, error: 'Stopped when the server restarted'}), (stopped = true))
-		if (stopped) await saveHistory().catch(() => {})
+		// (Not written back here: startup leaves the files as they are, and the next run saves it.)
+		for (const h of history) if (h && typeof h === 'object' && !h.endedAt) Object.assign(h, {endedAt: h.startedAt, ok: false, error: 'Stopped when the server restarted'})
 	})()
 
 	const writePrivate = (file, text) => writeAtomic(file, text, {mode: 0o600})
