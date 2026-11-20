@@ -34,16 +34,21 @@ export async function createStore(dataDir) {
 	let sessions = await readJson(sessionsFile, {})
 	let writing = Promise.resolve()
 	const persistSessions = () => (writing = writing.then(() => writeJson(sessionsFile, sessions)).catch(() => {}))
+	let configWriting = Promise.resolve()
 
 	return {
 		dataDir,
 		getConfig: () => ({...config}),
 		async setConfig(patch) {
-			const next = {...config, ...patch}
-			// Publish only after the file is on disk. A failed write leaves memory as it was and still throws.
-			await writeJson(configFile, next)
-			config = next
-			return {...config}
+			const run = configWriting.then(async () => {
+				const next = {...config, ...patch}
+				await writeJson(configFile, next)
+				config = next
+				return {...config}
+			})
+			// Queue past a failure so the next save still runs, but this caller gets the rejection.
+			configWriting = run.catch(() => {})
+			return run
 		},
 		getSession: (cookieId) => (cookieId ? sessions[hashId(cookieId)] : undefined),
 		async putSession(cookieId, session) {

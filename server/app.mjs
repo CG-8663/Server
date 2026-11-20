@@ -11,7 +11,7 @@ import http from 'node:http'
 
 import {randomBytes, randomUUID} from 'node:crypto'
 import {existsSync} from 'node:fs'
-import {mkdir, readFile, rm, writeFile} from 'node:fs/promises'
+import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import express from 'express'
 import WebSocket, {WebSocketServer} from 'ws'
@@ -492,7 +492,12 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	const catchSave = (handler) => (req, res) => {
 		Promise.resolve(handler(req, res)).catch((error) => {
 			console.error('[omarchy-server]', error)
-			if (!res.headersSent) res.status(500).json({error: {code: 'INTERNAL', message: 'Couldn’t save that'}})
+			if (res.headersSent) return
+			try {
+				res.status(500).json({error: {code: 'INTERNAL', message: 'Couldn’t save that'}})
+			} catch (sendFailure) {
+				console.error('[omarchy-server]', sendFailure)
+			}
 		})
 	}
 
@@ -900,15 +905,26 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	}))
 
 	// Custom background: the phone resizes the photo to a JPEG before sending it.
+	// The live file is replaced only after prefs commit, so a failed save can't show a new photo under the old version.
 	api.post('/background', express.raw({type: 'image/jpeg', limit: '8mb'}), catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
 		const body = req.body
 		const isJpeg = Buffer.isBuffer(body) && body.length > 4 && body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff
 		if (!isJpeg) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'That image couldn’t be read. Try a JPEG or PNG.'}})
-		await mkdir(join(store.dataDir, 'backgrounds'), {recursive: true, mode: 0o700})
-		await writeFile(backgroundFile(session.accountId), body, {mode: 0o600})
-		const prefs = await savePrefs(session.accountId, {backgroundVersion: Date.now()})
+		const dir = join(store.dataDir, 'backgrounds')
+		await mkdir(dir, {recursive: true, mode: 0o700})
+		const live = backgroundFile(session.accountId)
+		const tmp = join(dir, `.${accountKey(session.accountId)}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`)
+		let prefs
+		try {
+			await writeFile(tmp, body, {mode: 0o600})
+			prefs = await savePrefs(session.accountId, {backgroundVersion: Date.now()})
+		} catch (error) {
+			await rm(tmp, {force: true}).catch((cleanup) => console.error('[omarchy-server]', cleanup))
+			throw error
+		}
+		await rename(tmp, live)
 		res.json({prefs})
 	}))
 	api.get('/background', async (req, res) => {
@@ -924,13 +940,28 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	api.delete('/background', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		await rm(backgroundFile(session.accountId), {force: true})
+		const live = backgroundFile(session.accountId)
+		const aside = `${live}.${process.pid}.${randomBytes(4).toString('hex')}.bak`
+		let moved = false
+		try {
+			await rename(live, aside)
+			moved = true
+		} catch (error) {
+			if (error.code !== 'ENOENT') throw error
+		}
 		const current = prefsOf(session.accountId) ?? {}
-		const prefs = await savePrefs(session.accountId, {
-			backgroundVersion: null,
-			customBrandHsl: null,
-			...(current.theme === 'custom' ? {theme: 'horizon'} : {}),
-		})
+		let prefs
+		try {
+			prefs = await savePrefs(session.accountId, {
+				backgroundVersion: null,
+				customBrandHsl: null,
+				...(current.theme === 'custom' ? {theme: 'horizon'} : {}),
+			})
+		} catch (error) {
+			if (moved) await rename(aside, live).catch((restore) => console.error('[omarchy-server]', restore))
+			throw error
+		}
+		if (moved) await rm(aside, {force: true})
 		res.json({prefs})
 	}))
 

@@ -356,10 +356,8 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 			const bgPath = join(bgDir(), bgName)
 			const bgBefore = await readFile(bgPath)
 			const diskBefore = await readFile(join(fresh.dir, 'config.json'), 'utf8')
-			// The data directory cannot be written, so the next save fails inside the real write.
+			// config.json lives here. backgrounds/ stays writable, so only the config write fails.
 			await chmod(fresh.dir, 0o555)
-			await chmod(bgDir(), 0o555)
-			await chmod(bgPath, 0o444)
 			const refused = {error: {code: 'INTERNAL', message: 'Couldn’t save that'}}
 			const leak = 'LeakCheckName'
 			const marker = 'IMGLEAKMARKER'
@@ -376,19 +374,24 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 			const up = await send(Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(marker)]))
 			assert.equal(up.status, 500)
 			assert.deepEqual(await up.json(), refused)
+			assert.equal((await fresh.req('GET', '/api/prefs')).body.prefs.backgroundVersion, prefs.backgroundVersion)
+			let gotBg = await fetch(`${fresh.base}/api/background`, {headers: {cookie: fresh.getCookie()}})
+			assert.equal(gotBg.status, 200)
+			assert.deepEqual(Buffer.from(await gotBg.arrayBuffer()), bgBefore)
+			assert.deepEqual(await readdir(bgDir()), [bgName])
 			const removed = await fresh.req('DELETE', '/api/background')
 			assert.equal(removed.status, 500)
 			assert.deepEqual(removed.body, refused)
 			const anon = await fetch(`${fresh.base}/api/prefs`, {method: 'POST', headers: {'content-type': 'application/json', 'x-omarchy-server': '1'}, body: JSON.stringify({theme: 'mocha'})})
 			assert.equal(anon.status, 401)
 			assert.deepEqual((await fresh.req('GET', '/api/prefs')).body.prefs, prefs)
+			assert.equal((await fresh.req('GET', '/api/prefs')).body.prefs.backgroundVersion, prefs.backgroundVersion)
 			assert.deepEqual((await fresh.req('GET', '/api/desktop')).body.desktop, savedDesktop)
-			const gotBg = await fetch(`${fresh.base}/api/background`, {headers: {cookie: fresh.getCookie()}})
+			gotBg = await fetch(`${fresh.base}/api/background`, {headers: {cookie: fresh.getCookie()}})
 			assert.equal(gotBg.status, 200)
 			assert.deepEqual(Buffer.from(await gotBg.arrayBuffer()), bgBefore)
+			assert.deepEqual(await readdir(bgDir()), [bgName])
 			await chmod(fresh.dir, 0o700)
-			await chmod(bgDir(), 0o700)
-			await chmod(bgPath, 0o600)
 			assert.equal(await readFile(join(fresh.dir, 'config.json'), 'utf8'), diskBefore)
 			const text = logged.join('\n')
 			assert.ok(logged.length >= 4)
@@ -404,8 +407,42 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		} finally {
 			console.error = origError
 			await chmod(fresh.dir, 0o700).catch(() => {})
-			await chmod(bgDir(), 0o700).catch(() => {})
 			await fresh.close()
+		}
+	})
+
+	test('overlapping config saves keep both changes, and a failed one does not', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'touch-cfg-'))
+		const store = await createStore(dir)
+		try {
+			await store.setConfig({theme: 'tokyo'})
+			const first = store.setConfig({accent: 'teal'})
+			const second = store.setConfig({solid: 'yes'})
+			const [a, b] = await Promise.all([first, second])
+			assert.equal(a.theme, 'tokyo')
+			assert.equal(a.accent, 'teal')
+			assert.equal(b.theme, 'tokyo')
+			assert.equal(b.accent, 'teal')
+			assert.equal(b.solid, 'yes')
+			assert.deepEqual(store.getConfig(), b)
+			await chmod(dir, 0o555)
+			await assert.rejects(store.setConfig({nope: true}))
+			assert.equal(store.getConfig().nope, undefined)
+			assert.equal(store.getConfig().accent, 'teal')
+			await chmod(dir, 0o700)
+			const later = await store.setConfig({later: 2})
+			assert.equal(later.accent, 'teal')
+			assert.equal(later.solid, 'yes')
+			assert.equal(later.later, 2)
+			assert.equal(later.nope, undefined)
+			const disk = JSON.parse(await readFile(join(dir, 'config.json'), 'utf8'))
+			assert.equal(disk.theme, 'tokyo')
+			assert.equal(disk.accent, 'teal')
+			assert.equal(disk.solid, 'yes')
+			assert.equal(disk.later, 2)
+			assert.equal(disk.nope, undefined)
+		} finally {
+			await chmod(dir, 0o700).catch(() => {})
 		}
 	})
 
