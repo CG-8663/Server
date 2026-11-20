@@ -3,7 +3,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {PluginBrowser} from './Plugins'
 
 import {mutate, query, type RegistryApp, type UserApp} from '../api'
-import {appUrl, useAction, useApps, useBootstrap, useInstallReview, useRegistry} from '../data'
+import {appUrl, useAction, useApps, useBootstrap, useInstallReview, useRegistry, useUser} from '../data'
 import {useDesktop} from '../desktop/Desktop'
 import {explainProbe, openApp} from '../openApp'
 import {Icon, hasIcon} from '../icons'
@@ -47,6 +47,8 @@ const PLUGINS = '::omarchy-plugins'
 export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (app: UserApp) => void; onOpenApp?: (app: UserApp) => void; onBack?: () => void; onTerminal?: (input: string) => void}) {
 	const registry = useRegistry()
 	const apps = useApps()
+	const user = useUser()
+	const owner = user.data?.role !== 'member'
 	const [q, setQ] = useState('')
 	const [category, setCategory] = useState('all')
 	const [selected, setSelected] = useState<{app: StoreApp; install?: boolean} | null>(null)
@@ -213,7 +215,7 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 						</div>
 					)}
 
-			{stores && <CommunityStores onClose={() => setStores(false)} />}
+			{stores && <CommunityStores owner={owner} onClose={() => setStores(false)} />}
 
 			{selected && (
 				<StoreSheet
@@ -242,7 +244,7 @@ const SUGGESTED_STORES = [
 type Repo = {url: string; meta: {id: string; name: string}}
 const sameRepo = (a: string, b: string) => a.replace(/\.git$|\/$/, '').toLowerCase() === b.replace(/\.git$|\/$/, '').toLowerCase()
 
-function CommunityStores({onClose}: {onClose: () => void}) {
+function CommunityStores({owner, onClose}: {owner: boolean; onClose: () => void}) {
 	const qc = useQueryClient()
 	const toast = useToast()
 	const repos = useQuery({queryKey: ['appStore.repositories'], queryFn: () => query<Repo[]>('appStore.repositories')})
@@ -287,7 +289,9 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 			/>
 			<div className="screen">
 				<p className="prose" style={{margin: '0 0 14px'}}>
-					Community stores aren’t reviewed. Their apps run on your server like any other app, so only add stores from developers you trust.
+					{owner
+						? 'Community stores aren’t reviewed. Their apps run on your server like any other app, so only add stores from developers you trust.'
+						: 'Only the owner can add or remove a store.'}
 				</p>
 				{repos.isLoading && (
 					<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', borderRadius: 18}}>
@@ -307,7 +311,7 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 										<b>{r.meta.name}</b>
 										<span className="mono muted" style={{fontSize: 12, wordBreak: 'break-all'}}>{r.url}</span>
 									</span>
-									{removing === r.url ? (
+									{owner && (removing === r.url ? (
 										<button className="btn small danger" disabled={remove.isPending} onClick={() => remove.mutate(r.url)}>
 											{remove.isPending ? 'Removing…' : 'Remove'}
 										</button>
@@ -315,14 +319,14 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 										<button className="btn small" onClick={() => setRemoving(r.url)} aria-label={`Remove ${r.meta.name}`}>
 											Remove
 										</button>
-									)}
+									))}
 								</div>
 							))}
 						</div>
 						{removing && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>Apps you installed from it keep running; they just won’t get updates.</p>}
 					</>
 				)}
-				{suggestions.length > 0 && (
+				{owner && suggestions.length > 0 && (
 					<>
 						<h4 className="list-head">Suggested</h4>
 						<div className="glass group">
@@ -343,31 +347,35 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 						</div>
 					</>
 				)}
-				<h4 className="list-head">Add by link</h4>
-				<form
-					className="store-add"
-					onSubmit={(e) => {
-						e.preventDefault()
-						if (valid) add.mutate(url.trim())
-					}}
-				>
-					<input
-						className="field"
-						type="url"
-						inputMode="url"
-						autoCapitalize="off"
-						autoCorrect="off"
-						spellCheck={false}
-						placeholder="https://github.com/someone/app-store"
-						value={url}
-						onChange={(e) => setUrl(e.target.value)}
-						aria-label="Community app store link"
-					/>
-					<button className="btn primary" type="submit" disabled={!valid || add.isPending}>
-						{add.isPending && add.variables === url.trim() ? 'Adding…' : 'Add'}
-					</button>
-				</form>
-				{add.isPending && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>Downloading the store’s catalog. This can take a minute.</p>}
+				{owner && (
+					<>
+						<h4 className="list-head">Add by link</h4>
+						<form
+							className="store-add"
+							onSubmit={(e) => {
+								e.preventDefault()
+								if (valid) add.mutate(url.trim())
+							}}
+						>
+							<input
+								className="field"
+								type="url"
+								inputMode="url"
+								autoCapitalize="off"
+								autoCorrect="off"
+								spellCheck={false}
+								placeholder="https://github.com/someone/app-store"
+								value={url}
+								onChange={(e) => setUrl(e.target.value)}
+								aria-label="Community app store link"
+							/>
+							<button className="btn primary" type="submit" disabled={!valid || add.isPending}>
+								{add.isPending && add.variables === url.trim() ? 'Adding…' : 'Add'}
+							</button>
+						</form>
+						{add.isPending && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>Downloading the store’s catalog. This can take a minute.</p>}
+					</>
+				)}
 			</div>
 		</Sheet>
 	)
