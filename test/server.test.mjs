@@ -812,6 +812,18 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(b.body.session, null)
 	})
 
+	test('revoking a device already inside the refresh window signs the phone out', async () => {
+		await touch.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})
+		const sid = touch.getCookie().split('=')[1]
+		await touch.store.updateSession(sid, {accessExpiresAt: Date.now()})
+		fake.revokeAllDevices()
+		const r = await touch.req('GET', '/api/rpc/apps.list')
+		assert.equal(r.status, 401)
+		assert.equal(touch.store.sessionCount(), 0)
+		const b = await touch.req('GET', '/api/bootstrap')
+		assert.equal(b.body.session, null)
+	})
+
 	test('logout revokes the Omarchy Server session', async () => {
 		await touch.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})
 		const r = await touch.req('POST', '/api/auth/logout')

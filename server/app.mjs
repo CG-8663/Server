@@ -561,7 +561,16 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const run = async (token) =>
 			kind === 'mutation' ? backend.mutation(path, input, {token, timeout}) : backend.query(path, input, {token, timeout})
 		try {
-			return await run(await accessTokenFor(req.sid, session))
+			// Split refresh from the procedure. A revoked device whose token is already inside the
+			// refresh window fails here, before the call, with "Invalid native session" — not "Invalid token".
+			let token
+			try {
+				token = await accessTokenFor(req.sid, session)
+			} catch (error) {
+				if (error instanceof BackendError && error.code === 'UNAUTHORIZED') await store.deleteSession(req.sid)
+				throw error
+			}
+			return await run(token)
 		} catch (error) {
 			if (!(error instanceof BackendError) || error.code !== 'UNAUTHORIZED') throw error
 			// A wrong password is unauthorized too. Only an expired access token is refreshed and retried.

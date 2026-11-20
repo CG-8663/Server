@@ -98,6 +98,9 @@ export function createTerminalSessions({exec = execFile} = {}) {
 
 	function start(key, {cols, rows, shell}) {
 		const child = openShell({cols, rows, ...shell})
+		// A keystroke can meet a pipe the shell just closed, before stdin is marked not writable.
+		// Nothing else listens for that EPIPE, and it would take the whole daemon down.
+		child.stdin.on('error', () => {})
 		const s = {child, cols, rows, chunks: [], size: 0, sockets: new Set(), used: Date.now(), pty: null}
 		const out = (d) => {
 			s.chunks.push(d)
