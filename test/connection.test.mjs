@@ -3,6 +3,7 @@ import {test} from 'node:test'
 import {QueryClient, QueryObserver} from '@tanstack/react-query'
 
 import {OFFLINE_MESSAGE, UNREACHABLE_MESSAGE, deriveConnectionState, isBrowserOnline, queryProblem, snapshotCacheStatus} from '../web/src/connection.ts'
+import {applyOptimisticAppState, rollbackOptimisticAppState} from '../web/src/optimisticApps.ts'
 
 test('isBrowserOnline defaults true unless onLine is explicitly false', () => {
 	assert.equal(isBrowserOnline(undefined), true)
@@ -108,4 +109,38 @@ test('queryProblem catches missing data offline/paused and explicit errors', () 
 	assert.equal(queryProblem({data: [{id: 'vm-1'}], error: null, fetchStatus: 'paused'}, false), null)
 	assert.equal(queryProblem({data: undefined, error: new Error('Server unreachable'), fetchStatus: 'idle'}, true), 'Server unreachable')
 	assert.equal(queryProblem({data: [{id: 'vm-1'}], error: null, fetchStatus: 'idle'}, true), null)
+})
+
+test('optimistic app state rolls back on failure without clobbering concurrent changes', async () => {
+	const qc = new QueryClient()
+	try {
+		for (const [prev, next] of [
+			['running', 'stopping'],
+			['running', 'restarting'],
+			['stopped', 'starting'],
+		]) {
+			qc.setQueryData(['apps.list'], [
+				{id: 'immich', state: prev},
+				{id: 'jellyfin', state: 'running'},
+			])
+			const snap = await applyOptimisticAppState(qc, {appId: 'immich', state: next})
+			assert.equal(qc.getQueryData(['apps.list']).find((a) => a.id === 'immich').state, next)
+
+			// Concurrent update to another app must survive rollback.
+			qc.setQueryData(['apps.list'], (apps) => apps.map((a) => (a.id === 'jellyfin' ? {...a, state: 'stopped'} : a)))
+			rollbackOptimisticAppState(qc, snap)
+			const after = qc.getQueryData(['apps.list'])
+			assert.equal(after.find((a) => a.id === 'immich').state, prev)
+			assert.equal(after.find((a) => a.id === 'jellyfin').state, 'stopped')
+		}
+
+		// If a poll already updated the target app to a different settled state, rollback leaves it alone.
+		qc.setQueryData(['apps.list'], [{id: 'immich', state: 'running'}])
+		const snap = await applyOptimisticAppState(qc, {appId: 'immich', state: 'stopping'})
+		qc.setQueryData(['apps.list'], [{id: 'immich', state: 'stopped'}])
+		rollbackOptimisticAppState(qc, snap)
+		assert.equal(qc.getQueryData(['apps.list']).find((a) => a.id === 'immich').state, 'stopped')
+	} finally {
+		qc.clear()
+	}
 })

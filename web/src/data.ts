@@ -14,6 +14,7 @@ import {
 	type UserApp,
 } from './api'
 import {OFFLINE_ACTION_MESSAGE, isBrowserOnline} from './connection'
+import {applyOptimisticAppState, rollbackOptimisticAppState} from './optimisticApps'
 import {isAppBusy, useToast} from './ui'
 
 export const BootstrapContext = createContext<Bootstrap | null>(null)
@@ -75,13 +76,7 @@ export function useAction() {
 			if (!isBrowserOnline()) throw new ApiError(OFFLINE_ACTION_MESSAGE, 'OFFLINE', 0)
 			return mutate(a.path, a.input)
 		},
-		onMutate: (a) => {
-			if (a.optimistic) {
-				qc.setQueryData<UserApp[]>(['apps.list'], (apps) =>
-					apps?.map((app) => (app.id === a.optimistic!.appId ? {...app, state: a.optimistic!.state} : app)),
-				)
-			}
-		},
+		onMutate: (a) => (a.optimistic ? applyOptimisticAppState(qc, a.optimistic) : undefined),
 		onSuccess: (_, a) => {
 			// A new install shows (installing) right away, everywhere the app list is shown, even
 			// before the list is fetched again.
@@ -92,7 +87,10 @@ export function useAction() {
 				])
 			if (a.done) toast(a.done)
 		},
-		onError: (error: Error) => toast(error.message, true),
+		onError: (error: Error, _a, ctx) => {
+			rollbackOptimisticAppState(qc, ctx)
+			toast(error.message, true)
+		},
 		onSettled: (_, __, a) => {
 			const domain = a.path.split('.')[0]
 			if (domain === 'apps') {
