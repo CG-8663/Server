@@ -17,7 +17,7 @@ import {WhatsNewOnUpdate} from './WhatsNew'
 import {LayoutChooser} from './LayoutChooser'
 import {InstallerPrompt} from './InstallerPrompt'
 import {consumeReopenAssistant} from './assistant'
-import {closeAssistantView, openAssistantView, useAssistantTurn} from './assistantTurn'
+import {closeAssistantView, openAssistantView, resetAssistantTurn, useAssistantTurn} from './assistantTurn'
 import {AssistantLookContext, cleanLook, DEFAULT_LOOK, type AssistantLook} from './character/AssistantCharacter'
 import {AssistantCharacterWidget} from './character/widgets'
 
@@ -71,6 +71,7 @@ export function App() {
 
 	useEffect(() => {
 		const onOut = () => {
+			resetAssistantTurn()
 			qc.removeQueries({predicate: (q) => q.queryKey[0] !== 'bootstrap'})
 			refresh()
 		}
