@@ -202,9 +202,18 @@ export function createUpdater({
 		const {available, version} = await check({force: true})
 		if (!available) throw new RpcError('BAD_REQUEST', 'Omarchy Server is already up to date')
 		if (!(await run('git', ['-C', appDir, 'rev-parse', 'HEAD']).then(() => true, () => false))) throw new RpcError('PRECONDITION_FAILED', `This copy can’t update itself. Run the installer: ${await installerHint()}`)
+		// Look busy only while the first status save can finish. If that write throws, the
+		// background work never starts, so its finally would never clear the flag.
+		const previous = status
 		busy = true
 		status = {running: true, progress: 2, description: 'Starting', error: false, target: version}
-		await save()
+		try {
+			await save()
+		} catch (error) {
+			busy = false
+			status = previous
+			throw error
+		}
 		;(async () => {
 			// A failure to read the current revision is a failed update, not a crash.
 			let previous = ''
