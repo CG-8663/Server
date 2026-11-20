@@ -429,6 +429,32 @@ errors: No known data errors
 		assert.equal(mix.devices.length, 5)
 	})
 
+	test('ZFS pools report usable dataset space instead of raw pool capacity', async () => {
+		const fs = fakeFs({'/etc/fstab': ''})
+		const run = fakeRun([], {
+			zpool: (a) =>
+				a[0] === 'list'
+					? 'tank\t12000000000000\t4000000000000\t8000000000000\tONLINE\nfallback\t6000\t1000\t5000\tONLINE\n'
+					: '',
+			zfs: (a) => {
+				if (a[0] === 'get') return '/tank\n'
+				if (a[0] === 'list' && a.at(-1) === 'tank') return '2500000000000\t5500000000000\n'
+				if (a[0] === 'list' && a.at(-1) === 'fallback') return '-\t-\n'
+				return ''
+			},
+		})
+		const h = createHelper({user, fs, run})
+		const pools = JSON.parse(await h.handle('zfs-pools'))
+		const tank = pools.find((p) => p.name === 'tank')
+		assert.equal(tank.used, 2500000000000)
+		assert.equal(tank.free, 5500000000000)
+		assert.equal(tank.size, 8000000000000)
+		const fb = pools.find((p) => p.name === 'fallback')
+		assert.equal(fb.used, 1000)
+		assert.equal(fb.free, 5000)
+		assert.equal(fb.size, 6000)
+	})
+
 	test('firewall: app ports only', async () => {
 		const h = createHelper({user, run: fakeRun([]), fs: fakeFs()})
 		for (const p of ['22', '2021', '5900', '70000', 'abc']) await assert.rejects(h.handle('firewall-open', [p]), /Bad port/)

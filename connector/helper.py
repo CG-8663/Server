@@ -431,6 +431,19 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 mountpoint = run("zfs", ["get", "-H", "-o", "value", "mountpoint", name]).strip()
             except Exception:
                 mountpoint = ""
+            try:
+                space_lines = run("zfs", ["list", "-H", "-p", "-o", "used,avail", name]).strip().splitlines()
+                sp = space_lines[0].split("\t") if space_lines else []
+            except Exception:
+                sp = []
+            if len(sp) >= 2 and sp[0].isdigit() and sp[1].isdigit():
+                used_bytes = int(sp[0])
+                free_bytes = int(sp[1])
+                size_bytes = used_bytes + free_bytes
+            else:
+                size_bytes = int(size) if size.isdigit() else 0
+                used_bytes = int(alloc) if alloc.isdigit() else 0
+                free_bytes = int(free) if free.isdigit() else 0
             bind = next((l for l in tab if l.endswith("%s %s" % (ZFS_MARK, name))), None)
             if bind:
                 folder = bind.split()[1]
@@ -438,7 +451,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 folder = mountpoint
             else:
                 folder = None
-            out.append({"name": name, "size": int(size), "used": int(alloc), "free": int(free), "health": health, "mountpoint": mountpoint, "folder": folder, **st})
+            out.append({"name": name, "size": size_bytes, "used": used_bytes, "free": free_bytes, "health": health, "mountpoint": mountpoint, "folder": folder, **st})
         return out
 
     def zfs_importable_data():

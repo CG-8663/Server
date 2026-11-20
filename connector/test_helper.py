@@ -608,6 +608,38 @@ errors: No known data errors
         self.assertEqual(pools["mix"]["layout"], "mirror+raidz1")
         self.assertEqual(len(pools["mix"]["devices"]), 5)
 
+    def test_zfs_pools_report_usable_dataset_space(self):
+        def run(cmd, args):
+            if cmd == "lsblk":
+                return json.dumps({"blockdevices": []})
+            if cmd == "zpool":
+                if args[:1] == ["version"]:
+                    return "zfs-2.2.0\n"
+                if args[:1] == ["list"]:
+                    return "tank\t12000000000000\t4000000000000\t8000000000000\tONLINE\nfallback\t6000\t1000\t5000\tONLINE\n"
+                return ""
+            if cmd == "zfs":
+                if args[:1] == ["get"]:
+                    return "/home/chris/Pools/%s\n" % args[-1]
+                if args[:1] == ["list"] and args[-1] == "tank":
+                    return "2500000000000\t5500000000000\n"
+                if args[:1] == ["list"] and args[-1] == "fallback":
+                    return "-\t-\n"
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files={})
+        zpools = {p["name"]: p for p in json.loads(self.handle("zfs-pools", [], **kw))}
+        self.assertEqual(zpools["tank"]["used"], 2500000000000)
+        self.assertEqual(zpools["tank"]["free"], 5500000000000)
+        self.assertEqual(zpools["tank"]["size"], 8000000000000)
+        self.assertEqual(zpools["fallback"]["used"], 1000)
+        self.assertEqual(zpools["fallback"]["free"], 5000)
+        self.assertEqual(zpools["fallback"]["size"], 6000)
+
+        pools = {p["name"]: p for p in json.loads(self.handle("pools", [], **kw))}
+        self.assertEqual(pools["tank"]["size"], 8000000000000)
+        self.assertEqual(pools["tank"]["free"], 5500000000000)
+
 
 if __name__ == "__main__":
     unittest.main()

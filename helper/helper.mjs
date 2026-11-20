@@ -616,9 +616,14 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 				if (!name) continue
 				const st = parseStatus(await zpool('status', '-P', name).catch(() => ''))
 				const mountpoint = (await zfs('get', '-H', '-o', 'value', 'mountpoint', name).catch(() => '')).trim()
+				const space = (await zfs('list', '-H', '-p', '-o', 'used,avail', name).catch(() => '')).trim().split('\n')[0]?.split('\t') ?? []
+				const usable = space.length >= 2 && /^\d+$/.test(space[0]) && /^\d+$/.test(space[1])
+				const usedBytes = usable ? Number(space[0]) : Number(alloc) || 0
+				const freeBytes = usable ? Number(space[1]) : Number(free) || 0
+				const sizeBytes = usable ? usedBytes + freeBytes : Number(size) || 0
 				const bind = tab.find((l) => l.endsWith(`${ZFS_MARK} ${name}`))
 				const folder = bind ? bind.split(/\s+/)[1] : mountpoint.startsWith(`${poolsDir}/`) ? mountpoint : null
-				out.push({name, size: Number(size), used: Number(alloc), free: Number(free), health, mountpoint, folder, ...st})
+				out.push({name, size: sizeBytes, used: usedBytes, free: freeBytes, health, mountpoint, folder, ...st})
 			}
 			return JSON.stringify(out)
 		},
