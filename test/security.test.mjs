@@ -240,9 +240,10 @@ describe('security.json on startup', () => {
 			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, true)
 			assert.deepEqual(await readFile(file), original)
 			assert.equal(original.length, 0)
-			const notes = lines.filter((l) => l.includes(file))
+			const notes = lines.filter((l) => l.includes('security.json'))
 			assert.equal(notes.length, 1)
 			assert.match(notes[0], /left unchanged/)
+			assert.equal(notes[0].includes(root), false)
 		} finally {
 			await d?.close()
 		}
@@ -255,12 +256,34 @@ describe('security.json on startup', () => {
 			const call = await authed(d)
 			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, true)
 			assert.deepEqual(await readFile(file), original)
-			const notes = lines.filter((l) => l.includes(file))
+			const notes = lines.filter((l) => l.includes('security.json'))
 			assert.equal(notes.length, 1)
 			assert.match(notes[0], /left unchanged/)
+			assert.equal(notes[0].includes(root), false)
 			assert.equal(notes.some((l) => l.includes(raw) || l.includes('lockAfterRemote')), false)
 		} finally {
 			await d?.close()
+		}
+	})
+
+	test('a JSON string or array is not settings: the file stays, the lock stays on, and the log names security.json only', async () => {
+		for (const [name, raw] of [
+			['str-sec', '"do-not-log-string"'],
+			['arr-sec', '["do-not-log-array"]'],
+		]) {
+			const {d, file, lines, original} = await startWithSecurity(name, raw)
+			try {
+				const call = await authed(d)
+				assert.equal((await call('system.security', null, 'query')).lockAfterRemote, true)
+				assert.deepEqual(await readFile(file), original)
+				const notes = lines.filter((l) => l.includes('security.json'))
+				assert.equal(notes.length, 1)
+				assert.equal(notes[0].match(/security\.json/g).length, 1)
+				assert.equal(notes[0].includes(root), false)
+				assert.equal(lines.some((l) => l.includes(raw) || l.includes('do-not-log')), false)
+			} finally {
+				await d?.close()
+			}
 		}
 	})
 
