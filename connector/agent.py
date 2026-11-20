@@ -1363,8 +1363,45 @@ def start_relay(cfg):
     return server, f"rest:http://127.0.0.1:{server.server_address[1]}/{secret}/"
 
 
-def _restic_env(repo, password):
+# A restic run lives on a worker thread. SIGTERM is delivered on the main thread, so the
+# handler below has to delete the password file itself; _run_restic also catches it when
+# that call is on the main thread, and its finally removes the file either way.
+_restic_running = False
+_restic_proc = None
+
+
+def _backup_password_dir(sweep):
     runtime = os.path.join(RUNTIME, "omarchy-connector") if os.path.isdir(RUNTIME) else DATA_DIR
+    if sweep:
+        try:
+            names = os.listdir(runtime)
+        except OSError:
+            names = []
+        for name in names:
+            if name.startswith("backup-"):
+                try:
+                    os.unlink(os.path.join(runtime, name))
+                except OSError:
+                    pass
+    return runtime
+
+
+def _on_connector_stop(signum, frame):
+    if _restic_running:
+        proc = _restic_proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        _backup_password_dir(True)
+        raise SystemExit
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _restic_env(repo, password):
+    runtime = _backup_password_dir(False)
     os.makedirs(runtime, mode=0o700, exist_ok=True)
     pw = os.path.join(runtime, f"backup-{os.urandom(6).hex()}")
     fd = os.open(pw, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1378,12 +1415,24 @@ def _restic_env(repo, password):
 
 
 def _run_restic(conn, call_id, args, repo, password, step):
+    global _restic_running, _restic_proc
     env, pw = _restic_env(repo, password)
     last = [0.0]
     summary = {}
     errors = []
+    previous = None
+    _restic_running = True
+
+    def _on_term(signum, frame):
+        raise SystemExit
+
     try:
+        # Only the main thread may install a handler. SystemExit is a BaseException, so the
+        # broad `except Exception` around a backup does not swallow the stop.
+        if threading.current_thread() is threading.main_thread():
+            previous = signal.signal(signal.SIGTERM, _on_term)
         p = subprocess.Popen([restic_path()] + args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        _restic_proc = p
         def drain_err():
             for line in p.stderr:
                 errors.append(line.strip())
@@ -1406,6 +1455,16 @@ def _run_restic(conn, call_id, args, repo, password, step):
             os.unlink(pw)
         except OSError:
             pass
+        proc = _restic_proc
+        _restic_proc = None
+        _restic_running = False
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
     # restic: 3 means some files couldn't be read (the rest is saved).
     if code not in (0, 3):
         raise RuntimeError(next((e for e in reversed(errors) if e), f"restic stopped ({code})")[:300])
@@ -1588,6 +1647,7 @@ def forget():
         subprocess.run(["systemctl", "--user", "disable", "omarchy-connector.service"], capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         pass  # not run by systemd (or no systemd): stopping is enough
+    _backup_password_dir(True)
     os._exit(0)
 
 
@@ -1628,6 +1688,8 @@ def main():
             cfg = json.load(f)
     except (OSError, ValueError):
         sys.exit("Not joined to a server yet. Run the install command from Machines → Local swarm → Add a computer.")
+    _backup_password_dir(True)
+    signal.signal(signal.SIGTERM, _on_connector_stop)
     delay = 2
     while True:
         try:
