@@ -3,6 +3,7 @@ import {useContext, useEffect, useState, type CSSProperties, type FormEvent, typ
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {logout, mutate, query, type ActiveSession, type AssistantApi, type AssistantCheck, type AssistantEffort, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
+import {resetAssistantTurn} from '../assistantTurn'
 import {resetDeskConfig} from '../desktop/config'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
@@ -415,6 +416,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					await logout().catch(() => {})
 					qc.clear()
 					resetDeskConfig()
+					resetAssistantTurn()
 					onSignedOut()
 				}}
 			/>

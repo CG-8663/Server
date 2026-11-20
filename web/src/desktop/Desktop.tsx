@@ -13,7 +13,7 @@ import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
 import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../osLook'
-import {closeAssistantView, keepAssistantWindow, openAssistantView} from '../assistantTurn'
+import {closeAssistantView, keepAssistantWindow, openAssistantView, resetAssistantTurn} from '../assistantTurn'
 import {AssistantCharacterWidget} from '../character/widgets'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, resetDeskConfig, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
@@ -772,6 +772,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		await logout().catch(() => {})
 		qc.clear()
 		resetDeskConfig()
+		resetAssistantTurn()
 		onSignedOut()
 	}
 

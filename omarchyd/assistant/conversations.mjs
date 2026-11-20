@@ -1,9 +1,10 @@
+import {AsyncLocalStorage} from 'node:async_hooks'
 import {constants} from 'node:fs'
 import {lstat, mkdir, open, readdir, realpath, rm} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
-import {join} from 'node:path'
+import {basename, join} from 'node:path'
 
-import {writeAtomic} from '../atomic.mjs'
+import {removeAtomic, writeAtomic} from '../atomic.mjs'
 import {RpcError} from '../rpc.mjs'
 
 const clipTitle = (s) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, 48) || 'Chat'
@@ -16,10 +17,25 @@ const missingChat = () => new RpcError('NOT_FOUND', 'That chat isn’t here')
 const missingStep = () => new RpcError('NOT_FOUND', 'That step isn’t here')
 
 // One read-modify-write at a time per chat, so a snapshot from before Approve cannot land after it.
+// Re-entrant so writeRow can take the same lock the caller already holds.
 const locks = new Map()
+const held = new AsyncLocalStorage()
 function withLock(id, fn) {
+	const owned = held.getStore()
+	if (owned?.has(id)) return fn()
 	const prev = locks.get(id) ?? Promise.resolve()
-	const run = prev.then(fn, fn)
+	const run = prev.then(
+		() => {
+			const next = new Set(owned)
+			next.add(id)
+			return held.run(next, fn)
+		},
+		() => {
+			const next = new Set(owned)
+			next.add(id)
+			return held.run(next, fn)
+		},
+	)
 	const settled = run.then(() => {}, () => {})
 	locks.set(id, settled)
 	settled.then(() => locks.get(id) === settled && locks.delete(id))
@@ -39,6 +55,10 @@ function canReplace(current, next) {
 export function createConversations({dataDir, now = () => Date.now()}) {
 	const dir = join(dataDir, 'assistant', 'conversations')
 	const loaded = mkdir(dir, {recursive: true, mode: 0o700})
+	// Factory reset closes the store before deleting, so a write queued behind that delete does not recreate the chat.
+	let closed = false
+	// Paths whose write has been queued but may not be renamed yet, so reset can delete them on that same queue.
+	const writing = new Set()
 	let dirReal = null
 	const root = async () => {
 		await loaded
@@ -90,9 +110,17 @@ export function createConversations({dataDir, now = () => Date.now()}) {
 		return row
 	}
 	async function writeRow(id, row) {
-		const file = await fileFor(id)
-		row.id = id
-		await writeAtomic(file, JSON.stringify(row, null, '\t'), {mode: 0o600})
+		return withLock(id, async () => {
+			if (closed) return
+			const file = await fileFor(id)
+			row.id = id
+			writing.add(file)
+			try {
+				await writeAtomic(file, () => (closed ? null : JSON.stringify(row, null, '\t')), {mode: 0o600})
+			} finally {
+				writing.delete(file)
+			}
+		})
 	}
 	async function findAction(userId, actionId) {
 		if (typeof actionId !== 'string' || !ACTION_ID.test(actionId)) throw missingStep()
@@ -110,6 +138,21 @@ export function createConversations({dataDir, now = () => Date.now()}) {
 	}
 
 	return {
+		// Factory reset: every saved chat goes. The folder stays. A write already queued does not put the file back.
+		async reset() {
+			closed = true
+			const base = await root()
+			const files = new Set(writing)
+			for (const name of await readdir(base).catch(() => [])) {
+				if (name.endsWith('.json')) files.add(join(base, name))
+			}
+			for (const file of files) {
+				const id = basename(file).slice(0, -5)
+				const drop = () => removeAtomic(file)
+				if (CHAT_ID.test(id)) await withLock(id, drop)
+				else await drop()
+			}
+		},
 		async list(userId) {
 			const base = await root()
 			const names = (await readdir(base).catch(() => [])).filter((n) => n.endsWith('.json'))

@@ -14,11 +14,13 @@ import {setAssistantActivity, useAssistantAnimationState} from '../assistantActi
 import {liveBubbleMark} from '../assistantLive'
 import {
 	abortAssistantTurn,
+	assistantEpoch,
 	assistantTurn,
 	beginAssistantTurn,
 	closeAssistantView,
 	finishAssistantTurn,
 	openAssistantView,
+	registerAssistantAbort,
 	setTurnActivity,
 	setTurnConversationId,
 	setTurnError,
@@ -339,13 +341,14 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		el.style.height = `${Math.min(el.scrollHeight, 140)}px`
 	}
 
-	const runStream = async (body: AssistantStreamBody, ac: AbortController, aid: string) => {
+	const runStream = async (body: AssistantStreamBody, ac: AbortController, aid: string, since: number) => {
 		let aborted = false
 		let failed = false
 		let sawAction = false
+		const stale = () => assistantEpoch() !== since
 		try {
 			await streamAssistant(body, (e) => {
-				if (ac.signal.aborted) return
+				if (ac.signal.aborted || stale()) return
 				if (e.event === 'text') {
 					setTurnActivity(null)
 					setTurnItems((bs) => bs?.map((b) => (b.kind === 'text' && b.id === aid ? {...b, content: b.content + e.data.text} : b)) ?? bs)
@@ -371,7 +374,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 						return [...bs, card]
 					})
 				} else if (e.event === 'done') {
-					setTurnConversationId(e.data.conversationId)
+					setTurnConversationId(e.data.conversationId, since)
 				} else if (e.event === 'error') {
 					failed = true
 					setTurnError(e.data.message)
@@ -379,11 +382,13 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 			}, ac.signal)
 		} catch (err) {
 			aborted = ac.signal.aborted || (err instanceof Error && err.name === 'AbortError')
+			if (stale()) return
 			if (!aborted) {
 				failed = true
 				setTurnError(err instanceof Error ? err.message : 'The assistant did not answer')
 			}
 		} finally {
+			if (stale()) return
 			setTurnItems((bs) => {
 				if (!bs) return bs
 				return bs.flatMap((b) => {
@@ -392,7 +397,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 					return [{...b, streaming: false}]
 				})
 			})
-			finishAssistantTurn(ac)
+			finishAssistantTurn(ac, since)
 		}
 	}
 
@@ -411,20 +416,22 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		const text = draft.trim()
 		if (!text || items === null || deciding.current.size > 0) return
 		const token = ++sendGen
+		const since = assistantEpoch()
 		const hadTurn = assistantTurn().streaming
 		let conversationId = assistantTurn().conversationId
 		// The id arrives on `done`. A second send before that stays on the thread just created.
 		if (hadTurn && !conversationId) {
 			const list = await query<AssistantConversationSummary[]>('assistant.conversations').catch(() => null)
+			if (assistantEpoch() !== since || sendGen !== token || deciding.current.size > 0) return
 			const found = list?.[0]?.id
 			if (found) {
 				conversationId = found
-				setTurnConversationId(found)
+				setTurnConversationId(found, since)
 			}
 		}
-		if (sendGen !== token || deciding.current.size > 0) return
+		if (assistantEpoch() !== since || sendGen !== token || deciding.current.size > 0) return
 		const ac = new AbortController()
-		beginAssistantTurn(ac)
+		beginAssistantTurn(ac, since)
 		const id = ++liveSeq
 		const aid = `live-${id}`
 		setDraft('')
@@ -433,16 +440,17 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		setTurnActivity(null)
 		stick.current = true
 		setTurnItems((bs) => [...(bs ?? []), {id: `user-${id}`, kind: 'text', role: 'user', content: text}, {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
-		await runStream(conversationId ? {conversationId, message: text} : {message: text}, ac, aid)
+		await runStream(conversationId ? {conversationId, message: text} : {message: text}, ac, aid, since)
 	}
 
 	const pumpFollow = async () => {
 		if (pumping.current || deciding.current.size > 0 || !followQueued.current) return
+		const since = assistantEpoch()
 		pumping.current = true
 		followQueued.current = false
 		const conversationId = assistantTurn().conversationId
 		const ac = new AbortController()
-		beginAssistantTurn(ac)
+		beginAssistantTurn(ac, since)
 		const id = ++liveSeq
 		const aid = `live-${id}`
 		stick.current = true
@@ -450,16 +458,18 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		setTurnActivity(null)
 		if (conversationId) setTurnItems((bs) => [...(bs ?? []), {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
 		try {
-			if (conversationId) await runStream({conversationId, continue: true}, ac, aid)
-			else finishAssistantTurn(ac)
+			if (conversationId) await runStream({conversationId, continue: true}, ac, aid, since)
+			else finishAssistantTurn(ac, since)
 		} finally {
 			pumping.current = false
+			if (assistantEpoch() !== since) return
 			if (followQueued.current && deciding.current.size === 0) void pumpFollow()
 		}
 	}
 
 	const decide = async (actionId: string, path: 'assistant.approve' | 'assistant.reject', extra?: {id?: string; password?: string} & ReviewInstallInput) => {
 		if (deciding.current.has(actionId)) return
+		const since = assistantEpoch()
 		const conversationId = assistantTurn().conversationId
 		if (!conversationId) {
 			setTurnError('That chat isn’t here')
@@ -468,6 +478,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		const cur = assistantTurn().items?.find((b) => b.kind === 'card' && b.action.id === actionId)
 		if (!cur || cur.kind !== 'card' || cur.action.status !== 'pending') return
 		const own = new AbortController()
+		const dropAbort = registerAssistantAbort(own)
 		decisionAbort.current.set(actionId, own)
 		deciding.current.add(actionId)
 		noteDeciding()
@@ -490,7 +501,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 				...(extra?.folders ? {folders: extra.folders} : {}),
 				...(extra?.folderAccess ? {folderAccess: extra.folderAccess} : {}),
 			})
-			if (own.signal.aborted) return
+			if (assistantEpoch() !== since || own.signal.aborted) return
 			setTurnItems((bs) =>
 				bs?.map((b) => {
 					if (b.kind !== 'card' || b.action.id !== actionId) return b
@@ -520,7 +531,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 				if (theme) reloadTheme = theme
 			}
 		} catch (err) {
-			if (own.signal.aborted) return
+			if (assistantEpoch() !== since || own.signal.aborted) return
 			if (err instanceof ApiError) {
 				setTurnItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: cardAction({...b.action, id: actionId, status: 'error', error: err.message})} : b)) ?? bs)
 			} else {
@@ -528,9 +539,11 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 				setTurnError(err instanceof Error ? err.message : 'That step didn’t finish')
 			}
 		} finally {
+			dropAbort()
 			deciding.current.delete(actionId)
 			decisionAbort.current.delete(actionId)
 			noteDeciding()
+			if (assistantEpoch() !== since) return
 			if (follow) followQueued.current = true
 			if (followQueued.current && deciding.current.size === 0) {
 				if (reloadAfterRestart) {
@@ -538,6 +551,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 					setTurnActivity('Waiting for the server to come back…')
 					void (async () => {
 						await waitForServer()
+						if (assistantEpoch() !== since) return
 						location.reload()
 					})()
 				} else if (reloadTheme != null) {
@@ -546,7 +560,9 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 						try {
 							await pumpFollow()
 						} finally {
+							if (assistantEpoch() !== since) return
 							await waitForDesktopTheme(reloadTheme)
+							if (assistantEpoch() !== since) return
 							location.reload()
 						}
 					})()
