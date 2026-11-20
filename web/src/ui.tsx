@@ -8,6 +8,7 @@ import {detectDesktop, LAYOUT_POINTER} from './layout'
 export {detectDesktop}
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
+import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
 
 // ---- portals --------------------------------------------------------------------------
@@ -814,26 +815,23 @@ export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 // Appearance is cached in the browser for an instant first paint, and saved on the server per
 // Omarchy Server account so every device you sign in on gets it. The server counts each save (rev):
 // a device takes the server's copy whenever it changed, checking again when it comes back to the
-// front (and every 20 s), and a change sends only what changed, so it never puts back another
-// device's older choice.
-const PREFS_REV_KEY = `${LOCAL_KEY}:rev`
-const prefsRev = () => {
-	try {
-		return Number(localStorage.getItem(PREFS_REV_KEY)) || 0
-	} catch {
-		return 0
-	}
-}
-const keepPrefsRev = (rev: unknown) => {
-	try {
-		if (Number(rev)) localStorage.setItem(PREFS_REV_KEY, String(rev))
-	} catch {}
-}
+// front (and every 20 s), and unsaved local edits stay pending until a save succeeds so offline
+// changes are never reverted by a poll.
 export function usePrefs(brandHsl: string | null | undefined, signedIn: boolean) {
 	const [prefs, setLocal] = useState<Prefs>(readPrefs)
 	const now = useRef(prefs)
 	now.current = prefs
-	const saving = useRef(0)
+	const syncRef = useRef<ReturnType<typeof createPrefsSync<Prefs>> | null>(null)
+	if (!syncRef.current) {
+		syncRef.current = createPrefsSync<Prefs>({
+			storage: typeof localStorage !== 'undefined' ? localStorage : undefined,
+			load: loadPrefs,
+			save: savePrefs,
+			getCurrent: () => now.current,
+			onApply: (next) => setLocal(next),
+			clean,
+		})
+	}
 	useLayoutEffect(() => {
 		applyPrefs(prefs, brandHsl)
 		try {
@@ -844,32 +842,18 @@ export function usePrefs(brandHsl: string | null | undefined, signedIn: boolean)
 	}, [prefs, brandHsl])
 	useEffect(() => {
 		if (!signedIn) return
-		let last = 0
-		const pull = () => {
-			if (saving.current || Date.now() - last < 3000) return
-			last = Date.now()
-			fetch('/api/prefs', {credentials: 'same-origin'})
-				.then((r) => (r.ok ? r.json() : null))
-				.then((body) => {
-					if (saving.current || !body) return
-					if (body.prefs) {
-						if (Number(body.prefs.rev) !== prefsRev() || JSON.stringify(clean(body.prefs)) !== JSON.stringify(now.current)) {
-							setLocal(clean(body.prefs))
-							keepPrefsRev(body.prefs.rev)
-						}
-					}
-					// First sign-in on the server: keep what this device already had.
-					else savePrefs(now.current).then((p) => keepPrefsRev(p?.rev))
-				})
-				.catch(() => {})
-		}
-		pull()
-		const onVisible = () => document.visibilityState === 'visible' && pull()
-		window.addEventListener('focus', pull)
+		const sync = syncRef.current!
+		void sync.pull()
+		const onVisible = () => document.visibilityState === 'visible' && void sync.pull()
+		const onFocus = () => void sync.pull()
+		const onOnline = () => void sync.pull({force: true})
+		window.addEventListener('focus', onFocus)
+		window.addEventListener('online', onOnline)
 		document.addEventListener('visibilitychange', onVisible)
 		const timer = window.setInterval(onVisible, 20_000)
 		return () => {
-			window.removeEventListener('focus', pull)
+			window.removeEventListener('focus', onFocus)
+			window.removeEventListener('online', onOnline)
 			document.removeEventListener('visibilitychange', onVisible)
 			window.clearInterval(timer)
 		}
@@ -877,31 +861,45 @@ export function usePrefs(brandHsl: string | null | undefined, signedIn: boolean)
 	const setPrefs = useCallback(
 		(next: Prefs) => {
 			const before = now.current
+			now.current = next
 			setLocal(next)
 			if (!signedIn) return
-			const patch = Object.fromEntries((['theme', 'accent', 'customBrandHsl', 'omarchyBackground', 'solidColor', 'assistantLook'] as const).filter((k) => JSON.stringify(next[k] ?? null) !== JSON.stringify(before[k] ?? null)).map((k) => [k, next[k] ?? null])) as Partial<Prefs>
-			if (!Object.keys(patch).length) return
-			saving.current++
-			savePrefs(patch)
-				.then((p) => keepPrefsRev(p?.rev))
-				.finally(() => saving.current--)
+			void syncRef.current?.update(before, next)
 		},
 		[signedIn],
 	)
 	return [prefs, setPrefs, setLocal] as const
 }
+function prefsTimeout(ms = 20_000) {
+	if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+		return {signal: AbortSignal.timeout(ms), cleanup: () => {}}
+	}
+	const ac = new AbortController()
+	const timer = window.setTimeout(() => ac.abort(), ms)
+	return {signal: ac.signal, cleanup: () => window.clearTimeout(timer)}
+}
+function loadPrefs(): Promise<{prefs?: (Prefs & {rev?: number}) | null} | null> {
+	const {signal, cleanup} = prefsTimeout()
+	return fetch('/api/prefs', {credentials: 'same-origin', signal})
+		.then((r) => (r.ok ? r.json() : null))
+		.catch(() => null)
+		.finally(cleanup)
+}
 function savePrefs(p: Partial<Prefs>): Promise<(Prefs & {rev?: number}) | null> {
 	const body: Record<string, unknown> = {}
-	for (const k of ['theme', 'accent', 'customBrandHsl', 'omarchyBackground', 'solidColor', 'assistantLook'] as const) if (k in p) body[k] = p[k] ?? null
+	for (const k of SYNCED_PREF_KEYS) if (k in p) body[k] = p[k] ?? null
+	const {signal, cleanup} = prefsTimeout()
 	return fetch('/api/prefs', {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
 		body: JSON.stringify(body),
+		signal,
 	})
 		.then((r) => (r.ok ? r.json() : null))
 		.then((b) => b?.prefs ?? null)
 		.catch(() => null)
+		.finally(cleanup)
 }
 
 // Resize a photo on the phone (keeps upload small, fixes rotation) and find its dominant colour.
