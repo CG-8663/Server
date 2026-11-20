@@ -214,7 +214,7 @@ function MachineSheet({machine: m, onClose, onConsole}: {machine: Machine; onClo
 			{m.errorMessage && (
 				<div className="error">
 					<Icon name="alert" size={18} />
-					{m.errorMessage.replace(/^\[|\]$/g, '').replace(/-/g, ' ')}
+					{/^\[[\w-]+\]$/.test(m.errorMessage) ? m.errorMessage.slice(1, -1).replace(/-/g, ' ') : m.errorMessage}
 				</div>
 			)}
 			<div className="primary-row">

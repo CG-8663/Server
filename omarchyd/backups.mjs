@@ -21,6 +21,7 @@ import {dirname, join, relative, sep} from 'node:path'
 import {pipeline} from 'node:stream/promises'
 
 import {removeAtomic, writeAtomic} from './atomic.mjs'
+import {fetchErrorMessage, httpDownloadErrorMessage} from './fetch-error.mjs'
 import {RpcError} from './rpc.mjs'
 
 export const RESTIC_VERSION = '0.18.1'
@@ -249,9 +250,16 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			const have = await versionOf(bin)
 			if (have) return (engine = {path: bin, version: have.text})
 			await mkdir(binDir, {recursive: true, mode: 0o700})
-			const res = await fetchImpl(resticUrl(arch), {redirect: 'follow'})
-			if (!res.ok) throw new RpcError('PRECONDITION_FAILED', `Couldn’t download the backup engine (restic): ${res.status}`)
-			const packed = Buffer.from(await res.arrayBuffer())
+			let res
+			let packed
+			try {
+				res = await fetchImpl(resticUrl(arch), {redirect: 'follow', signal: AbortSignal.timeout(120_000)})
+				if (!res.ok) throw new RpcError('PRECONDITION_FAILED', httpDownloadErrorMessage('the backup program (restic)', res.status))
+				packed = Buffer.from(await res.arrayBuffer())
+			} catch (error) {
+				if (error instanceof RpcError) throw error
+				throw new RpcError('PRECONDITION_FAILED', fetchErrorMessage('the backup program (restic)', error))
+			}
 			const sum = createHash('sha256').update(packed).digest('hex')
 			if (sum !== RESTIC_SHA256[arch]) throw new RpcError('PRECONDITION_FAILED', 'The downloaded backup engine didn’t match its published checksum, so it wasn’t used.')
 			const tmp = `${bin}-${process.pid}`
@@ -975,11 +983,14 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		}
 		const opts = cleanOptions(input)
 		let newKey = false
+		let stage = 'folder'
 		try {
 			if (opts.repo && opts.repo !== config.repo && (await hasKey()) && (await exists(join(await serverRepo(), 'config')))) throw new RpcError('CONFLICT', 'The backup folder can’t move once backups exist')
 			Object.assign(config, opts)
 			if (!config.nas) throw new RpcError('BAD_REQUEST', 'Connect a NAS first')
+			stage = 'engine'
 			await ensureEngine()
+			stage = 'folder'
 			if (!(await hasKey())) {
 				const key = recoveryKey()
 				await writePrivate(keyFile, `${key}\n`)
@@ -992,6 +1003,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			config = before
 			if (newKey) await rm(keyFile, {force: true})
 			if (e instanceof RpcError) throw e
+			if (stage === 'engine') throw new RpcError('PRECONDITION_FAILED', `Couldn’t set up the backup program (restic): ${e.message}`)
 			throw new RpcError('INTERNAL_SERVER_ERROR', `Couldn’t set up the backup folder (${config.repo}): ${e.message}`)
 		}
 		if (nasPassword !== secrets.nasPassword) {
