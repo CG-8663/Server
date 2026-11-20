@@ -144,7 +144,7 @@ class BackupPasswordFiles(unittest.TestCase):
         self.assertIs(os._exit, fake_exit)
         agent.forget()
         self.assertEqual(exited, [0])
-        self.assertEqual(calls, [["systemctl", "--user", "disable", "omarchy-connector.service"]])
+        self.assertEqual(calls, [["systemctl", "--user", "disable", "--now", "--no-block", "omarchy-connector.service"]])
         self.assertEqual(_names(pwdir), {"vnc.sock"})
         self.assertFalse(os.path.exists(cfg))
         self.assertTrue(os.path.exists(os.path.join(data, "backup-other")))
