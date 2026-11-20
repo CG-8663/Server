@@ -298,12 +298,16 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 			else {
 				job = parsed
 				if (!job.endedAt) {
-					Object.assign(job, {endedAt: now(), stopped: 'The server restarted. Choose Done, then connect again to pick up where it left off.'})
+					const paused = typeof job.paused === 'string' && job.paused ? job.paused : null
+					const stopped = paused
+						? `The server restarted while ${paused} was paused on Unraid. Start ${paused} on Unraid, then choose Done and connect again to pick up where it left off.`
+						: 'The server restarted. Choose Done, then connect again to pick up where it left off.'
+					Object.assign(job, {endedAt: now(), stopped})
 					if (Array.isArray(job.items)) {
 						for (const item of job.items) {
 							if (item?.status === 'running') {
 								item.status = 'failed'
-								item.error = 'Stopped when the server restarted'
+								item.error = paused && item.name === paused ? `Stopped when the server restarted. Start ${paused} on Unraid.` : 'Stopped when the server restarted'
 								delete item.step
 							} else if (item?.status === 'waiting') {
 								item.status = 'skipped'
@@ -599,11 +603,25 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		const pause = job.pauseContainers && plan.running && plan.copies.length
 		if (pause) {
 			item.step = 'Copying the last changes (paused on Unraid)'
-			await remote(`docker stop ${sq(plan.name)}`, {timeout: 5 * 60_000})
+			job.paused = plan.name
+			await saveJob().catch(() => {})
 			try {
+				await remote(`docker stop ${sq(plan.name)}`, {timeout: 5 * 60_000})
 				for (const cp of plan.copies) await rsync(cp.from, join(appData, cp.to), () => {}, {file: !!cp.file})
 			} finally {
-				await remote(`docker start ${sq(plan.name)}`, {timeout: 5 * 60_000}).catch((e) => (item.note = `It didn’t start again on Unraid: ${e.message}`))
+				let restarted = false
+				await remote(`docker start ${sq(plan.name)}`, {timeout: 5 * 60_000}).then(
+					() => {
+						restarted = true
+					},
+					(e) => {
+						item.note = [item.note, `It may still be stopped on Unraid — start ${plan.name} there (${e.message}).`].filter(Boolean).join(' ')
+					},
+				)
+				if (restarted) {
+					delete job.paused
+					await saveJob().catch(() => {})
+				}
 			}
 		}
 		item.step = 'Installing'

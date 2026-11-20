@@ -589,6 +589,169 @@ test('a restart interrupts running and waiting items in memory and gives accurat
 	}
 })
 
+test('a paused Unraid container is restarted if docker stop fails and is reported if the server restarts', async () => {
+	// 1. docker stop times out, docker start still runs and succeeds.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-pause-1-'))
+		const remoteCalls = []
+		const plexRunning = {...plex, Name: '/plex', State: {Running: true}}
+		const run = async (cmd, argv = []) => {
+			if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+			const remote = String(argv[argv.length - 1] ?? '')
+			remoteCalls.push(remote)
+			if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+			if (remote.includes('/mnt/user/*')) return {stdout: 'appdata\t100\n', stderr: ''}
+			if (remote.startsWith('docker ps')) return {stdout: 'plex\n', stderr: ''}
+			if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([plexRunning]), stderr: ''}
+			if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/plex\t100\td\n', stderr: ''}
+			if (remote.startsWith('docker stop')) throw new Error('ssh: Connection timed out')
+			return {stdout: '', stderr: ''}
+		}
+		const apps = {
+			importedStoreDir: join(dir, 'store'),
+			appDirFor: (id) => join(dir, 'apps', id),
+			installed: () => false,
+			installImported: async () => {},
+			importState: () => ({done: true, error: null}),
+		}
+		const u = createUnraid({dataDir: dir, files: {}, apps, machines: {}, storage: null, run})
+		try {
+			await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			await u.procedures['unraid.scan'].run()
+			const started = await u.procedures['unraid.start'].run({containers: ['unraid-plex']})
+			let st
+			let saved = ''
+			for (let i = 0; i < 200; i++) {
+				st = await u.procedures['unraid.status'].run()
+				saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(st.job.items[0].status, 'failed')
+			assert.ok(remoteCalls.includes("docker stop 'plex'"))
+			assert.ok(remoteCalls.includes("docker start 'plex'"))
+			assert.equal(JSON.parse(saved).paused, undefined)
+		} finally {
+			u.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+
+	// 2. docker stop fails and docker start also fails: item note warns it may still be stopped.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-pause-2-'))
+		const remoteCalls = []
+		const plexRunning = {...plex, Name: '/plex', State: {Running: true}}
+		const run = async (cmd, argv = []) => {
+			if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+			const remote = String(argv[argv.length - 1] ?? '')
+			remoteCalls.push(remote)
+			if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+			if (remote.includes('/mnt/user/*')) return {stdout: 'appdata\t100\n', stderr: ''}
+			if (remote.startsWith('docker ps')) return {stdout: 'plex\n', stderr: ''}
+			if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([plexRunning]), stderr: ''}
+			if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/plex\t100\td\n', stderr: ''}
+			if (remote.startsWith('docker stop')) throw new Error('ssh: Connection timed out')
+			if (remote.startsWith('docker start')) throw new Error('ssh: Connection timed out')
+			return {stdout: '', stderr: ''}
+		}
+		const apps = {
+			importedStoreDir: join(dir, 'store'),
+			appDirFor: (id) => join(dir, 'apps', id),
+			installed: () => false,
+			installImported: async () => {},
+			importState: () => ({done: true, error: null}),
+		}
+		const u = createUnraid({dataDir: dir, files: {}, apps, machines: {}, storage: null, run})
+		try {
+			await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			await u.procedures['unraid.scan'].run()
+			const started = await u.procedures['unraid.start'].run({containers: ['unraid-plex']})
+			let st
+			for (let i = 0; i < 200; i++) {
+				st = await u.procedures['unraid.status'].run()
+				const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(st.job.items[0].status, 'failed')
+			assert.ok(remoteCalls.includes("docker start 'plex'"))
+			assert.match(st.job.items[0].note, /may still be stopped on Unraid.*plex/i)
+		} finally {
+			u.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+
+	// 3. Server restarts while docker stop is in flight: job.json names paused container and restart message surfaces it.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-pause-3-'))
+		let releaseStop
+		let stopReached = false
+		const stopHeld = new Promise((resolve, reject) => {
+			releaseStop = () => reject(new Error('stopped for cleanup'))
+		})
+		const plexRunning = {...plex, Name: '/plex', State: {Running: true}}
+		const run = async (cmd, argv = []) => {
+			if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+			const remote = String(argv[argv.length - 1] ?? '')
+			if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+			if (remote.includes('/mnt/user/*')) return {stdout: 'appdata\t100\n', stderr: ''}
+			if (remote.startsWith('docker ps')) return {stdout: 'plex\n', stderr: ''}
+			if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([plexRunning]), stderr: ''}
+			if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/plex\t100\td\n', stderr: ''}
+			if (remote.startsWith('docker stop')) {
+				stopReached = true
+				return stopHeld
+			}
+			return {stdout: '', stderr: ''}
+		}
+		const apps = {
+			importedStoreDir: join(dir, 'store'),
+			appDirFor: (id) => join(dir, 'apps', id),
+			installed: () => false,
+			installImported: async () => {},
+			importState: () => ({done: true, error: null}),
+		}
+		const u1 = createUnraid({dataDir: dir, files: {}, apps, machines: {}, storage: null, run})
+		let u2
+		try {
+			await u1.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			await u1.procedures['unraid.scan'].run()
+			const started = await u1.procedures['unraid.start'].run({containers: ['unraid-plex']})
+			let saved = ''
+			for (let i = 0; i < 200; i++) {
+				saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (stopReached && saved.includes('"paused": "plex"')) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(stopReached, true)
+			assert.equal(JSON.parse(saved).paused, 'plex')
+
+			u2 = createUnraid({dataDir: dir, files: {}, apps, machines: {}, storage: null, run: async () => ({stdout: '', stderr: ''})})
+			await u2.ready
+			const st2 = await u2.procedures['unraid.status'].run()
+			assert.match(st2.job.stopped, /plex/)
+			assert.match(st2.job.stopped, /Start plex on Unraid/)
+			assert.equal(st2.job.items[0].status, 'failed')
+			assert.match(st2.job.items[0].error, /Start plex on Unraid/)
+
+			releaseStop()
+			for (let i = 0; i < 200; i++) {
+				const cur = await u1.procedures['unraid.status'].run()
+				const disk = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (cur.job?.endedAt && disk.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(disk)) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+		} finally {
+			releaseStop?.()
+			u2?.close()
+			u1.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+})
+
 test('a failed job save does not leave the import running', async () => {
 	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-job-ro-'))
 	const jobDir = join(dir, 'unraid')
