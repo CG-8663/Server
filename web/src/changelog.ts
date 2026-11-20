@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.50',
+		date: '2026-11-19',
+		title: 'Remote desktop on your phone, and steadier apps',
+		added: ['A remote desktop on your phone has a Fill the screen button, and one finger pans around the picture when it’s zoomed in or doesn’t fill the screen.'],
+		fixed: [
+			'The remote desktop keeps your phone’s keyboard open while you tap and type, and fits the screen again after the keyboard closes.',
+			'Opening an app in its own tab works behind a reverse proxy, and tells you when app addresses need setting up instead of opening a broken page.',
+			'Apps start again by themselves after the server restarts.',
+			'Restarting or updating the server is quick instead of waiting up to 90 seconds.',
+			'If Podman’s storage still belongs to another user, Apps says so and how to fix it.',
+			'Installing over SSH without a terminal stops with a clear message instead of failing in the system update.',
+		],
+	},
+	{
 		version: '0.9.49',
 		date: '2026-11-19',
 		title: 'Format, unmount and mount extra disks',

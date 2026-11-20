@@ -53,6 +53,8 @@ export type Bootstrap = {
 		revision?: string
 		device?: string | null
 		onboarded?: boolean
+		// How a browser tab reaches an app from this page (see server/app.mjs appAccess).
+		appAccess?: 'relay' | 'direct' | 'none'
 		error?: string
 	}
 	accounts: {userId: string; name: string; avatar: string | null; wallpaper: Wallpaper | null}[]

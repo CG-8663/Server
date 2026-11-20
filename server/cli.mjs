@@ -59,4 +59,16 @@ server.on('error', (error) => {
 	console.error(`[omarchy-server] ${error.message}`)
 	process.exit(1)
 })
-for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close(() => process.exit(0)))
+// Stopping (a restart, an update): stop taking new connections, say goodbye to the open ones, and
+// don't wait on a browser that keeps its WebSocket open. 5 seconds at most, whatever happens.
+let stopping = false
+function stop() {
+	if (stopping) return
+	stopping = true
+	setTimeout(() => process.exit(0), 5000).unref()
+	server.close(() => process.exit(0))
+	app.closeAll()
+	httpServer.closeIdleConnections?.()
+	setTimeout(() => server.destroyConnections(), 1000).unref()
+}
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, stop)

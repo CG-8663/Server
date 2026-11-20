@@ -1,6 +1,7 @@
 // Desktop mode: Ubuntu (GNOME) by default — top bar, dock, icons, floating windows, Activities.
 // Optional Hyprland shell: tiling, workspaces 1–9, Omarchy Super chords. Same screens either way.
 import {createContext, lazy, memo, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
+import {useAppTab} from '../appTab'
 import {createPortal} from 'react-dom'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
@@ -490,6 +491,10 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	framesRef.current = frames.data
 	const cfgRef = useRef(cfg)
 	cfgRef.current = cfg
+	// Opening an app in its own browser tab: the right address from this page (see appTab.ts).
+	const appTab = useAppTab()
+	const appTabRef = useRef(appTab)
+	appTabRef.current = appTab
 
 	const api = useMemo<DesktopApi>(() => {
 		const launch = (app: UserApp) => {
@@ -500,7 +505,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				// Same as Omarchy Server: the app gets its own browser tab.
 				setOverview(null)
 				setMenu(null)
-				window.open(url, '_blank', 'noopener')
+				appTabRef.current.openTab(app)
 				return
 			}
 			open('app', {appId: app.id})
@@ -720,7 +725,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		const items: MenuItem[] = [{label: mine.length && where === 'dock' && !key.startsWith('folder:') ? 'Show' : 'Open', icon: 'open', onClick: () => (mine.length && where === 'dock' ? dockClick(key) : api.openItem(key))}]
 		if (key.startsWith('folder:/Home/') && owner) items.push({label: 'Share on your home LAN…', icon: 'folder-share', onClick: () => setShareFor({path: key.slice(7), name: it.label})})
 		if (key === 'files' || key === 'terminal') items.push({label: 'New window', icon: 'plus', onClick: () => (key === 'terminal' ? api.openTerminal() : open('files', undefined, {newWindow: true}))})
-		if (app && appUrl(app, boot.server!.host)) items.push({label: 'Open in a browser tab', icon: 'open', onClick: () => window.open(appUrl(app, boot.server!.host)!, '_blank', 'noopener')})
+		if (app && appUrl(app, boot.server!.host)) items.push({label: 'Open in a browser tab', icon: 'open', onClick: () => appTab.openTab(app)})
 		if (machine && machine.state === 'running')
 			items.push({
 				label: 'Shut down',
@@ -1942,6 +1947,7 @@ function WindowFrame({
 	const machine = win.kind === 'console' ? machineList.find((m) => m.id === win.payload?.machineId) : undefined
 	const boot = useBootstrap()
 	const url = app ? appUrl(app, boot.server!.host) : null
+	const {openTab} = useAppTab()
 
 	const toggleMax = () => onUpdate(win.id, {snap: win.snap ? null : 'max'})
 
@@ -2057,7 +2063,7 @@ function WindowFrame({
 								<Icon name="restart" size={15} />
 							</button>
 							{url && (
-								<button className="win-btn ghost" aria-label="Open in a browser tab" data-tip="Open in a browser tab" onClick={() => window.open(url, '_blank', 'noopener')}>
+								<button className="win-btn ghost" aria-label="Open in a browser tab" data-tip="Open in a browser tab" onClick={() => app && openTab(app)}>
 									<Icon name="open" size={15} />
 								</button>
 							)}
@@ -2172,6 +2178,7 @@ function RelayedFrame({app}: {app: UserApp}) {
 // The loading screen for an app window. If the app hasn't shown anything after a while, say so
 // and offer a way forward instead of spinning forever.
 function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetry?: () => void}) {
+	const {openTab} = useAppTab()
 	const [slow, setSlow] = useState(false)
 	useEffect(() => {
 		const t = window.setTimeout(() => setSlow(true), 8000)
@@ -2219,10 +2226,10 @@ function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetr
 					Try again
 				</button>
 				{url && (
-					<a className="btn primary" href={url} target="_blank" rel="noopener noreferrer">
+					<button className="btn primary" onClick={() => openTab(app)}>
 						<Icon name="open" size={17} />
 						Open in a tab
-					</a>
+					</button>
 				)}
 			</div>
 		</div>
@@ -2233,6 +2240,8 @@ function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetr
 // sign-in page refuses to load inside another page, so that one step happens in a normal tab.
 // The session it creates covers all of this browser's apps (7 days); the window then loads.
 export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null; onClose: () => void}) {
+	const {openTab: openAppTab} = useAppTab()
+	const openTab = (a?: UserApp) => a && openAppTab(a)
 	const [loaded, setLoaded] = useState(false)
 	const [reloadKey, setReloadKey] = useState(0)
 	const qc = useQueryClient()
@@ -2310,7 +2319,7 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 						<Icon name="key" size={17} />
 						Use the secure address
 					</button>
-					<button className="btn" onClick={() => window.open(url, '_blank', 'noopener')}>
+					<button className="btn" onClick={() => openTab(app)}>
 						<Icon name="open" size={17} />
 						Open in a tab
 					</button>
@@ -2389,7 +2398,7 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 					<button
 						className="btn primary"
 						onClick={() => {
-							window.open(url, '_blank', 'noopener')
+							openTab(app)
 							setWaiting(true)
 						}}
 					>
@@ -2419,7 +2428,7 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 					<button
 						className="btn primary"
 						onClick={() => {
-							window.open(url, '_blank', 'noopener')
+							openTab(app)
 							qc.invalidateQueries({queryKey: ['app-frame']})
 							onClose()
 						}}

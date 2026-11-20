@@ -20,7 +20,7 @@ import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.49'
+export const VERSION = '0.9.50'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -583,6 +583,8 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				...(session ? {startedAt: version?.startedAt, revision: version?.revision} : {}),
 				device: discovery?.device ?? null,
 				onboarded: discovery?.onboarded ?? true,
+				// How a browser tab reaches an app from this page (issue #86): see appAccess.
+				appAccess: appAccess(req),
 			}
 			const mapped = (accounts ?? []).map((a) => ({
 				userId: a.userId,
@@ -1388,6 +1390,18 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	// only apps that forbid embedding are relayed and the browser's own Omarchy Server sign-in applies.
 	//   results[id]: window | tab | signin | unknown
 	//   relay[id]:   true when the app opens through a relay (ask /api/app-open for its address)
+	// How a browser tab reaches an app from the page that asked:
+	//   relay   app addresses are set up (TOUCH_APP_HOSTS): ask /api/app-open for the app's own address
+	//   direct  the page reached this server on its own port, so the apps' ports on that host work too
+	//   none    neither (a reverse proxy on 443 with no app addresses): the app ports aren't reachable
+	// Behind a proxy the browser's Host has the proxy's port (or none), not the one this server listens on.
+	const appAccess = (req) => {
+		if (relayMode(req) === 'host') return 'relay'
+		const hostHeader = String(req.headers.host ?? '')
+		const m = /:(\d+)$/.exec(hostHeader.replace(/^\[[^\]]*\]/, (b) => b.replace(/:/g, '')))
+		const asked = m ? Number(m[1]) : req.secure ? 443 : 80
+		return asked === req.socket?.localPort ? 'direct' : 'none'
+	}
 	const isIpOrLocal = (h) => /^[\d.]+$/.test(h) || h.includes(':') || h.endsWith('.local') || h === 'localhost' || !h.includes('.')
 	const relayMode = (req) => {
 		const host = req.hostname ?? ''
@@ -1487,13 +1501,14 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				const t = randomBytes(32).toString('base64url')
 				appTickets.set(t, {sid: req.sid, appId: app.id, exp: Date.now() + 2 * 60 * 1000})
 				for (const [k, v] of appTickets) if (v.exp < Date.now()) appTickets.delete(k)
-				return res.json({url: `${req.protocol}://${host}/__touch/enter?t=${t}&r=${encodeURIComponent(path)}`, ping: `${req.protocol}://${host}/__touch/ping.gif`})
+				// address: the app's own address, to copy or bookmark (the url above is a one-time sign-in).
+				return res.json({url: `${req.protocol}://${host}/__touch/enter?t=${t}&r=${encodeURIComponent(path)}`, ping: `${req.protocol}://${host}/__touch/ping.gif`, address: `${req.protocol}://${host}${path}`})
 			}
 			if (mode === 'port') {
 				const port = await relayFor(app, serverHost, ancestor)
 				if (!port) return res.status(503).json({error: {code: 'UNAVAILABLE', message: 'No free port for the app relay'}})
 				const h = req.hostname.includes(':') ? `[${req.hostname}]` : req.hostname
-				return res.json({url: `${req.protocol}://${h}:${port}${path}`, ping: `${req.protocol}://${h}:${port}/__touch/ping.gif`})
+				return res.json({url: `${req.protocol}://${h}:${port}${path}`, ping: `${req.protocol}://${h}:${port}/__touch/ping.gif`, address: `${req.protocol}://${h}:${port}${path}`})
 			}
 			res.status(409).json({error: {code: 'NEEDS_APP_HOSTS', message: 'Opening apps remotely needs app addresses (see the README)'}})
 		} catch (error) {
@@ -1526,8 +1541,17 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	//   /api/console?machineId=…            -> /machines/console (raw VNC, binary)
 	//   /api/terminal?appId=…&cols=…&rows=…[&fresh=1] -> /terminal (your shell, which keeps running when
 	//   closed; appId = a shell inside that app; fresh = end it and start a new one)
+	// On a restart: tell every terminal, desktop and app connection the server is going (1001, so pages
+	// reconnect), and stop the app relays.
+	const consoles = new Set()
+	app.closeAll = () => {
+		for (const wss of consoles) for (const c of wss.clients) c.close(1001, 'server restarting')
+		for (const r of relays.values()) r.server?.close?.()
+		for (const r of relays.values()) r.server?.destroyConnections?.()
+	}
 	app.attachConsole = (server) => {
 		const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024})
+		consoles.add(wss)
 		server.on('upgrade', async (req, socket, head) => {
 			if (app.relayUpgrade(req, socket, head)) return
 			const refuse = (status) => {

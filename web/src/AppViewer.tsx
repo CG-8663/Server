@@ -1,4 +1,5 @@
 import {useEffect, useRef, useState} from 'react'
+import {useAppTab} from './appTab'
 import {createPortal} from 'react-dom'
 
 import {mutate, type UserApp} from './api'
@@ -40,6 +41,7 @@ export function AppViewer({app, onClose}: {app: UserApp; onClose: () => void}) {
 		} catch {}
 	}
 	const url = appUrl(app, boot.server!.host)
+	const {openTab} = useAppTab()
 	const name = app.name ?? app.id
 	const closed = useRef(false)
 	const close = useRef(onClose)
@@ -85,9 +87,9 @@ export function AppViewer({app, onClose}: {app: UserApp; onClose: () => void}) {
 					<Icon name="restart" size={19} />
 				</button>
 				{url && (
-					<a className="round-btn" aria-label="Open in a browser tab" title="Open in a browser tab" href={url} target="_blank" rel="noopener noreferrer">
+					<button className="round-btn" aria-label="Open in a browser tab" title="Open in a browser tab" onClick={() => openTab(app)}>
 						<Icon name="open" size={19} />
-					</a>
+					</button>
 				)}
 			</header>
 			{creds && showCreds && (

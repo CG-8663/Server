@@ -168,7 +168,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.49', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.50', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -490,6 +490,26 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.doesNotMatch(evil, /frame-src/)
 	})
 
+	test('bootstrap says how a browser tab reaches apps: directly on this port, or not (a proxy) (#86)', async () => {
+		const {request} = await import('node:http')
+		const u = new URL(touch.base)
+		const accessFor = (host) =>
+			new Promise((resolve, reject) => {
+				const r = request({host: u.hostname, port: u.port, path: '/api/bootstrap', headers: {host}}, (res) => {
+					let body = ''
+					res.on('data', (c) => (body += c))
+					res.on('end', () => resolve(JSON.parse(body).server?.appAccess))
+				})
+				r.on('error', reject)
+				r.end()
+			})
+		// Reached on the server's own port (on your network): the app ports on that host work.
+		assert.equal(await accessFor(`192.168.1.50:${u.port}`), 'direct')
+		// Through a proxy on 80/443 with no app addresses: they don't.
+		assert.equal(await accessFor('omarchy.example.com'), 'none')
+		assert.equal(await accessFor('omarchy.example.com:8443'), 'none')
+	})
+
 	test('app windows: reports whether the browser’s Omarchy Server app session is valid, never the session itself', async () => {
 		const ask = (app, extra) => touch.req('GET', `/api/app-access?app=${app}`, undefined, {cookie: `${touch.getCookie()}${extra}`})
 		// a malformed cookie from another app on the same host must not break anything
@@ -564,6 +584,10 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 			const open = await get('touch.example.com', '/api/app-open?app=nextcloud', {cookie: touch2.getCookie(), 'x-forwarded-proto': 'https'})
 			const body = JSON.parse(open.body)
 			assert.match(body.url, /^https:\/\/nextcloud-touch\.example\.com\/__touch\/enter\?t=/)
+			// The app's own address, to copy or bookmark (no one-time ticket in it), and tabs use this route (#86).
+			assert.equal(body.address, 'https://nextcloud-touch.example.com/')
+			const boot = JSON.parse((await get('touch.example.com', '/api/bootstrap', {cookie: touch2.getCookie(), 'x-forwarded-proto': 'https'})).body)
+			assert.equal(boot.server.appAccess, 'relay')
 			const enter = new URL(body.url)
 			// nothing gets through without the hand-over
 			assert.equal((await get('nextcloud-touch.example.com', '/')).status, 401)
