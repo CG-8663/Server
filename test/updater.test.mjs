@@ -79,6 +79,34 @@ test('update: download, build, restart from a separate unit; after the restart i
 	assert.deepEqual(await after.procedures['system.updateStatus'].run(), {running: false, progress: 100, description: 'Updated to 0.6.1', error: false})
 })
 
+test('update: a failing rev-parse is a failed update, and the updater is free to try again', async () => {
+	let parses = 0
+	const run = async (cmd, args) => {
+		if (cmd === 'git' && args[2] === 'rev-parse') {
+			parses++
+			if (parses >= 2) throw new Error('git: index.lock busy')
+			return 'old111\n'
+		}
+		return ''
+	}
+	const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: dir, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath: '/nonexistent'})
+	await u.procedures['system.update'].run()
+	const st = await until(async () => {
+		const s = await u.procedures['system.updateStatus'].run()
+		return s.error ? s : null
+	})
+	assert.match(st.error, /index\.lock busy/)
+	assert.equal(st.running, false)
+	// The failed attempt clears its lock after the status is saved. Until then a new
+	// attempt is still told one is running; once it clears, that refusal is gone.
+	let again = 'An update is already running'
+	for (let i = 0; i < 50 && /already running/.test(again); i++) {
+		again = await u.procedures['system.update'].run().then(() => '', (e) => e.message)
+		if (/already running/.test(again)) await new Promise((r) => setTimeout(r, 10))
+	}
+	assert.equal(/already running/.test(again), false, again)
+})
+
 test('update: a failed build puts the previous version back', async () => {
 	const calls = []
 	const run = async (cmd, args) => {
