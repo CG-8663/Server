@@ -281,6 +281,54 @@ class Helper(unittest.TestCase):
         self.assertEqual(self.handle("format", ["/dev/sdb", "blank"], **kw), "ok")
         self.assertIn(["wipefs", "-a", "/dev/sdb"], empty.log)
 
+    def test_mmcblk_whole_disks_allowed_and_boot_rpmb_hidden(self):
+        from helper import HelperError
+        lsblk = {
+            "blockdevices": [
+                {
+                    "name": "mmcblk0", "path": "/dev/mmcblk0", "type": "disk", "size": 62534975488, "rota": False, "tran": "mmc", "serial": "SD1",
+                    "children": [{"name": "mmcblk0p1", "path": "/dev/mmcblk0p1", "type": "part", "fstype": "exfat", "label": "SDCARD", "mountpoints": [None]}],
+                },
+                {"name": "mmcblk0boot0", "path": "/dev/mmcblk0boot0", "type": "disk", "size": 4194304, "rota": False, "mountpoints": [None]},
+                {"name": "mmcblk0boot1", "path": "/dev/mmcblk0boot1", "type": "disk", "size": 4194304, "rota": False, "mountpoints": [None]},
+                {"name": "mmcblk0rpmb", "path": "/dev/mmcblk0rpmb", "type": "disk", "size": 4194304, "rota": False, "mountpoints": [None]},
+            ]
+        }
+        mounted = [False]
+        log = []
+
+        def run(cmd, args):
+            log.append([cmd, *args])
+            if cmd == "lsblk":
+                data = copy.deepcopy(lsblk)
+                if mounted[0]:
+                    data["blockdevices"][0]["children"][0]["mountpoints"] = ["/run/media/chris/SDCARD"]
+                return json.dumps(data)
+            if cmd == "wipefs":
+                return json.dumps({"signatures": []})
+            if cmd == "zpool":
+                raise HelperError("zpool: not found")
+            if cmd == "smartctl":
+                return json.dumps({"smart_status": {"passed": True}})
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files={})
+        disks = json.loads(self.handle("disks", [], **kw))
+        self.assertEqual([(d["name"], d["role"]) for d in disks], [("mmcblk0", "data")])
+        for bad in ("/dev/mmcblk0p1", "/dev/mmcblk0boot0", "/dev/mmcblk0rpmb"):
+            with self.assertRaisesRegex(HelperError, "Not a drive"):
+                self.handle("mount", [bad], **kw)
+            with self.assertRaisesRegex(HelperError, "Not a drive"):
+                self.handle("format", [bad, "blank"], **kw)
+        self.assertEqual(self.handle("mount", ["/dev/mmcblk0"], **kw), "ok")
+        self.assertIn(["mount", "-o", "nosuid,nodev,uid=1000,gid=1000", "/dev/mmcblk0p1", "/run/media/chris/SDCARD"], log)
+        mounted[0] = True
+        self.assertEqual(self.handle("umount", ["/dev/mmcblk0"], **kw), "ok")
+        self.assertIn(["umount", "/run/media/chris/SDCARD"], log)
+        mounted[0] = False
+        self.assertEqual(self.handle("format", ["/dev/mmcblk0", "blank"], **kw), "ok")
+        self.assertIn(["wipefs", "-a", "/dev/mmcblk0"], log)
+
 
 if __name__ == "__main__":
     unittest.main()

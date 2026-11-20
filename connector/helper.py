@@ -22,7 +22,7 @@ import shutil
 import subprocess
 import sys
 
-DEV = re.compile(r"^/dev/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|hd[a-z])$")
+DEV = re.compile(r"^/dev/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|mmcblk\d{1,2}|hd[a-z])$")
 BY_ID = re.compile(r"^/dev/disk/by-id/[A-Za-z0-9._:+-]+$")
 NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -484,7 +484,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             run("mkfs.exfat", [d["path"]])
         return "ok"
     if verb == "disks":
-        skip = re.compile(r"^(zram|loop|sr|ram)")
+        skip = re.compile(r"^(zram|loop|sr|ram)|^mmcblk\d+boot|rpmb$")
 
         def disk_id(path):
             try:
@@ -535,7 +535,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         out = []
         for d in block_devices():
             name = d.get("name") or ""
-            if d.get("type") != "disk" or skip.match(name) or not int(d.get("size") or 0):
+            if d.get("type") != "disk" or skip.search(name) or not int(d.get("size") or 0):
                 continue
             allp = flat(d)
             mnt = [m for x in allp for m in (x.get("mountpoints") or []) if m]
