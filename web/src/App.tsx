@@ -67,7 +67,9 @@ export function App() {
 	const layout = useLayout()
 	// The first time anyone signs in on this device: Desktop or Phone & tablet (then What's New).
 	const [askLayout, setAskLayout] = useState(() => !layoutAsked())
-	const reopenAssistant = useRef(consumeReopenAssistant()).current
+	const reopenAssistantRef = useRef<boolean | null>(null)
+	if (reopenAssistantRef.current === null) reopenAssistantRef.current = consumeReopenAssistant()
+	const reopenAssistant = reopenAssistantRef.current
 
 	useEffect(() => {
 		const onOut = () => {
