@@ -6,6 +6,7 @@ and the startup check runs the connector against temp XDG directories.
 """
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -49,6 +50,7 @@ class BackupPasswordFiles(unittest.TestCase):
 
     def test_sigterm_during_run_restic_deletes_password_file(self):
         root = tempfile.mkdtemp(prefix="restic-pw-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         runtime = os.path.join(root, "run")
         os.makedirs(runtime)
         standin = os.path.join(root, "bin")
@@ -115,6 +117,7 @@ class BackupPasswordFiles(unittest.TestCase):
 
     def test_forget_deletes_password_files_before_exit(self):
         root = tempfile.mkdtemp(prefix="restic-forget-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         runtime = os.path.join(root, "run")
         data = os.path.join(root, "data")
         pwdir = os.path.join(runtime, "omarchy-connector")
@@ -151,6 +154,7 @@ class BackupPasswordFiles(unittest.TestCase):
 
     def test_startup_sweep_deletes_stale_password_files(self):
         root = tempfile.mkdtemp(prefix="restic-sweep-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         runtime = os.path.join(root, "run")
         pwdir = os.path.join(runtime, "omarchy-connector")
         os.makedirs(pwdir)
@@ -171,6 +175,7 @@ class BackupPasswordFiles(unittest.TestCase):
 
     def test_connector_start_sweeps_password_file(self):
         root = tempfile.mkdtemp(prefix="restic-main-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         runtime = os.path.join(root, "run")
         config_home = os.path.join(root, ".config")
         conf = os.path.join(config_home, "omarchy-connector")

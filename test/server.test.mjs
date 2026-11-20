@@ -496,6 +496,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 			assert.equal(disk.nope, undefined)
 		} finally {
 			await chmod(dir, 0o700).catch(() => {})
+			await rm(dir, {recursive: true, force: true})
 		}
 	})
 
