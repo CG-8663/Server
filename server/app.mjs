@@ -564,9 +564,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			return await run(await accessTokenFor(req.sid, session))
 		} catch (error) {
 			if (!(error instanceof BackendError) || error.code !== 'UNAUTHORIZED') throw error
-			// A wrong password for this call (change password, factory reset, desktop sign-in) is not an
-			// expired token: sending it again would count as a second failed attempt.
-			if (/incorrect (password|2fa code)/i.test(error.message)) throw error
+			// A wrong password is unauthorized too. Only an expired access token is refreshed and retried.
+			// Sending a password or authenticator code again would count as a second failed attempt.
+			if (error.message !== 'Invalid token') throw error
 			if (session.mode === 'legacy') {
 				await store.deleteSession(req.sid)
 				throw error

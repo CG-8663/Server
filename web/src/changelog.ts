@@ -11,7 +11,7 @@ export const CHANGELOG: Release[] = [
 			'The server no longer stops when a swarm computer sends data for a closed terminal, when an update can’t read its own version, or when settings and backups are saved at the same moment.',
 			'Closing an app window or download stops it on the app’s side too, and an app that drops mid-download no longer leaves the page waiting.',
 			'Apps keep opening after signing another device out, and on devices that stay signed in for more than 30 days.',
-			'A wrong password counts once, Settings › Devices shows when each device was really last used, and a shell or desktop that can’t open says why instead of “only the owner”.',
+			'A wrong password counts once and the form stays open. Settings › Devices shows when each device was really last used, and a shell or desktop that can’t open says why instead of “only the owner”.',
 			'Switching Terminal or Desktop off for a computer closes what’s already open, and a computer that reconnects ends its old sessions.',
 			'The CPU gauge counts virtual machine time once and stays steady when several pages are open.',
 			'Swarm computers: closed terminals are cleaned up, storage works on older Linux versions, drive sleep survives a restart on Debian and Ubuntu, linked folders no longer break backups, and a failed restore leaves no empty folder.',
