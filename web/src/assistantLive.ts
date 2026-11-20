@@ -82,3 +82,47 @@ export function canDecideAssistantAction({status, streaming}: {status: string; s
 export function canStartAssistantFollow({pumping, decidingCount, followQueued, streaming}: {pumping: boolean; decidingCount: number; followQueued: boolean; streaming: boolean}): boolean {
 	return !pumping && decidingCount === 0 && followQueued && !streaming
 }
+
+export type ApprovalErrorInfo = {
+	isApiError: boolean
+	code?: string
+	status?: number
+	message: string
+}
+
+// True when the request itself failed (timeout, proxy or connection error, or missing input)
+// rather than the approved step failing on the server.
+export function isApprovalRequestError(err: Pick<ApprovalErrorInfo, 'isApiError' | 'code' | 'status'>): boolean {
+	if (!err.isApiError) return true
+	if (
+		err.code === 'UNREACHABLE'
+		|| err.code === 'BAD_RESPONSE'
+		|| err.code === 'ERROR'
+		|| err.code === 'INTERNAL'
+		|| err.code === 'NOT_CONFIGURED'
+		|| err.code === 'UNAUTHORIZED'
+		|| err.code === 'BAD_REQUEST'
+	) return true
+	if (err.status === 503 || err.status === 504) return true
+	return false
+}
+
+// Decide what an Approve card should show after the call throws: use the server's real status when
+// the request itself failed, instead of marking a still-running or finished step as a final error.
+export function resolveFailedDecision(
+	current: AssistantAction,
+	err: ApprovalErrorInfo,
+	serverAction: AssistantAction | null,
+): {action: AssistantAction; banner: string | null; follow: boolean} {
+	if (!isApprovalRequestError(err)) {
+		if (err.code === 'CONFLICT' && serverAction) return {action: serverAction, banner: null, follow: false}
+		return {action: {...current, status: 'error', error: err.message}, banner: null, follow: false}
+	}
+	if (serverAction) {
+		if (serverAction.status === 'done' || serverAction.status === 'rejected') return {action: serverAction, banner: null, follow: true}
+		if (serverAction.status === 'error') return {action: serverAction, banner: null, follow: false}
+		return {action: serverAction, banner: err.message, follow: false}
+	}
+	const action: AssistantAction = current.status === 'running' ? {...current, status: 'pending'} : current
+	return {action, banner: err.message, follow: false}
+}

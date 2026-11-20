@@ -11,7 +11,7 @@ import {Icon} from '../icons'
 import {AppIcon, Sheet, SheetHeader} from '../ui'
 import {useDesktop} from '../desktop/Desktop'
 import {setAssistantActivity, useAssistantAnimationState} from '../assistantActivity'
-import {appendLiveText, canDecideAssistantAction, canSendAssistantMessage, canStartAssistantFollow, finishLiveItems, insertLiveAction, liveBubbleMark, startLiveTurn} from '../assistantLive'
+import {appendLiveText, canDecideAssistantAction, canSendAssistantMessage, canStartAssistantFollow, finishLiveItems, insertLiveAction, isApprovalRequestError, liveBubbleMark, resolveFailedDecision, startLiveTurn} from '../assistantLive'
 import {
 	abortAssistantTurn,
 	assistantTurn,
@@ -497,12 +497,22 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 			}
 		} catch (err) {
 			if (own.signal.aborted) return
-			if (err instanceof ApiError) {
-				setTurnItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: cardAction({...b.action, id: actionId, status: 'error', error: err.message})} : b)) ?? bs)
-			} else {
-				setTurnItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId && b.action.status === 'running' ? {...b, action: {...b.action, status: 'pending'}} : b)) ?? bs)
-				setTurnError(err instanceof Error ? err.message : 'That step didn’t finish')
+			const info = err instanceof ApiError
+				? {isApiError: true, code: err.code, status: err.status, message: err.message}
+				: {isApiError: false, message: err instanceof Error ? err.message : 'That step didn’t finish'}
+			let serverAction: AssistantAction | null = null
+			if ((isApprovalRequestError(info) || info.code === 'CONFLICT') && info.code !== 'UNAUTHORIZED') {
+				const conv = await query<AssistantConversation>('assistant.getConversation', {id: conversationId}).catch(() => null)
+				if (own.signal.aborted) return
+				const found = conv?.actions?.find((a) => a.id === actionId)
+				if (found) serverAction = cardAction(found)
 			}
+			const resolved = resolveFailedDecision({...cur.action, status: 'running'}, info, serverAction)
+			setTurnItems((bs) =>
+				bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: cardAction({...b.action, ...resolved.action, id: actionId})} : b)) ?? bs,
+			)
+			if (resolved.banner) setTurnError(resolved.banner)
+			if (resolved.follow) follow = true
 		} finally {
 			deciding.current.delete(actionId)
 			decisionAbort.current.delete(actionId)

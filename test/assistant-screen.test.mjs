@@ -10,6 +10,8 @@ import {
 	canDecideAssistantAction,
 	canSendAssistantMessage,
 	canStartAssistantFollow,
+	isApprovalRequestError,
+	resolveFailedDecision,
 } from '../web/src/assistantLive.ts'
 import {
 	assistantTurn,
@@ -107,4 +109,71 @@ test('minimizing the Assistant window lets finished replies count as unread and 
 	const deskSrc = await readFile(new URL('../web/src/desktop/Desktop.tsx', import.meta.url), 'utf8')
 	const minBlock = deskSrc.match(/const minimize = useCallback\([\s\S]*?\}, \[update\]\)/)?.[0] ?? ''
 	assert.match(minBlock, /kind === 'assistant'[\s\S]*closeAssistantView\(\)/, 'Desktop minimize closes the assistant view')
+})
+
+const sampleAction = (status = 'running', extra = {}) => ({
+	id: 'act-1',
+	status,
+	kind: 'rpc',
+	toolName: 'apps_update',
+	title: 'Update Home Assistant',
+	detail: '',
+	...extra,
+})
+
+test('request errors are distinguished from step errors returned by omarchyd', () => {
+	assert.equal(isApprovalRequestError({isApiError: false}), true)
+	assert.equal(isApprovalRequestError({isApiError: true, code: 'UNREACHABLE', status: 502}), true)
+	assert.equal(isApprovalRequestError({isApiError: true, code: 'BAD_RESPONSE', status: 502}), true)
+	assert.equal(isApprovalRequestError({isApiError: true, code: 'ERROR', status: 504}), true)
+	assert.equal(isApprovalRequestError({isApiError: true, code: 'BAD_REQUEST', status: 400}), true)
+	assert.equal(isApprovalRequestError({isApiError: true, code: 'BAD_GATEWAY', status: 502}), false)
+	assert.equal(isApprovalRequestError({isApiError: true, code: 'FORBIDDEN', status: 403}), false)
+	assert.equal(isApprovalRequestError({isApiError: true, code: 'PRECONDITION_FAILED', status: 412}), false)
+})
+
+test('a timed-out or dropped approval request uses the server’s real status instead of a fake final error', () => {
+	const timeout = {isApiError: true, code: 'UNREACHABLE', status: 502, message: "Can't reach Omarchy Server at http://127.0.0.1:2021 (timed out)"}
+
+	// Server finished the step: card becomes done and triggers follow-up.
+	const done = resolveFailedDecision(sampleAction('running'), timeout, sampleAction('done'))
+	assert.equal(done.action.status, 'done')
+	assert.equal(done.banner, null)
+	assert.equal(done.follow, true)
+
+	// Server is still running the step: keep it running and show the connection error in the banner.
+	const running = resolveFailedDecision(sampleAction('running'), timeout, sampleAction('running'))
+	assert.equal(running.action.status, 'running')
+	assert.equal(running.banner, timeout.message)
+	assert.equal(running.follow, false)
+
+	// Server never started it (still pending) or could not be reached: revert to pending so Approve returns.
+	const pending = resolveFailedDecision(sampleAction('running'), timeout, sampleAction('pending'))
+	assert.equal(pending.action.status, 'pending')
+	assert.equal(pending.banner, timeout.message)
+	assert.equal(pending.follow, false)
+
+	const offline = resolveFailedDecision(sampleAction('running'), timeout, null)
+	assert.equal(offline.action.status, 'pending')
+	assert.equal(offline.banner, timeout.message)
+	assert.equal(offline.follow, false)
+
+	// Server recorded a real step error: show the server's error on the card.
+	const serverErr = resolveFailedDecision(sampleAction('running'), timeout, sampleAction('error', {error: 'Disk full'}))
+	assert.equal(serverErr.action.status, 'error')
+	assert.equal(serverErr.action.error, 'Disk full')
+	assert.equal(serverErr.banner, null)
+	assert.equal(serverErr.follow, false)
+
+	// Direct step error from omarchyd marks the card as failed.
+	const stepErr = resolveFailedDecision(sampleAction('running'), {isApiError: true, code: 'BAD_GATEWAY', status: 502, message: 'Update failed'}, null)
+	assert.equal(stepErr.action.status, 'error')
+	assert.equal(stepErr.action.error, 'Update failed')
+	assert.equal(stepErr.banner, null)
+	assert.equal(stepErr.follow, false)
+
+	// Conflict syncs to the server's status when available.
+	const conflict = resolveFailedDecision(sampleAction('running'), {isApiError: true, code: 'CONFLICT', status: 409, message: 'That step was already handled'}, sampleAction('done'))
+	assert.equal(conflict.action.status, 'done')
+	assert.equal(conflict.banner, null)
 })
