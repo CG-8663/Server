@@ -4055,6 +4055,8 @@ html.desk-mode body {
 	animation: fade 0.2s var(--ease);
 }
 .ov-search {
+	position: relative;
+	z-index: 2;
 	margin-top: 26px;
 	width: min(440px, 80%);
 	height: 42px;
@@ -4127,14 +4129,25 @@ html.desk-mode body {
 		0 0 0 4px color-mix(in srgb, var(--accent) 80%, transparent),
 		0 24px 70px rgba(0, 0, 0, 0.55);
 }
-.win-pick {
+.ov-layer > .ov-windows {
 	position: absolute;
 	inset: 0;
-	z-index: 30;
+	z-index: 1;
+	pointer-events: none;
+}
+.win-pick {
+	position: absolute;
 	border: 0;
 	padding: 0;
+	border-radius: 14px;
 	background: transparent;
 	cursor: default;
+	pointer-events: auto;
+}
+.win-pick:hover,
+.win-pick:focus-visible {
+	box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 80%, transparent);
+	outline: none;
 }
 .pop-note .icon-btn {
 	color: rgba(255, 255, 255, 0.75);

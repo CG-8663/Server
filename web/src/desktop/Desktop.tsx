@@ -15,7 +15,7 @@ import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../osLook'
 import {closeAssistantView, keepAssistantWindow, openAssistantView, resetAssistantTurn} from '../assistantTurn'
 import {AssistantCharacterWidget} from '../character/widgets'
-import {hasOpenDialog, useDialogFocus, useMenuFocus} from '../focus'
+import {hasOpenDialog, useDialogFocus, useInert, useMenuFocus} from '../focus'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, resetDeskConfig, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
@@ -658,7 +658,6 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			}
 			if (e.key === 'Escape') {
 				if (hasOpenDialog()) return
-				setOverview(null)
 				setLauncher(false)
 				setCheatsheet(false)
 			}
@@ -935,6 +934,16 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			? 'Lock Super to this window (full screen). Scroll Lock does the same on Omarchy after you paste the snippet.'
 			: 'Mark keys as locked to this window. On Omarchy, press Scroll Lock after pasting the snippet.'
 
+	const overviewWindows =
+		overview === 'windows'
+			? [...visible]
+					.sort((a, b) => a.born - b.born)
+					.flatMap((w) => {
+						const slot = overviewSlot(w, visible)
+						return slot ? [{id: w.id, title: winTitle(w, appList, machineList), rect: slot.rect}] : []
+					})
+			: []
+
 	return (
 		<DesktopContext.Provider value={api}>
 			<div
@@ -990,6 +999,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					}}
 					empty={wins.length === 0}
 					deviceName={boot.server?.device ?? 'server'}
+					inert={!!overview}
 				/>}
 
 				{wins.map((w) => (
@@ -997,7 +1007,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						key={w.id}
 						win={w}
 						active={active?.id === w.id}
-						overviewSlot={overview === 'windows' ? overviewSlot(w, visible) : null}
+						overviewSlot={overview === 'windows' ? (overviewSlot(w, visible)?.transform ?? null) : null}
+						inert={!!overview}
 						title={winTitle(w, appList, machineList)}
 						appList={appList}
 						machineList={machineList}
@@ -1007,10 +1018,6 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						onMinimize={minimize}
 						onPreview={setPreview}
 						onDragging={setDragging}
-						onOverviewPick={(id) => {
-							focus(id)
-							setOverview(null)
-						}}
 						tile={hypr && !w.float && !w.min && w.snap !== 'max' ? tiled[w.id] ?? null : null}
 						hidden={hypr && (w.workspace ?? 1) !== hyprWs}
 					>
@@ -1056,6 +1063,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						machineList={machineList}
 						owner={owner}
 						hasWindows={visible.length > 0}
+						windows={overviewWindows}
+						onPickWindow={(id) => {
+							focus(id)
+							setOverview(null)
+						}}
 						onOpen={(key) => api.openItem(key)}
 						onMenu={(k, x, y, opener) => itemMenu(k, x, y, 'overview', opener)}
 					/>
@@ -1393,7 +1405,10 @@ function DesktopIcons(p: {
 	onBackgroundClick: () => void
 	empty: boolean
 	deviceName: string
+	inert?: boolean
 }) {
+	const surfaceRef = useRef<HTMLDivElement>(null)
+	useInert(surfaceRef, !!p.inert)
 	const [sel, setSel] = useState<Set<string>>(new Set())
 	// The "right-click the desktop" tip: gone for good once closed, a window has been open, or the
 	// desktop menu used (on this device).
@@ -1516,6 +1531,7 @@ function DesktopIcons(p: {
 
 	return (
 		<div
+			ref={surfaceRef}
 			className="desk-surface"
 			tabIndex={-1}
 			onPointerDown={startBand}
@@ -1814,7 +1830,10 @@ function overviewSlot(w: Win, visible: Win[]) {
 	const rowOffset = ((cols - inRow) * cw) / 2
 	const cx = areaX + rowOffset + col * cw + cw / 2
 	const cy = areaY + row * ch + ch / 2
-	return `translate(${cx - (r.x + r.w / 2)}px, ${cy - (r.y + r.h / 2)}px) scale(${s})`
+	return {
+		transform: `translate(${cx - (r.x + r.w / 2)}px, ${cy - (r.y + r.h / 2)}px) scale(${s})`,
+		rect: {left: cx - a.x - (r.w * s) / 2, top: cy - a.y - (r.h * s) / 2, width: r.w * s, height: r.h * s},
+	}
 }
 
 function Overview({
@@ -1825,6 +1844,8 @@ function Overview({
 	machineList,
 	owner,
 	hasWindows,
+	windows,
+	onPickWindow,
 	onOpen,
 	onMenu,
 }: {
@@ -1835,12 +1856,15 @@ function Overview({
 	machineList: Machine[]
 	owner: boolean
 	hasWindows: boolean
+	windows: {id: string; title: string; rect: {left: number; top: number; width: number; height: number}}[]
+	onPickWindow: (id: string) => void
 	onOpen: (key: string) => void
 	onMenu: (key: string, x: number, y: number, opener?: HTMLElement | null) => void
 }) {
 	const [q, setQ] = useState('')
 	const ref = useRef<HTMLInputElement>(null)
-	useEffect(() => ref.current?.focus(), [])
+	const layerRef = useRef<HTMLDivElement>(null)
+	useDialogFocus(true, layerRef, () => setMode(null), {initialFocus: ref})
 	const showApps = mode === 'apps' || q.trim() !== '' || !hasWindows
 	const keys = [
 		...SYSTEM_DOCK.filter((k) => k !== 'terminal' || owner),
@@ -1854,7 +1878,15 @@ function Overview({
 	return (
 		<>
 			<div className="ov-backdrop" onClick={() => setMode(null)} />
-			<div className={`ov-layer${showApps ? ' apps' : ''}`} onClick={(e) => e.target === e.currentTarget && setMode(null)}>
+			<div
+				ref={layerRef}
+				className={`ov-layer${showApps ? ' apps' : ''}`}
+				role="dialog"
+				aria-modal="true"
+				aria-label={showApps ? 'Applications' : 'Activities overview'}
+				tabIndex={-1}
+				onClick={(e) => e.target === e.currentTarget && setMode(null)}
+			>
 				<div className="ov-search">
 					<Icon name="search" size={18} />
 					<input
@@ -1868,6 +1900,19 @@ function Overview({
 						}}
 					/>
 				</div>
+				{!showApps && windows.length > 0 && (
+					<div className="ov-windows" role="group" aria-label="Open windows">
+						{windows.map((w) => (
+							<button
+								key={w.id}
+								className="win-pick"
+								aria-label={`Switch to ${w.title}`}
+								style={{left: w.rect.left, top: w.rect.top, width: w.rect.width, height: w.rect.height}}
+								onClick={() => onPickWindow(w.id)}
+							/>
+						))}
+					</div>
+				)}
 				{showApps && (
 					<div className="ov-grid" onClick={(e) => e.target === e.currentTarget && setMode(null)}>
 						{items.map((x) => (
@@ -1916,6 +1961,7 @@ const EDGES: Edge[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']
 function WindowFrame({
 	win,
 	overviewSlot,
+	inert,
 	active,
 	title,
 	appList,
@@ -1926,7 +1972,6 @@ function WindowFrame({
 	onMinimize,
 	onPreview,
 	onDragging,
-	onOverviewPick,
 	tile,
 	hidden,
 	children,
@@ -1934,6 +1979,7 @@ function WindowFrame({
 	win: Win
 	active: boolean
 	overviewSlot: string | null
+	inert?: boolean
 	title: string
 	appList: UserApp[]
 	machineList: Machine[]
@@ -1943,12 +1989,12 @@ function WindowFrame({
 	onMinimize: (id: string) => void
 	onPreview: (r: Rect | null) => void
 	onDragging: (b: boolean) => void
-	onOverviewPick: (id: string) => void
 	tile?: Rect | null
 	hidden?: boolean
 	children: ReactNode
 }) {
 	const el = useRef<HTMLDivElement>(null)
+	useInert(el, !!inert)
 	const [portal, setPortal] = useState<HTMLDivElement | null>(null)
 	const [reload, setReload] = useState(0)
 	const r = tile ?? rectOf(win)
@@ -2096,7 +2142,6 @@ function WindowFrame({
 				<div className="win-portal" ref={setPortal} />
 			</div>
 			{!win.snap && !overviewSlot && !tile && EDGES.map((edge) => <span key={edge} className={`win-edge e-${edge}`} onPointerDown={startResize(edge)} />)}
-			{overviewSlot && <button className="win-pick" aria-label={`Switch to ${title}`} onClick={() => onOverviewPick(win.id)} />}
 		</div>
 	)
 }

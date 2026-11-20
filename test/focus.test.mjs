@@ -243,3 +243,14 @@ test('nextMenuIndex and getMenuItems support arrow, Home/End navigation and skip
 	assert.match(desk, /useMenuFocus\(true, ref, onClose, menu\.opener\)/)
 	assert.match(desk, /useMenuFocus\(p\.menu === 'system', sysRef, closeTopMenu\)/)
 })
+
+test('Activities overview sets inert on desktop surface and windows, traps focus, and places window picks right after search', () => {
+	const desk = readFileSync(join(rootDir, 'web/src/desktop/Desktop.tsx'), 'utf8')
+	assert.match(desk, /useInert\(surfaceRef, !!p\.inert\)/)
+	assert.match(desk, /useInert\(el, !!inert\)/)
+	assert.match(desk, /useDialogFocus\(true, layerRef, \(\) => setMode\(null\), \{initialFocus: ref\}\)/)
+	const searchPos = desk.indexOf('<div className="ov-search">')
+	const picksPos = desk.indexOf('<div className="ov-windows"')
+	assert.ok(searchPos !== -1 && picksPos !== -1 && picksPos > searchPos, 'window picks must follow search inside Overview')
+	assert.equal(desk.includes('onOverviewPick'), false, 'WindowFrame should no longer render .win-pick inside windows')
+})

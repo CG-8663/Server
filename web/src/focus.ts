@@ -313,3 +313,14 @@ export function useMenuFocus(
 		fn()
 	}
 }
+
+export function useInert(ref: RefObject<HTMLElement | null>, active: boolean): void {
+	useEffect(() => {
+		const el = ref.current
+		if (!el) return
+		el.inert = active
+		return () => {
+			el.inert = false
+		}
+	}, [ref, active])
+}
