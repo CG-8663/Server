@@ -96,16 +96,34 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const ready = (async () => {
 		await mkdir(imagesDir, {recursive: true, mode: 0o700})
 		await mkdir(vmsDir, {recursive: true, mode: 0o700})
+		// Only a missing file is a new install. A damaged or unreadable machines.json must stay
+		// byte-for-byte: saving [] here would wipe the registry.
+		let loaded = false
 		try {
-			machines = JSON.parse(await readFile(stateFile, 'utf8')).machines ?? []
-		} catch {}
-		// A create that was interrupted by a restart can't resume: show it as failed.
-		// Machines from before 0.6.1 asked for a virtio display, which QEMU on Arch only has with an
-		// extra package: use the built-in standard VGA instead.
-		for (const m of machines) if (m.layout?.video === 'virtio') m.layout.video = 'vga'
-		for (const m of machines) if (m.state === 'installing') Object.assign(m, {state: 'error', errorMessage: 'Setup was interrupted. Delete this machine and create it again.'})
-		for (const m of machines) normalize(m)
-		await save().catch(() => {})
+			const text = await readFile(stateFile, 'utf8')
+			let data
+			try {
+				data = JSON.parse(text)
+			} catch {
+				data = undefined
+			}
+			if (data && typeof data === 'object' && !Array.isArray(data) && Array.isArray(data.machines)) {
+				machines = data.machines
+				loaded = true
+			} else console.error(`[omarchyd] couldn’t load ${stateFile}; leaving it unchanged`)
+		} catch (error) {
+			if (error.code === 'ENOENT') loaded = true
+			else console.error(`[omarchyd] couldn’t load ${stateFile}; leaving it unchanged`)
+		}
+		if (loaded) {
+			// A create that was interrupted by a restart can't resume: show it as failed.
+			// Machines from before 0.6.1 asked for a virtio display, which QEMU on Arch only has with an
+			// extra package: use the built-in standard VGA instead.
+			for (const m of machines) if (m.layout?.video === 'virtio') m.layout.video = 'vga'
+			for (const m of machines) if (m.state === 'installing') Object.assign(m, {state: 'error', errorMessage: 'Setup was interrupted. Delete this machine and create it again.'})
+			for (const m of machines) normalize(m)
+			await save().catch(() => {})
+		}
 		startSampler()
 		autostart()
 	})()
