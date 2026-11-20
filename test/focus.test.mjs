@@ -205,3 +205,9 @@ test('pickFocusTarget and restoreFocus restore connected opener or fall back whe
 		['fallback', {preventScroll: true}],
 	])
 })
+
+test('AppViewer uses useDialogFocus with tabIndex={-1} and aria-modal="true"', () => {
+	const src = readFileSync(join(rootDir, 'web/src/AppViewer.tsx'), 'utf8')
+	assert.match(src, /useDialogFocus\(true, dialogRef, back\)/)
+	assert.match(src, /role="dialog"\s+aria-modal="true"[\s\S]*?tabIndex=\{-1\}/)
+})
