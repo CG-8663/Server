@@ -389,7 +389,8 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(del.body.prefs.backgroundVersion, null)
 	})
 
-	test('a failed settings save returns an error and keeps what was saved', async () => {
+	test('a failed settings save returns an error and keeps what was saved', async (t) => {
+		if (process.getuid?.() === 0) return t.skip('root ignores file mode')
 		const fresh = await startTouch({backendUrl: fake.url})
 		const origError = console.error
 		const logged = []
@@ -464,7 +465,8 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		}
 	})
 
-	test('overlapping config saves keep both changes, and a failed one does not', async () => {
+	test('overlapping config saves keep both changes, and a failed one does not', async (t) => {
+		if (process.getuid?.() === 0) return t.skip('root ignores file mode')
 		const dir = await mkdtemp(join(tmpdir(), 'touch-cfg-'))
 		const store = await createStore(dir)
 		try {
