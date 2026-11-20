@@ -312,7 +312,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 
 		smart: async ([dev]) => {
 			await disk(dev)
-			return run('smartctl', ['-j', '-a', dev])
+			return run('smartctl', ['-n', 'standby', '-j', '-a', dev])
 		},
 
 		sleep: async ([dev, minutes]) => {

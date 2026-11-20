@@ -864,6 +864,17 @@ errors: No known data errors
 		assert.ok(log.some((l) => l[0] === 'wipefs' && l[1] === '-a' && l[2] === '/dev/mmcblk0'))
 		assert.ok(JSON.parse(await h.handle('smart', ['/dev/mmcblk0'])).smart_status.passed)
 	})
+
+	test('smart runs smartctl with -n standby so sleeping drives are not woken', async () => {
+		const log = []
+		const h = createHelper({
+			user,
+			fs: fakeFs(),
+			run: fakeRun(log, {smartctl: () => JSON.stringify({smart_status: {passed: true}})}),
+		})
+		await h.handle('smart', ['/dev/sda'])
+		assert.deepEqual(log.find((l) => l[0] === 'smartctl'), ['smartctl', '-n', 'standby', '-j', '-a', '/dev/sda'])
+	})
 })
 
 describe('omarchyd storage', () => {
@@ -1120,5 +1131,53 @@ describe('omarchyd storage', () => {
 		const s = createStorage({dataDir: data, home: '/home/chris', files: {resolve: async () => ({real: '', top: 'Home'})}, run, fstabPath: fstab})
 		const disks = await s.procedures['storage.disks'].run()
 		assert.deepEqual(disks.map((d) => ({name: d.name, role: d.role})), [{name: 'mmcblk0', role: 'data'}])
+	})
+
+	test('storage.disks keeps last known SMART reading when a drive goes into standby', async () => {
+		let clock = 1_000_000
+		let sdaStandby = false
+		let smartCalls = 0
+		const twoHdds = {
+			blockdevices: [
+				{name: 'sda', path: '/dev/sda', type: 'disk', size: 4e12, rota: true, tran: 'sata', serial: 'WD-A', mountpoints: [null]},
+				{name: 'sdb', path: '/dev/sdb', type: 'disk', size: 4e12, rota: true, tran: 'sata', serial: 'WD-B', mountpoints: [null]},
+			],
+		}
+		const standbyJson = JSON.stringify({smartctl: {exit_status: 2, messages: [{string: 'Device is in STANDBY mode, exit(2)'}]}})
+		const run = async (cmd, args) => {
+			if (cmd === 'lsblk') return JSON.stringify(twoHdds)
+			if (cmd === 'sudo' && args[2] === 'ping') return 'ok\n'
+			if (cmd === 'sudo' && args[2] === 'zfs-available') return 'no\n'
+			if (cmd === 'sudo' && args[2] === 'smart') {
+				smartCalls++
+				if (args[3] === '/dev/sda' && !sdaStandby) {
+					return JSON.stringify({smart_status: {passed: true}, temperature: {current: 34}, power_on_time: {hours: 9000}, ata_smart_attributes: {table: [{id: 5, raw: {value: 0}}]}})
+				}
+				return standbyJson
+			}
+			return ''
+		}
+		const data = join(root, 'standby-data')
+		await mkdir(data)
+		const s = createStorage({dataDir: data, home: '/home/chris', files: {resolve: async () => ({real: '', top: 'Home'})}, run, fstabPath: fstab, now: () => clock})
+
+		let disks = await s.procedures['storage.disks'].run()
+		assert.equal(disks.find((d) => d.name === 'sda').health.temperature, 34)
+		assert.equal(disks.find((d) => d.name === 'sdb').health, null)
+		assert.equal(smartCalls, 2)
+
+		// Cache expires and sda is now in standby: keep previous reading instead of wiping it.
+		clock += 11 * 60_000
+		sdaStandby = true
+		disks = await s.procedures['storage.disks'].run()
+		assert.equal(disks.find((d) => d.name === 'sda').health.temperature, 34)
+		assert.equal(disks.find((d) => d.name === 'sda').health.passed, true)
+		assert.equal(disks.find((d) => d.name === 'sdb').health, null)
+		assert.equal(smartCalls, 4)
+
+		// Subsequent 30s poll uses the refreshed cache entry.
+		clock += 30_000
+		await s.procedures['storage.disks'].run()
+		assert.equal(smartCalls, 4)
 	})
 })
