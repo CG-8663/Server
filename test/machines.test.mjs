@@ -83,6 +83,7 @@ describe('omarchyd machines', () => {
 				case '--version':
 					return '10.0.0\n'
 				case 'list':
+					if (seen.failList) throw new Error('virsh list: error: failed to connect to the hypervisor')
 					return ` Id   Name   State\n------------------\n${[...doms].map(([n, s]) => ` -    ${n}   ${s}`).join('\n')}\n`
 				case 'define': {
 					if (seen.failDefine) throw new Error("virsh define: error: unsupported configuration: domain configuration does not support video model 'virtio'")
@@ -95,12 +96,16 @@ describe('omarchyd machines', () => {
 					doms.set(a[1], 'running')
 					return ''
 				case 'shutdown':
+					doms.set(a[1], 'shut off')
+					return ''
 				case 'destroy':
+					if (seen.failDestroy) throw new Error('virsh destroy: error: Failed to terminate domain')
 					doms.set(a[1], 'shut off')
 					return ''
 				case 'reboot':
 					return ''
 				case 'undefine':
+					if (seen.failUndefine) throw new Error('virsh undefine: error: Failed to undefine domain')
 					doms.delete(a[1])
 					return ''
 			}
@@ -458,6 +463,47 @@ describe('omarchyd machines', () => {
 		const tasks = (await q('machines.details', {id})).tasks.map((t) => t.type)
 		for (const t of ['create', 'hardware', 'snapshot', 'backup', 'pause', 'hibernate']) assert.ok(tasks.includes(t), `task ${t} recorded`)
 		assert.ok((await q('machines.tasks')).every((t) => t.machineName))
+	})
+
+	test('uninstall leaves the machine when its state cannot be read', async () => {
+		const disk = join(data, 'machines/vms', id, 'disk.qcow2')
+		seen.failList = true
+		try {
+			const before = seen.calls.length
+			await assert.rejects(call('machines.uninstall', {id}), /was not deleted because its state could not be read/)
+			assert.equal(seen.calls.slice(before).some((c) => /^virsh (destroy|undefine) /.test(c)), false)
+			await stat(disk)
+			assert.ok((await q('machines.list')).some((x) => x.id === id), 'the list still loads, and the machine is still on it')
+			const saved = JSON.parse(await readFile(join(data, 'machines/machines.json'), 'utf8'))
+			assert.ok(saved.machines.some((x) => x.id === id))
+			assert.equal(doms.get(`omarchy-${id}`), 'running')
+		} finally {
+			seen.failList = false
+		}
+	})
+
+	test('uninstall leaves the disk when the machine will not shut down', async () => {
+		const disk = join(data, 'machines/vms', id, 'disk.qcow2')
+		seen.failDestroy = true
+		try {
+			const before = seen.calls.length
+			await assert.rejects(call('machines.uninstall', {id}), /was not deleted because it could not be shut down/)
+			assert.equal(seen.calls.slice(before).some((c) => c.startsWith('virsh undefine ')), false)
+			await stat(disk)
+			assert.ok((await q('machines.list')).some((x) => x.id === id))
+			assert.equal(doms.get(`omarchy-${id}`), 'running')
+		} finally {
+			seen.failDestroy = false
+		}
+		seen.failUndefine = true
+		try {
+			await assert.rejects(call('machines.uninstall', {id}), /was not deleted because it could not be removed from libvirt/)
+			await stat(disk)
+			assert.ok((await q('machines.list')).some((x) => x.id === id))
+			assert.equal(doms.has(`omarchy-${id}`), true)
+		} finally {
+			seen.failUndefine = false
+		}
 	})
 
 	test('stop, start, uninstall', async () => {
