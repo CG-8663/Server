@@ -5,13 +5,12 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query, type Listing} from './api'
 import {Icon, type IconName} from './icons'
 import {Group, Row, Switch, haptic, useConfirm, useToast} from './ui'
+import {itemStatusForView, jobSummary, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
 
 type Share = {name: string; size: number | null; kind: 'share' | 'appdata' | 'system' | 'domains' | 'isos'}
 type Container = {id: string; name: string; image: string; running: boolean; icon: string | null; web: {port: number} | null; copies: {from: string; to: string; file?: boolean}[]; shares: string[]; notes: string[]; problems: string[]; size: number; installed: boolean}
 type Vm = {name: string; state: string; cores: number; memoryMb: number; firmware: string; disks: {file: string}[]; notes: string[]; problems: string[]; size: number}
 type Scan = {shares: Share[]; containers: Container[]; vms: Vm[]; at: number}
-type Item = {kind: 'share' | 'container' | 'vm'; key: string; name: string; size: number | null; status: 'waiting' | 'running' | 'done' | 'failed' | 'skipped'; step?: string; progress?: number; error?: string; note?: string; path?: string}
-type Job = {id: string; host: string; startedAt: number; endedAt: number | null; destination: string; items: Item[]; cancelled?: boolean; stopped?: string}
 type Status = {connected: {host: string; version: string; fingerprint: string | null} | null; scanned: boolean; job: Job | null}
 
 const bytes = (n: number | null | undefined) => {
@@ -352,86 +351,87 @@ const STATUS_ICON: Record<Item['status'], IconName> = {waiting: 'clock', running
 const KIND_LABEL: Record<Item['kind'], string> = {share: 'Share', container: 'App', vm: 'VM'}
 
 function JobView({job, connected, onCancel, onAgain, onDone}: {job: Job; connected: boolean; onCancel: () => void; onAgain: () => void; onDone: () => void}) {
-	const running = !job.endedAt
-	const done = job.items.filter((i) => i.status === 'done').length
-	const failed = job.items.filter((i) => i.status === 'failed').length
+	const summary = jobSummary(job, connected)
 	useEffect(() => {
-		if (!running) haptic(failed ? [20, 40, 20] : 12)
-	}, [running, failed])
+		if (!summary.running) haptic(summary.incomplete ? [20, 40, 20] : 12)
+	}, [summary.running, summary.incomplete])
 	return (
 		<>
 			<div className="glass card bk-status">
 				<div className="bk-status-line">
-					{running ? (
+					{summary.running ? (
 						<span className="spinner" />
 					) : (
-						<span className="bk-dot" style={{'--c': failed ? 'var(--orange, #f59e0b)' : 'var(--green)'} as CSSProperties}>
-							<Icon name={failed ? 'alert' : 'check'} size={16} />
+						<span className="bk-dot" style={{'--c': summary.incomplete ? 'var(--orange, #f59e0b)' : 'var(--green)'} as CSSProperties}>
+							<Icon name={summary.incomplete ? 'alert' : 'check'} size={16} />
 						</span>
 					)}
-					<b>{running ? `Moving from ${job.host}… ${done} of ${job.items.length}` : failed ? `${done} of ${job.items.length} came over` : 'Everything came over'}</b>
+					<b>{summary.heading}</b>
 				</div>
 				{job.stopped && <p className="bk-err">{job.stopped}</p>}
-				{running ? (
+				{summary.running ? (
 					<button className="btn" onClick={onCancel} disabled={job.cancelled}>
 						{job.cancelled ? 'Stopping…' : 'Stop'}
 					</button>
 				) : (
 					<div style={{display: 'flex', gap: 8}}>
-						{(failed > 0 || job.stopped) && connected && (
+						{summary.canRetry && (
 							<button className="btn primary" style={{flex: 1}} onClick={onAgain}>
 								Try the rest again
 							</button>
 						)}
-						<button className={`btn ${failed ? '' : 'primary'}`} style={{flex: 1}} onClick={onDone}>
+						<button className={`btn ${summary.canRetry ? '' : 'primary'}`} style={{flex: 1}} onClick={onDone}>
 							Done
 						</button>
 					</div>
 				)}
 			</div>
-			<Group title="Progress" footer={running ? 'You can leave this page: the move carries on, and copies pick up where they left off if anything stops them.' : undefined}>
-				{job.items.map((i) => (
-					<div key={`${i.kind}-${i.key}`}>
-						<div className="row static" style={{minHeight: 60}}>
-							<span className="row-ico" style={{'--c': i.status === 'done' ? 'var(--green)' : i.status === 'failed' ? 'var(--red)' : i.status === 'running' ? 'var(--accent)' : '#8e8e93'} as CSSProperties}>
-								{i.status === 'running' ? <span className="spinner" /> : <Icon name={STATUS_ICON[i.status]} size={18} />}
-							</span>
-							<span className="main">
-								<b style={{fontWeight: 550}}>
-									{KIND_LABEL[i.kind]} · {i.name}
-								</b>
-								<span>
-									{i.status === 'running'
-										? `${i.step ?? 'Starting'}${i.progress ? ` · ${Math.round(i.progress * 100)}%` : ''}`
-										: i.status === 'failed'
-											? i.error
-											: i.status === 'done'
-												? i.path
-													? i.path.replace(/^\/Home/, 'Home').replace(/\//g, ' › ')
-													: 'Here now'
-												: i.status === 'skipped'
-													? 'Skipped'
-													: bytes(i.size)}
+			<Group title="Progress" footer={summary.running ? 'You can leave this page: the move carries on, and copies pick up where they left off if anything stops them.' : undefined}>
+				{job.items.map((i) => {
+					const st = itemStatusForView(i, summary.running)
+					return (
+						<div key={`${i.kind}-${i.key}`}>
+							<div className="row static" style={{minHeight: 60}}>
+								<span className="row-ico" style={{'--c': st === 'done' ? 'var(--green)' : st === 'failed' ? 'var(--red)' : st === 'running' ? 'var(--accent)' : '#8e8e93'} as CSSProperties}>
+									{st === 'running' ? <span className="spinner" /> : <Icon name={STATUS_ICON[st]} size={18} />}
 								</span>
-							</span>
-						</div>
-						{i.status === 'running' && (
-							<div className="row static" style={{minHeight: 0, paddingTop: 0}}>
-								<div className="bk-bar" style={{flex: 1}}>
-									<span style={{width: `${Math.max(3, Math.round((i.progress ?? 0) * 100))}%`}} />
-								</div>
-							</div>
-						)}
-						{i.note && (
-							<div className="row static bk-item">
-								<Icon name="info" size={15} />
 								<span className="main">
-									<span>{i.note}</span>
+									<b style={{fontWeight: 550}}>
+										{KIND_LABEL[i.kind]} · {i.name}
+									</b>
+									<span>
+										{st === 'running'
+											? `${i.step ?? 'Starting'}${i.progress ? ` · ${Math.round(i.progress * 100)}%` : ''}`
+											: st === 'failed'
+												? i.error || 'Stopped'
+												: st === 'done'
+													? i.path
+														? i.path.replace(/^\/Home/, 'Home').replace(/\//g, ' › ')
+														: 'Here now'
+													: st === 'skipped'
+														? 'Skipped'
+														: bytes(i.size)}
+									</span>
 								</span>
 							</div>
-						)}
-					</div>
-				))}
+							{summary.running && st === 'running' && (
+								<div className="row static" style={{minHeight: 0, paddingTop: 0}}>
+									<div className="bk-bar" style={{flex: 1}}>
+										<span style={{width: `${Math.max(3, Math.round((i.progress ?? 0) * 100))}%`}} />
+									</div>
+								</div>
+							)}
+							{i.note && (
+								<div className="row static bk-item">
+									<Icon name="info" size={15} />
+									<span className="main">
+										<span>{i.note}</span>
+									</span>
+								</div>
+							)}
+						</div>
+					)
+				})}
 			</Group>
 		</>
 	)

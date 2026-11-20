@@ -297,7 +297,21 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 			if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) console.error('[omarchyd] job.json is empty or invalid and was left unchanged')
 			else {
 				job = parsed
-				if (!job.endedAt) Object.assign(job, {endedAt: now(), stopped: 'The server restarted. Connect again and choose Continue to pick up where it left off.'})
+				if (!job.endedAt) {
+					Object.assign(job, {endedAt: now(), stopped: 'The server restarted. Choose Done, then connect again to pick up where it left off.'})
+					if (Array.isArray(job.items)) {
+						for (const item of job.items) {
+							if (item?.status === 'running') {
+								item.status = 'failed'
+								item.error = 'Stopped when the server restarted'
+								delete item.step
+							} else if (item?.status === 'waiting') {
+								item.status = 'skipped'
+								delete item.step
+							}
+						}
+					}
+				}
 			}
 		}
 	})()

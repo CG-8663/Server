@@ -550,6 +550,45 @@ test('a job that was still running is marked stopped in memory without rewriting
 	}
 })
 
+test('a restart interrupts running and waiting items in memory and gives accurate instructions', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-job-items-'))
+	const file = join(dir, 'unraid', 'job.json')
+	const body = JSON.stringify(
+		{
+			id: 'cd34',
+			host: 'tower.local',
+			endedAt: null,
+			items: [
+				{kind: 'share', key: 'Docs', name: 'Docs', status: 'done', path: '/Home/Unraid/Docs'},
+				{kind: 'share', key: 'Media', name: 'Media', status: 'running', step: 'Copying', progress: 0.4},
+				{kind: 'container', key: 'unraid-plex', name: 'plex', status: 'waiting'},
+			],
+		},
+		null,
+		'\t',
+	)
+	await mkdir(join(dir, 'unraid'), {recursive: true})
+	await writeFile(file, body)
+	const u = createUnraid({dataDir: dir, files: {}, apps: {}, machines: {}, storage: null, run: async () => ({stdout: '', stderr: ''})})
+	try {
+		await u.ready
+		const st = await u.procedures['unraid.status'].run()
+		assert.equal(await readFile(file, 'utf8'), body)
+		assert.ok(st.job.endedAt)
+		assert.match(st.job.stopped, /Done/)
+		assert.match(st.job.stopped, /connect again/)
+		assert.doesNotMatch(st.job.stopped, /Continue/)
+		assert.equal(st.job.items[0].status, 'done')
+		assert.equal(st.job.items[1].status, 'failed')
+		assert.equal(st.job.items[1].error, 'Stopped when the server restarted')
+		assert.equal(st.job.items[1].step, undefined)
+		assert.equal(st.job.items[2].status, 'skipped')
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
 test('a failed job save does not leave the import running', async () => {
 	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-job-ro-'))
 	const jobDir = join(dir, 'unraid')
