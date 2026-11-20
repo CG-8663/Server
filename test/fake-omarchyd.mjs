@@ -198,6 +198,10 @@ export async function startFakeserverd({
 							res.writeHead(302, {location: `http://${req.headers.host?.split(':')[0]}:2000/app-auth?origin=host&app=${a.id}&path=${encodeURIComponent(req.url)}`})
 							return res.end()
 						}
+						if (a.id === 'immich' && req.url === '/absolute') {
+							res.writeHead(302, {location: `http://127.0.0.1:${a.port}/photos?x=1`})
+							return res.end()
+						}
 						if (a.id === 'immich' && req.url === '/') {
 							res.writeHead(302, {location: '/photos'})
 							return res.end()
@@ -327,6 +331,14 @@ export async function startFakeserverd({
 			},
 		},
 		'user.renewToken': {kind: 'mutation', run: () => 'renewed'},
+		'user.appPass': {
+			kind: 'mutation',
+			run: () => {
+				const t = newToken()
+				appSessionTokens.add(t)
+				return `OMARCHY_APP_SESSION=${t}; Path=/; HttpOnly; SameSite=Lax`
+			},
+		},
 		'user.revokeAppPasses': {
 			kind: 'mutation',
 			run: () => {
@@ -485,6 +497,7 @@ export async function startFakeserverd({
 		'notifications.get': {kind: 'query', run: () => notifications},
 		'notifications.clear': {kind: 'mutation', run: (id) => ((notifications = notifications.filter((n) => n !== id)), true)},
 		'system.factoryReset': {kind: 'mutation', run: (input) => (input?.password === password ? true : {error: ['UNAUTHORIZED', 'Invalid password']})},
+		'system.desktopSignIn': {kind: 'mutation', run: (input) => (input?.password === password ? {result: 'ok'} : {error: ['UNAUTHORIZED', 'Incorrect password']})},
 		'machines.capabilities': {kind: 'query', run: () => ({hostArchitecture: 'amd64', libvirtAvailable: true, kvmAvailable: true})},
 		'machines.osImages': {
 			kind: 'query',

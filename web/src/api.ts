@@ -15,7 +15,15 @@ async function handle<T>(res: Response): Promise<T> {
 	if (!res.ok || body?.error) {
 		const err = body?.error ?? {}
 		const error = new ApiError(err.message ?? `Request failed (${res.status})`, err.code ?? 'ERROR', res.status)
-		if (res.status === 401 && err.code === 'UNAUTHORIZED') window.dispatchEvent(new Event('touch:signed-out'))
+		// A mistyped password or authenticator code is also 401. Leave the person on the form.
+		const credentialMiss =
+			err.message === 'Incorrect password' ||
+			err.message === 'Invalid password' ||
+			err.message === 'Incorrect 2FA code' ||
+			err.message === 'Enter the 6-digit code from your authenticator app (2FA)' ||
+			err.message === 'That 2FA code isn’t right. Try the current one.' ||
+			err.message === 'That 2FA code was already used. Wait for the next one.'
+		if (res.status === 401 && err.code === 'UNAUTHORIZED' && !credentialMiss) window.dispatchEvent(new Event('touch:signed-out'))
 		throw error
 	}
 	return body as T

@@ -66,7 +66,11 @@ export async function listHostUsb({
 	for (const link of links) {
 		if (!link.startsWith('usb-')) continue
 		const target = await realpath(join(serialById, link)).catch(() => null)
-		const match = devices.find((d) => d.serial && link.includes(d.serial)) || devices.find((d) => link.toLowerCase().includes(`${d.vendorId}_${d.productId}`))
+		const stem = link.replace(/-if\d+.*$/, '')
+		const bySerial = devices.filter((d) => d.serial && (stem.endsWith(`_${d.serial}`) || stem.endsWith(`-${d.serial}`)))
+		const match =
+			bySerial.reduce((best, d) => (best && best.serial.length >= d.serial.length ? best : d), null) ||
+			devices.find((d) => link.toLowerCase().includes(`${d.vendorId}_${d.productId}`))
 		if (!match) continue
 		match.path = `/dev/serial/by-id/${link}`
 		match.node = target
