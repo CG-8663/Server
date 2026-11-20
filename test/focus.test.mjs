@@ -254,3 +254,24 @@ test('Activities overview sets inert on desktop surface and windows, traps focus
 	assert.ok(searchPos !== -1 && picksPos !== -1 && picksPos > searchPos, 'window picks must follow search inside Overview')
 	assert.equal(desk.includes('onOverviewPick'), false, 'WindowFrame should no longer render .win-pick inside windows')
 })
+
+test('desktop windows are focusable with tabIndex={-1} and restore priority prefers opener then next window', () => {
+	const desk = readFileSync(join(rootDir, 'web/src/desktop/Desktop.tsx'), 'utf8')
+	assert.match(desk, /role="dialog"[\s\S]*?aria-label=\{title\}[\s\S]*?tabIndex=\{-1\}/)
+	assert.match(desk, /pickFocusTarget\(\[/)
+
+	const opener = makeMockEl({id: 'dock-settings'})
+	const nextWin = makeMockEl({id: 'win-files'})
+	const minimizedWin = makeMockEl({id: 'win-min', closest: (sel) => (sel.includes('.win.minimized') ? {} : null)})
+	const dockFallback = makeMockEl({id: 'dock-fallback'})
+	const deskSurface = makeMockEl({id: 'desk-surface'})
+
+	// Connected opener wins.
+	assert.equal(pickFocusTarget([opener, nextWin, dockFallback, deskSurface]), opener)
+
+	// Disconnected opener falls back to next visible window (skipping minimized ones).
+	const goneOpener = makeMockEl({id: 'gone', isConnected: false})
+	assert.equal(pickFocusTarget([goneOpener, minimizedWin, nextWin, dockFallback, deskSurface]), nextWin)
+	assert.equal(pickFocusTarget([goneOpener, minimizedWin, dockFallback, deskSurface]), dockFallback)
+	assert.equal(pickFocusTarget([goneOpener, null, null, deskSurface]), deskSurface)
+})

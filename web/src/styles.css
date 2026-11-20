@@ -3745,6 +3745,13 @@ html.desk-mode body {
 		transform: scale(0.96);
 	}
 }
+.win:focus {
+	outline: none;
+}
+.win:focus-visible {
+	outline: 2px solid var(--accent-text);
+	outline-offset: -2px;
+}
 .win.active {
 	box-shadow:
 		0 0 0 1px rgba(0, 0, 0, 0.6),
