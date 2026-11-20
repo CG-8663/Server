@@ -7,6 +7,7 @@ import {join} from 'node:path'
 import {parseArgs} from 'node:util'
 
 import {openAccounts} from './accounts.mjs'
+import {parsePort} from './cli-args.mjs'
 import {takeLine} from './prompt.mjs'
 import {startOmarchyd} from './server.mjs'
 import {defaultTlsDir} from './tls.mjs'
@@ -25,8 +26,8 @@ try {
 		strict: true,
 		allowPositionals: true,
 		options: {
-			port: {type: 'string', default: '2021'},
-			'web-port': {type: 'string', default: '7780'},
+			port: {type: 'string'},
+			'web-port': {type: 'string'},
 			data: {type: 'string'},
 			name: {type: 'string'},
 			help: {type: 'boolean', short: 'h'},
@@ -93,8 +94,17 @@ if (command === 'serve') {
 		console.error('omarchyd runs as your own user, not root. Start it without sudo.')
 		process.exit(1)
 	}
+	let port
+	let webPort
+	try {
+		port = parsePort(values.port, undefined, {flag: '--port', fallback: 2021})
+		webPort = parsePort(values['web-port'], undefined, {flag: '--web-port', fallback: 7780})
+	} catch (error) {
+		console.error(`omarchyd: ${error.message}`)
+		process.exit(1)
+	}
 	// The same certificate folder as the web server (server/cli.mjs), so both use one certificate.
-	const server = await startOmarchyd({port: Number(values.port), webPort: Number(values['web-port']), dataDir, tlsDir: defaultTlsDir()})
+	const server = await startOmarchyd({port, webPort, dataDir, tlsDir: defaultTlsDir()})
 	console.log(`omarchyd listening on ${server.url} (data in ${dataDir})`)
 	if (!server.accounts.hasOwner()) console.log('No owner yet. Create one with: omarchyd create-owner')
 } else if (command === 'has-owner') {

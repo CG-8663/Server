@@ -1,11 +1,14 @@
 // `omarchyd/cli.mjs` option parsing, validation, error handling, and help output.
 import assert from 'node:assert/strict'
 import {spawnSync} from 'node:child_process'
+import {existsSync} from 'node:fs'
 import {mkdtemp, rm} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, test} from 'node:test'
 import {fileURLToPath} from 'node:url'
+
+import {parsePort} from '../omarchyd/cli-args.mjs'
 
 const CLI = fileURLToPath(new URL('../omarchyd/cli.mjs', import.meta.url))
 const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-cli-'))
@@ -60,4 +63,35 @@ test('#611: create-owner without a terminal prints a friendly message and exits 
 	assert.equal(r.status, 1)
 	assert.match(r.stderr, /Run this in a terminal so the password can be typed privately/)
 	assert.doesNotMatch(r.stderr, /^\s+at /m)
+})
+
+test('#439: serve rejects invalid --port and --web-port with exit 1 and no stack trace', () => {
+	const data = join(root, 'omarchyd-bad-port-does-not-exist')
+	for (const val of ['70000', 'abc', '']) {
+		const r = runSync(['serve', '--port', val, '--data', data])
+		assert.equal(r.status, 1, `serve --port ${JSON.stringify(val)} expected exit 1, got ${r.status} stderr=${r.stderr}`)
+		assert.match(r.stderr, /--port must be a number from 1 to 65535/)
+		assert.doesNotMatch(r.stderr, /ERR_SOCKET_BAD_PORT|^\s+at /m)
+	}
+	for (const val of ['0', '70000']) {
+		const r = runSync(['serve', '--web-port', val, '--data', data])
+		assert.equal(r.status, 1, `serve --web-port ${val} expected exit 1, got ${r.status} stderr=${r.stderr}`)
+		assert.match(r.stderr, /--web-port must be a number from 1 to 65535/)
+		assert.doesNotMatch(r.stderr, /ERR_SOCKET_BAD_PORT|^\s+at /m)
+	}
+	assert.equal(existsSync(data), false)
+})
+
+test('#439: parsePort validates ranges, handles empty env vs explicit flag, and overrides bad env', () => {
+	assert.equal(parsePort(undefined, undefined, {fallback: 7780}), 7780)
+	assert.equal(parsePort(undefined, '', {env: 'PORT', fallback: 7780}), 7780)
+	assert.equal(parsePort(undefined, '   ', {env: 'PORT', fallback: 7780}), 7780)
+	assert.equal(parsePort('1', undefined, {fallback: 7780}), 1)
+	assert.equal(parsePort('65535', undefined, {fallback: 7780}), 65535)
+	assert.equal(parsePort('8080', 'bad', {env: 'PORT', fallback: 7780}), 8080)
+	assert.throws(() => parsePort('', undefined, {flag: '--port', fallback: 7780}), /--port must be a number from 1 to 65535/)
+	for (const bad of ['0', '-1', '65536', '70000', 'abc', '1.5']) {
+		assert.throws(() => parsePort(bad, undefined, {flag: '--port', fallback: 7780}), /--port must be a number from 1 to 65535/)
+		assert.throws(() => parsePort(undefined, bad, {flag: '--port', env: 'PORT', fallback: 7780}), /PORT must be a number from 1 to 65535/)
+	}
 })

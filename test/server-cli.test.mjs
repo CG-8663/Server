@@ -126,3 +126,64 @@ test('#448: --help and -h document --app-hosts and all server environment variab
 		}
 	}
 })
+
+test('#439: rejects invalid --port and PORT with exit 1 and no stack trace', () => {
+	const data = join(root, 'bad-port-data')
+	const flagCases = [
+		['--port', '70000'],
+		['--port', 'abc'],
+		['--port', '0'],
+		['--port', ''],
+		['--port=-1'],
+		['--port', '1.5'],
+		['--port', '65536'],
+	]
+	for (const args of flagCases) {
+		const r = runSync([...args, '--data', data])
+		assert.equal(r.status, 1, `${args.join(' ')} expected exit 1, got ${r.status} stderr=${r.stderr}`)
+		assert.match(r.stderr, /--port must be a number from 1 to 65535/)
+		assert.doesNotMatch(r.stderr, /ERR_SOCKET_BAD_PORT|^\s+at /m)
+	}
+	for (const val of ['abc', '70000', '-1']) {
+		const r = runSync(['--data', data], {PORT: val})
+		assert.equal(r.status, 1, `PORT=${val} expected exit 1, got ${r.status} stderr=${r.stderr}`)
+		assert.match(r.stderr, /PORT must be a number from 1 to 65535/)
+		assert.doesNotMatch(r.stderr, /ERR_SOCKET_BAD_PORT|^\s+at /m)
+	}
+})
+
+test('#439: empty PORT falls back to 7780 instead of listening on port 0', async () => {
+	const data = await mkdtemp(join(root, 'empty-port-'))
+	const child = spawn(process.execPath, [CLI, '--host', '127.0.0.1', '--data', data], {
+		env: {...process.env, HOME: root, OMARCHY_TLS_DIR: join(root, 'tls'), PORT: ''},
+		stdio: ['ignore', 'pipe', 'pipe'],
+	})
+	let stdout = ''
+	let stderr = ''
+	child.stdout.on('data', (d) => (stdout += d))
+	child.stderr.on('data', (d) => (stderr += d))
+	try {
+		const outcome = await new Promise((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error(`timed out\nstdout=${stdout}\nstderr=${stderr}`)), 10_000)
+			child.stdout.on('data', () => {
+				if (stdout.includes('Open')) {
+					clearTimeout(timer)
+					resolve('started')
+				}
+			})
+			child.on('exit', (code) => {
+				clearTimeout(timer)
+				resolve(`exited:${code}`)
+			})
+		})
+		if (outcome === 'started') {
+			assert.match(stdout, /:7780\b/)
+			assert.doesNotMatch(stdout, /:0\b/)
+		} else {
+			assert.match(stderr, /7780|EADDRINUSE|EACCES/)
+			assert.doesNotMatch(stdout, /:0\b/)
+		}
+	} finally {
+		await stopChild(child)
+	}
+})

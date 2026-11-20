@@ -8,6 +8,7 @@ import {parseArgs} from 'node:util'
 
 import {createApp, normalizeBackendUrl, VERSION} from './app.mjs'
 import {createStore} from './store.mjs'
+import {parsePort} from '../omarchyd/cli-args.mjs'
 import {defaultTlsDir, dualProtocolServer, tlsContext} from '../omarchyd/tls.mjs'
 
 let values
@@ -48,8 +49,14 @@ Environment:
 	process.exit(0)
 }
 
-const port = Number(values.port ?? process.env.PORT ?? 7780)
-const host = values.host ?? process.env.HOST ?? '0.0.0.0'
+let port
+try {
+	port = parsePort(values.port, process.env.PORT, {flag: '--port', env: 'PORT', fallback: 7780})
+} catch (error) {
+	console.error(`[omarchy-server] ${error.message}`)
+	process.exit(1)
+}
+const host = values.host || process.env.HOST || '0.0.0.0'
 const dataDir = values.data ?? process.env.OMARCHY_SERVER_DATA ?? join(homedir(), '.config', 'omarchy-server')
 const staticDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist')
 
