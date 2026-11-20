@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 import {QueryClient, QueryObserver} from '@tanstack/react-query'
 
@@ -143,4 +144,17 @@ test('optimistic app state rolls back on failure without clobbering concurrent c
 	} finally {
 		qc.clear()
 	}
+})
+
+test('Desktop TopBar uses useServerReachable and CSS lets dot.down override dot color', async () => {
+	const desktopSrc = await readFile(new URL('../web/src/desktop/Desktop.tsx', import.meta.url), 'utf8')
+	assert.match(desktopSrc, /useServerReachable/)
+	assert.equal(/<span className="dot live" \/>/.test(desktopSrc), false)
+	assert.match(desktopSrc, /className=\{`dot \$\{online \? 'live' : 'down'\}`\}/)
+
+	const cssSrc = await readFile(new URL('../web/src/styles.css', import.meta.url), 'utf8')
+	const topSysDot = /\.top-sys \.dot \{[^}]*\}/.exec(cssSrc)?.[0] ?? ''
+	const sysHeadDot = /\.sys-head \.dot \{[^}]*\}/.exec(cssSrc)?.[0] ?? ''
+	assert.equal(topSysDot.includes('var(--green)'), false)
+	assert.equal(sysHeadDot.includes('var(--green)'), false)
 })

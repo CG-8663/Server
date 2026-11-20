@@ -9,6 +9,7 @@ import {SERVER_DESKTOP, logout, mutate, type Bootstrap, type Machine, type UserA
 import {AppSheet} from '../AppSheet'
 import {askApp, explainProbe} from '../openApp'
 import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory, useNotifications, useUpdates, useUser} from '../data'
+import {useServerReachable} from '../connection'
 import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
 import {OPEN_TERMINAL} from '../terminalEvent'
@@ -1609,9 +1610,12 @@ function TopBar(p: {
 	const mem = useMemory()
 	const user = useUser()
 	const action = useAction()
+	const conn = useServerReachable()
+	const online = conn.reachable
 	const cpuPct = cpu.data ? Math.round(cpu.data.totalUsed) : null
 	const memPct = mem.data ? Math.round((mem.data.totalUsed / mem.data.size) * 100) : null
 	return (
+		<>
 		<header className="desk-top">
 			<div className="top-left">
 				{p.left ?? (
@@ -1634,12 +1638,12 @@ function TopBar(p: {
 			<div className="top-right">
 				{p.lockChip}
 				{cpuPct !== null && (
-					<StatChip icon="cpu" label="CPU" className="top-stat" size={15}>
+					<StatChip icon="cpu" label={online ? 'CPU' : 'CPU (last reading — server unreachable)'} className={`top-stat${online ? '' : ' stale'}`} size={15}>
 						{cpuPct}%
 					</StatChip>
 				)}
 				{memPct !== null && (
-					<StatChip icon="memory" label="Memory" className="top-stat" size={15}>
+					<StatChip icon="memory" label={online ? 'Memory' : 'Memory (last reading — server unreachable)'} className={`top-stat${online ? '' : ' stale'}`} size={15}>
 						{memPct}%
 					</StatChip>
 				)}
@@ -1658,8 +1662,14 @@ function TopBar(p: {
 						</button>
 					)
 				})()}
-				<button className={`top-sys${p.menu === 'system' ? ' on' : ''}`} onClick={() => p.setMenu(p.menu === 'system' ? null : 'system')} aria-label="System menu">
-					<span className="dot live" />
+				<button
+					className={`top-sys${p.menu === 'system' ? ' on' : ''}${online ? '' : ' offline'}`}
+					onClick={() => p.setMenu(p.menu === 'system' ? null : 'system')}
+					aria-label={online ? 'System menu' : `System menu — ${conn.message}`}
+					title={conn.message ?? undefined}
+				>
+					<span className={`dot ${online ? 'live' : 'down'}`} />
+					{!online && <span className="top-offline">{conn.status === 'offline' ? 'Offline' : 'Lost contact'}</span>}
 					<Icon name="power" size={16} />
 					<Icon name="chevron-down" size={13} />
 				</button>
@@ -1710,7 +1720,7 @@ function TopBar(p: {
 			{p.menu === 'system' && (
 				<div className="top-pop sys-pop" role="menu">
 					<div className="sys-head">
-						<span className="dot live" />
+						<span className={`dot ${online ? 'live' : 'down'}`} />
 						<span>
 							<b>{p.boot.server?.device ?? 'server'}</b>
 							<span className="mono muted">{p.boot.server?.host}</span>
@@ -1719,6 +1729,12 @@ function TopBar(p: {
 							</span>
 						</span>
 					</div>
+					{!online && (
+						<div className="sys-offline" role="alert">
+							<Icon name="alert" size={15} />
+							<span>{conn.message}</span>
+						</div>
+					)}
 					<div className="sys-user muted">Signed in as {user.data?.name ?? 'you'}</div>
 					<button role="menuitem" onClick={() => (p.setMenu(null), p.onSettings())}>
 						<Icon name="settings" size={17} /> Settings
@@ -1745,6 +1761,13 @@ function TopBar(p: {
 				</div>
 			)}
 		</header>
+		{!online && (
+			<div className="error desk-offline-banner" role="alert">
+				<Icon name="alert" size={16} />
+				<span>{conn.message}</span>
+			</div>
+		)}
+		</>
 	)
 }
 
