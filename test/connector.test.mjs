@@ -220,6 +220,17 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		assert.equal(r.status, 401)
 	})
 
+	test('#108 a frame for a channel that is already closed is ignored, not a crash', async () => {
+		const cfg = JSON.parse(await readFile(join(agentHome, '.config/omarchy-connector/config.json'), 'utf8'))
+		const ws = new WebSocket(`wss://127.0.0.1:${webPort}/connector/ws`, {rejectUnauthorized: false, headers: {authorization: `Bearer ${cfg.id}:${cfg.key}`, 'user-agent': 'omarchy-connector/test'}})
+		await new Promise((r, j) => (ws.once('open', r), ws.once('error', j)))
+		ws.send(Buffer.from([0, 0, 0, 9, 65, 66]), {binary: true})
+		await new Promise((r) => setTimeout(r, 300))
+		ws.close()
+		// The server is still up and the real connector reconnects.
+		await until(async () => (await q('swarm.list'))[0]?.online)
+	})
+
 	test('removed from the swarm: it’s cut off, forgets the server and stops', async () => {
 		const [a] = await q('swarm.list')
 		await call('swarm.remove', {id: a.id})

@@ -230,12 +230,13 @@ export function createUpdater({
 			} catch (error) {
 				// Put the previous version back so the services keep working. Nothing was changed
 				// when the current revision could not be read, so there is nothing to put back.
+				// Say so if putting it back fails.
+				let restored = true
 				if (previous) {
-					await run('git', ['-C', appDir, 'reset', '--hard', previous]).catch(() => {})
-					await run(process.execPath, ['scripts/deps.mjs'], {cwd: appDir}).catch(() => {})
-					await run('npm', ['run', 'build'], {cwd: appDir, env: {...process.env, NODE_OPTIONS: '--max-old-space-size=1024'}}).catch(() => {})
+					const back = (p) => p.then(() => true, () => false)
+					restored = (await back(run('git', ['-C', appDir, 'reset', '--hard', previous]))) && (await back(run(process.execPath, ['scripts/deps.mjs'], {cwd: appDir}))) && (await back(run('npm', ['run', 'build'], {cwd: appDir, env: {...process.env, NODE_OPTIONS: '--max-old-space-size=1024'}})))
 				}
-				status = {running: false, progress: 0, description: '', error: `The update failed and nothing changed: ${error.message}`}
+				status = {running: false, progress: 0, description: '', error: restored ? `The update failed and nothing changed: ${error.message}` : `The update failed, and putting the previous version back failed too. Run the installer: ${await installerHint().catch(() => 'see the README')}. (${error.message})`}
 				await save().catch(() => {})
 			} finally {
 				busy = false

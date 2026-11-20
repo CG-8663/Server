@@ -303,6 +303,15 @@ export const ALLOWED = {
 // Long-running mutations: omarchyd answers when the operation finishes.
 const SLOW = new Set(['unraid.connect', 'unraid.scan', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub'])
 
+// The host an Origin header names. "null" and other unparseable origins name none, so they never match.
+function hostOf(origin) {
+	try {
+		return new URL(origin).host
+	} catch {
+		return null
+	}
+}
+
 function parseCookies(header = '') {
 	const out = {}
 	for (const part of header.split(';')) {
@@ -454,9 +463,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		res.set('Cache-Control', 'no-store')
 		req.sid = parseCookies(req.headers.cookie)[COOKIE]
 		// CSRF: state-changing calls must come from our own page.
-		if (req.method !== 'GET') {
+		if (req.method !== 'GET' && req.method !== 'HEAD') {
 			const origin = req.headers.origin
-			if (req.headers['x-omarchy-server'] !== '1' || (origin && new URL(origin).host !== req.headers.host)) {
+			if (req.headers['x-omarchy-server'] !== '1' || (origin && hostOf(origin) !== req.headers.host)) {
 				return res.status(403).json({error: {code: 'FORBIDDEN', message: 'Cross-site request refused'}})
 			}
 		}
@@ -1629,7 +1638,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				if (!route) return refuse('404 Not Found')
 				// Browsers always send Origin on WebSocket handshakes: refuse other sites.
 				const origin = req.headers.origin
-				if (!origin || new URL(origin).host !== req.headers.host) return refuse('403 Forbidden')
+				if (!origin || hostOf(origin) !== req.headers.host) return refuse('403 Forbidden')
 				const sid = parseCookies(req.headers.cookie)[COOKIE]
 				if (!store.getSession(sid)) return refuse('401 Unauthorized')
 				const target = new URL(getClient().baseUrl)
@@ -1832,6 +1841,15 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 
 	api.get('/health', (req, res) => res.json({ok: true, version: VERSION}))
 	api.use((req, res) => res.status(404).json({error: {code: 'NOT_FOUND', message: 'Not found'}}))
+	// Errors the routes above don't answer themselves (a malformed JSON body, a failed save) get
+	// the JSON shape the web app reads, never Express's HTML page with file paths.
+	api.use((error, req, res, next) => {
+		if (res.headersSent) return next(error)
+		const status = Number(error?.status ?? error?.statusCode)
+		if (status >= 400 && status < 500) return res.status(status).json({error: {code: 'BAD_REQUEST', message: error.type === 'entity.parse.failed' ? 'Malformed JSON' : error.type === 'entity.too.large' ? 'Request too large' : 'Bad request'}})
+		console.error('[omarchy-server] api', error?.message ?? error)
+		res.status(500).json({error: {code: 'INTERNAL_SERVER_ERROR', message: 'Something went wrong on the server'}})
+	})
 	app.use('/api', api)
 
 	// ---- PWA -----------------------------------------------------------------

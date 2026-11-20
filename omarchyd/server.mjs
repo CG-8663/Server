@@ -669,7 +669,15 @@ WantedBy=graphical-session.target
 			if (url.pathname === '/app-auth/v1/account/session' && req.method === 'GET') {
 				await apps.ready
 				const cookie = Object.fromEntries((req.headers.cookie ?? '').split(';').map((c) => c.trim().split('=')).map(([k, ...v]) => [k, v.join('=')]))[APP_COOKIE]
-				return sendJson(res, apps.checkSession(decodeURIComponent(cookie ?? '')) ? 200 : 401, {})
+				{
+					let value = ''
+					try {
+						value = decodeURIComponent(cookie ?? '')
+					} catch {
+						return sendJson(res, 401, {})
+					}
+					return sendJson(res, apps.checkSession(value) ? 200 : 401, {})
+				}
 			}
 			const fileKind = /^\/api\/files\/(view|download|upload)$/.exec(url.pathname)?.[1]
 			if (fileKind === 'upload' && req.method === 'POST') {
