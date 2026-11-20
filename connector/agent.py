@@ -227,7 +227,8 @@ def omarchy_facts():
             continue
         try:
             with open(os.path.join(pdir, name, "manifest.json")) as f:
-                plugins.append(str(json.load(f).get("id") or name))
+                manifest = json.load(f)
+            plugins.append(str((manifest.get("id") if isinstance(manifest, dict) else None) or name))
         except (OSError, ValueError):
             plugins.append(name)
     themes = []
@@ -268,7 +269,7 @@ def cpu_percent():
     vals = [int(x) for x in parts] if parts else []
     if len(vals) < 4:
         return None
-    # guest and guest_nice are already inside user and nice.
+    # guest and guest_nice (the 9th and 10th values) are already counted in user and nice.
     idle, total = vals[3] + (vals[4] if len(vals) > 4 else 0), sum(vals[:8])
     last, _cpu_last = _cpu_last, (idle, total)
     if not last or total == last[1]:
@@ -296,7 +297,7 @@ def disks():
         if len(p) < 3 or p[2] not in REAL_FS or p[0] in seen:
             continue
         mount = p[1].replace("\\040", " ")
-        if mount.startswith(("/boot", "/snap", "/var/lib/docker", "/var/lib/containers")):
+        if any(mount == p or mount.startswith(p + "/") for p in ("/boot", "/snap", "/var/lib/docker", "/var/lib/containers")):
             continue
         seen.add(p[0])
         try:
@@ -579,7 +580,8 @@ def _check_updates(pkg):
     cmd = {"apt": ["apt", "list", "--upgradable"], "dnf": ["dnf", "-q", "check-update"], "pacman": ["checkupdates"] if shutil.which("checkupdates") else ["pacman", "-Qu"], "zypper": ["zypper", "-q", "lu"]}.get(pkg)
     try:
         if cmd:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            # English output, so the header lines below are recognised whatever the system language.
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=dict(os.environ, LC_ALL="C", LANG="C"))
             _updates["n"] = len([l for l in r.stdout.splitlines() if l.strip() and not l.startswith(("Listing", "Last metadata", "S |", "--+", "Loading", "Repository", "Obsoleting"))])
     except (OSError, subprocess.SubprocessError):
         _updates["n"] = None
@@ -885,9 +887,16 @@ def vnc_start():
             if os.path.exists(VNC_SOCK):
                 break
             if _vnc["proc"].poll() is not None:
+                _vnc["proc"] = None
                 raise RuntimeError("The screen sharing program stopped straight away.")
             time.sleep(0.1)
         else:
+            # Still running but no socket: stop it, so a retry doesn't leave another one behind.
+            p, _vnc["proc"] = _vnc["proc"], None
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except OSError:
+                pass
             raise RuntimeError("The screen sharing program didn’t start.")
         _vnc["users"] = 1
 
@@ -929,9 +938,14 @@ class Shell(Channel):
         shell = me.pw_shell if me.pw_shell and os.path.exists(me.pw_shell) else "/bin/bash"
         pid, fd = pty.fork()
         if pid == 0:
-            os.chdir(me.pw_dir)
-            env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", HOME=me.pw_dir, SHELL=shell, USER=me.pw_name, LANG=os.environ.get("LANG") or "C.UTF-8")
-            os.execvpe(shell, [shell, "-l"], env)
+            # The child must never fall back into the connector's own code.
+            try:
+                os.chdir(me.pw_dir)
+                env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", HOME=me.pw_dir, SHELL=shell, USER=me.pw_name, LANG=os.environ.get("LANG") or "C.UTF-8")
+                os.execvpe(shell, [shell, "-l"], env)
+            except BaseException:  # noqa: BLE001
+                pass
+            os._exit(127)
         self.pid, self.fd = pid, fd
         self.resize(cols, rows)
         threading.Thread(target=self.pump, daemon=True).start()
@@ -945,17 +959,41 @@ class Shell(Channel):
             pass
 
     def pump(self):
-        while not self.closed:
+        # This thread owns the pty: it alone closes it, so its number can't be reused by a new
+        # terminal while this loop still reads from it.
+        try:
+            while not self.closed:
+                try:
+                    r, _, _ = select.select([self.fd], [], [], 1)
+                    if r:
+                        data = os.read(self.fd, 65536)
+                        if not data:
+                            break
+                        self.out(data)
+                except OSError:
+                    break
+            self.ended("Shell ended")
+        finally:
             try:
-                r, _, _ = select.select([self.fd], [], [], 1)
-                if r:
-                    data = os.read(self.fd, 65536)
-                    if not data:
-                        break
-                    self.out(data)
+                os.close(self.fd)
             except OSError:
-                break
-        self.ended("Shell ended")
+                pass
+            self.reap()
+
+    def reap(self):
+        # Wait for the shell so it doesn't stay behind as a zombie; one that ignores SIGHUP is killed.
+        for _ in range(30):
+            try:
+                if os.waitpid(self.pid, os.WNOHANG)[0]:
+                    return
+            except OSError:
+                return
+            time.sleep(0.1)
+        try:
+            os.kill(self.pid, signal.SIGKILL)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
 
     def write(self, data):
         try:
@@ -971,14 +1009,7 @@ class Shell(Channel):
             os.kill(self.pid, signal.SIGHUP)
         except OSError:
             pass
-        try:
-            os.close(self.fd)
-        except OSError:
-            pass
-        try:
-            os.waitpid(self.pid, os.WNOHANG)
-        except OSError:
-            pass
+        # The pump thread closes the pty and reaps the shell when it sees this.
 
 
 class Screen(Channel):
@@ -1014,6 +1045,11 @@ class Screen(Channel):
         if self.closed:
             return
         self.closed = True
+        # shutdown() wakes the pump's blocked recv(); close() alone leaves the VNC connection open.
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         try:
             self.sock.close()
         except OSError:
@@ -1032,7 +1068,8 @@ THEME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}$")
 def run(cmd, **kw):
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=kw.pop("timeout", 300), **kw)
     if r.returncode != 0:
-        raise RuntimeError((r.stderr or r.stdout or f"{cmd[0]} failed").strip().splitlines()[-1][:300])
+        lines = ((r.stderr or "").strip() or (r.stdout or "").strip()).splitlines()
+        raise RuntimeError((lines[-1] if lines else f"{cmd[0]} failed")[:300])
     return r.stdout
 
 
@@ -1281,6 +1318,11 @@ def backup_folders(_args):
     for name in sorted(os.listdir(home), key=str.lower):
         if name.startswith(".") or not os.path.isdir(os.path.join(home, name)):
             continue
+        # A folder that is a link to somewhere outside the home folder can't be backed up from here.
+        try:
+            home_folder(name)
+        except RuntimeError:
+            continue
         out.append({"name": name})
     return {"home": home, "folders": out[:200]}
 
@@ -1477,7 +1519,12 @@ def backup_run(conn, call_id, args, cfg):
         raise RuntimeError("No password for the backup store")
     folders, skipped = [], []
     for rel in args.get("folders") or []:
-        full = home_folder(rel)
+        # One folder that can't be backed up is skipped and reported; the others still are.
+        try:
+            full = home_folder(rel)
+        except RuntimeError:
+            skipped.append(str(rel)[:200])
+            continue
         (folders if os.path.isdir(full) else skipped).append(full if os.path.isdir(full) else rel)
     if not folders:
         raise RuntimeError("None of the chosen folders are on this computer")
@@ -1503,14 +1550,22 @@ def backup_restore(conn, call_id, args, cfg):
     while os.path.exists(target):
         target = os.path.join(home, "Restored", time.strftime("%Y-%m-%d %H%M") + f" ({n})")
         n += 1
-    os.makedirs(target, mode=0o700)
     restic_path()
-    server, repo = start_relay(cfg)
+    os.makedirs(target, mode=0o700)
     try:
-        # Only what was under the home folder, laid out as it was there (Restored/<date>/Documents…).
-        _run_restic(conn, call_id, ["restore", f"{snap}:{home}", "--target", target, "--json"], repo, password, "Restoring")
-    finally:
-        server.shutdown()
+        server, repo = start_relay(cfg)
+        try:
+            # Only what was under the home folder, laid out as it was there (Restored/<date>/Documents…).
+            _run_restic(conn, call_id, ["restore", f"{snap}:{home}", "--target", target, "--json"], repo, password, "Restoring")
+        finally:
+            server.shutdown()
+    except BaseException:
+        # A restore that failed leaves no empty folder that looks like a finished one.
+        try:
+            os.rmdir(target)
+        except OSError:
+            pass
+        raise
     return {"folder": target}
 
 
@@ -1521,6 +1576,7 @@ BACKUP_ACTIONS = {"backup-folders": lambda conn, cid, args, cfg: backup_folders(
 class Connection:
     def __init__(self, cfg):
         self.cfg = cfg
+        self.connected_at = None
         self.allowed = cfg.get("abilities", {})
         self.channels = {}
         self.ws = None
@@ -1535,6 +1591,7 @@ class Connection:
     def run(self):
         url = self.cfg["server"].replace("https://", "wss://", 1).rstrip("/") + "/connector/ws"
         self.ws = WS(url, {"Authorization": f"Bearer {self.cfg['id']}:{self.cfg['key']}", "User-Agent": f"omarchy-connector/{VERSION}"}, CA_FILE)
+        self.connected_at = time.monotonic()
         log("connected to", self.cfg["server"])
         self.send({"op": "hello", "info": info(), "abilities": self.allowed})
         stop = threading.Event()
@@ -1644,7 +1701,9 @@ def forget():
     except OSError:
         pass
     try:
-        subprocess.run(["systemctl", "--user", "disable", "omarchy-connector.service"], capture_output=True, timeout=30)
+        # --now so systemd stops the unit instead of restarting it (Restart=always) every 5 seconds;
+        # --no-block so this process isn't waiting on its own stop.
+        subprocess.run(["systemctl", "--user", "disable", "--now", "--no-block", "omarchy-connector.service"], capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         pass  # not run by systemd (or no systemd): stopping is enough
     _backup_password_dir(True)
@@ -1692,15 +1751,18 @@ def main():
     signal.signal(signal.SIGTERM, _on_connector_stop)
     delay = 2
     while True:
+        conn = Connection(cfg)
         try:
-            Connection(cfg).run()
-            delay = 2
+            conn.run()
         except Exception as e:  # noqa: BLE001
             if reconnect_action(e) == "forget":
                 log("the server refused this computer's key; it was removed from the swarm")
                 forget()
             else:
                 log("connection:", e)
+        # run() only ever ends with an error. If it had been connected a while, start over at 2 s.
+        if conn.connected_at and time.monotonic() - conn.connected_at > 30:
+            delay = 2
         time.sleep(delay)
         delay = min(60, delay * 2)
 

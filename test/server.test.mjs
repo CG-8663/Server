@@ -182,7 +182,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.52', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.53', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -247,12 +247,25 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(fake.settings.hostname, 'nest')
 		assert.equal((await touch.req('POST', '/api/rpc/apps.setTorEnabled', {input: true})).status, 200)
 		assert.equal(fake.settings.tor, true)
+		const tries = fake.calls.filter((c) => c.path === 'user.changePassword').length
 		const wrong = await touch.req('POST', '/api/rpc/user.changePassword', {input: {oldPassword: 'nope', newPassword: 'abcdefg'}})
 		assert.equal(wrong.status, 401)
+		// #246: a wrong password is one attempt, not two.
+		assert.equal(fake.calls.filter((c) => c.path === 'user.changePassword').length, tries + 1)
 		// Signed-in devices are the browsers this web server holds sessions for.
 		const second = await fetch(`${touch.base}/api/auth/login`, {method: 'POST', headers: {'content-type': 'application/json', 'x-omarchy-server': '1', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0) Firefox/130.0'}, body: JSON.stringify({username: 'chris', password: 'correct horse'})})
 		assert.equal(second.status, 200)
+		const third = await fetch(`${touch.base}/api/auth/login`, {method: 'POST', headers: {'content-type': 'application/json', 'x-omarchy-server': '1', 'user-agent': 'Mozilla/5.0 (Macintosh) Safari/605.1'}, body: JSON.stringify({username: 'chris', password: 'correct horse'})})
+		const thirdCookie = third.headers.getSetCookie().find((c) => c.startsWith('omarchy_server_sid=')).split(';')[0]
 		let sessions = (await touch.req('GET', '/api/rpc/user.listSessions')).body.data
+		const thirdSession = sessions.find((x) => !x.current && /Macintosh/.test(x.client.userAgent))
+		assert.equal((await touch.req('POST', '/api/rpc/user.revokeSession', {input: {sessionId: thirdSession.id}})).status, 200)
+		void thirdCookie
+		// #300: the device that stays signed in (Firefox) gets the new app pass too, not just this one.
+		const passes = touch.store.sessionEntries().map(({session}) => session.console?.appCookie)
+		assert.equal(passes.length, 2)
+		assert.equal(new Set(passes).size, 1)
+		sessions = (await touch.req('GET', '/api/rpc/user.listSessions')).body.data
 		assert.equal(sessions.length, 2)
 		assert.equal(sessions[0].current, true)
 		assert.match(sessions[0].client.userAgent, /iPhone/)
@@ -266,6 +279,21 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.deepEqual(sessions.map((x) => x.current), [true])
 		const secondCookie = second.headers.getSetCookie().find((c) => c.startsWith('omarchy_server_sid=')).split(';')[0]
 		assert.equal((await fetch(`${touch.base}/api/rpc/apps.list`, {headers: {cookie: secondCookie}})).status, 401, 'the other browser is signed out')
+	})
+
+	test('#301 an app pass older than a week is swapped for a new one while the sign-in is used', async () => {
+		const sid = touch.getCookie().split('=')[1]
+		const before = touch.store.getSession(sid).console.appCookie
+		await touch.store.updateSession(sid, {console: {...touch.store.getSession(sid).console, appPassAt: Date.now() - 8 * 86_400_000}})
+		await touch.req('GET', '/api/bootstrap')
+		for (let i = 0; i < 100 && touch.store.getSession(sid).console.appCookie === before; i++) await new Promise((r) => setTimeout(r, 20))
+		assert.notEqual(touch.store.getSession(sid).console.appCookie, before)
+		assert.ok(fake.calls.some((c) => c.path === 'user.appPass'))
+		// A fresh pass isn't renewed again on the next request.
+		const n = fake.calls.filter((c) => c.path === 'user.appPass').length
+		await touch.req('GET', '/api/bootstrap')
+		await new Promise((r) => setTimeout(r, 100))
+		assert.equal(fake.calls.filter((c) => c.path === 'user.appPass').length, n)
 	})
 
 	test('the assistant’s look is saved per account, cleaned, and never sent to omarchyd', async () => {
@@ -612,6 +640,8 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		const evil = await cspFor('x.com;script-src *')
 		assert.doesNotMatch(evil, /script-src \*/)
 		assert.doesNotMatch(evil, /frame-src/)
+		// #249: an IPv6 address gets its frame-src too.
+		assert.match(await cspFor('[fd00::5]:7780'), /frame-src 'self' http:\/\/\[fd00::5\]:\* https:\/\/\[fd00::5\]:\*;/)
 	})
 
 	test('bootstrap says how a browser tab reaches apps: directly on this port, or not (a proxy) (#86)', async () => {
@@ -725,6 +755,14 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 			assert.equal(page.status, 200)
 			assert.match(page.body, /Nextcloud/)
 			assert.equal(page.headers['content-security-policy'], "frame-ancestors 'self' https://touch.example.com")
+			// #302: an app's absolute redirect to its own port comes back to the app address, on https.
+			const imOpen = JSON.parse((await get('touch.example.com', '/api/app-open?app=immich', {cookie: touch2.getCookie(), 'x-forwarded-proto': 'https'})).body)
+			const imEnter = new URL(imOpen.url)
+			const imHanded = await get('immich-touch.example.com', imEnter.pathname + imEnter.search, {'x-forwarded-proto': 'https'})
+			const imCookie = imHanded.headers['set-cookie'][0].split(';')[0]
+			const moved = await get('immich-touch.example.com', '/absolute', {cookie: imCookie, 'x-forwarded-proto': 'https'})
+			assert.equal(moved.status, 302)
+			assert.equal(moved.headers.location, 'https://immich-touch.example.com/photos?x=1')
 			// a per-app cookie doesn't open other apps
 			assert.equal((await get('immich-touch.example.com', '/', {cookie: cookie.split(';')[0]})).status, 401)
 			// Touch's own pages allow framing its app subdomains
@@ -780,6 +818,48 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(r.status, 200)
 		assert.ok(fake.calls.findLast((c) => c.path === 'user.logout'))
 		assert.equal(touch.store.sessionCount(), 0)
+	})
+})
+
+describe('a wrong password is one try', () => {
+	test('a wrong password is sent once and the session stays', async () => {
+		const fake = await startFakeserverd()
+		const touch = await startTouch({backendUrl: fake.url})
+		try {
+			assert.equal((await touch.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})).status, 200)
+			assert.equal(touch.store.sessionCount(), 1)
+			const change = await touch.req('POST', '/api/rpc/user.changePassword', {input: {oldPassword: 'nope', newPassword: 'longer-secret'}})
+			assert.equal(change.status, 401)
+			assert.equal(fake.calls.filter((c) => c.path === 'user.changePassword').length, 1)
+			assert.equal(fake.calls.filter((c) => c.path === 'user.refreshNativeAccess').length, 0)
+			assert.equal(touch.store.sessionCount(), 1)
+			const reset = await touch.req('POST', '/api/rpc/system.factoryReset', {input: {password: 'nope'}})
+			assert.equal(reset.status, 401)
+			assert.equal(fake.calls.filter((c) => c.path === 'system.factoryReset').length, 1)
+			assert.equal(touch.store.sessionCount(), 1)
+			const desk = await touch.req('POST', '/api/rpc/system.desktopSignIn', {input: {password: 'nope'}})
+			assert.equal(desk.status, 401)
+			assert.equal(fake.calls.filter((c) => c.path === 'system.desktopSignIn').length, 1)
+			assert.equal(touch.store.sessionCount(), 1)
+		} finally {
+			await touch.close()
+			await fake.close()
+		}
+	})
+
+	test('a wrong password on a legacy session is sent once and the session stays', async () => {
+		const fake = await startFakeserverd({legacy: true})
+		const touch = await startTouch({backendUrl: fake.url})
+		try {
+			assert.equal((await touch.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})).status, 200)
+			const change = await touch.req('POST', '/api/rpc/user.changePassword', {input: {oldPassword: 'nope', newPassword: 'longer-secret'}})
+			assert.equal(change.status, 401)
+			assert.equal(fake.calls.filter((c) => c.path === 'user.changePassword').length, 1)
+			assert.equal(touch.store.sessionCount(), 1)
+		} finally {
+			await touch.close()
+			await fake.close()
+		}
 	})
 })
 

@@ -120,13 +120,17 @@ export async function openAccounts(dataDir) {
 	const access = new Map() // accessToken -> {userId, sessionId, expiresAt}
 	const urlTokens = new Map() // url token -> {browserToken, expiresAt}
 	let saving = Promise.resolve()
-	const save = () =>
-		(saving = saving.then(async () => {
+	// One write at a time. A failed write is reported to its caller only: the next save starts fresh.
+	const save = () => {
+		const next = saving.then(async () => {
 			const tmp = `${file}.tmp`
 			await writeFile(tmp, JSON.stringify(state, null, '\t'), {mode: 0o600})
 			await rename(tmp, file)
 			await chmod(file, 0o600).catch(() => {})
-		}))
+		})
+		saving = next.catch(() => {})
+		return next
+	}
 	const now = () => Date.now()
 	const prune = () => {
 		for (const [k, v] of access) if (v.expiresAt < now()) access.delete(k)

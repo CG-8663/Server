@@ -17,10 +17,11 @@ import express from 'express'
 import WebSocket, {WebSocketServer} from 'ws'
 
 import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
+import {linkProxy} from '../omarchyd/proxy-link.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.52'
+export const VERSION = '0.9.53'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -303,6 +304,18 @@ export const ALLOWED = {
 // Long-running mutations: omarchyd answers when the operation finishes.
 const SLOW = new Set(['unraid.connect', 'unraid.scan', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub'])
 
+// An IPv6 address in a URL needs brackets; req.hostname and URL.hostname may already have them.
+const bracketHost = (h) => (String(h).includes(':') && !String(h).startsWith('[') ? `[${h}]` : String(h))
+
+// The host an Origin header names. "null" and other unparseable origins name none, so they never match.
+function hostOf(origin) {
+	try {
+		return new URL(origin).host
+	} catch {
+		return null
+	}
+}
+
 function parseCookies(header = '') {
 	const out = {}
 	for (const part of header.split(';')) {
@@ -389,7 +402,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		if (!c) return null
 		const upstream = new URL(c.baseUrl).hostname
 		const host = isLoopback(upstream) ? req.hostname : upstream
-		return /^[a-z0-9.-]{1,253}$/i.test(host ?? '') ? host : null
+		return /^[a-z0-9.-]{1,253}$/i.test(host ?? '') || /^\[[0-9a-f:.]{2,45}\]$/i.test(host ?? '') ? host : null
 	}
 	// App subdomains (TOUCH_APP_HOSTS) are routed to their relay before Touch's own handling.
 	let hostRoute = null
@@ -442,8 +455,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			ur.pipe(res)
 		})
 		up.setTimeout(10 * 60_000, () => up.destroy())
+		linkProxy(req, res, up)
 		up.on('error', () => {
-			if (!res.headersSent) res.writeHead(502, {'content-type': 'text/plain'})
+			if (res.headersSent) return
+			res.writeHead(502, {'content-type': 'text/plain'})
 			res.end()
 		})
 		req.pipe(up)
@@ -454,13 +469,17 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		res.set('Cache-Control', 'no-store')
 		req.sid = parseCookies(req.headers.cookie)[COOKIE]
 		// CSRF: state-changing calls must come from our own page.
-		if (req.method !== 'GET') {
+		if (req.method !== 'GET' && req.method !== 'HEAD') {
 			const origin = req.headers.origin
-			if (req.headers['x-omarchy-server'] !== '1' || (origin && new URL(origin).host !== req.headers.host)) {
+			if (req.headers['x-omarchy-server'] !== '1' || (origin && hostOf(origin) !== req.headers.host)) {
 				return res.status(403).json({error: {code: 'FORBIDDEN', message: 'Cross-site request refused'}})
 			}
 		}
 		shareAppSession(req, res, store.getSession(req.sid))
+		if (req.sid) keepAppPassFresh(req.sid)
+		// Settings › Devices shows when each device was last used: note it, at most once a minute.
+		const seen = store.getSession(req.sid)
+		if (seen && Date.now() - (seen.lastSeenAt ?? 0) > 60_000) store.updateSession(req.sid, {lastSeenAt: Date.now()}).catch(() => {})
 		next()
 	})
 
@@ -545,6 +564,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			return await run(await accessTokenFor(req.sid, session))
 		} catch (error) {
 			if (!(error instanceof BackendError) || error.code !== 'UNAUTHORIZED') throw error
+			// A wrong password is unauthorized too. Only an expired access token is refreshed and retried.
+			// Sending a password or authenticator code again would count as a second failed attempt.
+			if (error.message !== 'Invalid token') throw error
 			if (session.mode === 'legacy') {
 				await store.deleteSession(req.sid)
 				throw error
@@ -977,7 +999,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		// The same login also returns Omarchy Server's app-gateway session (OMARCHY_APP_SESSION). Touch
 		// keeps it server-side so app windows open without Omarchy Server's separate app sign-in.
 		const appCookie = cookies.find((c) => /^OMARCHY_APP_SESSION=/.test(c)) ?? null
-		return {token, cookie, appCookie, renewedAt: Date.now()}
+		return {token, cookie, appCookie, renewedAt: Date.now(), appPassAt: Date.now()}
 	}
 
 	// The server-held browser-style session: dashboard token + browser cookie. omarchyd
@@ -1013,13 +1035,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			throw await lostBrowserSession(sid, error)
 		}
 	}
+	// Errors (signed out, server not answering) are thrown, not turned into "not the owner".
 	async function sessionIsOwner(sid) {
-		try {
-			const me = await authedCall({sid}, 'user.get', 'query')
-			return me?.role === 'owner'
-		} catch {
-			return false
-		}
+		const me = await authedCall({sid}, 'user.get', 'query')
+		return me?.role === 'owner'
 	}
 
 	// ---- Files: downloads, previews, thumbnails and uploads ---------------------
@@ -1157,7 +1176,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	async function frameVerdict(app, serverHost, cookieHeader) {
 		if (!app?.port) return 'unknown'
 		if (app.requiresHttps) return 'tab'
-		const origin = `http://${serverHost.includes(':') ? `[${serverHost}]` : serverHost}:${app.port}`
+		const origin = `http://${bracketHost(serverHost)}:${app.port}`
 		let url = new URL(app.path || '/', origin)
 		for (let hop = 0; hop < 5; hop++) {
 			let r
@@ -1310,8 +1329,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 							return res.end('<!doctype html><meta charset="utf-8"><body style="font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0;color:#888;text-align:center;padding:24px">Your Omarchy Server app session ended.<br>Sign out of Omarchy Server and back in, then reopen this app.</body>')
 						}
 						if (to.port === String(relay.targetPort) && (to.hostname === hostname || isLoopback(to.hostname) || to.hostname === serverHost)) {
-							to.host = req.headers.host
-							headers.location = to.href
+							// Back to the address the browser used: its scheme and its host, port and all (an
+							// app address behind a TLS proxy has no port, and \`to.host = …\` would keep the old one).
+							const proto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() || (req.socket.encrypted ? 'https' : 'http')
+							headers.location = `${proto === 'https' ? 'https' : 'http'}://${req.headers.host}${to.pathname}${to.search}${to.hash}`
 						}
 					} catch {
 						/* leave it */
@@ -1321,8 +1342,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				res.writeHead(ur.statusCode ?? 502, ur.statusMessage, headers)
 				ur.pipe(res)
 			})
+			linkProxy(req, res, up)
 			up.on('error', () => {
-				if (!res.headersSent) res.writeHead(502, {'content-type': 'text/plain; charset=utf-8'})
+				if (res.headersSent) return
+				res.writeHead(502, {'content-type': 'text/plain; charset=utf-8'})
 				res.end('The app isn’t answering right now.')
 			})
 			req.pipe(up)
@@ -1486,8 +1509,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					}
 					const key = `${id}:${app.port}:${cookieHeader ? 1 : 0}`
 					const hit = appFrameCache.get(key)
-					let verdict = hit && Date.now() - hit.at < 10 * 60 * 1000 ? hit.verdict : await frameVerdict(app, serverHost, cookieHeader)
-					if (verdict === 'window' || verdict === 'tab' || verdict === 'blocked') appFrameCache.set(key, {verdict, at: hit?.at ?? Date.now()})
+					const fresh = hit && Date.now() - hit.at < 10 * 60 * 1000
+					let verdict = fresh ? hit.verdict : await frameVerdict(app, serverHost, cookieHeader)
+					// A new answer starts a new 10 minutes.
+					if (!fresh && (verdict === 'window' || verdict === 'tab' || verdict === 'blocked')) appFrameCache.set(key, {verdict, at: Date.now()})
 					if (verdict === 'blocked') {
 						if (mode) relay[id] = true
 						verdict = mode ? 'window' : 'tab'
@@ -1509,7 +1534,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		if (!store.getSession(req.sid)) return res.redirect(302, '/')
 		try {
 			const {ticket, port} = await authedCall(req, 'apps.accessTicket', 'mutation', {appId: id, view: req.query.view === '1'})
-			const h = req.hostname.includes(':') ? `[${req.hostname}]` : req.hostname
+			const h = bracketHost(req.hostname)
 			res.redirect(302, `${req.protocol}://${h}:${port}/__omarchy/enter?t=${encodeURIComponent(ticket)}&r=${encodeURIComponent(r)}`)
 		} catch (error) {
 			if (error instanceof BackendError && error.code === 'UNAUTHORIZED') return res.redirect(302, '/')
@@ -1548,7 +1573,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			if (mode === 'port') {
 				const port = await relayFor(app, serverHost, ancestor)
 				if (!port) return res.status(503).json({error: {code: 'UNAVAILABLE', message: 'No free port for the app relay'}})
-				const h = req.hostname.includes(':') ? `[${req.hostname}]` : req.hostname
+				const h = bracketHost(req.hostname)
 				return res.json({url: `${req.protocol}://${h}:${port}${path}`, ping: `${req.protocol}://${h}:${port}/__touch/ping.gif`, address: `${req.protocol}://${h}:${port}${path}`})
 			}
 			res.status(409).json({error: {code: 'NEEDS_APP_HOSTS', message: 'Opening apps remotely needs app addresses (see the README)'}})
@@ -1629,7 +1654,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				if (!route) return refuse('404 Not Found')
 				// Browsers always send Origin on WebSocket handshakes: refuse other sites.
 				const origin = req.headers.origin
-				if (!origin || new URL(origin).host !== req.headers.host) return refuse('403 Forbidden')
+				if (!origin || hostOf(origin) !== req.headers.host) return refuse('403 Forbidden')
 				const sid = parseCookies(req.headers.cookie)[COOKIE]
 				if (!store.getSession(sid)) return refuse('401 Unauthorized')
 				const target = new URL(getClient().baseUrl)
@@ -1652,7 +1677,15 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
 				}
 				const needsOwner = route === 'terminal' || params.machineId === 'desktop' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
-				if (needsOwner && !(await sessionIsOwner(sid))) return refuse('403 Forbidden')
+				if (needsOwner) {
+					let owner
+					try {
+						owner = await sessionIsOwner(sid)
+					} catch (error) {
+						return refuse(error?.code === 'UNAUTHORIZED' ? '401 Unauthorized' : '502 Bad Gateway')
+					}
+					if (!owner) return refuse('403 Forbidden')
+				}
 				const ticket = await consoleTicket(sid, route)
 				target.search = new URLSearchParams({...params, ticket}).toString()
 				const upstream = new WebSocket(target, route === 'machines' ? ['binary'] : [], {handshakeTimeout: 10_000})
@@ -1696,14 +1729,35 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		}
 		await store.deleteSessionByKey(key)
 	}
-	// Signing other devices out also ends their app passes; this browser gets a new one.
+	// Signing a device out ends every app pass this person holds (passes have one generation per
+	// person). Every device of theirs that is still signed in here gets the new one, not just this one.
 	async function renewAppPass(req, res) {
 		const cookie = await authedCall(req, 'user.revokeAppPasses', 'mutation').catch(() => null)
 		const session = store.getSession(req.sid)
 		if (typeof cookie !== 'string' || !session?.console) return
 		const appCookie = cookie.split(';')[0]
-		await store.updateSession(req.sid, {console: {...session.console, appCookie}})
+		for (const {key, session: s} of store.sessionEntries()) {
+			if (s.accountId !== session.accountId || !s.console) continue
+			await store.updateSessionByKey(key, {console: {...s.console, appCookie, appPassAt: Date.now()}})
+		}
+		await store.updateSession(req.sid, {console: {...store.getSession(req.sid).console, appCookie, appPassAt: Date.now()}})
 		shareAppSession(req, res, store.getSession(req.sid))
+	}
+	// App passes last 30 days; this sign-in lasts a year. Swap in a new pass once a week while it's used.
+	const APP_PASS_RENEW_MS = 7 * 86_400_000
+	const renewingPass = new Set()
+	function keepAppPassFresh(sid) {
+		const s = store.getSession(sid)
+		if (!s?.console?.appCookie || renewingPass.has(sid) || Date.now() - (s.console.appPassAt ?? 0) < APP_PASS_RENEW_MS) return
+		renewingPass.add(sid)
+		;(async () => {
+			const auth = await browserAuth(sid)
+			const cookie = await getClient()?.mutation('user.appPass', undefined, auth)
+			const cur = store.getSession(sid)
+			if (typeof cookie === 'string' && cur?.console) await store.updateSession(sid, {console: {...cur.console, appCookie: cookie.split(';')[0], appPassAt: Date.now()}})
+		})()
+			.catch(() => {})
+			.finally(() => renewingPass.delete(sid))
 	}
 	const mine = (req) => {
 		const me = store.getSession(req.sid)
@@ -1832,6 +1886,15 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 
 	api.get('/health', (req, res) => res.json({ok: true, version: VERSION}))
 	api.use((req, res) => res.status(404).json({error: {code: 'NOT_FOUND', message: 'Not found'}}))
+	// Errors the routes above don't answer themselves (a malformed JSON body, a failed save) get
+	// the JSON shape the web app reads, never Express's HTML page with file paths.
+	api.use((error, req, res, next) => {
+		if (res.headersSent) return next(error)
+		const status = Number(error?.status ?? error?.statusCode)
+		if (status >= 400 && status < 500) return res.status(status).json({error: {code: 'BAD_REQUEST', message: error.type === 'entity.parse.failed' ? 'Malformed JSON' : error.type === 'entity.too.large' ? 'Request too large' : 'Bad request'}})
+		console.error('[omarchy-server] api', error?.message ?? error)
+		res.status(500).json({error: {code: 'INTERNAL_SERVER_ERROR', message: 'Something went wrong on the server'}})
+	})
 	app.use('/api', api)
 
 	// ---- PWA -----------------------------------------------------------------
