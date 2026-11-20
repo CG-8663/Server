@@ -14,7 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, screenshotFilename} from './consoleHelpers'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, readConsoleMetrics, screenshotFilename} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -193,7 +193,8 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				haptic(8)
 				if (deskUi) {
 					window.setTimeout(() => {
-						setCanResize(!!(r as any)._supportsSetDesktopSize)
+						if (disposed || rfbRef.current !== r) return
+						setCanResize(readConsoleMetrics(r as any).canResize)
 						r.focus()
 					}, 600)
 				}
@@ -260,12 +261,13 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		}
 		if (sc === 'remote' && !canResize) toast('This machine can’t change its resolution from here; showing it fitted instead.')
 	}
-	// Resolution readout (noVNC has no public resize event).
+	// Resolution readout and late resize-capability detection (noVNC has no public resize event).
 	useEffect(() => {
 		if (!deskUi) return
 		const t = window.setInterval(() => {
-			const fb = fbSize()
-			setRes((cur) => (fb && (cur?.w !== fb.w || cur?.h !== fb.h) ? fb : cur))
+			const next = readConsoleMetrics(rfbRef.current as any)
+			setRes((cur) => (next.res && (cur?.w !== next.res.w || cur?.h !== next.res.h) ? next.res : cur))
+			setCanResize((cur) => (cur === next.canResize ? cur : next.canResize))
 		}, 1000)
 		return () => window.clearInterval(t)
 		// eslint-disable-next-line react-hooks/exhaustive-deps

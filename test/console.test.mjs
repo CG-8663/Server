@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {describe, test} from 'node:test'
 
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, screenshotFilename, wheelButtons} from '../web/src/consoleHelpers.ts'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, readConsoleMetrics, screenshotFilename, wheelButtons} from '../web/src/consoleHelpers.ts'
 
 describe('console helpers', () => {
 	test('#120: reconnects on clean and unclean disconnects unless disposed or superseded', async () => {
@@ -97,5 +97,17 @@ describe('console helpers', () => {
 		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
 		assert.match(src, /bindConsoleWheel\(/)
 		assert.doesNotMatch(src, /onWheel=\{onWheel\}/)
+	})
+
+	test('#372: keeps checking remote resize support after initial connect', async () => {
+		assert.deepEqual(readConsoleMetrics(null), {res: null, canResize: false})
+		assert.deepEqual(readConsoleMetrics({_fbWidth: 0, _fbHeight: 0, _supportsSetDesktopSize: false}), {res: null, canResize: false})
+		assert.deepEqual(readConsoleMetrics({_fbWidth: 1920, _fbHeight: 1080, _supportsSetDesktopSize: false}), {res: {w: 1920, h: 1080}, canResize: false})
+		assert.deepEqual(readConsoleMetrics({_fbWidth: 1920, _fbHeight: 1080, _supportsSetDesktopSize: true}), {res: {w: 1920, h: 1080}, canResize: true})
+
+		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
+		const pollBlock = src.slice(src.indexOf('window.setInterval(() => {'), src.indexOf('}, 1000)'))
+		assert.match(pollBlock, /readConsoleMetrics\(/)
+		assert.match(pollBlock, /setCanResize/)
 	})
 })

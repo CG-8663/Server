@@ -68,3 +68,9 @@ export function bindConsoleWheel(
 	el.addEventListener('wheel', onWheel, {passive: false})
 	return () => el.removeEventListener('wheel', onWheel)
 }
+
+// Read the current framebuffer size and whether the remote desktop supports resizing.
+export function readConsoleMetrics(rfb: {_fbWidth?: number; _fbHeight?: number; _supportsSetDesktopSize?: boolean} | null | undefined) {
+	const res = rfb?._fbWidth && rfb?._fbHeight ? {w: rfb._fbWidth, h: rfb._fbHeight} : null
+	return {res, canResize: !!rfb?._supportsSetDesktopSize}
+}
