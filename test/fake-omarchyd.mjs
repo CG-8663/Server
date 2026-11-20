@@ -369,6 +369,23 @@ export async function startFakeserverd({
 			}),
 		},
 		'system.batteryUsage': {kind: 'query', run: () => ({batteries: []})},
+		'system.stats': {
+			kind: 'query',
+			run: () => ({
+				cpu: {threads: 16, totalUsed: 18.4, system: 9.1, apps: [{id: 'immich', used: 6.2}, {id: 'nextcloud', used: 3.1}], machines: []},
+				memory: {size: 16 * gb, totalUsed: 6.2 * gb, system: 2 * gb, apps: [{id: 'immich', used: 2.1 * gb}], machines: []},
+				disk: {size: 1000 * gb, totalUsed: 720 * gb, available: 280 * gb, system: 40 * gb, files: 300 * gb, apps: [{id: 'immich', used: 210 * gb}], machines: []},
+				temp: {warning: 'normal', temperature: 52},
+				gpu: {
+					gpus: [
+						{id: 'GPU-aaa', index: 0, name: 'NVIDIA GeForce RTX 3060', used: 32, memoryUsed: 1.4 * gb, memoryTotal: 12 * gb, temperature: 39},
+						{id: 'GPU-bbb', index: 1, name: 'NVIDIA GeForce RTX 3060', used: 4, memoryUsed: 0.2 * gb, memoryTotal: 12 * gb, temperature: 36},
+					],
+				},
+				battery: {batteries: []},
+				uptime: 1_234_567,
+			}),
+		},
 		'system.installerStatus': {kind: 'query', run: () => ({needed: false, reasons: []})},
 		'apps.list': {kind: 'query', run: () => apps},
 		'apps.state': {kind: 'query', run: ({appId}) => apps.find((a) => a.id === appId) ?? {state: 'not-installed', progress: 0}},
@@ -445,7 +462,17 @@ export async function startFakeserverd({
 		'usb.attach': {kind: 'mutation', run: () => ({needsRestart: false})},
 		'usb.detach': {kind: 'mutation', run: () => ({needsRestart: false})},
 		'machines.details': {kind: 'query', run: ({id}) => machineDetails(machines.find((m) => m.id === id))},
-		'machines.stats': {kind: 'query', run: ({id}) => ({memoryMb: 2048, vcpus: 2, points: machines.find((m) => m.id === id)?.state === 'running' ? statPoints() : []})},
+		'machines.stats': {
+			kind: 'query',
+			run: (input) => {
+				const one = (m) => {
+					const points = m?.state === 'running' ? statPoints() : []
+					return {memoryMb: 2048, vcpus: 2, points, last: points.at(-1) ?? null}
+				}
+				if (!input?.id) return Object.fromEntries(machines.map((m) => [m.id, one(m)]))
+				return one(machines.find((m) => m.id === input.id))
+			},
+		},
 		'machines.node': {
 			kind: 'query',
 			run: () => ({hostname: 'omarchy', cpuModel: 'Intel(R) Xeon(R) CPU E5-2470 v2 @ 2.40GHz', threads: 8, loadAverage: [0.42, 0.51, 0.47], memoryTotalMb: 32768, memoryFreeMb: 21000, uptimeSeconds: 400_000, storage: {totalGb: 930, freeGb: 610}, libvirtVersion: '11.2.0', qemuVersion: '10.0.2', hostArchitecture: 'amd64', libvirtAvailable: true, kvmAvailable: true, videoModels: ['vga', 'bochs', 'none'], cpuTypes: ['host', 'host-model', 'max', 'qemu64'], nicModels: ['virtio', 'e1000e', 'e1000', 'rtl8139'], diskBuses: ['virtio', 'sata', 'scsi', 'ide'], diskCaches: ['default', 'none', 'writeback', 'writethrough', 'directsync', 'unsafe'], counts: {total: machines.length, running: machines.filter((m) => m.state === 'running').length}}),

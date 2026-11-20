@@ -84,6 +84,7 @@ export const ALLOWED = {
 	'system.uptime': 'query',
 	'system.deviceName': 'query',
 	'system.cpuTemperature': 'query',
+	'system.stats': 'query',
 	'system.cpuUsage': 'query',
 	'system.memoryUsage': 'query',
 	'system.diskUsage': 'query',

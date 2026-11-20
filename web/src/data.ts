@@ -5,15 +5,10 @@ import {
 	mutate,
 	query,
 	type Bootstrap,
-	type CpuUsage,
-	type DiskUsage,
-	type BatteryUsage,
-	type GpuUsage,
-	type Temperature,
 	type InstallReview,
 	type Machine,
-	type MemoryUsage,
 	type Registry,
+	type SystemStats,
 	type User,
 	type UserApp,
 } from './api'
@@ -36,15 +31,18 @@ export const useUser = () => useQuery({queryKey: ['user.get'], queryFn: () => qu
 export const useRecent = () =>
 	useQuery({queryKey: ['apps.recentlyOpened'], queryFn: () => query<string[]>('apps.recentlyOpened'), staleTime: 30_000, retry: false})
 
-const live = (key: string, ms = 3000) => ({queryKey: [key], queryFn: () => query(key), refetchInterval: ms})
-export const useCpu = () => useQuery({...live('system.cpuUsage'), queryFn: () => query<CpuUsage>('system.cpuUsage')})
-export const useMemory = () => useQuery({...live('system.memoryUsage'), queryFn: () => query<MemoryUsage>('system.memoryUsage')})
-export const useDisk = () => useQuery({...live('system.diskUsage', 30_000), queryFn: () => query<DiskUsage>('system.diskUsage')})
-export const useTemp = () =>
-	useQuery({...live('system.cpuTemperature', 10_000), queryFn: () => query<Temperature>('system.cpuTemperature')})
-export const useGpus = () => useQuery({...live('system.gpuUsage'), queryFn: () => query<GpuUsage>('system.gpuUsage')})
-export const useBattery = () => useQuery({...live('system.batteryUsage'), queryFn: () => query<BatteryUsage>('system.batteryUsage')})
-export const useUptime = () => useQuery({...live('system.uptime', 60_000), queryFn: () => query<number>('system.uptime')})
+const statsQuery = {
+	queryKey: ['system.stats'] as const,
+	queryFn: () => query<SystemStats>('system.stats'),
+	refetchInterval: 3000,
+}
+export const useCpu = () => useQuery({...statsQuery, select: (s) => s.cpu})
+export const useMemory = () => useQuery({...statsQuery, select: (s) => s.memory})
+export const useDisk = () => useQuery({...statsQuery, select: (s) => s.disk})
+export const useTemp = () => useQuery({...statsQuery, select: (s) => s.temp})
+export const useGpus = () => useQuery({...statsQuery, select: (s) => s.gpu})
+export const useBattery = () => useQuery({...statsQuery, select: (s) => s.battery})
+export const useUptime = () => useQuery({...statsQuery, select: (s) => s.uptime})
 export const useNotifications = () =>
 	useQuery({queryKey: ['notifications.get'], queryFn: () => query<string[]>('notifications.get'), refetchInterval: 30_000})
 export const useMachines = () =>
