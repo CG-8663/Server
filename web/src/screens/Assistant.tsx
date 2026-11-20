@@ -2,10 +2,14 @@ import {useEffect, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {ApiError, mutate, query, type AssistantAction, type AssistantKey} from '../api'
+import {ApiError, mutate, query, type AssistantAction, type AssistantKey, type InstallReview} from '../api'
+import {BeforeInstall} from '../beforeInstall'
+import {installNeedsReview, type ReviewInstallInput} from '../installReview'
 import {cardAction, markReopenAssistant, streamAssistant, threadItems, type AssistantConversation, type AssistantConversationSummary, type AssistantItem, type AssistantStreamBody} from '../assistant'
 import {useUser} from '../data'
 import {Icon} from '../icons'
+import {AppIcon, Sheet, SheetHeader} from '../ui'
+import {useDesktop} from '../desktop/Desktop'
 import {setAssistantActivity, useAssistantAnimationState} from '../assistantActivity'
 import {liveBubbleMark} from '../assistantLive'
 import {
@@ -198,6 +202,8 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 	const stick = useRef(true)
 	const deciding = useRef(new Set<string>())
+	const [installGate, setInstallGate] = useState<{actionId: string; appId: string; appName: string} | null>(null)
+	const desk = useDesktop()
 	const decisionAbort = useRef(new Map<string, AbortController>())
 	const followQueued = useRef(false)
 	const pumping = useRef(false)
@@ -452,7 +458,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		}
 	}
 
-	const decide = async (actionId: string, path: 'assistant.approve' | 'assistant.reject', extra?: {id?: string; password?: string}) => {
+	const decide = async (actionId: string, path: 'assistant.approve' | 'assistant.reject', extra?: {id?: string; password?: string} & ReviewInstallInput) => {
 		if (deciding.current.has(actionId)) return
 		const conversationId = assistantTurn().conversationId
 		if (!conversationId) {
@@ -476,7 +482,14 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		let reloadTheme: string | null = null
 		let reloadAfterRestart = false
 		try {
-			const updated = await mutate<AssistantAction>(path, {actionId, ...(extra?.id ? {id: extra.id} : {}), ...(extra?.password ? {password: extra.password} : {})})
+			const updated = await mutate<AssistantAction>(path, {
+				actionId,
+				...(extra?.id ? {id: extra.id} : {}),
+				...(extra?.password ? {password: extra.password} : {}),
+				...(extra?.grant ? {grant: extra.grant} : {}),
+				...(extra?.folders ? {folders: extra.folders} : {}),
+				...(extra?.folderAccess ? {folderAccess: extra.folderAccess} : {}),
+			})
 			if (own.signal.aborted) return
 			setTurnItems((bs) =>
 				bs?.map((b) => {
@@ -542,6 +555,28 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 				}
 			}
 		}
+	}
+
+	const maybeReview = async (action: AssistantAction) => {
+		if (!action.appId || installGate?.actionId === action.id || deciding.current.has(action.id)) return
+		try {
+			const review = await query<InstallReview>('apps.installReview', {appId: action.appId})
+			qc.setQueryData(['apps.installReview', action.appId], review)
+			if (!installNeedsReview(review)) {
+				void decide(action.id, 'assistant.approve')
+				return
+			}
+			const appName = action.title.replace(/^Install\s+/, '').trim() || 'this app'
+			setInstallGate({actionId: action.id, appId: action.appId, appName})
+		} catch {
+			void decide(action.id, 'assistant.approve')
+		}
+	}
+
+	const cancelInstall = () => {
+		const gate = installGate
+		setInstallGate(null)
+		if (gate) void decide(gate.actionId, 'assistant.reject')
 	}
 
 	const loading = keys.isLoading || (hasKeys && items === null && !keys.isError)
@@ -610,7 +645,14 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 							<div className="assistant-thread-end">
 								{items.map((b) =>
 									b.kind === 'card' ? (
-										<ActionCard key={b.id} action={b.action} onDecide={(id, path, extra) => void decide(id, path, extra)} />
+										<ActionCard key={b.id} action={b.action} onDecide={(id, path, extra) => {
+											const cur = assistantTurn().items?.find((item) => item.kind === 'card' && item.action.id === id)
+											if (path === 'assistant.approve' && !extra && cur?.kind === 'card' && cur.action.toolName === 'apps_install' && cur.action.appId) {
+												void maybeReview(cur.action)
+												return
+											}
+											void decide(id, path, extra)
+										}} />
 									) : b.role === 'assistant' ? (
 										<div key={b.id} className="assistant-msg">
 											{/* The character beside its replies; only the one being written moves. */}
@@ -669,6 +711,23 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 						</button>
 					</form>
 				</>
+			)}
+			{installGate && (
+				<Sheet open onClose={cancelInstall} label={`Install ${installGate.appName}`}>
+					<SheetHeader icon={<AppIcon name={installGate.appName} size={72} />} title={installGate.appName} onClose={cancelInstall} />
+					<BeforeInstall
+						appId={installGate.appId}
+						appName={installGate.appName}
+						cancelLabel="Cancel"
+						openTerminal={desk ? (command) => desk.openTerminal(undefined, command) : undefined}
+						onInstall={(input) => {
+							const gate = installGate
+							setInstallGate(null)
+							void decide(gate.actionId, 'assistant.approve', input)
+						}}
+						onCancel={cancelInstall}
+					/>
+				</Sheet>
 			)}
 		</div>
 	)

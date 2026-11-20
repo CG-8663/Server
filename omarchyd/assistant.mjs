@@ -124,6 +124,44 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		await appendOutcome(who, action, toolText(result, ''))
 		return publicAction(done)
 	}
+	function personGrant(value) {
+		if (!Array.isArray(value)) return null
+		const out = []
+		for (const item of value) {
+			if (out.length >= 32) break
+			const s = String(item ?? '').trim()
+			if (!s || s.length > 64 || out.includes(s)) continue
+			out.push(s)
+		}
+		return out
+	}
+	function personFolders(value) {
+		if (!Array.isArray(value)) return null
+		const out = []
+		for (const item of value) {
+			if (out.length >= 32) break
+			if (!item || typeof item !== 'object') continue
+			const appId = String(item.appId ?? '').trim()
+			const id = String(item.id ?? '').trim()
+			const path = String(item.path ?? '').trim()
+			if (!appId || !id || !path || appId.length > 200 || id.length > 200 || path.length > 4096) continue
+			out.push({appId, id, path})
+		}
+		return out
+	}
+	function personFolderAccess(value) {
+		if (!Array.isArray(value)) return null
+		const out = []
+		for (const item of value) {
+			if (out.length >= 32) break
+			if (!item || typeof item !== 'object') continue
+			const id = String(item.id ?? '').trim()
+			const sourcePath = String(item.sourcePath ?? '').trim()
+			if (!id || !sourcePath || id.length > 200 || sourcePath.length > 4096) continue
+			out.push({id, sourcePath})
+		}
+		return out
+	}
 	async function approve(input, {auth}) {
 		const who = actor(auth)
 		const id = actionId(input)
@@ -143,6 +181,16 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			if (spec) {
 				const kept = declaredArgs(spec, rpcInput)
 				for (const key of Object.keys(rpcInput)) if (!Object.hasOwn(kept, key)) delete rpcInput[key]
+			}
+			// The model cannot attach grant. The person allows it on the store's install review, and that
+			// choice arrives on this Approve call.
+			if (action.toolName === 'apps_install') {
+				const grant = personGrant(input?.grant)
+				if (grant?.length) rpcInput.grant = grant
+				const folders = personFolders(input?.folders)
+				if (folders?.length) rpcInput.folders = folders
+				const folderAccess = personFolderAccess(input?.folderAccess)
+				if (folderAccess?.length) rpcInput.folderAccess = folderAccess
 			}
 			if (action.toolName === 'omarchy_setBackground') {
 				const chosen = String(input?.id ?? rpcInput.id ?? '').trim()

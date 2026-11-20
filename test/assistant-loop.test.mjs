@@ -587,6 +587,52 @@ test('approving a stored install drops grant that was saved on the action', asyn
 	}
 })
 
+test('approving an install sends the access the person allowed on the review', async () => {
+	const {calls, runProcedure} = factsProcedure()
+	const box = await withAssistant({runProcedure, fetchImpl: fetch})
+	try {
+		const conv = await box.asst.conversations.create('owner', {title: 'install'})
+		const action = await box.asst.conversations.putAction('owner', conv.id, {
+			kind: 'rpc',
+			toolName: 'apps_install',
+			title: 'Install Jellyfin',
+			detail: '',
+			rpc: {path: 'apps.install', input: {appId: 'jellyfin', grant: ['host-files']}},
+		})
+		await box.asst.procedures['assistant.approve'].run({
+			actionId: action.id,
+			grant: ['containers', 'devices'],
+			folders: [{appId: 'jellyfin', id: 'media', path: '/home/chris/Videos'}],
+		}, {auth: {userId: 'owner'}})
+		const sent = calls.filter((c) => c.name === 'apps.install')
+		assert.equal(sent.length, 1)
+		assert.deepEqual(sent[0].input, {appId: 'jellyfin', grant: ['containers', 'devices'], folders: [{appId: 'jellyfin', id: 'media', path: '/home/chris/Videos'}]})
+	} finally {
+		await box.close()
+	}
+})
+
+test('an update does not take grant from the approve click', async () => {
+	const {calls, runProcedure} = factsProcedure()
+	const box = await withAssistant({runProcedure, fetchImpl: fetch})
+	try {
+		const conv = await box.asst.conversations.create('owner', {title: 'update'})
+		const action = await box.asst.conversations.putAction('owner', conv.id, {
+			kind: 'rpc',
+			toolName: 'apps_update',
+			title: 'Update Jellyfin',
+			detail: '',
+			rpc: {path: 'apps.update', input: {appId: 'jellyfin'}},
+		})
+		await box.asst.procedures['assistant.approve'].run({actionId: action.id, grant: ['containers']}, {auth: {userId: 'owner'}})
+		const sent = calls.filter((c) => c.name === 'apps.update')
+		assert.equal(sent.length, 1)
+		assert.deepEqual(sent[0].input, {appId: 'jellyfin'})
+	} finally {
+		await box.close()
+	}
+})
+
 test('appStore_search filters the registry inside the turn', async () => {
 	const {calls, runProcedure} = factsProcedure(async (name) => {
 		if (name === 'appStore.registry') {

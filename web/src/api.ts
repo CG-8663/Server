@@ -272,6 +272,8 @@ export type AssistantAction = {
 	toolName: string
 	title: string
 	detail: string
+	// Present on an install card so Approve can open the store review. Never a grant.
+	appId?: string
 	error?: string
 	picker?: {theme: string | null; selected: string | null}
 }
