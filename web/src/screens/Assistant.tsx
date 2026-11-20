@@ -255,7 +255,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		setAssistantActivity({phase, pending: cards.filter((c) => c.action.status === 'pending').length, composing, ...(successAt ? {successAt} : {})})
 	}, [items, activity, turnError, composing, streaming])
 	useEffect(() => {
-		openAssistantView()
+		if (active) openAssistantView()
 		return () => closeAssistantView()
 	}, [])
 	const faceState = useAssistantAnimationState({reactions: look.reactions})

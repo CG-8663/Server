@@ -5,11 +5,20 @@ import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 
 import {consumeReopenAssistant, markReopenAssistant} from '../web/src/assistant.ts'
+import {assistantActivity, characterState, SLEEP_MS} from '../web/src/assistantActivity.ts'
 import {
 	canDecideAssistantAction,
 	canSendAssistantMessage,
 	canStartAssistantFollow,
 } from '../web/src/assistantLive.ts'
+import {
+	assistantTurn,
+	beginAssistantTurn,
+	closeAssistantView,
+	finishAssistantTurn,
+	openAssistantView,
+	resetAssistantTurn,
+} from '../web/src/assistantTurn.ts'
 
 test('sending is disabled while a reply is being written or an approval is running', () => {
 	assert.equal(canSendAssistantMessage({draft: 'hello', itemsLoaded: true, streaming: false, decidingCount: 0}), true)
@@ -73,4 +82,29 @@ test('reopen-assistant flag survives re-renders before reload and is consumed on
 
 	const appSrc = await readFile(new URL('../web/src/App.tsx', import.meta.url), 'utf8')
 	assert.equal(appSrc.includes('useRef(consumeReopenAssistant())'), false, 'App must not consume the flag on every render')
+})
+
+test('minimizing the Assistant window lets finished replies count as unread and the character sleep', async () => {
+	resetAssistantTurn()
+	openAssistantView()
+	const ac = new AbortController()
+	beginAssistantTurn(ac)
+	// Minimizing closes the assistant view without aborting the live turn.
+	closeAssistantView()
+	assert.equal(ac.signal.aborted, false)
+	assert.equal(assistantTurn().open, false)
+	assert.equal(assistantActivity().open, false)
+
+	finishAssistantTurn(ac)
+	assert.equal(assistantTurn().unread, 1)
+	assert.equal(characterState(assistantActivity(), {now: assistantActivity().activeAt + SLEEP_MS + 1}), 'sleeping')
+
+	// Restoring the window marks the view open again and clears unread.
+	openAssistantView()
+	assert.equal(assistantTurn().open, true)
+	assert.equal(assistantTurn().unread, 0)
+
+	const deskSrc = await readFile(new URL('../web/src/desktop/Desktop.tsx', import.meta.url), 'utf8')
+	const minBlock = deskSrc.match(/const minimize = useCallback\([\s\S]*?\}, \[update\]\)/)?.[0] ?? ''
+	assert.match(minBlock, /kind === 'assistant'[\s\S]*closeAssistantView\(\)/, 'Desktop minimize closes the assistant view')
 })
