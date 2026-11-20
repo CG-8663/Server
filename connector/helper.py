@@ -370,7 +370,14 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             cfg = re.split(r"^errors:", parts[1], flags=re.M)[0]
         layout = set()
         devices = []
+        section = "data"
         for line in cfg.split("\n"):
+            sec = re.match(r"^\s+(logs|cache|spares|special|dedup)\s*\Z", line)
+            if sec:
+                section = sec.group(1)
+                continue
+            if section != "data":
+                continue
             m = re.match(r"^\s+(\S+)\s+(ONLINE|DEGRADED|FAULTED|OFFLINE|UNAVAIL|REMOVED)\s+(\d+\S*)\s+(\d+\S*)\s+(\d+\S*)", line)
             if not m:
                 continue

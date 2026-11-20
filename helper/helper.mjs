@@ -219,13 +219,20 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		const cfg = text.split(/^\s*config:\s*$/m)[1]?.split(/^errors:/m)[0] ?? ''
 		const layout = new Set()
 		const devices = []
+		let section = 'data'
 		for (const line of cfg.split('\n')) {
+			const sec = /^\s+(logs|cache|spares|special|dedup)\s*$/.exec(line)
+			if (sec) {
+				section = sec[1]
+				continue
+			}
+			if (section !== 'data') continue
 			const m = /^\s+(\S+)\s+(ONLINE|DEGRADED|FAULTED|OFFLINE|UNAVAIL|REMOVED)\s+(\d+\S*)\s+(\d+\S*)\s+(\d+\S*)/.exec(line)
 			if (!m) continue
 			if (/^(mirror|raidz[123]?|draid)/.test(m[1])) layout.add(m[1].replace(/-\d+$/, ''))
 			else if (m[1].startsWith('/')) devices.push({path: m[1], state: m[2], errors: [m[3], m[4], m[5]].map((x) => Number.parseInt(x, 10) || 0).reduce((a, b) => a + b, 0)})
 		}
-		return {state, scan, errors, layout: layout.size ? [...layout].join('+') : 'stripe', devices}
+		return {state, scan, errors, layout: layout.size ? [...layout].sort().join('+') : 'stripe', devices}
 	}
 	async function zfsPoolMount(name) {
 		if (!ZFS_NAME.test(name ?? '')) fail('Bad pool name')

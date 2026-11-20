@@ -357,6 +357,78 @@ errors: No known data errors
 		assert.deepEqual([imp.name, imp.state, imp.otherSystem], ['oldtank', 'ONLINE', true])
 	})
 
+	test('ZFS status ignores logs, cache, spares, special and dedup vdevs for layout and drive count', async () => {
+		const statusWithAux = `  pool: tank
+ state: ONLINE
+  scan: scrub repaired 0B in 00:10:00 with 0 errors on Sun Nov  1 00:24:02 2026
+config:
+
+	NAME                                          STATE     READ WRITE CKSUM
+	tank                                          ONLINE       0     0     0
+	  raidz1-0                                    ONLINE       0     0     0
+	    /dev/disk/by-id/ata-A-part1               ONLINE       0     0     0
+	    /dev/disk/by-id/ata-B-part1               ONLINE       0     0     0
+	    /dev/disk/by-id/ata-C-part1               ONLINE       0     0     0
+	logs
+	  mirror-1                                    ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-L1-part1             ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-L2-part1             ONLINE       0     0     0
+	special
+	  mirror-2                                    ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-S1-part1             ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-S2-part1             ONLINE       0     0     0
+	dedup
+	  mirror-3                                    ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-D1-part1             ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-D2-part1             ONLINE       0     0     0
+	cache
+	  /dev/disk/by-id/nvme-C1-part1               ONLINE       0     0     0
+	spares
+	  /dev/disk/by-id/ata-SPARE-part1             AVAIL
+
+errors: No known data errors
+`
+		const mixedData = `  pool: mix
+ state: ONLINE
+config:
+
+	NAME                                STATE     READ WRITE CKSUM
+	mix                                 ONLINE       0     0     0
+	  raidz1-0                          ONLINE       0     0     0
+	    /dev/disk/by-id/ata-1           ONLINE       0     0     0
+	    /dev/disk/by-id/ata-2           ONLINE       0     0     0
+	    /dev/disk/by-id/ata-3           ONLINE       0     0     0
+	  mirror-1                          ONLINE       0     0     0
+	    /dev/disk/by-id/ata-4           ONLINE       0     0     0
+	    /dev/disk/by-id/ata-5           ONLINE       0     0     0
+
+errors: No known data errors
+`
+		const fs = fakeFs({'/etc/fstab': ''})
+		const run = fakeRun([], {
+			zpool: (a) =>
+				a[0] === 'list'
+					? 'tank\t8000\t1000\t7000\tONLINE\nmix\t9000\t1000\t8000\tONLINE\n'
+					: a[0] === 'status'
+						? a.at(-1) === 'mix'
+							? mixedData
+							: statusWithAux
+						: '',
+			zfs: () => '/tank\n',
+		})
+		const h = createHelper({user, fs, run})
+		const pools = JSON.parse(await h.handle('zfs-pools'))
+		const tank = pools.find((p) => p.name === 'tank')
+		assert.equal(tank.layout, 'raidz1')
+		assert.deepEqual(
+			tank.devices.map((d) => d.path),
+			['/dev/disk/by-id/ata-A-part1', '/dev/disk/by-id/ata-B-part1', '/dev/disk/by-id/ata-C-part1'],
+		)
+		const mix = pools.find((p) => p.name === 'mix')
+		assert.equal(mix.layout, 'mirror+raidz1')
+		assert.equal(mix.devices.length, 5)
+	})
+
 	test('firewall: app ports only', async () => {
 		const h = createHelper({user, run: fakeRun([]), fs: fakeFs()})
 		for (const p of ['22', '2021', '5900', '70000', 'abc']) await assert.rejects(h.handle('firewall-open', [p]), /Bad port/)

@@ -542,6 +542,72 @@ class Helper(unittest.TestCase):
         self.assertEqual(d["pool"], "tank")
         self.assertIsNone(d["zfs"])
 
+    def test_zfs_status_ignores_logs_cache_spares_special_and_dedup(self):
+        status_with_aux = """  pool: tank
+ state: ONLINE
+  scan: scrub repaired 0B in 00:10:00 with 0 errors on Sun Nov  1 00:24:02 2026
+config:
+
+\tNAME                                          STATE     READ WRITE CKSUM
+\ttank                                          ONLINE       0     0     0
+\t  raidz1-0                                    ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-A-part1               ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-B-part1               ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-C-part1               ONLINE       0     0     0
+\tlogs
+\t  mirror-1                                    ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-L1-part1             ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-L2-part1             ONLINE       0     0     0
+\tspecial
+\t  mirror-2                                    ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-S1-part1             ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-S2-part1             ONLINE       0     0     0
+\tdedup
+\t  mirror-3                                    ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-D1-part1             ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-D2-part1             ONLINE       0     0     0
+\tcache
+\t  /dev/disk/by-id/nvme-C1-part1               ONLINE       0     0     0
+\tspares
+\t  /dev/disk/by-id/ata-SPARE-part1             AVAIL
+
+errors: No known data errors
+"""
+        mixed_data = """  pool: mix
+ state: ONLINE
+config:
+
+\tNAME                                STATE     READ WRITE CKSUM
+\tmix                                 ONLINE       0     0     0
+\t  raidz1-0                          ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-1           ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-2           ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-3           ONLINE       0     0     0
+\t  mirror-1                          ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-4           ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-5           ONLINE       0     0     0
+
+errors: No known data errors
+"""
+
+        def run(cmd, args):
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "tank\t8000\t1000\t7000\tONLINE\nmix\t9000\t1000\t8000\tONLINE\n"
+            if cmd == "zpool" and args[:1] == ["status"]:
+                return mixed_data if args[-1] == "mix" else status_with_aux
+            if cmd == "zfs":
+                return "/tank\n"
+            return ""
+
+        pools = {p["name"]: p for p in json.loads(self.handle("zfs-pools", [], run=run, user=self.kw["user"], files={}))}
+        self.assertEqual(pools["tank"]["layout"], "raidz1")
+        self.assertEqual(
+            [d["path"] for d in pools["tank"]["devices"]],
+            ["/dev/disk/by-id/ata-A-part1", "/dev/disk/by-id/ata-B-part1", "/dev/disk/by-id/ata-C-part1"],
+        )
+        self.assertEqual(pools["mix"]["layout"], "mirror+raidz1")
+        self.assertEqual(len(pools["mix"]["devices"]), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
