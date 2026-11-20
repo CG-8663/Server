@@ -4,17 +4,34 @@ import http from 'node:http'
 import {networkInterfaces, homedir} from 'node:os'
 import {dirname, join} from 'node:path'
 import {fileURLToPath} from 'node:url'
+import {parseArgs} from 'node:util'
 
 import {createApp, normalizeBackendUrl, VERSION} from './app.mjs'
 import {createStore} from './store.mjs'
 import {defaultTlsDir, dualProtocolServer, tlsContext} from '../omarchyd/tls.mjs'
 
-const args = process.argv.slice(2)
-const flag = (name) => {
-	const i = args.indexOf(`--${name}`)
-	return i >= 0 ? args[i + 1] : undefined
+let values
+try {
+	const parsed = parseArgs({
+		strict: true,
+		allowPositionals: false,
+		options: {
+			backend: {type: 'string'},
+			port: {type: 'string'},
+			host: {type: 'string'},
+			data: {type: 'string'},
+			'app-hosts': {type: 'string'},
+			help: {type: 'boolean', short: 'h'},
+		},
+	})
+	values = parsed.values
+} catch (error) {
+	console.error(`[omarchy-server] ${error.message}`)
+	console.error('Run with --help for usage.')
+	process.exit(2)
 }
-if (args.includes('--help') || args.includes('-h')) {
+
+if (values.help) {
 	console.log(`Omarchy Server ${VERSION}
 
   omarchy-server [--backend <address>] [--port <n>] [--host <addr>] [--data <dir>]
@@ -26,16 +43,16 @@ if (args.includes('--help') || args.includes('-h')) {
 	process.exit(0)
 }
 
-const port = Number(flag('port') ?? process.env.PORT ?? 7780)
-const host = flag('host') ?? process.env.HOST ?? '0.0.0.0'
-const dataDir = flag('data') ?? process.env.OMARCHY_SERVER_DATA ?? join(homedir(), '.config', 'omarchy-server')
+const port = Number(values.port ?? process.env.PORT ?? 7780)
+const host = values.host ?? process.env.HOST ?? '0.0.0.0'
+const dataDir = values.data ?? process.env.OMARCHY_SERVER_DATA ?? join(homedir(), '.config', 'omarchy-server')
 const staticDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist')
 
 const store = await createStore(dataDir)
-const backendArg = flag('backend') ?? process.env.OMARCHY_BACKEND_URL
+const backendArg = values.backend ?? process.env.OMARCHY_BACKEND_URL
 if (backendArg) await store.setConfig({backendUrl: normalizeBackendUrl(backendArg)})
 // App addresses for remote access, e.g. "{app}-touch.example.com"; kept until set to "off".
-const appHosts = flag('app-hosts') ?? process.env.TOUCH_APP_HOSTS
+const appHosts = values['app-hosts'] ?? process.env.TOUCH_APP_HOSTS
 if (appHosts) await store.setConfig({appHosts: appHosts === 'off' ? null : appHosts})
 
 // https:// on the same port as http:// (see omarchyd/tls.mjs). The certificate is shared with omarchyd.
