@@ -194,7 +194,10 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         if any("/Pools/" in m for m in mounts(d)):
             return True
         uuids = {x.get("uuid") for x in flat(d) if x.get("uuid")}
-        return any(FSTAB_MARK in l and any(u in l for u in uuids) for l in fstab())
+        if any(FSTAB_MARK in l and any(u in l for u in uuids) for l in fstab()):
+            return True
+        names = set(zfs_pool_names())
+        return any(x.get("fstype") == "zfs_member" and x.get("label") in names for x in flat(d))
 
     def fstab_pools():
         out = []

@@ -52,6 +52,30 @@ class Fake:
         return ""
 
 
+def zfs_member_lsblk():
+    tree = copy.deepcopy(LSBLK)
+    sdb = next(d for d in tree["blockdevices"] if d["path"] == "/dev/sdb")
+    sdb["children"] = [{
+        "name": "sdb1",
+        "path": "/dev/sdb1",
+        "type": "part",
+        "fstype": "zfs_member",
+        "label": "tank",
+        "mountpoints": [None],
+    }]
+    return tree
+
+
+def run_with_zpool_list(fake, text):
+    def run(cmd, args):
+        if cmd == "zpool" and list(args)[:4] == ["list", "-H", "-o", "name"]:
+            fake.log.append([cmd, *list(args)])
+            return text
+        return fake.run(cmd, args)
+
+    return run
+
+
 class Helper(unittest.TestCase):
     def setUp(self):
         from helper import handle
@@ -236,6 +260,26 @@ class Helper(unittest.TestCase):
         self.assertTrue(any(x[:3] == ["btrfs", "scrub", "start"] for x in self.fake.log))
         self.assertEqual(self.handle("pool-forget", ["tank"], **self.kw), "ok")
         self.assertNotIn("# omarchy-connector pool tank", self.fake.files["/etc/fstab"])
+
+    def test_format_and_umount_refuse_imported_zfs_pool(self):
+        fake = Fake(zfs_member_lsblk())
+        kw = dict(run=run_with_zpool_list(fake, "tank\n"), user=self.kw["user"], files=fake.files)
+        with self.assertRaisesRegex(Exception, r"/dev/sdb is in a pool"):
+            self.handle("format", ["/dev/sdb", "blank"], **kw)
+        with self.assertRaisesRegex(Exception, r"/dev/sdb is in a pool"):
+            self.handle("umount", ["/dev/sdb"], **kw)
+        self.assertFalse(any(c[0] == "wipefs" and "-a" in c for c in fake.log))
+
+    def test_format_allows_zfs_member_when_pool_not_imported(self):
+        tree = zfs_member_lsblk()
+        missing = Fake(tree)
+        kw = dict(run=missing.run, user=self.kw["user"], files=missing.files)
+        self.assertEqual(self.handle("format", ["/dev/sdb", "blank"], **kw), "ok")
+        self.assertIn(["wipefs", "-a", "/dev/sdb"], missing.log)
+        empty = Fake(tree)
+        kw = dict(run=run_with_zpool_list(empty, ""), user=self.kw["user"], files=empty.files)
+        self.assertEqual(self.handle("format", ["/dev/sdb", "blank"], **kw), "ok")
+        self.assertIn(["wipefs", "-a", "/dev/sdb"], empty.log)
 
 
 if __name__ == "__main__":
