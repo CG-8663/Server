@@ -49,7 +49,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const catalogUrl = storeDir ? fileUrl(join(storeDir, 'machines', 'catalog.json')) : undefined
 	const machines = createMachines({dataDir, files, ...(catalogUrl ? {catalogUrl} : {}), ...machineOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
-	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, webPort, ...(sourceDir ? {sourceDir} : {}), ...updaterOptions})
+	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, webPort, ...(sourceDir ? {sourceDir} : {}), ...(storeDir ? {appStoreDir: storeDir} : {}), ...updaterOptions})
 	// One certificate context for the app gateways and the Security settings. On a server this is
 	// the folder the web server uses too (omarchyd/cli.mjs passes it), so apps are served with the
 	// certificate your devices trust and the Security settings reach both. Before 0.9.13 omarchyd kept

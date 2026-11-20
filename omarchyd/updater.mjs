@@ -18,6 +18,17 @@ import {RpcError} from './rpc.mjs'
 export const REPO_RAW = 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server'
 export const INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash'
 export const installCommand = (sourceDir) => (sourceDir ? `OMARCHY_SERVER_REPO=${sourceDir} bash ${join(sourceDir, 'install.sh')}` : INSTALL_COMMAND)
+const shQuote = (value) => `'${String(value).replaceAll("'", `'\\''`)}'`
+// The sign-in prompt runs this in a terminal. With a local source it must run that clone's
+// install.sh, and keep the isolation variables, or the installer would rewrite the service
+// without them and the next start would update from GitHub.
+export function installerPromptCommand({sourceDir, appStoreDir, port, curl}) {
+	if (!sourceDir) return curl
+	const env = [`OMARCHY_SERVER_SOURCE=${shQuote(sourceDir)}`]
+	if (appStoreDir) env.push(`OMARCHY_SERVER_APP_STORE=${shQuote(appStoreDir)}`)
+	env.push(`OMARCHY_SERVER_REPO=${shQuote(sourceDir)}`, 'OMARCHY_SERVER_FROM_APP=1', `OMARCHY_SERVER_PORT=${port}`)
+	return `${env.join(' ')} bash ${shQuote(join(sourceDir, 'install.sh'))}`
+}
 // Where this copy came from: the GitHub repository it was installed from (its git origin), so a copy
 // installed from omarchy-server-dev checks and updates from there, and one from omarchy-server from there.
 export function rawFromOrigin(url) {
@@ -91,6 +102,7 @@ export function createUpdater({
 	// Callers pass sourceDir (startOmarchyd). Do not default it from OMARCHY_SERVER_SOURCE here:
 	// tests mock GitHub and would otherwise read the live clone.
 	sourceDir,
+	appStoreDir,
 	// Only a copy the installer set up (running as a systemd service) is checked; not a dev run.
 	installerCheck = BETA_INSTALLER_PROMPT && !!process.env.INVOCATION_ID,
 }) {
@@ -248,10 +260,14 @@ export function createUpdater({
 			for (const p of installerPackages(script)) if (!(await run('pacman', ['-Q', p], {timeout: 10_000}).then(() => true, () => false))) missing.push(p)
 			if (missing.length) reasons.push(`New system packages are needed: ${missing.join(', ')}.`)
 		}
+		const port = Number(webPort) || 7780
 		const value = reasons.length
-			? {needed: true, reasons, command: sourceDir
-				? `OMARCHY_SERVER_REPO=${sourceDir} OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=${Number(webPort) || 7780} bash ${join(sourceDir, 'install.sh')}`
-				: `curl -fsSL ${await source()}/${branch}/install.sh | OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=${Number(webPort) || 7780} bash`}
+			? {needed: true, reasons, command: installerPromptCommand({
+				sourceDir,
+				appStoreDir,
+				port,
+				curl: `curl -fsSL ${await source()}/${branch}/install.sh | OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=${port} bash`,
+			})}
 			: {needed: false, reasons: []}
 		installerCache = {at: Date.now(), value}
 		return value

@@ -152,6 +152,34 @@ test('installer prompt: needed after an update the installer hasn’t been run f
 	assert.deepEqual(await make({installerCheck: false}).procedures['system.installerStatus'].run(), {needed: false, reasons: []})
 })
 
+test('installer prompt runs the local clone’s install.sh when a source is set', async () => {
+	const {mkdir} = await import('node:fs/promises')
+	const src = join(dir, 'prompt-src')
+	const store = join(dir, 'prompt-store')
+	const app = join(dir, 'prompt-app')
+	const data = join(dir, 'prompt-data')
+	await writeSource(src, {version: '0.6.1'})
+	await mkdir(join(app, 'helper'), {recursive: true})
+	await mkdir(data, {recursive: true})
+	await writeFile(join(app, 'install.sh'), '#!/bin/bash\nINSTALLER_REVISION=2\nfor pkg in nodejs; do x; done\n')
+	await writeFile(join(app, 'helper', 'helper.mjs'), 'helper v2')
+	const helperPath = join(dir, 'prompt-helper.mjs')
+	await writeFile(helperPath, 'helper v1')
+	const run = async (cmd, args) => {
+		if (cmd === 'git') return 'https://github.com/TouchWorkStation/omarchy-server.git\n'
+		if (cmd === 'pacman') throw new Error('not found')
+		return ''
+	}
+	const u = createUpdater({autoCheck: false, appDir: app, dataDir: data, currentVersion: '1.0.0', sourceDir: src, appStoreDir: store, run, helperPath, webPort: 7790, installerCheck: true})
+	const st = await u.procedures['system.installerStatus'].run()
+	assert.equal(st.needed, true)
+	assert.equal(
+		st.command,
+		`OMARCHY_SERVER_SOURCE='${src}' OMARCHY_SERVER_APP_STORE='${store}' OMARCHY_SERVER_REPO='${src}' OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=7790 bash '${join(src, 'install.sh')}'`,
+	)
+	assert.equal(st.command.includes('curl'), false)
+})
+
 async function writeSource(src, {version, helper = 'helper v2', install = 'for pkg in nodejs wayvnc; do x; done'} = {}) {
 	const {mkdir} = await import('node:fs/promises')
 	await mkdir(join(src, 'web/src'), {recursive: true})
