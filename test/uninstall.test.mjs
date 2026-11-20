@@ -97,6 +97,50 @@ const filesKept = async (box) => {
 	assert.equal(await exists(join(box.home, 'Documents/mine.txt')), true, 'your files are never touched')
 }
 
+// Root files the helper wrote. A successful uninstall logs their removal and does not tell the
+// user they were left behind. `sudo` only records the command, so smb.conf itself is not rewritten here.
+const rootLeftovers = [
+	['udev sleep rule', /sudo rm -f[^\n]*\/etc\/udev\/rules\.d\/69-omarchy-server-sleep\.rules/],
+	['udev usb rule', /sudo rm -f[^\n]*\/etc\/udev\/rules\.d\/69-omarchy-server-usb\.rules/],
+	['udev reload', /sudo udevadm control --reload/],
+	['port sysctl file', /sudo rm -f \/etc\/sysctl\.d\/60-omarchy-server-ports\.conf/],
+	['sysctl reload', /sudo sysctl --system/],
+	['smb disable', /sudo systemctl disable --now smb\.service/],
+	['shares conf', /sudo rm -f \/etc\/samba\/omarchy-server-shares\.conf/],
+	['445', /sudo ufw delete allow 445\/tcp\n/],
+	['445 lan 10', /sudo ufw delete allow from 10\.0\.0\.0\/8 to any port 445 proto tcp\n/],
+	['445 lan 172', /sudo ufw delete allow from 172\.16\.0\.0\/12 to any port 445 proto tcp\n/],
+	['445 lan 192', /sudo ufw delete allow from 192\.168\.0\.0\/16 to any port 445 proto tcp\n/],
+]
+const notLeftBehind = (out) => {
+	assert.doesNotMatch(out, /69-omarchy-server-(?:sleep|usb)\.rules/)
+	assert.doesNotMatch(out, /60-omarchy-server-ports\.conf/)
+	assert.doesNotMatch(out, /omarchy-server-shares\.conf/)
+	assert.doesNotMatch(out, /SMB shares/)
+}
+
+test('uninstall removes udev rules, the port sysctl file and Samba shares', async () => {
+	for (const args of [['-y'], ['--purge', '-y']]) {
+		const box = await install(`root-${args.includes('--purge') ? 'purge' : 'keep'}`)
+		const r = run(box, args)
+		assert.equal(r.status, 0, r.out)
+		const c = await calls(box)
+		for (const [name, pattern] of rootLeftovers) assert.match(c, pattern, name)
+		notLeftBehind(r.out)
+	}
+})
+
+test('when sudo cannot run, the commands to remove udev rules, the sysctl file and Samba shares are printed', async () => {
+	for (const args of [['-y'], ['--purge', '-y']]) {
+		const box = await install(`root-nosudo-${args.includes('--purge') ? 'purge' : 'keep'}`)
+		const r = run(box, args, {FAKE_SUDO_FAILS: '1'})
+		assert.equal(r.status, 1, r.out)
+		for (const [name, pattern] of rootLeftovers) assert.match(r.out, pattern, name)
+		assert.match(r.out, /include = \/etc\/samba\/omarchy-server-shares\.conf/)
+		assert.ok(!(await calls(box)).includes('sudo '), 'sudo was never run')
+	}
+})
+
 test('uninstall removes the program and keeps the account, the apps’ data and your files', async () => {
 	const box = await install('keep')
 	const r = run(box, ['-y'])

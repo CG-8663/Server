@@ -43,6 +43,25 @@ function run(home, dir, extra = {}) {
 	return {status: r.status, out: `${r.stdout}${r.stderr}`, log}
 }
 
+test('uninstall removes the connector sleep udev rule when sudo succeeds', async () => {
+	const home = join(root, 'udev-ok')
+	await mkdir(home)
+	const r = run(home, await bin())
+	assert.equal(r.status, 0, r.out)
+	const log = await readFile(r.log, 'utf8')
+	assert.match(log, /sudo rm -f[^\n]*\/etc\/udev\/rules\.d\/69-omarchy-connector-sleep\.rules/)
+	assert.match(log, /sudo udevadm control --reload/)
+})
+
+test('when sudo fails, the printed command includes the connector udev rule', async () => {
+	const home = join(root, 'udev-fail')
+	await mkdir(home)
+	const r = run(home, await bin(), {FAKE_SUDO_FAILS: '1'})
+	assert.equal(r.status, 1)
+	assert.match(r.out, /sudo rm -f[^\n]*\/etc\/udev\/rules\.d\/69-omarchy-connector-sleep\.rules/)
+	assert.doesNotMatch(r.out, /Done\./)
+})
+
 test('uninstall says it could not remove the helper when sudo fails, and exits 1', async () => {
 	const home = join(root, 'fail')
 	await mkdir(home)
