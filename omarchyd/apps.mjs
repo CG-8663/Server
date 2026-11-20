@@ -1122,7 +1122,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					if (!ok) await rm(path, {force: true})
 				}
 				// Hidden home folders are refused, except the app's own folder and the shared root.
-				const own = under(path, dir) || under(real, dir) || under(path, shared) || under(real, shared)
+				// Judge where it really is: a link inside the app folder can lead anywhere.
+				const own = under(real, dir) || under(real, shared)
 				if (!own && (refusedMount(real, home) || refusedMount(path, home))) continue
 				// One of your folders (Videos, Music…): make sure it exists and let the app's user in.
 				const mine = Object.values(USER_DIRS).map((d) => join(home, d)).find((d) => under(path, d) || under(real, d))
@@ -1135,7 +1136,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				if (!under(path, dir) && !under(path, shared) && !under(real, dir) && !under(real, shared)) continue
 				if (!(await exists(path))) await mkdir(path, {recursive: true})
 				// Folders inside the app's own folder are its data: they get handed to its container user.
-				if (under(path, dir) && path !== dir && (await lstat(path).then((st) => st.isDirectory(), () => false))) app.dataDirs.push(path)
+				if (under(path, dir) && under(realpathExisting(path), dir) && path !== dir && (await lstat(path).then((st) => st.isDirectory(), () => false))) app.dataDirs.push(path)
 			}
 		}
 	}
