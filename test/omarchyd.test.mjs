@@ -43,7 +43,7 @@ describe('omarchyd', () => {
 		const r = await call('query', 'system.version')
 		assert.equal(r.status, 200)
 		const v = r.body.result.data
-		assert.equal(v.version, '0.9.47')
+		assert.equal(v.version, '0.9.48')
 		assert.equal(typeof v.startedAt, 'number')
 		assert.ok(v.startedAt <= Date.now() && Date.now() - v.startedAt < 60_000)
 		assert.match(String(v.revision ?? ''), /^[0-9a-f]{7,40}$/)
@@ -222,6 +222,7 @@ describe('network shares are owner-only', () => {
 	test('a member cannot replace this server or change storage pools', async () => {
 		const rpcs = [
 			['mutation', 'system.update'],
+			['mutation', 'system.setReleaseChannel', {channel: 'stable'}],
 			['mutation', 'storage.createPool', {name: 'pool', devices: ['not-a-disk']}],
 			['mutation', 'storage.addToPool', {name: 'pool', device: 'not-a-disk'}],
 			['mutation', 'storage.importPool', {name: 'pool', uuid: 'not-a-uuid'}],
