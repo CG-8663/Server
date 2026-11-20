@@ -68,3 +68,17 @@ export function assistantIconBadge({unread = 0, pending = 0, phase}: {unread?: n
 	if (phase === 'error') return {warn: true}
 	return null
 }
+
+// One reply runs per chat on the server, so wait until the current reply finishes before sending
+// another message, starting an Approve/Reject, or opening a follow-up stream.
+export function canSendAssistantMessage({draft, itemsLoaded, streaming, decidingCount}: {draft: string; itemsLoaded: boolean; streaming: boolean; decidingCount: number}): boolean {
+	return draft.trim().length > 0 && itemsLoaded && !streaming && decidingCount === 0
+}
+
+export function canDecideAssistantAction({status, streaming}: {status: string; streaming: boolean}): boolean {
+	return status === 'pending' && !streaming
+}
+
+export function canStartAssistantFollow({pumping, decidingCount, followQueued, streaming}: {pumping: boolean; decidingCount: number; followQueued: boolean; streaming: boolean}): boolean {
+	return !pumping && decidingCount === 0 && followQueued && !streaming
+}
