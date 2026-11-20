@@ -1422,6 +1422,26 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		await writeFile(file, YAML.stringify(doc), {mode: 0o600})
 		await run('docker-compose', ['-p', 'omarchy-tor', '-f', file, 'up', '-d'], {env: engineEnv, cwd: dir})
 	}
+	// The prepared compose file may already have the address filled in. The store file still names the variable.
+	async function composeMentionsTor(dir) {
+		for (const name of ['compose.omarchy.yml', ...COMPOSE_FILES]) {
+			const text = await readFile(join(dir, name), 'utf8').catch(() => '')
+			if (/\$\{?TOR_PROXY_IP\b/.test(text) || text.includes(TOR_PROXY_IP)) return true
+		}
+		return false
+	}
+	// `exceptId` is the app being removed. Tor stops only when nothing still installed uses it.
+	async function stopTorIfIdle(exceptId) {
+		const dir = join(base, 'system', 'tor')
+		const file = join(dir, 'compose.yml')
+		if (!(await exists(file))) return
+		for (const other of state.apps) {
+			if (other.id === exceptId) continue
+			if (await composeMentionsTor(appDir(other.id))) return
+		}
+		await run('docker-compose', ['-p', 'omarchy-tor', '-f', file, 'down'], {env: engineEnv, cwd: dir})
+		await rm(dir, {recursive: true, force: true})
+	}
 
 	// The store's files for an app, into its folder. On an update the folder already holds the app's
 	// data, owned by its container user: files the app keeps in those data folders are left as they
@@ -1785,7 +1805,16 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			if (app.viewPort) await firewall?.close(app.viewPort)
 			for (const p of app.openPorts ?? []) await firewall?.close(p)
 			if (app.system) await systemApps?.uninstall(app)
-			if (await exists(join(appDir(app.id), 'compose.omarchy.yml'))) await compose(app, 'down', '--volumes', '--remove-orphans').catch(() => {})
+			// A failed `down` leaves the containers running. Keep the app listed so it can be retried.
+			try {
+				if (await exists(join(appDir(app.id), 'compose.omarchy.yml'))) await compose(app, 'down', '--volumes', '--remove-orphans')
+				await stopTorIfIdle(app.id)
+			} catch (error) {
+				if (error instanceof RpcError) throw error
+				console.error(`[omarchyd] uninstalling ${app.id}:`, error)
+				const detail = String(error.message ?? error).replace(/\s+/g, ' ').trim().slice(-300)
+				throw new RpcError('BAD_GATEWAY', `Couldn’t uninstall ${app.name ?? app.id}: ${detail}`)
+			}
 			await removeAppDir(app.id)
 			state.apps = state.apps.filter((a) => a.id !== app.id)
 			state.recent = state.recent.filter((r) => r !== app.id)
@@ -1915,6 +1944,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				for (const a of [...state.apps]) await uninstall({appId: a.id}).catch(() => {})
 				if (state.apps.length === before) break
 			}
+			// An app that failed to uninstall may still need Tor. Otherwise the proxy stops here too,
+			// including when a reset finds no apps left and the container is still up.
+			await stopTorIfIdle(null)
 			state.passGen = {}
 			await save()
 			return state.apps.length
