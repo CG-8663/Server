@@ -587,7 +587,17 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			if (conversationId) row = await conversations.get(userId, conversationId)
 			let key
 			try {
-				key = await keys.resolveForUser(userId, keyId || row?.keyId || undefined)
+				if (keyId) {
+					key = await keys.resolveForUser(userId, keyId)
+				} else if (row?.keyId) {
+					// If the chat's remembered key was deleted or unshared, switch to another key they can use.
+					key = await keys.resolveForUser(userId, row.keyId).catch((e) => {
+						if (e?.code !== 'NOT_FOUND') throw e
+						return keys.resolveForUser(userId)
+					})
+				} else {
+					key = await keys.resolveForUser(userId)
+				}
 			} catch (e) {
 				say('error', {message: e?.message || 'Add an API key in Settings → Assistant, or ask the owner to share one'})
 				return finish(row?.id)

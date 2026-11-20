@@ -155,3 +155,59 @@ test('a step left running across a restart is marked interrupted and reports its
 		await rm(dataDir, {recursive: true, force: true})
 	}
 })
+
+test('an existing chat falls back to another usable key when its remembered key is deleted or unshared', async () => {
+	const dataDir = await tmp()
+	try {
+		const auths = []
+		const asst = createAssistant({
+			dataDir,
+			accounts: fakeAccounts(),
+			now: () => 1,
+			fetchImpl: async (_url, init) => {
+				auths.push(init.headers.authorization)
+				return openaiSays('hello')
+			},
+			runProcedure: async () => null,
+		})
+		const k1 = await asst.keys.add(OWNER, {provider: 'openai', api: 'chat', apiKey: 'sk-aaaa1111', model: 'm'})
+		const run = async (who, opts) => {
+			const events = []
+			const res = await asst.runTurn({userId: who.userId, role: who.role, ...opts, emit: (e) => events.push(e)})
+			return {conversationId: res.conversationId, events}
+		}
+
+		// Case 1: owner deletes the key the chat started with and adds another.
+		const first = await run(OWNER, {message: 'hi'})
+		assert.deepEqual(first.events.map((e) => e.event), ['text', 'done'])
+		const k2 = await asst.keys.add(OWNER, {provider: 'openai', api: 'chat', apiKey: 'sk-bbbb2222', model: 'm'})
+		await asst.keys.remove(OWNER, k1.id)
+		const second = await run(OWNER, {conversationId: first.conversationId, message: 'again'})
+		assert.deepEqual(second.events.map((e) => e.event), ['text', 'done'])
+		assert.equal(auths.at(-1), 'Bearer sk-bbbb2222')
+		assert.equal((await asst.conversations.get('owner', first.conversationId)).keyId, k2.id)
+
+		// Explicit keyId still refuses an unavailable key rather than silently switching.
+		const explicit = await run(OWNER, {conversationId: first.conversationId, keyId: k1.id, message: 'explicit'})
+		assert.deepEqual(explicit.events, [{event: 'error', data: {message: 'That key isn’t available'}}])
+
+		// Case 2: owner stops sharing a key with a member who still has another key.
+		await asst.keys.update(OWNER, {id: k2.id, sharedWith: ['sam']})
+		const samChat = await run(SAM, {message: 'hello from sam'})
+		assert.deepEqual(samChat.events.map((e) => e.event), ['text', 'done'])
+		const kSam = await asst.keys.add(SAM, {provider: 'openai', api: 'chat', apiKey: 'sk-sams3333', model: 'm'})
+		await asst.keys.update(OWNER, {id: k2.id, sharedWith: []})
+		const samNext = await run(SAM, {conversationId: samChat.conversationId, message: 'still there?'})
+		assert.deepEqual(samNext.events.map((e) => e.event), ['text', 'done'])
+		assert.equal(auths.at(-1), 'Bearer sk-sams3333')
+		assert.equal((await asst.conversations.get('sam', samChat.conversationId)).keyId, kSam.id)
+
+		// Case 3: when no usable key remains, guide them to Settings instead of "That key isn’t available".
+		await asst.keys.remove(SAM, kSam.id)
+		const noneLeft = await run(SAM, {conversationId: samChat.conversationId, message: 'any key?'})
+		assert.equal(noneLeft.events[0].event, 'error')
+		assert.match(noneLeft.events[0].data.message, /Settings → Assistant/)
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
