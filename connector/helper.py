@@ -770,20 +770,32 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         name = args[0] if args else ""
         zfs_pool_mount(name)
         bind = next((l for l in fstab() if l.endswith("%s %s" % (ZFS_MARK, name))), None)
-        if bind:
+        bind_parts = bind.split() if bind else []
+        bind_target = bind_parts[1] if len(bind_parts) >= 2 else None
+        unmounted = False
+        if bind_target:
             try:
-                run("umount", [bind.split()[1]])
-            except Exception:
-                pass
-            write_text("/etc/fstab", "\n".join(l for l in fstab() if l != bind))
+                run("umount", [bind_target])
+                unmounted = True
+            except Exception as e:
+                if "not mounted" not in str(e).lower():
+                    fail("%s is in use. Stop apps and shares using it, then try again." % name)
+        try:
+            run("zpool", ["export", name])
+        except Exception:
+            if unmounted:
+                try:
+                    run("mount", [bind_target])
+                except Exception:
+                    pass
+            fail("%s is in use. Stop apps and shares using it, then try again." % name)
+        if bind:
+            kept = [l for l in fstab() if l != bind]
+            write_text("/etc/fstab", ("\n".join(kept) + "\n") if kept else "")
             try:
                 run("systemctl", ["daemon-reload"])
             except Exception:
                 pass
-        try:
-            run("zpool", ["export", name])
-        except Exception:
-            fail("%s is in use. Stop apps and shares using it, then try again." % name)
         return "ok"
     if verb == "pools":
         devs = [d for d in block_devices() if d.get("type") == "disk"]

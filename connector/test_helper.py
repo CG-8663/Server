@@ -356,6 +356,50 @@ class Helper(unittest.TestCase):
             self.handle("pool-create", ["tank", "single", "/dev/sda"], **kw)
         self.assertEqual(self.fake.files["/etc/fstab"], "UUID=1111 / btrfs defaults 0 0\n")
 
+    def test_zfs_export_keeps_bind_mount_and_fstab_when_export_fails(self):
+        from helper import HelperError
+        fstab_before = "UUID=1 / ext4 defaults 0 0\n/tank /home/chris/Pools/tank none bind,nosuid,nodev,nofail,x-systemd.requires=zfs-mount.service 0 0 # omarchy-connector zfs tank\n"
+        files = {"/etc/fstab": fstab_before}
+        log = []
+        mode = ["busy-export"]
+
+        def run(cmd, args):
+            log.append([cmd, *args])
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "tank\n"
+            if cmd == "umount" and mode[0] == "busy-umount":
+                raise HelperError("umount: /home/chris/Pools/tank: target is busy.")
+            if cmd == "umount" and mode[0] == "not-mounted":
+                raise HelperError("umount: /home/chris/Pools/tank: not mounted.")
+            if cmd == "zpool" and args[:1] == ["export"] and mode[0] == "busy-export":
+                raise HelperError("zpool: pool is busy")
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files=files)
+        with self.assertRaisesRegex(HelperError, "in use"):
+            self.handle("zfs-export", ["tank"], **kw)
+        self.assertEqual(files["/etc/fstab"], fstab_before)
+        umount_idx = next(i for i, c in enumerate(log) if c[0] == "umount" and c[-1] == "/home/chris/Pools/tank")
+        export_idx = log.index(["zpool", "export", "tank"])
+        remount_idx = log.index(["mount", "/home/chris/Pools/tank"])
+        self.assertLess(umount_idx, export_idx)
+        self.assertLess(export_idx, remount_idx)
+
+        log.clear()
+        mode[0] = "busy-umount"
+        with self.assertRaisesRegex(HelperError, "in use"):
+            self.handle("zfs-export", ["tank"], **kw)
+        self.assertEqual(files["/etc/fstab"], fstab_before)
+        self.assertFalse(any(c[:2] == ["zpool", "export"] for c in log))
+
+        for success_mode in ("ok", "not-mounted"):
+            files["/etc/fstab"] = fstab_before
+            log.clear()
+            mode[0] = success_mode
+            self.assertEqual(self.handle("zfs-export", ["tank"], **kw), "ok")
+            self.assertEqual(files["/etc/fstab"], "UUID=1 / ext4 defaults 0 0\n")
+            self.assertIn(["systemctl", "daemon-reload"], log)
+
 
 if __name__ == "__main__":
     unittest.main()
