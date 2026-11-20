@@ -9,6 +9,7 @@ import {
 	canRestoreFocus,
 	checkLiveText,
 	dialogStackSize,
+	fieldAria,
 	getFocusable,
 	getInitialFocusTarget,
 	getMenuItems,
@@ -297,4 +298,39 @@ test('liveRegionText and checkLiveText route status vs alert text and keep persi
 	assert.match(settings, /<div role="status" aria-live="polite" aria-atomic="true">/)
 	assert.match(settings, /<div role="alert" aria-live="assertive" aria-atomic="true">/)
 	assert.match(settings, /<CheckLine check=\{k\.check \?\? null\} \/>/)
+})
+
+test('fieldAria wires aria-describedby and aria-invalid and shared Field replaces duplicates', () => {
+	assert.deepEqual(fieldAria('f1', {}), {hintId: 'f1-hint', errorId: 'f1-error'})
+	assert.deepEqual(fieldAria('f1', {hasHint: true}), {
+		hintId: 'f1-hint',
+		errorId: 'f1-error',
+		describedBy: 'f1-hint',
+	})
+	assert.deepEqual(fieldAria('f1', {hasError: true, hasHint: true}), {
+		hintId: 'f1-hint',
+		errorId: 'f1-error',
+		describedBy: 'f1-error f1-hint',
+		invalid: true,
+	})
+	assert.deepEqual(fieldAria('f1', {invalid: true, describedBy: 'extra'}), {
+		hintId: 'f1-hint',
+		errorId: 'f1-error',
+		describedBy: 'extra',
+		invalid: true,
+	})
+
+	const ui = readFileSync(join(rootDir, 'web/src/ui.tsx'), 'utf8')
+	assert.match(ui, /export function Field\(/)
+	assert.match(ui, /aria-describedby=\{a11y\.describedBy\}/)
+	assert.match(ui, /aria-invalid=\{ariaInvalidProp \?\? a11y\.invalid\}/)
+
+	for (const rel of ['web/src/screens/Settings.tsx', 'web/src/backups.tsx', 'web/src/unraid.tsx']) {
+		const src = readFileSync(join(rootDir, rel), 'utf8')
+		assert.equal(src.includes('function Field('), false, `${rel} should reuse Field from ui.tsx`)
+	}
+	for (const rel of ['web/src/CreateMachine.tsx', 'web/src/screens/Storage.tsx', 'web/src/beforeInstall.tsx', 'web/src/screens/Auth.tsx']) {
+		const src = readFileSync(join(rootDir, rel), 'utf8')
+		assert.match(src, /<Field\b/, `${rel} should use shared Field`)
+	}
 })

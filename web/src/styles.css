@@ -1484,6 +1484,12 @@ h1.title {
 	line-height: 1.45;
 	padding-left: 4px;
 }
+.field .hint.field-error {
+	color: var(--red);
+}
+.field input[aria-invalid='true'] {
+	border-color: var(--red);
+}
 .error {
 	display: flex;
 	gap: 9px;

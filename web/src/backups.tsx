@@ -4,7 +4,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
 import {Icon} from './icons'
-import {Group, Row, Segmented, Sheet, SheetHeader, Switch, haptic, useConfirm, useToast} from './ui'
+import {Field, Group, Row, Segmented, Sheet, SheetHeader, Switch, haptic, useConfirm, useToast} from './ui'
 
 type Nas = {host: string; port?: number; share: string; folder: string; username: string; domain?: string; hasPassword?: boolean}
 type Schedule = {frequency: 'off' | 'daily' | 'weekly'; hour: number; weekday: number}
@@ -90,16 +90,6 @@ function useSave() {
 			qc.invalidateQueries({queryKey: ['backups.snapshots']})
 		},
 	})
-}
-
-function Field({id, label, hint, ...input}: {id: string; label: string; hint?: string} & React.InputHTMLAttributes<HTMLInputElement>) {
-	return (
-		<div className="field">
-			<label htmlFor={id}>{label}</label>
-			<input id={id} {...input} />
-			{hint && <span className="hint">{hint}</span>}
-		</div>
-	)
 }
 
 export function BackupsPage({onBack}: {onBack: () => void}) {

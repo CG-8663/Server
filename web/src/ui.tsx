@@ -1,12 +1,12 @@
 import {createPortal} from 'react-dom'
-import {createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject} from 'react'
+import {createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type InputHTMLAttributes, type ReactNode, type RefObject} from 'react'
 
 import {useQuery} from '@tanstack/react-query'
 import type {AppState, Machine, Wallpaper} from './api'
 import {AssistantAvatar, cleanLook, type AssistantLook} from './character/AssistantCharacter'
 import {detectDesktop, LAYOUT_POINTER} from './layout'
 export {detectDesktop}
-import {liveRegionText, useDialogFocus} from './focus'
+import {fieldAria, liveRegionText, useDialogFocus} from './focus'
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
@@ -577,6 +577,59 @@ export function Group({title, children, footer}: {title: string; children: React
 				</p>
 			)}
 		</section>
+	)
+}
+
+export type FieldProps = {
+	id?: string
+	label: string
+	labelHidden?: boolean
+	hint?: ReactNode
+	error?: ReactNode
+	invalid?: boolean
+	wrapperClassName?: string
+} & Omit<InputHTMLAttributes<HTMLInputElement>, 'id'>
+
+export function Field({
+	id,
+	label,
+	labelHidden,
+	hint,
+	error,
+	invalid,
+	wrapperClassName,
+	'aria-describedby': describedByProp,
+	'aria-invalid': ariaInvalidProp,
+	...input
+}: FieldProps) {
+	const autoId = useId()
+	const fieldId = id ?? autoId
+	const a11y = fieldAria(autoId, {
+		hasHint: Boolean(hint),
+		hasError: Boolean(error),
+		invalid,
+		describedBy: describedByProp,
+	})
+	return (
+		<div className={wrapperClassName ? `field ${wrapperClassName}` : 'field'}>
+			<label htmlFor={fieldId} className={labelHidden ? 'sr-only' : undefined}>
+				{label}
+			</label>
+			<input
+				id={fieldId}
+				aria-describedby={a11y.describedBy}
+				aria-invalid={ariaInvalidProp ?? a11y.invalid}
+				{...input}
+			/>
+			{hint && (
+				<span id={a11y.hintId} className="hint">
+					{hint}
+				</span>
+			)}
+			<span id={a11y.errorId} className={error ? 'hint field-error' : 'sr-only'} aria-live="polite" aria-atomic="true">
+				{error || ''}
+			</span>
+		</div>
 	)
 }
 

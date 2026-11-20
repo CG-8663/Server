@@ -335,3 +335,21 @@ export function checkLiveText(check: {ok: boolean; message: string} | null | und
 	if (!check) return {status: '', alert: ''}
 	return check.ok ? {status: check.message, alert: ''} : {status: '', alert: check.message}
 }
+
+export function fieldAria(
+	baseId: string,
+	opts: {hasHint?: boolean; hasError?: boolean; invalid?: boolean; describedBy?: string},
+): {hintId: string; errorId: string; describedBy?: string; invalid?: true} {
+	const hintId = `${baseId}-hint`
+	const errorId = `${baseId}-error`
+	const ids: string[] = []
+	if (opts.hasError) ids.push(errorId)
+	if (opts.hasHint) ids.push(hintId)
+	if (opts.describedBy) ids.push(opts.describedBy)
+	return {
+		hintId,
+		errorId,
+		...(ids.length ? {describedBy: ids.join(' ')} : {}),
+		...(opts.invalid || opts.hasError ? {invalid: true as const} : {}),
+	}
+}

@@ -5,7 +5,7 @@ import {query, type MachineCapabilities, type OsImage} from './api'
 import {useAction, useCpu, useMachines, useMemory, useUser} from './data'
 import {Icon} from './icons'
 import {osLook} from './osLook'
-import {Sheet, SheetHeader, bytes, haptic} from './ui'
+import {Field, Sheet, SheetHeader, bytes, haptic} from './ui'
 
 // Per-OS starting specs and floors.
 type Spec = {cores: number; memoryGb: number; diskSizeGb: number; minCores: number; minMemoryGb: number; minDiskSizeGb: number}
@@ -254,11 +254,14 @@ function Configure({os, hostArch, onBack, onDone}: {os: OsImage; hostArch: strin
 						{error}
 					</div>
 				)}
-				<div className="field">
-					<label htmlFor="vm-name">Name</label>
-					<input id="vm-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={100} />
-					{nameTaken && <span className="hint" style={{color: 'var(--red)'}}>You already have a machine with this name.</span>}
-				</div>
+				<Field
+					id="vm-name"
+					label="Name"
+					value={name}
+					onChange={(e) => setName(e.target.value)}
+					maxLength={100}
+					error={nameTaken ? 'You already have a machine with this name.' : undefined}
+				/>
 				<div className="glass group" style={{borderRadius: 18, marginBottom: 16, '--inset': '16px'} as React.CSSProperties}>
 					<Stepper label="CPU cores" value={cores} unit={cores === 1 ? 'core' : 'cores'} min={Math.min(profile.minCores, threads)} max={threads} onChange={setCores} />
 					<Stepper label="Memory" value={memoryGb} unit="GB" min={Math.min(profile.minMemoryGb, maxMemoryGb)} max={Math.max(maxMemoryGb, 1)} onChange={setMemoryGb} />
@@ -266,29 +269,42 @@ function Configure({os, hostArch, onBack, onDone}: {os: OsImage; hostArch: strin
 				</div>
 				{os.requiresCredentials && (
 					<>
-						<div className="field">
-							<label htmlFor="vm-user">Username in the machine</label>
-							<input id="vm-user" autoCapitalize="off" autoCorrect="off" spellCheck={false} value={username} onChange={(e) => setUsername(e.target.value)} />
-							{!usernameOk && username !== '' && <span className="hint" style={{color: 'var(--red)'}}>Letters, numbers, dots, dashes; up to 20 characters.</span>}
-						</div>
+						<Field
+							id="vm-user"
+							label="Username in the machine"
+							autoCapitalize="off"
+							autoCorrect="off"
+							spellCheck={false}
+							value={username}
+							onChange={(e) => setUsername(e.target.value)}
+							error={!usernameOk && username !== '' ? 'Letters, numbers, dots, dashes; up to 20 characters.' : undefined}
+						/>
 						{needsPassword && (
-							<div className="field">
-								<label htmlFor="vm-pass">Password in the machine</label>
-								<input id="vm-pass" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-								<span className="hint">
-									{windows
+							<Field
+								id="vm-pass"
+								label="Password in the machine"
+								type="password"
+								autoComplete="new-password"
+								value={password}
+								onChange={(e) => setPassword(e.target.value)}
+								hint={
+									windows
 										? 'Used to sign in to Windows. It’s kept only in the installer’s answer file, which is deleted the first time you shut down or restart this machine here.'
-										: `Used to sign in to ${os.name}. Only a scrambled (hashed) copy goes into the machine; Omarchy Server doesn’t keep it.`}
-								</span>
-							</div>
+										: `Used to sign in to ${os.name}. Only a scrambled (hashed) copy goes into the machine; Omarchy Server doesn’t keep it.`
+								}
+							/>
 						)}
 					</>
 				)}
 				{os.requiresLicenseKey && (
-					<div className="field">
-						<label htmlFor="vm-key">Product key</label>
-						<input id="vm-key" autoCapitalize="characters" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" value={licenseKey} onChange={(e) => setLicenseKey(e.target.value)} />
-					</div>
+					<Field
+						id="vm-key"
+						label="Product key"
+						autoCapitalize="characters"
+						placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+						value={licenseKey}
+						onChange={(e) => setLicenseKey(e.target.value)}
+					/>
 				)}
 				{(() => {
 					const note = os.manualSetup

@@ -4,7 +4,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query, type Listing} from './api'
 import {Icon, type IconName} from './icons'
-import {Group, Row, Switch, haptic, useConfirm, useToast} from './ui'
+import {Field, Group, Row, Switch, haptic, useConfirm, useToast} from './ui'
 
 type Share = {name: string; size: number | null; kind: 'share' | 'appdata' | 'system' | 'domains' | 'isos'}
 type Container = {id: string; name: string; image: string; running: boolean; icon: string | null; web: {port: number} | null; copies: {from: string; to: string}[]; shares: string[]; notes: string[]; problems: string[]; size: number; installed: boolean}
@@ -32,16 +32,6 @@ const SHARE_NOTE: Record<Share['kind'], string> = {
 	system: 'Unraid’s own Docker and VM files. Not needed here.',
 	domains: 'VM disks. They come over with each VM you choose.',
 	isos: 'Installer images for VMs.',
-}
-
-function Field({id, label, hint, ...input}: {id: string; label: string; hint?: string} & React.InputHTMLAttributes<HTMLInputElement>) {
-	return (
-		<div className="field">
-			<label htmlFor={id}>{label}</label>
-			<input id={id} {...input} />
-			{hint && <span className="hint">{hint}</span>}
-		</div>
-	)
 }
 
 function Check({on}: {on: boolean}) {

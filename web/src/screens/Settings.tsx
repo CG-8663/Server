@@ -8,7 +8,7 @@ import {resetDeskConfig} from '../desktop/config'
 import {useBootstrap, useUser} from '../data'
 import {checkLiveText} from '../focus'
 import {Icon, type IconName} from '../icons'
-import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
+import {Card, Field, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
 import {Appearance} from './More'
 import {AssistantAppearanceSettings} from '../character/widgets'
 import {OmarchyThemes} from '../OmarchyThemes'
@@ -426,16 +426,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 }
 
 // ---- sheets -------------------------------------------------------------------
-
-function Field({id, label, hint, ...input}: {id: string; label: string; hint?: string} & React.InputHTMLAttributes<HTMLInputElement>) {
-	return (
-		<div className="field">
-			<label htmlFor={id}>{label}</label>
-			<input id={id} {...input} />
-			{hint && <span className="hint">{hint}</span>}
-		</div>
-	)
-}
 
 const PROVIDER_LABEL: Record<AssistantProvider, string> = {
 	spacexai: 'Grok (SpaceXAI)',
@@ -1040,7 +1030,7 @@ function PasswordSheet({open, onClose}: {open: boolean; onClose: () => void}) {
 		>
 			<Field id="old" label="Current password" type="password" autoComplete="current-password" value={oldPassword} onChange={(e) => setOld(e.target.value)} autoFocus />
 			<Field id="new" label="New password" type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNew(e.target.value)} hint="At least 6 characters." />
-			<Field id="repeat" label="Repeat new password" type="password" autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} hint={mismatch ? 'Passwords don’t match.' : undefined} />
+			<Field id="repeat" label="Repeat new password" type="password" autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} error={mismatch ? 'Passwords don’t match.' : undefined} />
 		</FormSheet>
 	)
 }
@@ -1144,7 +1134,8 @@ function HostnameSheet({open, current, onClose}: {open: boolean; current: string
 				spellCheck={false}
 				value={name}
 				onChange={(e) => setName(e.target.value)}
-				hint={valid ? `Reachable at http://${name.trim().toLowerCase()}.local` : 'Letters, numbers and dashes only.'}
+				hint={valid ? `Reachable at http://${name.trim().toLowerCase()}.local` : undefined}
+				error={!valid ? 'Letters, numbers and dashes only.' : undefined}
 				autoFocus
 			/>
 		</FormSheet>
