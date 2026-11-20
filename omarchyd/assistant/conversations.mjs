@@ -14,6 +14,7 @@ const CHAT_ID = /^c_[0-9a-f]{12}$/
 const ACTION_ID = /^a_[0-9a-f]{12}$/
 const missingChat = () => new RpcError('NOT_FOUND', 'That chat isn’t here')
 const missingStep = () => new RpcError('NOT_FOUND', 'That step isn’t here')
+const INTERRUPTED = 'Interrupted by a restart'
 
 // One read-modify-write at a time per chat, so a snapshot from before Approve cannot land after it.
 const locks = new Map()
@@ -36,19 +37,11 @@ function canReplace(current, next) {
 	return false
 }
 
-export function createConversations({dataDir, now = () => Date.now()}) {
+export function createConversations({dataDir, now = () => Date.now(), recoverRunning = false}) {
 	const dir = join(dataDir, 'assistant', 'conversations')
-	const loaded = mkdir(dir, {recursive: true, mode: 0o700})
-	let dirReal = null
-	const root = async () => {
-		await loaded
-		dirReal ??= await realpath(dir)
-		return dirReal
-	}
 	// The path is the real conversations directory plus a safe file name. Symlinks are refused.
-	async function fileFor(id) {
+	async function fileAt(base, id) {
 		if (typeof id !== 'string' || !CHAT_ID.test(id)) throw missingChat()
-		const base = await root()
 		const file = join(base, `${id}.json`)
 		if ((await realpath(join(file, '..'))) !== base) throw missingChat()
 		try {
@@ -72,6 +65,55 @@ export function createConversations({dataDir, now = () => Date.now()}) {
 		} finally {
 			await fh.close()
 		}
+	}
+	// After a restart no step is still running in memory; close any left open so the chat can go on.
+	async function recoverInterrupted(base) {
+		const names = await readdir(base).catch(() => [])
+		for (const name of names) {
+			if (!name.endsWith('.json')) continue
+			const id = name.slice(0, -5)
+			if (!CHAT_ID.test(id)) continue
+			await withLock(id, async () => {
+				let file
+				let row
+				try {
+					file = await fileAt(base, id)
+					row = JSON.parse(await readText(file))
+				} catch {
+					return
+				}
+				if (!row || typeof row !== 'object' || Array.isArray(row) || !Array.isArray(row.actions)) return
+				if (!row.actions.some((a) => a && a.status === 'running')) return
+				if (!Array.isArray(row.messages)) row.messages = []
+				const t = now()
+				row.id = id
+				row.actions = row.actions.map((a) => {
+					if (!a || typeof a !== 'object') return a
+					if (a.status !== 'running') return {...a, conversationId: id}
+					if (a.toolCallId && !row.messages.some((m) => m?.role === 'tool' && m.toolCallId === a.toolCallId)) {
+						row.messages.push({
+							role: 'tool',
+							toolCallId: a.toolCallId,
+							name: a.toolName,
+							content: INTERRUPTED,
+							at: t,
+						})
+					}
+					return {...a, status: 'error', error: INTERRUPTED, resolvedAt: t, conversationId: id}
+				})
+				row.updatedAt = t
+				await writeAtomic(file, JSON.stringify(row, null, '\t'), {mode: 0o600})
+			})
+		}
+	}
+	const ready = mkdir(dir, {recursive: true, mode: 0o700}).then(async () => {
+		const base = await realpath(dir)
+		if (recoverRunning) await recoverInterrupted(base)
+		return base
+	})
+	const root = () => ready
+	async function fileFor(id) {
+		return fileAt(await root(), id)
 	}
 	async function readOwned(userId, id) {
 		const file = await fileFor(id)
