@@ -87,6 +87,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const domain = (id) => `omarchy-${id}`
 
 	let machines = [] // persisted metadata, never secrets
+	// False until a missing file (new install) or a readable registry is loaded. save() must not
+	// replace a damaged machines.json with this in-memory list.
+	let loaded = false
 	const busy = new Map() // id -> {state, progress, settling}
 	const isBusy = (id) => busy.has(id) && !busy.get(id).settling
 	const downloads = new Map() // imageId -> {progress, promise}
@@ -98,7 +101,6 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await mkdir(vmsDir, {recursive: true, mode: 0o700})
 		// Only a missing file is a new install. A damaged or unreadable machines.json must stay
 		// byte-for-byte: saving [] here would wipe the registry.
-		let loaded = false
 		try {
 			const text = await readFile(stateFile, 'utf8')
 			let data
@@ -126,7 +128,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		}
 		autostart()
 	})()
-	const save = () => writeAtomic(stateFile, () => JSON.stringify({machines}, null, 2))
+	const save = () => {
+		if (!loaded) throw new RpcError('PRECONDITION_FAILED', 'machines.json is damaged and was left unchanged')
+		return writeAtomic(stateFile, () => JSON.stringify({machines}, null, 2))
+	}
 	const find = (id) => {
 		const m = typeof id === 'string' && ID.test(id) ? machines.find((x) => x.id === id) : null
 		if (!m) throw new RpcError('NOT_FOUND', 'That machine doesn’t exist')

@@ -1,6 +1,6 @@
 // Files: every path stays inside Home or the Trash, symlinks included; trash and restore round-trip.
 import assert from 'node:assert/strict'
-import {lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile} from 'node:fs/promises'
+import {link, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -48,6 +48,65 @@ describe('files: paths', () => {
 	test('names can’t contain a slash or be . or ..', async () => {
 		for (const bad of ['a/b', '..', '.', '', 'x'.repeat(256)]) await assert.rejects(call('files.rename', {path: '/Home/Documents/notes.txt', newName: bad}), (e) => e.code === 'BAD_REQUEST', bad)
 		await assert.rejects(call('files.createDirectory', {path: '/Home/..'}), (e) => e.code === 'BAD_REQUEST')
+	})
+
+	test("replace into the item's own folder leaves the item in place", async () => {
+		const copied = await call('files.copy', {path: '/Home/Documents/notes.txt', toDirectory: '/Home/Documents', collision: 'replace'})
+		assert.equal(copied, '/Home/Documents/notes.txt')
+		assert.equal(await readFile(join(home, 'Documents', 'notes.txt'), 'utf8'), 'hello')
+		const moved = await call('files.move', {path: '/Home/Documents/notes.txt', toDirectory: '/Home/Documents', collision: 'replace'})
+		assert.equal(moved, '/Home/Documents/notes.txt')
+		assert.equal(await readFile(join(home, 'Documents', 'notes.txt'), 'utf8'), 'hello')
+		await mkdir(join(home, 'Other'))
+		await writeFile(join(home, 'Other', 'notes.txt'), 'old')
+		const replaced = await call('files.copy', {path: '/Home/Documents/notes.txt', toDirectory: '/Home/Other', collision: 'replace'})
+		assert.equal(replaced, '/Home/Other/notes.txt')
+		assert.equal(await readFile(join(home, 'Other', 'notes.txt'), 'utf8'), 'hello')
+		assert.equal(await readFile(join(home, 'Documents', 'notes.txt'), 'utf8'), 'hello')
+	})
+
+	test("keep-both copy into the item's own folder creates a second file", async () => {
+		const copied = await call('files.copy', {path: '/Home/Documents/notes.txt', toDirectory: '/Home/Documents', collision: 'keep-both'})
+		assert.match(copied, /\(2\)/)
+		const names = await readdir(join(home, 'Documents'))
+		assert.ok(names.some((name) => name.includes('(2)')))
+		assert.equal(await readFile(join(home, 'Documents', 'notes.txt'), 'utf8'), 'hello')
+	})
+
+	test("error into the item's own folder reports a conflict", async () => {
+		await assert.rejects(
+			call('files.copy', {path: '/Home/Documents/notes.txt', toDirectory: '/Home/Documents', collision: 'error'}),
+			(e) => e.code === 'CONFLICT' && e.message === '[already-exists]',
+		)
+	})
+
+	test('replace through a symlink to the parent leaves the source in place', async () => {
+		const linkDir = join(home, 'DocumentsLink')
+		await symlink(join(home, 'Documents'), linkDir)
+		try {
+			await call('files.copy', {path: '/Home/Documents/notes.txt', toDirectory: '/Home/DocumentsLink', collision: 'replace'})
+			assert.equal(await readFile(join(home, 'Documents', 'notes.txt'), 'utf8'), 'hello')
+		} finally {
+			await rm(linkDir, {force: true})
+		}
+	})
+
+	test('replace overwrites a hard link with the same basename in another folder', async () => {
+		const dir = join(home, 'Hard')
+		await mkdir(dir)
+		const src = join(home, 'Documents', 'notes.txt')
+		const dest = join(dir, 'notes.txt')
+		await link(src, dest)
+		const before = await lstat(src)
+		assert.equal((await lstat(dest)).ino, before.ino)
+		const replaced = await call('files.copy', {path: '/Home/Documents/notes.txt', toDirectory: '/Home/Hard', collision: 'replace'})
+		assert.equal(replaced, '/Home/Hard/notes.txt')
+		assert.equal(await readFile(dest, 'utf8'), 'hello')
+		assert.equal(await readFile(src, 'utf8'), 'hello')
+		const afterSrc = await lstat(src)
+		const afterDest = await lstat(dest)
+		assert.notEqual(afterDest.ino, afterSrc.ino)
+		assert.equal(afterSrc.nlink, before.nlink - 1)
 	})
 
 	test('an upload over an existing link replaces the link, never the file it points to', async () => {

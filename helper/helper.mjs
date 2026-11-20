@@ -114,7 +114,9 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		if (mounts(d).some((m) => /\/Pools\//.test(m))) return true
 		const text = await fstab()
 		const uuids = new Set(flat(d).map((x) => x.uuid).filter(Boolean))
-		return text.some((l) => l.includes(FSTAB_MARK) && [...uuids].some((u) => l.includes(u)))
+		if (text.some((l) => l.includes(FSTAB_MARK) && [...uuids].some((u) => l.includes(u)))) return true
+		const names = new Set(await zfsPoolNames())
+		return flat(d).some((x) => x.fstype === 'zfs_member' && names.has(x.label))
 	}
 	// Blank: no partitions, no filesystem or RAID signature, nothing mounted, not the system drive.
 	async function blankDisk(path) {

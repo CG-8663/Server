@@ -45,11 +45,13 @@ if [ "$UNINSTALL" = 1 ]; then
 	rm -f "$UNIT"
 	systemctl --user daemon-reload 2>/dev/null || true
 	rm -rf "$DIR" "$CONF"
-	if ! sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector; then
-		warn "The helper and its sudoers rule could not be removed. Run this yourself:"
-		printf '  sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector\n' >&2
+	if ! sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules; then
+		warn "The helper, its sudoers rule and the sleep udev rule could not be removed. Run this yourself:"
+		printf '  sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules\n' >&2
+		printf '  sudo udevadm control --reload\n' >&2
 		exit 1
 	fi
+	sudo udevadm control --reload >/dev/null 2>&1 || true
 	say "Done. Remove this computer in Machines → Local swarm too, if it's still listed."
 	exit 0
 fi

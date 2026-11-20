@@ -211,8 +211,16 @@ export function createUpdater({
 			busy = false
 			throw error
 		}
+		// If this write throws, the background work never starts, so its finally would never clear the flag.
+		const previousStatus = status
 		status = {running: true, progress: 2, description: 'Starting', error: false, target: version}
-		await save()
+		try {
+			await save()
+		} catch (error) {
+			busy = false
+			status = previousStatus
+			throw error
+		}
 		;(async () => {
 			// A failure to read the current revision is a failed update, not a crash.
 			let previous = ''
