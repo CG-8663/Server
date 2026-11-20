@@ -186,6 +186,88 @@ test('dollar signs in container commands and mount paths are escaped for Compose
 	}
 })
 
+test('single-file appdata mounts are copied without a trailing slash', async () => {
+	const container = {
+		Name: '/file-app',
+		State: {Running: true},
+		Config: {Image: 'app:1', Env: [], Labels: {}},
+		HostConfig: {PortBindings: {'8080/tcp': [{HostPort: '8080'}]}},
+		Mounts: [
+			{Type: 'bind', Source: '/mnt/user/appdata/app/config.ini', Destination: '/config.ini', RW: true},
+			{Type: 'bind', Source: '/mnt/user/appdata/app/db', Destination: '/db', RW: true},
+		],
+	}
+	const p = containerPlan(container, {appdataFiles: new Set(['/mnt/user/appdata/app/config.ini'])})
+	assert.deepEqual(p.copies, [
+		{from: '/mnt/user/appdata/app/config.ini', to: 'app/config.ini', file: true},
+		{from: '/mnt/user/appdata/app/db', to: 'app/db'},
+	])
+	assert.ok(YAML.parse(p.files['docker-compose.yml']).services['file-app'].volumes.includes('${APP_DATA_DIR:-.}/data/app/config.ini:/config.ini'))
+
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-file-'))
+	const rsyncCalls = []
+	const sshCmds = []
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync') {
+			rsyncCalls.push(argv)
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		sshCmds.push(remote)
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+		if (remote.includes('/mnt/user/*')) return {stdout: 'appdata\t4224\n', stderr: ''}
+		if (remote.startsWith('docker ps')) return {stdout: 'file-app\n', stderr: ''}
+		if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([container]), stderr: ''}
+		if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/app/config.ini\t128\tf\n/mnt/user/appdata/app/db\t4096\td\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const apps = {
+		importedStoreDir: join(dir, 'store'),
+		appDirFor: (id) => join(dir, 'apps', id),
+		installed: () => false,
+		installImported: async () => {},
+		importState: () => ({done: true, error: null}),
+	}
+	const u = createUnraid({dataDir: dir, files: {}, apps, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		const scan = await u.procedures['unraid.scan'].run()
+		assert.equal(scan.containers[0].size, 4224)
+		assert.ok(sshCmds.some((c) => c.includes('[ -f "$p" ]')))
+		const started = await u.procedures['unraid.start'].run({containers: ['unraid-file-app']})
+		let st
+		for (let i = 0; i < 200; i++) {
+			st = await u.procedures['unraid.status'].run()
+			const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+			if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		assert.equal(st.job.items[0].status, 'done')
+		const fileCalls = rsyncCalls.filter((a) => a.some((x) => x.includes('config.ini')))
+		const dirCalls = rsyncCalls.filter((a) => a.some((x) => x.includes('/app/db')))
+		assert.equal(fileCalls.length, 2)
+		assert.equal(dirCalls.length, 2)
+		const expectedFileDest = join(dir, 'apps/unraid-file-app/data/app/config.ini')
+		for (const argv of fileCalls) {
+			assert.ok(argv.includes('-lt'))
+			assert.ok(!argv.includes('-rlt'))
+			assert.equal(argv[argv.length - 2], 'tower.local:/mnt/user/appdata/app/config.ini')
+			assert.equal(argv[argv.length - 1], expectedFileDest)
+		}
+		for (const argv of dirCalls) {
+			assert.ok(argv.includes('-rlt'))
+			assert.equal(argv[argv.length - 2], 'tower.local:/mnt/user/appdata/app/db/')
+			assert.equal(argv[argv.length - 1], `${join(dir, 'apps/unraid-file-app/data/app/db')}/`)
+		}
+		assert.equal((await stat(join(dir, 'apps/unraid-file-app/data/app'))).isDirectory(), true)
+		await assert.rejects(stat(expectedFileDest), {code: 'ENOENT'})
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
 test('imported container version ignores registry ports and image digests', () => {
 	const digest = 'a'.repeat(64)
 	const cases = [

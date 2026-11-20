@@ -7,7 +7,7 @@ import {Icon, type IconName} from './icons'
 import {Group, Row, Switch, haptic, useConfirm, useToast} from './ui'
 
 type Share = {name: string; size: number | null; kind: 'share' | 'appdata' | 'system' | 'domains' | 'isos'}
-type Container = {id: string; name: string; image: string; running: boolean; icon: string | null; web: {port: number} | null; copies: {from: string; to: string}[]; shares: string[]; notes: string[]; problems: string[]; size: number; installed: boolean}
+type Container = {id: string; name: string; image: string; running: boolean; icon: string | null; web: {port: number} | null; copies: {from: string; to: string; file?: boolean}[]; shares: string[]; notes: string[]; problems: string[]; size: number; installed: boolean}
 type Vm = {name: string; state: string; cores: number; memoryMb: number; firmware: string; disks: {file: string}[]; notes: string[]; problems: string[]; size: number}
 type Scan = {shares: Share[]; containers: Container[]; vms: Vm[]; at: number}
 type Item = {kind: 'share' | 'container' | 'vm'; key: string; name: string; size: number | null; status: 'waiting' | 'running' | 'done' | 'failed' | 'skipped'; step?: string; progress?: number; error?: string; note?: string; path?: string}

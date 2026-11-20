@@ -16,7 +16,7 @@
 import {randomBytes} from 'node:crypto'
 import {access, chmod, mkdir, readFile, rename, rm, stat, writeFile} from 'node:fs/promises'
 import os from 'node:os'
-import {join} from 'node:path'
+import {dirname, join} from 'node:path'
 import YAML from 'yaml'
 
 import {writeAtomic} from './atomic.mjs'
@@ -79,7 +79,7 @@ const escapeCompose = (s) => String(s).replace(/\$/g, '$$$$')
 
 // One container (docker inspect) → an app listing (omarchy-app.yml + docker-compose.yml), what to copy
 // for it, and anything that doesn't come across.
-export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = () => null, takenIds = new Set()} = {}) {
+export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = () => null, takenIds = new Set(), appdataFiles = new Set()} = {}) {
 	const name = String(c?.Name ?? '').replace(/^\//, '')
 	let id = `unraid-${slug(name)}`
 	for (let n = 2; takenIds.has(id); n++) id = `unraid-${slug(name).slice(0, 44)}-${n}`
@@ -156,7 +156,7 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 		const where = unraidPath(src)
 		if (where.kind === 'appdata') {
 			const rel = where.rest.replace(/\/+$/, '') || 'appdata'
-			copies.push({from: src, to: rel})
+			copies.push({from: src, to: rel, ...(appdataFiles.has(src) ? {file: true} : {})})
 			volumes.push(`\${APP_DATA_DIR:-.}/data/${escapeCompose(rel)}:${dst}${ro}`)
 		} else if (where.kind === 'share') {
 			shares.add(where.share)
@@ -409,18 +409,21 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 				const imageInfo = images.length ? JSON.parse(await remote(`docker image inspect ${images.map(sq).join(' ')}`, {timeout: 120_000})) : []
 				const byImage = new Map(imageInfo.map((i) => [i.Id, i]))
 				const appdataSizes = new Map()
+				const appdataFiles = new Set()
 				const appdataPaths = [...new Set(inspect.flatMap((c) => (c.Mounts ?? []).map((m) => m.Source).filter((s) => unraidPath(s).kind === 'appdata')))]
 				if (appdataPaths.length) {
-					const out = await remote(`for p in ${appdataPaths.map(sq).join(' ')}; do printf '%s\\t%s\\n' "$p" "$(timeout 60 du -sb "$p" 2>/dev/null | cut -f1)"; done`, {timeout: 20 * 60_000})
+					const out = await remote(`for p in ${appdataPaths.map(sq).join(' ')}; do t=d; [ -f "$p" ] && t=f; printf '%s\\t%s\\t%s\\n' "$p" "$(timeout 60 du -sb "$p" 2>/dev/null | cut -f1)" "$t"; done`, {timeout: 20 * 60_000})
 					for (const l of out.split('\n')) {
-						const [p, s] = l.split('\t')
-						if (p) appdataSizes.set(p, Number(s) || 0)
+						const [p, s, t] = l.split('\t')
+						if (!p) continue
+						appdataSizes.set(p, Number(s) || 0)
+						if (t?.trim() === 'f') appdataFiles.add(p)
 					}
 				}
 				const taken = new Set()
 				containers = inspect.map((c) => {
 					const img = byImage.get(c.Image)
-					const plan = containerPlan(c, {imageEnv: img?.Config?.Env ?? [], imageCmd: img?.Config?.Cmd ?? null, takenIds: taken})
+					const plan = containerPlan(c, {imageEnv: img?.Config?.Env ?? [], imageCmd: img?.Config?.Cmd ?? null, takenIds: taken, appdataFiles})
 					taken.add(plan.id)
 					return {...plan, size: plan.copies.reduce((t, cp) => t + (appdataSizes.get(cp.from) ?? 0), 0), installed: apps.installed(plan.id)}
 				})
@@ -456,11 +459,15 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		return (await files.resolve(virtual)).real
 	}
 
-	async function rsync(from, to, onProgress) {
-		await mkdir(to, {recursive: true})
+	async function rsync(from, to, onProgress, {file = false} = {}) {
+		await mkdir(file ? dirname(to) : to, {recursive: true})
 		const e = ['ssh', ...sshOpts(false)].map((a) => (/[\s'"]/.test(a) ? `'${a}'` : a)).join(' ')
+		const src = from.replace(/\/+$/, '')
+		const args = file
+			? ['-lt', '--partial', '--protect-args', '--info=progress2', '-e', e, `${session.host}:${src}`, to]
+			: ['-rlt', '--partial', '--protect-args', '--info=progress2', '--no-inc-recursive', '-e', e, `${session.host}:${src}/`, `${to}/`]
 		try {
-			await run('rsync', ['-rlt', '--partial', '--protect-args', '--info=progress2', '--no-inc-recursive', '-e', e, `${session.host}:${from.replace(/\/+$/, '')}/`, `${to}/`], {
+			await run('rsync', args, {
 				env: sshEnv(),
 				timeout: 7 * 24 * 60 * 60_000,
 				split: /[\r\n]/,
@@ -568,7 +575,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		let n = 0
 		for (const cp of plan.copies) {
 			item.step = 'Copying its files'
-			await rsync(cp.from, join(appData, cp.to), (p) => (item.progress = 0.7 * ((n + p.percent) / total)))
+			await rsync(cp.from, join(appData, cp.to), (p) => (item.progress = 0.7 * ((n + p.percent) / total)), {file: !!cp.file})
 			n++
 		}
 		const pause = job.pauseContainers && plan.running && plan.copies.length
@@ -576,7 +583,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 			item.step = 'Copying the last changes (paused on Unraid)'
 			await remote(`docker stop ${sq(plan.name)}`, {timeout: 5 * 60_000})
 			try {
-				for (const cp of plan.copies) await rsync(cp.from, join(appData, cp.to), () => {})
+				for (const cp of plan.copies) await rsync(cp.from, join(appData, cp.to), () => {}, {file: !!cp.file})
 			} finally {
 				await remote(`docker start ${sq(plan.name)}`, {timeout: 5 * 60_000}).catch((e) => (item.note = `It didn’t start again on Unraid: ${e.message}`))
 			}
