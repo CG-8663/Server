@@ -103,12 +103,13 @@ function makeTimeoutSignal(timeoutMs: number, external?: AbortSignal) {
 }
 
 async function handle<T>(res: Response, signal?: AbortSignal): Promise<T> {
-	const body = await res.json().catch((err) => {
+	const body: unknown = await res.json().catch((err) => {
 		if (signal?.aborted) throw err
 		return null
 	})
-	if (!res.ok || body?.error) {
-		const err = body?.error ?? {}
+	const hasError = body !== null && typeof body === 'object' && !Array.isArray(body) && 'error' in body && Boolean((body as {error?: unknown}).error)
+	if (!res.ok || hasError) {
+		const err = hasError ? (body as {error: {message?: string; code?: string}}).error : {}
 		const error = new ApiError(err.message ?? `Request failed (${res.status})`, err.code ?? 'ERROR', res.status)
 		// A mistyped password or authenticator code is also 401. Leave the person on the form.
 		const credentialMiss =
@@ -120,6 +121,9 @@ async function handle<T>(res: Response, signal?: AbortSignal): Promise<T> {
 			err.message === 'That 2FA code was already used. Wait for the next one.'
 		if (res.status === 401 && err.code === 'UNAUTHORIZED' && !credentialMiss && typeof window !== 'undefined') window.dispatchEvent(new Event('touch:signed-out'))
 		throw error
+	}
+	if (!body || typeof body !== 'object' || Array.isArray(body)) {
+		throw new ApiError(`Omarchy Server sent an answer this page can’t read (${res.status})`, 'INVALID_RESPONSE', res.status)
 	}
 	return body as T
 }

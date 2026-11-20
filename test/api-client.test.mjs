@@ -123,3 +123,29 @@ test('normal RPCs attach default timeout while slow RPCs allow long operations',
 	assert.equal(seenNormal, true)
 	assert.equal(seenSlow, true)
 })
+
+test('non-JSON or non-object 200 responses throw INVALID_RESPONSE ApiError', async () => {
+	const cases = [
+		['html', () => new Response('<html>login</html>', {status: 200})],
+		['empty', () => new Response('', {status: 200})],
+		['json null', () => new Response('null', {status: 200})],
+		['json true', () => new Response('true', {status: 200})],
+		['json array', () => new Response('[]', {status: 200})],
+	]
+	for (const [label, makeRes] of cases) {
+		for (const [op, call] of [
+			['query', () => query('apps.list')],
+			['mutate', () => mutate('apps.list', {})],
+			['getBootstrap', () => getBootstrap()],
+		]) {
+			globalThis.fetch = async () => makeRes()
+			await assert.rejects(call, (err) => {
+				assert.ok(err instanceof ApiError, `${label} ${op}: expected ApiError`)
+				assert.equal(err.code, 'INVALID_RESPONSE', `${label} ${op}`)
+				assert.equal(err.status, 200, `${label} ${op}`)
+				assert.match(err.message, /can’t read \(200\)/, `${label} ${op}`)
+				return true
+			})
+		}
+	}
+})
