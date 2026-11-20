@@ -255,10 +255,20 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			run: async (input, {auth}) => {
 				ownerOnly(auth, 'reset Omarchy Server')
 				await accounts.confirmPassword(auth.userId, input?.password)
-				// Answer first; the reset carries on by itself.
+				// Answer first; the reset carries on by itself. The next owner must not inherit
+				// assistant keys and chats, swarm computers, backup secrets or network shares.
 				setTimeout(async () => {
 					await apps.uninstallAll().catch((e) => console.error('[omarchyd] reset apps', e.message))
 					await machines.uninstallAll().catch((e) => console.error('[omarchyd] reset machines', e.message))
+					await assistant.keys.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
+					await assistant.conversations.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
+					const agents = await connector.procedures['swarm.list'].run().catch((e) => {
+						console.error('[omarchyd] reset swarm', e.message)
+						return []
+					})
+					for (const agent of agents) await connector.procedures['swarm.remove'].run({id: agent.id}).catch((e) => console.error('[omarchyd] reset swarm', e.message))
+					await backups.clearSettings().catch((e) => console.error('[omarchyd] reset backups', e.message))
+					await storage.clearShares().catch((e) => console.error('[omarchyd] reset shares', e.message))
 					await accounts.reset()
 					console.log('[omarchyd] factory reset done')
 				}, 500)

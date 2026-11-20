@@ -1100,8 +1100,20 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		return {id}
 	}
 
+	// Factory reset: NAS address, password and recovery key are forgotten. A missing file is the
+	// default on the next start, and the copy in memory must match so a later save cannot put them back.
+	async function clearSettings() {
+		await ready
+		config = structuredClone(DEFAULTS)
+		secrets = {}
+		await rm(configFile, {force: true})
+		await rm(secretFile, {force: true})
+		await rm(keyFile, {force: true})
+	}
+
 	return {
 		ready,
+		clearSettings,
 		runBackup,
 		runComputer,
 		handleUpload,

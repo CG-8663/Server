@@ -110,6 +110,13 @@ export function createConversations({dataDir, now = () => Date.now()}) {
 	}
 
 	return {
+		// Factory reset: every saved chat goes. The folder stays, so a later chat can be written.
+		async reset() {
+			const base = await root()
+			for (const name of await readdir(base).catch(() => [])) {
+				if (name.endsWith('.json')) await rm(join(base, name), {force: true})
+			}
+		},
 		async list(userId) {
 			const base = await root()
 			const names = (await readdir(base).catch(() => [])).filter((n) => n.endsWith('.json'))

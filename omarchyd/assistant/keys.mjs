@@ -1,4 +1,4 @@
-import {mkdir, readFile} from 'node:fs/promises'
+import {mkdir, readFile, rm} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
 import {join} from 'node:path'
 
@@ -159,6 +159,13 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 		async getSecret(id) {
 			await loaded
 			return find(id) ?? null
+		},
+		// Factory reset: the key list is empty in memory and the file is gone, so the next owner
+		// does not inherit these keys and a later save cannot write them back.
+		async reset() {
+			await loaded
+			state = {keys: []}
+			await rm(file, {force: true})
 		},
 		async resolveForUser(userId, keyId) {
 			await loaded
