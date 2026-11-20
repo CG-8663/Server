@@ -9,10 +9,10 @@ import {promisify} from 'node:util'
 const run = promisify(execFile)
 const git = (cwd, ...args) => run('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args])
 
-// The installer's own update lines, run as written.
+// The installer's GitHub in-place update (not the local-clone HEAD path).
 async function updateLines() {
 	const script = await readFile(new URL('../install.sh', import.meta.url), 'utf8')
-	const lines = script.split('\n').map((l) => l.trim()).filter((l) => /^git -C "\$APP" (fetch|reset --hard) /.test(l))
+	const lines = script.split('\n').map((l) => l.trim()).filter((l) => /^git -C "\$APP" (fetch|reset --hard) /.test(l) && /\borigin\b/.test(l))
 	assert.equal(lines.length, 2, 'install.sh fetches, then resets')
 	return lines.join('\n')
 }
