@@ -13,7 +13,7 @@ import WebSocket from 'ws'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
 import {cloudUserData, isWindowsClientLabel, omarchyConfiguration, windowsAnswerFile} from '../omarchyd/machine-media.mjs'
-import {findChecksum} from '../omarchyd/machines.mjs'
+import {createMachines, findChecksum} from '../omarchyd/machines.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 test('findChecksum reads GNU and BSD checksum lists', () => {
@@ -515,5 +515,53 @@ describe('omarchyd machines', () => {
 		assert.deepEqual(await q('machines.list'), [])
 		assert.equal(doms.size, 0)
 		await assert.rejects(stat(join(data, 'machines/vms', id)))
+	})
+})
+
+describe('machines.json registry', () => {
+	const open = (dataDir) => createMachines({dataDir, run: async () => '', kvmDevice: join(dataDir, 'kvm'), catalogUrl: 'https://example.invalid/catalog.json', fetchImpl: async () => ({ok: false})})
+
+	test('a truncated machines.json is unchanged after ready/list, and the machine list is empty', async (t) => {
+		const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-m-bad-'))
+		const logs = []
+		t.mock.method(console, 'error', (...args) => logs.push(args.map(String).join(' ')))
+		try {
+			const file = join(root, 'machines', 'machines.json')
+			const damaged = '{"machines":[{"id":"abcd1234","name":"Kept","secret":"do-not-log"'
+			await mkdir(join(root, 'machines'), {recursive: true})
+			await writeFile(file, damaged)
+			const machines = open(root)
+			await machines.ready
+			assert.deepEqual(await machines.procedures['machines.list'].run(), [])
+			assert.equal(await readFile(file, 'utf8'), damaged)
+			assert.equal(logs.length, 1)
+			assert.match(logs[0], /machines\.json/)
+			assert.equal(logs[0].includes(root), false)
+			assert.equal(logs[0].includes('do-not-log'), false)
+			assert.equal(logs[0].includes('abcd1234'), false)
+		} finally {
+			await rm(root, {recursive: true, force: true})
+		}
+	})
+
+	test('a valid machines.json still loads its machines', async () => {
+		const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-m-ok-'))
+		try {
+			const file = join(root, 'machines', 'machines.json')
+			await mkdir(join(root, 'machines'), {recursive: true})
+			await writeFile(file, JSON.stringify({machines: [{id: 'abcd1234', name: 'Kept', osId: 'testos-amd64', cores: 1, memoryGb: 1, diskSizeGb: 10, state: 'stopped', portForwards: [], createdAt: 1, layout: {video: 'virtio', disks: []}}]}))
+			const machines = open(root)
+			await machines.ready
+			const listed = await machines.procedures['machines.list'].run()
+			assert.equal(listed.length, 1)
+			assert.equal(listed[0].id, 'abcd1234')
+			assert.equal(listed[0].name, 'Kept')
+			const saved = JSON.parse(await readFile(file, 'utf8'))
+			assert.equal(saved.machines[0].id, 'abcd1234')
+			assert.equal(saved.machines[0].name, 'Kept')
+			assert.equal(saved.machines[0].layout.video, 'vga')
+		} finally {
+			await rm(root, {recursive: true, force: true})
+		}
 	})
 })
