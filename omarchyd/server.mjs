@@ -32,7 +32,7 @@ import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.52'
+export const OMARCHYD_VERSION = '0.9.53'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -248,6 +248,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'user.generateTotpUri': {kind: 'query', run: (_i, {auth}) => accounts.totpUri(auth.userId)},
 		'user.enable2fa': {kind: 'mutation', run: async (input, {auth}) => (await accounts.enable2fa(auth.userId, input ?? {}), true)},
 		'user.disable2fa': {kind: 'mutation', run: async (input, {auth}) => (await accounts.disable2fa(auth.userId, input ?? {}), true)},
+		// A fresh app pass for this person, for a device whose pass is getting old (passes last 30 days).
+		'user.appPass': {kind: 'mutation', run: async (_i, {auth}) => apps.sessionCookie(apps.issueSession(auth.userId))},
 		// A fresh app pass for this person, ending the ones their other devices hold.
 		'user.revokeAppPasses': {kind: 'mutation', run: async (_i, {auth}) => apps.sessionCookie(await apps.revokePasses(auth.userId))},
 		'system.factoryReset': {
@@ -669,7 +671,15 @@ WantedBy=graphical-session.target
 			if (url.pathname === '/app-auth/v1/account/session' && req.method === 'GET') {
 				await apps.ready
 				const cookie = Object.fromEntries((req.headers.cookie ?? '').split(';').map((c) => c.trim().split('=')).map(([k, ...v]) => [k, v.join('=')]))[APP_COOKIE]
-				return sendJson(res, apps.checkSession(decodeURIComponent(cookie ?? '')) ? 200 : 401, {})
+				{
+					let value = ''
+					try {
+						value = decodeURIComponent(cookie ?? '')
+					} catch {
+						return sendJson(res, 401, {})
+					}
+					return sendJson(res, apps.checkSession(value) ? 200 : 401, {})
+				}
 			}
 			const fileKind = /^\/api\/files\/(view|download|upload)$/.exec(url.pathname)?.[1]
 			if (fileKind === 'upload' && req.method === 'POST') {

@@ -50,6 +50,14 @@ class HelperError(Exception):
     pass
 
 
+def hdparm_path():
+    # udev runs RUN+= with a fixed path: Debian and Ubuntu install hdparm in /usr/sbin, Arch in /usr/bin.
+    for p in ("/usr/sbin/hdparm", "/usr/bin/hdparm", "/sbin/hdparm"):
+        if os.path.exists(p):
+            return os.path.realpath(p)
+    return shutil.which("hdparm", path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin") or "/usr/sbin/hdparm"
+
+
 def fail(message):
     raise HelperError(message)
 
@@ -99,7 +107,23 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         os.replace(tmp, path)
 
     def block_devices():
-        j = json.loads(run("lsblk", ["-J", "-b", "-o", "NAME,PATH,TYPE,SIZE,ROTA,TRAN,MODEL,SERIAL,FSTYPE,LABEL,UUID,MOUNTPOINTS,RM,HOTPLUG"]))
+        cols = "NAME,PATH,TYPE,SIZE,ROTA,TRAN,MODEL,SERIAL,FSTYPE,LABEL,UUID,%s,RM,HOTPLUG"
+        try:
+            j = json.loads(run("lsblk", ["-J", "-b", "-o", cols % "MOUNTPOINTS"]))
+        except HelperError as e:
+            # util-linux before 2.37 (Ubuntu 20.04, Debian 11, EL8) has only MOUNTPOINT.
+            if "MOUNTPOINTS" not in str(e):
+                raise
+            j = json.loads(run("lsblk", ["-J", "-b", "-o", cols % "MOUNTPOINT"]))
+
+            def plural(d):
+                if "mountpoints" not in d:
+                    d["mountpoints"] = [d.get("mountpoint")] if d.get("mountpoint") else []
+                for c in d.get("children") or []:
+                    plural(c)
+
+            for d in j.get("blockdevices") or []:
+                plural(d)
         return j.get("blockdevices") or []
 
     def flat(d):
@@ -636,7 +660,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         needle = 'ENV{ID_SERIAL_SHORT}=="%s"' % serial
         lines = [l for l in text.split("\n") if l and not l.startswith("#") and needle not in l]
         if m:
-            lines.append('ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", %s, RUN+="/usr/bin/hdparm -S %s /dev/%%k"' % (needle, SLEEP_MINUTES[m]))
+            lines.append('ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", %s, RUN+="%s -S %s /dev/%%k"' % (needle, hdparm_path(), SLEEP_MINUTES[m]))
         write_text(UDEV_SLEEP, "# Drive sleep, set by Omarchy Server\n%s\n" % "\n".join(lines) if lines else "")
         return "ok"
     if verb == "zfs-available":

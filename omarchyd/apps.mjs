@@ -30,6 +30,7 @@ import YAML from 'yaml'
 import {RpcError} from './rpc.mjs'
 import {SYSTEM_PERMISSIONS} from './system-apps.mjs'
 import {dualProtocolServer, tlsContext, wantsUpgrade} from './tls.mjs'
+import {linkProxy} from './proxy-link.mjs'
 import {usbComposeOverlay} from './usb.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
@@ -777,8 +778,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				r.pipe(res)
 			})
 			up.on('timeout', () => up.destroy(new Error('timeout')))
+			linkProxy(req, res, up)
 			up.on('error', () => {
-				if (!res.headersSent) res.writeHead(502, {'content-type': 'text/plain'})
+				if (res.headersSent) return
+				res.writeHead(502, {'content-type': 'text/plain; charset=utf-8'})
 				res.end(`${app.name ?? app.id} isn’t answering yet. If it just started, give it a moment.`)
 			})
 			req.pipe(up)
