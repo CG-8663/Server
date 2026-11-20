@@ -48,6 +48,17 @@ function closeSocket(ws, code, reason) {
 		ws.close(code)
 	}
 }
+// Same sentence a refused new connection gets, so an open session ends with that reason too.
+function switchedOff(name, ability) {
+	return `${ability === 'terminal' ? 'The terminal' : 'The desktop'} isn’t switched on for ${name}`
+}
+function closeLiveChannel(l, ch, reason) {
+	const channel = l.channels.get(ch)
+	if (!channel) return
+	l.channels.delete(ch)
+	closeSocket(channel.ws, 1011, reason)
+	if (l.ws.readyState === l.ws.OPEN) l.ws.send(JSON.stringify({op: 'close', ch}))
+}
 const num = (v) => (v == null || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null)
 
 // Only the facts the page shows, checked and trimmed (a connector is another computer: don't
@@ -227,6 +238,14 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			a.on[k] = input[k] === true && a.allowed[k]
 		}
 		await save()
+		// A switch only saved before, so a terminal or desktop already open kept forwarding.
+		const l = live.get(a.id)
+		if (l) {
+			for (const [ch, channel] of [...l.channels]) {
+				const ability = channel.kind === 'pty' ? 'terminal' : channel.kind === 'vnc' ? 'desktop' : null
+				if (ability && !may(a, ability)) closeLiveChannel(l, ch, switchedOff(a.name, ability))
+			}
+		}
 		return true
 	}
 	const may = (a, ability) => a.allowed[ability] && a.on[ability]
@@ -309,8 +328,16 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			return socket.destroy()
 		}
 		wss.handleUpgrade(req, socket, head, (ws) => {
-			// One connection per computer: a new one replaces the old.
-			live.get(a.id)?.ws.terminate()
+			// One connection per computer: a new one replaces the old. Its viewers and waiting calls
+			// end now (its own close handler sees it's no longer the live one and skips this).
+			const old = live.get(a.id)
+			if (old) {
+				for (const ch of old.channels.values()) closeSocket(ch.ws, 1000, 'The computer reconnected')
+				for (const c of old.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'The computer reconnected')))
+				old.channels.clear()
+				old.calls.clear()
+				old.ws.terminate()
+			}
 			const l = {ws, metrics: a.metrics ?? null, channels: new Map(), nextCh: 0, calls: new Map(), nextCall: 0}
 			live.set(a.id, l)
 			const alive = setInterval(() => ws.readyState === ws.OPEN && ws.ping(), 25_000)
@@ -319,7 +346,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 					const buf = Buffer.from(data)
 					if (buf.length < 4) return
 					const ch = l.channels.get(buf.readUInt32BE(0))
-					if (ch?.ws.readyState === ch?.ws.OPEN) ch.ws.send(buf.subarray(4), {binary: true})
+					if (ch && ch.ws.readyState === ch.ws.OPEN) ch.ws.send(buf.subarray(4), {binary: true})
 					return
 				}
 				let msg
@@ -356,7 +383,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 				clearInterval(alive)
 				if (live.get(a.id)?.ws !== ws) return
 				live.delete(a.id)
-				for (const ch of l.channels.values()) ch.ws.close(1000, 'The computer went offline')
+				for (const ch of l.channels.values()) closeSocket(ch.ws, 1000, 'The computer went offline')
 				for (const c of l.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'The computer went offline')))
 				a.lastSeen = now()
 				await save().catch(() => {})
@@ -371,9 +398,9 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		const a = find(agentId)
 		const l = live.get(agentId)
 		const ability = kind === 'pty' ? 'terminal' : 'desktop'
-		if (!a || !l || !may(a, ability)) return closeSocket(browserWs, 1011, !a ? 'Unknown computer' : !l ? 'That computer is offline' : `${ability === 'terminal' ? 'The terminal' : 'The desktop'} isn’t switched on for ${a.name}`)
+		if (!a || !l || !may(a, ability)) return closeSocket(browserWs, 1011, !a ? 'Unknown computer' : !l ? 'That computer is offline' : switchedOff(a.name, ability))
 		const ch = ++l.nextCh
-		l.channels.set(ch, {ws: browserWs})
+		l.channels.set(ch, {ws: browserWs, kind})
 		l.ws.send(JSON.stringify({op: 'open', ch, kind, cols: opts.cols, rows: opts.rows}))
 		const head = Buffer.alloc(4)
 		head.writeUInt32BE(ch)

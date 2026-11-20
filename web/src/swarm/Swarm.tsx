@@ -187,7 +187,7 @@ function SwarmGauges({metrics}: {metrics: NonNullable<Agent['metrics']>}) {
 	return (
 		<div className="glass gauges" data-n={items.length} aria-label="System usage" style={{marginTop: 16}}>
 			{items.map((g) => (
-				<div className="gauge" key={g.k}>
+				<div className="gauge" key={'key' in g ? g.key : g.k}>
 					<Ring value={g.p} color={'color' in g ? g.color : levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
 						<span className="pct">
 							{g.ready ? Math.round(g.p) : '–'}

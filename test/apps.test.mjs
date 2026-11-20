@@ -187,6 +187,8 @@ describe('omarchyd apps', () => {
 		// The web app can ask whether a session is valid.
 		assert.equal((await fetch(`${d.url}/app-auth/v1/account/session?app=demo-app`, {headers: {cookie}})).status, 200)
 		assert.equal((await fetch(`${d.url}/app-auth/v1/account/session?app=demo-app`)).status, 401)
+		// #324: a cookie with a broken percent escape is just not a session.
+		assert.equal((await fetch(`${d.url}/app-auth/v1/account/session?app=demo-app`, {headers: {cookie: 'OMARCHY_APP_SESSION=%E0%A4%A'}})).status, 401)
 		// WebSockets: refused without a session, echoed with one.
 		const anonWs = new WebSocket(`ws://127.0.0.1:${appPort}/ws`)
 		await new Promise((r) => anonWs.on('error', r))

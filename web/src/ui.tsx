@@ -1078,6 +1078,15 @@ export function useLayout(): {desktop: boolean; pref: LayoutPref; detected: bool
 	return {desktop: pref === 'desktop' || (pref === 'auto' && wide), pref, detected: wide}
 }
 
+// The phone page scroller is .shell (or .auth before sign-in). The document itself does not scroll.
+function phoneScroller(): HTMLElement | null {
+	return document.querySelector<HTMLElement>('.shell, .auth')
+}
+export function scrollPhoneToTop(behavior: ScrollBehavior = 'auto') {
+	phoneScroller()?.scrollTo({top: 0, behavior})
+	window.scrollTo({top: 0, behavior})
+}
+
 // ---- iOS keyboard viewport repair -------------------------------------------------------------
 // After the on-screen keyboard closes, iOS Safari can keep the shrunken viewport, so fixed
 // elements (the dock, the backdrop) sit too high and leave a strip at the bottom until the page
@@ -1085,13 +1094,26 @@ export function useLayout(): {desktop: boolean; pref: LayoutPref; detected: bool
 export function nudgeViewport() {
 	if (document.documentElement.classList.contains('desk-mode')) return
 	const root = document.documentElement
-	const y = window.scrollY
-	const prev = root.style.minHeight
+	const scroller = phoneScroller()
+	const yWin = window.scrollY
+	const y = scroller?.scrollTop ?? yWin
+	const prevMin = root.style.minHeight
+	const prevOverflow = root.style.overflow
+	const prevPad = scroller?.style.paddingBottom ?? ''
+	// html/body overflow:hidden clips a 1px document scroll; open it for one frame so iOS remeasures.
 	root.style.minHeight = 'calc(100% + 2px)'
-	window.scrollTo(0, y + 1)
+	root.style.overflow = 'auto'
+	if (scroller) scroller.style.paddingBottom = '2px'
+	if (scroller) scroller.scrollTop = y + 1
+	window.scrollTo(0, yWin + 1)
 	requestAnimationFrame(() => {
-		window.scrollTo(0, y)
-		root.style.minHeight = prev
+		if (scroller) {
+			scroller.scrollTop = y
+			scroller.style.paddingBottom = prevPad
+		}
+		window.scrollTo(0, yWin)
+		root.style.minHeight = prevMin
+		root.style.overflow = prevOverflow
 	})
 }
 // If the page was zoomed in anyway (a pinch, or a field from an older build), put it back at 1×
@@ -1163,6 +1185,7 @@ export function watchStandaloneGap() {
 	window.addEventListener('orientationchange', () => window.setTimeout(measure, 300))
 	window.visualViewport?.addEventListener('resize', () => window.setTimeout(measure, 50))
 	window.addEventListener('scroll', measure, {passive: true})
+	document.addEventListener('scroll', measure, {passive: true, capture: true})
 	document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && window.setTimeout(measure, 100))
 	document.addEventListener('focusout', () => [120, 450, 900].forEach((ms) => window.setTimeout(measure, ms)))
 }

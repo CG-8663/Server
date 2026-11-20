@@ -285,9 +285,10 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 	const sshEnv = () => ({...baseEnv(), SSH_ASKPASS: askpass, SSH_ASKPASS_REQUIRE: 'force', DISPLAY: ':0', OMARCHY_UNRAID_SECRET: session.password})
 	function touch() {
 		clearTimeout(idle)
-		// Forget the password when nothing has happened for a while (and no import is running).
+		// Forget the password when nothing has happened for a while. rsync never calls remote, so a running import arms the next window instead of dropping it.
 		idle = setTimeout(() => {
-			if (!job || job.endedAt) forget()
+			if (job && !job.endedAt) touch()
+			else forget()
 		}, 2 * 60 * 60_000)
 		idle.unref?.()
 	}
@@ -452,6 +453,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		for (const v of scan.vms) if (vmsWanted.has(v.name)) items.push({kind: 'vm', key: v.name, name: v.name, size: v.size, status: 'waiting'})
 		if (!items.length) throw new RpcError('BAD_REQUEST', 'Choose something to bring over')
 		job = {id: randomBytes(4).toString('hex'), host: session.host, startedAt: now(), endedAt: null, destination: dest, shareOnNetwork: input.shareOnNetwork !== false, pauseContainers: input.pauseContainers !== false, items, shareDest: Object.fromEntries([...sharesWanted].map((s) => [s, `${dest}/${s}`]))}
+		touch()
 		await saveJob()
 		const plans = new Map(scan.containers.map((c) => [c.id, c]))
 		const vmPlans = new Map(scan.vms.map((v) => [v.name, v]))
@@ -477,6 +479,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 				await saveJob().catch(() => {})
 			}
 			job.endedAt = now()
+			touch()
 			await saveJob().catch(() => {})
 		})()
 		return {id: job.id}

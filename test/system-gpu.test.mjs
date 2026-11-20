@@ -136,6 +136,41 @@ test('Intel Arc discrete: VRAM from lmem sysfs', async () => {
 	assert.equal(gpus[0].memoryUsed, 4 * 1024 ** 3)
 })
 
+test('a management chip or virtio display with no readings is not a GPU', async () => {
+	const aspeed = await gpuUsage({
+		run: async () => '',
+		list: async (d) => (d === '/sys/class/drm' ? ['card0', 'card0-VGA-1'] : []),
+		read: async (p) => (p.endsWith('/vendor') ? '0x1a03\n' : p.endsWith('/product_name') ? 'ASPEED Graphics Family\n' : ''),
+	})
+	assert.deepEqual(aspeed.gpus, [])
+	const virtio = await gpuUsage({
+		run: async () => '',
+		list: async (d) => (d === '/sys/class/drm' ? ['card0'] : []),
+		read: async (p) => (p.endsWith('/vendor') ? '0x1af4\n' : ''),
+	})
+	assert.deepEqual(virtio.gpus, [])
+})
+
+test('hybrid Intel and NVIDIA cards get distinct indexes', async () => {
+	const smi = async (cmd) => (cmd === 'nvidia-smi' ? '0, NVIDIA GeForce RTX 3050, GPU-aaa, 12, 100, 4096, 50\n' : '')
+	const files = {
+		'/sys/class/drm/card0/device/vendor': '0x8086\n',
+		'/sys/class/drm/card1/device/vendor': '0x10de\n',
+	}
+	const {gpus} = await gpuUsage({
+		run: smi,
+		list: async (d) => (d === '/sys/class/drm' ? ['card0', 'card1'] : []),
+		read: async (p) => files[p] ?? '',
+	})
+	assert.deepEqual(
+		gpus.map((g) => [g.id, g.index, g.name]),
+		[
+			['GPU-aaa', 0, 'NVIDIA GeForce RTX 3050'],
+			['drm-card0', 1, 'Intel Graphics'],
+		],
+	)
+})
+
 test('NVIDIA DRM nodes are not double-counted next to nvidia-smi', async () => {
 	const files = {
 		'/sys/class/drm/card0/device/vendor': '0x10de\n',
