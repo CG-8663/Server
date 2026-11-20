@@ -3,6 +3,7 @@
 import os
 import sys
 import threading
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "connector"))
@@ -269,6 +270,7 @@ class Gpus(unittest.TestCase):
 
         gpus = agent.gpus(run=run, list_dir=list_dir, read_file=lambda p, d="": files.get(p, d))
         self.assertEqual([g["id"] for g in gpus], ["GPU-aaa", "drm-card0"])
+        self.assertEqual([g["index"] for g in gpus], [0, 1])
         self.assertEqual(gpus[1]["used"], 41)
 
     def test_no_gpus(self):
@@ -364,7 +366,7 @@ class Sampler(unittest.TestCase):
 
         s = agent.create_sampler(now=lambda: 0, read={"cpu": lambda: 7.0, "memory": lambda: ({"total": 1, "used": 1}, {"total": 0, "used": 0}), "gpu": gpu})
         got = s.get()
-        self.assertEqual(got["cpu"], 7.0)
+        self.assertIsNone(got["cpu"])
         self.assertEqual(got["gpus"], [])
         self.assertTrue(started["gpu"])
         release.set()
@@ -396,24 +398,25 @@ class Sampler(unittest.TestCase):
         s = agent.create_sampler(now=lambda: t["n"], intervals={**agent.DEFAULT_INTERVALS, "cpu": 1}, read=read, spawn=spawn)
         self.assertFalse(s.active())
         first = s.get()
-        # A throwaway cpu read, then the first real sample.
-        self.assertEqual(counts["cpu"], 2)
-        self.assertEqual(first["cpu"], 3.0)
+        # One throwaway cpu read. The real sample waits until the next tick.
+        self.assertEqual(counts["cpu"], 1)
+        self.assertIsNone(first["cpu"])
         self.assertTrue(s.active())
         self.assertEqual(len(spawned), 1)
         t["n"] = 1
         self.assertTrue(s.service())
-        self.assertEqual(counts["cpu"], 3)
+        self.assertEqual(counts["cpu"], 2)
+        self.assertEqual(s.peek()["cpu"], 3.0)
         t["n"] = 1 + agent.IDLE_S
         self.assertFalse(s.service())
         self.assertFalse(s.active())
-        self.assertEqual(counts["cpu"], 3)
+        self.assertEqual(counts["cpu"], 2)
         again = s.get()
-        self.assertEqual(again["cpu"], 4.5)
-        self.assertEqual(counts["cpu"], 3)
+        self.assertEqual(again["cpu"], 3.0)
+        self.assertEqual(counts["cpu"], 2)
         self.assertEqual(len(spawned), 3)
         spawned[-1]()
-        self.assertEqual(counts["cpu"], 4)
+        self.assertEqual(counts["cpu"], 3)
         s.stop()
         self.assertFalse(s.active())
 
@@ -436,6 +439,104 @@ class Sampler(unittest.TestCase):
         self.assertEqual(sent[0]["metrics"]["cpu"], 1.0)
         self.assertEqual(n["cpu"], 1)
         self.assertTrue(s.active())
+
+    def test_failing_read_waits_for_its_interval(self):
+        n = {"temp": 0}
+
+        def temp():
+            n["temp"] += 1
+            raise RuntimeError("sensor")
+
+        t = {"n": 0}
+        s = agent.create_sampler(now=lambda: t["n"], intervals={**agent.DEFAULT_INTERVALS, "temp": 5}, read={"temp": temp, "cpu": lambda: 1.0})
+        s.tick()
+        self.assertEqual(n["temp"], 1)
+        t["n"] = 1
+        s.tick()
+        self.assertEqual(n["temp"], 1)
+        t["n"] = 5
+        s.tick()
+        self.assertEqual(n["temp"], 2)
+
+    def test_slow_gpu_does_not_pile_up(self):
+        current = {"n": 0}
+        peak = {"n": 0}
+        lock = threading.Lock()
+
+        def gpu():
+            with lock:
+                current["n"] += 1
+                peak["n"] = max(peak["n"], current["n"])
+            time.sleep(0.05)
+            with lock:
+                current["n"] -= 1
+            return []
+
+        clock = {"n": 0.0}
+        s = agent.Sampler(now=lambda: clock["n"], read={"cpu": lambda: 1.0, "gpu": gpu})
+        for _ in range(8):
+            clock["n"] += 1.0
+            s.tick(wait_gpu=False)
+        time.sleep(0.2)
+        self.assertEqual(peak["n"], 1)
+
+    def test_clock_step_back_does_not_freeze_samples(self):
+        clock = {"n": 1_000_000.0}
+        n = {"cpu": 0}
+
+        def cpu():
+            n["cpu"] += 1
+            return float(n["cpu"])
+
+        s = agent.Sampler(now=lambda: clock["n"], read={"cpu": cpu})
+        s.tick()
+        clock["n"] -= 3600
+        for _ in range(5):
+            clock["n"] += 1
+            s.tick()
+        self.assertEqual(n["cpu"], 6)
+
+    def test_default_clock_is_monotonic(self):
+        mono = {"n": 0.0}
+        wall = {"n": 10_000.0}
+        n = {"cpu": 0}
+        real_mono, real_time = time.monotonic, time.time
+        time.monotonic = lambda: mono["n"]
+        time.time = lambda: wall["n"]
+        try:
+            s = agent.create_sampler(read={"cpu": lambda: n.__setitem__("cpu", n["cpu"] + 1) or float(n["cpu"])})
+            s.tick()
+            wall["n"] -= 3600
+            s.tick()
+            self.assertEqual(n["cpu"], 1)
+            mono["n"] += 1
+            s.tick()
+            self.assertEqual(n["cpu"], 2)
+        finally:
+            time.monotonic = real_mono
+            time.time = real_time
+
+
+class CpuPercent(unittest.TestCase):
+    def tearDown(self):
+        agent._cpu_last = None
+
+    def test_guest_time_is_not_counted_twice(self):
+        agent._cpu_last = None
+        lines = iter(["cpu 0 0 0 0 0 0 0 0 0 0\n", "cpu 50 0 0 50 0 0 0 0 50 0\n"])
+        orig = agent.read
+
+        def read(path, default=""):
+            if path == "/proc/stat":
+                return next(lines)
+            return orig(path, default)
+
+        agent.read = read
+        try:
+            self.assertIsNone(agent.cpu_percent())
+            self.assertEqual(agent.cpu_percent(), 50.0)
+        finally:
+            agent.read = orig
 
 
 if __name__ == "__main__":

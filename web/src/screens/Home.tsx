@@ -42,7 +42,7 @@ export function Gauges({onClick}: {onClick?: () => void}) {
 	return (
 		<button className="glass gauges press" data-n={items.length} onClick={onClick} aria-label="System usage, open details">
 			{items.map((g) => (
-				<div className="gauge" key={g.k}>
+				<div className="gauge" key={'key' in g ? g.key : g.k}>
 					<Ring value={g.p} color={'color' in g ? g.color : levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
 						<span className="pct">
 							{g.ready ? Math.round(g.p) : '–'}
