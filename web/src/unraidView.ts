@@ -58,3 +58,11 @@ export function jobSummary(job: Pick<UnraidJob, 'host' | 'endedAt' | 'items' | '
 export function isKeyChangedError(message: string | null): boolean {
 	return Boolean(message && /key changed/i.test(message))
 }
+
+export function retryActionState(scanning: boolean) {
+	return {
+		disabled: scanning,
+		label: scanning ? 'Looking…' : 'Try the rest again',
+		showSpinner: scanning,
+	}
+}

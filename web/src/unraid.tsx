@@ -5,7 +5,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query, type Listing} from './api'
 import {Icon, type IconName} from './icons'
 import {Group, Row, Switch, haptic, useConfirm, useToast} from './ui'
-import {isKeyChangedError, itemStatusForView, jobSummary, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
+import {isKeyChangedError, itemStatusForView, jobSummary, retryActionState, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
 
 type Share = {name: string; size: number | null; kind: 'share' | 'appdata' | 'system' | 'domains' | 'isos'}
 type Container = {id: string; name: string; image: string; running: boolean; icon: string | null; web: {port: number} | null; copies: {from: string; to: string; file?: boolean}[]; shares: string[]; notes: string[]; problems: string[]; size: number; installed: boolean}
@@ -61,6 +61,7 @@ export function UnraidPage({onBack}: {onBack: () => void}) {
 	const refresh = () => qc.invalidateQueries({queryKey: ['unraid.status']})
 
 	const look = async () => {
+		if (scanning) return
 		setScanning(true)
 		setError(null)
 		try {
@@ -81,6 +82,7 @@ export function UnraidPage({onBack}: {onBack: () => void}) {
 	const disconnect = async () => {
 		await mutate('unraid.disconnect').catch(() => {})
 		setScan(null)
+		setError(null)
 		refresh()
 	}
 
@@ -105,6 +107,8 @@ export function UnraidPage({onBack}: {onBack: () => void}) {
 				<JobView
 					job={s!.job!}
 					connected={!!s?.connected}
+					scanning={scanning}
+					error={error}
 					onCancel={async () => {
 						const ok = await confirm({title: 'Stop the move?', body: 'What’s being copied right now finishes; the rest is skipped. You can start again later, and copies pick up where they left off.', confirm: 'Stop', danger: true, icon: 'stop'})
 						if (ok) await mutate('unraid.cancel').then(refresh)
@@ -370,8 +374,9 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 const STATUS_ICON: Record<Item['status'], IconName> = {waiting: 'clock', running: 'clock', done: 'check', failed: 'alert', skipped: 'stop'}
 const KIND_LABEL: Record<Item['kind'], string> = {share: 'Share', container: 'App', vm: 'VM'}
 
-function JobView({job, connected, onCancel, onAgain, onDone}: {job: Job; connected: boolean; onCancel: () => void; onAgain: () => void; onDone: () => void}) {
+function JobView({job, connected, scanning, error, onCancel, onAgain, onDone}: {job: Job; connected: boolean; scanning: boolean; error: string | null; onCancel: () => void; onAgain: () => void; onDone: () => void}) {
 	const summary = jobSummary(job, connected)
+	const retry = retryActionState(scanning)
 	useEffect(() => {
 		if (!summary.running) haptic(summary.incomplete ? [20, 40, 20] : 12)
 	}, [summary.running, summary.incomplete])
@@ -389,6 +394,7 @@ function JobView({job, connected, onCancel, onAgain, onDone}: {job: Job; connect
 					<b>{summary.heading}</b>
 				</div>
 				{job.stopped && <p className="bk-err">{job.stopped}</p>}
+				{error && <p className="bk-err">{error}</p>}
 				{summary.running ? (
 					<button className="btn" onClick={onCancel} disabled={job.cancelled}>
 						{job.cancelled ? 'Stopping…' : 'Stop'}
@@ -396,8 +402,9 @@ function JobView({job, connected, onCancel, onAgain, onDone}: {job: Job; connect
 				) : (
 					<div style={{display: 'flex', gap: 8}}>
 						{summary.canRetry && (
-							<button className="btn primary" style={{flex: 1}} onClick={onAgain}>
-								Try the rest again
+							<button className="btn primary" style={{flex: 1}} disabled={retry.disabled} onClick={onAgain}>
+								{retry.showSpinner && <span className="spinner" />}
+								{retry.label}
 							</button>
 						)}
 						<button className={`btn ${summary.canRetry ? '' : 'primary'}`} style={{flex: 1}} onClick={onDone}>

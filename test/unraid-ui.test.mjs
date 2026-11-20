@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 
-import {isKeyChangedError, itemStatusForView, jobSummary} from '../web/src/unraidView.ts'
+import {isKeyChangedError, itemStatusForView, jobSummary, retryActionState} from '../web/src/unraidView.ts'
 
 test('interrupted and cancelled Unraid jobs never say Everything came over or spin forever', async () => {
 	const interrupted = {
@@ -78,4 +78,16 @@ test('connect form shows a Forget this server’s key button for host key change
 	assert.match(src, /isKeyChangedError\(/)
 	assert.match(src, /mutate\('unraid\.forgetHost'/)
 	assert.match(src, /Forget this server’s key/)
+})
+
+test('JobView shows retry scan progress and errors when Try the rest again runs', async () => {
+	assert.deepEqual(retryActionState(false), {disabled: false, label: 'Try the rest again', showSpinner: false})
+	assert.deepEqual(retryActionState(true), {disabled: true, label: 'Looking…', showSpinner: true})
+
+	const src = await readFile(new URL('../web/src/unraid.tsx', import.meta.url), 'utf8')
+	assert.match(src, /scanning=\{scanning\}/)
+	assert.match(src, /error=\{error\}/)
+	assert.match(src, /retryActionState\(scanning\)/)
+	const jobViewSrc = src.slice(src.indexOf('function JobView'))
+	assert.match(jobViewSrc, /error && <p className="bk-err">\{error\}<\/p>/)
 })
