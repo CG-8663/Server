@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// omarchy-server [--backend <address>] [--port 7780] [--host 0.0.0.0] [--data <dir>]
+// omarchy-server [--backend <address>] [--port 7780] [--host 0.0.0.0] [--data <dir>] [--app-hosts <pattern|off>]
 import http from 'node:http'
 import {networkInterfaces, homedir} from 'node:os'
 import {dirname, join} from 'node:path'
@@ -34,12 +34,17 @@ try {
 if (values.help) {
 	console.log(`Omarchy Server ${VERSION}
 
-  omarchy-server [--backend <address>] [--port <n>] [--host <addr>] [--data <dir>]
+  omarchy-server [--backend <address>] [--port <n>] [--host <addr>] [--data <dir>] [--app-hosts <pattern|off>]
 
-  --backend  Address of omarchyd, the backend (the installer sets http://127.0.0.1:2021)
-  --port    Port to listen on (default 7780, env PORT)
-  --host    Address to bind (default 0.0.0.0, env HOST)
-  --data    Where config and device sessions live (default ~/.config/omarchy-server)`)
+  --backend    Address of omarchyd, the backend (default http://127.0.0.1:2021 when set by installer, env OMARCHY_BACKEND_URL)
+  --port       Port to listen on (default 7780, env PORT)
+  --host       Address to bind (default 0.0.0.0, env HOST)
+  --data       Where config and device sessions live (default ~/.config/omarchy-server, env OMARCHY_SERVER_DATA)
+  --app-hosts  App subdomain pattern, e.g. "{app}-touch.example.com" ("off" or "" to clear, env TOUCH_APP_HOSTS)
+  -h, --help   Show this help
+
+Environment:
+  OMARCHY_SERVER_SECURE_COOKIES=1  Mark the session cookie Secure (when served only behind HTTPS)`)
 	process.exit(0)
 }
 

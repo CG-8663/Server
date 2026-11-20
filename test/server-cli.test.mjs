@@ -103,3 +103,26 @@ test('#609: accepts --name=value and uses the last value for repeated options', 
 		await stopChild(res.child)
 	}
 })
+
+test('#448: --help and -h document --app-hosts and all server environment variables', () => {
+	for (const flag of ['--help', '-h']) {
+		const r = runSync([flag])
+		assert.equal(r.status, 0, `${flag}: ${r.stderr}`)
+		assert.equal(r.stderr, '')
+		for (const expected of [
+			'--backend',
+			'--port',
+			'--host',
+			'--data',
+			'--app-hosts',
+			'PORT',
+			'HOST',
+			'OMARCHY_BACKEND_URL',
+			'OMARCHY_SERVER_DATA',
+			'TOUCH_APP_HOSTS',
+			'OMARCHY_SERVER_SECURE_COOKIES',
+		]) {
+			assert.ok(r.stdout.includes(expected), `${flag} output missing ${expected}`)
+		}
+	}
+})
