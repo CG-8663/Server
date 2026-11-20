@@ -1,11 +1,12 @@
 // The root helper's checks (with simulated commands and files) and omarchyd's storage module.
 import assert from 'node:assert/strict'
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, realpath, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
 
 import {createHelper} from '../helper/helper.mjs'
+import {createFiles} from '../omarchyd/files.mjs'
 import {createStorage} from '../omarchyd/storage.mjs'
 
 const user = {name: 'chris', uid: 1000, gid: 1000, home: '/home/chris'}
@@ -147,6 +148,12 @@ describe('helper', () => {
 		const h = createHelper({user, run: fakeRun(log), fs})
 		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'etc', path: '/home/chris/link-out'}]})), /inside your home/)
 		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'x]\n[evil', path: '/home/chris/Music'}]})), /Bad share name/)
+		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]}))
+		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Global', path: '/home/chris/Music'}]})), /Bad share name/)
+		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'homes', path: '/home/chris/Music'}]})), /Bad share name/)
+		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'printers', path: '/home/chris/Music'}]})), /Bad share name/)
+		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Photos', path: '/home/chris/Photos 20%used'}]}))
+		assert.match(fs.files.get('/etc/samba/smb.conf'), /path = \/home\/chris\/Photos 20%%used/)
 		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]}))
 		const conf = fs.files.get('/etc/samba/smb.conf')
 		assert.match(conf, /^# Managed by Omarchy Server/)
@@ -887,5 +894,95 @@ describe('omarchyd storage', () => {
 		await s.procedures['storage.mount'].run({device: '/dev/sdc'})
 		assert.deepEqual(calls.filter((a) => a[0] === 'mount').at(-1), ['mount', '/dev/sdc'])
 		await assert.rejects(s.procedures['storage.format'].run({device: '/dev/sdc', filesystem: 'ntfs'}), /blank, ext4 or exfat/)
+	})
+
+	test('a reserved Samba name is not used, and shares saved together all remain', async () => {
+		const scratch = await mkdtemp(join(os.tmpdir(), 'omarchy-shares-'))
+		await mkdir(join(scratch, 'home'))
+		const home = await realpath(join(scratch, 'home'))
+		const data = join(scratch, 'data')
+		await mkdir(join(home, 'A'), {recursive: true})
+		await mkdir(join(home, 'B'))
+		await mkdir(join(home, 'C'))
+		await mkdir(join(home, 'One', 'Music'), {recursive: true})
+		await mkdir(join(home, 'Two', 'Music'), {recursive: true})
+		for (const name of ['global', 'homes', 'printers', 'Global']) await mkdir(join(home, name))
+		await mkdir(data)
+		const calls = []
+		const run = async (cmd, args, opts) => {
+			if (cmd === 'sh') return '/usr/bin/omarchy\n'
+			if (cmd === 'pacman' && args[0] === '-Q') return `${args[1]} 1\n`
+			calls.push({args, input: opts?.input})
+			if (args[2] === 'shares-apply') await new Promise((r) => setTimeout(r, 40))
+			if (args[2] === 'ping' || args[2] === 'shares-apply' || args[2] === 'smb-password') return 'ok\n'
+			return 'ok\n'
+		}
+		const files = createFiles({home, dataDir: data})
+		const storage = createStorage({dataDir: data, home, files, run, fstabPath: join(scratch, 'fstab'), smbConf: join(scratch, 'smb.conf')})
+		const add = (path) => storage.procedures['files.addShare'].run({path})
+		try {
+			const settled = await Promise.allSettled([add('/Home/A'), add('/Home/B'), add('/Home/C')])
+			assert.deepEqual(settled.map((r) => r.status), ['fulfilled', 'fulfilled', 'fulfilled'])
+			const together = (await storage.procedures['files.shares'].run()).map((s) => s.path).sort()
+			assert.deepEqual(together, ['/Home/A', '/Home/B', '/Home/C'])
+			const last = JSON.parse(calls.filter((c) => c.args[2] === 'shares-apply').at(-1).input).shares.map((s) => s.path)
+			assert.equal(last.length, 3)
+			await Promise.all([add('/Home/One/Music'), add('/Home/Two/Music')])
+			const music = (await storage.procedures['files.shares'].run()).filter((s) => s.path.includes('Music')).map((s) => s.name).sort()
+			assert.deepEqual(music, ['Music', 'Music 2'])
+			for (const name of ['global', 'homes', 'printers', 'Global']) await add(`/Home/${name}`)
+			const reserved = (await storage.procedures['files.shares'].run()).map((s) => s.name)
+			assert.equal(reserved.some((n) => ['global', 'homes', 'printers'].includes(n.toLowerCase())), false)
+		} finally {
+			await rm(scratch, {recursive: true, force: true})
+		}
+	})
+
+	test('renaming, moving or trashing a shared folder updates the share', async () => {
+		const scratch = await mkdtemp(join(os.tmpdir(), 'omarchy-share-move-'))
+		await mkdir(join(scratch, 'home'))
+		const home = await realpath(join(scratch, 'home'))
+		const data = join(scratch, 'data')
+		await mkdir(join(home, 'Music', 'Live'), {recursive: true})
+		await mkdir(join(home, 'MusicVideos'))
+		await mkdir(join(home, 'Docs'))
+		await mkdir(join(home, 'Photos'))
+		await mkdir(join(home, 'Archive'))
+		await mkdir(data)
+		const calls = []
+		const run = async (cmd, args, opts) => {
+			if (cmd === 'sh') return '/usr/bin/omarchy\n'
+			if (cmd === 'pacman' && args[0] === '-Q') return `${args[1]} 1\n`
+			calls.push({args, input: opts?.input})
+			if (args[2] === 'ping' || args[2] === 'shares-apply' || args[2] === 'smb-password') return 'ok\n'
+			return 'ok\n'
+		}
+		const files = createFiles({home, dataDir: data})
+		const storage = createStorage({dataDir: data, home, files, run, fstabPath: join(scratch, 'fstab'), smbConf: join(scratch, 'smb.conf')})
+		const add = (path) => storage.procedures['files.addShare'].run({path})
+		const listed = () => storage.procedures['files.shares'].run()
+		const applied = () => calls.filter((c) => c.args[2] === 'shares-apply').map((c) => JSON.parse(c.input).shares.map((s) => s.path))
+		try {
+			await add('/Home/Music')
+			await add('/Home/Music/Live')
+			await add('/Home/MusicVideos')
+			await files.procedures['files.rename'].run({path: '/Home/Music', newName: 'Tunes'})
+			const afterRename = await listed()
+			assert.deepEqual(afterRename.map((s) => s.path).sort(), ['/Home/MusicVideos', '/Home/Tunes', '/Home/Tunes/Live'])
+			assert.equal(afterRename.every((s) => s.available), true)
+			assert.equal(afterRename.find((s) => s.path === '/Home/Tunes').name, 'Music')
+			assert.ok(applied().at(-1).every((p) => p.endsWith('/Tunes') || p.endsWith('/Tunes/Live') || p.endsWith('/MusicVideos')))
+			await add('/Home/Photos')
+			await files.procedures['files.move'].run({path: '/Home/Photos', toDirectory: '/Home/Archive'})
+			assert.equal((await listed()).find((s) => s.name === 'Photos').path, '/Home/Archive/Photos')
+			await files.procedures['files.copy'].run({path: '/Home/Archive/Photos', toDirectory: '/Home'})
+			assert.equal((await listed()).find((s) => s.name === 'Photos').path, '/Home/Archive/Photos')
+			await add('/Home/Docs')
+			await files.procedures['files.trash'].run({path: '/Home/Docs'})
+			assert.equal((await listed()).find((s) => s.path === '/Home/Docs'), undefined)
+			assert.equal(applied().at(-1).some((p) => p.endsWith('/Docs')), false)
+		} finally {
+			await rm(scratch, {recursive: true, force: true})
+		}
 	})
 })

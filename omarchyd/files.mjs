@@ -171,6 +171,9 @@ export function createFiles({home, dataDir}) {
 		}
 	}
 	const validName = (n) => typeof n === 'string' && n.length > 0 && n.length <= 255 && !n.includes('/') && !n.includes('\0') && n !== '.' && n !== '..'
+	// Storage registers this so a renamed, moved, or trashed folder takes its network share with it.
+	// Copy leaves the share on the original. `to` is null when the folder was trashed.
+	let follow = async () => {}
 
 	async function createDirectory({path}) {
 		if (!validName(basename(path))) throw new RpcError('BAD_REQUEST', '[invalid-name]')
@@ -183,14 +186,18 @@ export function createFiles({home, dataDir}) {
 	}
 	async function renameItem({path, newName}) {
 		if (!validName(newName)) throw new RpcError('BAD_REQUEST', '[invalid-name]')
-		const {real} = await resolve(path)
+		const {real, base} = await resolve(path)
+		if (real === base) throw new RpcError('BAD_REQUEST', '[cannot-rename]')
 		const target = join(dirname(real), newName)
 		if (await lstat(target).then(() => true, () => false)) throw new RpcError('CONFLICT', '[already-exists]')
 		await rename(real, target)
-		return toVirtual(target)
+		const next = await toVirtual(target)
+		await follow(path, next)
+		return next
 	}
 	async function moveOrCopy({path, toDirectory, collision = 'keep-both'}, copy) {
-		const {real} = await resolve(path)
+		const {real, base} = await resolve(path)
+		if (real === base) throw new RpcError('BAD_REQUEST', '[cannot-move]')
 		const {real: dest} = await resolve(toDirectory)
 		if (dest === real || dest.startsWith(real + sep)) throw new RpcError('BAD_REQUEST', '[subdir-of-self]')
 		let target = join(dest, basename(real))
@@ -212,7 +219,9 @@ export function createFiles({home, dataDir}) {
 				await cp(real, target, {recursive: true, verbatimSymlinks: true})
 				await rm(real, {recursive: true, force: true})
 			})
-		return toVirtual(target)
+		const next = await toVirtual(target)
+		if (!copy) await follow(path, next)
+		return next
 	}
 
 	// Trash the freedesktop way: the item in Trash/files, a .trashinfo with where it came from.
@@ -229,13 +238,18 @@ export function createFiles({home, dataDir}) {
 			await cp(real, target, {recursive: true, verbatimSymlinks: true})
 			await rm(real, {recursive: true, force: true})
 		})
-		return toVirtual(target)
+		const next = await toVirtual(target)
+		await follow(path, null)
+		return next
 	}
 	async function restore({path}) {
 		const {real, top} = await resolve(path)
 		if (top !== 'Trash') throw new RpcError('BAD_REQUEST', '[not-in-trash]')
+		// Only a direct child of Trash/files has its own .trashinfo. A nested file can share a
+		// basename with another trashed item, and must not read or remove that item's info.
+		const ownInfo = dirname(real) === trashFiles
 		const infoFile = join(trashInfo, `${basename(real)}.trashinfo`)
-		const original = /^Path=(.*)$/m.exec(await readFile(infoFile, 'utf8').catch(() => ''))?.[1]
+		const original = ownInfo ? /^Path=(.*)$/m.exec(await readFile(infoFile, 'utf8').catch(() => ''))?.[1] : undefined
 		const h = await roots()
 		// The .trashinfo can be written by anything that can write to the Trash, so where it says the
 		// item came from is only trusted inside Home: normalised (no "../" tricks) and, once its folder
@@ -255,14 +269,14 @@ export function createFiles({home, dataDir}) {
 		await mkdir(dirname(dest), {recursive: true})
 		if (await lstat(dest).then(() => true, () => false)) dest = await freeName(dirname(dest), basename(dest))
 		await rename(real, dest)
-		await rm(infoFile, {force: true})
+		if (ownInfo) await rm(infoFile, {force: true})
 		return toVirtual(dest)
 	}
 	async function deleteItem({path}) {
 		const {real, top} = await resolve(path)
 		if (top !== 'Trash' || path === '/Trash') throw new RpcError('BAD_REQUEST', '[only-from-trash]')
 		await rm(real, {recursive: true, force: true})
-		await rm(join(trashInfo, `${basename(real)}.trashinfo`), {force: true})
+		if (dirname(real) === trashFiles) await rm(join(trashInfo, `${basename(real)}.trashinfo`), {force: true})
 		return true
 	}
 	async function emptyTrash() {
@@ -409,6 +423,9 @@ export function createFiles({home, dataDir}) {
 		serveFile,
 		upload,
 		resolve,
+		followShares(fn) {
+			if (typeof fn === 'function') follow = fn
+		},
 	}
 }
 
