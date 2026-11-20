@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import {mkdtemp, readFile, stat} from 'node:fs/promises'
+import {chmod, mkdtemp, readdir, readFile, stat} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
@@ -168,7 +168,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.50', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.51', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -334,6 +334,116 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal((await fetch(`${touch.base}/api/background`)).status, 401)
 		const del = await touch.req('DELETE', '/api/background')
 		assert.equal(del.body.prefs.backgroundVersion, null)
+	})
+
+	test('a failed settings save returns an error and keeps what was saved', async () => {
+		const fresh = await startTouch({backendUrl: fake.url})
+		const origError = console.error
+		const logged = []
+		console.error = (...args) => logged.push(args.map((a) => (a instanceof Error ? (a.stack ?? a.message) : String(a))).join(' '))
+		const bgDir = () => join(fresh.dir, 'backgrounds')
+		try {
+			assert.equal((await fresh.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})).status, 200)
+			assert.equal((await fresh.req('POST', '/api/prefs', {theme: 'tokyo', accent: 'teal'})).status, 200)
+			const desktop = {wallpaper: 'valley', style: 'graphite'}
+			assert.equal((await fresh.req('POST', '/api/desktop', {config: desktop})).status, 200)
+			const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 1)])
+			const send = (body) => fetch(`${fresh.base}/api/background`, {method: 'POST', headers: {'content-type': 'image/jpeg', 'x-omarchy-server': '1', cookie: fresh.getCookie()}, body})
+			assert.equal((await send(jpeg)).status, 200)
+			const prefs = (await fresh.req('GET', '/api/prefs')).body.prefs
+			const savedDesktop = (await fresh.req('GET', '/api/desktop')).body.desktop
+			const [bgName] = await readdir(bgDir())
+			const bgPath = join(bgDir(), bgName)
+			const bgBefore = await readFile(bgPath)
+			const diskBefore = await readFile(join(fresh.dir, 'config.json'), 'utf8')
+			// config.json lives here. backgrounds/ stays writable, so only the config write fails.
+			await chmod(fresh.dir, 0o555)
+			const refused = {error: {code: 'INTERNAL', message: 'Couldn’t save that'}}
+			const leak = 'LeakCheckName'
+			const marker = 'IMGLEAKMARKER'
+			let r = await fresh.req('POST', '/api/prefs', {theme: 'mocha', assistantLook: {character: 'patch', name: leak}})
+			assert.equal(r.status, 500)
+			assert.deepEqual(r.body, refused)
+			assert.equal(JSON.stringify(r.body).includes(leak), false)
+			assert.equal(JSON.stringify(r.body).includes(fresh.dir), false)
+			assert.equal((await fresh.req('POST', '/api/prefs', {theme: '<script>'})).status, 400)
+			r = await fresh.req('POST', '/api/desktop', {config: {wallpaper: 'dunes', leak}})
+			assert.equal(r.status, 500)
+			assert.deepEqual(r.body, refused)
+			assert.equal((await fresh.req('POST', '/api/desktop', {config: [1]})).status, 400)
+			const up = await send(Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(marker)]))
+			assert.equal(up.status, 500)
+			assert.deepEqual(await up.json(), refused)
+			assert.equal((await fresh.req('GET', '/api/prefs')).body.prefs.backgroundVersion, prefs.backgroundVersion)
+			let gotBg = await fetch(`${fresh.base}/api/background`, {headers: {cookie: fresh.getCookie()}})
+			assert.equal(gotBg.status, 200)
+			assert.deepEqual(Buffer.from(await gotBg.arrayBuffer()), bgBefore)
+			assert.deepEqual(await readdir(bgDir()), [bgName])
+			const removed = await fresh.req('DELETE', '/api/background')
+			assert.equal(removed.status, 500)
+			assert.deepEqual(removed.body, refused)
+			const anon = await fetch(`${fresh.base}/api/prefs`, {method: 'POST', headers: {'content-type': 'application/json', 'x-omarchy-server': '1'}, body: JSON.stringify({theme: 'mocha'})})
+			assert.equal(anon.status, 401)
+			assert.deepEqual((await fresh.req('GET', '/api/prefs')).body.prefs, prefs)
+			assert.equal((await fresh.req('GET', '/api/prefs')).body.prefs.backgroundVersion, prefs.backgroundVersion)
+			assert.deepEqual((await fresh.req('GET', '/api/desktop')).body.desktop, savedDesktop)
+			gotBg = await fetch(`${fresh.base}/api/background`, {headers: {cookie: fresh.getCookie()}})
+			assert.equal(gotBg.status, 200)
+			assert.deepEqual(Buffer.from(await gotBg.arrayBuffer()), bgBefore)
+			assert.deepEqual(await readdir(bgDir()), [bgName])
+			await chmod(fresh.dir, 0o700)
+			assert.equal(await readFile(join(fresh.dir, 'config.json'), 'utf8'), diskBefore)
+			const text = logged.join('\n')
+			assert.ok(logged.length >= 4)
+			assert.match(text, /EACCES/)
+			assert.equal(text.includes(leak), false)
+			assert.equal(text.includes(marker), false)
+			// The process is still up, and a later save still sticks.
+			r = await fresh.req('POST', '/api/prefs', {accent: 'pink'})
+			assert.equal(r.status, 200)
+			assert.equal(r.body.prefs.theme, 'tokyo')
+			assert.equal(r.body.prefs.accent, 'pink')
+			assert.equal((await fresh.req('GET', '/api/prefs')).body.prefs.accent, 'pink')
+		} finally {
+			console.error = origError
+			await chmod(fresh.dir, 0o700).catch(() => {})
+			await fresh.close()
+		}
+	})
+
+	test('overlapping config saves keep both changes, and a failed one does not', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'touch-cfg-'))
+		const store = await createStore(dir)
+		try {
+			await store.setConfig({theme: 'tokyo'})
+			const first = store.setConfig({accent: 'teal'})
+			const second = store.setConfig({solid: 'yes'})
+			const [a, b] = await Promise.all([first, second])
+			assert.equal(a.theme, 'tokyo')
+			assert.equal(a.accent, 'teal')
+			assert.equal(b.theme, 'tokyo')
+			assert.equal(b.accent, 'teal')
+			assert.equal(b.solid, 'yes')
+			assert.deepEqual(store.getConfig(), b)
+			await chmod(dir, 0o555)
+			await assert.rejects(store.setConfig({nope: true}))
+			assert.equal(store.getConfig().nope, undefined)
+			assert.equal(store.getConfig().accent, 'teal')
+			await chmod(dir, 0o700)
+			const later = await store.setConfig({later: 2})
+			assert.equal(later.accent, 'teal')
+			assert.equal(later.solid, 'yes')
+			assert.equal(later.later, 2)
+			assert.equal(later.nope, undefined)
+			const disk = JSON.parse(await readFile(join(dir, 'config.json'), 'utf8'))
+			assert.equal(disk.theme, 'tokyo')
+			assert.equal(disk.accent, 'teal')
+			assert.equal(disk.solid, 'yes')
+			assert.equal(disk.later, 2)
+			assert.equal(disk.nope, undefined)
+		} finally {
+			await chmod(dir, 0o700).catch(() => {})
+		}
 	})
 
 	test('terminal: bridges a shell (and an app shell) with a terminal ticket', async () => {

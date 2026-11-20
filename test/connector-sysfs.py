@@ -277,5 +277,21 @@ class Gpus(unittest.TestCase):
         self.assertEqual(agent.gpus(run=run, list_dir=lambda p: [], read_file=lambda p, d="": d), [])
 
 
+class RejectKey(unittest.TestCase):
+    def test_classifier(self):
+        self.assertFalse(issubclass(agent.Rejected, PermissionError))
+        self.assertEqual(agent.reconnect_action(agent.Rejected("HTTP/1.1 401 Unauthorized")), "forget")
+        for exc in (PermissionError(13, "Permission denied"), ConnectionError("closed"), OSError(13, "Permission denied")):
+            self.assertEqual(agent.reconnect_action(exc), "retry", type(exc).__name__)
+
+    def test_handshake_status(self):
+        with self.assertRaises(agent.Rejected) as caught:
+            agent.raise_for_handshake("HTTP/1.1 401 Unauthorized")
+        self.assertEqual(agent.reconnect_action(caught.exception), "forget")
+        with self.assertRaises(ConnectionError):
+            agent.raise_for_handshake("HTTP/1.1 500 Internal Server Error")
+        agent.raise_for_handshake("HTTP/1.1 101 Switching Protocols")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

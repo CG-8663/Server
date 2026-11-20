@@ -1,9 +1,10 @@
-import {useEffect, useMemo, useState, type CSSProperties} from 'react'
+import {useMemo, useState, type CSSProperties} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {PluginBrowser} from './Plugins'
 
 import {mutate, query, type RegistryApp, type UserApp} from '../api'
-import {appUrl, useAction, useApps, useBootstrap, useInstallReview, useRegistry} from '../data'
+import {appUrl, useAction, useApps, useBootstrap, useRegistry, useUser} from '../data'
+import {BeforeInstall} from '../beforeInstall'
 import {useDesktop} from '../desktop/Desktop'
 import {explainProbe, openApp} from '../openApp'
 import {Icon, hasIcon} from '../icons'
@@ -47,6 +48,8 @@ const PLUGINS = '::omarchy-plugins'
 export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (app: UserApp) => void; onOpenApp?: (app: UserApp) => void; onBack?: () => void; onTerminal?: (input: string) => void}) {
 	const registry = useRegistry()
 	const apps = useApps()
+	const user = useUser()
+	const owner = user.data?.role !== 'member'
 	const [q, setQ] = useState('')
 	const [category, setCategory] = useState('all')
 	const [selected, setSelected] = useState<{app: StoreApp; install?: boolean} | null>(null)
@@ -213,7 +216,7 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 						</div>
 					)}
 
-			{stores && <CommunityStores onClose={() => setStores(false)} />}
+			{stores && <CommunityStores owner={owner} onClose={() => setStores(false)} />}
 
 			{selected && (
 				<StoreSheet
@@ -242,7 +245,7 @@ const SUGGESTED_STORES = [
 type Repo = {url: string; meta: {id: string; name: string}}
 const sameRepo = (a: string, b: string) => a.replace(/\.git$|\/$/, '').toLowerCase() === b.replace(/\.git$|\/$/, '').toLowerCase()
 
-function CommunityStores({onClose}: {onClose: () => void}) {
+function CommunityStores({owner, onClose}: {owner: boolean; onClose: () => void}) {
 	const qc = useQueryClient()
 	const toast = useToast()
 	const repos = useQuery({queryKey: ['appStore.repositories'], queryFn: () => query<Repo[]>('appStore.repositories')})
@@ -287,7 +290,9 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 			/>
 			<div className="screen">
 				<p className="prose" style={{margin: '0 0 14px'}}>
-					Community stores aren’t reviewed. Their apps run on your server like any other app, so only add stores from developers you trust.
+					{owner
+						? 'Community stores aren’t reviewed. Their apps run on your server like any other app, so only add stores from developers you trust.'
+						: 'Only the owner can add or remove a store.'}
 				</p>
 				{repos.isLoading && (
 					<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', borderRadius: 18}}>
@@ -307,7 +312,7 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 										<b>{r.meta.name}</b>
 										<span className="mono muted" style={{fontSize: 12, wordBreak: 'break-all'}}>{r.url}</span>
 									</span>
-									{removing === r.url ? (
+									{owner && (removing === r.url ? (
 										<button className="btn small danger" disabled={remove.isPending} onClick={() => remove.mutate(r.url)}>
 											{remove.isPending ? 'Removing…' : 'Remove'}
 										</button>
@@ -315,14 +320,14 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 										<button className="btn small" onClick={() => setRemoving(r.url)} aria-label={`Remove ${r.meta.name}`}>
 											Remove
 										</button>
-									)}
+									))}
 								</div>
 							))}
 						</div>
 						{removing && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>Apps you installed from it keep running; they just won’t get updates.</p>}
 					</>
 				)}
-				{suggestions.length > 0 && (
+				{owner && suggestions.length > 0 && (
 					<>
 						<h4 className="list-head">Suggested</h4>
 						<div className="glass group">
@@ -343,31 +348,35 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 						</div>
 					</>
 				)}
-				<h4 className="list-head">Add by link</h4>
-				<form
-					className="store-add"
-					onSubmit={(e) => {
-						e.preventDefault()
-						if (valid) add.mutate(url.trim())
-					}}
-				>
-					<input
-						className="field"
-						type="url"
-						inputMode="url"
-						autoCapitalize="off"
-						autoCorrect="off"
-						spellCheck={false}
-						placeholder="https://github.com/someone/app-store"
-						value={url}
-						onChange={(e) => setUrl(e.target.value)}
-						aria-label="Community app store link"
-					/>
-					<button className="btn primary" type="submit" disabled={!valid || add.isPending}>
-						{add.isPending && add.variables === url.trim() ? 'Adding…' : 'Add'}
-					</button>
-				</form>
-				{add.isPending && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>Downloading the store’s catalog. This can take a minute.</p>}
+				{owner && (
+					<>
+						<h4 className="list-head">Add by link</h4>
+						<form
+							className="store-add"
+							onSubmit={(e) => {
+								e.preventDefault()
+								if (valid) add.mutate(url.trim())
+							}}
+						>
+							<input
+								className="field"
+								type="url"
+								inputMode="url"
+								autoCapitalize="off"
+								autoCorrect="off"
+								spellCheck={false}
+								placeholder="https://github.com/someone/app-store"
+								value={url}
+								onChange={(e) => setUrl(e.target.value)}
+								aria-label="Community app store link"
+							/>
+							<button className="btn primary" type="submit" disabled={!valid || add.isPending}>
+								{add.isPending && add.variables === url.trim() ? 'Adding…' : 'Add'}
+							</button>
+						</form>
+						{add.isPending && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>Downloading the store’s catalog. This can take a minute.</p>}
+					</>
+				)}
 			</div>
 		</Sheet>
 	)
@@ -417,7 +426,6 @@ function StoreSheet({
 	const action = useAction()
 	const [reviewing, setReviewing] = useState(!!startInstall)
 	const [more, setMore] = useState(false)
-	const review = useInstallReview(reviewing ? app.id : null)
 	const detail = useStoreApp(app)
 	const website = detail.data?.website ?? app.website
 	const view = {
@@ -435,39 +443,6 @@ function StoreSheet({
 	const incompatible = app.compatible === false || !!app.unsupported
 	const canInstall = !live && !incompatible
 	const showReview = reviewing && canInstall
-	// Extra access must be allowed explicitly: a separate tick, every install.
-	const [allowed, setAllowed] = useState(false)
-	useEffect(() => setAllowed(false), [reviewing, app.id])
-	const access = review.data?.permissions ?? []
-	const setup = review.data?.setup ?? []
-	const folders = review.data?.folders ?? []
-	// Where each of those folders goes: null = inside the app (the default), else a path you typed.
-	const [placed, setPlaced] = useState<Record<string, string | null>>({})
-	useEffect(() => setPlaced({}), [reviewing, app.id])
-	const fkey = (f: {appId: string; id: string}) => `${f.appId}/${f.id}`
-	const home = review.data?.home ?? ''
-	const folderOk = (p: string | null | undefined) => p == null || (p.startsWith(`${home}/`) && !p.slice(home.length).split('/').some((x) => x.startsWith('.')) && !p.includes('..'))
-	const foldersReady = folders.every((f) => folderOk(placed[fkey(f)]) && placed[fkey(f)] !== '')
-	const copy = (text: string) =>
-		navigator.clipboard?.writeText(text).then(
-			() => toast('Copied'),
-			() => toast('Couldn’t copy here: select the command and copy it', true),
-		)
-
-	const install = () => {
-		haptic(12)
-		const folderAccess = review.data?.requiredFolders.map((f) => ({id: f.id, sourcePath: f.defaultSourcePath}))
-		const grant = [...new Set((review.data?.permissions ?? []).map((p) => p.id))]
-		const chosen = folders.filter((f) => placed[fkey(f)]).map((f) => ({appId: f.appId, id: f.id, path: placed[fkey(f)]!.trim()}))
-		action.mutate({
-			path: 'apps.install',
-			input: {appId: app.id, ...(folderAccess?.length ? {folderAccess} : {}), ...(grant.length ? {grant} : {}), ...(chosen.length ? {folders: chosen} : {})},
-			// It and anything it needs that isn't installed yet.
-			adding: [...missingDeps.map((d) => all.find((a) => a.id === d)).filter((a): a is StoreApp => !!a), app].map((a) => ({id: a.id, name: a.name, icon: a.icon})),
-			done: `Installing ${app.name}…`,
-		})
-		setReviewing(false)
-	}
 	const liveUrl = live ? appUrl(live, boot.server!.host) : null
 
 	return (
@@ -475,176 +450,24 @@ function StoreSheet({
 			<SheetHeader icon={<AppIcon src={app.icon} name={app.name} size={72} />} title={app.name} subtitle={app.developer ?? app.repo} onClose={onClose} />
 
 			{showReview ? (
-				<div className="screen">
-					<h3 style={{margin: '0 0 6px', fontSize: 18, fontWeight: 680}}>Before you install</h3>
-					<p className="prose" style={{margin: '0 0 16px'}}>
-						{app.name} will be installed on your server{app.installSize ? ` (${bytes(app.installSize)} download)` : ''}.
-					</p>
-					{review.isLoading && (
-						<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, borderRadius: 18}}>
-							<span className="spinner" /> Checking what it needs…
-						</div>
-					)}
-					{review.error && (
-						<div className="error">
-							<Icon name="alert" size={18} />
-							{(review.error as Error).message}
-						</div>
-					)}
-					{(review.data?.alsoInstalls?.length ?? 0) > 0 && (
-						<div className="glass" style={{marginBottom: 16, borderRadius: 18, overflow: 'hidden'}}>
-							<div style={{padding: '14px 16px 4px', fontSize: 13, fontWeight: 650, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em'}}>
-								Also installs (it needs {review.data!.alsoInstalls!.length > 1 ? 'these' : 'this'})
-							</div>
-							{review.data!.alsoInstalls!.map((d) => (
-								<div className="perm" key={d.id}>
-									<AppIcon src={d.icon} name={d.name} size={34} />
-									<span className="main">
-										<b>{d.name}</b>
-										<span>installed first</span>
-									</span>
-								</div>
-							))}
-						</div>
-					)}
-										{review.data && (review.data.requiredFolders.length > 0 || review.data.gpuAccess) && (
-						<div className="glass" style={{marginBottom: 16, borderRadius: 18, overflow: 'hidden'}}>
-							<div style={{padding: '14px 16px 4px', fontSize: 13, fontWeight: 650, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em'}}>
-								It will have access to
-							</div>
-							{review.data.requiredFolders.map((f) => (
-								<div className="perm" key={f.id}>
-									<span className="row-ico" style={{'--c': 'var(--blue)'} as React.CSSProperties}>
-										<Icon name="folder" size={18} />
-									</span>
-									<span className="main">
-										<b>
-											{f.name}
-											{f.readOnly ? ' · read-only' : ''}
-										</b>
-										<span>{f.defaultSourcePath}</span>
-									</span>
-								</div>
-							))}
-							{review.data.gpuAccess && (
-								<div className="perm">
-									<span className="row-ico" style={{'--c': 'var(--peach)'} as React.CSSProperties}>
-										<Icon name="bolt" size={18} />
-									</span>
-									<span className="main">
-										<b>Graphics card</b>
-										<span>hardware acceleration</span>
-									</span>
-								</div>
-							)}
-						</div>
-					)}
-					{access.length > 0 && (
-						<div className="access-ask">
-							<div className="access-head">
-								<Icon name="alert" size={18} />
-								<b>{app.name} asks for extra access</b>
-							</div>
-							{access.map((p) => (
-								<div className="access-item" key={`${p.appId}-${p.id}`}>
-									<b>
-										{p.label}
-										{access.some((x) => x.appId !== app.id) ? ` · ${p.appName}` : ''}
-									</b>
-									<span>{p.detail}</span>
-									{['low-ports', 'devices', 'host-files', 'system', 'system-software', 'refused'].includes(p.id) && p.what?.length ? <span className="access-what">{p.what.join(', ')}</span> : null}
-								</div>
-							))}
-							{access.some((p) => p.id === 'refused') ? (
-								<p className="access-refused">{app.name} asks for folders Omarchy Server never gives an app (your whole home, its hidden folders, or system folders), so it can’t be installed.</p>
-							) : (
-								<label className="access-allow">
-									<input type="checkbox" checked={allowed} onChange={(e) => setAllowed(e.target.checked)} />
-									<span>I understand. Allow this for {app.name}.</span>
-								</label>
-							)}
-						</div>
-					)}
-					{folders.map((f) => {
-						const k = fkey(f)
-						const value = placed[k]
-						return (
-							<div key={k} className="glass card" style={{marginBottom: 16, borderRadius: 18}}>
-								<div style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 6}}>
-									<span className="row-ico" style={{'--c': 'var(--blue)'} as React.CSSProperties}>
-										<Icon name="folder" size={18} />
-									</span>
-									<b style={{fontSize: 15}}>{f.label}</b>
-								</div>
-								{f.detail && <p className="prose" style={{margin: '0 0 10px', fontSize: 14}}>{f.detail}</p>}
-								<label style={{display: 'flex', gap: 10, alignItems: 'flex-start', padding: '6px 0', fontSize: 14.5}}>
-									<input type="radio" name={`folder-${k}`} checked={value == null} onChange={() => setPlaced((p) => ({...p, [k]: null}))} />
-									<span>
-										Inside {f.appName}
-										<small className="muted" style={{display: 'block'}}>Only {f.appName} sees them. Uninstalling with its data deletes them.</small>
-									</span>
-								</label>
-								<label style={{display: 'flex', gap: 10, alignItems: 'flex-start', padding: '6px 0', fontSize: 14.5}}>
-									<input type="radio" name={`folder-${k}`} checked={value != null} onChange={() => setPlaced((p) => ({...p, [k]: f.suggest ?? `${home}/`}))} />
-									<span>
-										A folder in your home
-										<small className="muted" style={{display: 'block'}}>You can open them from Files and the desktop too, and they stay if you uninstall.</small>
-									</span>
-								</label>
-								{value != null && (
-									<>
-										<div className="field" style={{marginTop: 6}}><input value={value} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setPlaced((p) => ({...p, [k]: e.target.value}))} aria-label={`Folder for ${f.label}`} /></div>
-										{!folderOk(value) && <p className="muted" style={{fontSize: 13, margin: '6px 0 0', color: 'var(--red)'}}>Pick a folder inside {home} (not a hidden one).</p>}
-									</>
-								)}
-							</div>
-						)
-					})}
-					{setup.map((s) => (
-						<div key={s.appId} className="glass card" style={{marginBottom: 16, borderRadius: 18}}>
-							<div style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8}}>
-								<span className="row-ico" style={{'--c': 'var(--yellow)'} as React.CSSProperties}>
-									<Icon name="terminal" size={18} />
-								</span>
-								<b style={{fontSize: 15}}>One-time setup for {s.appName}</b>
-							</div>
-							<p className="prose" style={{margin: '0 0 10px', fontSize: 14}}>
-								Run this once in a terminal on the server. It installs {s.appName} the way Omarchy’s menu does, and asks for your password itself. This page notices when it’s done.
-							</p>
-							<pre style={{whiteSpace: 'pre-wrap', wordBreak: 'break-all', userSelect: 'all', fontSize: 12.5, padding: 10, borderRadius: 10, background: 'rgba(0,0,0,.25)', margin: '0 0 10px'}}>{s.command}</pre>
-							<div style={{display: 'flex', gap: 8}}>
-								{openTerminal && (
-									<button className="btn" onClick={() => openTerminal(s.command)}>
-										<Icon name="terminal" size={18} /> Open Terminal
-									</button>
-								)}
-								<button className="btn ghost" onClick={() => copy(s.command)}>
-									Copy
-								</button>
-							</div>
-							<p className="muted" style={{display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, margin: '10px 0 0'}}>
-								<span className="spinner" /> Waiting for the setup…
-							</p>
-						</div>
-					))}
-					{review.data && !review.data.requiredFolders.length && !review.data.gpuAccess && !access.length && !setup.length && !folders.length && (
-						<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, borderRadius: 18}}>
-							<span className="row-ico" style={{'--c': 'var(--green)'} as React.CSSProperties}>
-								<Icon name="shield" size={18} />
-							</span>
-							<span style={{fontSize: 14.5}}>No access to your files or hardware needed.</span>
-						</div>
-					)}
-					<div className="stack">
-						<button className="btn primary block" onClick={install} disabled={!review.data || action.isPending || setup.length > 0 || !foldersReady || (access.length > 0 && !allowed) || access.some((p) => p.id === 'refused')}>
-							<Icon name="download" size={20} />
-							{review.data?.alsoInstalls?.length ? `Install all ${review.data.alsoInstalls.length + 1}` : `Install ${app.name}`}
-						</button>
-						<button className="btn block ghost" onClick={() => setReviewing(false)}>
-							Back
-						</button>
-					</div>
-				</div>
+				<BeforeInstall
+					appId={app.id}
+					appName={app.name}
+					installSize={app.installSize}
+					pending={action.isPending}
+					cancelLabel="Back"
+					openTerminal={openTerminal}
+					onInstall={(input) => {
+						action.mutate({
+							path: 'apps.install',
+							input: {appId: app.id, ...input},
+							adding: [...missingDeps.map((d) => all.find((a) => a.id === d)).filter((a): a is StoreApp => !!a), app].map((a) => ({id: a.id, name: a.name, icon: a.icon})),
+							done: `Installing ${app.name}…`,
+						})
+						setReviewing(false)
+					}}
+					onCancel={() => setReviewing(false)}
+				/>
 			) : (
 				<>
 					{live ? (

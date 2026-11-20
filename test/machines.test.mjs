@@ -13,7 +13,7 @@ import WebSocket from 'ws'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
 import {cloudUserData, isWindowsClientLabel, omarchyConfiguration, windowsAnswerFile} from '../omarchyd/machine-media.mjs'
-import {findChecksum} from '../omarchyd/machines.mjs'
+import {createMachines, findChecksum} from '../omarchyd/machines.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 test('findChecksum reads GNU and BSD checksum lists', () => {
@@ -83,6 +83,7 @@ describe('omarchyd machines', () => {
 				case '--version':
 					return '10.0.0\n'
 				case 'list':
+					if (seen.failList) throw new Error('virsh list: error: failed to connect to the hypervisor')
 					return ` Id   Name   State\n------------------\n${[...doms].map(([n, s]) => ` -    ${n}   ${s}`).join('\n')}\n`
 				case 'define': {
 					if (seen.failDefine) throw new Error("virsh define: error: unsupported configuration: domain configuration does not support video model 'virtio'")
@@ -95,12 +96,16 @@ describe('omarchyd machines', () => {
 					doms.set(a[1], 'running')
 					return ''
 				case 'shutdown':
+					doms.set(a[1], 'shut off')
+					return ''
 				case 'destroy':
+					if (seen.failDestroy) throw new Error('virsh destroy: error: Failed to terminate domain')
 					doms.set(a[1], 'shut off')
 					return ''
 				case 'reboot':
 					return ''
 				case 'undefine':
+					if (seen.failUndefine) throw new Error('virsh undefine: error: Failed to undefine domain')
 					doms.delete(a[1])
 					return ''
 			}
@@ -460,6 +465,47 @@ describe('omarchyd machines', () => {
 		assert.ok((await q('machines.tasks')).every((t) => t.machineName))
 	})
 
+	test('uninstall leaves the machine when its state cannot be read', async () => {
+		const disk = join(data, 'machines/vms', id, 'disk.qcow2')
+		seen.failList = true
+		try {
+			const before = seen.calls.length
+			await assert.rejects(call('machines.uninstall', {id}), /was not deleted because its state could not be read/)
+			assert.equal(seen.calls.slice(before).some((c) => /^virsh (destroy|undefine) /.test(c)), false)
+			await stat(disk)
+			assert.ok((await q('machines.list')).some((x) => x.id === id), 'the list still loads, and the machine is still on it')
+			const saved = JSON.parse(await readFile(join(data, 'machines/machines.json'), 'utf8'))
+			assert.ok(saved.machines.some((x) => x.id === id))
+			assert.equal(doms.get(`omarchy-${id}`), 'running')
+		} finally {
+			seen.failList = false
+		}
+	})
+
+	test('uninstall leaves the disk when the machine will not shut down', async () => {
+		const disk = join(data, 'machines/vms', id, 'disk.qcow2')
+		seen.failDestroy = true
+		try {
+			const before = seen.calls.length
+			await assert.rejects(call('machines.uninstall', {id}), /was not deleted because it could not be shut down/)
+			assert.equal(seen.calls.slice(before).some((c) => c.startsWith('virsh undefine ')), false)
+			await stat(disk)
+			assert.ok((await q('machines.list')).some((x) => x.id === id))
+			assert.equal(doms.get(`omarchy-${id}`), 'running')
+		} finally {
+			seen.failDestroy = false
+		}
+		seen.failUndefine = true
+		try {
+			await assert.rejects(call('machines.uninstall', {id}), /was not deleted because it could not be removed from libvirt/)
+			await stat(disk)
+			assert.ok((await q('machines.list')).some((x) => x.id === id))
+			assert.equal(doms.has(`omarchy-${id}`), true)
+		} finally {
+			seen.failUndefine = false
+		}
+	})
+
 	test('stop, start, uninstall', async () => {
 		await call('machines.forceStop', {id})
 		await until(async () => (await q('machines.list')).find((x) => x.id === id).state === 'stopped')
@@ -469,5 +515,53 @@ describe('omarchyd machines', () => {
 		assert.deepEqual(await q('machines.list'), [])
 		assert.equal(doms.size, 0)
 		await assert.rejects(stat(join(data, 'machines/vms', id)))
+	})
+})
+
+describe('machines.json registry', () => {
+	const open = (dataDir) => createMachines({dataDir, run: async () => '', kvmDevice: join(dataDir, 'kvm'), catalogUrl: 'https://example.invalid/catalog.json', fetchImpl: async () => ({ok: false})})
+
+	test('a truncated machines.json is unchanged after ready/list, and the machine list is empty', async (t) => {
+		const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-m-bad-'))
+		const logs = []
+		t.mock.method(console, 'error', (...args) => logs.push(args.map(String).join(' ')))
+		try {
+			const file = join(root, 'machines', 'machines.json')
+			const damaged = '{"machines":[{"id":"abcd1234","name":"Kept","secret":"do-not-log"'
+			await mkdir(join(root, 'machines'), {recursive: true})
+			await writeFile(file, damaged)
+			const machines = open(root)
+			await machines.ready
+			assert.deepEqual(await machines.procedures['machines.list'].run(), [])
+			assert.equal(await readFile(file, 'utf8'), damaged)
+			assert.equal(logs.length, 1)
+			assert.match(logs[0], /machines\.json/)
+			assert.equal(logs[0].includes(root), false)
+			assert.equal(logs[0].includes('do-not-log'), false)
+			assert.equal(logs[0].includes('abcd1234'), false)
+		} finally {
+			await rm(root, {recursive: true, force: true})
+		}
+	})
+
+	test('a valid machines.json still loads its machines', async () => {
+		const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-m-ok-'))
+		try {
+			const file = join(root, 'machines', 'machines.json')
+			await mkdir(join(root, 'machines'), {recursive: true})
+			await writeFile(file, JSON.stringify({machines: [{id: 'abcd1234', name: 'Kept', osId: 'testos-amd64', cores: 1, memoryGb: 1, diskSizeGb: 10, state: 'stopped', portForwards: [], createdAt: 1, layout: {video: 'virtio', disks: []}}]}))
+			const machines = open(root)
+			await machines.ready
+			const listed = await machines.procedures['machines.list'].run()
+			assert.equal(listed.length, 1)
+			assert.equal(listed[0].id, 'abcd1234')
+			assert.equal(listed[0].name, 'Kept')
+			const saved = JSON.parse(await readFile(file, 'utf8'))
+			assert.equal(saved.machines[0].id, 'abcd1234')
+			assert.equal(saved.machines[0].name, 'Kept')
+			assert.equal(saved.machines[0].layout.video, 'vga')
+		} finally {
+			await rm(root, {recursive: true, force: true})
+		}
 	})
 })

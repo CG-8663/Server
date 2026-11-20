@@ -56,6 +56,12 @@ export function cardAction(raw: unknown): AssistantAction {
 	const error = typeof a.error === 'string' ? scrubSecrets(a.error) : ''
 	const toolName = typeof a.toolName === 'string' ? a.toolName : ''
 	const picker = wallpaperPicker(a, toolName)
+	const rpc = a.rpc && typeof a.rpc === 'object' && !Array.isArray(a.rpc) ? (a.rpc as {input?: unknown}).input : null
+	const rawAppId = rpc && typeof rpc === 'object' && !Array.isArray(rpc) ? (rpc as {appId?: unknown}).appId : ''
+	// The live stream reads the card once, then the screen reads that result again. The second read
+	// has no rpc, so an app id already on the card has to stay.
+	const keptAppId = typeof a.appId === 'string' ? a.appId.trim() : ''
+	const appId = toolName === 'apps_install' ? (typeof rawAppId === 'string' ? rawAppId.trim() : '') || keptAppId : ''
 	return {
 		id: typeof a.id === 'string' ? a.id : '',
 		status: isStatus(a.status) ? a.status : 'pending',
@@ -65,6 +71,7 @@ export function cardAction(raw: unknown): AssistantAction {
 		detail: scrubSecrets(typeof a.detail === 'string' ? a.detail : ''),
 		...(error ? {error} : {}),
 		...(picker ? {picker} : {}),
+		...(appId ? {appId} : {}),
 	}
 }
 

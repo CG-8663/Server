@@ -11,7 +11,7 @@ import http from 'node:http'
 
 import {randomBytes, randomUUID} from 'node:crypto'
 import {existsSync} from 'node:fs'
-import {mkdir, readFile, rm, writeFile} from 'node:fs/promises'
+import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import express from 'express'
 import WebSocket, {WebSocketServer} from 'ws'
@@ -20,7 +20,7 @@ import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.50'
+export const VERSION = '0.9.51'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -487,6 +487,20 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		return res.status(500).json({error: {code: 'INTERNAL', message: 'Something went wrong in Omarchy Server'}})
 	}
 
+	// Express 4 does not turn a rejected async handler into a response, so a failed settings save
+	// has to be caught here or the process exits.
+	const catchSave = (handler) => (req, res) => {
+		Promise.resolve(handler(req, res)).catch((error) => {
+			console.error('[omarchy-server]', error)
+			if (res.headersSent) return
+			try {
+				res.status(500).json({error: {code: 'INTERNAL', message: 'Couldn’t save that'}})
+			} catch (sendFailure) {
+				console.error('[omarchy-server]', sendFailure)
+			}
+		})
+	}
+
 	// Secure when asked for, or when the request arrived over HTTPS (e.g. through a Cloudflare
 	// Tunnel or reverse proxy on this machine, which is the only proxy we trust headers from).
 	const setCookie = (res, value, maxAge) =>
@@ -830,7 +844,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const session = requireSession(req, res)
 		if (session) res.json({prefs: prefsOf(session.accountId)})
 	})
-	api.post('/prefs', async (req, res) => {
+	api.post('/prefs', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
 		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook} = req.body ?? {}
@@ -865,7 +879,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			patch.customBrandHsl = customBrandHsl
 		}
 		res.json({prefs: await savePrefs(session.accountId, patch)})
-	})
+	}))
 
 	// The desktop's own layout and look (wallpaper, style, dock, icons), per account, so every
 	// browser you sign in on shows the same desktop. The browser checks the contents when it reads them.
@@ -873,7 +887,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const session = requireSession(req, res)
 		if (session) res.json({desktop: store.getConfig().desktops?.[accountKey(session.accountId)] ?? null})
 	})
-	api.post('/desktop', async (req, res) => {
+	api.post('/desktop', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
 		const config = req.body?.config
@@ -888,20 +902,31 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		all[key] = {config: JSON.parse(text), rev: prevRev + 1, updatedAt: Date.now()}
 		await store.setConfig({desktops: all})
 		res.json({desktop: all[key]})
-	})
+	}))
 
 	// Custom background: the phone resizes the photo to a JPEG before sending it.
-	api.post('/background', express.raw({type: 'image/jpeg', limit: '8mb'}), async (req, res) => {
+	// The live file is replaced only after prefs commit, so a failed save can't show a new photo under the old version.
+	api.post('/background', express.raw({type: 'image/jpeg', limit: '8mb'}), catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
 		const body = req.body
 		const isJpeg = Buffer.isBuffer(body) && body.length > 4 && body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff
 		if (!isJpeg) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'That image couldn’t be read. Try a JPEG or PNG.'}})
-		await mkdir(join(store.dataDir, 'backgrounds'), {recursive: true, mode: 0o700})
-		await writeFile(backgroundFile(session.accountId), body, {mode: 0o600})
-		const prefs = await savePrefs(session.accountId, {backgroundVersion: Date.now()})
+		const dir = join(store.dataDir, 'backgrounds')
+		await mkdir(dir, {recursive: true, mode: 0o700})
+		const live = backgroundFile(session.accountId)
+		const tmp = join(dir, `.${accountKey(session.accountId)}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`)
+		let prefs
+		try {
+			await writeFile(tmp, body, {mode: 0o600})
+			prefs = await savePrefs(session.accountId, {backgroundVersion: Date.now()})
+		} catch (error) {
+			await rm(tmp, {force: true}).catch((cleanup) => console.error('[omarchy-server]', cleanup))
+			throw error
+		}
+		await rename(tmp, live)
 		res.json({prefs})
-	})
+	}))
 	api.get('/background', async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
@@ -912,18 +937,33 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			res.status(404).end()
 		}
 	})
-	api.delete('/background', async (req, res) => {
+	api.delete('/background', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		await rm(backgroundFile(session.accountId), {force: true})
+		const live = backgroundFile(session.accountId)
+		const aside = `${live}.${process.pid}.${randomBytes(4).toString('hex')}.bak`
+		let moved = false
+		try {
+			await rename(live, aside)
+			moved = true
+		} catch (error) {
+			if (error.code !== 'ENOENT') throw error
+		}
 		const current = prefsOf(session.accountId) ?? {}
-		const prefs = await savePrefs(session.accountId, {
-			backgroundVersion: null,
-			customBrandHsl: null,
-			...(current.theme === 'custom' ? {theme: 'horizon'} : {}),
-		})
+		let prefs
+		try {
+			prefs = await savePrefs(session.accountId, {
+				backgroundVersion: null,
+				customBrandHsl: null,
+				...(current.theme === 'custom' ? {theme: 'horizon'} : {}),
+			})
+		} catch (error) {
+			if (moved) await rename(aside, live).catch((restore) => console.error('[omarchy-server]', restore))
+			throw error
+		}
+		if (moved) await rm(aside, {force: true})
 		res.json({prefs})
-	})
+	}))
 
 	// ---- VM console ------------------------------------------------------------
 	async function openConsoleSession(backend, credentials, userAgent, accessToken) {

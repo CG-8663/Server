@@ -178,6 +178,94 @@ test('back up, copy to the NAS, restore an app, and recover on a new server', {s
 	}
 })
 
+test('empty or wrong-shaped backup files do not stop startup or get rewritten', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'bk-'))
+	const dataDir = join(dir, 'data')
+	const backups = join(dataDir, 'backups')
+	await mkdir(backups, {recursive: true})
+	const historyFile = join(backups, 'history.json')
+	const secretFile = join(backups, 'secrets.json')
+	const configFile = join(backups, 'config.json')
+	const configText = '{"repo":"/Home/Backups/Kept","schedule":{"frequency":"weekly","hour":9,"weekday":2}}'
+	await writeFile(historyFile, '')
+	await writeFile(secretFile, '[]')
+	await writeFile(configFile, configText)
+	const errors = []
+	const orig = console.error
+	console.error = (...args) => errors.push(args.map(String).join(' '))
+	const b = createBackups({dataDir, files: fakeFiles(dir), apps: {backupTargets: async () => []}, timers: false, run: async () => ({stdout: '', stderr: ''})})
+	try {
+		await b.ready
+		const st = await b.procedures['backups.status'].run()
+		assert.equal(st.repo, '/Home/Backups/Kept')
+		assert.deepEqual(st.schedule, {frequency: 'weekly', hour: 9, weekday: 2})
+		assert.deepEqual(st.include, {apps: true, settings: true, machineBackups: false})
+		assert.equal(st.nas, null)
+		assert.deepEqual(st.history, [])
+		assert.equal(await readFile(historyFile, 'utf8'), '')
+		assert.equal(await readFile(secretFile, 'utf8'), '[]')
+		assert.equal(await readFile(configFile, 'utf8'), configText)
+		assert.deepEqual(errors, [
+			`[omarchyd] backups: damaged file ${secretFile}`,
+			`[omarchyd] backups: damaged file ${historyFile}`,
+		])
+	} finally {
+		console.error = orig
+		b.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('a backup that was in progress is still marked stopped, and an array config is left untouched', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'bk-'))
+	const dataDir = join(dir, 'data')
+	const backups = join(dataDir, 'backups')
+	await mkdir(backups, {recursive: true})
+	const historyFile = join(backups, 'history.json')
+	const row = {id: 'ab12', reason: 'scheduled', startedAt: 1000, endedAt: null, ok: false, error: null, items: [], added: 0, nas: null}
+	const historyText = JSON.stringify([row])
+	await writeFile(historyFile, historyText)
+	const opts = {dataDir, files: fakeFiles(dir), apps: {backupTargets: async () => []}, timers: false, run: async () => ({stdout: '', stderr: ''})}
+	const running = createBackups(opts)
+	const errors = []
+	const orig = console.error
+	let damaged
+	try {
+		const st = await running.procedures['backups.status'].run()
+		assert.equal(st.history[0].id, 'ab12')
+		assert.equal(st.history[0].endedAt, 1000)
+		assert.equal(st.history[0].ok, false)
+		assert.equal(st.history[0].error, 'Stopped when the server restarted')
+		assert.equal(await readFile(historyFile, 'utf8'), historyText)
+
+		const configFile = join(backups, 'config.json')
+		const secretFile = join(backups, 'secrets.json')
+		await writeFile(configFile, '["not-a-config"]')
+		await writeFile(secretFile, '{"nasPassword":"super-secret-password"')
+		console.error = (...args) => errors.push(args.map(String).join(' '))
+		damaged = createBackups(opts)
+		await damaged.ready
+		const fresh = await damaged.procedures['backups.status'].run()
+		assert.equal(fresh.repo, '/Home/Backups/Omarchy Server')
+		assert.deepEqual(fresh.schedule, {frequency: 'daily', hour: 3, weekday: 0})
+		assert.deepEqual(fresh.include, {apps: true, settings: true, machineBackups: false})
+		assert.equal(fresh.nas, null)
+		assert.equal(await readFile(configFile, 'utf8'), '["not-a-config"]')
+		assert.equal(await readFile(secretFile, 'utf8'), '{"nasPassword":"super-secret-password"')
+		assert.equal(await readFile(historyFile, 'utf8'), historyText)
+		assert.ok(errors.every((line) => !line.includes('super-secret-password') && !line.includes('not-a-config')))
+		assert.deepEqual(errors, [
+			`[omarchyd] backups: damaged file ${configFile}`,
+			`[omarchyd] backups: damaged file ${secretFile}`,
+		])
+	} finally {
+		console.error = orig
+		running.close()
+		damaged?.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
 test('setup makes the backup folder, and a setup that fails leaves nothing half-done', async () => {
 	const dir = await mkdtemp(join(os.tmpdir(), 'bk-'))
 	const home = join(dir, 'home')

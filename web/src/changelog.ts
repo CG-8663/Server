@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.51',
+		date: '2026-11-20',
+		title: 'Sturdier when files are damaged, and assistant installs that finish',
+		added: ['Approving an assistant install opens the same “Before you install” review as the App Store, so apps that need permissions, folders or a GPU install in one go.'],
+		fixed: [
+			'A damaged settings, backup, machine or certificate file no longer stops the server from starting, and nothing is overwritten. Damaged certificate notes keep the current certificate in use.',
+			'Deleting a machine is refused when its state can’t be read, so a running machine never loses its disk.',
+			'Apps that run as their own user, such as Jellyfin, can write to their own data folder.',
+			'Only the owner can add or remove an app store.',
+			'A computer leaves the swarm only when the server actually rejects its key, not after a local error.',
+			'A long computer name in another language can’t crash the server, and a failed settings save shows an error instead of stopping the web server.',
+		],
+	},
+	{
 		version: '0.9.50',
 		date: '2026-11-19',
 		title: 'Remote desktop on your phone, and steadier apps',

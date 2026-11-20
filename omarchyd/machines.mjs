@@ -96,16 +96,34 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const ready = (async () => {
 		await mkdir(imagesDir, {recursive: true, mode: 0o700})
 		await mkdir(vmsDir, {recursive: true, mode: 0o700})
+		// Only a missing file is a new install. A damaged or unreadable machines.json must stay
+		// byte-for-byte: saving [] here would wipe the registry.
+		let loaded = false
 		try {
-			machines = JSON.parse(await readFile(stateFile, 'utf8')).machines ?? []
-		} catch {}
-		// A create that was interrupted by a restart can't resume: show it as failed.
-		// Machines from before 0.6.1 asked for a virtio display, which QEMU on Arch only has with an
-		// extra package: use the built-in standard VGA instead.
-		for (const m of machines) if (m.layout?.video === 'virtio') m.layout.video = 'vga'
-		for (const m of machines) if (m.state === 'installing') Object.assign(m, {state: 'error', errorMessage: 'Setup was interrupted. Delete this machine and create it again.'})
-		for (const m of machines) normalize(m)
-		await save().catch(() => {})
+			const text = await readFile(stateFile, 'utf8')
+			let data
+			try {
+				data = JSON.parse(text)
+			} catch {
+				data = undefined
+			}
+			if (data && typeof data === 'object' && !Array.isArray(data) && Array.isArray(data.machines)) {
+				machines = data.machines
+				loaded = true
+			} else console.error('[omarchyd] couldn’t load machines.json; leaving it unchanged')
+		} catch (error) {
+			if (error.code === 'ENOENT') loaded = true
+			else console.error('[omarchyd] couldn’t load machines.json; leaving it unchanged')
+		}
+		if (loaded) {
+			// A create that was interrupted by a restart can't resume: show it as failed.
+			// Machines from before 0.6.1 asked for a virtio display, which QEMU on Arch only has with an
+			// extra package: use the built-in standard VGA instead.
+			for (const m of machines) if (m.layout?.video === 'virtio') m.layout.video = 'vga'
+			for (const m of machines) if (m.state === 'installing') Object.assign(m, {state: 'error', errorMessage: 'Setup was interrupted. Delete this machine and create it again.'})
+			for (const m of machines) normalize(m)
+			await save().catch(() => {})
+		}
 		startSampler()
 		autostart()
 	})()
@@ -626,15 +644,53 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return true
 	}
 
+	// domainStates() swallows a virsh failure so the machine list still loads. Delete must not
+	// treat that empty map as "already off" and remove a disk that is still in use.
+	async function readDomainState(m) {
+		let text
+		try {
+			text = await virsh('list', '--all')
+		} catch {
+			throw new RpcError('BAD_GATEWAY', `${m.name} was not deleted because its state could not be read`)
+		}
+		const name = domain(m.id)
+		for (const line of text.split('\n').slice(2)) {
+			const hit = /^\s*(\S+)\s+(\S+)\s+(.+?)\s*$/.exec(line)
+			if (hit && hit[2] === name) return hit[3]
+		}
+		return null
+	}
+	// Older libvirt rejects --nvram or --managed-save. Try plainer forms before giving up.
+	async function undefineDomain(m) {
+		const name = domain(m.id)
+		const attempts = [
+			['undefine', name, '--nvram', '--managed-save'],
+			['undefine', name, '--nvram'],
+			['undefine', name],
+		]
+		for (const args of attempts) {
+			try {
+				await virsh(...args)
+				return
+			} catch {}
+		}
+		throw new RpcError('BAD_GATEWAY', `${m.name} was not deleted because it could not be removed from libvirt`)
+	}
+
 	async function uninstall(input) {
 		await ready
 		const m = find(input?.id)
 		if (busy.get(m.id)?.state === 'installing') throw new RpcError('CONFLICT', `${m.name} is still being set up`)
 		if (m.options?.protection && !input?.force) throw new RpcError('PRECONDITION_FAILED', `${m.name} is protected. Turn off Protection in its options to delete it.`)
-		const states = await domainStates()
-		const live = states.get(domain(m.id))
-		if (live && live !== 'shut off') await virsh('destroy', domain(m.id)).catch(() => {})
-		if (live) await virsh('undefine', domain(m.id), '--nvram', '--managed-save').catch(() => virsh('undefine', domain(m.id), '--nvram').catch(() => virsh('undefine', domain(m.id))))
+		const live = await readDomainState(m)
+		if (live && live !== 'shut off') {
+			try {
+				await virsh('destroy', domain(m.id))
+			} catch {
+				throw new RpcError('BAD_GATEWAY', `${m.name} was not deleted because it could not be shut down`)
+			}
+		}
+		if (live) await undefineDomain(m)
 		await rm(join(vmsDir, m.id), {recursive: true, force: true})
 		machines = machines.filter((x) => x.id !== m.id)
 		await save()
