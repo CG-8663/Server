@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// omarchyd serve [--port 2021] [--data DIR]       run the backend (localhost only)
-// omarchyd create-owner [--name NAME] [--data DIR]  create the owner account; asks for the password here
-// omarchyd has-owner [--data DIR]                  exit 0 if the owner account exists
+// omarchyd serve [--port 2021] [--web-port 7780] [--data DIR]  run the backend (localhost only)
+// omarchyd create-owner [--name NAME] [--data DIR]             create the owner account; asks for the password here
+// omarchyd has-owner [--data DIR]                             exit 0 if the owner account exists
 import os from 'node:os'
 import {join} from 'node:path'
 import {parseArgs} from 'node:util'
@@ -11,12 +11,45 @@ import {takeLine} from './prompt.mjs'
 import {startOmarchyd} from './server.mjs'
 import {defaultTlsDir} from './tls.mjs'
 
-const {values, positionals} = parseArgs({
-	allowPositionals: true,
-	options: {port: {type: 'string', default: '2021'}, 'web-port': {type: 'string', default: '7780'}, data: {type: 'string'}, name: {type: 'string'}},
-})
-const dataDir = values.data ?? join(process.env.XDG_DATA_HOME ?? join(os.homedir(), '.local/share'), 'omarchy-server')
+const USAGE = `omarchyd: the Omarchy Server backend
+
+  omarchyd serve [--port 2021] [--web-port 7780] [--data <dir>]
+  omarchyd create-owner [--name <name>] [--data <dir>]
+  omarchyd has-owner [--data <dir>]
+  omarchyd -h | --help | help`
+
+let values
+let positionals
+try {
+	const parsed = parseArgs({
+		strict: true,
+		allowPositionals: true,
+		options: {
+			port: {type: 'string', default: '2021'},
+			'web-port': {type: 'string', default: '7780'},
+			data: {type: 'string'},
+			name: {type: 'string'},
+			help: {type: 'boolean', short: 'h'},
+		},
+	})
+	values = parsed.values
+	positionals = parsed.positionals
+} catch (error) {
+	console.error(`omarchyd: ${error.message}`)
+	console.error('Run with --help for usage.')
+	process.exit(2)
+}
+
 const command = positionals[0] ?? 'serve'
+if (values.help || command === 'help') {
+	console.log(USAGE)
+	process.exit(0)
+}
+if (positionals.length > 1) {
+	console.error(`omarchyd: unexpected argument “${positionals[1]}”`)
+	process.exit(2)
+}
+const dataDir = values.data ?? join(process.env.XDG_DATA_HOME ?? join(os.homedir(), '.local/share'), 'omarchy-server')
 
 // Read a password from the terminal without echoing it.
 // Typed input that came after an Enter, kept for the next question (a paste of both passwords).
@@ -76,13 +109,13 @@ if (command === 'serve') {
 		process.exit(1)
 	}
 	const name = values.name ?? os.userInfo().username
-	const password = await askHidden(`Password for ${name}: `)
-	const again = await askHidden('Again: ')
-	if (password !== again) {
-		console.error('The passwords don’t match.')
-		process.exit(1)
-	}
 	try {
+		const password = await askHidden(`Password for ${name}: `)
+		const again = await askHidden('Again: ')
+		if (password !== again) {
+			console.error('The passwords don’t match.')
+			process.exit(1)
+		}
 		await accounts.createOwner({name, password})
 		console.log(`Created the owner account “${name}”. Sign in with that name and password.`)
 	} catch (e) {
@@ -91,5 +124,5 @@ if (command === 'serve') {
 	}
 } else {
 	console.error(`Unknown command “${command}”. Use: serve | create-owner | has-owner`)
-	process.exit(1)
+	process.exit(2)
 }
