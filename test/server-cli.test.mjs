@@ -1,6 +1,7 @@
 // `server/cli.mjs` option parsing, validation, error handling, and help output.
 import assert from 'node:assert/strict'
 import {spawn, spawnSync} from 'node:child_process'
+import {existsSync} from 'node:fs'
 import {mkdtemp, rm} from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
@@ -186,4 +187,19 @@ test('#439: empty PORT falls back to 7780 instead of listening on port 0', async
 	} finally {
 		await stopChild(child)
 	}
+})
+
+test('#447: unusable --backend or OMARCHY_BACKEND_URL exits 1 with a clean message and no stack trace', () => {
+	const data = join(root, 'bad-backend-data-does-not-exist')
+	for (const val of ['http://a b', 'http://user:pw@host', '']) {
+		const r = runSync(['--backend', val, '--data', data])
+		assert.equal(r.status, 1, `--backend ${JSON.stringify(val)} expected exit 1, got ${r.status} stderr=${r.stderr}`)
+		assert.match(r.stderr, /^\[omarchy-server\] --backend: /m)
+		assert.doesNotMatch(r.stderr, /TypeError|ERR_INVALID_URL|^\s+at /m)
+	}
+	const rEnv = runSync(['--data', data], {OMARCHY_BACKEND_URL: 'x y'})
+	assert.equal(rEnv.status, 1)
+	assert.match(rEnv.stderr, /^\[omarchy-server\] OMARCHY_BACKEND_URL: /m)
+	assert.doesNotMatch(rEnv.stderr, /TypeError|ERR_INVALID_URL|^\s+at /m)
+	assert.equal(existsSync(data), false)
 })

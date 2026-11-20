@@ -60,9 +60,22 @@ const host = values.host || process.env.HOST || '0.0.0.0'
 const dataDir = values.data ?? process.env.OMARCHY_SERVER_DATA ?? join(homedir(), '.config', 'omarchy-server')
 const staticDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist')
 
+const backendFromFlag = values.backend !== undefined
+const backendArg = backendFromFlag ? values.backend : process.env.OMARCHY_BACKEND_URL || undefined
+let backendUrl
+if (backendArg !== undefined) {
+	try {
+		backendUrl = normalizeBackendUrl(backendArg)
+	} catch (error) {
+		const label = backendFromFlag ? '--backend' : 'OMARCHY_BACKEND_URL'
+		const message = error?.code === 'ERR_INVALID_URL' ? 'that is not a valid address' : error.message
+		console.error(`[omarchy-server] ${label}: ${message}`)
+		process.exit(1)
+	}
+}
+
 const store = await createStore(dataDir)
-const backendArg = values.backend ?? process.env.OMARCHY_BACKEND_URL
-if (backendArg) await store.setConfig({backendUrl: normalizeBackendUrl(backendArg)})
+if (backendUrl !== undefined) await store.setConfig({backendUrl})
 // App addresses for remote access, e.g. "{app}-touch.example.com"; kept until set to "off".
 const appHosts = values['app-hosts'] ?? process.env.TOUCH_APP_HOSTS
 if (appHosts) await store.setConfig({appHosts: appHosts === 'off' ? null : appHosts})
