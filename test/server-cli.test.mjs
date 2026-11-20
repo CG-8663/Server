@@ -2,12 +2,14 @@
 import assert from 'node:assert/strict'
 import {spawn, spawnSync} from 'node:child_process'
 import {existsSync} from 'node:fs'
-import {mkdtemp, rm} from 'node:fs/promises'
+import {mkdtemp, readFile, rm} from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, test} from 'node:test'
 import {fileURLToPath} from 'node:url'
+
+import {normalizeAppHosts} from '../server/app.mjs'
 
 const CLI = fileURLToPath(new URL('../server/cli.mjs', import.meta.url))
 const root = await mkdtemp(join(os.tmpdir(), 'server-cli-'))
@@ -202,4 +204,66 @@ test('#447: unusable --backend or OMARCHY_BACKEND_URL exits 1 with a clean messa
 	assert.match(rEnv.stderr, /^\[omarchy-server\] OMARCHY_BACKEND_URL: /m)
 	assert.doesNotMatch(rEnv.stderr, /TypeError|ERR_INVALID_URL|^\s+at /m)
 	assert.equal(existsSync(data), false)
+})
+
+test('#617: invalid --app-hosts or TOUCH_APP_HOSTS is refused without saving, and empty clears saved value', async () => {
+	const badDir = join(root, 'bad-app-hosts-does-not-exist')
+	for (const val of ['touch.example.com', '{app}_touch.example.com', 'https://{app}.example.com']) {
+		const r = runSync(['--app-hosts', val, '--data', badDir])
+		assert.equal(r.status, 2, `--app-hosts ${val} expected exit 2, got ${r.status} stderr=${r.stderr}`)
+		assert.match(r.stderr, /--app-hosts must look like/)
+	}
+	const rBadEnv = runSync(['--data', badDir], {TOUCH_APP_HOSTS: 'touch.example.com'})
+	assert.equal(rBadEnv.status, 2)
+	assert.match(rBadEnv.stderr, /TOUCH_APP_HOSTS must look like/)
+	assert.equal(existsSync(badDir), false)
+
+	const data = await mkdtemp(join(root, 'app-hosts-'))
+	const cfgPath = join(data, 'config.json')
+	const readCfg = async () => JSON.parse(await readFile(cfgPath, 'utf8'))
+
+	// Save valid value
+	const s1 = await startAndWaitForBanner(['--port', String(await freePort()), '--host', '127.0.0.1', '--data', data, '--app-hosts', '{app}-touch.example.com'])
+	await stopChild(s1.child)
+	assert.equal((await readCfg()).appHosts, '{app}-touch.example.com')
+
+	// Preserved when unset
+	const s2 = await startAndWaitForBanner(['--port', String(await freePort()), '--host', '127.0.0.1', '--data', data])
+	await stopChild(s2.child)
+	assert.equal((await readCfg()).appHosts, '{app}-touch.example.com')
+
+	// Cleared with empty --app-hosts ""
+	const s3 = await startAndWaitForBanner(['--port', String(await freePort()), '--host', '127.0.0.1', '--data', data, '--app-hosts', ''])
+	await stopChild(s3.child)
+	assert.equal((await readCfg()).appHosts, null)
+
+	// Re-save, then clear with empty TOUCH_APP_HOSTS=""
+	const s4 = await startAndWaitForBanner(['--port', String(await freePort()), '--host', '127.0.0.1', '--data', data, '--app-hosts', '{app}-touch.example.com'])
+	await stopChild(s4.child)
+	assert.equal((await readCfg()).appHosts, '{app}-touch.example.com')
+
+	const s5 = await startAndWaitForBanner(['--port', String(await freePort()), '--host', '127.0.0.1', '--data', data], {TOUCH_APP_HOSTS: ''})
+	await stopChild(s5.child)
+	assert.equal((await readCfg()).appHosts, null)
+
+	// Re-save, then clear with --app-hosts off
+	const s6 = await startAndWaitForBanner(['--port', String(await freePort()), '--host', '127.0.0.1', '--data', data, '--app-hosts', '{app}-touch.example.com'])
+	await stopChild(s6.child)
+	assert.equal((await readCfg()).appHosts, '{app}-touch.example.com')
+
+	const s7 = await startAndWaitForBanner(['--port', String(await freePort()), '--host', '127.0.0.1', '--data', data, '--app-hosts', 'off'])
+	await stopChild(s7.child)
+	assert.equal((await readCfg()).appHosts, null)
+})
+
+test('#617: normalizeAppHosts accepts valid patterns, clears on empty/off, and rejects invalid inputs', () => {
+	assert.equal(normalizeAppHosts('{app}-touch.example.com'), '{app}-touch.example.com')
+	assert.equal(normalizeAppHosts('  {APP}.Home.Example.Com  '), '{app}.home.example.com')
+	assert.equal(normalizeAppHosts('off'), null)
+	assert.equal(normalizeAppHosts('OFF'), null)
+	assert.equal(normalizeAppHosts(''), null)
+	assert.equal(normalizeAppHosts('   '), null)
+	for (const bad of ['touch.example.com', '{app}_touch.example.com', 'https://{app}.example.com', '{app}', '{app}-{app}.example.com', '{app}.', '.{app}.com', '{app}..com']) {
+		assert.throws(() => normalizeAppHosts(bad), /must look like/)
+	}
 })

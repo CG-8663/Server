@@ -367,6 +367,15 @@ export function normalizeBackendUrl(input) {
 	return `${url.protocol}//${url.host}`
 }
 
+export function normalizeAppHosts(input) {
+	const p = String(input ?? '').trim().toLowerCase()
+	if (!p || p === 'off') return null
+	if (!/^[a-z0-9.-]*\{app\}[a-z0-9.-]*$/.test(p) || !p.includes('.') || p.startsWith('.') || p.endsWith('.') || p.includes('..')) {
+		throw new Error('must look like {app}-touch.example.com (or "off" to clear)')
+	}
+	return p
+}
+
 export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0'}) {
 	const app = express()
 	app.disable('x-powered-by')
@@ -1275,8 +1284,13 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	// App subdomains for remote access (Cloudflare tunnel etc.): TOUCH_APP_HOSTS="{app}-touch.example.com"
 	// routes e.g. forgejo-touch.example.com to Forgejo through the relay, on Touch's own port.
 	const appHostPattern = (() => {
-		const p = String(store.getConfig().appHosts ?? '').trim().toLowerCase()
-		if (!/^[a-z0-9.\-]*\{app\}[a-z0-9.\-]*$/.test(p) || !p.includes('.')) return null
+		let p = null
+		try {
+			p = normalizeAppHosts(store.getConfig().appHosts)
+		} catch {
+			return null
+		}
+		if (!p) return null
 		const [pre, post] = p.split('{app}')
 		const esc = (x) => x.replace(/[.\-]/g, (m) => `\\${m}`)
 		return {post, make: (id) => `${pre}${id.toLowerCase()}${post}`, match: new RegExp(`^${esc(pre)}([a-z0-9-]{1,100})${esc(post)}$`)}

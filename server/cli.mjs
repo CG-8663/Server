@@ -6,7 +6,7 @@ import {dirname, join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {parseArgs} from 'node:util'
 
-import {createApp, normalizeBackendUrl, VERSION} from './app.mjs'
+import {createApp, normalizeAppHosts, normalizeBackendUrl, VERSION} from './app.mjs'
 import {createStore} from './store.mjs'
 import {parsePort} from '../omarchyd/cli-args.mjs'
 import {defaultTlsDir, dualProtocolServer, tlsContext} from '../omarchyd/tls.mjs'
@@ -73,12 +73,23 @@ if (backendArg !== undefined) {
 		process.exit(1)
 	}
 }
+// App addresses for remote access, e.g. "{app}-touch.example.com"; kept until set to "off" or "".
+const appHostsFromFlag = values['app-hosts'] !== undefined
+const rawAppHosts = appHostsFromFlag ? values['app-hosts'] : process.env.TOUCH_APP_HOSTS
+let appHostsUpdate
+if (rawAppHosts !== undefined) {
+	try {
+		appHostsUpdate = normalizeAppHosts(rawAppHosts)
+	} catch (error) {
+		const label = appHostsFromFlag ? '--app-hosts' : 'TOUCH_APP_HOSTS'
+		console.error(`[omarchy-server] ${label} ${error.message}`)
+		process.exit(2)
+	}
+}
 
 const store = await createStore(dataDir)
 if (backendUrl !== undefined) await store.setConfig({backendUrl})
-// App addresses for remote access, e.g. "{app}-touch.example.com"; kept until set to "off".
-const appHosts = values['app-hosts'] ?? process.env.TOUCH_APP_HOSTS
-if (appHosts) await store.setConfig({appHosts: appHosts === 'off' ? null : appHosts})
+if (rawAppHosts !== undefined) await store.setConfig({appHosts: appHostsUpdate})
 
 // https:// on the same port as http:// (see omarchyd/tls.mjs). The certificate is shared with omarchyd.
 const secure = tlsContext({dir: defaultTlsDir()})
