@@ -332,5 +332,12 @@ describe('security.json on startup', () => {
 		await mkdir(file)
 		await assert.rejects(startOmarchyd({port: 0, dataDir: data, home: root, machineOptions: {run: async () => ''}}), {code: 'EISDIR'})
 		assert.equal((await stat(file)).isDirectory(), true)
+		// Apps used to start writing apps.json before this read error, and that save could
+		// finish after the test (or the temp dir) was gone. Wait, then check they never started.
+		const until = Date.now() + 400
+		while (Date.now() < until) {
+			await assert.rejects(stat(join(data, 'apps', 'apps.json')), {code: 'ENOENT'})
+			await new Promise((r) => setTimeout(r, 50))
+		}
 	})
 })
