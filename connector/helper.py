@@ -586,10 +586,11 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 if FSTAB_MARK in l and any(u in l for u in uuids):
                     return (l[l.index(FSTAB_MARK) + len(FSTAB_MARK) :].strip() or None)
             zmember = next((x for x in flat(d) if x.get("fstype") == "zfs_member"), None)
-            if zmember and zmember.get("label"):
+            if zmember and zmember.get("label") and zmember["label"] in zfs_names:
                 return zmember["label"]
             return None
 
+        zfs_names = set(zfs_pool_names())
         sleeps = sleep_map()
         out = []
         for d in block_devices():

@@ -506,6 +506,42 @@ class Helper(unittest.TestCase):
         self.handle("disks", [], **kw)
         self.assertEqual(smart_log, [])
 
+    def test_disks_marks_zfs_drive_as_pool_only_when_imported(self):
+        from helper import HelperError
+        lsblk = {
+            "blockdevices": [
+                {
+                    "name": "sdb", "path": "/dev/sdb", "type": "disk", "size": 4000787030016, "rota": True, "tran": "sata",
+                    "model": "WDC WD40EFRX", "serial": "WD-1", "mountpoints": [None],
+                    "children": [{"name": "sdb1", "path": "/dev/sdb1", "type": "part", "size": 4000777252864, "fstype": "zfs_member", "label": "tank", "uuid": "123456", "mountpoints": [None]}],
+                }
+            ]
+        }
+        zpool_out = [None]
+
+        def run(cmd, args):
+            if cmd == "lsblk":
+                return json.dumps(lsblk)
+            if cmd == "zpool" and args[:1] == ["list"]:
+                if zpool_out[0] is None:
+                    raise HelperError("no zpool")
+                return zpool_out[0]
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files={})
+        for not_imported in (None, ""):
+            zpool_out[0] = not_imported
+            d = json.loads(self.handle("disks", [], **kw))[0]
+            self.assertEqual(d["role"], "data")
+            self.assertIsNone(d["pool"])
+            self.assertEqual(d["zfs"], {"pool": "tank"})
+
+        zpool_out[0] = "tank\n"
+        d = json.loads(self.handle("disks", [], **kw))[0]
+        self.assertEqual(d["role"], "pool")
+        self.assertEqual(d["pool"], "tank")
+        self.assertIsNone(d["zfs"])
+
 
 if __name__ == "__main__":
     unittest.main()
