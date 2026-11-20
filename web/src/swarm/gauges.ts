@@ -110,6 +110,7 @@ function gpuItems(gpus: SwarmGpu[]) {
 	const many = gpus.length > 1
 	return gpus.map((gpu) => ({
 		k: many ? `GPU ${gpu.index}` : 'GPU',
+		key: gpu.id,
 		icon: 'gpu' as const,
 		p: gpu.used ?? 0,
 		sub: shortGpuName(gpu.name) || ' ',

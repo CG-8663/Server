@@ -16,6 +16,7 @@ import {createBackups} from './backups.mjs'
 import {createUnraid} from './unraid.mjs'
 import {APP_COOKIE, createApps} from './apps.mjs'
 import {createFiles} from './files.mjs'
+import {fileUrl, localGitDir} from './local-source.mjs'
 import {createMachines} from './machines.mjs'
 import {createOmarchyTheme} from './omarchy-theme.mjs'
 import {createOmarchyPlugins} from './omarchy-plugins.mjs'
@@ -28,11 +29,14 @@ import {createSystemApps} from './system-apps.mjs'
 import {authorityInfo, readPolicy, rotateAuthority, tlsContext, writePolicy} from './tls.mjs'
 import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
+import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.51'
+export const OMARCHYD_VERSION = '0.9.53'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
+	const storeDir = localGitDir('OMARCHY_SERVER_APP_STORE', process.env.OMARCHY_SERVER_APP_STORE)
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
 	const startedAt = Date.now()
 	const revision = await new Promise((resolve) => {
@@ -63,9 +67,11 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	if (badSecurity) console.error('[omarchyd] security.json is empty or invalid and was left unchanged')
 	const security = {lockAfterRemote: true, ...saved}
 	const files = createFiles({home, dataDir})
-	const machines = createMachines({dataDir, files, ...machineOptions})
+	const defaultStores = storeDir ? [{url: fileUrl(storeDir)}] : undefined
+	const catalogUrl = storeDir ? fileUrl(join(storeDir, 'machines', 'catalog.json')) : undefined
+	const machines = createMachines({dataDir, files, ...(catalogUrl ? {catalogUrl} : {}), ...machineOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
-	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, webPort, ...updaterOptions})
+	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, webPort, ...(sourceDir ? {sourceDir} : {}), ...(storeDir ? {appStoreDir: storeDir} : {}), ...updaterOptions})
 	// One certificate context for the app gateways and the Security settings. On a server this is
 	// the folder the web server uses too (omarchyd/cli.mjs passes it), so apps are served with the
 	// certificate your devices trust and the Security settings reach both. Before 0.9.13 omarchyd kept
@@ -75,7 +81,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const secure = appOptions.secure ?? tlsContext({dir: tlsDir, lazy: true})
 	// Apps that are part of the server itself (Tailscale), installed through the root helper.
 	const systemApps = appOptions.systemApps !== undefined ? appOptions.systemApps || null : createSystemApps({helper: storage.helper})
-	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions, systemApps, tlsDir, secure})
+	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...(defaultStores ? {defaultStores} : {}), ...appOptions, systemApps, tlsDir, secure})
 	// Backups need apps: to pause them while their files are saved, and to know where those files are.
 	// …and the local swarm's connector (created further down), for computers that back up here.
 	const backups = createBackups({dataDir, home, files, apps, swarm: {agents: () => connector.backup.agents(), call: (...a) => connector.backup.call(...a), progress: (id) => connector.backup.progress(id)}, ...backupOptions})
@@ -97,25 +103,28 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const release = await system.osRelease()
 	const settings = {hostname: os.hostname()}
 
-	// Apps and machines in the usage breakdown; "System" is everything else.
-	async function withUsage(totalP, kind) {
-		const total = await totalP
-		let apps = []
-		let vms = []
-		try {
-			apps = apps_usage()
-			vms = machines.usage?.() ?? []
-		} catch {
-			/* breakdown unavailable: totals still right */
-		}
-		const threads = os.cpus().length || 1
-		const value = (u) => (kind === 'cpu' ? Math.round(Math.min(100, (100 * u.cpuShare) / threads) * 10) / 10 : Math.round(u.memBytes))
-		const appItems = apps.map((u) => ({id: u.id, used: value(u)})).filter((u) => u.used > 0)
-		const vmItems = vms.map((u) => ({id: u.id, name: u.name, used: value(u)})).filter((u) => u.used > 0)
-		const counted = [...appItems, ...vmItems].reduce((t, u) => t + u.used, 0)
-		return {...total, apps: appItems, machines: vmItems, system: Math.max(0, total.totalUsed - counted)}
-	}
-	const apps_usage = () => apps.usage?.() ?? []
+	// Live gauges: hardware is sampled on its own interval while a screen is reading.
+	// The timer starts on the first read and stops about 15s after the last one,
+	// so an idle server is not running nvidia-smi or podman stats.
+	const sampler = createSampler({
+		read: {
+			cpu: () => system.cpuUsage(),
+			memory: () => system.memoryUsage(),
+			gpu: () => system.gpuUsage(),
+			temp: () => system.cpuTemperature(),
+			battery: () => system.batteryUsage(),
+			disk: () => system.diskUsage(home, {dataDir}),
+			uptime: async () => Math.round(os.uptime()),
+			breakdown: async () => {
+				try {
+					apps.refreshUsage?.()
+					return {apps: apps.usage?.() ?? [], machines: machines.usage?.() ?? []}
+				} catch {
+					return {apps: [], machines: []}
+				}
+			},
+		},
+	})
 
 	const ownerOnly = (auth, what = 'change the desktop’s theme') => {
 		if (accounts.getUser(auth.userId)?.role === 'member') throw new RpcError('FORBIDDEN', `Only the server’s owner can ${what}`)
@@ -195,13 +204,14 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		},
 
 		// ---- system ---------------------------------------------------------------------------
-		'system.uptime': {kind: 'query', run: () => Math.round(os.uptime())},
-		'system.cpuUsage': {kind: 'query', run: () => withUsage(system.cpuUsage(), 'cpu')},
-		'system.memoryUsage': {kind: 'query', run: () => withUsage(system.memoryUsage(), 'memory')},
-		'system.diskUsage': {kind: 'query', run: () => system.diskUsage(home, {dataDir})},
-		'system.cpuTemperature': {kind: 'query', run: () => system.cpuTemperature()},
-		'system.gpuUsage': {kind: 'query', run: () => system.gpuUsage()},
-		'system.batteryUsage': {kind: 'query', run: () => system.batteryUsage()},
+		'system.stats': {kind: 'query', run: () => sampler.get()},
+		'system.uptime': {kind: 'query', run: async () => (await sampler.get()).uptime},
+		'system.cpuUsage': {kind: 'query', run: async () => (await sampler.get()).cpu},
+		'system.memoryUsage': {kind: 'query', run: async () => (await sampler.get()).memory},
+		'system.diskUsage': {kind: 'query', run: async () => (await sampler.get()).disk},
+		'system.cpuTemperature': {kind: 'query', run: async () => (await sampler.get()).temp},
+		'system.gpuUsage': {kind: 'query', run: async () => (await sampler.get()).gpu},
+		'system.batteryUsage': {kind: 'query', run: async () => (await sampler.get()).battery},
 		'system.getHostname': {kind: 'query', run: () => settings.hostname},
 		'system.getIpAddresses': {kind: 'query', run: () => system.ipAddresses()},
 		'system.device': {kind: 'query', run: async () => ({device: await system.deviceName(), os: release.pretty})},
@@ -238,6 +248,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'user.generateTotpUri': {kind: 'query', run: (_i, {auth}) => accounts.totpUri(auth.userId)},
 		'user.enable2fa': {kind: 'mutation', run: async (input, {auth}) => (await accounts.enable2fa(auth.userId, input ?? {}), true)},
 		'user.disable2fa': {kind: 'mutation', run: async (input, {auth}) => (await accounts.disable2fa(auth.userId, input ?? {}), true)},
+		// A fresh app pass for this person, for a device whose pass is getting old (passes last 30 days).
+		'user.appPass': {kind: 'mutation', run: async (_i, {auth}) => apps.sessionCookie(apps.issueSession(auth.userId))},
 		// A fresh app pass for this person, ending the ones their other devices hold.
 		'user.revokeAppPasses': {kind: 'mutation', run: async (_i, {auth}) => apps.sessionCookie(await apps.revokePasses(auth.userId))},
 		'system.factoryReset': {
@@ -659,7 +671,15 @@ WantedBy=graphical-session.target
 			if (url.pathname === '/app-auth/v1/account/session' && req.method === 'GET') {
 				await apps.ready
 				const cookie = Object.fromEntries((req.headers.cookie ?? '').split(';').map((c) => c.trim().split('=')).map(([k, ...v]) => [k, v.join('=')]))[APP_COOKIE]
-				return sendJson(res, apps.checkSession(decodeURIComponent(cookie ?? '')) ? 200 : 401, {})
+				{
+					let value = ''
+					try {
+						value = decodeURIComponent(cookie ?? '')
+					} catch {
+						return sendJson(res, 401, {})
+					}
+					return sendJson(res, apps.checkSession(value) ? 200 : 401, {})
+				}
 			}
 			const fileKind = /^\/api\/files\/(view|download|upload)$/.exec(url.pathname)?.[1]
 			if (fileKind === 'upload' && req.method === 'POST') {
@@ -777,7 +797,7 @@ WantedBy=graphical-session.target
 		}
 	}, 20_000).unref?.()
 
-	return {url: `http://${host}:${server.address().port}`, accounts, terminals, close: () => (apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), terminals.close(), new Promise((r) => server.close(r)))}
+	return {url: `http://${host}:${server.address().port}`, accounts, terminals, close: () => (sampler.stop(), apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), terminals.close(), new Promise((r) => server.close(r)))}
 }
 
 // The "always use the secure address" choice made while omarchyd kept its own certificate folder.

@@ -43,7 +43,7 @@ describe('omarchyd', () => {
 		const r = await call('query', 'system.version')
 		assert.equal(r.status, 200)
 		const v = r.body.result.data
-		assert.equal(v.version, '0.9.51')
+		assert.equal(v.version, '0.9.53')
 		assert.equal(typeof v.startedAt, 'number')
 		assert.ok(v.startedAt <= Date.now() && Date.now() - v.startedAt < 60_000)
 		assert.match(String(v.revision ?? ''), /^[0-9a-f]{7,40}$/)
@@ -90,6 +90,12 @@ describe('omarchyd', () => {
 		assert.ok(mem.size > 0 && mem.totalUsed > 0)
 		const gpus = (await call('query', 'system.gpuUsage', undefined, native)).body.result.data
 		assert.ok(Array.isArray(gpus.gpus))
+		const stats = (await call('query', 'system.stats', undefined, native)).body.result.data
+		assert.ok(stats.cpu.threads > 0)
+		assert.equal(typeof stats.cpu.totalUsed, 'number')
+		assert.deepEqual(stats.memory, mem)
+		assert.deepEqual(stats.gpu, gpus)
+		assert.equal(typeof stats.uptime, 'number')
 		const battery = (await call('query', 'system.batteryUsage', undefined, native)).body.result.data
 		assert.ok(Array.isArray(battery.batteries))
 	})
