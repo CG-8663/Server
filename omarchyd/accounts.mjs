@@ -81,13 +81,41 @@ async function checkPassword(password, user) {
 	return a.length === b.length && timingSafeEqual(a, b)
 }
 
+// null and arrays are not plain objects. JSON values have no other prototypes.
+const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+function accountsObject(value) {
+	if (!plainObject(value) || !Array.isArray(value.users)) return false
+	if ('devices' in value && !plainObject(value.devices)) return false
+	if ('browsers' in value && !plainObject(value.browsers)) return false
+	return true
+}
+
+// The message names the file and nothing else, so a log cannot leak the path or a totp secret.
+const damagedAccounts = () => new Error('accounts.json is damaged or unreadable')
+
 export async function openAccounts(dataDir) {
 	await mkdir(dataDir, {recursive: true, mode: 0o700})
 	const file = join(dataDir, 'accounts.json')
-	let state = {users: [], devices: {}, browsers: {}}
+	let raw = null
 	try {
-		state = {...state, ...JSON.parse(await readFile(file, 'utf8'))}
-	} catch {}
+		raw = await readFile(file, 'utf8')
+	} catch (error) {
+		// Only a missing file means there is no owner yet. Any other read error must not
+		// look like an empty server, or createOwner would save over the real accounts.
+		if (error?.code !== 'ENOENT') throw damagedAccounts()
+	}
+	let state = {users: [], devices: {}, browsers: {}}
+	if (raw !== null) {
+		let parsed
+		try {
+			parsed = JSON.parse(raw)
+		} catch {
+			throw damagedAccounts()
+		}
+		if (!accountsObject(parsed)) throw damagedAccounts()
+		state = {...state, ...parsed}
+	}
 	// Short-lived tokens stay in memory; device and browser sessions survive restarts.
 	const access = new Map() // accessToken -> {userId, sessionId, expiresAt}
 	const urlTokens = new Map() // url token -> {browserToken, expiresAt}
