@@ -139,8 +139,13 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (catalog.images && Date.now() - catalog.at < CATALOG_TTL) return catalog.images
 		let list = null
 		try {
-			const res = await fetchImpl(catalogUrl, {signal: AbortSignal.timeout(8000)})
-			if (res.ok) list = validCatalog(await res.json())
+			if (/^file:\/\//.test(catalogUrl) || catalogUrl.startsWith('/')) {
+				const p = catalogUrl.startsWith('/') ? catalogUrl : fileURLToPath(catalogUrl)
+				list = validCatalog(JSON.parse(await readFile(p, 'utf8')))
+			} else {
+				const res = await fetchImpl(catalogUrl, {signal: AbortSignal.timeout(8000)})
+				if (res.ok) list = validCatalog(await res.json())
+			}
 		} catch {}
 		if (!list) list = validCatalog(JSON.parse(await readFile(bundledCatalog, 'utf8')))
 		catalog = {at: Date.now(), images: list}
