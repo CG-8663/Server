@@ -20,6 +20,28 @@ const openaiSays = (text) => ({
 		yield chunk(`data: ${JSON.stringify({choices: [{delta: {content: text}}]})}\n\ndata: [DONE]\n\n`)
 	})(),
 })
+const anthropicSse = (events) => ({
+	ok: true,
+	status: 200,
+	headers: new Headers(),
+	body: (async function* () {
+		for (const e of events) yield chunk(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`)
+	})(),
+})
+const anthropicTool = (id, name) => anthropicSse([
+	{type: 'content_block_start', index: 0, content_block: {type: 'tool_use', id, name}},
+	{type: 'content_block_delta', index: 0, delta: {type: 'input_json_delta', partial_json: '{}'}},
+	{type: 'content_block_stop', index: 0},
+	{type: 'message_delta', delta: {stop_reason: 'tool_use'}},
+	{type: 'message_stop'},
+])
+const anthropicText = (text) => anthropicSse([
+	{type: 'content_block_start', index: 0, content_block: {type: 'text', text: ''}},
+	{type: 'content_block_delta', index: 0, delta: {type: 'text_delta', text}},
+	{type: 'content_block_stop', index: 0},
+	{type: 'message_delta', delta: {stop_reason: 'end_turn'}},
+	{type: 'message_stop'},
+])
 
 test('a rejected API key update leaves the key and other defaults untouched in memory and on disk', async () => {
 	const dataDir = await tmp()
@@ -207,6 +229,115 @@ test('an existing chat falls back to another usable key when its remembered key 
 		const noneLeft = await run(SAM, {conversationId: samChat.conversationId, message: 'any key?'})
 		assert.equal(noneLeft.events[0].event, 'error')
 		assert.match(noneLeft.events[0].data.message, /Settings → Assistant/)
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
+function assertValidAnthropicHistory(messages, label) {
+	assert.ok(messages.length > 0, `${label}: history is not empty`)
+	assert.equal(messages[0].role, 'user', `${label}: first message is user`)
+	assert.ok(messages[0].content.every((b) => b.type !== 'tool_result'), `${label}: first user message has no orphan tool_result`)
+	for (let i = 0; i < messages.length; i++) {
+		const m = messages[i]
+		if (m.role === 'user') {
+			const results = m.content.filter((b) => b.type === 'tool_result')
+			if (!results.length) continue
+			const prev = messages[i - 1]
+			assert.equal(prev?.role, 'assistant', `${label}: tool_result follows an assistant turn`)
+			const callIds = new Set(prev.content.filter((b) => b.type === 'tool_use').map((b) => b.id))
+			for (const r of results) assert.ok(callIds.has(r.tool_use_id), `${label}: tool_result ${r.tool_use_id} matches previous tool_use`)
+		}
+	}
+}
+
+test('Anthropic requests always start with a user message and never split tool calls when history passes 40 messages', async () => {
+	const dataDir = await tmp()
+	try {
+		const bodies = []
+		const responses = [
+			anthropicTool('toolu_1', 'system_uptime'),
+			anthropicTool('toolu_2', 'system_uptime'),
+			anthropicTool('toolu_3', 'system_uptime'),
+			anthropicText('All good.'),
+		]
+		const asst = createAssistant({
+			dataDir,
+			accounts: fakeAccounts(),
+			now: () => 1,
+			sleep: async () => {},
+			fetchImpl: async (_url, init) => {
+				bodies.push(JSON.parse(init.body))
+				return responses.shift() ?? anthropicText('ok')
+			},
+			runProcedure: async (name) => (name === 'system.uptime' ? {uptime: 123} : null),
+		})
+		await asst.keys.add(OWNER, {provider: 'anthropic', apiKey: 'sk-ant-test-1234', model: 'claude-sonnet-4-6'})
+
+		// Seed 36 messages (18 turns, with a tool call sitting right near the 40-message cut).
+		const chat = await asst.conversations.create('owner', {title: 'Long'})
+		await asst.conversations.append('owner', chat.id, {role: 'user', content: 'q0', at: 1})
+		await asst.conversations.append('owner', chat.id, {role: 'assistant', content: '', toolCalls: [{id: 'toolu_old', name: 'system_uptime', arguments: '{}'}], at: 1})
+		await asst.conversations.append('owner', chat.id, {role: 'tool', toolCallId: 'toolu_old', name: 'system_uptime', content: '{"uptime":1}', at: 1})
+		await asst.conversations.append('owner', chat.id, {role: 'assistant', content: 'a0', at: 1})
+		for (let i = 1; i < 17; i++) {
+			await asst.conversations.append('owner', chat.id, {role: 'user', content: `q${i}`, at: 1})
+			await asst.conversations.append('owner', chat.id, {role: 'assistant', content: `a${i}`, at: 1})
+		}
+
+		const events = []
+		await asst.runTurn({userId: 'owner', role: 'owner', conversationId: chat.id, message: 'uptime please', emit: (e) => events.push(e)})
+		assert.equal(bodies.length, 4)
+		assert.equal(events.at(-1).event, 'done')
+		for (let i = 0; i < bodies.length; i++) assertValidAnthropicHistory(bodies[i].messages, `tool-loop request ${i + 1}`)
+
+		// Also check when summary fails on a >40 message chat: the backstop still starts with a user message.
+		const failedSummaryBodies = []
+		let call = 0
+		const asst2 = createAssistant({
+			dataDir,
+			accounts: fakeAccounts(),
+			now: () => 2,
+			sleep: async () => {},
+			fetchImpl: async (_url, init) => {
+				const body = JSON.parse(init.body)
+				if (call++ === 0) return {ok: false, status: 400, headers: new Headers(), text: async () => '{"error":{"message":"too long"}}'}
+				failedSummaryBodies.push(body)
+				return anthropicText('Still fine.')
+			},
+			runProcedure: async () => null,
+		})
+		const longChat = await asst2.conversations.create('owner', {title: 'Very long'})
+		for (let i = 0; i < 25; i++) {
+			await asst2.conversations.append('owner', longChat.id, {role: 'user', content: `u${i}`, at: 1})
+			await asst2.conversations.append('owner', longChat.id, {role: 'assistant', content: `r${i}`, at: 1})
+		}
+		await asst2.runTurn({userId: 'owner', role: 'owner', conversationId: longChat.id, message: 'next', emit: () => {}})
+		assert.equal(failedSummaryBodies.length, 1)
+		assertValidAnthropicHistory(failedSummaryBodies[0].messages, 'failed-summary backstop')
+
+		// Also check a chat where the last 40 messages have no user message (one user turn + 22 tool loops).
+		const deepBodies = []
+		const asst3 = createAssistant({
+			dataDir,
+			accounts: fakeAccounts(),
+			now: () => 3,
+			sleep: async () => {},
+			fetchImpl: async (_url, init) => {
+				deepBodies.push(JSON.parse(init.body))
+				return anthropicText('Done.')
+			},
+			runProcedure: async () => null,
+		})
+		const deepChat = await asst3.conversations.create('owner', {title: 'Deep tools'})
+		await asst3.conversations.append('owner', deepChat.id, {role: 'user', content: 'run everything', at: 1})
+		for (let i = 0; i < 22; i++) {
+			await asst3.conversations.append('owner', deepChat.id, {role: 'assistant', content: '', toolCalls: [{id: `toolu_d${i}`, name: 'system_uptime', arguments: '{}'}], at: 1})
+			await asst3.conversations.append('owner', deepChat.id, {role: 'tool', toolCallId: `toolu_d${i}`, name: 'system_uptime', content: '{}', at: 1})
+		}
+		await asst3.runTurnContinue({userId: 'owner', role: 'owner', conversationId: deepChat.id, emit: () => {}})
+		assert.equal(deepBodies.length, 1)
+		assertValidAnthropicHistory(deepBodies[0].messages, 'deep tool chain')
 	} finally {
 		await rm(dataDir, {recursive: true, force: true})
 	}

@@ -313,7 +313,14 @@ function providerHistory(messages, actions) {
 			out.push(found ? toOpenAI(found) : {role: 'tool', tool_call_id: t.id, content: placeholder(actionByCall.get(t.id))})
 		}
 	}
-	const history = out.slice(-MAX_MESSAGES)
+	// Start the window on a person's message so providers never receive an assistant reply or orphan tool result first.
+	let start = Math.max(0, out.length - MAX_MESSAGES)
+	while (start < out.length && out[start]?.role !== 'user') start++
+	if (start === out.length) {
+		start = Math.max(0, out.length - MAX_MESSAGES)
+		while (start > 0 && out[start]?.role !== 'user') start--
+	}
+	const history = out.slice(start)
 	while (history[0]?.role === 'tool') history.shift()
 	return history
 }
