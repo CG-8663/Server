@@ -223,6 +223,9 @@ async function pull() {
 		/* offline: this browser's copy stays */
 	} finally {
 		syncing = false
+		// A return above still skips anything after this block. Sign-out during the load
+		// left the next account's mount looking at `syncing`, so start that load here.
+		if (mine !== epoch) void pull()
 	}
 }
 let started = false

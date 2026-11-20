@@ -95,4 +95,24 @@ test('the next account does not inherit this tab’s desktop', async () => {
 	release()
 	await wait(0)
 	assert.equal(localStorage.getItem(REV), null, 'a late save wrote the previous rev')
+
+	resetDeskConfig()
+	let releaseGet
+	fetchImpl = () =>
+		new Promise((resolve) => {
+			releaseGet = () => resolve({ok: true, json: async () => ({desktop: {config: {wallpaper: 'meadow', dock: {position: 'bottom'}}, rev: 8}})})
+		})
+	syncDeskConfig()
+	await wait(30)
+	assert.equal(typeof releaseGet, 'function', 'the load never started')
+	fetchImpl = async (_url, opts) => {
+		if (opts?.method === 'POST') return {ok: true, json: async () => ({desktop: {rev: 1}})}
+		return {ok: true, json: async () => ({desktop: {config: {wallpaper: 'pier', dock: {position: 'right'}}, rev: 4}})}
+	}
+	resetDeskConfig()
+	releaseGet()
+	await wait(50)
+	const followed = JSON.parse(localStorage.getItem(KEY))
+	assert.equal(followed.wallpaper, 'pier', 'the load that was in flight swallowed the next account')
+	assert.equal(followed.dock.position, 'right')
 })
