@@ -69,6 +69,11 @@ class Batteries(unittest.TestCase):
 
 
 class Gpus(unittest.TestCase):
+    def setUp(self):
+        agent._last_nvidia = None
+        agent._last_engine = {}
+        agent._last_rc6 = {}
+
     def test_nvidia_csv(self):
         csv = "0, NVIDIA GeForce RTX 3060, GPU-aaa, 32, 1477, 12288, 39\n1, NVIDIA GeForce RTX 3060, GPU-bbb, 0, 2, 12288, 36\n"
 
@@ -134,6 +139,136 @@ class Gpus(unittest.TestCase):
         agent.gpus(run=run, list_dir=list_dir, read_file=read_file)
         self.assertEqual(len(calls), 2)
         agent._last_nvidia = None
+
+    def test_intel_listed_without_busy_percent(self):
+        files = {
+            "/sys/class/drm/card0/device/vendor": "0x8086\n",
+            "/sys/class/drm/card0/device/product_name": "Intel Arc Graphics\n",
+        }
+
+        def list_dir(path):
+            return ["card0", "card0-eDP-1"] if path == "/sys/class/drm" else []
+
+        def run(cmd, args):
+            return ""
+
+        gpus = agent.gpus(run=run, list_dir=list_dir, read_file=lambda p, d="": files.get(p, d))
+        self.assertEqual(len(gpus), 1)
+        self.assertEqual(gpus[0]["id"], "drm-card0")
+        self.assertEqual(gpus[0]["name"], "Intel Arc Graphics")
+        self.assertIsNone(gpus[0]["used"])
+
+    def test_intel_engine_busy_not_stuck_gpu_busy_percent(self):
+        # i915 often exposes gpu_busy_percent as 0. Utilization is rcs0 busy-ns over wall time.
+        files = {
+            "/sys/class/drm/card1/device/vendor": "0x8086\n",
+            "/sys/class/drm/card1/device/gpu_busy_percent": "0\n",
+            "/sys/class/drm/card1/engine/rcs0/busy": "0\n",
+            "/sys/class/drm/card1/engine/bcs0/busy": "0\n",
+        }
+        clock = {"t": 10.0}
+
+        def list_dir(path):
+            if path == "/sys/class/drm":
+                return ["card1", "card1-eDP-1"]
+            if path == "/sys/class/drm/card1/engine":
+                return ["rcs0", "bcs0"]
+            return []
+
+        def read_file(path, default=""):
+            return files.get(path, default)
+
+        first = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=read_file, now=lambda: clock["t"])
+        self.assertEqual(first[0]["id"], "drm-card1")
+        self.assertEqual(first[0]["name"], "Intel Graphics")
+        self.assertIsNone(first[0]["used"])
+        files["/sys/class/drm/card1/engine/rcs0/busy"] = str(int(0.4 * 1e9)) + "\n"
+        clock["t"] = 11.0
+        second = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=read_file, now=lambda: clock["t"])
+        self.assertEqual(second[0]["used"], 40)
+
+    def test_intel_compute_busy_not_hidden_by_idle_render(self):
+        files = {
+            "/sys/class/drm/card1/device/vendor": "0x8086\n",
+            "/sys/class/drm/card1/engine/rcs0/busy": "0\n",
+            "/sys/class/drm/card1/engine/ccs0/busy": "0\n",
+        }
+        clock = {"t": 10.0}
+
+        def list_dir(path):
+            if path == "/sys/class/drm":
+                return ["card1"]
+            if path == "/sys/class/drm/card1/engine":
+                return ["rcs0", "ccs0"]
+            return []
+
+        first = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=lambda p, d="": files.get(p, d), now=lambda: clock["t"])
+        self.assertIsNone(first[0]["used"])
+        files["/sys/class/drm/card1/engine/ccs0/busy"] = str(int(0.4 * 1e9)) + "\n"
+        clock["t"] = 11.0
+        second = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=lambda p, d="": files.get(p, d), now=lambda: clock["t"])
+        self.assertEqual(second[0]["used"], 40)
+
+    def test_bmc_and_virtio_without_busy_percent_are_not_listed(self):
+        files = {
+            "/sys/class/drm/card0/device/vendor": "0x1a03\n",
+            "/sys/class/drm/card0/device/product_name": "ASPEED Graphics Family\n",
+            "/sys/class/drm/card1/device/vendor": "0x8086\n",
+            "/sys/class/drm/card1/device/product_name": "Intel Graphics\n",
+        }
+
+        def list_dir(path):
+            return ["card0", "card1"] if path == "/sys/class/drm" else []
+
+        gpus = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=lambda p, d="": files.get(p, d))
+        self.assertEqual([g["id"] for g in gpus], ["drm-card1"])
+        self.assertIsNone(gpus[0]["used"])
+
+    def test_intel_rc6_when_engine_has_no_busy_file(self):
+        # Broadwell i915: engine dirs exist, no busy files, no gpu_busy_percent.
+        # RC6 residency is idle time; GPU use is the wall time not spent in RC6.
+        files = {
+            "/sys/class/drm/card1/device/vendor": "0x8086\n",
+            "/sys/class/drm/card1/gt/gt0/rc6_enable": "1\n",
+            "/sys/class/drm/card1/gt/gt0/rc6_residency_ms": "0\n",
+        }
+        clock = {"t": 10.0}
+
+        def list_dir(path):
+            if path == "/sys/class/drm":
+                return ["card1", "card1-eDP-1"]
+            if path == "/sys/class/drm/card1/engine":
+                return ["rcs0", "bcs0", "vcs0", "vecs0"]
+            return []
+
+        def read_file(path, default=""):
+            return files.get(path, default)
+
+        first = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=read_file, now=lambda: clock["t"])
+        self.assertEqual(first[0]["id"], "drm-card1")
+        self.assertIsNone(first[0]["used"])
+        files["/sys/class/drm/card1/gt/gt0/rc6_residency_ms"] = "600\n"
+        clock["t"] = 11.0
+        second = agent.gpus(run=lambda c, a: "", list_dir=list_dir, read_file=read_file, now=lambda: clock["t"])
+        self.assertEqual(second[0]["used"], 40)
+
+    def test_hybrid_nvidia_and_amd(self):
+        files = {
+            "/sys/class/drm/card0/device/vendor": "0x1002\n",
+            "/sys/class/drm/card0/device/gpu_busy_percent": "41\n",
+            "/sys/class/drm/card0/device/product_name": "AMD Radeon RX 7900 XTX\n",
+        }
+        csv = "0, NVIDIA GeForce RTX 3060, GPU-aaa, 32, 1477, 12288, 39\n"
+
+        def run(cmd, args):
+            return csv if cmd == "nvidia-smi" else ""
+
+        def list_dir(path):
+            return ["card0"] if path == "/sys/class/drm" else []
+
+        gpus = agent.gpus(run=run, list_dir=list_dir, read_file=lambda p, d="": files.get(p, d))
+        self.assertEqual([g["id"] for g in gpus], ["GPU-aaa", "drm-card0"])
+        self.assertEqual(gpus[1]["used"], 41)
 
     def test_no_gpus(self):
         def run(cmd, args):

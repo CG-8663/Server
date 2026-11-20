@@ -20,7 +20,7 @@ import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.47'
+export const VERSION = '0.9.48'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -405,7 +405,17 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	app.all('/connector/backup/*', (req, res) => {
 		const backend = getClient()
 		if (!backend) return res.status(503).end()
-		const target = new URL(req.originalUrl, backend.baseUrl)
+		// This route is not signed in. `new URL` collapses ".." and decodes %2e%2e, so a path
+		// that still matches this route can land on /trpc or any other omarchyd route.
+		const rawPath = req.originalUrl.split('?')[0]
+		if (rawPath.includes('\\') || rawPath.includes('\0')) return res.status(400).end()
+		let target
+		try {
+			target = new URL(req.originalUrl, backend.baseUrl)
+		} catch {
+			return res.status(400).end()
+		}
+		if (target.origin !== new URL(backend.baseUrl).origin || !target.pathname.startsWith('/connector/backup/')) return res.status(400).end()
 		const headers = {}
 		for (const h of ['authorization', 'content-type', 'content-length', 'range', 'accept']) if (req.headers[h]) headers[h] = req.headers[h]
 		const up = http.request(target, {method: req.method, headers}, (ur) => {

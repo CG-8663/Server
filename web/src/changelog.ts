@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.48',
+		date: '2026-11-19',
+		title: 'Security fixes',
+		fixed: [
+			'The path computers use to upload backups can’t be used to reach anything else on the server.',
+			'Move from Unraid leaves behind a container folder that would lead outside its share or app folder, and says so.',
+			'Only the owner can update the server, change its update channel, or create, change or check storage pools.',
+			'Intel graphics on computers in your swarm show how busy they are, including older chips.',
+		],
+	},
+	{
 		version: '0.9.47',
 		date: '2026-11-19',
 		title: 'Move from Unraid',

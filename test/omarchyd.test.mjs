@@ -43,7 +43,7 @@ describe('omarchyd', () => {
 		const r = await call('query', 'system.version')
 		assert.equal(r.status, 200)
 		const v = r.body.result.data
-		assert.equal(v.version, '0.9.47')
+		assert.equal(v.version, '0.9.48')
 		assert.equal(typeof v.startedAt, 'number')
 		assert.ok(v.startedAt <= Date.now() && Date.now() - v.startedAt < 60_000)
 		assert.match(String(v.revision ?? ''), /^[0-9a-f]{7,40}$/)
@@ -218,5 +218,23 @@ describe('network shares are owner-only', () => {
 		const st = await call('query', 'backups.status', undefined, owner)
 		assert.equal(st.status, 200)
 		assert.equal(st.body.result.data.configured, false)
+	})
+	test('a member cannot replace this server or change storage pools', async () => {
+		const rpcs = [
+			['mutation', 'system.update'],
+			['mutation', 'system.setReleaseChannel', {channel: 'stable'}],
+			['mutation', 'storage.createPool', {name: 'pool', devices: ['not-a-disk']}],
+			['mutation', 'storage.addToPool', {name: 'pool', device: 'not-a-disk'}],
+			['mutation', 'storage.importPool', {name: 'pool', uuid: 'not-a-uuid'}],
+			['mutation', 'storage.forgetPool', {name: 'pool'}],
+			['mutation', 'storage.scrub', {name: 'pool'}],
+			['mutation', 'storage.setSleep', {device: 'not-a-disk', minutes: 10}],
+		]
+		for (const [kind, path, input] of rpcs) {
+			const r = await call(kind, path, input, member)
+			assert.equal(r.status, 403, path)
+			assert.match(r.body.error.message, /owner/i, path)
+		}
+		assert.equal((await call('query', 'storage.pools', undefined, member)).status, 200, 'members can still see pools')
 	})
 })

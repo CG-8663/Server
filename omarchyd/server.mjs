@@ -29,7 +29,7 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.47'
+export const OMARCHYD_VERSION = '0.9.48'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
@@ -346,7 +346,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			Object.entries(storage.procedures).map(([name, p]) =>
 				['files.shares', 'files.sharePassword', 'files.shareOptions', 'files.addShare', 'files.updateShare', 'files.removeShare', 'files.setSharePassword'].includes(name)
 					? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage network shares'), p.run(input))}]
-					: [name, p],
+					: ['storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'storage.scrub', 'storage.setSleep'].includes(name)
+						? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'change storage'), p.run(input))}]
+						: [name, p],
 			),
 		),
 		...machines.procedures,
@@ -358,7 +360,11 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		),
 		...Object.fromEntries(Object.entries(backups.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage backups'), p.run(input))}])),
 		...Object.fromEntries(Object.entries(unraid.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'move from Unraid'), p.run(input))}])),
-		...updater.procedures,
+		...Object.fromEntries(
+			Object.entries(updater.procedures).map(([name, p]) =>
+				name === 'system.update' || name === 'system.setReleaseChannel' ? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'update Omarchy Server'), p.run(input))}] : [name, p],
+			),
+		),
 		// Running the installer needs sudo on the server: only the owner is asked.
 		'system.installerStatus': {
 			kind: 'query',
