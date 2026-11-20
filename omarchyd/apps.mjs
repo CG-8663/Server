@@ -1509,7 +1509,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			finalText = YAML.stringify(doc)
 		}
 		// System ports (below 1024): only for apps you allowed; the helper lowers the limit once.
-		const low = appPermissions(finalText).find((p) => p.id === 'low-ports')
+		// Expand with the env Compose will bind: the app .env, process env, and composeEnv (exports.sh).
+		const dotenv = parseDotEnv(await readFile(join(dir, '.env'), 'utf8').catch(() => ''))
+		const low = appPermissions(finalText, whereFor(app, dotenv)).find((p) => p.id === 'low-ports')
 		if (low && (app.permissions ?? []).includes('low-ports') && firewall?.lowPorts) await firewall.lowPorts(Math.min(...low.what.map(Number)))
 		prepared.text = finalText
 		await writeFile(join(dir, 'compose.omarchy.yml'), prepared.text, {mode: 0o600})
@@ -1530,7 +1532,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		// After placing, `folders` is id → path and Compose will expand FOLDER_* to those paths.
 		const folderIds = app.folderIds ?? (Array.isArray(app.folders) ? app.folders.map((f) => f.id) : [])
 		const folders = app.folders && !Array.isArray(app.folders) ? app.folders : undefined
-		const env = composeEnv({id: app.id, port: app.port, version: app.version, folderIds, folders})
+		const env = composeEnv({id: app.id, port: app.port, version: app.version, folderIds, folders, exports: app.exports})
 		const merged = {...expandDotEnv(dotenv, {...process.env, ...env}), ...process.env, ...env}
 		return {
 			home,
