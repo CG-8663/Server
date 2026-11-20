@@ -973,6 +973,31 @@ errors: No known data errors
 		await h.handle('smart', ['/dev/sda'])
 		assert.deepEqual(log.find((l) => l[0] === 'smartctl'), ['smartctl', '-n', 'standby', '-j', '-a', '/dev/sda'])
 	})
+
+	test('drives mounted under /var, /usr, /opt, /srv, /nix or owner home are protected as system drives', async () => {
+		const sysPaths = ['/var/lib/docker', '/var/lib/containers', '/var/log', '/usr/local', '/opt', '/opt/apps', '/srv', '/nix', '/home/chris']
+		const dataPaths = ['/run/media/chris/stick', '/varnish', '/home/chris/Pools/media', '/home/chris/extra']
+		const all = [...sysPaths, ...dataPaths]
+		const devs = all.map((mp, i) => ({
+			name: `sd${String.fromCharCode(97 + i)}`,
+			path: `/dev/sd${String.fromCharCode(97 + i)}`,
+			type: 'disk',
+			size: 1e12,
+			rota: true,
+			children: [{name: `sd${String.fromCharCode(97 + i)}1`, path: `/dev/sd${String.fromCharCode(97 + i)}1`, type: 'part', fstype: 'ext4', mountpoints: [mp]}],
+		}))
+		const h = createHelper({user, fs: fakeFs(), run: async (cmd) => (cmd === 'lsblk' ? JSON.stringify({blockdevices: devs}) : cmd === 'wipefs' ? JSON.stringify({signatures: []}) : '')})
+		for (let i = 0; i < sysPaths.length; i++) {
+			const dev = devs[i].path
+			await assert.rejects(h.handle('umount', [dev]), /holds the system/, `${sysPaths[i]} umount`)
+			await assert.rejects(h.handle('format', [dev, 'blank']), /holds the system/, `${sysPaths[i]} format`)
+			await assert.rejects(h.handle('pool-create', ['tank', 'single', dev]), /holds the system/, `${sysPaths[i]} pool-create`)
+		}
+		for (let i = sysPaths.length; i < all.length; i++) {
+			const dev = devs[i].path
+			await assert.rejects(h.handle('format', [dev, 'blank']), /in use|pool/, `${all[i]} is not treated as system`)
+		}
+	})
 })
 
 describe('omarchyd storage', () => {
@@ -1277,5 +1302,30 @@ describe('omarchyd storage', () => {
 		clock += 30_000
 		await s.procedures['storage.disks'].run()
 		assert.equal(smartCalls, 4)
+	})
+
+	test('storage.disks treats mounts under /var, /usr, /opt, /srv, /nix or owner home as system', async () => {
+		const sysPaths = ['/var/lib/docker', '/var/log', '/usr/local', '/opt', '/srv', '/nix', '/home/chris']
+		const dataPaths = ['/run/media/chris/stick', '/varnish', '/home/chris/extra']
+		const devs = [...sysPaths, ...dataPaths].map((mp, i) => ({
+			name: `sd${String.fromCharCode(97 + i)}`,
+			path: `/dev/sd${String.fromCharCode(97 + i)}`,
+			type: 'disk',
+			size: 1e12,
+			rota: false,
+			children: [{name: `sd${String.fromCharCode(97 + i)}1`, path: `/dev/sd${String.fromCharCode(97 + i)}1`, type: 'part', fstype: 'ext4', mountpoints: [mp]}],
+		}))
+		const run = async (cmd, args) => {
+			if (cmd === 'lsblk') return JSON.stringify({blockdevices: devs})
+			if (cmd === 'sudo' && args[2] === 'ping') return 'ok\n'
+			if (cmd === 'sudo' && args[2] === 'zfs-available') return 'no\n'
+			return ''
+		}
+		const data = join(root, 'sysmounts-data')
+		await mkdir(data)
+		const s = createStorage({dataDir: data, home: '/home/chris', files: {resolve: async () => ({real: '', top: 'Home'})}, run, fstabPath: fstab})
+		const byMount = Object.fromEntries((await s.procedures['storage.disks'].run()).map((d) => [d.mounts[0], d.role]))
+		for (const mp of sysPaths) assert.equal(byMount[mp], 'system', mp)
+		for (const mp of dataPaths) assert.equal(byMount[mp], 'data', mp)
 	})
 })

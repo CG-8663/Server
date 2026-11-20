@@ -46,7 +46,17 @@ const BY_ID = /^\/dev\/disk\/by-id\/[A-Za-z0-9._:+-]+$/
 const NAME = /^[a-z][a-z0-9-]{0,31}$/
 const ZFS_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const SYSTEM_MOUNTS = new Set(['/', '/boot', '/efi', '/boot/efi', '/home', '/var', '/usr', '[SWAP]'])
+const SYSTEM_MOUNTS = new Set(['/', '/home', '[SWAP]'])
+const SYSTEM_MOUNT_PREFIXES = ['/boot', '/efi', '/var', '/usr', '/opt', '/srv', '/nix']
+const cleanMount = (m) => (typeof m === 'string' && m.length > 1 ? m.replace(/\/+$/, '') || '/' : m)
+function isSystemMount(m, home) {
+	const p = cleanMount(m)
+	if (!p) return false
+	if (SYSTEM_MOUNTS.has(p)) return true
+	const ownerHome = cleanMount(home)
+	if (ownerHome && p === ownerHome) return true
+	return SYSTEM_MOUNT_PREFIXES.some((pre) => p === pre || p.startsWith(`${pre}/`))
+}
 const SKIP_FS = new Set(['crypto_LUKS', 'swap', 'LVM2_member', 'linux_raid_member', 'zfs_member'])
 const FAT_FS = new Set(['vfat', 'exfat', 'ntfs', 'msdos', 'fuseblk'])
 function safeMountName(s) {
@@ -122,7 +132,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 	// Blank: no partitions, no filesystem or RAID signature, nothing mounted, not the system drive.
 	async function blankDisk(path) {
 		const d = await disk(path)
-		if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${path} holds the system`)
+		if (mounts(d).some((m) => isSystemMount(m, user.home))) fail(`${path} holds the system`)
 		if (mounts(d).length) fail(`${path} is in use`)
 		if ((d.children ?? []).length || d.fstype) fail(`${path} isn’t blank. Format this drive first (choose blank).`)
 		const sig = (await run('wipefs', ['--no-act', '--json', path]).catch(() => '')).trim()
@@ -362,14 +372,14 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 
 		umount: async ([path]) => {
 			const d = await resolveDisk(path)
-			if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${d.path} holds the system`)
+			if (mounts(d).some((m) => isSystemMount(m, user.home))) fail(`${d.path} holds the system`)
 			if (await poolMember(d)) fail(`${d.path} is in a pool`)
 			for (const m of mounts(d)) await run('umount', [m])
 			return 'ok'
 		},
 		mount: async ([path]) => {
 			const d = await resolveDisk(path)
-			if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${d.path} holds the system`)
+			if (mounts(d).some((m) => isSystemMount(m, user.home))) fail(`${d.path} holds the system`)
 			if (await poolMember(d)) fail(`${d.path} is in a pool`)
 			if (mounts(d).length) fail(`${d.path} is already mounted`)
 			const nodes = (d.children ?? []).length ? flat(d).filter((x) => x !== d) : [d]
@@ -407,7 +417,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		format: async ([path, fsKind]) => {
 			if (!['blank', 'ext4', 'exfat'].includes(fsKind)) fail('Choose blank, ext4 or exfat')
 			const d = await resolveDisk(path)
-			if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${d.path} holds the system`)
+			if (mounts(d).some((m) => isSystemMount(m, user.home))) fail(`${d.path} holds the system`)
 			if (await poolMember(d)) fail(`${d.path} is in a pool`)
 			if (mounts(d).length) fail(`${d.path} is in use. Unmount it first.`)
 			// Unlocked encryption, LVM or a running RAID array on it (lsblk shows them as its children),

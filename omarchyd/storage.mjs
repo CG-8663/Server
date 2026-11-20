@@ -14,7 +14,17 @@ import {RpcError} from './rpc.mjs'
 export const HELPER = '/usr/local/libexec/omarchy-server/helper.mjs'
 const FSTAB_MARK = '# omarchy-server pool'
 const NAME = /^[a-z][a-z0-9-]{0,31}$/
-const SYSTEM_MOUNTS = new Set(['/', '/boot', '/efi', '/boot/efi', '/home', '/var', '/usr', '[SWAP]'])
+const SYSTEM_MOUNTS = new Set(['/', '/home', '[SWAP]'])
+const SYSTEM_MOUNT_PREFIXES = ['/boot', '/efi', '/var', '/usr', '/opt', '/srv', '/nix']
+const cleanMount = (m) => (typeof m === 'string' && m.length > 1 ? m.replace(/\/+$/, '') || '/' : m)
+function isSystemMount(m, home) {
+	const p = cleanMount(m)
+	if (!p) return false
+	if (SYSTEM_MOUNTS.has(p)) return true
+	const ownerHome = cleanMount(home)
+	if (ownerHome && p === ownerHome) return true
+	return SYSTEM_MOUNT_PREFIXES.some((pre) => p === pre || p.startsWith(`${pre}/`))
+}
 
 function execP(cmd, args, {input, timeout = 10 * 60_000} = {}) {
 	return new Promise((resolve, reject) => {
@@ -115,7 +125,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 				const btrfs = all.find((x) => x.fstype === 'btrfs')
 				const zmember = all.find((x) => x.fstype === 'zfs_member')
 				const pool = btrfs ? (poolByUuid.get(btrfs.uuid) ?? null) : zmember && zfsNames.has(zmember.label) ? zmember.label : null
-				const system = mounts.some((m) => SYSTEM_MOUNTS.has(m))
+				const system = mounts.some((m) => isSystemMount(m, home))
 				const blank = !d.fstype && !(d.children ?? []).length && !mounts.length
 				const nvme = d.tran === 'nvme' || d.name.startsWith('nvme')
 				const mountList = mounts.filter(Boolean)

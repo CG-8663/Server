@@ -640,6 +640,44 @@ errors: No known data errors
         self.assertEqual(pools["tank"]["size"], 8000000000000)
         self.assertEqual(pools["tank"]["free"], 5500000000000)
 
+    def test_system_mounts_include_subpaths_opt_srv_nix_and_owner_home(self):
+        from helper import HelperError
+        sys_paths = ["/var/lib/docker", "/var/log", "/usr/local", "/opt", "/srv", "/nix", "/home/chris"]
+        data_paths = ["/run/media/chris/stick", "/varnish", "/home/chris/extra"]
+        all_paths = sys_paths + data_paths
+        devs = [
+            {
+                "name": "sd%s" % chr(97 + i), "path": "/dev/sd%s" % chr(97 + i), "type": "disk", "size": 1000000000000, "rota": True,
+                "children": [{"name": "sd%s1" % chr(97 + i), "path": "/dev/sd%s1" % chr(97 + i), "type": "part", "fstype": "ext4", "mountpoints": [mp]}],
+            }
+            for i, mp in enumerate(all_paths)
+        ]
+
+        def run(cmd, args):
+            if cmd == "lsblk":
+                return json.dumps({"blockdevices": devs})
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files={})
+        by_mount = {d["mounts"][0]: d["role"] for d in json.loads(self.handle("disks", [], **kw))}
+        for mp in sys_paths:
+            self.assertEqual(by_mount[mp], "system", mp)
+        for mp in data_paths:
+            self.assertEqual(by_mount[mp], "data", mp)
+
+        for i in (0, 3, 4, 5, 6):
+            dev = devs[i]["path"]
+            for verb, extra in (("umount", []), ("format", ["blank"]), ("sleep", ["20"])):
+                with self.assertRaisesRegex(HelperError, "holds the system"):
+                    self.handle(verb, [dev, *extra], **kw)
+            with self.assertRaisesRegex(HelperError, "holds the system"):
+                self.handle("pool-create", ["tank", "single", dev], **kw)
+
+        for i in range(len(sys_paths), len(all_paths)):
+            dev = devs[i]["path"]
+            with self.assertRaisesRegex(HelperError, "is in use"):
+                self.handle("format", [dev, "blank"], **kw)
+
 
 if __name__ == "__main__":
     unittest.main()

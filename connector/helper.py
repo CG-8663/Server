@@ -28,9 +28,28 @@ BY_ID = re.compile(r"^/dev/disk/by-id/[A-Za-z0-9._:+-]+$")
 NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 ZFS_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}\Z")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-SYSTEM_MOUNTS = frozenset(["/", "/boot", "/efi", "/boot/efi", "/home", "/var", "/usr", "[SWAP]"])
+SYSTEM_MOUNTS = frozenset(["/", "/home", "[SWAP]"])
+SYSTEM_MOUNT_PREFIXES = ("/boot", "/efi", "/var", "/usr", "/opt", "/srv", "/nix")
 SKIP_FS = frozenset(["crypto_LUKS", "swap", "LVM2_member", "linux_raid_member", "zfs_member"])
 FAT_FS = frozenset(["vfat", "exfat", "ntfs", "msdos", "fuseblk"])
+
+
+def clean_mount(m):
+    if isinstance(m, str) and len(m) > 1:
+        return m.rstrip("/") or "/"
+    return m
+
+
+def is_system_mount(m, home=None):
+    p = clean_mount(m)
+    if not p:
+        return False
+    if p in SYSTEM_MOUNTS:
+        return True
+    owner_home = clean_mount(home)
+    if owner_home and p == owner_home:
+        return True
+    return any(p == pre or p.startswith(pre + "/") for pre in SYSTEM_MOUNT_PREFIXES)
 
 
 def safe_mount_name(s):
@@ -206,7 +225,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
 
     def blank_disk(path):
         d = disk(path)
-        if any(m in SYSTEM_MOUNTS for m in mounts(d)):
+        if any(is_system_mount(m, user["home"]) for m in mounts(d)):
             fail("%s holds the system" % path)
         if mounts(d):
             fail("%s is in use" % path)
@@ -484,7 +503,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         return run("smartctl", ["-n", "standby", "-j", "-a", d["path"]])
     if verb == "umount":
         d = resolve_disk(args[0] if args else "")
-        if any(m in SYSTEM_MOUNTS for m in mounts(d)):
+        if any(is_system_mount(m, user["home"]) for m in mounts(d)):
             fail("%s holds the system" % d["path"])
         if pool_member(d):
             fail("%s is in a pool" % d["path"])
@@ -493,7 +512,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         return "ok"
     if verb == "mount":
         d = resolve_disk(args[0] if args else "")
-        if any(m in SYSTEM_MOUNTS for m in mounts(d)):
+        if any(is_system_mount(m, user["home"]) for m in mounts(d)):
             fail("%s holds the system" % d["path"])
         if pool_member(d):
             fail("%s is in a pool" % d["path"])
@@ -532,7 +551,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         if fs_kind not in ("blank", "ext4", "exfat"):
             fail("Choose blank, ext4 or exfat")
         d = resolve_disk(args[0] if args else "")
-        if any(m in SYSTEM_MOUNTS for m in mounts(d)):
+        if any(is_system_mount(m, user["home"]) for m in mounts(d)):
             fail("%s holds the system" % d["path"])
         if pool_member(d):
             fail("%s is in a pool" % d["path"])
@@ -622,7 +641,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             btrfs = next((x for x in allp if x.get("fstype") == "btrfs"), None)
             zmember = next((x for x in allp if x.get("fstype") == "zfs_member"), None)
             pool = pool_name(d)
-            system = any(m in SYSTEM_MOUNTS for m in mnt)
+            system = any(is_system_mount(m, user["home"]) for m in mnt)
             blank = not d.get("fstype") and not (d.get("children") or []) and not mnt
             nvme = d.get("tran") == "nvme" or name.startswith("nvme")
             rota = d.get("rota") in (True, 1, "1")
@@ -733,7 +752,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         return json.dumps(pool_status_data(args[0] if args else ""))
     if verb == "sleep":
         d = disk(args[0] if args else "")
-        if any(m in SYSTEM_MOUNTS for m in mounts(d)):
+        if any(is_system_mount(m, user["home"]) for m in mounts(d)):
             fail("%s holds the system" % d["path"])
         try:
             m = int(args[1]) if len(args) > 1 else -1
