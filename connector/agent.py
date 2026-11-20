@@ -227,7 +227,8 @@ def omarchy_facts():
             continue
         try:
             with open(os.path.join(pdir, name, "manifest.json")) as f:
-                plugins.append(str(json.load(f).get("id") or name))
+                manifest = json.load(f)
+            plugins.append(str((manifest.get("id") if isinstance(manifest, dict) else None) or name))
         except (OSError, ValueError):
             plugins.append(name)
     themes = []
@@ -929,9 +930,14 @@ class Shell(Channel):
         shell = me.pw_shell if me.pw_shell and os.path.exists(me.pw_shell) else "/bin/bash"
         pid, fd = pty.fork()
         if pid == 0:
-            os.chdir(me.pw_dir)
-            env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", HOME=me.pw_dir, SHELL=shell, USER=me.pw_name, LANG=os.environ.get("LANG") or "C.UTF-8")
-            os.execvpe(shell, [shell, "-l"], env)
+            # The child must never fall back into the connector's own code.
+            try:
+                os.chdir(me.pw_dir)
+                env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", HOME=me.pw_dir, SHELL=shell, USER=me.pw_name, LANG=os.environ.get("LANG") or "C.UTF-8")
+                os.execvpe(shell, [shell, "-l"], env)
+            except BaseException:  # noqa: BLE001
+                pass
+            os._exit(127)
         self.pid, self.fd = pid, fd
         self.resize(cols, rows)
         threading.Thread(target=self.pump, daemon=True).start()
@@ -945,17 +951,41 @@ class Shell(Channel):
             pass
 
     def pump(self):
-        while not self.closed:
+        # This thread owns the pty: it alone closes it, so its number can't be reused by a new
+        # terminal while this loop still reads from it.
+        try:
+            while not self.closed:
+                try:
+                    r, _, _ = select.select([self.fd], [], [], 1)
+                    if r:
+                        data = os.read(self.fd, 65536)
+                        if not data:
+                            break
+                        self.out(data)
+                except OSError:
+                    break
+            self.ended("Shell ended")
+        finally:
             try:
-                r, _, _ = select.select([self.fd], [], [], 1)
-                if r:
-                    data = os.read(self.fd, 65536)
-                    if not data:
-                        break
-                    self.out(data)
+                os.close(self.fd)
             except OSError:
-                break
-        self.ended("Shell ended")
+                pass
+            self.reap()
+
+    def reap(self):
+        # Wait for the shell so it doesn't stay behind as a zombie; one that ignores SIGHUP is killed.
+        for _ in range(30):
+            try:
+                if os.waitpid(self.pid, os.WNOHANG)[0]:
+                    return
+            except OSError:
+                return
+            time.sleep(0.1)
+        try:
+            os.kill(self.pid, signal.SIGKILL)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
 
     def write(self, data):
         try:
@@ -971,14 +1001,7 @@ class Shell(Channel):
             os.kill(self.pid, signal.SIGHUP)
         except OSError:
             pass
-        try:
-            os.close(self.fd)
-        except OSError:
-            pass
-        try:
-            os.waitpid(self.pid, os.WNOHANG)
-        except OSError:
-            pass
+        # The pump thread closes the pty and reaps the shell when it sees this.
 
 
 class Screen(Channel):
@@ -1032,7 +1055,8 @@ THEME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}$")
 def run(cmd, **kw):
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=kw.pop("timeout", 300), **kw)
     if r.returncode != 0:
-        raise RuntimeError((r.stderr or r.stdout or f"{cmd[0]} failed").strip().splitlines()[-1][:300])
+        lines = ((r.stderr or "").strip() or (r.stdout or "").strip()).splitlines()
+        raise RuntimeError((lines[-1] if lines else f"{cmd[0]} failed")[:300])
     return r.stdout
 
 
@@ -1462,6 +1486,7 @@ BACKUP_ACTIONS = {"backup-folders": lambda conn, cid, args, cfg: backup_folders(
 class Connection:
     def __init__(self, cfg):
         self.cfg = cfg
+        self.connected_at = None
         self.allowed = cfg.get("abilities", {})
         self.channels = {}
         self.ws = None
@@ -1476,6 +1501,7 @@ class Connection:
     def run(self):
         url = self.cfg["server"].replace("https://", "wss://", 1).rstrip("/") + "/connector/ws"
         self.ws = WS(url, {"Authorization": f"Bearer {self.cfg['id']}:{self.cfg['key']}", "User-Agent": f"omarchy-connector/{VERSION}"}, CA_FILE)
+        self.connected_at = time.monotonic()
         log("connected to", self.cfg["server"])
         self.send({"op": "hello", "info": info(), "abilities": self.allowed})
         stop = threading.Event()
@@ -1585,7 +1611,9 @@ def forget():
     except OSError:
         pass
     try:
-        subprocess.run(["systemctl", "--user", "disable", "omarchy-connector.service"], capture_output=True, timeout=30)
+        # --now so systemd stops the unit instead of restarting it (Restart=always) every 5 seconds;
+        # --no-block so this process isn't waiting on its own stop.
+        subprocess.run(["systemctl", "--user", "disable", "--now", "--no-block", "omarchy-connector.service"], capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         pass  # not run by systemd (or no systemd): stopping is enough
     os._exit(0)
@@ -1630,15 +1658,18 @@ def main():
         sys.exit("Not joined to a server yet. Run the install command from Machines → Local swarm → Add a computer.")
     delay = 2
     while True:
+        conn = Connection(cfg)
         try:
-            Connection(cfg).run()
-            delay = 2
+            conn.run()
         except Exception as e:  # noqa: BLE001
             if reconnect_action(e) == "forget":
                 log("the server refused this computer's key; it was removed from the swarm")
                 forget()
             else:
                 log("connection:", e)
+        # run() only ever ends with an error. If it had been connected a while, start over at 2 s.
+        if conn.connected_at and time.monotonic() - conn.connected_at > 30:
+            delay = 2
         time.sleep(delay)
         delay = min(60, delay * 2)
 
