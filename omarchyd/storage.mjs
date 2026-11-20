@@ -188,6 +188,16 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	}
 
 	// ---- shares -----------------------------------------------------------------------------------
+	// Add, update, remove, and a folder move each read the list and write it back. One queue, so
+	// each starts from the list the previous call saved.
+	let shareQueue = Promise.resolve()
+	function withShares(fn) {
+		const run = shareQueue.then(fn, fn)
+		shareQueue = run.then(() => {}, () => {})
+		return run
+	}
+	// Samba treats these section names as its own, in any case. A share must not use them.
+	const SAMBA_RESERVED = new Set(['global', 'homes', 'printers'])
 	async function shareList() {
 		const shares = await readJson(sharesFile, [])
 		return Promise.all(
@@ -209,6 +219,21 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			if (r && r.top === 'Home') out.push({name: s.name, path: r.real, readOnly: !!s.readOnly, ...(s.guest ? {guest: true} : {})})
 		}
 		await helper('shares-apply', [], JSON.stringify({shares: out}))
+	}
+	// `to` is the folder's new virtual path, or null when it was trashed. Nested shares follow too.
+	// /Home/Music must not take /Home/MusicVideos with it.
+	async function relocateShares(from, to) {
+		if (typeof from !== 'string' || !from.startsWith('/Home/')) return
+		if (to != null && (typeof to !== 'string' || !to.startsWith('/Home/'))) return
+		await withShares(async () => {
+			const shares = await readJson(sharesFile, [])
+			const under = (p) => p === from || (typeof p === 'string' && p.startsWith(from + '/'))
+			const next = to == null ? shares.filter((s) => !under(s.path)) : shares.map((s) => (under(s.path) ? {...s, path: to + s.path.slice(from.length)} : s))
+			if (next.length === shares.length && next.every((s, i) => s.path === shares[i].path)) return
+			// The folder has already moved. The list has to match even if Samba does not reload.
+			await writeJson(sharesFile, next)
+			await applyShares(next).catch(() => {})
+		})
 	}
 	// Shares without a password need a helper that knows them (installed with Omarchy Server 0.9.21 or
 	// later). Read the installed helper rather than guess, so an older one is never asked (it would
@@ -267,6 +292,8 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			return pw
 		}
 	}
+
+	files.followShares?.(relocateShares)
 
 	return {
 		helper,
@@ -349,7 +376,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			// Change how a folder is shared: with or without a password, read-only or not.
 			'files.updateShare': {
 				kind: 'mutation',
-				run: async (input) => {
+				run: (input) => withShares(async () => {
 					const path = String(input?.path ?? '')
 					const shares = await readJson(sharesFile, [])
 					const i = shares.findIndex((s) => s.path === path)
@@ -362,11 +389,11 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					await applyShares(next)
 					await writeJson(sharesFile, next)
 					return true
-				},
+				}),
 			},
 			'files.addShare': {
 				kind: 'mutation',
-				run: async (input) => {
+				run: (input) => withShares(async () => {
 					const path = String(input?.path ?? '')
 					const r = await files.resolve(path)
 					if (r.top !== 'Home' || path === '/Home') throw new RpcError('BAD_REQUEST', 'Choose a folder inside Home to share')
@@ -374,7 +401,8 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					if (shares.some((s) => s.path === path)) return true
 					const base = (path.split('/').pop() || 'Share').replace(/[^A-Za-z0-9 _.-]/g, '').slice(0, 28) || 'Share'
 					let name = base
-					for (let n = 2; shares.some((s) => s.name.toLowerCase() === name.toLowerCase()); n++) name = `${base} ${n}`
+					const nameTaken = (n) => SAMBA_RESERVED.has(n.toLowerCase()) || shares.some((s) => s.name.toLowerCase() === n.toLowerCase())
+					for (let n = 2; nameTaken(name); n++) name = `${base} ${n}`
 					await requireSamba()
 					const settings = await shareSettings(input)
 					const next = [...shares, {name, path, ...(settings.guest ? {guest: true} : {}), ...(settings.readOnly ? {readOnly: true} : {})}]
@@ -382,24 +410,26 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					await applyShares(next)
 					await writeJson(sharesFile, next)
 					return true
-				},
+				}),
 			},
 			'files.removeShare': {
 				kind: 'mutation',
-				run: async (input) => {
+				run: (input) => withShares(async () => {
 					const next = (await readJson(sharesFile, [])).filter((s) => s.path !== String(input?.path ?? ''))
 					await applyShares(next)
 					await writeJson(sharesFile, next)
 					return true
-				},
+				}),
 			},
 		},
 		// Factory reset: drop the share list and the share password. Clearing Samba is best-effort;
 		// the files go either way, so the next owner does not inherit the password.
 		async clearShares() {
-			await applyShares([]).catch((e) => console.error('[omarchyd] reset shares', e.message))
-			await rm(sharesFile, {force: true})
-			await rm(passwordFile, {force: true})
+			await withShares(async () => {
+				await applyShares([]).catch((e) => console.error('[omarchyd] reset shares', e.message))
+				await rm(sharesFile, {force: true})
+				await rm(passwordFile, {force: true})
+			})
 		},
 		firewall: {
 			open: (port) => helper('firewall-open', [String(port)]).catch(() => {}),

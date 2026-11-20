@@ -714,12 +714,15 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			const anyGuest = body.shares.some((s) => s?.guest === true)
 			for (const s of body.shares) {
 				const name = String(s?.name ?? '')
-				if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}$/.test(name) || seen.has(name.toLowerCase())) fail(`Bad share name: ${name}`)
+				// global, homes, and printers are Samba's own sections. A second [Global] would merge into [global].
+				if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}$/.test(name) || /^(global|homes|printers)$/i.test(name) || seen.has(name.toLowerCase())) fail(`Bad share name: ${name}`)
 				seen.add(name.toLowerCase())
 				const path = await inHome(String(s?.path ?? ''))
 				if (/[\n\r]/.test(path)) fail('Bad folder')
+				// The path parameter substitutes %u and %m. %% is a literal percent.
+				const written = path.replace(/%/g, '%%')
 				const who = s.guest === true ? `   guest ok = yes\n` : `   valid users = ${user.name}\n   force user = ${user.name}\n`
-				blocks.push(`[${name}]\n   path = ${path}\n${who}   read only = ${s.readOnly ? 'yes' : 'no'}\n   browseable = yes\n`)
+				blocks.push(`[${name}]\n   path = ${written}\n${who}   read only = ${s.readOnly ? 'yes' : 'no'}\n   browseable = yes\n`)
 			}
 			const shares = `${SMB_MARK}. Edit shares in the Omarchy Server web app.\n\n${blocks.join('\n')}`
 			const current = await fs.readFile(SMB_CONF, 'utf8').catch(() => null)

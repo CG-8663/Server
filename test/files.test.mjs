@@ -158,6 +158,61 @@ describe('files: Trash', () => {
 		assert.deepEqual(await readdir(join(home, '.local/share/Trash/files')), [])
 		assert.equal(await readlink(join(home, 'escape')), outside, 'links themselves left alone')
 	})
+
+	test('rename and move refuse the Home and Trash folders themselves', async () => {
+		const scratch = await mkdtemp(join(os.tmpdir(), 'omarchy-roots-'))
+		await mkdir(join(scratch, 'home'))
+		const h = await realpath(join(scratch, 'home'))
+		await mkdir(join(h, 'Documents'), {recursive: true})
+		await mkdir(join(h, '.local/share/Trash/files'), {recursive: true})
+		await mkdir(join(scratch, 'data'))
+		await writeFile(join(h, 'Documents', 'notes.txt'), 'hello')
+		const f = createFiles({home: h, dataDir: join(scratch, 'data')})
+		const run = (name, input) => f.procedures[name].run(input)
+		try {
+			await assert.rejects(run('files.rename', {path: '/Home', newName: 'Renamed'}), (e) => e.code === 'BAD_REQUEST')
+			await assert.rejects(run('files.move', {path: '/Home', toDirectory: '/Home/Documents'}), (e) => e.code === 'BAD_REQUEST')
+			await assert.rejects(run('files.move', {path: '/Trash', toDirectory: '/Home/Documents'}), (e) => e.code === 'BAD_REQUEST')
+			await assert.rejects(run('files.copy', {path: '/Trash', toDirectory: '/Home/Documents'}), (e) => e.code === 'BAD_REQUEST')
+			const listed = await run('files.list', {path: '/Home/Documents'})
+			assert.ok(listed.files.some((file) => file.name === 'notes.txt'))
+			assert.equal(await readFile(join(h, 'Documents', 'notes.txt'), 'utf8'), 'hello')
+		} finally {
+			await rm(scratch, {recursive: true, force: true})
+		}
+	})
+
+	test('a file inside a trashed folder does not use another item’s trashinfo', async () => {
+		const scratch = await mkdtemp(join(os.tmpdir(), 'omarchy-trashinfo-'))
+		await mkdir(join(scratch, 'home'))
+		const h = await realpath(join(scratch, 'home'))
+		const data = join(scratch, 'data')
+		await mkdir(join(h, 'proj'), {recursive: true})
+		await mkdir(join(h, 'other'), {recursive: true})
+		await mkdir(data)
+		await writeFile(join(h, 'proj', 'a.txt'), 'nested')
+		await writeFile(join(h, 'other', 'a.txt'), 'top')
+		const f = createFiles({home: h, dataDir: data})
+		const run = (name, input) => f.procedures[name].run(input)
+		const infoDir = join(h, '.local/share/Trash/info')
+		try {
+			await run('files.trash', {path: '/Home/proj'})
+			await run('files.trash', {path: '/Home/other/a.txt'})
+			const info = await readFile(join(infoDir, 'a.txt.trashinfo'), 'utf8')
+			await run('files.delete', {path: '/Trash/proj/a.txt'})
+			assert.equal(await readFile(join(infoDir, 'a.txt.trashinfo'), 'utf8'), info, 'deleting the nested file removed the other trashinfo')
+			await writeFile(join(h, '.local/share/Trash/files/proj/b.txt'), 'second')
+			const nested = await run('files.restore', {path: '/Trash/proj/b.txt'})
+			assert.equal(nested, '/Home/b.txt')
+			assert.equal(await readFile(join(h, 'b.txt'), 'utf8'), 'second')
+			assert.equal(await readFile(join(infoDir, 'a.txt.trashinfo'), 'utf8'), info, 'restoring the nested file removed the other trashinfo')
+			const top = await run('files.restore', {path: '/Trash/a.txt'})
+			assert.equal(top, '/Home/other/a.txt')
+			assert.equal(await readFile(join(h, 'other', 'a.txt'), 'utf8'), 'top')
+		} finally {
+			await rm(scratch, {recursive: true, force: true})
+		}
+	})
 })
 
 describe('files: list paging', () => {
