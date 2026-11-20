@@ -70,12 +70,14 @@ if has desktop; then
 	command -v x11vnc >/dev/null || pkgs+=(x11vnc)
 	command -v wayvnc >/dev/null || pkgs+=(wayvnc)
 fi
+# Disk tools live in /usr/sbin on Debian, which isn't on a normal user's PATH; the helper looks there too.
+sbin() { PATH="$PATH:/usr/local/sbin:/usr/sbin:/sbin" command -v "$1" >/dev/null; }
 if has storage; then
-	command -v smartctl >/dev/null || pkgs+=(smartmontools)
-	command -v mkfs.ext4 >/dev/null || pkgs+=(e2fsprogs)
-	command -v mkfs.exfat >/dev/null || pkgs+=(exfatprogs)
-	command -v mkfs.btrfs >/dev/null || pkgs+=(btrfs-progs)
-	command -v hdparm >/dev/null || pkgs+=(hdparm)
+	sbin smartctl || pkgs+=(smartmontools)
+	sbin mkfs.ext4 || pkgs+=(e2fsprogs)
+	sbin mkfs.exfat || pkgs+=(exfatprogs)
+	sbin mkfs.btrfs || pkgs+=(btrfs-progs)
+	sbin hdparm || pkgs+=(hdparm)
 fi
 if [ ${#pkgs[@]} -gt 0 ]; then
 	say "Installing ${pkgs[*]} (sudo needed)"

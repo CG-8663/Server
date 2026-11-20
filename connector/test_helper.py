@@ -285,3 +285,36 @@ class Helper(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class OldLsblk(unittest.TestCase):
+    # #118: util-linux before 2.37 has no MOUNTPOINTS column.
+    def test_falls_back_to_mountpoint(self):
+        from helper import HelperError, handle
+
+        old = copy.deepcopy(LSBLK)
+        for d in old["blockdevices"]:
+            for c in d.get("children") or []:
+                mp = c.pop("mountpoints", None)
+                c["mountpoint"] = (mp or [None])[0]
+        fake = Fake(old)
+
+        def run(cmd, args):
+            if cmd == "lsblk" and any("MOUNTPOINTS" in a for a in args):
+                fake.log.append([cmd, *args])
+                raise HelperError("lsblk: unknown column: MOUNTPOINTS")
+            return fake.run(cmd, args)
+
+        with self.assertRaisesRegex(Exception, "holds the system"):
+            handle("format", ["/dev/nvme0n1", "blank"], run=run, user={"name": "chris", "uid": 1000, "home": "/home/chris"}, files=fake.files)
+        self.assertTrue(any("MOUNTPOINT," in " ".join(x) or x[-1].endswith("MOUNTPOINT,RM,HOTPLUG") for x in fake.log))
+
+
+class Hdparm(unittest.TestCase):
+    # #119: udev needs the real path.
+    def test_path_exists_or_sbin(self):
+        from helper import hdparm_path
+
+        p = hdparm_path()
+        self.assertTrue(p.startswith("/"))
+        self.assertTrue(os.path.exists(p) or p == "/usr/sbin/hdparm")
