@@ -116,6 +116,76 @@ test('an HTTPS WebUI label sets web.https on the imported app', () => {
 	assert.deepEqual(app.web, {service: 'vaultwarden', port: 8443, https: true})
 })
 
+test('dollar signs in container commands and mount paths are escaped for Compose', async () => {
+	const container = {
+		Name: '/Dollar-App',
+		State: {Running: false},
+		Config: {Image: 'app:1', Env: [], Cmd: ['sh', '-c', 'echo $HOME && exec app --token=ab$cd'], User: 'user$1'},
+		HostConfig: {PortBindings: {'8080/tcp': [{HostPort: '8080'}]}},
+		Mounts: [
+			{Type: 'bind', Source: '/mnt/user/appdata/my$app', Destination: '/config/$dir', RW: true},
+			{Type: 'bind', Source: '/mnt/user/Media/sub$1', Destination: '/media/$out', RW: true},
+			{Type: 'bind', Source: '/etc/localtime', Destination: '/etc/$tz', RW: false},
+			{Type: 'bind', Source: '/var/run/docker.sock', Destination: '/var/run/$sock', RW: true},
+		],
+	}
+	const p = containerPlan(container)
+	const svc = YAML.parse(p.files['docker-compose.yml']).services['dollar-app']
+	assert.deepEqual(svc.command, ['sh', '-c', 'echo $$HOME && exec app --token=ab$$cd'])
+	assert.equal(svc.user, 'user$$1')
+	assert.deepEqual(svc.volumes, [
+		'${APP_DATA_DIR:-.}/data/my$$app:/config/$$dir',
+		'${APP_DATA_DIR:-.}/data/shares/media/sub$$1:/media/$$out',
+		'/etc/localtime:/etc/$$tz:ro',
+		'/var/run/docker.sock:/var/run/$$sock',
+	])
+	assert.deepEqual(p.copies, [{from: '/mnt/user/appdata/my$app', to: 'my$app'}])
+
+	const withShare = containerPlan(container, {shareDest: () => '/home/u/Pools/Data$1/Media'})
+	const withShareSvc = YAML.parse(withShare.files['docker-compose.yml']).services['dollar-app']
+	assert.ok(withShareSvc.volumes.includes('/home/u/Pools/Data$$1/Media/sub$$1:/media/$$out'))
+
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-dollar-'))
+	await mkdir(join(dir, 'tree', 'Home', 'My$Pool', 'Unraid'), {recursive: true})
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+		if (remote.includes('/mnt/user')) return {stdout: 'Media\t100\n', stderr: ''}
+		if (remote.startsWith('docker ps')) return {stdout: 'Dollar-App\n', stderr: ''}
+		if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([container]), stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	const apps = {
+		importedStoreDir: join(dir, 'store'),
+		appDirFor: (id) => join(dir, 'apps', id),
+		installed: () => false,
+		installImported: async () => {},
+		importState: () => ({done: true, error: null}),
+	}
+	const u = createUnraid({dataDir: dir, files, apps, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		const started = await u.procedures['unraid.start'].run({shares: ['Media'], containers: ['unraid-dollar-app'], destination: '/Home/My$Pool/Unraid'})
+		let st
+		for (let i = 0; i < 200; i++) {
+			st = await u.procedures['unraid.status'].run()
+			const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+			if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		assert.ok(st?.job?.endedAt)
+		assert.deepEqual(st.job.items.map((x) => [x.key, x.status]), [['Media', 'done'], ['unraid-dollar-app', 'done']])
+		const written = YAML.parse(await readFile(join(dir, 'store', 'unraid-dollar-app', 'docker-compose.yml'), 'utf8'))
+		assert.ok(written.services['dollar-app'].volumes.includes(`${join(dir, 'tree/Home/My$$Pool/Unraid/Media/sub$$1')}:/media/$$out`))
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
 test('imported container version ignores registry ports and image digests', () => {
 	const digest = 'a'.repeat(64)
 	const cases = [

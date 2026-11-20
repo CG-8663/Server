@@ -74,6 +74,9 @@ function imageVersion(image) {
 	return (tag || 'latest').slice(0, 40)
 }
 
+// Compose would read "$" as one of its variables.
+const escapeCompose = (s) => String(s).replace(/\$/g, '$$$$')
+
 // One container (docker inspect) → an app listing (omarchy-app.yml + docker-compose.yml), what to copy
 // for it, and anything that doesn't come across.
 export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = () => null, takenIds = new Set()} = {}) {
@@ -95,8 +98,7 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 		if (k === 'PATH' || k === 'HOST_OS' || k === 'HOST_HOSTNAME' || k === 'HOST_CONTAINERNAME') continue
 		// Unraid runs apps as nobody:users (99:100); here they run as the app user Omarchy Server sets.
 		if (k === 'PUID' || k === 'PGID') env[k] = `\${${k}}`
-		// Compose would read "$" as one of its variables.
-		else env[k] = v.replace(/\$/g, '$$$$')
+		else env[k] = escapeCompose(v)
 	}
 	const hc = c?.HostConfig ?? {}
 	if (hc.Privileged) notes.push('It ran with full access to the Unraid server (privileged). It’s brought over without that.')
@@ -141,12 +143,13 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 		}
 		const ro = m.RW === false ? ':ro' : ''
 		const src = String(m.Source ?? '')
+		const dst = escapeCompose(m.Destination)
 		if (src === '/etc/localtime') {
-			volumes.push(`/etc/localtime:${m.Destination}:ro`)
+			volumes.push(`/etc/localtime:${dst}:ro`)
 			continue
 		}
 		if (src === '/var/run/docker.sock' || src === '/run/docker.sock') {
-			volumes.push(`/var/run/docker.sock:${m.Destination}${ro}`)
+			volumes.push(`/var/run/docker.sock:${dst}${ro}`)
 			notes.push('It manages containers. Here it gets your own (rootless) container engine, not a root one.')
 			continue
 		}
@@ -154,13 +157,13 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 		if (where.kind === 'appdata') {
 			const rel = where.rest.replace(/\/+$/, '') || 'appdata'
 			copies.push({from: src, to: rel})
-			volumes.push(`\${APP_DATA_DIR:-.}/data/${rel}:${m.Destination}${ro}`)
+			volumes.push(`\${APP_DATA_DIR:-.}/data/${escapeCompose(rel)}:${dst}${ro}`)
 		} else if (where.kind === 'share') {
 			shares.add(where.share)
 			const dest = shareDest(where.share)
-			if (dest) volumes.push(`${join(dest, where.rest)}:${m.Destination}${ro}`)
+			if (dest) volumes.push(`${escapeCompose(join(dest, where.rest))}:${dst}${ro}`)
 			else {
-				volumes.push(`\${APP_DATA_DIR:-.}/data/shares/${slug(where.share)}${where.rest ? `/${where.rest}` : ''}:${m.Destination}${ro}`)
+				volumes.push(`\${APP_DATA_DIR:-.}/data/shares/${slug(where.share)}${where.rest ? `/${escapeCompose(where.rest)}` : ''}:${dst}${ro}`)
 				notes.push(`It uses the ${where.share} share. Bring that share over too, or it starts with an empty folder there.`)
 			}
 		} else if (src.startsWith('/tmp')) {
@@ -173,9 +176,9 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 	if (Object.keys(env).length) svc.environment = env
 	const user = String(c?.Config?.User ?? '')
 	if (/^(99|nobody)(:(100|users))?$/.test(user)) svc.user = '${PUID}:${PGID}'
-	else if (user) svc.user = user
+	else if (user) svc.user = escapeCompose(user)
 	const cmd = c?.Config?.Cmd
-	if (Array.isArray(cmd) && cmd.length && JSON.stringify(cmd) !== JSON.stringify(imageCmd)) svc.command = cmd
+	if (Array.isArray(cmd) && cmd.length && JSON.stringify(cmd) !== JSON.stringify(imageCmd)) svc.command = cmd.map(escapeCompose)
 	if (volumes.length) svc.volumes = volumes
 	const portLines = []
 	if (webBinding || (publicPort && webPort)) portLines.push(`${publicPort}:${webPort}`)
@@ -552,7 +555,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 					// "${APP_DATA_DIR:-.}/data/shares/<share>[/rest]:<in the container>[:ro]" (the variable has a colon of its own).
 					const m = /^\$\{APP_DATA_DIR:-\.\}\/data\/shares\/([^/:]+)((?:\/[^:]*)?)(:.+)$/.exec(String(v))
 					const share = m && plan.shares.find((s) => slug(s) === m[1])
-					if (share && shareDest(share)) return `${join(await realOf(shareDest(share)), m[2] ?? '')}${m[3]}`
+					if (share && shareDest(share)) return `${join(escapeCompose(await realOf(shareDest(share))), m[2] ?? '')}${m[3]}`
 					return v
 				}),
 			)
