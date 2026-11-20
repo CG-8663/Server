@@ -95,3 +95,37 @@ export type SuperKey = 'meta' | 'altright' | 'ctrlright'
 export function resolveSuperKey(stored: string | null | undefined): SuperKey {
 	return stored === 'altright' || stored === 'ctrlright' || stored === 'meta' ? stored : 'meta'
 }
+
+export type TouchReleaseInput = {
+	cancelled: boolean
+	mode: 'touch' | 'mouse'
+	kind: 'none' | 'one' | 'two' | 'mouse'
+	wasCount: number
+	remaining: number
+	moved: boolean
+	held: boolean
+	dragging: boolean
+	quick: boolean
+	maxPointers: number
+}
+
+export type TouchReleaseOutcome =
+	| {action: 'none'}
+	| {action: 'release-drag'}
+	| {action: 'click'; target: 'start' | 'cursor' | 'mid'; button: number; haptic: number; updateLastTap: boolean}
+
+// Decide what a touch release or pointercancel should do at the end of a gesture.
+export function touchReleaseAction(input: TouchReleaseInput): TouchReleaseOutcome {
+	if (input.kind === 'one' && input.wasCount === 1) {
+		if (input.dragging) return {action: 'release-drag'}
+		if (!input.cancelled && !input.moved) {
+			if (input.mode === 'touch') return {action: 'click', target: 'start', button: input.held ? BTN.right : BTN.left, haptic: 5, updateLastTap: false}
+			if (input.quick) return {action: 'click', target: 'cursor', button: BTN.left, haptic: 5, updateLastTap: true}
+		}
+		return {action: 'none'}
+	}
+	if (input.kind === 'two' && input.remaining === 0 && !input.cancelled && !input.moved && input.quick) {
+		return {action: 'click', target: 'mid', button: input.maxPointers >= 3 ? BTN.middle : BTN.right, haptic: 10, updateLastTap: false}
+	}
+	return {action: 'none'}
+}

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {describe, test} from 'node:test'
 
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, wheelButtons} from '../web/src/consoleHelpers.ts'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, wheelButtons} from '../web/src/consoleHelpers.ts'
 
 describe('console helpers', () => {
 	test('#120: reconnects on clean and unclean disconnects unless disposed or superseded', async () => {
@@ -149,5 +149,26 @@ describe('console helpers', () => {
 		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
 		assert.match(src, /resolveSuperKey\(/)
 		assert.doesNotMatch(src, /\/Linux\/\.test\(navigator\.userAgent\)/)
+	})
+
+	test('#369: cancelled touches end or release drags without clicking', async () => {
+		// Cancelled touches must never click or right-click
+		assert.deepEqual(touchReleaseAction({cancelled: true, mode: 'touch', kind: 'one', wasCount: 1, remaining: 0, moved: false, held: false, dragging: false, quick: true, maxPointers: 1}), {action: 'none'})
+		assert.deepEqual(touchReleaseAction({cancelled: true, mode: 'touch', kind: 'one', wasCount: 1, remaining: 0, moved: false, held: true, dragging: false, quick: false, maxPointers: 1}), {action: 'none'})
+		assert.deepEqual(touchReleaseAction({cancelled: true, mode: 'mouse', kind: 'one', wasCount: 1, remaining: 0, moved: false, held: false, dragging: false, quick: true, maxPointers: 1}), {action: 'none'})
+		assert.deepEqual(touchReleaseAction({cancelled: true, mode: 'touch', kind: 'two', wasCount: 1, remaining: 0, moved: false, held: false, dragging: false, quick: true, maxPointers: 2}), {action: 'none'})
+		// Cancelled drags still release the held left button
+		assert.deepEqual(touchReleaseAction({cancelled: true, mode: 'touch', kind: 'one', wasCount: 1, remaining: 0, moved: true, held: false, dragging: true, quick: false, maxPointers: 1}), {action: 'release-drag'})
+		assert.deepEqual(touchReleaseAction({cancelled: true, mode: 'mouse', kind: 'one', wasCount: 1, remaining: 0, moved: true, held: false, dragging: true, quick: false, maxPointers: 1}), {action: 'release-drag'})
+		// Normal lifts still click/release as before
+		assert.deepEqual(touchReleaseAction({cancelled: false, mode: 'touch', kind: 'one', wasCount: 1, remaining: 0, moved: false, held: false, dragging: false, quick: true, maxPointers: 1}), {action: 'click', target: 'start', button: BTN.left, haptic: 5, updateLastTap: false})
+		assert.deepEqual(touchReleaseAction({cancelled: false, mode: 'touch', kind: 'one', wasCount: 1, remaining: 0, moved: false, held: true, dragging: false, quick: false, maxPointers: 1}), {action: 'click', target: 'start', button: BTN.right, haptic: 5, updateLastTap: false})
+		assert.deepEqual(touchReleaseAction({cancelled: false, mode: 'mouse', kind: 'one', wasCount: 1, remaining: 0, moved: false, held: false, dragging: false, quick: true, maxPointers: 1}), {action: 'click', target: 'cursor', button: BTN.left, haptic: 5, updateLastTap: true})
+		assert.deepEqual(touchReleaseAction({cancelled: false, mode: 'touch', kind: 'two', wasCount: 1, remaining: 0, moved: false, held: false, dragging: false, quick: true, maxPointers: 2}), {action: 'click', target: 'mid', button: BTN.right, haptic: 10, updateLastTap: false})
+		assert.deepEqual(touchReleaseAction({cancelled: false, mode: 'touch', kind: 'two', wasCount: 1, remaining: 0, moved: false, held: false, dragging: false, quick: true, maxPointers: 3}), {action: 'click', target: 'mid', button: BTN.middle, haptic: 10, updateLastTap: false})
+
+		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
+		assert.match(src, /touchReleaseAction\(/)
+		assert.doesNotMatch(src, /onPointerCancel=\{onPointerUp\}/)
 	})
 })

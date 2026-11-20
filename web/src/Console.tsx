@@ -14,7 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, type Pt, type SuperKey} from './consoleHelpers'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -905,10 +905,14 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		}
 	}
 
-	const onPointerUp = (e: React.PointerEvent) => {
+	const endPointer = (e: React.PointerEvent, cancelled: boolean) => {
 		const st = g.current
 		const p = {x: e.clientX, y: e.clientY}
 		if (e.pointerType === 'mouse') {
+			if (cancelled) {
+				if (mask.current) send(toFb(p) ?? cursor.current, 0)
+				return
+			}
 			const button = e.button === 2 ? BTN.right : e.button === 1 ? BTN.middle : BTN.left
 			if (!(mask.current & button)) return
 			const fb = toFb(p) ?? cursor.current
@@ -919,42 +923,41 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		const wasCount = st.pointers.size
 		st.pointers.delete(e.pointerId)
 		const quick = performance.now() - st.startTime < 280
+		if (cancelled && st.kind === 'two') st.moved = true
+		if (st.kind === 'one' && wasCount === 1) window.clearTimeout(st.longTimer)
 
-		if (st.kind === 'one' && wasCount === 1) {
-			window.clearTimeout(st.longTimer)
-			if (mode === 'touch') {
-				const fb = toFb(st.start, false)
-				if (st.dragging) release(toFb(p) ?? cursor.current, BTN.left)
-				else if (!st.moved && fb) {
-					if (st.held) click(fb, BTN.right)
-					else click(fb, BTN.left)
-					haptic(5)
-				}
-			} else {
-				if (st.dragging) release(cursor.current, BTN.left)
-				else if (!st.moved && quick) {
-					click(cursor.current, BTN.left)
-					haptic(5)
-					st.lastTapTime = performance.now()
-				}
-			}
-			st.kind = 'none'
-		} else if (st.kind === 'two') {
-			if (st.pointers.size === 0) {
-				// Two-finger tap = right-click (three-finger tap = middle).
-				if (!st.moved && quick) {
-					const at = mode === 'mouse' ? cursor.current : toFb(st.two.mid, false)
-					if (at) {
-						click(at, st.two.maxPointers >= 3 ? BTN.middle : BTN.right)
-						haptic(10)
-					}
-				}
-				st.kind = 'none'
-				// Snap back if the pinch left us just above 100%.
-				if (view.current.z < 1.05) applyView({...view.current, z: 1}, true)
+		const outcome = touchReleaseAction({
+			cancelled,
+			mode,
+			kind: st.kind,
+			wasCount,
+			remaining: st.pointers.size,
+			moved: st.moved,
+			held: st.held,
+			dragging: st.dragging,
+			quick,
+			maxPointers: st.two.maxPointers,
+		})
+		if (outcome.action === 'release-drag') {
+			release(mode === 'touch' ? (toFb(p) ?? cursor.current) : cursor.current, BTN.left)
+		} else if (outcome.action === 'click') {
+			const at = outcome.target === 'cursor' ? cursor.current : outcome.target === 'start' ? toFb(st.start, false) : toFb(st.two.mid, false)
+			if (at) {
+				click(at, outcome.button)
+				haptic(outcome.haptic)
+				if (outcome.updateLastTap) st.lastTapTime = performance.now()
 			}
 		}
-		if (st.pointers.size === 0) st.kind = 'none'
+		if (st.kind === 'two' && st.pointers.size === 0 && view.current.z < 1.05) {
+			// Snap back if the pinch left us just above 100%.
+			applyView({...view.current, z: 1}, true)
+		}
+		if (st.pointers.size === 0) {
+			st.dragging = false
+			st.held = false
+			st.panning = false
+			st.kind = 'none'
+		}
 	}
 
 	const onWheelRef = useRef<(e: WheelEvent) => void>(() => {})
@@ -1229,8 +1232,8 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 					className="console-touch"
 					onPointerDown={onPointerDown}
 					onPointerMove={onPointerMove}
-					onPointerUp={onPointerUp}
-					onPointerCancel={onPointerUp}
+					onPointerUp={(e) => endPointer(e, false)}
+					onPointerCancel={(e) => endPointer(e, true)}
 					onContextMenu={(e) => e.preventDefault()}
 				/>}
 				<div ref={cursorRef} className={`console-cursor${mode === 'mouse' && !deskUi ? '' : ' hidden'}`} aria-hidden="true">
