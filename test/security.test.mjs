@@ -11,7 +11,7 @@ import WebSocket from 'ws'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
-import {authorityInfo, ensureTls, privateAddress, readPolicy, rotateAuthority, wantsUpgrade, writePolicy} from '../omarchyd/tls.mjs'
+import {authorityInfo, ensureTls, privateAddress, readPolicy, rotateAuthority, tlsContext, wantsUpgrade, writePolicy} from '../omarchyd/tls.mjs'
 
 let root
 before(async () => (root = await mkdtemp(join(os.tmpdir(), 'omarchy-sec-'))))
@@ -202,6 +202,32 @@ describe('damaged tls metadata', () => {
 			await chmod(join(dir, 'policy.json'), 0o600)
 		}
 		assert.equal(await readFile(join(dir, 'policy.json'), 'utf8'), '{"alwaysHttps":true}')
+	})
+
+	test('an unreadable policy.json does not reject startup and is read once it is allowed', async (t) => {
+		if (process.getuid?.() === 0) return t.skip('root ignores file mode')
+		const dir = join(root, 'policy-context')
+		await mkdir(dir, {recursive: true})
+		await writeFile(join(dir, 'policy.json'), '{"alwaysHttps":true}', {mode: 0o600})
+		await chmod(join(dir, 'policy.json'), 0o000)
+		const lines = []
+		const orig = console.error
+		console.error = (...parts) => lines.push(parts.map(String).join(' '))
+		const secure = tlsContext({dir, lazy: true})
+		try {
+			const error = await secure.start().then(() => null, (reason) => reason)
+			assert.equal(error, null)
+			assert.equal(secure.policy().alwaysHttps, false)
+			assert.ok(lines.some((line) => line.includes('policy.json') && line.includes('EACCES') && !line.includes(dir) && !line.includes('\n')))
+			await chmod(join(dir, 'policy.json'), 0o600)
+			const deadline = Date.now() + 8_000
+			while (!secure.policy().alwaysHttps && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100))
+			assert.equal(secure.policy().alwaysHttps, true)
+		} finally {
+			secure.close()
+			console.error = orig
+			await chmod(join(dir, 'policy.json'), 0o600).catch(() => {})
+		}
 	})
 
 	test('a write-only CA key is not replaced when its certificate is gone', async (t) => {

@@ -256,6 +256,7 @@ export function tlsContext({dir = defaultTlsDir(), refreshMs = 10 * 60_000, lazy
 	let policy = {alwaysHttps: false}
 	let seen = ''
 	let poll = null
+	let policyUnreadable = false
 	const load = async () => {
 		if (closed) return
 		try {
@@ -273,8 +274,22 @@ export function tlsContext({dir = defaultTlsDir(), refreshMs = 10 * 60_000, lazy
 		const key = marks.join(':')
 		if (key === seen) return
 		const certChanged = seen && seen.split(':')[0] !== String(marks[0])
+		// chmod does not change mtime. Remembering this stamp before a failed read means
+		// the poll never tries again, and load().then(check) would reject on startup.
+		let next
+		try {
+			next = await readPolicy(dir)
+		} catch (error) {
+			if (!policyUnreadable) {
+				policyUnreadable = true
+				const message = String(error.message ?? error).replace(/, open .*$/, '')
+				console.error('[omarchy-server] policy.json:', message)
+			}
+			return
+		}
+		policyUnreadable = false
 		seen = key
-		policy = await readPolicy(dir)
+		policy = next
 		if (certChanged) await load()
 	}
 	// Made on first use when lazy (nothing to do on a server with no apps yet).
