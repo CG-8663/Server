@@ -34,15 +34,60 @@ function incompleteToolStart(rest, final) {
 	return -1
 }
 
-const paramsToArgs = (body) => {
+const schemaFor = (tools, name) => {
+	for (const t of tools ?? []) {
+		const fn = t?.function ?? t
+		if (fn?.name === name) return fn.parameters?.properties ?? null
+	}
+	return null
+}
+
+const parseParamValue = (raw, prop) => {
+	const types = Array.isArray(prop?.type) ? prop.type : prop?.type ? [prop.type] : null
+	if (types) {
+		if (types.length === 1 && types[0] === 'string') return raw
+		if (types.includes('boolean') && (raw === 'true' || raw === 'false')) return raw === 'true'
+		if (types.includes('null') && raw === 'null') return null
+		if ((types.includes('integer') || types.includes('number')) && raw !== '') {
+			try {
+				const v = JSON.parse(raw)
+				if (typeof v === 'number' && Number.isFinite(v) && (types.includes('number') || Number.isInteger(v))) return v
+			} catch {}
+		}
+		if (types.includes('object') || types.includes('array')) {
+			try {
+				const v = JSON.parse(raw)
+				if (types.includes('array') && Array.isArray(v)) return v
+				if (types.includes('object') && v && typeof v === 'object' && !Array.isArray(v)) return v
+			} catch {}
+		}
+		return raw
+	}
+	// Without a schema for this field, keep plain text as a string and parse JSON values.
+	if (raw === 'true') return true
+	if (raw === 'false') return false
+	if (raw === 'null') return null
+	if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(raw)) {
+		const v = Number(raw)
+		if (Number.isFinite(v)) return v
+	}
+	if ((raw.startsWith('{') && raw.endsWith('}')) || (raw.startsWith('[') && raw.endsWith(']'))) {
+		try {
+			return JSON.parse(raw)
+		} catch {}
+	}
+	return raw
+}
+
+const paramsToArgs = (body, props) => {
 	const args = {}
 	const re = /<parameter=([^\s>]+)>\s*([\s\S]*?)\s*<\/parameter>/g
 	let m
-	while ((m = re.exec(body))) args[m[1]] = m[2]
+	while ((m = re.exec(body))) args[m[1]] = parseParamValue(m[2], props?.[m[1]])
 	return Object.keys(args).length ? JSON.stringify(args) : '{}'
 }
 
-const toolsFromXmlInner = (block) => {
+const toolsFromXmlInner = (block, toolList) => {
 	const tools = []
 	const json = String(block ?? '').trim()
 	if (json.startsWith('{')) {
@@ -59,11 +104,11 @@ const toolsFromXmlInner = (block) => {
 	}
 	const fn = /<function=([^\s>]+)>([\s\S]*?)<\/function>/g
 	let m
-	while ((m = fn.exec(block))) tools.push({type: 'tool', id: callId(), name: m[1], arguments: paramsToArgs(m[2])})
+	while ((m = fn.exec(block))) tools.push({type: 'tool', id: callId(), name: m[1], arguments: paramsToArgs(m[2], schemaFor(toolList, m[1]))})
 	return tools
 }
 
-export function takeXmlTools(buf, final) {
+export function takeXmlTools(buf, final, toolList) {
 	let text = ''
 	const tools = []
 	let rest = String(buf ?? '')
@@ -96,7 +141,7 @@ export function takeXmlTools(buf, final) {
 		}
 		if (at < 0) break
 		text += rest.slice(0, at)
-		tools.push(...toolsFromXmlInner(inner))
+		tools.push(...toolsFromXmlInner(inner, toolList))
 		rest = rest.slice(at + raw.length).replace(/^\s*<\/(?:tool_call|function)>/, '')
 	}
 	rest = rest.replace(/^\s*<\/(?:tool_call|function)>/, '')
@@ -157,7 +202,8 @@ function parseEvent(event, pending) {
 
 
 
-export async function* streamChat({baseUrl, apiKey, model, messages, tools, effort, fetchImpl = fetch, signal}) {
+export async function* streamChat({baseUrl, apiKey, model, messages, tools, toolSchemas, effort, fetchImpl = fetch, signal}) {
+	const schemas = tools?.length ? tools : toolSchemas
 	const url = `${String(baseUrl).replace(/\/+$/, '')}/chat/completions`
 	const res = await fetchImpl(url, {
 		method: 'POST',
@@ -190,7 +236,7 @@ export async function* streamChat({baseUrl, apiKey, model, messages, tools, effo
 	const pump = function* (event, final) {
 		const parsed = parseEvent(event, pending)
 		if (parsed.content) contentBuf += parsed.content
-		const next = takeXmlTools(contentBuf, final)
+		const next = takeXmlTools(contentBuf, final, schemas)
 		contentBuf = next.rest
 		if (next.text) yield {type: 'text', text: next.text}
 		for (const t of next.tools) yield t
@@ -244,7 +290,8 @@ export function responsesInput(messages) {
 export const responsesTools = (tools) =>
 	(tools ?? []).map((t) => ({type: 'function', name: t.function?.name, description: t.function?.description ?? '', parameters: t.function?.parameters ?? {type: 'object', properties: {}}}))
 
-export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', apiKey, accessToken, model, messages, tools, effort, fetchImpl = fetch, signal}) {
+export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', apiKey, accessToken, model, messages, tools, toolSchemas, effort, fetchImpl = fetch, signal}) {
+	const schemas = tools?.length ? tools : toolSchemas
 	const {instructions, input} = responsesInput(messages)
 	const token = accessToken ?? apiKey
 	const body = {model, input, store: false, stream: true}
@@ -284,7 +331,7 @@ export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', a
 		}
 		if (ev?.type === 'response.output_text.delta' && typeof ev.delta === 'string') contentBuf += ev.delta
 		// Some local servers put Qwen-style XML tool calls in the text, as with Chat Completions.
-		const next = takeXmlTools(contentBuf, final)
+		const next = takeXmlTools(contentBuf, final, schemas)
 		contentBuf = next.rest
 		if (next.text) yield {type: 'text', text: next.text}
 		for (const t of next.tools) yield t
@@ -421,7 +468,7 @@ export const forgetTextToolModels = () => textToolModels.clear()
 // with the tools as text, and remembers that for this address and model.
 export async function* withToolFallback(stream, opts) {
 	const id = `${String(opts.baseUrl ?? '').replace(/\/+$/, '')}|${opts.model}`
-	const asText = () => stream({...opts, messages: toolProtocolMessages(opts.messages, opts.tools), tools: []})
+	const asText = () => stream({...opts, messages: toolProtocolMessages(opts.messages, opts.tools), tools: [], toolSchemas: opts.tools})
 	if (!opts.tools?.length) return yield* stream(opts)
 	if (textToolModels.has(id)) return yield* asText()
 	let first = true
