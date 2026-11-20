@@ -47,6 +47,20 @@ test('an install card keeps the app id and drops grant', () => {
 	assert.equal(JSON.stringify(card).includes('containers'), false)
 })
 
+test('an install card keeps the app id when the card is read twice', () => {
+	const once = cardAction({
+		id: 'a',
+		status: 'pending',
+		kind: 'rpc',
+		toolName: 'apps_install',
+		title: 'Install Jellyfin',
+		detail: '',
+		rpc: {path: 'apps.install', input: {appId: 'jellyfin'}},
+	})
+	const twice = cardAction(once)
+	assert.equal(twice.appId, 'jellyfin')
+})
+
 test('the assistant reuses the store review and cancel rejects the install', async () => {
 	const assistant = await readFile(new URL('../web/src/screens/Assistant.tsx', import.meta.url), 'utf8')
 	const store = await readFile(new URL('../web/src/screens/Store.tsx', import.meta.url), 'utf8')
