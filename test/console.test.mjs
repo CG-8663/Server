@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {describe, test} from 'node:test'
 
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, screenshotFilename, wheelButtons} from '../web/src/consoleHelpers.ts'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, wheelButtons} from '../web/src/consoleHelpers.ts'
 
 describe('console helpers', () => {
 	test('#120: reconnects on clean and unclean disconnects unless disposed or superseded', async () => {
@@ -135,5 +135,19 @@ describe('console helpers', () => {
 		assert.match(src, /toFb\(st\.two\.mid,\s*false\)/)
 		assert.doesNotMatch(src, /toFb\(st\.two\.mid\)\s*\?\?\s*cursor\.current/)
 		assert.match(src, /mode === 'touch' && onPicture\(p\)/)
+	})
+
+	test('#367: defaults Super key to meta even on Linux desktop so AltGr keeps working', async () => {
+		assert.equal(resolveSuperKey(null), 'meta')
+		assert.equal(resolveSuperKey(undefined), 'meta')
+		assert.equal(resolveSuperKey(''), 'meta')
+		assert.equal(resolveSuperKey('unknown'), 'meta')
+		assert.equal(resolveSuperKey('altright'), 'altright')
+		assert.equal(resolveSuperKey('ctrlright'), 'ctrlright')
+		assert.equal(resolveSuperKey('meta'), 'meta')
+
+		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
+		assert.match(src, /resolveSuperKey\(/)
+		assert.doesNotMatch(src, /\/Linux\/\.test\(navigator\.userAgent\)/)
 	})
 })

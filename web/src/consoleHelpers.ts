@@ -88,3 +88,10 @@ export function pointToFb(p: Pt, rect: Rect | null, fb: Size | null, {clamp = tr
 		y: Math.round(Math.min(fb.h - 1, Math.max(0, ((p.y - rect.top) / rect.height) * fb.h))),
 	}
 }
+
+export type SuperKey = 'meta' | 'altright' | 'ctrlright'
+
+// Resolve the Super key setting without hijacking Right Alt / AltGr by default.
+export function resolveSuperKey(stored: string | null | undefined): SuperKey {
+	return stored === 'altright' || stored === 'ctrlright' || stored === 'meta' ? stored : 'meta'
+}

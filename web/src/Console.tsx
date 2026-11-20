@@ -14,7 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, screenshotFilename, type Pt} from './consoleHelpers'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, type Pt, type SuperKey} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -36,20 +36,15 @@ const readScale = (): Scale => {
 }
 // Which key on this computer acts as the machine's Super key. Many computers keep the Windows/⌘/
 // Super key for themselves (an Omarchy or Windows desktop never hands Super+Enter to a browser),
-// so a key the browser does receive can stand in for it.
-type SuperKey = 'meta' | 'altright' | 'ctrlright'
+// so Right Alt or Right Ctrl can be chosen in the Keys menu as a stand-in, keeping AltGr working by default.
 const SUPER_CODES: Record<SuperKey, string[]> = {meta: ['MetaLeft', 'MetaRight', 'OSLeft', 'OSRight'], altright: ['AltRight'], ctrlright: ['ControlRight']}
 const SUPER_LABEL: Record<SuperKey, string> = {meta: 'Windows / ⌘ key', altright: 'Right Alt', ctrlright: 'Right Ctrl'}
 function readSuperKey(): SuperKey {
 	try {
-		const v = localStorage.getItem('omarchy-server:console-super')
-		if (v === 'altright' || v === 'ctrlright' || v === 'meta') return v
+		return resolveSuperKey(localStorage.getItem('omarchy-server:console-super'))
 	} catch {
-		/* not saved */
+		return 'meta'
 	}
-	// A Linux desktop (Omarchy, GNOME…) keeps Super for itself, so Right Alt stands in there unless
-	// you choose otherwise. The Super key itself still works whenever the browser receives it.
-	return typeof navigator !== 'undefined' && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) ? 'altright' : 'meta'
 }
 const F = (n: number) => 0xffbd + n // F1 = 0xffbe
 const KEY = {Escape: 0xff1b, Tab: 0xff09, Enter: 0xff0d, Backspace: 0xff08, Up: 0xff52, Down: 0xff54, Left: 0xff51, Right: 0xff53, Ctrl: 0xffe3, Alt: 0xffe9, Super: 0xffeb, Shift: 0xffe1}
