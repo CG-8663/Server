@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
+import {assistantActivity, setAssistantActivity} from '../web/src/assistantActivity.ts'
 import {assistantIconBadge, liveBubbleMark} from '../web/src/assistantLive.ts'
 import {
 	abortAssistantTurn,
@@ -13,6 +14,9 @@ import {
 	keepAssistantWindow,
 	openAssistantView,
 	resetAssistantTurn,
+	setTurnConversationId,
+	setTurnError,
+	setTurnItems,
 } from '../web/src/assistantTurn.ts'
 
 test('an empty live bubble shows a spinner; tokens switch it to an ellipsis', () => {
@@ -89,4 +93,32 @@ test('finishing a superseded turn does not count as unread', () => {
 	finishAssistantTurn(second)
 	assert.equal(assistantTurn().streaming, false)
 	assert.equal(assistantTurn().unread, 1)
+})
+
+test('signing out clears the previous person\'s assistant chat', () => {
+	resetAssistantTurn()
+	setTurnItems([{id: 'prev', kind: 'text', role: 'user', content: 'hello from the last person'}])
+	setTurnConversationId('conv-previous')
+	setTurnError('the last person had no key')
+	closeAssistantView()
+	const done = new AbortController()
+	beginAssistantTurn(done)
+	finishAssistantTurn(done)
+	const live = new AbortController()
+	beginAssistantTurn(live)
+	setAssistantActivity({phase: 'working', pending: 2, composing: true, successAt: 9, open: true})
+	resetAssistantTurn()
+	assert.equal(live.signal.aborted, true)
+	const turn = assistantTurn()
+	assert.equal(turn.items, null)
+	assert.equal(turn.conversationId, undefined)
+	assert.equal(turn.unread, 0)
+	assert.equal(turn.streaming, false)
+	assert.equal(turn.error, null)
+	const activity = assistantActivity()
+	assert.equal(activity.phase, 'idle')
+	assert.equal(activity.pending, 0)
+	assert.equal(activity.open, false)
+	assert.equal(activity.composing, false)
+	assert.equal(activity.successAt, 0)
 })

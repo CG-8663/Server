@@ -3,7 +3,7 @@
 import {useSyncExternalStore} from 'react'
 
 // Node's test loader needs the .ts suffix; web/tsconfig allowImportingTsExtensions matches that.
-import {setAssistantActivity} from './assistantActivity.ts'
+import {resetAssistantActivity, setAssistantActivity} from './assistantActivity.ts'
 import type {AssistantItem} from './assistant.ts'
 
 export type AssistantTurn = {
@@ -45,8 +45,10 @@ export function assistantTurn() {
 }
 
 export function resetAssistantTurn() {
+	controller?.abort()
 	controller = null
-	state = empty()
+	emit(empty())
+	resetAssistantActivity()
 }
 
 function syncPhase() {
