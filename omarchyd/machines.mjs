@@ -626,15 +626,53 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return true
 	}
 
+	// domainStates() swallows a virsh failure so the machine list still loads. Delete must not
+	// treat that empty map as "already off" and remove a disk that is still in use.
+	async function readDomainState(m) {
+		let text
+		try {
+			text = await virsh('list', '--all')
+		} catch {
+			throw new RpcError('BAD_GATEWAY', `${m.name} was not deleted because its state could not be read`)
+		}
+		const name = domain(m.id)
+		for (const line of text.split('\n').slice(2)) {
+			const hit = /^\s*(\S+)\s+(\S+)\s+(.+?)\s*$/.exec(line)
+			if (hit && hit[2] === name) return hit[3]
+		}
+		return null
+	}
+	// Older libvirt rejects --nvram or --managed-save. Try plainer forms before giving up.
+	async function undefineDomain(m) {
+		const name = domain(m.id)
+		const attempts = [
+			['undefine', name, '--nvram', '--managed-save'],
+			['undefine', name, '--nvram'],
+			['undefine', name],
+		]
+		for (const args of attempts) {
+			try {
+				await virsh(...args)
+				return
+			} catch {}
+		}
+		throw new RpcError('BAD_GATEWAY', `${m.name} was not deleted because it could not be removed from libvirt`)
+	}
+
 	async function uninstall(input) {
 		await ready
 		const m = find(input?.id)
 		if (busy.get(m.id)?.state === 'installing') throw new RpcError('CONFLICT', `${m.name} is still being set up`)
 		if (m.options?.protection && !input?.force) throw new RpcError('PRECONDITION_FAILED', `${m.name} is protected. Turn off Protection in its options to delete it.`)
-		const states = await domainStates()
-		const live = states.get(domain(m.id))
-		if (live && live !== 'shut off') await virsh('destroy', domain(m.id)).catch(() => {})
-		if (live) await virsh('undefine', domain(m.id), '--nvram', '--managed-save').catch(() => virsh('undefine', domain(m.id), '--nvram').catch(() => virsh('undefine', domain(m.id))))
+		const live = await readDomainState(m)
+		if (live && live !== 'shut off') {
+			try {
+				await virsh('destroy', domain(m.id))
+			} catch {
+				throw new RpcError('BAD_GATEWAY', `${m.name} was not deleted because it could not be shut down`)
+			}
+		}
+		if (live) await undefineDomain(m)
 		await rm(join(vmsDir, m.id), {recursive: true, force: true})
 		machines = machines.filter((x) => x.id !== m.id)
 		await save()
