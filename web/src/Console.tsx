@@ -14,7 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
-import {consoleDisconnectAction} from './consoleHelpers'
+import {BTN, consoleDisconnectAction, wheelButtons} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -53,7 +53,6 @@ function readSuperKey(): SuperKey {
 }
 const F = (n: number) => 0xffbd + n // F1 = 0xffbe
 const KEY = {Escape: 0xff1b, Tab: 0xff09, Enter: 0xff0d, Backspace: 0xff08, Up: 0xff52, Down: 0xff54, Left: 0xff51, Right: 0xff53, Ctrl: 0xffe3, Alt: 0xffe9, Super: 0xffeb, Shift: 0xffe1}
-const BTN = {left: 1, middle: 2, right: 4, wheelUp: 8, wheelDown: 16, wheelLeft: 32, wheelRight: 64}
 const MIN_ZOOM = 1
 const MAX_ZOOM = 5
 const LONG_PRESS_MS = 450
@@ -973,7 +972,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			return
 		}
 		const fb = toFb(p)
-		if (fb) wheel(fb, e.deltaY > 0 ? BTN.wheelDown : BTN.wheelUp)
+		if (fb) for (const b of wheelButtons(e.deltaX, e.deltaY)) wheel(fb, b)
 	}
 
 	// ---- keyboard ----------------------------------------------------------------
