@@ -506,6 +506,11 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			y: Math.round(Math.min(fb.h - 1, Math.max(0, ((p.y - r.top) / r.height) * fb.h))),
 		}
 	}
+	// Whether a point on screen is on the remote picture (not the bars around it).
+	const onPicture = (p: Pt) => {
+		const r = canvasRect()
+		return !!r && p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom
+	}
 	const toScreen = (p: Pt): Pt | null => {
 		const fb = fbSize()
 		const r = canvasRect()
@@ -524,6 +529,25 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [])
 
+	// Where the remote picture sits in the screen area at 100% (it's fitted and centered, so a desktop
+	// that isn't the phone's shape has bars around it). Measured from the canvas as it's shown now.
+	const pictureAt100 = () => {
+		const s = screenRef.current
+		const canvas = s?.querySelector('canvas')
+		if (!s || !canvas) return null
+		const sr = s.getBoundingClientRect()
+		const cr = canvas.getBoundingClientRect()
+		const v = view.current
+		if (!cr.width || !cr.height || !v.z) return null
+		return {x: (cr.left - sr.left - v.x) / v.z, y: (cr.top - sr.top - v.y) / v.z, w: cr.width / v.z, h: cr.height / v.z}
+	}
+	// How far the view can move on one axis: a picture smaller than the screen can slide anywhere
+	// inside it (up and out of the keyboard's way, say), a bigger one pans to its edges (issue #91).
+	const span = (size: number, at: number, len: number, z: number) => {
+		const a = -at * z
+		const b = size - (at + len) * z
+		return [Math.min(a, b), Math.max(a, b)]
+	}
 	const applyView = (v: View, animate = false) => {
 		const s = screenRef.current
 		const stage = stageRef.current
@@ -531,8 +555,11 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		const w = s.clientWidth
 		const h = s.clientHeight
 		const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v.z))
-		const x = Math.min(0, Math.max(w - w * z, v.x))
-		const y = Math.min(0, Math.max(h - h * z, v.y))
+		const pic = pictureAt100() ?? {x: 0, y: 0, w, h}
+		const [x0, x1] = span(w, pic.x, pic.w, z)
+		const [y0, y1] = span(h, pic.y, pic.h, z)
+		const x = Math.min(x1, Math.max(x0, v.x))
+		const y = Math.min(y1, Math.max(y0, v.y))
 		view.current = {z, x, y}
 		stage.style.transition = animate ? 'transform .28s cubic-bezier(.2,.8,.2,1)' : 'none'
 		stage.style.transform = `translate(${x}px, ${y}px) scale(${z})`
@@ -561,6 +588,15 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		haptic(5)
 		applyView({z: 1, x: 0, y: 0}, true)
 	}
+	// Fill the screen with the picture (no bars), centered; drag to see the rest.
+	const fill = () => {
+		haptic(5)
+		const s = screenRef.current
+		const pic = pictureAt100()
+		if (!s || !pic) return
+		const z = Math.min(MAX_ZOOM, Math.max(s.clientWidth / pic.w, s.clientHeight / pic.h))
+		applyView({z, x: s.clientWidth / 2 - (pic.x + pic.w / 2) * z, y: s.clientHeight / 2 - (pic.y + pic.h / 2) * z}, true)
+	}
 	// Refit whenever the screen area changes size (rotation, keyboard, window), not only on window resize.
 	useEffect(() => {
 		const el = screenRef.current
@@ -572,44 +608,57 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	}, [])
 	// Phones: keep the console exactly the size of the visible area, so the on-screen keyboard
 	// shrinks the picture instead of covering it, and nothing is left behind when it closes.
-	// iOS doesn't always send a resize when the keyboard goes away, so check again while it animates.
+	// Always sized to the visual viewport (issue #93): guessing whether it's "the whole window" from
+	// innerHeight is unreliable on iOS and left a bar. iOS doesn't always send a resize when the
+	// keyboard or the address bar moves, so check again while they animate, and refit the remote
+	// picture to the new size each time (noVNC only notices a change of its own element's size).
 	useEffect(() => {
 		if (deskUi || embedded) return
 		const vv = window.visualViewport
 		const root = rootRef.current
 		if (!vv || !root) return
 		let timers: number[] = []
+		let last = ''
 		const sync = () => {
-			const full = Math.abs(window.innerHeight - vv.height) < 2 && vv.offsetTop < 1
-			if (full) {
-				root.style.top = ''
-				root.style.height = ''
-				if (window.scrollY !== 0 || document.documentElement.scrollTop !== 0) window.scrollTo(0, 0)
-			} else {
-				root.style.top = `${vv.offsetTop}px`
-				root.style.height = `${vv.height}px`
-			}
+			const box = `${vv.offsetTop},${vv.offsetLeft},${vv.width},${vv.height}`
+			root.style.top = `${vv.offsetTop}px`
+			root.style.left = `${vv.offsetLeft}px`
+			root.style.width = `${vv.width}px`
+			root.style.height = `${vv.height}px`
+			root.style.bottom = 'auto'
+			root.style.right = 'auto'
+			if (vv.offsetTop < 1 && (window.scrollY !== 0 || document.documentElement.scrollTop !== 0)) window.scrollTo(0, 0)
+			if (box === last) return
+			last = box
+			requestAnimationFrame(() => {
+				// noVNC's own resize check can think nothing changed; refit directly.
+				const r = rfbRef.current as any
+				r?._updateClip?.()
+				r?._updateScale?.()
+				applyView(view.current)
+			})
 		}
 		const settle = () => {
 			sync()
 			timers.forEach(window.clearTimeout)
-			timers = [60, 180, 350, 600, 1000].map((ms) => window.setTimeout(sync, ms))
+			timers = [60, 180, 350, 600, 1000, 1600].map((ms) => window.setTimeout(sync, ms))
 		}
 		vv.addEventListener('resize', settle)
 		vv.addEventListener('scroll', sync)
 		window.addEventListener('orientationchange', settle)
+		window.addEventListener('resize', settle)
 		root.addEventListener('focusin', settle)
 		root.addEventListener('focusout', settle)
-		sync()
+		settle()
 		return () => {
 			timers.forEach(window.clearTimeout)
 			vv.removeEventListener('resize', settle)
 			vv.removeEventListener('scroll', sync)
 			window.removeEventListener('orientationchange', settle)
+			window.removeEventListener('resize', settle)
 			root.removeEventListener('focusin', settle)
 			root.removeEventListener('focusout', settle)
-			root.style.top = ''
-			root.style.height = ''
+			for (const k of ['top', 'left', 'width', 'height', 'bottom', 'right'] as const) root.style[k] = ''
 			window.scrollTo(0, 0)
 			settleViewport()
 		}
@@ -694,6 +743,9 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	}
 
 	const onPointerDown = (e: React.PointerEvent) => {
+		// With the on-screen keyboard up, touching the desktop mustn't take focus from it (that closes
+		// the keyboard): the same as the dock's keys (issue #92).
+		if (keyboardOpen && e.pointerType !== 'mouse') e.preventDefault()
 		if (state !== 'connected') return
 		const st = g.current
 		;(e.target as Element).setPointerCapture?.(e.pointerId)
@@ -783,7 +835,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 							send(fb, 0)
 							press(fb, BTN.left)
 						}
-					} else if (view.current.z > 1.01) st.panning = true
+					} else if (view.current.z > 1.01 || !onPicture(st.start)) st.panning = true
 					else {
 						st.dragging = true
 						const fb = toFb(st.start)
@@ -899,7 +951,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				}
 				st.kind = 'none'
 				// Snap back if the pinch left us just above 100%.
-				if (view.current.z < 1.05) applyView({z: 1, x: 0, y: 0}, true)
+				if (view.current.z < 1.05) applyView({...view.current, z: 1}, true)
 			}
 		}
 		if (st.pointers.size === 0) st.kind = 'none'
@@ -1183,7 +1235,13 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				</div>
 
 				{live && !deskUi && (
-					<div className="console-float right" onPointerDown={(e) => e.stopPropagation()}>
+					<div
+						className="console-float right"
+						onPointerDown={(e) => {
+							e.stopPropagation()
+							if (keyboardOpen) e.preventDefault()
+						}}
+					>
 						<button aria-label="Zoom out" onClick={() => zoomBy(1 / 1.5)} disabled={zoomLabel <= 100}>
 							<Icon name="zoom-out" size={18} />
 						</button>
@@ -1192,6 +1250,9 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 						</button>
 						<button aria-label="Zoom in" onClick={() => zoomBy(1.5)} disabled={zoomLabel >= MAX_ZOOM * 100}>
 							<Icon name="zoom-in" size={18} />
+						</button>
+						<button aria-label="Fill the screen" title="Fill the screen" onClick={fill}>
+							<Icon name="fullscreen" size={18} />
 						</button>
 					</div>
 				)}

@@ -237,7 +237,12 @@ export function tlsContext({dir = defaultTlsDir(), refreshMs = 10 * 60_000, lazy
 // http.Server, with its own request and upgrade handlers). Requests over TLS have
 // req.socket.encrypted set. Returns the listening net.Server.
 export function dualProtocolServer(server, getContext) {
+	// Every connection, so a restart can end them (net.Server.close() waits for all of them to close,
+	// and an open WebSocket never does).
+	const sockets = new Set()
 	const front = net.createServer((socket) => {
+		sockets.add(socket)
+		socket.once('close', () => sockets.delete(socket))
 		socket.once('error', () => socket.destroy())
 		socket.once('data', (first) => {
 			socket.pause()
@@ -279,5 +284,8 @@ export function dualProtocolServer(server, getContext) {
 		})
 	})
 	front.on('close', () => server.close())
+	front.destroyConnections = () => {
+		for (const s of sockets) s.destroy()
+	}
 	return front
 }

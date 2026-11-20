@@ -57,3 +57,35 @@ test('piped into bash, a package step that reads its input does not skip the res
 		await rm(dir, {recursive: true, force: true})
 	}
 })
+
+test('with no terminal, the Omarchy system update isn’t started (it would wait forever to be confirmed)', {skip, timeout: 30_000}, async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'install-notty-'))
+	try {
+		const bin = join(dir, 'bin')
+		const home = join(dir, 'home')
+		await mkdir(bin, {recursive: true})
+		await mkdir(home, {recursive: true})
+		const stub = async (name, body) => {
+			await writeFile(join(bin, name), `#!/bin/bash\n${body}\n`)
+			await chmod(join(bin, name), 0o755)
+		}
+		await stub('pacman', 'case "$1" in -Qi) exit 1;; -Q) echo "samba 1"; exit 0;; esac\necho "PACMAN $*"')
+		await stub('sudo', 'exec "$@"')
+		await stub('id', '[ "$1" = -u ] && { echo 1000; exit; }; exec /usr/bin/id "$@"')
+		await stub('omarchy', 'echo "OMARCHY $*"; sleep 60')
+		const out = spawnSync('bash', [], {
+			input: script,
+			encoding: 'utf8',
+			env: {PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, USER: 'tester'},
+			detached: true,
+			timeout: 20_000,
+		})
+		const text = (out.stdout + out.stderr).replace(/\x1b\[[0-9;]*m/g, '')
+		assert.match(text, /needs a terminal to confirm in\. Run this from a terminal \(ssh -t\)/)
+		assert.doesNotMatch(text, /OMARCHY update/)
+		assert.notEqual(out.status, 0)
+		assert.equal(out.signal, null, 'it stopped by itself, not by the test’s timeout')
+	} finally {
+		await rm(dir, {recursive: true, force: true})
+	}
+})

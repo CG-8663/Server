@@ -1,4 +1,5 @@
 import {useEffect, useRef, useState} from 'react'
+import {NEEDS_APP_ADDRESSES, useAppTab} from './appTab'
 import {useQuery} from '@tanstack/react-query'
 
 import {askApp, explainProbe, openApp, webStatus} from './openApp'
@@ -18,6 +19,7 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	const action = useAction()
 	const confirm = useConfirm()
 	const toast = useToast()
+	const appTab = useAppTab()
 	const [logsOpen, setLogsOpen] = useState(false)
 	const [tab, setTab] = useState<'overview' | 'usb'>('overview')
 	const [waiting, setWaiting] = useState<number | null>(null)
@@ -70,11 +72,17 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	}
 	const copy = async () => {
 		if (!url) return
+		// The address that works from here: the app's own address behind a proxy (see appTab.ts).
+		const where = await appTab.address(app).catch((e: Error) => (toast(e.message, true), null))
+		if (!where) {
+			if (appTab.access === 'none') toast(NEEDS_APP_ADDRESSES, true)
+			return
+		}
 		try {
-			await navigator.clipboard.writeText(url)
+			await navigator.clipboard.writeText(where)
 			toast('Address copied')
 		} catch {
-			toast(url)
+			toast(where)
 		}
 	}
 

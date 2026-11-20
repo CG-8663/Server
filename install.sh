@@ -71,6 +71,12 @@ if [ ${#need[@]} -gt 0 ] || ! samba_in_step; then
 		say "Samba's parts are different versions (a partial update); updating the system to bring them in step (sudo needed)"
 	fi
 	if command -v omarchy >/dev/null 2>&1; then
+		# Over ssh, Omarchy's own scripts miss OMARCHY_PATH (only the desktop session sets it), and the
+		# update stops with "OMARCHY_PATH: unbound variable".
+		if [ -z "${OMARCHY_PATH:-}" ] && [ -d /usr/share/omarchy ]; then export OMARCHY_PATH=/usr/share/omarchy; fi
+		# The update asks you to confirm, so it needs a terminal: without one (ssh host '…', automation)
+		# it would wait forever.
+		[ -t 0 ] || die "The system update needs a terminal to confirm in. Run this from a terminal (ssh -t), or install ${need[*]:-the missing packages} first."
 		omarchy update || die "The system update didn't finish. Run 'omarchy update' (or Omarchy menu → Update), then run this installer again."
 		[ ${#need[@]} -eq 0 ] || sudo pacman -S --needed --noconfirm "${need[@]}"
 	else
@@ -199,6 +205,9 @@ if [ ! -f "$REG" ]; then
 	printf '# Short image names (e.g. nginx) come from Docker Hub, as app stores expect.\nunqualified-search-registries = ["docker.io"]\n' >"$REG"
 fi
 systemctl --user enable --now podman.socket >/dev/null
+# Rootless Podman has no daemon to restart apps after a reboot ("restart: unless-stopped"): this unit
+# starts them at boot (linger is on, so no sign-in is needed).
+systemctl --user enable podman-restart.service >/dev/null 2>&1 || true
 
 # 2c. The storage helper: the one part that runs as root, allowed by a single sudoers rule.
 #     It's copied root-owned so nothing running as you can change it.
@@ -269,6 +278,7 @@ After=network-online.target
 ExecStart=$NODE $APP/omarchyd/cli.mjs serve --port 2021 --web-port $PORT --data $BASE/omarchyd
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=10
 
 [Install]
 WantedBy=default.target
@@ -283,6 +293,7 @@ Wants=omarchyd.service
 ExecStart=$NODE $APP/server/cli.mjs --port $PORT --data $BASE/web --backend http://127.0.0.1:2021
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=10
 NoNewPrivileges=yes
 
 [Install]

@@ -510,6 +510,32 @@ export function readinessOf({probe, container = 'running', runningForMs = Infini
 	return 'unreachable'
 }
 
+// Whether Podman itself works (issue #88), not just whether its socket file is there. The common way
+// it breaks: its storage was made for another user or home folder (a renamed user, a restored backup,
+// a copied VM), so it refuses to start, and apps only say "Cannot connect to the Docker daemon".
+export async function podmanHealth(run, env, home) {
+	const storageHelp = (where) =>
+		`Podman’s storage still belongs to ${where}, not to ${home}, so it won’t start (this happens after renaming the user or restoring another machine’s home folder). Move ~/.local/share/containers aside, or run “podman system reset”, then reinstall your apps.`
+	try {
+		const res = await run('podman', ['info', '--format', 'json'], {env, timeout: 30_000})
+		let info = null
+		try {
+			info = JSON.parse(typeof res === 'string' ? res : (res?.stdout ?? ''))
+		} catch {
+			/* nothing to compare: it ran, so it works */
+		}
+		const root = String(info?.store?.graphRoot ?? '')
+		if (root && root.startsWith('/home/') && !root.startsWith(home + '/')) return {ok: false, message: storageHelp(root.replace(/\/\.local\/share\/containers\/storage$/, ''))}
+		return {ok: true}
+	} catch (e) {
+		const text = `${e.stderr ?? ''} ${e.message ?? ''}`
+		const other = /(\/home\/[^/\s"']+)\/\.local\/share\/containers/.exec(text)?.[1]
+		if (e.code === 'ENOENT') return {ok: false, message: 'Apps need Podman. Run the Omarchy Server installer again to add it.'}
+		if ((other && other !== home) || /does not match our (static|graph|run|tmp) dir/i.test(text)) return {ok: false, message: storageHelp(other && other !== home ? other : 'another user')}
+		return {ok: false, message: `Podman didn’t start: ${text.replace(/^\s*(podman:\s*)?(Error:\s*)?/i, '').trim().split('\n').slice(-1)[0].slice(0, 300)}`}
+	}
+}
+
 export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000, systemApps = null}) {
 	const base = join(dataDir, 'apps')
 	const storesDir = join(base, 'stores')
@@ -529,6 +555,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	let registryCache = null
 	let registryWarm = null
 
+	// Apps come back after a reboot only if Podman's own restart unit is on (it's off by default, and
+	// rootless Podman has no daemon to do it). It's a user unit, so this needs no sudo: servers set up
+	// before the installer did it get it here too (issue #89).
+	run('systemctl', ['--user', 'enable', 'podman-restart.service'], {timeout: 20_000}).catch(() => {})
 	const ready = (async () => {
 		await mkdir(storesDir, {recursive: true, mode: 0o700})
 		await mkdir(installedDir, {recursive: true, mode: 0o700})
@@ -1024,7 +1054,16 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const files = ['-f', join(appDir(app.id), 'compose.omarchy.yml')]
 		const extra = usbFile(app.id)
 		if (await exists(extra)) files.push('-f', extra)
-		return run('docker-compose', ['-p', project(app.id), ...files, ...args], {env: composeEnv(app), cwd: appDir(app.id)})
+		try {
+			return await run('docker-compose', ['-p', project(app.id), ...files, ...args], {env: composeEnv(app), cwd: appDir(app.id)})
+		} catch (e) {
+			// "Cannot connect to the Docker daemon" means Podman itself isn't answering: say why instead.
+			if (/Cannot connect to the Docker daemon|podman\.sock.*(refused|no such file)/i.test(String(e.message))) {
+				const h = await engineHealth({fresh: true})
+				if (!h.ok) throw new RpcError('PRECONDITION_FAILED', h.message)
+			}
+			throw e
+		}
 	}
 
 	// Bind-mount sources that don't exist yet are folders the app expects to own (Podman won't
@@ -1156,6 +1195,14 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const ok = await run('docker-compose', ['version'], {env: engineEnv}).then(() => true, () => false)
 		const sock = engineEnv.DOCKER_HOST.replace(/^unix:\/\//, '')
 		return ok && (await exists(sock))
+	}
+
+	// Whether Podman itself works, not just whether its socket file is there (see podmanHealth).
+	let health = null
+	async function engineHealth({fresh = false} = {}) {
+		if (!fresh && health && Date.now() - health.at < 30_000) return health
+		health = {...(await podmanHealth(run, engineEnv, home)), at: Date.now()}
+		return health
 	}
 
 	async function liveState(a) {
@@ -1463,7 +1510,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 		if (state.apps.some((a) => a.id === id)) throw new RpcError('CONFLICT', 'That app is already installed')
 		const plan = await installPlan(id)
-		if (plan.some((src) => !src.system) && !(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
+		if (plan.some((src) => !src.system)) {
+			if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
+			const h = await engineHealth({fresh: true})
+			if (!h.ok) throw new RpcError('PRECONDITION_FAILED', h.message)
+		}
 		if (plan.some((src) => src.system) && !systemApps) throw new RpcError('PRECONDITION_FAILED', 'This server can’t install system apps')
 		// Check every port first, so nothing starts installing if one of them can't.
 		const ports = new Set()
