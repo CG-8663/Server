@@ -39,8 +39,10 @@ export async function createStore(dataDir) {
 		dataDir,
 		getConfig: () => ({...config}),
 		async setConfig(patch) {
-			config = {...config, ...patch}
-			await writeJson(configFile, config)
+			const next = {...config, ...patch}
+			// Publish only after the file is on disk. A failed write leaves memory as it was and still throws.
+			await writeJson(configFile, next)
+			config = next
 			return {...config}
 		},
 		getSession: (cookieId) => (cookieId ? sessions[hashId(cookieId)] : undefined),

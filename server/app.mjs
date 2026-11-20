@@ -487,6 +487,15 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		return res.status(500).json({error: {code: 'INTERNAL', message: 'Something went wrong in Omarchy Server'}})
 	}
 
+	// Express 4 does not turn a rejected async handler into a response, so a failed settings save
+	// has to be caught here or the process exits.
+	const catchSave = (handler) => (req, res) => {
+		Promise.resolve(handler(req, res)).catch((error) => {
+			console.error('[omarchy-server]', error)
+			if (!res.headersSent) res.status(500).json({error: {code: 'INTERNAL', message: 'Couldn’t save that'}})
+		})
+	}
+
 	// Secure when asked for, or when the request arrived over HTTPS (e.g. through a Cloudflare
 	// Tunnel or reverse proxy on this machine, which is the only proxy we trust headers from).
 	const setCookie = (res, value, maxAge) =>
@@ -830,7 +839,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const session = requireSession(req, res)
 		if (session) res.json({prefs: prefsOf(session.accountId)})
 	})
-	api.post('/prefs', async (req, res) => {
+	api.post('/prefs', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
 		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook} = req.body ?? {}
@@ -865,7 +874,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			patch.customBrandHsl = customBrandHsl
 		}
 		res.json({prefs: await savePrefs(session.accountId, patch)})
-	})
+	}))
 
 	// The desktop's own layout and look (wallpaper, style, dock, icons), per account, so every
 	// browser you sign in on shows the same desktop. The browser checks the contents when it reads them.
@@ -873,7 +882,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const session = requireSession(req, res)
 		if (session) res.json({desktop: store.getConfig().desktops?.[accountKey(session.accountId)] ?? null})
 	})
-	api.post('/desktop', async (req, res) => {
+	api.post('/desktop', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
 		const config = req.body?.config
@@ -888,10 +897,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		all[key] = {config: JSON.parse(text), rev: prevRev + 1, updatedAt: Date.now()}
 		await store.setConfig({desktops: all})
 		res.json({desktop: all[key]})
-	})
+	}))
 
 	// Custom background: the phone resizes the photo to a JPEG before sending it.
-	api.post('/background', express.raw({type: 'image/jpeg', limit: '8mb'}), async (req, res) => {
+	api.post('/background', express.raw({type: 'image/jpeg', limit: '8mb'}), catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
 		const body = req.body
@@ -901,7 +910,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		await writeFile(backgroundFile(session.accountId), body, {mode: 0o600})
 		const prefs = await savePrefs(session.accountId, {backgroundVersion: Date.now()})
 		res.json({prefs})
-	})
+	}))
 	api.get('/background', async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
@@ -912,7 +921,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			res.status(404).end()
 		}
 	})
-	api.delete('/background', async (req, res) => {
+	api.delete('/background', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
 		await rm(backgroundFile(session.accountId), {force: true})
@@ -923,7 +932,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			...(current.theme === 'custom' ? {theme: 'horizon'} : {}),
 		})
 		res.json({prefs})
-	})
+	}))
 
 	// ---- VM console ------------------------------------------------------------
 	async function openConsoleSession(backend, credentials, userAgent, accessToken) {

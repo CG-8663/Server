@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import {mkdtemp, readFile, stat} from 'node:fs/promises'
+import {chmod, mkdtemp, readdir, readFile, stat} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
@@ -334,6 +334,79 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal((await fetch(`${touch.base}/api/background`)).status, 401)
 		const del = await touch.req('DELETE', '/api/background')
 		assert.equal(del.body.prefs.backgroundVersion, null)
+	})
+
+	test('a failed settings save returns an error and keeps what was saved', async () => {
+		const fresh = await startTouch({backendUrl: fake.url})
+		const origError = console.error
+		const logged = []
+		console.error = (...args) => logged.push(args.map((a) => (a instanceof Error ? (a.stack ?? a.message) : String(a))).join(' '))
+		const bgDir = () => join(fresh.dir, 'backgrounds')
+		try {
+			assert.equal((await fresh.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})).status, 200)
+			assert.equal((await fresh.req('POST', '/api/prefs', {theme: 'tokyo', accent: 'teal'})).status, 200)
+			const desktop = {wallpaper: 'valley', style: 'graphite'}
+			assert.equal((await fresh.req('POST', '/api/desktop', {config: desktop})).status, 200)
+			const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 1)])
+			const send = (body) => fetch(`${fresh.base}/api/background`, {method: 'POST', headers: {'content-type': 'image/jpeg', 'x-omarchy-server': '1', cookie: fresh.getCookie()}, body})
+			assert.equal((await send(jpeg)).status, 200)
+			const prefs = (await fresh.req('GET', '/api/prefs')).body.prefs
+			const savedDesktop = (await fresh.req('GET', '/api/desktop')).body.desktop
+			const [bgName] = await readdir(bgDir())
+			const bgPath = join(bgDir(), bgName)
+			const bgBefore = await readFile(bgPath)
+			const diskBefore = await readFile(join(fresh.dir, 'config.json'), 'utf8')
+			// The data directory cannot be written, so the next save fails inside the real write.
+			await chmod(fresh.dir, 0o555)
+			await chmod(bgDir(), 0o555)
+			await chmod(bgPath, 0o444)
+			const refused = {error: {code: 'INTERNAL', message: 'Couldn’t save that'}}
+			const leak = 'LeakCheckName'
+			const marker = 'IMGLEAKMARKER'
+			let r = await fresh.req('POST', '/api/prefs', {theme: 'mocha', assistantLook: {character: 'patch', name: leak}})
+			assert.equal(r.status, 500)
+			assert.deepEqual(r.body, refused)
+			assert.equal(JSON.stringify(r.body).includes(leak), false)
+			assert.equal(JSON.stringify(r.body).includes(fresh.dir), false)
+			assert.equal((await fresh.req('POST', '/api/prefs', {theme: '<script>'})).status, 400)
+			r = await fresh.req('POST', '/api/desktop', {config: {wallpaper: 'dunes', leak}})
+			assert.equal(r.status, 500)
+			assert.deepEqual(r.body, refused)
+			assert.equal((await fresh.req('POST', '/api/desktop', {config: [1]})).status, 400)
+			const up = await send(Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(marker)]))
+			assert.equal(up.status, 500)
+			assert.deepEqual(await up.json(), refused)
+			const removed = await fresh.req('DELETE', '/api/background')
+			assert.equal(removed.status, 500)
+			assert.deepEqual(removed.body, refused)
+			const anon = await fetch(`${fresh.base}/api/prefs`, {method: 'POST', headers: {'content-type': 'application/json', 'x-omarchy-server': '1'}, body: JSON.stringify({theme: 'mocha'})})
+			assert.equal(anon.status, 401)
+			assert.deepEqual((await fresh.req('GET', '/api/prefs')).body.prefs, prefs)
+			assert.deepEqual((await fresh.req('GET', '/api/desktop')).body.desktop, savedDesktop)
+			const gotBg = await fetch(`${fresh.base}/api/background`, {headers: {cookie: fresh.getCookie()}})
+			assert.equal(gotBg.status, 200)
+			assert.deepEqual(Buffer.from(await gotBg.arrayBuffer()), bgBefore)
+			await chmod(fresh.dir, 0o700)
+			await chmod(bgDir(), 0o700)
+			await chmod(bgPath, 0o600)
+			assert.equal(await readFile(join(fresh.dir, 'config.json'), 'utf8'), diskBefore)
+			const text = logged.join('\n')
+			assert.ok(logged.length >= 4)
+			assert.match(text, /EACCES/)
+			assert.equal(text.includes(leak), false)
+			assert.equal(text.includes(marker), false)
+			// The process is still up, and a later save still sticks.
+			r = await fresh.req('POST', '/api/prefs', {accent: 'pink'})
+			assert.equal(r.status, 200)
+			assert.equal(r.body.prefs.theme, 'tokyo')
+			assert.equal(r.body.prefs.accent, 'pink')
+			assert.equal((await fresh.req('GET', '/api/prefs')).body.prefs.accent, 'pink')
+		} finally {
+			console.error = origError
+			await chmod(fresh.dir, 0o700).catch(() => {})
+			await chmod(bgDir(), 0o700).catch(() => {})
+			await fresh.close()
+		}
 	})
 
 	test('terminal: bridges a shell (and an app shell) with a terminal ticket', async () => {
