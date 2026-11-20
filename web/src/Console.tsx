@@ -14,7 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, readConsoleMetrics, screenshotFilename} from './consoleHelpers'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, screenshotFilename, type Pt} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -77,7 +77,6 @@ function sendChar(r: KeySender, ch: string, shiftHeld = false) {
 type State = 'connecting' | 'connected' | 'lost' | 'superseded' | 'error'
 type Mode = 'touch' | 'mouse'
 type View = {z: number; x: number; y: number}
-type Pt = {x: number; y: number}
 
 const HINT: Record<Mode, string> = {
 	touch: 'Touch: tap to click · hold to right-click · pinch to zoom',
@@ -506,15 +505,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	const canvasRect = () => canvasHost.current?.querySelector('canvas')?.getBoundingClientRect() ?? null
 	// Screen (client) point -> framebuffer pixel. Works at any zoom because the
 	// canvas's on-screen box already includes our transform.
-	const toFb = (p: Pt): Pt | null => {
-		const fb = fbSize()
-		const r = canvasRect()
-		if (!fb || !r || !r.width) return null
-		return {
-			x: Math.round(Math.min(fb.w - 1, Math.max(0, ((p.x - r.left) / r.width) * fb.w))),
-			y: Math.round(Math.min(fb.h - 1, Math.max(0, ((p.y - r.top) / r.height) * fb.h))),
-		}
-	}
+	const toFb = (p: Pt, clamp = true): Pt | null => pointToFb(p, canvasRect(), fbSize(), {clamp})
 	// Whether a point on screen is on the remote picture (not the bars around it).
 	const onPicture = (p: Pt) => {
 		const r = canvasRect()
@@ -757,23 +748,24 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		if (keyboardOpen && e.pointerType !== 'mouse') e.preventDefault()
 		if (state !== 'connected') return
 		const st = g.current
-		;(e.target as Element).setPointerCapture?.(e.pointerId)
 		const p = {x: e.clientX, y: e.clientY}
 
 		// A real mouse (desktop) maps straight through.
 		if (e.pointerType === 'mouse') {
-			st.kind = 'mouse'
 			// On a desktop, clicking the screen gives the VM your physical keyboard
 			// (noVNC's own handler: every key and shortcut, modifiers included).
 			if (embedded) window.setTimeout(() => rfbRef.current?.focus(), 0)
-			const fb = toFb(p)
+			const fb = toFb(p, false)
 			if (!fb) return
+			st.kind = 'mouse'
+			;(e.target as Element).setPointerCapture?.(e.pointerId)
 			cursor.current = fb
 			const button = e.button === 2 ? BTN.right : e.button === 1 ? BTN.middle : BTN.left
 			press(fb, button)
 			return
 		}
 
+		;(e.target as Element).setPointerCapture?.(e.pointerId)
 		st.pointers.set(e.pointerId, p)
 		if (st.pointers.size === 1) {
 			st.kind = 'one'
@@ -785,15 +777,16 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			st.dragging = false
 			st.panning = false
 			window.clearTimeout(st.longTimer)
-			if (mode === 'touch') {
+			if (mode === 'touch' && onPicture(p)) {
 				st.longTimer = window.setTimeout(() => {
 					if (st.kind !== 'one' || st.moved) return
+					const fb = toFb(st.start, false)
+					if (!fb) return
 					st.held = true
 					haptic(15)
-					const fb = toFb(st.start)
-					if (fb) ripple(fb, true)
+					ripple(fb, true)
 				}, LONG_PRESS_MS)
-			} else if (performance.now() - st.lastTapTime < 320) {
+			} else if (mode === 'mouse' && performance.now() - st.lastTapTime < 320) {
 				// Mouse mode: double-tap and hold = press the left button for dragging.
 				st.dragging = true
 				press(cursor.current, BTN.left)
@@ -921,8 +914,9 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		const st = g.current
 		const p = {x: e.clientX, y: e.clientY}
 		if (e.pointerType === 'mouse') {
-			const fb = toFb(p) ?? cursor.current
 			const button = e.button === 2 ? BTN.right : e.button === 1 ? BTN.middle : BTN.left
+			if (!(mask.current & button)) return
+			const fb = toFb(p) ?? cursor.current
 			release(fb, button)
 			return
 		}
@@ -934,7 +928,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		if (st.kind === 'one' && wasCount === 1) {
 			window.clearTimeout(st.longTimer)
 			if (mode === 'touch') {
-				const fb = toFb(st.start)
+				const fb = toFb(st.start, false)
 				if (st.dragging) release(toFb(p) ?? cursor.current, BTN.left)
 				else if (!st.moved && fb) {
 					if (st.held) click(fb, BTN.right)
@@ -954,9 +948,11 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			if (st.pointers.size === 0) {
 				// Two-finger tap = right-click (three-finger tap = middle).
 				if (!st.moved && quick) {
-					const at = mode === 'mouse' ? cursor.current : (toFb(st.two.mid) ?? cursor.current)
-					click(at, st.two.maxPointers >= 3 ? BTN.middle : BTN.right)
-					haptic(10)
+					const at = mode === 'mouse' ? cursor.current : toFb(st.two.mid, false)
+					if (at) {
+						click(at, st.two.maxPointers >= 3 ? BTN.middle : BTN.right)
+						haptic(10)
+					}
 				}
 				st.kind = 'none'
 				// Snap back if the pinch left us just above 100%.

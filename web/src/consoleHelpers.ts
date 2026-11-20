@@ -74,3 +74,17 @@ export function readConsoleMetrics(rfb: {_fbWidth?: number; _fbHeight?: number; 
 	const res = rfb?._fbWidth && rfb?._fbHeight ? {w: rfb._fbWidth, h: rfb._fbHeight} : null
 	return {res, canResize: !!rfb?._supportsSetDesktopSize}
 }
+
+export type Pt = {x: number; y: number}
+export type Rect = {left: number; top: number; right: number; bottom: number; width: number; height: number}
+export type Size = {w: number; h: number}
+
+// Convert a screen coordinate to a framebuffer pixel, returning null outside the picture unless clamp is set.
+export function pointToFb(p: Pt, rect: Rect | null, fb: Size | null, {clamp = true}: {clamp?: boolean} = {}): Pt | null {
+	if (!fb || !rect || !rect.width || !rect.height) return null
+	if (!clamp && (p.x < rect.left || p.x > rect.right || p.y < rect.top || p.y > rect.bottom)) return null
+	return {
+		x: Math.round(Math.min(fb.w - 1, Math.max(0, ((p.x - rect.left) / rect.width) * fb.w))),
+		y: Math.round(Math.min(fb.h - 1, Math.max(0, ((p.y - rect.top) / rect.height) * fb.h))),
+	}
+}

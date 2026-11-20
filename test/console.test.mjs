@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {describe, test} from 'node:test'
 
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, readConsoleMetrics, screenshotFilename, wheelButtons} from '../web/src/consoleHelpers.ts'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, screenshotFilename, wheelButtons} from '../web/src/consoleHelpers.ts'
 
 describe('console helpers', () => {
 	test('#120: reconnects on clean and unclean disconnects unless disposed or superseded', async () => {
@@ -109,5 +109,31 @@ describe('console helpers', () => {
 		const pollBlock = src.slice(src.indexOf('window.setInterval(() => {'), src.indexOf('}, 1000)'))
 		assert.match(pollBlock, /readConsoleMetrics\(/)
 		assert.match(pollBlock, /setCanResize/)
+	})
+
+	test('#123: ignores taps and clicks on the black bars while clamping drags', async () => {
+		const rect = {left: 0, top: 100, right: 400, bottom: 325, width: 400, height: 225}
+		const fb = {w: 1600, h: 900}
+		assert.deepEqual(pointToFb({x: 200, y: 212.5}, rect, fb, {clamp: false}), {x: 800, y: 450})
+		assert.deepEqual(pointToFb({x: 200, y: 212.5}, rect, fb, {clamp: true}), {x: 800, y: 450})
+		// Top, bottom, left, right black bars
+		assert.equal(pointToFb({x: 200, y: 40}, rect, fb, {clamp: false}), null)
+		assert.equal(pointToFb({x: 200, y: 360}, rect, fb, {clamp: false}), null)
+		assert.equal(pointToFb({x: -10, y: 200}, rect, fb, {clamp: false}), null)
+		assert.equal(pointToFb({x: 410, y: 200}, rect, fb, {clamp: false}), null)
+		// Active drags still clamp to edges
+		assert.deepEqual(pointToFb({x: 200, y: 40}, rect, fb, {clamp: true}), {x: 800, y: 0})
+		assert.deepEqual(pointToFb({x: 500, y: 400}, rect, fb, {clamp: true}), {x: 1599, y: 899})
+		// Missing or zero-size rect/fb
+		assert.equal(pointToFb({x: 10, y: 10}, null, fb, {clamp: false}), null)
+		assert.equal(pointToFb({x: 10, y: 10}, rect, null, {clamp: false}), null)
+		assert.equal(pointToFb({x: 10, y: 10}, {left: 0, top: 0, right: 10, bottom: 0, width: 10, height: 0}, fb, {clamp: false}), null)
+
+		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
+		assert.match(src, /toFb\(p,\s*false\)/)
+		assert.match(src, /toFb\(st\.start,\s*false\)/)
+		assert.match(src, /toFb\(st\.two\.mid,\s*false\)/)
+		assert.doesNotMatch(src, /toFb\(st\.two\.mid\)\s*\?\?\s*cursor\.current/)
+		assert.match(src, /mode === 'touch' && onPicture\(p\)/)
 	})
 })
