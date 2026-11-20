@@ -91,6 +91,7 @@ export const PERMISSIONS = {
 }
 // Bind mounts no app may have, whatever it asks: your whole home folder, its hidden folders (SSH keys,
 // settings, Omarchy Server's own data and keys), and the system's own folders.
+// An app's own data is under ~/.local too. createBindSources still claims that one folder.
 const under = (p, base) => Boolean(base) && (p === base || p.startsWith(`${base}/`))
 const CLOCK_FILES = ['/etc/localtime', '/etc/timezone']
 function refusedMount(path, home) {
@@ -602,6 +603,30 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			state.permissionsVersion = 2
 			await save()
 		}
+		// Apps installed before their own data under ~/.local was claimed have an empty dataDirs
+		// list, so the container user never received it. Jellyfin runs as user 1000 and then cannot
+		// write /config. Claim those folders once. A later start does not chown them again.
+		let claimed = false
+		for (const a of state.apps) {
+			if (a.system || a.state === 'error') continue
+			const previousDirs = a.dataDirs
+			const previousUsers = a.userDirs
+			try {
+				const text = await readFile(join(appDir(a.id), 'compose.omarchy.yml'), 'utf8').catch(() => '')
+				if (!text) continue
+				const had = new Set(a.dataDirs ?? [])
+				await createBindSources(a, text)
+				const fresh = (a.dataDirs ?? []).filter((d) => !had.has(d))
+				if (!fresh.length) continue
+				await prepareOwnership({...a, dataDirs: fresh, userDirs: []})
+				claimed = true
+			} catch (e) {
+				a.dataDirs = previousDirs
+				a.userDirs = previousUsers
+				console.error('[omarchyd] ownership', a.id, e.message)
+			}
+		}
+		if (claimed) await save()
 		for (const a of state.apps) if (a.system && a.state !== 'error') systemApps?.resume(a)
 		for (const a of state.apps) if (a.port && a.state !== 'error') await openGateways(a).catch((e) => console.error('[omarchyd] gateway', a.id, e.message))
 	})()
@@ -1090,10 +1115,15 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				// Never touch host files such as /etc/localtime (those are not under the app folder).
 				if (under(path, dir) && (await lstat(path).then((st) => st.isSymbolicLink(), () => false))) {
 					const target = await realpath(path).catch(() => '')
-					const ok = target && allowed.some((d) => under(target, d)) && !refusedMount(target, home)
+					// The app folder and the shared root sit under ~/.local. A link that stays inside
+					// them is the app's own data, not a way out to SSH keys or this server's files.
+					const ownTarget = target && (under(target, dir) || under(target, shared))
+					const ok = ownTarget || (target && allowed.some((d) => under(target, d)) && !refusedMount(target, home))
 					if (!ok) await rm(path, {force: true})
 				}
-				if (refusedMount(real, home) || refusedMount(path, home)) continue
+				// Hidden home folders are refused, except the app's own folder and the shared root.
+				const own = under(path, dir) || under(real, dir) || under(path, shared) || under(real, shared)
+				if (!own && (refusedMount(real, home) || refusedMount(path, home))) continue
 				// One of your folders (Videos, Music…): make sure it exists and let the app's user in.
 				const mine = Object.values(USER_DIRS).map((d) => join(home, d)).find((d) => under(path, d) || under(real, d))
 				if (mine) {
