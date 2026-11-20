@@ -59,3 +59,37 @@ test('trailing partial tag characters are kept at the end of a reply', async () 
 	}))
 	assert.equal(respOut.filter((e) => e.type === 'text').map((e) => e.text).join(''), 'The element is <')
 })
+
+test('streamed XML tool calls inside <tool_call> do not leak the opening tag', async () => {
+	const pieces = ['Let me check.\n\n', '<tool_call>', '\n<function=apps_list>', '\n</function>', '\n</tool_call>']
+	const chatOut = await collect(streamChat({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools: [],
+		fetchImpl: async () => chatSse(pieces.map((content) => ({choices: [{delta: {content}}]}))),
+	}))
+	assert.equal(chatOut.filter((e) => e.type === 'text').map((e) => e.text).join(''), 'Let me check.\n\n')
+	assert.equal(chatOut.some((e) => e.type === 'text' && e.text.includes('<tool_call>')), false)
+	assert.equal(chatOut.filter((e) => e.type === 'tool').length, 1)
+	assert.equal(chatOut.find((e) => e.type === 'tool').name, 'apps_list')
+
+	const respOut = await collect(streamResponses({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools: [],
+		fetchImpl: async () => responsesSse([
+			...pieces.map((delta) => ({type: 'response.output_text.delta', delta})),
+			{type: 'response.completed'},
+		]),
+	}))
+	assert.equal(respOut.filter((e) => e.type === 'text').map((e) => e.text).join(''), 'Let me check.\n\n')
+	assert.equal(respOut.filter((e) => e.type === 'tool').map((e) => e.name).join(','), 'apps_list')
+
+	const noClose = takeXmlTools('Checking.\n<tool_call>\n<function=apps_list>\n</function>', true)
+	assert.equal(noClose.text, 'Checking.\n')
+	assert.equal(noClose.tools.map((t) => t.name).join(','), 'apps_list')
+})

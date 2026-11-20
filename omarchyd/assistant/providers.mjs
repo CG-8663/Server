@@ -80,9 +80,19 @@ export function takeXmlTools(buf, final) {
 			raw = wrapped[0]
 			inner = wrapped[1]
 		} else if (fAt >= 0) {
-			at = fAt
-			raw = fn[0]
-			inner = fn[0]
+			const openCall = rest.indexOf('<tool_call>')
+			if (openCall >= 0 && openCall < fAt) {
+				if (!final) break
+				if (!rest.slice(openCall + '<tool_call>'.length, fAt).trim()) {
+					at = openCall
+					raw = rest.slice(openCall, fAt + fn[0].length)
+					inner = fn[0]
+				} else break
+			} else {
+				at = fAt
+				raw = fn[0]
+				inner = fn[0]
+			}
 		}
 		if (at < 0) break
 		text += rest.slice(0, at)
