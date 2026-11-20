@@ -25,6 +25,7 @@ import sys
 DEV = re.compile(r"^/dev/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|mmcblk\d{1,2}|hd[a-z])$")
 BY_ID = re.compile(r"^/dev/disk/by-id/[A-Za-z0-9._:+-]+$")
 NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+ZFS_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}\Z")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 SYSTEM_MOUNTS = frozenset(["/", "/boot", "/efi", "/boot/efi", "/home", "/var", "/usr", "[SWAP]"])
 SKIP_FS = frozenset(["crypto_LUKS", "swap", "LVM2_member", "linux_raid_member", "zfs_member"])
@@ -358,7 +359,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         }
 
     def zfs_pool_mount(name):
-        if not re.match(r"^[a-z][a-z0-9_.-]{0,31}$", name or "", re.I):
+        if not ZFS_NAME.match(name or ""):
             fail("Bad pool name")
         if name not in zfs_pool_names():
             fail("No ZFS pool called %s" % name)
@@ -715,7 +716,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
     if verb == "zfs-import":
         name = args[0] if args else ""
         force = args[1] if len(args) > 1 else None
-        if not re.match(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$", name or ""):
+        if not ZFS_NAME.match(name or ""):
             fail("Bad pool name")
         if force not in (None, "force"):
             fail("Bad option")

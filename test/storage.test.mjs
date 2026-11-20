@@ -296,6 +296,28 @@ describe('helper', () => {
 		assert.ok(!log.some((l) => l.join(' ') === 'zfs mount -a'))
 	})
 
+	test('ZFS pool names up to 64 characters work across import, scrub and export', async () => {
+		const imported = new Set()
+		const fs = fakeFs({'/etc/fstab': ''})
+		const run = fakeRun([], {
+			zpool: (a) => (a[0] === 'list' ? [...imported].join('\n') : ''),
+			zfs: (a) => (a[0] === 'list' ? `${a.at(-1)}\t/pools/${a.at(-1)}\ton\n` : ''),
+		})
+		const h = createHelper({user, fs, run})
+		for (const name of ['backup-archive-2019-photos-and-videos', 'a'.repeat(64)]) {
+			imported.clear()
+			assert.equal(await h.handle('zfs-import', [name]), 'ok')
+			imported.add(name)
+			assert.equal(await h.handle('zfs-scrub', [name]), 'ok')
+			assert.equal(await h.handle('zfs-export', [name]), 'ok')
+		}
+		const tooLong = 'a'.repeat(65)
+		imported.add(tooLong)
+		for (const verb of ['zfs-import', 'zfs-scrub', 'zfs-export']) {
+			await assert.rejects(h.handle(verb, [tooLong]), /Bad pool name/)
+		}
+	})
+
 	test('ZFS status and import list are parsed', async () => {
 		const status = `  pool: tank
  state: DEGRADED

@@ -400,6 +400,31 @@ class Helper(unittest.TestCase):
             self.assertEqual(files["/etc/fstab"], "UUID=1 / ext4 defaults 0 0\n")
             self.assertIn(["systemctl", "daemon-reload"], log)
 
+    def test_zfs_long_pool_names_work_across_import_scrub_and_export(self):
+        from helper import HelperError
+        imported = set()
+        files = {"/etc/fstab": ""}
+
+        def run(cmd, args):
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "\n".join(sorted(imported)) + ("\n" if imported else "")
+            if cmd == "zfs" and args[:1] == ["list"]:
+                return "%s\t/pools/%s\ton\n" % (args[-1], args[-1])
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files=files)
+        for name in ("backup-archive-2019-photos-and-videos", "a" * 64):
+            imported.clear()
+            self.assertEqual(self.handle("zfs-import", [name], **kw), "ok")
+            imported.add(name)
+            self.assertEqual(self.handle("zfs-scrub", [name], **kw), "ok")
+            self.assertEqual(self.handle("zfs-export", [name], **kw), "ok")
+        too_long = "a" * 65
+        imported.add(too_long)
+        for verb in ("zfs-import", "zfs-scrub", "zfs-export"):
+            with self.assertRaisesRegex(HelperError, "Bad pool name"):
+                self.handle(verb, [too_long], **kw)
+
 
 if __name__ == "__main__":
     unittest.main()

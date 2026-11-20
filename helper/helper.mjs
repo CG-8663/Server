@@ -44,6 +44,7 @@ import {join, sep} from 'node:path'
 const DEV = /^\/dev\/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|mmcblk\d{1,2}|hd[a-z])$/
 const BY_ID = /^\/dev\/disk\/by-id\/[A-Za-z0-9._:+-]+$/
 const NAME = /^[a-z][a-z0-9-]{0,31}$/
+const ZFS_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SYSTEM_MOUNTS = new Set(['/', '/boot', '/efi', '/boot/efi', '/home', '/var', '/usr', '[SWAP]'])
 const SKIP_FS = new Set(['crypto_LUKS', 'swap', 'LVM2_member', 'linux_raid_member', 'zfs_member'])
@@ -227,7 +228,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		return {state, scan, errors, layout: layout.size ? [...layout].join('+') : 'stripe', devices}
 	}
 	async function zfsPoolMount(name) {
-		if (!/^[a-z][a-z0-9_.-]{0,31}$/i.test(name ?? '')) fail('Bad pool name')
+		if (!ZFS_NAME.test(name ?? '')) fail('Bad pool name')
 		if (!(await zfsPoolNames()).includes(name)) fail(`No ZFS pool called ${name}`)
 		return name
 	}
@@ -654,7 +655,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		},
 
 		'zfs-import': async ([name, force]) => {
-			if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name ?? '')) fail('Bad pool name')
+			if (!ZFS_NAME.test(name ?? '')) fail('Bad pool name')
 			if (force !== undefined && force !== 'force') fail('Bad option')
 			if ((await zfsPoolNames()).includes(name)) fail(`${name} is already imported`)
 			// Import without mounting, check where its datasets would land, then mount.
