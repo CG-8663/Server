@@ -2,6 +2,7 @@ import {lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type 
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {getBootstrap, query, type Bootstrap, type User, type UserApp} from './api'
+import {useServerReachable} from './connection'
 import {AppSheet} from './AppSheet'
 import {AppViewer} from './AppViewer'
 import {VIEW_APP} from './openApp'
@@ -174,7 +175,8 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 
 	const app = apps.data?.find((a) => a.id === appId) ?? null
 	const update = updates.data?.find((u) => u.id === appId)
-	const online = !apps.error
+	const conn = useServerReachable()
+	const online = conn.reachable
 	const updateCount = updates.data?.length ?? 0
 	const notes = notifications.data ?? []
 	const index = TABS.findIndex((t) => t.id === tab)
@@ -211,7 +213,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 				{!online && (
 					<div className="error" role="alert">
 						<Icon name="alert" size={18} />
-						Lost contact with your server. Retrying…
+						{conn.message}
 					</div>
 				)}
 				<Suspense fallback={<ScreenFallback />}>

@@ -23,6 +23,10 @@ const client = new QueryClient({
 			refetchOnWindowFocus: true,
 			staleTime: 2000,
 		},
+		mutations: {
+			// Let actions fail immediately instead of queueing silently while the browser is offline.
+			networkMode: 'always',
+		},
 	},
 })
 

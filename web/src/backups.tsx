@@ -3,6 +3,7 @@ import {useEffect, useMemo, useState, type CSSProperties, type FormEvent} from '
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
+import {queryProblem, useBrowserOnline} from './connection'
 import {Icon} from './icons'
 import {Group, Row, Segmented, Sheet, SheetHeader, Switch, haptic, useConfirm, useToast} from './ui'
 
@@ -104,6 +105,8 @@ function Field({id, label, hint, ...input}: {id: string; label: string; hint?: s
 
 export function BackupsPage({onBack}: {onBack: () => void}) {
 	const status = useStatus()
+	const browserOnline = useBrowserOnline()
+	const problem = queryProblem(status, browserOnline)
 	const save = useSave()
 	const confirm = useConfirm()
 	const toast = useToast()
@@ -167,10 +170,10 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 					</div>
 				</div>
 			)}
-			{status.error && (
-				<div className="error">
+			{problem && (
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
-					{(status.error as Error).message}
+					{problem}
 				</div>
 			)}
 

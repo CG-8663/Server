@@ -9,6 +9,7 @@ import {useState, type CSSProperties, type ReactNode} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from '../api'
+import {queryProblem, useBrowserOnline} from '../connection'
 import {Icon} from '../icons'
 import {canFormat, canMount, canUnmount, formatConfirmToken, formatPhraseMatches, type FormatKind} from '../storageTools'
 import {Card, KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
@@ -141,6 +142,8 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 	const pools = poolsQ.data ?? []
 	const blank = drives.filter((d) => d.role === 'blank')
 	const ready = status.data?.helperAvailable
+	const browserOnline = useBrowserOnline()
+	const poolsProblem = queryProblem(poolsQ, browserOnline)
 
 	const refresh = () => {
 		for (const k of [rpc('disks'), rpc('pools'), rpc('importable'), 'system.diskUsage']) qc.invalidateQueries({queryKey: [k]})
@@ -223,6 +226,11 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 			>
 				{poolsQ.isLoading ? (
 					<div className="row static muted">Loading…</div>
+				) : poolsProblem && !poolsQ.data ? (
+					<div className="error" role="alert">
+						<Icon name="alert" size={18} />
+						{poolsProblem}
+					</div>
 				) : pools.length === 0 ? (
 					<div className="row static muted">No pools yet</div>
 				) : (

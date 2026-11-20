@@ -4,6 +4,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useState} from 'react'
 
 import {mutate, query} from '../api'
+import {queryProblem, useBrowserOnline} from '../connection'
 import {useUser} from '../data'
 import {Icon} from '../icons'
 import {haptic, useConfirm, useToast} from '../ui'
@@ -64,6 +65,8 @@ export function PluginBrowser({q}: {q: string}) {
 			act.mutate({path: 'omarchy.removePlugin', id: p.id, done: `Removing ${p.name}…`})
 	}
 	const data = page.data
+	const browserOnline = useBrowserOnline()
+	const problem = queryProblem(page, browserOnline)
 	return (
 		<section className="plugins">
 			<div className="glass card" style={{borderRadius: 18, margin: '4px 0 14px', display: 'flex', gap: 12, alignItems: 'flex-start'}}>
@@ -97,10 +100,10 @@ export function PluginBrowser({q}: {q: string}) {
 					<Icon name="sort" size={15} /> {sort === 'stars' ? 'Most starred' : 'Newest'}
 				</button>
 			</div>
-			{page.error && (
-				<div className="error">
+			{problem && (
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
-					{(page.error as Error).message}
+					{problem}
 				</div>
 			)}
 			{page.isLoading && Array.from({length: 4}, (_, i) => <div key={i} className="skeleton" style={{height: 96, margin: '10px 0', borderRadius: 18}} />)}

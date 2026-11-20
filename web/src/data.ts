@@ -2,6 +2,7 @@ import {createContext, useContext} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {
+	ApiError,
 	mutate,
 	query,
 	type Bootstrap,
@@ -12,6 +13,7 @@ import {
 	type User,
 	type UserApp,
 } from './api'
+import {OFFLINE_ACTION_MESSAGE, isBrowserOnline} from './connection'
 import {isAppBusy, useToast} from './ui'
 
 export const BootstrapContext = createContext<Bootstrap | null>(null)
@@ -68,8 +70,11 @@ export function useAction() {
 	const qc = useQueryClient()
 	const toast = useToast()
 	return useMutation({
-		mutationFn: async (a: {path: string; input?: unknown; optimistic?: {appId: string; state: UserApp['state']}; adding?: Pick<UserApp, 'id' | 'name' | 'icon'>[]; done?: string}) =>
-			mutate(a.path, a.input),
+		networkMode: 'always',
+		mutationFn: async (a: {path: string; input?: unknown; optimistic?: {appId: string; state: UserApp['state']}; adding?: Pick<UserApp, 'id' | 'name' | 'icon'>[]; done?: string}) => {
+			if (!isBrowserOnline()) throw new ApiError(OFFLINE_ACTION_MESSAGE, 'OFFLINE', 0)
+			return mutate(a.path, a.input)
+		},
 		onMutate: (a) => {
 			if (a.optimistic) {
 				qc.setQueryData<UserApp[]>(['apps.list'], (apps) =>
