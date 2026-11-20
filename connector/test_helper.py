@@ -329,6 +329,33 @@ class Helper(unittest.TestCase):
         self.assertEqual(self.handle("format", ["/dev/mmcblk0", "blank"], **kw), "ok")
         self.assertIn(["wipefs", "-a", "/dev/mmcblk0"], log)
 
+    def test_failed_pool_mount_rolls_back_fstab_and_forget_handles_unmounted(self):
+        from helper import HelperError
+        fail_mount = [True]
+
+        def run(cmd, args):
+            if cmd == "mount" and fail_mount[0]:
+                raise HelperError("mount: wrong fs type, bad option, bad superblock")
+            if cmd == "umount":
+                raise HelperError("umount: /home/chris/Pools/old: not mounted.")
+            return self.fake.run(cmd, args)
+
+        kw = dict(self.kw, run=run)
+        with self.assertRaisesRegex(HelperError, "wrong fs type"):
+            self.handle("pool-import", ["old", "44444444-4444-4444-4444-444444444444"], **kw)
+        self.assertEqual(self.fake.files["/etc/fstab"], "UUID=1111 / btrfs defaults 0 0\n")
+
+        fail_mount[0] = False
+        self.assertEqual(self.handle("pool-import", ["old", "44444444-4444-4444-4444-444444444444"], **kw), "ok")
+        self.assertIn("# omarchy-connector pool old", self.fake.files["/etc/fstab"])
+        self.assertEqual(self.handle("pool-forget", ["old"], **kw), "ok")
+        self.assertNotIn("# omarchy-connector pool old", self.fake.files["/etc/fstab"])
+
+        fail_mount[0] = True
+        with self.assertRaisesRegex(HelperError, "wrong fs type"):
+            self.handle("pool-create", ["tank", "single", "/dev/sda"], **kw)
+        self.assertEqual(self.fake.files["/etc/fstab"], "UUID=1111 / btrfs defaults 0 0\n")
+
 
 if __name__ == "__main__":
     unittest.main()

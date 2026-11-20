@@ -208,10 +208,22 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         chown_path(pools_dir)
         add_fstab(name, uuid)
         try:
-            run("systemctl", ["daemon-reload"])
+            try:
+                run("systemctl", ["daemon-reload"])
+            except Exception:
+                pass
+            run("mount", [mount_of(name)])
         except Exception:
-            pass
-        run("mount", [mount_of(name)])
+            try:
+                kept = [l for l in fstab() if not l.endswith("%s %s" % (FSTAB_MARK, name))]
+                write_text("/etc/fstab", ("\n".join(kept) + "\n") if kept else "")
+            except Exception:
+                pass
+            try:
+                run("systemctl", ["daemon-reload"])
+            except Exception:
+                pass
+            raise
         chown_path(mount_of(name))
 
     def pool_member(d):

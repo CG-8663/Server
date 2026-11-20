@@ -121,6 +121,40 @@ describe('helper', () => {
 		assert.ok(!log.some((l) => ['mkfs.btrfs', 'wipefs', 'btrfs'].includes(l[0]) && l[1] !== '--no-act'))
 	})
 
+	test('failed pool-import and pool-create roll back fstab so retry works; pool-forget removes unmounted pool', async () => {
+		const log = []
+		let failMount = true
+		const fs = fakeFs({'/etc/fstab': 'UUID=1111 / btrfs defaults 0 0\n'})
+		const h = createHelper({
+			user,
+			fs,
+			run: fakeRun(log, {
+				mount: () => {
+					if (failMount) throw new Error('mount: wrong fs type, bad option, bad superblock')
+					return ''
+				},
+				umount: () => {
+					throw new Error('umount: /home/chris/Pools/media: not mounted.')
+				},
+			}),
+		})
+		await assert.rejects(h.handle('pool-import', ['media', '22222222-2222-2222-2222-222222222222']), /wrong fs type/)
+		assert.equal(fs.files.get('/etc/fstab'), 'UUID=1111 / btrfs defaults 0 0\n')
+		assert.ok(log.filter((l) => l.join(' ') === 'systemctl daemon-reload').length >= 2, 'daemon-reload runs after fstab rollback')
+
+		// Retrying import is not blocked by a stale fstab line.
+		failMount = false
+		await h.handle('pool-import', ['media', '22222222-2222-2222-2222-222222222222'])
+		assert.match(fs.files.get('/etc/fstab'), /# omarchy-server pool media/)
+		assert.equal(await h.handle('pool-forget', ['media']), 'ok')
+		assert.equal(fs.files.get('/etc/fstab'), 'UUID=1111 / btrfs defaults 0 0\n')
+
+		// pool-create rolls back fstab if mount fails too.
+		failMount = true
+		await assert.rejects(h.handle('pool-create', ['tank', 'single', '/dev/sda']), /wrong fs type/)
+		assert.equal(fs.files.get('/etc/fstab'), 'UUID=1111 / btrfs defaults 0 0\n')
+	})
+
 	test('pool-status reads profile, error counters and the last check', async () => {
 		const fs = fakeFs({'/etc/fstab': 'UUID=x /home/chris/Pools/tank btrfs d 0 0 # omarchy-server pool tank\n'})
 		const h = createHelper({

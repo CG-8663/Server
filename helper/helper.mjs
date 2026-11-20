@@ -152,8 +152,14 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		await fs.mkdir(mountOf(name), {recursive: true})
 		await fs.chown(poolsDir, user.uid, user.gid)
 		await addFstab(name, uuid)
-		await run('systemctl', ['daemon-reload'])
-		await run('mount', [mountOf(name)])
+		try {
+			await run('systemctl', ['daemon-reload'])
+			await run('mount', [mountOf(name)])
+		} catch (error) {
+			await writeAtomic('/etc/fstab', (await fstab()).filter((l) => !l.endsWith(`${FSTAB_MARK} ${name}`)).join('\n')).catch(() => {})
+			await run('systemctl', ['daemon-reload']).catch(() => {})
+			throw error
+		}
 		await fs.chown(mountOf(name), user.uid, user.gid)
 	}
 
