@@ -194,16 +194,25 @@ function push() {
 }
 let lastPull = 0
 let syncing = false
+// A pull asked for while one is already running. Sign-out must not start a pull of its
+// own: that request is signed out, and stamping lastPull there blocks the next account.
+let pullAgain = false
 async function pull() {
-	if (syncing || Date.now() - lastPull < 3000) return
+	if (syncing) {
+		pullAgain = true
+		return
+	}
+	if (Date.now() - lastPull < 3000) return
 	const mine = epoch
 	syncing = true
-	lastPull = Date.now()
 	try {
 		const r = await fetch('/api/desktop', {credentials: 'same-origin'})
+		// A 401, or a pull sign-out invalidated, must leave lastPull unset. resetDeskConfig
+		// already zeroes it; setting it here makes the next account's sync wait 3 seconds.
 		if (mine !== epoch || !r.ok) return
 		const saved = (await r.json())?.desktop as {config: unknown; rev?: number; updatedAt?: number} | null
 		if (mine !== epoch) return
+		lastPull = Date.now()
 		const rev = saved ? Number(saved.rev) || 1 : 0
 		if (edits) {
 			// This browser has the newest changes: save them for the others.
@@ -223,9 +232,12 @@ async function pull() {
 		/* offline: this browser's copy stays */
 	} finally {
 		syncing = false
-		// A return above still skips anything after this block. Sign-out during the load
-		// left the next account's mount looking at `syncing`, so start that load here.
-		if (mine !== epoch) void pull()
+		// One follow-up for a pull that arrived while this one was running. Not because
+		// the epoch changed: that started a signed-out pull which stamped lastPull.
+		if (pullAgain) {
+			pullAgain = false
+			void pull()
+		}
 	}
 }
 let started = false

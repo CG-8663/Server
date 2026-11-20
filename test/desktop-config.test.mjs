@@ -110,9 +110,43 @@ test('the next account does not inherit this tab’s desktop', async () => {
 		return {ok: true, json: async () => ({desktop: {config: {wallpaper: 'pier', dock: {position: 'right'}}, rev: 4}})}
 	}
 	resetDeskConfig()
+	// The next account mounts while that load is still in flight.
+	syncDeskConfig()
 	releaseGet()
 	await wait(50)
 	const followed = JSON.parse(localStorage.getItem(KEY))
 	assert.equal(followed.wallpaper, 'pier', 'the load that was in flight swallowed the next account')
 	assert.equal(followed.dock.position, 'right')
+})
+
+test('a signed-out pull does not throttle the next account desktop', async () => {
+	resetDeskConfig()
+	let releaseGet
+	let gets = 0
+	fetchImpl = () => {
+		gets++
+		if (gets === 1) {
+			return new Promise((resolve) => {
+				releaseGet = () => resolve({ok: false, status: 401, json: async () => ({})})
+			})
+		}
+		// The follow-up that sign-out used to start is still signed out.
+		return Promise.resolve({ok: false, status: 401, json: async () => ({})})
+	}
+	syncDeskConfig()
+	await wait(30)
+	assert.equal(typeof releaseGet, 'function', 'the load never started')
+	resetDeskConfig()
+	releaseGet()
+	await wait(30)
+	let nextGets = 0
+	fetchImpl = async () => {
+		nextGets++
+		return {ok: true, json: async () => ({desktop: {config: {wallpaper: 'dahlia', dock: {position: 'top'}}, rev: 6}})}
+	}
+	syncDeskConfig()
+	await wait(50)
+	assert.equal(nextGets, 1, 'signed-out pull left the next syncDeskConfig behind the 3 second throttle')
+	const raw = localStorage.getItem(KEY)
+	assert.equal(raw && JSON.parse(raw).wallpaper, 'dahlia', 'the next account desktop was not loaded')
 })
