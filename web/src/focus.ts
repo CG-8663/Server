@@ -94,6 +94,48 @@ export function getInitialFocusTarget(
 	return getFocusable(container)[0] ?? container
 }
 
+export function getTabTrapTarget(
+	focusables: FocusableLike[],
+	active: FocusableLike | null,
+	shiftKey: boolean,
+	container: ContainerLike,
+): FocusableLike | null {
+	if (focusables.length === 0) return container
+	const first = focusables[0]
+	const last = focusables[focusables.length - 1]
+	const idx = active ? focusables.indexOf(active) : -1
+	const inside = !!active && container.contains(active)
+	if (shiftKey) {
+		return idx === 0 || active === container || !inside ? last : null
+	}
+	return idx === focusables.length - 1 || active === container || !inside ? first : null
+}
+
+export function canRestoreFocus(el: FocusableLike | null | undefined): el is FocusableLike {
+	if (!el) return false
+	if (el.isConnected === false) return false
+	if (el.disabled || el.getAttribute?.('disabled') != null) return false
+	if (el.closest?.('[inert], [hidden], .win.minimized, .win.off-workspace')) return false
+	return true
+}
+
+export function pickFocusTarget(candidates: (FocusableLike | null | undefined)[]): FocusableLike | null {
+	for (const candidate of candidates) {
+		if (canRestoreFocus(candidate)) return candidate
+	}
+	return null
+}
+
+export function restoreFocus(
+	opener: FocusableLike | null | undefined,
+	...fallbacks: (FocusableLike | null | undefined)[]
+): boolean {
+	const target = pickFocusTarget([opener, ...fallbacks])
+	if (!target?.focus) return false
+	target.focus({preventScroll: true})
+	return true
+}
+
 export type DialogFocusOptions = {
 	initialFocus?: 'auto' | 'container' | RefObject<HTMLElement | null>
 	canEscape?: (e: KeyboardEvent) => boolean
@@ -113,12 +155,31 @@ export function useDialogFocus(
 	canEscapeRef.current = opts?.canEscape
 	const initialFocusRef = useRef(opts?.initialFocus)
 	initialFocusRef.current = opts?.initialFocus
+	const restoreFocusRef = useRef(opts?.restoreFocus)
+	restoreFocusRef.current = opts?.restoreFocus
 	const dialogIdRef = useRef<symbol | null>(null)
+	const openerRef = useRef<HTMLElement | null>(null)
+	const wasOpenRef = useRef(false)
+
+	// Capture the opener before React runs commit-time autoFocus inside the dialog.
+	if (open && !wasOpenRef.current && !openerRef.current && typeof document !== 'undefined') {
+		const active = document.activeElement
+		if (active instanceof HTMLElement && active !== document.body && !(ref.current && ref.current.contains(active))) {
+			openerRef.current = active
+		}
+	}
 
 	useEffect(() => {
 		if (!open) return
 		const el = ref.current
 		if (!el) return
+		wasOpenRef.current = true
+		if (!openerRef.current) {
+			const active = document.activeElement
+			if (active instanceof HTMLElement && active !== document.body && !el.contains(active)) {
+				openerRef.current = active
+			}
+		}
 		const id = pushDialog(undefined, el)
 		dialogIdRef.current = id
 
@@ -129,17 +190,33 @@ export function useDialogFocus(
 		target?.focus?.({preventScroll: true})
 
 		const onKey = (e: KeyboardEvent) => {
-			if (e.key !== 'Escape' || !isTopDialog(id) || e.defaultPrevented) return
-			if (canEscapeRef.current && !canEscapeRef.current(e)) return
-			e.preventDefault()
-			e.stopPropagation()
-			onCloseRef.current?.()
+			if (!isTopDialog(id) || e.defaultPrevented) return
+			if (e.key === 'Escape') {
+				if (canEscapeRef.current && !canEscapeRef.current(e)) return
+				e.preventDefault()
+				e.stopPropagation()
+				onCloseRef.current?.()
+				return
+			}
+			if (e.key === 'Tab') {
+				const next = getTabTrapTarget(getFocusable(el), document.activeElement as FocusableLike | null, e.shiftKey, el)
+				if (next) {
+					e.preventDefault()
+					next.focus?.({preventScroll: true})
+				}
+			}
 		}
 		document.addEventListener('keydown', onKey)
 		return () => {
 			document.removeEventListener('keydown', onKey)
 			popDialog(id)
 			if (dialogIdRef.current === id) dialogIdRef.current = null
+			wasOpenRef.current = false
+			const opener = openerRef.current
+			openerRef.current = null
+			if (restoreFocusRef.current !== false) {
+				restoreFocus(opener, topDialogElement())
+			}
 		}
 	}, [open, ref])
 

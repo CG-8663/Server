@@ -6,15 +6,19 @@ import {afterEach, test} from 'node:test'
 import {fileURLToPath} from 'node:url'
 
 import {
+	canRestoreFocus,
 	dialogStackSize,
 	getFocusable,
 	getInitialFocusTarget,
+	getTabTrapTarget,
 	hasOpenDialog,
 	isElementFocusable,
 	isTopDialog,
+	pickFocusTarget,
 	popDialog,
 	pushDialog,
 	resetDialogStack,
+	restoreFocus,
 	topDialogElement,
 } from '../web/src/focus.ts'
 
@@ -149,4 +153,55 @@ test('Sheet in ui.tsx delegates focus/Escape to useDialogFocus without onClose i
 	const ui = readFileSync(join(rootDir, 'web/src/ui.tsx'), 'utf8')
 	assert.match(ui, /useDialogFocus\(open, ref, onClose\)/)
 	assert.match(ui, /useEffect\(\(\) => \{\s*if \(!open\) return\s*return lockPageScroll\(\)\s*\}, \[open\]\)/)
+})
+
+test('getTabTrapTarget wraps forward/backward at edges, lets middle controls pass, and pulls outside focus back', () => {
+	const first = makeMockEl({id: 'close', tabIndex: 0})
+	const middle = makeMockEl({id: 'input', tabIndex: 0})
+	const last = makeMockEl({id: 'submit', tabIndex: 0})
+	const outside = makeMockEl({id: 'dock-btn', tabIndex: 0})
+	const focusables = [first, middle, last]
+	const dialog = makeMockContainer(focusables)
+
+	// Wrapping from last -> first on Tab, and first -> last on Shift+Tab.
+	assert.equal(getTabTrapTarget(focusables, last, false, dialog), first)
+	assert.equal(getTabTrapTarget(focusables, first, true, dialog), last)
+
+	// Middle elements advance naturally without interception.
+	assert.equal(getTabTrapTarget(focusables, middle, false, dialog), null)
+	assert.equal(getTabTrapTarget(focusables, middle, true, dialog), null)
+
+	// Focus on the container or outside the dialog is pulled into the ends.
+	assert.equal(getTabTrapTarget(focusables, dialog, false, dialog), first)
+	assert.equal(getTabTrapTarget(focusables, dialog, true, dialog), last)
+	assert.equal(getTabTrapTarget(focusables, outside, false, dialog), first)
+	assert.equal(getTabTrapTarget(focusables, outside, true, dialog), last)
+
+	// Empty dialog keeps focus on the container.
+	const empty = makeMockContainer([])
+	assert.equal(getTabTrapTarget([], empty, false, empty), empty)
+	assert.equal(getTabTrapTarget([], empty, true, empty), empty)
+})
+
+test('pickFocusTarget and restoreFocus restore connected opener or fall back when opener is gone/inert', () => {
+	const focused = []
+	const opener = makeMockEl({id: 'opener', focus: (opts) => focused.push(['opener', opts])})
+	const disconnected = makeMockEl({id: 'gone', isConnected: false, focus: () => focused.push(['gone'])})
+	const disabled = makeMockEl({id: 'disabled', disabled: true, focus: () => focused.push(['disabled'])})
+	const inert = makeMockEl({id: 'inert', closest: (sel) => (sel.includes('inert') ? {} : null), focus: () => focused.push(['inert'])})
+	const fallback = makeMockEl({id: 'fallback', focus: (opts) => focused.push(['fallback', opts])})
+
+	assert.equal(canRestoreFocus(opener), true)
+	assert.equal(canRestoreFocus(disconnected), false)
+	assert.equal(canRestoreFocus(disabled), false)
+	assert.equal(canRestoreFocus(inert), false)
+
+	assert.equal(pickFocusTarget([disconnected, disabled, inert, fallback]), fallback)
+	assert.equal(restoreFocus(opener, fallback), true)
+	assert.equal(restoreFocus(disconnected, fallback), true)
+	assert.equal(restoreFocus(disconnected, inert), false)
+	assert.deepEqual(focused, [
+		['opener', {preventScroll: true}],
+		['fallback', {preventScroll: true}],
+	])
 })
