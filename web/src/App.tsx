@@ -13,12 +13,12 @@ import {Connect, Login} from './screens/Auth'
 import {Home} from './screens/Home'
 import {Desktop} from './desktop/Desktop'
 import {resetDeskConfig} from './desktop/config'
-import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, useLayout, usePrefs, type Prefs} from './ui'
+import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, scrollPhoneToTop, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
 import {LayoutChooser} from './LayoutChooser'
 import {InstallerPrompt} from './InstallerPrompt'
 import {consumeReopenAssistant} from './assistant'
-import {closeAssistantView, openAssistantView, useAssistantTurn} from './assistantTurn'
+import {closeAssistantView, openAssistantView, resetAssistantTurn, useAssistantTurn} from './assistantTurn'
 import {AssistantLookContext, cleanLook, DEFAULT_LOOK, type AssistantLook} from './character/AssistantCharacter'
 import {AssistantCharacterWidget} from './character/widgets'
 
@@ -73,6 +73,7 @@ export function App() {
 	useEffect(() => {
 		const onOut = () => {
 			resetDeskConfig()
+			resetAssistantTurn()
 			qc.removeQueries({predicate: (q) => q.queryKey[0] !== 'bootstrap'})
 			refresh()
 		}
@@ -161,11 +162,11 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	}, [])
 	const go = (t: Tab) => {
 		haptic(5)
-		if (t === tab) window.scrollTo({top: 0, behavior: 'smooth'})
+		if (t === tab) scrollPhoneToTop('smooth')
 		else {
 			history.pushState(null, '', `#/${t}`)
 			setTab(t)
-			window.scrollTo({top: 0})
+			scrollPhoneToTop()
 		}
 	}
 

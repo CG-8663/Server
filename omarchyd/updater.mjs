@@ -199,15 +199,33 @@ export function createUpdater({
 	async function update() {
 		await ready
 		if (busy) throw new RpcError('CONFLICT', 'An update is already running')
-		const {available, version} = await check({force: true})
-		if (!available) throw new RpcError('BAD_REQUEST', 'Omarchy Server is already up to date')
-		if (!(await run('git', ['-C', appDir, 'rev-parse', 'HEAD']).then(() => true, () => false))) throw new RpcError('PRECONDITION_FAILED', `This copy can’t update itself. Run the installer: ${await installerHint()}`)
+		// Claim it before the first await, so a second request in the meantime is refused too.
 		busy = true
+		let version
+		try {
+			const checked = await check({force: true})
+			version = checked.version
+			if (!checked.available) throw new RpcError('BAD_REQUEST', 'Omarchy Server is already up to date')
+			if (!(await run('git', ['-C', appDir, 'rev-parse', 'HEAD']).then(() => true, () => false))) throw new RpcError('PRECONDITION_FAILED', `This copy can’t update itself. Run the installer: ${await installerHint()}`)
+		} catch (error) {
+			busy = false
+			throw error
+		}
+		// If this write throws, the background work never starts, so its finally would never clear the flag.
+		const previousStatus = status
 		status = {running: true, progress: 2, description: 'Starting', error: false, target: version}
-		await save()
+		try {
+			await save()
+		} catch (error) {
+			busy = false
+			status = previousStatus
+			throw error
+		}
 		;(async () => {
-			const previous = (await run('git', ['-C', appDir, 'rev-parse', 'HEAD'])).trim()
+			// A failure to read the current revision is a failed update, not a crash.
+			let previous = ''
 			try {
+				previous = (await run('git', ['-C', appDir, 'rev-parse', 'HEAD'])).trim()
 				await step(10, 'Downloading')
 				if (sourceDir) {
 					await run('git', ['-C', appDir, 'fetch', '--depth', '1', sourceDir, 'HEAD'])
@@ -226,11 +244,15 @@ export function createUpdater({
 				// A separate, short-lived unit restarts both services, so this process can be replaced.
 				await run('systemd-run', ['--user', '--collect', `--on-active=${restartDelay}`, `--unit=omarchy-server-update-${Date.now()}`, 'systemctl', '--user', 'restart', 'omarchyd.service', 'omarchy-server-web.service'])
 			} catch (error) {
-				// Put the previous version back so the services keep working.
-				await run('git', ['-C', appDir, 'reset', '--hard', previous]).catch(() => {})
-				await run(process.execPath, ['scripts/deps.mjs'], {cwd: appDir}).catch(() => {})
-				await run('npm', ['run', 'build'], {cwd: appDir, env: {...process.env, NODE_OPTIONS: '--max-old-space-size=1024'}}).catch(() => {})
-				status = {running: false, progress: 0, description: '', error: `The update failed and nothing changed: ${error.message}`}
+				// Put the previous version back so the services keep working. Nothing was changed
+				// when the current revision could not be read, so there is nothing to put back.
+				// Say so if putting it back fails.
+				let restored = true
+				if (previous) {
+					const back = (p) => p.then(() => true, () => false)
+					restored = (await back(run('git', ['-C', appDir, 'reset', '--hard', previous]))) && (await back(run(process.execPath, ['scripts/deps.mjs'], {cwd: appDir}))) && (await back(run('npm', ['run', 'build'], {cwd: appDir, env: {...process.env, NODE_OPTIONS: '--max-old-space-size=1024'}})))
+				}
+				status = {running: false, progress: 0, description: '', error: restored ? `The update failed and nothing changed: ${error.message}` : `The update failed, and putting the previous version back failed too. Run the installer: ${await installerHint().catch(() => 'see the README')}. (${error.message})`}
 				await save().catch(() => {})
 			} finally {
 				busy = false

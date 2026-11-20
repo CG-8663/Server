@@ -52,6 +52,30 @@ class Fake:
         return ""
 
 
+def zfs_member_lsblk():
+    tree = copy.deepcopy(LSBLK)
+    sdb = next(d for d in tree["blockdevices"] if d["path"] == "/dev/sdb")
+    sdb["children"] = [{
+        "name": "sdb1",
+        "path": "/dev/sdb1",
+        "type": "part",
+        "fstype": "zfs_member",
+        "label": "tank",
+        "mountpoints": [None],
+    }]
+    return tree
+
+
+def run_with_zpool_list(fake, text):
+    def run(cmd, args):
+        if cmd == "zpool" and list(args)[:4] == ["list", "-H", "-o", "name"]:
+            fake.log.append([cmd, *list(args)])
+            return text
+        return fake.run(cmd, args)
+
+    return run
+
+
 class Helper(unittest.TestCase):
     def setUp(self):
         from helper import handle
@@ -237,7 +261,60 @@ class Helper(unittest.TestCase):
         self.assertEqual(self.handle("pool-forget", ["tank"], **self.kw), "ok")
         self.assertNotIn("# omarchy-connector pool tank", self.fake.files["/etc/fstab"])
 
+    def test_format_and_umount_refuse_imported_zfs_pool(self):
+        fake = Fake(zfs_member_lsblk())
+        kw = dict(run=run_with_zpool_list(fake, "tank\n"), user=self.kw["user"], files=fake.files)
+        with self.assertRaisesRegex(Exception, r"/dev/sdb is in a pool"):
+            self.handle("format", ["/dev/sdb", "blank"], **kw)
+        with self.assertRaisesRegex(Exception, r"/dev/sdb is in a pool"):
+            self.handle("umount", ["/dev/sdb"], **kw)
+        self.assertFalse(any(c[0] == "wipefs" and "-a" in c for c in fake.log))
+
+    def test_format_allows_zfs_member_when_pool_not_imported(self):
+        tree = zfs_member_lsblk()
+        missing = Fake(tree)
+        kw = dict(run=missing.run, user=self.kw["user"], files=missing.files)
+        self.assertEqual(self.handle("format", ["/dev/sdb", "blank"], **kw), "ok")
+        self.assertIn(["wipefs", "-a", "/dev/sdb"], missing.log)
+        empty = Fake(tree)
+        kw = dict(run=run_with_zpool_list(empty, ""), user=self.kw["user"], files=empty.files)
+        self.assertEqual(self.handle("format", ["/dev/sdb", "blank"], **kw), "ok")
+        self.assertIn(["wipefs", "-a", "/dev/sdb"], empty.log)
+
 
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class OldLsblk(unittest.TestCase):
+    # #118: util-linux before 2.37 has no MOUNTPOINTS column.
+    def test_falls_back_to_mountpoint(self):
+        from helper import HelperError, handle
+
+        old = copy.deepcopy(LSBLK)
+        for d in old["blockdevices"]:
+            for c in d.get("children") or []:
+                mp = c.pop("mountpoints", None)
+                c["mountpoint"] = (mp or [None])[0]
+        fake = Fake(old)
+
+        def run(cmd, args):
+            if cmd == "lsblk" and any("MOUNTPOINTS" in a for a in args):
+                fake.log.append([cmd, *args])
+                raise HelperError("lsblk: unknown column: MOUNTPOINTS")
+            return fake.run(cmd, args)
+
+        with self.assertRaisesRegex(Exception, "holds the system"):
+            handle("format", ["/dev/nvme0n1", "blank"], run=run, user={"name": "chris", "uid": 1000, "home": "/home/chris"}, files=fake.files)
+        self.assertTrue(any("MOUNTPOINT," in " ".join(x) or x[-1].endswith("MOUNTPOINT,RM,HOTPLUG") for x in fake.log))
+
+
+class Hdparm(unittest.TestCase):
+    # #119: udev needs the real path.
+    def test_path_exists_or_sbin(self):
+        from helper import hdparm_path
+
+        p = hdparm_path()
+        self.assertTrue(p.startswith("/"))
+        self.assertTrue(os.path.exists(p) or p == "/usr/sbin/hdparm")

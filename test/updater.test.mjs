@@ -1,6 +1,6 @@
 // Software update: comparing versions, release notes, the check against GitHub, and the update steps.
 import assert from 'node:assert/strict'
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, before, test} from 'node:test'
@@ -77,6 +77,77 @@ test('update: download, build, restart from a separate unit; after the restart i
 	// The restarted omarchyd is the new version.
 	const after = createUpdater({autoCheck: false, appDir: '/app', dataDir: dir, currentVersion: '0.6.1', run, fetchImpl: remote('0.6.1')})
 	assert.deepEqual(await after.procedures['system.updateStatus'].run(), {running: false, progress: 100, description: 'Updated to 0.6.1', error: false})
+})
+
+test('update: a failing rev-parse is a failed update, and the updater is free to try again', async () => {
+	let parses = 0
+	const run = async (cmd, args) => {
+		if (cmd === 'git' && args[2] === 'rev-parse') {
+			parses++
+			if (parses >= 2) throw new Error('git: index.lock busy')
+			return 'old111\n'
+		}
+		return ''
+	}
+	const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: dir, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath: '/nonexistent'})
+	await u.procedures['system.update'].run()
+	const st = await until(async () => {
+		const s = await u.procedures['system.updateStatus'].run()
+		return s.error ? s : null
+	})
+	assert.match(st.error, /index\.lock busy/)
+	assert.equal(st.running, false)
+	// The failed attempt clears its lock after the status is saved. Until then a new
+	// attempt is still told one is running; once it clears, that refusal is gone.
+	let again = 'An update is already running'
+	for (let i = 0; i < 50 && /already running/.test(again); i++) {
+		again = await u.procedures['system.update'].run().then(() => '', (e) => e.message)
+		if (/already running/.test(again)) await new Promise((r) => setTimeout(r, 10))
+	}
+	assert.equal(/already running/.test(again), false, again)
+})
+
+test('update: a status file that cannot be saved does not leave the update running', async () => {
+	const data = join(dir, 'stuck-data')
+	await mkdir(data)
+	const calls = []
+	const run = async (cmd, args) => (calls.push([cmd, ...args].join(' ')), cmd === 'git' && args[2] === 'rev-parse' ? 'abc123\n' : '')
+	const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: data, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath: '/nonexistent'})
+	await u.ready
+	const root = typeof process.getuid === 'function' && process.getuid() === 0
+	// Root ignores the mode bit, so a data dir that is a file is the write failure instead.
+	let restore = async () => {}
+	try {
+		if (root) {
+			await rm(data, {recursive: true, force: true})
+			await writeFile(data, 'not a directory')
+			restore = async () => {
+				await rm(data, {force: true})
+				await mkdir(data)
+			}
+		} else {
+			await chmod(data, 0o500)
+			restore = () => chmod(data, 0o700)
+		}
+		const writeError = /EACCES|EPERM|ENOTDIR/
+		await assert.rejects(u.procedures['system.update'].run(), writeError)
+		const again = await u.procedures['system.update'].run().then(
+			() => new Error('the folder still cannot be written'),
+			(error) => error,
+		)
+		assert.equal(/already running/.test(again.message), false, again.message)
+		assert.match(again.message, writeError)
+		const stuck = await u.procedures['system.updateStatus'].run()
+		assert.equal(stuck.running, false)
+		assert.notEqual(stuck.description, 'Starting')
+		await restore()
+		restore = async () => {}
+		assert.equal(await u.procedures['system.update'].run(), true)
+		await until(() => calls.some((c) => c.startsWith('systemd-run')))
+	} finally {
+		await restore()
+		u.stop()
+	}
 })
 
 test('update: a failed build puts the previous version back', async () => {

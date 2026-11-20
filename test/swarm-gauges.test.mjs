@@ -51,6 +51,8 @@ test('swarmGaugeItems: one GPU is a GPU ring; two are GPU 0 and GPU 1', () => {
 	assert.equal(two.at(-2).k, 'GPU 0')
 	assert.equal(two.at(-1).k, 'GPU 1')
 	assert.equal(two.at(-1).p, 4)
+	assert.equal(two.at(-2).key, 'gpu-0')
+	assert.equal(two.at(-1).key, 'gpu-1')
 })
 
 test('swarmGaugeItems: two battery packs are still one Battery ring', () => {

@@ -656,6 +656,103 @@ errors: No known data errors
 		assert.ok(call)
 		assert.match(call.find((a) => String(a).includes('uid=')) ?? '', /nosuid,nodev/)
 	})
+
+	test('mount: a second disk with the same label is mounted beside the first', async () => {
+		const log = []
+		const mkdirs = []
+		const chowns = []
+		const sameLabel = {
+			blockdevices: [
+				{
+					name: 'sda',
+					path: '/dev/sda',
+					type: 'disk',
+					children: [{name: 'sda1', path: '/dev/sda1', type: 'part', fstype: 'exfat', label: 'USB', mountpoints: ['/run/media/chris/USB']}],
+				},
+				{
+					name: 'sdb',
+					path: '/dev/sdb',
+					type: 'disk',
+					children: [{name: 'sdb1', path: '/dev/sdb1', type: 'part', fstype: 'exfat', label: 'USB', mountpoints: [null]}],
+				},
+			],
+		}
+		const run = async (cmd, args) => {
+			log.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(sameLabel)
+			return ''
+		}
+		const fs = fakeFs({'/etc/fstab': ''})
+		fs.mkdir = async (p) => void mkdirs.push(p)
+		fs.chown = async (p, uid, gid) => void chowns.push([p, uid, gid])
+		const h = createHelper({user, run, fs})
+		assert.equal(await h.handle('mount', ['/dev/sdb']), 'ok')
+		const mounted = log.find((l) => l[0] === 'mount')
+		assert.ok(mounted)
+		assert.equal(mounted.at(-2), '/dev/sdb1')
+		assert.equal(mounted.at(-1), '/run/media/chris/USB-2')
+		assert.ok(mkdirs.includes('/run/media/chris/USB-2'))
+		assert.ok(chowns.some((c) => c[0] === '/run/media/chris/USB-2' && c[1] === 1000 && c[2] === 1000))
+		assert.ok(!chowns.some((c) => c[0] === '/run/media/chris/USB'))
+		assert.ok(!mkdirs.includes('/run/media/chris/USB'))
+		assert.ok(chowns.some((c) => c[0] === '/run/media/chris'))
+
+		const twoParts = {
+			blockdevices: [
+				{
+					name: 'sdc',
+					path: '/dev/sdc',
+					type: 'disk',
+					children: [
+						{name: 'sdc1', path: '/dev/sdc1', type: 'part', fstype: 'exfat', label: 'USB', mountpoints: [null]},
+						{name: 'sdc2', path: '/dev/sdc2', type: 'part', fstype: 'exfat', label: 'USB', mountpoints: [null]},
+					],
+				},
+			],
+		}
+		const log2 = []
+		const run2 = async (cmd, args) => {
+			log2.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(twoParts)
+			return ''
+		}
+		const h2 = createHelper({user, run: run2, fs: fakeFs({'/etc/fstab': ''})})
+		assert.equal(await h2.handle('mount', ['/dev/sdc']), 'ok')
+		const dests = log2.filter((l) => l[0] === 'mount').map((l) => [l.at(-2), l.at(-1)])
+		assert.deepEqual(dests, [
+			['/dev/sdc1', '/run/media/chris/USB'],
+			['/dev/sdc2', '/run/media/chris/USB-2'],
+		])
+
+		const safeName = {
+			blockdevices: [
+				{
+					name: 'sdd',
+					path: '/dev/sdd',
+					type: 'disk',
+					children: [{name: 'sdd1', path: '/dev/sdd1', type: 'part', fstype: 'ext4', label: 'My Disk', mountpoints: ['/run/media/chris/My_Disk']}],
+				},
+				{
+					name: 'sde',
+					path: '/dev/sde',
+					type: 'disk',
+					children: [{name: 'sde1', path: '/dev/sde1', type: 'part', fstype: 'ext4', label: 'My Disk', mountpoints: [null]}],
+				},
+			],
+		}
+		const log3 = []
+		const run3 = async (cmd, args) => {
+			log3.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(safeName)
+			return ''
+		}
+		const h3 = createHelper({user, run: run3, fs: fakeFs({'/etc/fstab': ''})})
+		assert.equal(await h3.handle('mount', ['/dev/sde']), 'ok')
+		const safe = log3.find((l) => l[0] === 'mount')
+		assert.ok(safe)
+		assert.equal(safe.at(-2), '/dev/sde1')
+		assert.equal(safe.at(-1), '/run/media/chris/My_Disk-2')
+	})
 })
 
 describe('omarchyd storage', () => {

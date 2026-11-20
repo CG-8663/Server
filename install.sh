@@ -300,10 +300,10 @@ fi
 # 3. Your account, created here in the terminal so the password never crosses the network.
 if ! node "$APP/omarchyd/cli.mjs" has-owner --data "$BASE/omarchyd" >/dev/null 2>&1; then
 	say "Create your Omarchy Server account"
-	if [ -r /dev/tty ]; then
+	if (: </dev/tty) 2>/dev/null; then
 		node "$APP/omarchyd/cli.mjs" create-owner --data "$BASE/omarchyd" </dev/tty
 	else
-		die "No terminal to type a password in. Run: node $APP/omarchyd/cli.mjs create-owner --data $BASE/omarchyd"
+		die "No terminal to type a password in. Run this installer again from a terminal (ssh -t): the services are created only by a full run."
 	fi
 fi
 

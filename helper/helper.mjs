@@ -114,7 +114,9 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		if (mounts(d).some((m) => /\/Pools\//.test(m))) return true
 		const text = await fstab()
 		const uuids = new Set(flat(d).map((x) => x.uuid).filter(Boolean))
-		return text.some((l) => l.includes(FSTAB_MARK) && [...uuids].some((u) => l.includes(u)))
+		if (text.some((l) => l.includes(FSTAB_MARK) && [...uuids].some((u) => l.includes(u)))) return true
+		const names = new Set(await zfsPoolNames())
+		return flat(d).some((x) => x.fstype === 'zfs_member' && names.has(x.label))
 	}
 	// Blank: no partitions, no filesystem or RAID signature, nothing mounted, not the system drive.
 	async function blankDisk(path) {
@@ -359,7 +361,17 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			const nodes = (d.children ?? []).length ? flat(d).filter((x) => x !== d) : [d]
 			const targets = nodes.filter((x) => x.fstype && !SKIP_FS.has(x.fstype))
 			if (!targets.length) fail('Nothing to mount')
+			// Names already mounted under /run/media/$USER, so a second stick with the same label
+			// is placed beside the first instead of on top of it. A path under that name counts too.
+			const media = join('/run/media', user.name)
 			const used = new Set()
+			for (const dev of await blockDevices()) {
+				for (const m of flat(dev).flatMap((x) => (x.mountpoints ?? []).filter(Boolean))) {
+					if (!m.startsWith(`${media}${sep}`)) continue
+					const name = m.slice(media.length + 1).split(sep)[0]
+					if (name) used.add(name)
+				}
+			}
 			for (const t of targets) {
 				let name = safeMountName(t.label) || safeMountName(t.uuid) || safeMountName(t.name) || 'disk'
 				const base = name
