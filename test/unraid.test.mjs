@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import {mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
+import {chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {mock, test} from 'node:test'
@@ -211,6 +211,135 @@ test('the idle timer forgets the Unraid password after an import ends', async ()
 		mock.timers.reset()
 		await rm(dir, {recursive: true, force: true})
 		await rm(dirB, {recursive: true, force: true})
+	}
+})
+
+test('a damaged unraid job.json is not a running import and is left unchanged', async () => {
+	// Empty, truncated, a BOM, and JSON that is not a plain object. null and [] parse, but they are not a job.
+	const bodies = ['', '{', '\uFEFF{"endedAt":null}', 'null', '[]', '"stuck"']
+	for (const body of bodies) {
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-job-'))
+		const jobDir = join(dir, 'unraid')
+		const file = join(jobDir, 'job.json')
+		await mkdir(jobDir, {recursive: true})
+		await writeFile(file, body)
+		const rejections = []
+		const onRejection = (reason) => rejections.push(reason)
+		const logged = []
+		const origError = console.error
+		console.error = (...args) => logged.push(args.map(String).join(' '))
+		process.on('unhandledRejection', onRejection)
+		let u
+		try {
+			u = createUnraid({dataDir: dir, files: {}, apps: {}, machines: {}, storage: null, run: async () => ({stdout: '', stderr: ''})})
+			await new Promise((r) => setTimeout(r, 50))
+			assert.deepEqual(
+				rejections.map((e) => e?.message ?? String(e)),
+				[],
+				`job.json ${JSON.stringify(body)} rejected startup`,
+			)
+			await u.ready
+			assert.equal(await readFile(file, 'utf8'), body, 'startup must not rewrite a damaged job.json')
+			const st = await u.procedures['unraid.status'].run()
+			assert.equal(st.job, null)
+			await assert.rejects(u.procedures['unraid.connect'].run({host: 'tower.local', password: 'x'}), (err) => {
+				assert.doesNotMatch(err.message, /import is running/)
+				return true
+			})
+			const damage = logged.filter((line) => line.includes('job.json'))
+			assert.equal(damage.length, 1)
+			assert.equal(damage[0].includes(dir), false, 'the log must not include the path')
+			if (body) assert.equal(damage[0].includes(body), false, 'the log must not include the file contents')
+		} finally {
+			console.error = origError
+			process.off('unhandledRejection', onRejection)
+			u?.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+})
+
+test('a job that was still running is marked stopped in memory without rewriting job.json', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-job-ok-'))
+	const file = join(dir, 'unraid', 'job.json')
+	const body = '{\n\t"id": "ab12",\n\t"endedAt": null,\n\t"items": []\n}\n'
+	await mkdir(join(dir, 'unraid'), {recursive: true})
+	await writeFile(file, body)
+	const u = createUnraid({dataDir: dir, files: {}, apps: {}, machines: {}, storage: null, run: async () => ({stdout: '', stderr: ''})})
+	try {
+		await u.ready
+		await new Promise((r) => setTimeout(r, 20))
+		const st = await u.procedures['unraid.status'].run()
+		assert.equal(st.job.id, 'ab12')
+		assert.ok(st.job.endedAt)
+		assert.match(st.job.stopped, /server restarted/)
+		assert.equal(await readFile(file, 'utf8'), body)
+		await assert.rejects(u.procedures['unraid.connect'].run({host: 'tower.local', password: 'x'}), (err) => {
+			assert.doesNotMatch(err.message, /import is running/)
+			return true
+		})
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('a failed job save does not leave the import running', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-job-ro-'))
+	const jobDir = join(dir, 'unraid')
+	const file = join(jobDir, 'job.json')
+	const previous = '{\n\t"id": "old",\n\t"endedAt": 1,\n\t"items": []\n}\n'
+	await mkdir(join(dir, 'tree', 'Home'), {recursive: true})
+	await mkdir(jobDir, {recursive: true})
+	await writeFile(file, previous)
+	let rsyncs = 0
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync') {
+			rsyncs++
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\n', stderr: ''}
+		if (remote.includes('/mnt/user')) return {stdout: 'Media\t100\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	const u = createUnraid({dataDir: dir, files, apps: {}, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		// The file itself has to refuse writes. A read-only directory still lets writeFile replace a file it can open.
+		await chmod(file, 0o400)
+		await chmod(jobDir, 0o500)
+		await assert.rejects(u.procedures['unraid.start'].run({shares: ['Media']}), (err) => {
+			assert.equal(err.code, 'EACCES')
+			assert.doesNotMatch(err.message, /import is already running/)
+			return true
+		})
+		assert.equal(rsyncs, 0, 'the copy must not start when the job file cannot be saved')
+		assert.equal(await readFile(file, 'utf8'), previous)
+		const stuck = await u.procedures['unraid.status'].run()
+		assert.equal(stuck.job?.id, 'old')
+		assert.ok(stuck.job?.endedAt)
+		await chmod(jobDir, 0o700)
+		await chmod(file, 0o600)
+		const started = await u.procedures['unraid.start'].run({shares: ['Media']})
+		assert.equal(typeof started.id, 'string')
+		assert.notEqual(started.id, 'old')
+		let done
+		for (let i = 0; i < 50; i++) {
+			await new Promise((r) => setImmediate(r))
+			done = await u.procedures['unraid.status'].run()
+			if (done.job?.endedAt && done.job.id !== 'old') break
+		}
+		assert.ok(done.job?.endedAt)
+		assert.equal(rsyncs, 1)
+		assert.equal((await stat(file)).mode & 0o777, 0o600)
+	} finally {
+		await chmod(jobDir, 0o700).catch(() => {})
+		u.close()
+		await rm(dir, {recursive: true, force: true})
 	}
 })
 
