@@ -116,6 +116,22 @@ test('an HTTPS WebUI label sets web.https on the imported app', () => {
 	assert.deepEqual(app.web, {service: 'vaultwarden', port: 8443, https: true})
 })
 
+test('imported container version ignores registry ports and image digests', () => {
+	const digest = 'a'.repeat(64)
+	const cases = [
+		['nginx:1.25', '1.25'],
+		['registry.local:5000/team/app:1.2', '1.2'],
+		['registry.local:5000/team/app', 'latest'],
+		[`nginx@sha256:${digest}`, 'latest'],
+		[`registry.local:5000/team/app:1.2@sha256:${digest}`, '1.2'],
+		['nginx', 'latest'],
+	]
+	for (const [Image, expected] of cases) {
+		const p = containerPlan({Name: '/app', Config: {Image}})
+		assert.equal(YAML.parse(p.files['omarchy-app.yml']).version, expected, Image)
+	}
+})
+
 test('a VM on Unraid: its settings and disks', () => {
 	const xml = `<domain type='kvm'><name>Win11</name><memory unit='KiB'>8388608</memory><vcpu placement='static'>4</vcpu>
 <os><loader readonly='yes' type='pflash'>/usr/share/qemu/ovmf-x64/OVMF_CODE-pure-efi.fd</loader><type arch='x86_64' machine='pc-q35-7.2'>hvm</type></os>

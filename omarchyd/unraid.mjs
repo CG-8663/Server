@@ -66,6 +66,14 @@ export function webuiPort(label) {
 	return {port: Number(m[1]), path: m[2] && m[2] !== '/' ? m[2] : '', ...(/^\s*https:\/\//i.test(s) ? {https: true} : {})}
 }
 
+function imageVersion(image) {
+	const name = String(image ?? '').split('@')[0]
+	const last = name.slice(name.lastIndexOf('/') + 1)
+	const colon = last.indexOf(':')
+	const tag = colon >= 0 ? last.slice(colon + 1) : ''
+	return (tag || 'latest').slice(0, 40)
+}
+
 // One container (docker inspect) → an app listing (omarchy-app.yml + docker-compose.yml), what to copy
 // for it, and anything that doesn't come across.
 export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = () => null, takenIds = new Set()} = {}) {
@@ -179,7 +187,7 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 		name,
 		tagline: 'Brought over from Unraid',
 		category: 'utilities',
-		version: (image.split(':')[1] ?? 'latest').slice(0, 40),
+		version: imageVersion(image),
 		...(publicPort && webPort ? {port: publicPort, web: {service, port: webPort, ...(ui?.https ? {https: true} : {})}, path: ui?.path ?? ''} : {}),
 		...(kept.length ? {openPorts: [...new Set(kept.map((p) => p.host))]} : {}),
 		description: `${name}, moved from your Unraid server (${image}).`,
