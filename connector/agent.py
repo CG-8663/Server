@@ -268,7 +268,8 @@ def cpu_percent():
     vals = [int(x) for x in parts] if parts else []
     if len(vals) < 4:
         return None
-    idle, total = vals[3] + (vals[4] if len(vals) > 4 else 0), sum(vals)
+    # guest and guest_nice (the 9th and 10th values) are already counted in user and nice.
+    idle, total = vals[3] + (vals[4] if len(vals) > 4 else 0), sum(vals[:8])
     last, _cpu_last = _cpu_last, (idle, total)
     if not last or total == last[1]:
         return None

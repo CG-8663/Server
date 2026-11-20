@@ -12,20 +12,30 @@ const read = (p) => readFile(p, 'utf8').catch(() => '')
 // CPU use between two /proc/stat samples.
 let lastCpu = null
 async function cpuSample() {
-	const line = (await read('/proc/stat')).split('\n')[0]
+	return cpuFromStat((await read('/proc/stat')).split('\n')[0])
+}
+export function cpuFromStat(line) {
 	const n = line.trim().split(/\s+/).slice(1).map(Number)
 	const idle = (n[3] ?? 0) + (n[4] ?? 0)
-	const total = n.reduce((a, b) => a + (b || 0), 0)
+	// guest and guest_nice (columns 9 and 10) are already counted in user and nice.
+	const total = n.slice(0, 8).reduce((a, b) => a + (b || 0), 0)
 	return {idle, total}
 }
+// Callers share one sample. A reading over a few milliseconds is only noise (/proc/stat moves in
+// 10 ms ticks), so within a second of the last reading the last answer is given again.
+let lastAnswer = null
+let lastAt = 0
 export async function cpuUsage() {
+	if (lastAnswer && Date.now() - lastAt < 1000) return lastAnswer
 	const now = await cpuSample()
 	const prev = lastCpu ?? now
 	lastCpu = now
 	const dTotal = now.total - prev.total
 	const used = dTotal > 0 ? (100 * (dTotal - (now.idle - prev.idle))) / dTotal : 0
 	const pct = Math.round(Math.max(0, Math.min(100, used)) * 10) / 10
-	return {threads: os.cpus().length, totalUsed: pct, system: pct, apps: [], machines: []}
+	const answer = {threads: os.cpus().length, totalUsed: pct, system: pct, apps: [], machines: []}
+	if (prev !== now) (lastAnswer = answer), (lastAt = Date.now())
+	return answer
 }
 // Prime the first sample so the first answer isn't 0.
 void cpuUsage()

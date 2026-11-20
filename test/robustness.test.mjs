@@ -162,3 +162,38 @@ test('#103 #250 web API: bad Origin and malformed JSON get JSON errors; HEAD is 
 		await rm(dir, {recursive: true, force: true})
 	}
 })
+
+test('#323 host CPU: guest time is not counted twice', async () => {
+	const {cpuFromStat} = await import('../omarchyd/system.mjs')
+	const a = cpuFromStat('cpu  100 0 0 300 0 0 0 0 0 0')
+	const b = cpuFromStat('cpu  200 0 0 600 0 0 0 0 100 0')
+	const busy = 100 * (1 - (b.idle - a.idle) / (b.total - a.total))
+	assert.equal(Math.round(busy), 25)
+})
+
+test('#321 update: two requests at once start one update', async () => {
+	const dir = await tmp()
+	const changelog = await readFile(new URL('../web/src/changelog.ts', import.meta.url), 'utf8')
+	const fetchImpl = async (url) => {
+		await new Promise((r) => setTimeout(r, 30))
+		const path = new URL(url).pathname.split('/').slice(4).join('/')
+		const f = {'package.json': JSON.stringify({version: '0.6.1'}), 'web/src/changelog.ts': changelog}
+		return f[path] === undefined ? new Response('', {status: 404}) : new Response(f[path])
+	}
+	try {
+		let fetches = 0
+		const run = async (cmd, args) => {
+			if (cmd === 'git' && args.includes('fetch')) fetches++
+			return cmd === 'git' && args[2] === 'rev-parse' ? 'old\n' : ''
+		}
+		const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: dir, currentVersion: '0.5.0', run, fetchImpl, helperPath: '/nonexistent'})
+		const up = u.procedures['system.update'].run
+		const results = await Promise.allSettled([up(), up()])
+		assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1)
+		assert.match(String(results.find((r) => r.status === 'rejected').reason.message), /already running/)
+		await new Promise((r) => setTimeout(r, 200))
+		assert.ok(fetches <= 1)
+	} finally {
+		await rm(dir, {recursive: true, force: true})
+	}
+})
