@@ -566,16 +566,21 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					m.answerIso = answer
 				}
 				step(5)
+				// Write beside the final name. A crash while qemu-img is writing must not leave a bootable disk.qcow2.
+				const part = join(dir, 'disk.qcow2.part')
+				const disk = join(dir, 'disk.qcow2')
 				if (kind === 'cloud') {
 					const src = await ensureImage(img, (p) => step(5 + Math.floor(p * 0.75)))
 					step(82)
-					await run('qemu-img', ['convert', '-O', 'qcow2', src, join(dir, 'disk.qcow2')], {timeout: 30 * 60_000})
-					await run('qemu-img', ['resize', join(dir, 'disk.qcow2'), `${diskSizeGb}G`])
+					await run('qemu-img', ['convert', '-O', 'qcow2', src, part], {timeout: 30 * 60_000})
+					await run('qemu-img', ['resize', part, `${diskSizeGb}G`])
+					await rename(part, disk)
 				} else {
 					// Installer ISOs: a blank disk, booted from the installer until something is on it.
 					const iso = kind === 'omarchy' ? await ensureImage(img, (p) => step(5 + Math.floor(p * 0.8))) : local.real
 					step(88)
-					await run('qemu-img', ['create', '-f', 'qcow2', join(dir, 'disk.qcow2'), `${diskSizeGb}G`])
+					await run('qemu-img', ['create', '-f', 'qcow2', part, `${diskSizeGb}G`])
+					await rename(part, disk)
 					m.layout.disks.splice(1, 0, {id: 'cd0', file: iso, device: 'cdrom', bus: 'sata', format: 'raw'})
 					m.boot = ['disk0', 'cd0']
 				}
