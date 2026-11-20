@@ -6,7 +6,7 @@ import {after, before, describe, test} from 'node:test'
 
 import WebSocket from 'ws'
 
-import {createApp} from '../server/app.mjs'
+import {createApp, SLOW, timeoutFor} from '../server/app.mjs'
 import {createStore} from '../server/store.mjs'
 import {startFakeserverd} from './fake-omarchyd.mjs'
 
@@ -830,6 +830,13 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(r.status, 200)
 		assert.ok(fake.calls.findLast((c) => c.path === 'user.logout'))
 		assert.equal(touch.store.sessionCount(), 0)
+	})
+
+	test('assistant.approve uses the slow timeout so long approved steps do not time out at 20s', () => {
+		assert.equal(SLOW.has('assistant.approve'), true)
+		assert.equal(timeoutFor('assistant.approve'), 30 * 60 * 1000)
+		assert.equal(timeoutFor('assistant.reject'), 20_000)
+		assert.equal(timeoutFor('assistant.keys'), 20_000)
 	})
 })
 

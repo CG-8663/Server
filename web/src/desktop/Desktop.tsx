@@ -424,6 +424,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		setWins((ws) => ws.filter((x) => x.id !== id))
 	}, [update])
 	const minimize = useCallback((id: string) => {
+		const w = winsRef.current.find((x) => x.id === id)
+		if (w?.kind === 'assistant') closeAssistantView()
 		minSeq.current += 1
 		update(id, {min: true, minAt: minSeq.current})
 	}, [update])
@@ -2491,6 +2493,7 @@ const WindowContent = memo(
 				case 'assistant':
 					return (
 						<Assistant
+							active={!win.min}
 							onSettings={() => {
 								sessionStorage.setItem('omarchy-server:settings-page', 'assistant')
 								desk.open('settings')
