@@ -11,7 +11,7 @@ import {Icon} from '../icons'
 import {AppIcon, Sheet, SheetHeader} from '../ui'
 import {useDesktop} from '../desktop/Desktop'
 import {setAssistantActivity, useAssistantAnimationState} from '../assistantActivity'
-import {liveBubbleMark} from '../assistantLive'
+import {appendLiveText, finishLiveItems, insertLiveAction, liveBubbleMark, startLiveTurn} from '../assistantLive'
 import {
 	abortAssistantTurn,
 	assistantTurn,
@@ -343,13 +343,19 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		let aborted = false
 		let failed = false
 		let sawAction = false
+		let turn = startLiveTurn(aid)
 		try {
 			await streamAssistant(body, (e) => {
 				if (ac.signal.aborted) return
 				if (e.event === 'text') {
 					setTurnActivity(null)
-					setTurnItems((bs) => bs?.map((b) => (b.kind === 'text' && b.id === aid ? {...b, content: b.content + e.data.text} : b)) ?? bs)
+					setTurnItems((bs) => {
+						const step = appendLiveText(bs, turn, e.data.text)
+						turn = step.turn
+						return step.items
+					})
 				} else if (e.event === 'tool') {
+					turn = {...turn, afterTool: true}
 					const name = prettyTool(e.data.name)
 					setTurnActivity(e.data.state === 'error' ? `Couldn’t check ${name}` : `Checked ${name}`)
 				} else if (e.event === 'action') {
@@ -357,19 +363,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 					const action = cardAction(e.data)
 					if (!action.id) return
 					setTurnActivity(null)
-					setTurnItems((bs) => {
-						if (!bs) return bs
-						const card: AssistantItem = {id: `card-${action.id}`, kind: 'card', action}
-						const idx = bs.findIndex((b) => b.kind === 'card' && b.action.id === action.id)
-						if (idx >= 0) return bs.map((b, i) => (i === idx ? card : b))
-						const live = bs.findIndex((b) => b.kind === 'text' && b.id === aid && !b.content)
-						if (live >= 0) {
-							const next = bs.slice()
-							next.splice(live, 0, card)
-							return next
-						}
-						return [...bs, card]
-					})
+					setTurnItems((bs) => insertLiveAction(bs, turn.liveId, action))
 				} else if (e.event === 'done') {
 					setTurnConversationId(e.data.conversationId)
 				} else if (e.event === 'error') {
@@ -384,14 +378,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 				setTurnError(err instanceof Error ? err.message : 'The assistant did not answer')
 			}
 		} finally {
-			setTurnItems((bs) => {
-				if (!bs) return bs
-				return bs.flatMap((b) => {
-					if (b.kind !== 'text' || b.id !== aid) return [b]
-					if (!b.content && (aborted || failed || sawAction)) return []
-					return [{...b, streaming: false}]
-				})
-			})
+			setTurnItems((bs) => finishLiveItems(bs, turn.liveId, aborted || failed || sawAction))
 			finishAssistantTurn(ac)
 		}
 	}
