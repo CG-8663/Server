@@ -5,7 +5,7 @@
 import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {randomBytes} from 'node:crypto'
-import {access, readFile, statfs, writeFile} from 'node:fs/promises'
+import {access, readFile, rm, statfs, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 
@@ -393,6 +393,13 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					return true
 				},
 			},
+		},
+		// Factory reset: drop the share list and the share password. Clearing Samba is best-effort;
+		// the files go either way, so the next owner does not inherit the password.
+		async clearShares() {
+			await applyShares([]).catch((e) => console.error('[omarchyd] reset shares', e.message))
+			await rm(sharesFile, {force: true})
+			await rm(passwordFile, {force: true})
 		},
 		firewall: {
 			open: (port) => helper('firewall-open', [String(port)]).catch(() => {}),

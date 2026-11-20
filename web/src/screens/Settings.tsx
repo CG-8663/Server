@@ -3,9 +3,10 @@ import {useContext, useEffect, useState, type CSSProperties, type FormEvent, typ
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {logout, mutate, query, type ActiveSession, type AssistantApi, type AssistantCheck, type AssistantEffort, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
+import {resetAssistantTurn} from '../assistantTurn'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
-import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
+import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
 import {Appearance} from './More'
 import {AssistantAppearanceSettings} from '../character/widgets'
 import {OmarchyThemes} from '../OmarchyThemes'
@@ -100,7 +101,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 		if (p === 'main') sessionStorage.removeItem('omarchy-server:settings-page')
 		else sessionStorage.setItem('omarchy-server:settings-page', p)
 		setPage(p)
-		window.scrollTo({top: 0})
+		scrollPhoneToTop()
 	}
 	const close = () => setSheet(null)
 	const owner = user.data?.role !== 'member'
@@ -402,7 +403,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 			</p>
 
 			<NameSheet open={sheet === 'name'} current={user.data?.name ?? ''} onClose={close} />
-			<PasswordSheet open={sheet === 'password'} onClose={close} onSignedOut={onSignedOut} />
+			<PasswordSheet open={sheet === 'password'} onClose={close} />
 			<TwoFactorSheet open={sheet === '2fa'} enabled={!!twoFactor.data} onClose={close} />
 			<HostnameSheet open={sheet === 'hostname'} current={hostname.data ?? ''} onClose={close} />
 			{sheet === 'wifi' && <WifiSheet onClose={close} connected={wifi.data?.status === 'connected' ? wifi.data.ssid : undefined} />}
@@ -413,6 +414,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				onDone={async () => {
 					await logout().catch(() => {})
 					qc.clear()
+					resetAssistantTurn()
 					onSignedOut()
 				}}
 			/>
@@ -991,7 +993,7 @@ function NameSheet({open, current, onClose}: {open: boolean; current: string; on
 	)
 }
 
-function PasswordSheet({open, onClose, onSignedOut}: {open: boolean; onClose: () => void; onSignedOut: () => void}) {
+function PasswordSheet({open, onClose}: {open: boolean; onClose: () => void}) {
 	const save = useSave()
 	const [oldPassword, setOld] = useState('')
 	const [newPassword, setNew] = useState('')
@@ -1018,8 +1020,9 @@ function PasswordSheet({open, onClose, onSignedOut}: {open: boolean; onClose: ()
 						onSuccess: async () => {
 							onClose()
 							// Omarchy Server may sign every session out after a password change.
+							// This fetch does not go through the client that fires touch:signed-out.
 							const still = await fetch('/api/rpc/user.get', {credentials: 'same-origin'}).catch(() => null)
-							if (still?.status === 401) onSignedOut()
+							if (still?.status === 401) window.dispatchEvent(new Event('touch:signed-out'))
 						},
 					},
 				)

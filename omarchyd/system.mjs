@@ -9,23 +9,54 @@ const sh = (cmd, args, timeout = 10_000) =>
 
 const read = (p) => readFile(p, 'utf8').catch(() => '')
 
-// CPU use between two /proc/stat samples.
+// CPU use between two /proc/stat samples. guest and guest_nice are already inside
+// user and nice, so only the first eight columns count. A second caller in the same
+// second gets the last percent: a window of a few milliseconds is one clock tick or none.
+const CPU_SAMPLE_MS = 1000
 let lastCpu = null
-async function cpuSample() {
-	const line = (await read('/proc/stat')).split('\n')[0]
+let lastCpuAt = -Infinity
+let lastCpuResult = null
+let cpuGen = 0
+export function forgetCpu() {
+	cpuGen++
+	lastCpu = null
+	lastCpuAt = -Infinity
+	lastCpuResult = null
+}
+// guest and guest_nice (columns 9 and 10) are already counted in user and nice.
+export function cpuFromStat(line) {
 	const n = line.trim().split(/\s+/).slice(1).map(Number)
 	const idle = (n[3] ?? 0) + (n[4] ?? 0)
-	const total = n.reduce((a, b) => a + (b || 0), 0)
+	const total = n.slice(0, 8).reduce((a, b) => a + (b || 0), 0)
 	return {idle, total}
 }
-export async function cpuUsage() {
-	const now = await cpuSample()
-	const prev = lastCpu ?? now
-	lastCpu = now
-	const dTotal = now.total - prev.total
-	const used = dTotal > 0 ? (100 * (dTotal - (now.idle - prev.idle))) / dTotal : 0
+async function cpuSample(readText) {
+	const line = (await readText('/proc/stat')).split('\n')[0]
+	return cpuFromStat(line)
+}
+function cpuResult(pct) {
+	const threads = os.cpus().length
+	return {threads, totalUsed: pct, system: pct, apps: [], machines: []}
+}
+export async function cpuUsage({read: readText = read, now = Date.now} = {}) {
+	const gen = cpuGen
+	const t = now()
+	if (lastCpu && t - lastCpuAt >= 0 && t - lastCpuAt < CPU_SAMPLE_MS) return lastCpuResult
+	const sample = await cpuSample(readText)
+	if (gen !== cpuGen) return lastCpuResult ?? cpuResult(0)
+	const prev = lastCpu
+	const prevAt = lastCpuAt
+	lastCpu = sample
+	lastCpuAt = t
+	if (!prev || t - prevAt < 0) {
+		lastCpuResult = cpuResult(0)
+		return lastCpuResult
+	}
+	const dTotal = sample.total - prev.total
+	const used = dTotal > 0 ? (100 * (dTotal - (sample.idle - prev.idle))) / dTotal : 0
 	const pct = Math.round(Math.max(0, Math.min(100, used)) * 10) / 10
-	return {threads: os.cpus().length, totalUsed: pct, system: pct, apps: [], machines: []}
+	lastCpuResult = cpuResult(pct)
+	return lastCpuResult
 }
 // Prime the first sample so the first answer isn't 0.
 void cpuUsage()
@@ -262,7 +293,10 @@ async function drmGpus(list, readText, {skipVendors = new Set()} = {}) {
 		}
 		const product = (await readText(`${dir}/product_name`)).trim()
 		const name = product || drmFallbackName(vendor, card)
-		if (!vendor && used == null && memoryUsed == null && memoryTotal == null && temperature == null && !product) continue
+		// A vendor id alone is not a GPU. Baseboard chips and virtio displays have one
+		// and no utilisation. Intel is listed anyway: its busy file is often absent.
+		const reading = used != null || memoryUsed != null || memoryTotal != null
+		if (!reading && vendor !== VENDOR_INTEL) continue
 		gpus.push({id: `drm-${card}`, index: Number(card.slice(4)), name, used, memoryUsed, memoryTotal, temperature})
 	}
 	return gpus
@@ -307,7 +341,9 @@ export async function gpuUsage({run = sh, list = readdir, read: readText = read,
 		}
 		const skipVendors = nvidia.length ? new Set([VENDOR_NVIDIA]) : new Set()
 		const others = await drmGpus(list, readText, {skipVendors})
-		return {gpus: [...nvidia, ...others]}
+		// nvidia-smi and the DRM card number are separate indexes. Number the combined list
+		// so two cards are not both "GPU 0". The id stays the stable identity.
+		return {gpus: [...nvidia, ...others].map((g, i) => ({...g, index: i}))}
 	} catch {
 		return {gpus: []}
 	}

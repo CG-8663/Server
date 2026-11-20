@@ -1,8 +1,11 @@
 // Background samples of live system stats. Each field has its own interval.
 // Sampling runs only while something is reading, and stops about 15s after the
 // last read. The next read returns the last snapshot immediately and refreshes.
-// snapshot() and get() are memory reads for the caller; they do not wait on hardware
-// except the very first get(), which waits for cpu so the first look is not empty.
+// snapshot() and get() are memory reads for the caller. They do not wait on hardware
+// except the very first get(), which waits for that first tick so the first look is
+// not empty. The GPU read is left running. Scheduling uses a monotonic clock so a
+// step of the wall clock does not freeze the gauges. The wall clock is only the
+// sampledAt time shown to the user.
 
 export const DEFAULT_INTERVALS = {
 	cpu: 1_000,
@@ -47,13 +50,18 @@ function mapUsage(total, kind, breakdown) {
 
 export function createSampler({
 	now = Date.now,
+	mono,
 	intervals = DEFAULT_INTERVALS,
 	read,
 	setIntervalFn = setInterval,
 	clearIntervalFn = clearInterval,
 	setTimeoutFn = setTimeout,
 } = {}) {
+	// Tests pass their own now and drive the schedule with it. Production leaves now
+	// as Date.now and schedules with performance.now, which does not step backward.
+	const schedule = mono ?? (now === Date.now ? () => performance.now() : now)
 	const lastAt = {}
+	const pending = new Set()
 	let snap = emptySnapshot()
 	let lastBreakdown = {apps: [], machines: []}
 	let timer = null
@@ -61,48 +69,51 @@ export function createSampler({
 	let stopped = false
 	let lastRead = 0
 
-	const due = (key) => lastAt[key] == null || now() - lastAt[key] >= (intervals[key] ?? DEFAULT_INTERVALS[key])
+	const due = (key) => {
+		if (pending.has(key) || !read?.[key]) return false
+		if (lastAt[key] == null) return true
+		const elapsed = schedule() - lastAt[key]
+		return elapsed < 0 || elapsed >= (intervals[key] ?? DEFAULT_INTERVALS[key])
+	}
 
 	function applyBreakdown() {
 		if (snap.cpu) snap.cpu = mapUsage(snap.cpu, 'cpu', lastBreakdown)
 		if (snap.memory) snap.memory = mapUsage(snap.memory, 'memory', lastBreakdown)
 	}
 
+	// The attempt is recorded when the read starts. A failure still waits out the
+	// interval, and a read that is already running is not started again.
 	function sample(key, apply) {
-		if (!due(key) || !read[key]) return null
-		return Promise.resolve(read[key]())
-			.then((v) => apply(v))
+		if (!due(key)) return null
+		lastAt[key] = schedule()
+		pending.add(key)
+		let pendingRead
+		try {
+			pendingRead = read[key]()
+		} catch (error) {
+			pendingRead = Promise.reject(error)
+		}
+		return Promise.resolve(pendingRead)
+			.then((v) => {
+				apply(v)
+				snap.sampledAt[key] = now()
+			})
 			.catch(() => {})
+			.finally(() => pending.delete(key))
 	}
 
 	async function tick({waitGpu = true} = {}) {
 		if (stopped) return snap
-		const t = now()
 		const jobs = []
 		const job = (p) => p && jobs.push(p)
-		job(
-			sample('breakdown', (b) => {
-				lastBreakdown = b ?? {apps: [], machines: []}
-				lastAt.breakdown = t
-				snap.sampledAt.breakdown = t
-			}),
-		)
-		job(sample('cpu', (v) => ((snap.cpu = v), (lastAt.cpu = t), (snap.sampledAt.cpu = t))))
-		job(sample('memory', (v) => ((snap.memory = v), (lastAt.memory = t), (snap.sampledAt.memory = t))))
-		job(sample('temp', (v) => ((snap.temp = v), (lastAt.temp = t), (snap.sampledAt.temp = t))))
-		job(sample('battery', (v) => ((snap.battery = v), (lastAt.battery = t), (snap.sampledAt.battery = t))))
-		job(sample('disk', (v) => ((snap.disk = v), (lastAt.disk = t), (snap.sampledAt.disk = t))))
-		job(sample('uptime', (v) => ((snap.uptime = v), (lastAt.uptime = t), (snap.sampledAt.uptime = t))))
-		let gpuJob = null
-		if (due('gpu') && read.gpu) {
-			lastAt.gpu = t
-			gpuJob = Promise.resolve(read.gpu())
-				.then((v) => {
-					snap.gpu = v
-					snap.sampledAt.gpu = now()
-				})
-				.catch(() => {})
-		}
+		job(sample('breakdown', (b) => (lastBreakdown = b ?? {apps: [], machines: []})))
+		job(sample('cpu', (v) => (snap.cpu = v)))
+		job(sample('memory', (v) => (snap.memory = v)))
+		job(sample('temp', (v) => (snap.temp = v)))
+		job(sample('battery', (v) => (snap.battery = v)))
+		job(sample('disk', (v) => (snap.disk = v)))
+		job(sample('uptime', (v) => (snap.uptime = v)))
+		const gpuJob = sample('gpu', (v) => (snap.gpu = v))
 		if (jobs.length) await Promise.all(jobs)
 		applyBreakdown()
 		if (gpuJob && waitGpu) await gpuJob
@@ -120,7 +131,7 @@ export function createSampler({
 		if (stopped || timer != null) return
 		const kick = () => {
 			if (stopped) return
-			if (now() - lastRead >= IDLE_MS) {
+			if (schedule() - lastRead >= IDLE_MS) {
 				pause()
 				return
 			}
@@ -133,13 +144,13 @@ export function createSampler({
 	// A read keeps the timer alive. Coming back from idle returns the snapshot the
 	// caller already has and refreshes on the next turn, without waiting.
 	function touch({refresh = true} = {}) {
-		lastRead = now()
+		lastRead = schedule()
 		if (stopped) return
 		const wasIdle = timer == null
 		arm()
 		if (!wasIdle || !refresh || lastAt.cpu == null) return
 		const later = setTimeoutFn(() => {
-			if (!stopped && timer != null && now() - lastRead < IDLE_MS) void tick({waitGpu: false})
+			if (!stopped && timer != null && schedule() - lastRead < IDLE_MS) void tick({waitGpu: false})
 		}, 0)
 		later?.unref?.()
 	}

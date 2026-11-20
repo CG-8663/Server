@@ -42,12 +42,12 @@ export async function handleRpc(req, res, url, procedures, authenticate) {
 		if (!proc) throw new RpcError('NOT_FOUND', `No procedure found on path "${name}"`)
 		if ((proc.kind === 'query') !== (req.method === 'GET')) throw new RpcError('METHOD_NOT_SUPPORTED', 'Wrong method')
 		let input
-		if (req.method === 'GET') {
-			const raw = url.searchParams.get('input')
-			input = raw === null ? undefined : JSON.parse(raw)
-		} else {
-			const body = await readBody(req)
-			input = body ? JSON.parse(body) : undefined
+		const raw = req.method === 'GET' ? url.searchParams.get('input') : await readBody(req)
+		// Only the request's own JSON is "Invalid JSON". A parse error inside a procedure is a server error.
+		try {
+			input = raw === null || raw === '' ? undefined : JSON.parse(raw)
+		} catch {
+			throw new RpcError('BAD_REQUEST', 'Invalid JSON')
 		}
 		const ctx = {req, res, auth: null}
 		if (!proc.public) {
@@ -57,7 +57,6 @@ export async function handleRpc(req, res, url, procedures, authenticate) {
 		const data = await proc.run(input, ctx)
 		sendJson(res, 200, {result: {data: data ?? null}})
 	} catch (error) {
-		if (error instanceof SyntaxError) return sendError(res, new RpcError('BAD_REQUEST', 'Invalid JSON'))
 		sendError(res, error)
 	}
 }

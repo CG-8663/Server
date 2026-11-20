@@ -19,6 +19,7 @@ import os from 'node:os'
 import {join} from 'node:path'
 import YAML from 'yaml'
 
+import {writeAtomic} from './atomic.mjs'
 import {defaultSpawn} from './backups.mjs'
 import {RpcError} from './rpc.mjs'
 
@@ -258,10 +259,24 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		await mkdir(dir, {recursive: true, mode: 0o700})
 		await writeFile(askpass, '#!/bin/sh\nprintf \'%s\\n\' "$OMARCHY_UNRAID_SECRET"\n', {mode: 0o700})
 		await chmod(askpass, 0o700)
-		job = JSON.parse((await readFile(jobFile, 'utf8').catch(() => null)) ?? 'null')
-		if (job && !job.endedAt) Object.assign(job, {endedAt: now(), stopped: 'The server restarted. Connect again and choose Continue to pick up where it left off.'})
+		// A missing file is no previous job. Empty, truncated, or non-object JSON stays on disk;
+		// rewriting it here would destroy the only copy. The log names the file, never its path or contents.
+		const text = await readFile(jobFile, 'utf8').catch(() => null)
+		if (text !== null) {
+			let parsed = null
+			try {
+				parsed = JSON.parse(text)
+			} catch {
+				/* not JSON */
+			}
+			if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) console.error('[omarchyd] job.json is empty or invalid and was left unchanged')
+			else {
+				job = parsed
+				if (!job.endedAt) Object.assign(job, {endedAt: now(), stopped: 'The server restarted. Connect again and choose Continue to pick up where it left off.'})
+			}
+		}
 	})()
-	const saveJob = () => writeFile(jobFile, JSON.stringify(job, null, '\t'), {mode: 0o600})
+	const saveJob = (record = job) => writeAtomic(jobFile, JSON.stringify(record, null, '\t'), {mode: 0o600})
 
 	function baseEnv() {
 		const env = {LC_ALL: 'C'}
@@ -285,9 +300,10 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 	const sshEnv = () => ({...baseEnv(), SSH_ASKPASS: askpass, SSH_ASKPASS_REQUIRE: 'force', DISPLAY: ':0', OMARCHY_UNRAID_SECRET: session.password})
 	function touch() {
 		clearTimeout(idle)
-		// Forget the password when nothing has happened for a while (and no import is running).
+		// Forget the password when nothing has happened for a while. rsync never calls remote, so a running import arms the next window instead of dropping it.
 		idle = setTimeout(() => {
-			if (!job || job.endedAt) forget()
+			if (job && !job.endedAt) touch()
+			else forget()
 		}, 2 * 60 * 60_000)
 		idle.unref?.()
 	}
@@ -451,8 +467,10 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		for (const c of scan.containers) if (containersWanted.has(c.id)) items.push({kind: 'container', key: c.id, name: c.name, size: c.size, status: 'waiting'})
 		for (const v of scan.vms) if (vmsWanted.has(v.name)) items.push({kind: 'vm', key: v.name, name: v.name, size: v.size, status: 'waiting'})
 		if (!items.length) throw new RpcError('BAD_REQUEST', 'Choose something to bring over')
-		job = {id: randomBytes(4).toString('hex'), host: session.host, startedAt: now(), endedAt: null, destination: dest, shareOnNetwork: input.shareOnNetwork !== false, pauseContainers: input.pauseContainers !== false, items, shareDest: Object.fromEntries([...sharesWanted].map((s) => [s, `${dest}/${s}`]))}
-		await saveJob()
+		const next = {id: randomBytes(4).toString('hex'), host: session.host, startedAt: now(), endedAt: null, destination: dest, shareOnNetwork: input.shareOnNetwork !== false, pauseContainers: input.pauseContainers !== false, items, shareDest: Object.fromEntries([...sharesWanted].map((s) => [s, `${dest}/${s}`]))}
+		await saveJob(next)
+		job = next
+		touch()
 		const plans = new Map(scan.containers.map((c) => [c.id, c]))
 		const vmPlans = new Map(scan.vms.map((v) => [v.name, v]))
 		job.done = (async () => {
@@ -477,6 +495,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 				await saveJob().catch(() => {})
 			}
 			job.endedAt = now()
+			touch()
 			await saveJob().catch(() => {})
 		})()
 		return {id: job.id}

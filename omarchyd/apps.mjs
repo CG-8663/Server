@@ -30,6 +30,7 @@ import YAML from 'yaml'
 import {RpcError} from './rpc.mjs'
 import {SYSTEM_PERMISSIONS} from './system-apps.mjs'
 import {dualProtocolServer, tlsContext, wantsUpgrade} from './tls.mjs'
+import {linkProxy} from './proxy-link.mjs'
 import {usbComposeOverlay} from './usb.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
@@ -251,10 +252,16 @@ export function appPermissions(text, where = {}) {
 			else if (!/^(CHOWN|DAC_OVERRIDE|FOWNER|FSETID|SETUID|SETGID|SETPCAP|NET_BIND_SERVICE|KILL|AUDIT_WRITE|MKNOD|SETFCAP|SYS_CHROOT|SYS_NICE|SYS_RESOURCE|IPC_LOCK)$/.test(cap)) add('system', cap)
 		}
 		if (s.sysctls && Object.keys(s.sysctls).length) add('network', 'sysctls')
+		// Long syntax publishes the host port as one value (not host:container). Install calls this
+		// with no `where`, so a default such as ${PORT:-80} still has to expand. A start-end range
+		// counts from its low end. One part, or only `target`, is the container port.
+		const expandPort = (v) => (where.expand ? where.expand(v) : expandVars(String(v), {}))
 		for (const p of s.ports ?? []) {
-			const t = typeof p === 'object' ? String(p.published ?? '') : String(p).split('/')[0]
-			const parts = t.split(':')
-			const host = Number(parts.length >= 3 ? parts[parts.length - 2] : parts.length === 2 ? parts[0] : NaN)
+			const long = !!p && typeof p === 'object'
+			const spec = expandPort(long ? String(p.published ?? '') : String(p).split('/')[0])
+			const parts = long ? null : spec.split(':')
+			const hostPort = long ? spec : parts.length >= 3 ? parts[parts.length - 2] : parts.length === 2 ? parts[0] : ''
+			const host = Number(String(hostPort).split('-')[0])
 			if (Number.isInteger(host) && host > 0 && host < 1024) add('low-ports', host)
 		}
 	}
@@ -777,8 +784,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				r.pipe(res)
 			})
 			up.on('timeout', () => up.destroy(new Error('timeout')))
+			linkProxy(req, res, up)
 			up.on('error', () => {
-				if (!res.headersSent) res.writeHead(502, {'content-type': 'text/plain'})
+				if (res.headersSent) return
+				res.writeHead(502, {'content-type': 'text/plain; charset=utf-8'})
 				res.end(`${app.name ?? app.id} isn’t answering yet. If it just started, give it a moment.`)
 			})
 			req.pipe(up)
@@ -1500,7 +1509,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			finalText = YAML.stringify(doc)
 		}
 		// System ports (below 1024): only for apps you allowed; the helper lowers the limit once.
-		const low = appPermissions(finalText).find((p) => p.id === 'low-ports')
+		// Expand with the env Compose will bind: the app .env, process env, and composeEnv (exports.sh).
+		const dotenv = parseDotEnv(await readFile(join(dir, '.env'), 'utf8').catch(() => ''))
+		const low = appPermissions(finalText, whereFor(app, dotenv)).find((p) => p.id === 'low-ports')
 		if (low && (app.permissions ?? []).includes('low-ports') && firewall?.lowPorts) await firewall.lowPorts(Math.min(...low.what.map(Number)))
 		prepared.text = finalText
 		await writeFile(join(dir, 'compose.omarchy.yml'), prepared.text, {mode: 0o600})
@@ -1521,7 +1532,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		// After placing, `folders` is id → path and Compose will expand FOLDER_* to those paths.
 		const folderIds = app.folderIds ?? (Array.isArray(app.folders) ? app.folders.map((f) => f.id) : [])
 		const folders = app.folders && !Array.isArray(app.folders) ? app.folders : undefined
-		const env = composeEnv({id: app.id, port: app.port, version: app.version, folderIds, folders})
+		const env = composeEnv({id: app.id, port: app.port, version: app.version, folderIds, folders, exports: app.exports})
 		const merged = {...expandDotEnv(dotenv, {...process.env, ...env}), ...process.env, ...env}
 		return {
 			home,

@@ -8,6 +8,7 @@ import {test} from 'node:test'
 
 import {createAssistant} from '../omarchyd/assistant.mjs'
 import {cardAction, threadItems} from '../web/src/assistant.ts'
+import {assistantActivity, setAssistantActivity} from '../web/src/assistantActivity.ts'
 import {appendLiveText, assistantIconBadge, finishLiveItems, insertLiveAction, liveBubbleMark, startLiveTurn} from '../web/src/assistantLive.ts'
 import {
 	abortAssistantTurn,
@@ -17,7 +18,12 @@ import {
 	finishAssistantTurn,
 	keepAssistantWindow,
 	openAssistantView,
+	assistantEpoch,
+	registerAssistantAbort,
 	resetAssistantTurn,
+	setTurnConversationId,
+	setTurnError,
+	setTurnItems,
 } from '../web/src/assistantTurn.ts'
 
 test('an empty live bubble shows a spinner; tokens switch it to an ellipsis', () => {
@@ -212,4 +218,60 @@ test('a tool call with no earlier text stays in one bubble, and the lookup limit
 		{kind: 'text', role: 'assistant', content: 'Found it.'},
 		{kind: 'card', id: 'a1', title: 'Install Jellyfin'},
 	])
+})
+
+test('signing out clears the previous person\'s assistant chat', () => {
+	resetAssistantTurn()
+	setTurnItems([{id: 'prev', kind: 'text', role: 'user', content: 'hello from the last person'}])
+	setTurnConversationId('conv-previous')
+	setTurnError('the last person had no key')
+	closeAssistantView()
+	const done = new AbortController()
+	beginAssistantTurn(done)
+	finishAssistantTurn(done)
+	const live = new AbortController()
+	beginAssistantTurn(live)
+	setAssistantActivity({phase: 'working', pending: 2, composing: true, successAt: 9, open: true})
+	resetAssistantTurn()
+	assert.equal(live.signal.aborted, true)
+	const turn = assistantTurn()
+	assert.equal(turn.items, null)
+	assert.equal(turn.conversationId, undefined)
+	assert.equal(turn.unread, 0)
+	assert.equal(turn.streaming, false)
+	assert.equal(turn.error, null)
+	const activity = assistantActivity()
+	assert.equal(activity.phase, 'idle')
+	assert.equal(activity.pending, 0)
+	assert.equal(activity.open, false)
+	assert.equal(activity.composing, false)
+	assert.equal(activity.successAt, 0)
+})
+
+test('reset aborts a registered approve controller and bumps the assistant epoch', () => {
+	resetAssistantTurn()
+	const before = assistantEpoch()
+	const own = new AbortController()
+	registerAssistantAbort(own)
+	resetAssistantTurn()
+	assert.equal(own.signal.aborted, true)
+	assert.notEqual(assistantEpoch(), before)
+})
+
+test('an in-flight send does not restore the conversation id after reset', async () => {
+	resetAssistantTurn()
+	const since = assistantEpoch()
+	let release = () => {}
+	const gate = new Promise((resolve) => {
+		release = resolve
+	})
+	const pending = (async () => {
+		await gate
+		// send() writes the id it just looked up only when this generation is still current.
+		setTurnConversationId('conv-previous', since)
+	})()
+	resetAssistantTurn()
+	release()
+	await pending
+	assert.equal(assistantTurn().conversationId, undefined)
 })
