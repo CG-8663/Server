@@ -14,7 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
-import {BTN, consoleDisconnectAction, wheelButtons} from './consoleHelpers'
+import {BTN, consoleDisconnectAction, screenshotFilename, wheelButtons} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -469,7 +469,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			if (!blob) return
 			const a = document.createElement('a')
 			a.href = URL.createObjectURL(blob)
-			a.download = `${machine.name.replace(/[^\w.-]+/g, '-')}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`
+			a.download = screenshotFilename(machine.name)
 			a.click()
 			window.setTimeout(() => URL.revokeObjectURL(a.href), 2000)
 			toast('Screenshot saved')
