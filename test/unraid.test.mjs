@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
-import {test} from 'node:test'
+import {mock, test} from 'node:test'
 import YAML from 'yaml'
 
 import {containerPlan, createUnraid, rsyncProgress, slug, sq, unraidPath, vmPlan, webuiPort} from '../omarchyd/unraid.mjs'
@@ -147,6 +147,70 @@ test('bad details never reach ssh', async () => {
 	} finally {
 		u.close()
 		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('the idle timer forgets the Unraid password after an import ends', async () => {
+	// The idle clock is a real timer, not the injected `now`, so only mock timers can move it.
+	mock.timers.enable({apis: ['setTimeout', 'setInterval', 'Date']})
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-idle-'))
+	const dirB = await mkdtemp(join(os.tmpdir(), 'unraid-idle-b-'))
+	let releaseRsync
+	const rsyncHeld = new Promise((resolve) => {
+		releaseRsync = resolve
+	})
+	let rsyncStarted = false
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync') {
+			rsyncStarted = true
+			await rsyncHeld
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\n', stderr: ''}
+		if (remote.includes('/mnt/user')) return {stdout: 'Media\t100\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	// realOf creates each folder from /Home/<name> down, so /Home itself has to exist already.
+	await mkdir(join(dir, 'tree', 'Home'), {recursive: true})
+	const u = createUnraid({dataDir: dir, files, apps: {}, machines: {}, storage: null, run})
+	let uB
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		await u.procedures['unraid.start'].run({shares: ['Media']})
+		for (let i = 0; i < 50 && !rsyncStarted; i++) await new Promise((r) => setImmediate(r))
+		assert.equal(rsyncStarted, true, 'the 3 hour tick has to land while rsync is still pending')
+		mock.timers.tick(3 * 60 * 60 * 1000)
+		const mid = await u.procedures['unraid.status'].run()
+		assert.equal(mid.job.endedAt, null)
+		assert.equal(mid.connected.host, 'tower.local')
+		releaseRsync()
+		let done
+		for (let i = 0; i < 50; i++) {
+			await new Promise((r) => setImmediate(r))
+			done = await u.procedures['unraid.status'].run()
+			if (done.job?.endedAt) break
+		}
+		assert.ok(done.job?.endedAt, 'the import should have finished')
+		// The window starts again when the import ends. Long after that, the password is gone.
+		mock.timers.tick(48 * 60 * 60 * 1000)
+		assert.equal((await u.procedures['unraid.status'].run()).connected, null)
+
+		// No import: three idle hours still forgets the password.
+		uB = createUnraid({dataDir: dirB, files, apps: {}, machines: {}, storage: null, run})
+		await uB.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await uB.procedures['unraid.scan'].run()
+		mock.timers.tick(3 * 60 * 60 * 1000)
+		assert.equal((await uB.procedures['unraid.status'].run()).connected, null)
+	} finally {
+		u.close()
+		uB?.close()
+		mock.timers.reset()
+		await rm(dir, {recursive: true, force: true})
+		await rm(dirB, {recursive: true, force: true})
 	}
 })
 

@@ -6,7 +6,7 @@ import {logout, mutate, query, type ActiveSession, type AssistantApi, type Assis
 import {resetAssistantTurn} from '../assistantTurn'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
-import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
+import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
 import {Appearance} from './More'
 import {AssistantAppearanceSettings} from '../character/widgets'
 import {OmarchyThemes} from '../OmarchyThemes'
@@ -101,7 +101,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 		if (p === 'main') sessionStorage.removeItem('omarchy-server:settings-page')
 		else sessionStorage.setItem('omarchy-server:settings-page', p)
 		setPage(p)
-		window.scrollTo({top: 0})
+		scrollPhoneToTop()
 	}
 	const close = () => setSheet(null)
 	const owner = user.data?.role !== 'member'

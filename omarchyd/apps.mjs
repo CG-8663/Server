@@ -30,6 +30,7 @@ import YAML from 'yaml'
 import {RpcError} from './rpc.mjs'
 import {SYSTEM_PERMISSIONS} from './system-apps.mjs'
 import {dualProtocolServer, tlsContext, wantsUpgrade} from './tls.mjs'
+import {linkProxy} from './proxy-link.mjs'
 import {usbComposeOverlay} from './usb.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
@@ -47,6 +48,7 @@ const SESSION_DAYS = 30
 // TouchWorkStation's own catalog: plain Docker Compose files from each project's official image, with
 // original descriptions. Other stores (including Umbrel-format ones) can still be added by hand.
 export const DEFAULT_STORES = [{url: 'https://github.com/TouchWorkStation/app-store'}]
+export const isGithubAppStore = (url) => /github\.com\/touchworkstation\/app-store(\.git)?$/i.test(String(url ?? '').replace(/\/+$/, ''))
 const GALLERIES = {}
 // Variables omarchyd provides to every app (anything else a compose file needs without a default
 // means the app relies on something Omarchy Server doesn't offer yet).
@@ -589,6 +591,29 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			state.umbrelStoreRemoved = true
 			await save()
 		}
+		// A local clone of the catalog (file://) replaces the GitHub store so App Store and updates
+		// read the tree you sync, the same way Software update reads the local omarchy-server clone.
+		const localDefault = defaultStores.find((d) => /^file:\/\//.test(d.url))
+		if (localDefault) {
+			let changed = false
+			for (const s of state.stores) {
+				if (!isGithubAppStore(s.url)) continue
+				await rm(storeDir(s.url), {recursive: true, force: true}).catch(() => {})
+				s.url = localDefault.url
+				s.syncedAt = 0
+				changed = true
+			}
+			for (const a of state.apps) {
+				if (!isGithubAppStore(a.store)) continue
+				a.store = localDefault.url
+				changed = true
+			}
+			if (!state.stores.some((s) => s.url.toLowerCase() === localDefault.url.toLowerCase())) {
+				state.stores.unshift({url: localDefault.url, syncedAt: 0})
+				changed = true
+			}
+			if (changed) await save()
+		}
 		for (const a of state.apps) if (a.state === 'installing') Object.assign(a, {state: 'error', error: 'Install was interrupted. Uninstall it and install again.'})
 		// Newer versions ask about more kinds of access (host network, server folders, system access).
 		// Apps you already installed keep what they have, so they keep working and updating.
@@ -753,8 +778,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				r.pipe(res)
 			})
 			up.on('timeout', () => up.destroy(new Error('timeout')))
+			linkProxy(req, res, up)
 			up.on('error', () => {
-				if (!res.headersSent) res.writeHead(502, {'content-type': 'text/plain'})
+				if (res.headersSent) return
+				res.writeHead(502, {'content-type': 'text/plain; charset=utf-8'})
 				res.end(`${app.name ?? app.id} isn’t answering yet. If it just started, give it a moment.`)
 			})
 			req.pipe(up)
@@ -831,6 +858,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	function checkUrl(url) {
 		if (/^https:\/\/[\w.-]+(:\d+)?\/[\w.\-~/]+$/.test(url)) return
 		if (allowFileStores && /^file:\/\//.test(url)) return
+		if (defaultStores.some((d) => /^file:\/\//.test(d.url) && normalize(d.url) === url)) return
 		throw new RpcError('BAD_REQUEST', 'Enter the store’s https:// address, e.g. https://github.com/someone/app-store')
 	}
 	async function loadStore(url) {
@@ -1835,8 +1863,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		appUsage = {at: Date.now(), list: [...by].map(([id, u]) => ({id, ...u})), running: null}
 	}
 	function usage() {
-		if (!appUsage.running && Date.now() - appUsage.at > 5000) appUsage.running = measureApps().catch(() => (appUsage.running = null))
 		return appUsage.list
+	}
+	function refreshUsage() {
+		if (!appUsage.running) appUsage.running = measureApps().catch(() => (appUsage.running = null))
 	}
 
 	// Running installed apps that declared mcp:. Loopback only; never an openPort.
@@ -1858,6 +1888,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	return {
 		ready,
 		usage,
+		refreshUsage,
 		mcpTargets,
 		shellFor,
 		checkSession,
@@ -2025,7 +2056,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				kind: 'mutation',
 				run: async (input) => {
 					await ready
-					const url = normalize(input?.url)
+					const localDefault = defaultStores.find((d) => /^file:\/\//.test(d.url))
+					let url = normalize(input?.url)
+					if (localDefault && isGithubAppStore(url)) url = normalize(localDefault.url)
 					checkUrl(url)
 					if (state.stores.some((s) => s.url.toLowerCase() === url.toLowerCase())) throw new RpcError('CONFLICT', 'That store is already added')
 					try {

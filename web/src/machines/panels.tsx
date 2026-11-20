@@ -155,7 +155,7 @@ export function Chart({title, points, series, max, format}: {title: string; poin
 export function SummaryPanel({d}: {d: MachineDetails}) {
 	const stats = useStats(d.id, d.state === 'running')
 	const pts = stats.data?.points ?? []
-	const last = pts.at(-1)
+	const last = stats.data?.last ?? pts.at(-1)
 	const action = useMachineAction()
 	const [notes, setNotes] = useState<string | null>(null)
 	const host = typeof location !== 'undefined' ? location.hostname : ''
