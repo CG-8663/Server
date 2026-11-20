@@ -237,4 +237,16 @@ describe('network shares are owner-only', () => {
 		}
 		assert.equal((await call('query', 'storage.pools', undefined, member)).status, 200, 'members can still see pools')
 	})
+	test('a member cannot add or remove an app store', async () => {
+		const add = await call('mutation', 'appStore.addRepository', {url: 'http://example.com/store'}, member)
+		assert.equal(add.status, 403)
+		assert.match(add.body.error.message, /owner/i)
+		const remove = await call('mutation', 'appStore.removeRepository', {url: 'https://github.com/example/not-added'}, member)
+		assert.equal(remove.status, 403)
+		assert.match(remove.body.error.message, /owner/i)
+		const ownerAdd = await call('mutation', 'appStore.addRepository', {url: 'http://example.com/store'}, owner)
+		assert.equal(ownerAdd.status, 400)
+		assert.match(ownerAdd.body.error.message, /https/i)
+		assert.equal((await call('query', 'appStore.repositories', undefined, member)).status, 200)
+	})
 })

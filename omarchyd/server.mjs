@@ -352,7 +352,13 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			),
 		),
 		...machines.procedures,
-		...apps.procedures,
+		...Object.fromEntries(
+			Object.entries(apps.procedures).map(([name, p]) =>
+				name === 'appStore.addRepository' || name === 'appStore.removeRepository'
+					? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'change app stores'), p.run(input))}]
+					: [name, p],
+			),
+		),
 		...Object.fromEntries(
 			Object.entries(usb.procedures).map(([name, p]) =>
 				name === 'usb.list' ? [name, p] : [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'attach USB devices'), p.run(input))}],
