@@ -158,3 +158,28 @@ test('#260: start and restart exit 1 when services fail or are inactive', async 
 		assert.match(r.stdout, /Running at http:\/\//)
 	}
 })
+
+test('#619: stop exits 1 unless systemctl succeeds and both services are inactive', async () => {
+	const failBox = await makeSandbox('stop-fail', {
+		systemctl: 'echo "systemctl $*" >>"$FAKE_LOG"\nexit 1',
+	})
+	const r1 = runCli(failBox, ['stop'])
+	assert.equal(r1.status, 1)
+	assert.match(r1.stdout, /Couldn't stop\. See: omarchy-server logs/)
+	assert.doesNotMatch(r1.stdout, /\bStopped\b/)
+
+	const stillOneBox = await makeSandbox('stop-partial', {
+		systemctl: 'echo "systemctl $*" >>"$FAKE_LOG"\ncase "$*" in\n  *"is-active --quiet omarchyd.service"*) exit 0;;\n  *"is-active --quiet omarchy-server-web.service"*) exit 3;;\nesac\nexit 0',
+	})
+	const r2 = runCli(stillOneBox, ['stop'])
+	assert.equal(r2.status, 1)
+	assert.match(r2.stdout, /Couldn't stop\. See: omarchy-server logs/)
+	assert.doesNotMatch(r2.stdout, /\bStopped\b/)
+
+	const okBox = await makeSandbox('stop-ok', {
+		systemctl: 'echo "systemctl $*" >>"$FAKE_LOG"\ncase "$*" in *is-active*) exit 3;; esac\nexit 0',
+	})
+	const r3 = runCli(okBox, ['stop'])
+	assert.equal(r3.status, 0)
+	assert.match(r3.stdout, /^Stopped$/m)
+})

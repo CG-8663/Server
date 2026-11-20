@@ -17,6 +17,7 @@ MARK='omarchy-server widget'
 
 ip_addr() { ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}'; }
 running() { systemctl --user is-active --quiet omarchyd.service 2>/dev/null && systemctl --user is-active --quiet omarchy-server-web.service 2>/dev/null; }
+any_running() { systemctl --user is-active --quiet omarchyd.service 2>/dev/null || systemctl --user is-active --quiet omarchy-server-web.service 2>/dev/null; }
 notify() { command -v notify-send >/dev/null 2>&1 && notify-send -a "Omarchy Server" "Omarchy Server" "$1"; printf '%s\n' "$1"; }
 reload_bar() { if command -v omarchy-restart-waybar >/dev/null 2>&1; then omarchy-restart-waybar >/dev/null 2>&1; else pkill -SIGUSR2 waybar 2>/dev/null; fi; }
 
@@ -250,11 +251,17 @@ case "$cmd" in
 		;;
 	stop)
 		no_extra_args stop "$@"
-		systemctl --user stop "${UNITS[@]}"
+		fail=0
+		systemctl --user stop "${UNITS[@]}" || fail=1
 		# Desktop sharing only runs inside a signed-in Omarchy session.
 		systemctl --user is-active --quiet graphical-session.target 2>/dev/null && systemctl --user stop "$DESKTOP_UNIT" 2>/dev/null
 		sleep 1
-		notify "Stopped"
+		if [ "$fail" = 0 ] && ! any_running; then
+			notify "Stopped"
+		else
+			notify "Couldn't stop. See: omarchy-server logs"
+			exit 1
+		fi
 		;;
 	logs)
 		if wants_help "$@"; then usage logs; exit 0; fi
