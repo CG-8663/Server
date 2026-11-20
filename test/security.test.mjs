@@ -2,7 +2,7 @@
 // locking the desktop again after a sign-in from the web.
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
+import {chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -11,7 +11,7 @@ import WebSocket from 'ws'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
-import {authorityInfo, ensureTls, privateAddress, readPolicy, rotateAuthority, wantsUpgrade, writePolicy} from '../omarchyd/tls.mjs'
+import {authorityInfo, ensureTls, privateAddress, readPolicy, rotateAuthority, tlsContext, wantsUpgrade, writePolicy} from '../omarchyd/tls.mjs'
 
 let root
 before(async () => (root = await mkdtemp(join(os.tmpdir(), 'omarchy-sec-'))))
@@ -84,6 +84,181 @@ describe('certificate authority', () => {
 		assert.equal(wantsUpgrade(req({'sec-fetch-mode': 'navigate', 'x-forwarded-proto': 'https'}), on, ctx), false, 'behind a remote-access proxy')
 		assert.equal(wantsUpgrade(req({'sec-fetch-mode': 'navigate'}), on, null), false, 'no certificate, no redirect')
 		assert.equal(wantsUpgrade(req({'sec-fetch-mode': 'navigate'}), {alwaysHttps: false}, ctx), false, 'off by default')
+	})
+})
+
+describe('damaged tls metadata', () => {
+	const logged = async (fn) => {
+		const lines = []
+		const orig = console.error
+		console.error = (...parts) => lines.push(parts.map(String).join(' '))
+		try {
+			return {value: await fn(), lines}
+		} finally {
+			console.error = orig
+		}
+	}
+
+	test('a damaged server.json keeps the certificate already on disk', async () => {
+		const dir = join(root, 'damaged-server')
+		const first = await ensureTls({dir, names})
+		const caKey = await readFile(join(dir, 'ca.key'), 'utf8')
+		const caCrt = await readFile(join(dir, 'ca.crt'), 'utf8')
+		await writeFile(join(dir, 'server.json'), '')
+		const again = await logged(() => ensureTls({dir, names}))
+		assert.equal(again.value.cert, first.cert)
+		assert.equal(again.value.key, first.key)
+		assert.equal(again.value.ca, caCrt)
+		assert.equal(await readFile(join(dir, 'ca.key'), 'utf8'), caKey)
+		assert.equal(await readFile(join(dir, 'ca.crt'), 'utf8'), caCrt)
+		assert.equal(await readFile(join(dir, 'server.json'), 'utf8'), '')
+		assert.deepEqual(again.lines, ['[omarchy-server] TLS metadata damaged: server.json'])
+		// A JSON array is the wrong type, not a missing file: still do not reissue.
+		await writeFile(join(dir, 'server.json'), '[]')
+		const typed = await ensureTls({dir, names})
+		assert.equal(typed.cert, first.cert)
+		assert.equal(await readFile(join(dir, 'server.json'), 'utf8'), '[]')
+		assert.equal(await readFile(join(dir, 'ca.key'), 'utf8'), caKey)
+	})
+
+	test('a damaged ca.json does not replace the authority', async () => {
+		const dir = join(root, 'damaged-ca')
+		const first = await ensureTls({dir, names})
+		const caKey = await readFile(join(dir, 'ca.key'), 'utf8')
+		const caCrt = await readFile(join(dir, 'ca.crt'), 'utf8')
+		await writeFile(join(dir, 'ca.json'), '')
+		const kept = await logged(() => ensureTls({dir, names}))
+		assert.equal(kept.value.cert, first.cert)
+		assert.equal(await readFile(join(dir, 'ca.key'), 'utf8'), caKey)
+		assert.equal(await readFile(join(dir, 'ca.crt'), 'utf8'), caCrt)
+		assert.equal(await readFile(join(dir, 'ca.json'), 'utf8'), '')
+		assert.deepEqual(kept.lines, ['[omarchy-server] TLS metadata damaged: ca.json'])
+		// Renewal is due, and the permitted names cannot be read. Issuing would widen them.
+		await rm(join(dir, 'server.json'))
+		const due = await ensureTls({dir, names})
+		assert.equal(due.cert, first.cert)
+		assert.equal(await readFile(join(dir, 'ca.key'), 'utf8'), caKey)
+		assert.equal(await readFile(join(dir, 'ca.crt'), 'utf8'), caCrt)
+		assert.equal(await readFile(join(dir, 'ca.json'), 'utf8'), '')
+		assert.equal(await readFile(join(dir, 'server.json'), 'utf8').catch((error) => error.code), 'ENOENT')
+		assert.doesNotMatch(sans(dir), /example\.com/)
+		const info = await authorityInfo(dir)
+		assert.deepEqual(info, {exists: true, restricted: true})
+		assert.equal(await readFile(join(dir, 'ca.json'), 'utf8'), '')
+		await writeFile(join(dir, 'ca.json'), 'null')
+		const typed = await ensureTls({dir, names})
+		assert.equal(typed.cert, first.cert)
+		assert.equal(await readFile(join(dir, 'ca.json'), 'utf8'), 'null')
+		assert.equal(await readFile(join(dir, 'ca.key'), 'utf8'), caKey)
+		assert.equal((await authorityInfo(dir)).restricted, true)
+		// The restriction flag is set, but the permitted names are not. Still restricted.
+		await writeFile(join(dir, 'ca.json'), '{"restricted":true}')
+		assert.deepEqual(await authorityInfo(dir), {exists: true, restricted: true})
+		const narrow = await ensureTls({dir, names})
+		assert.equal(narrow.cert, first.cert)
+		assert.equal(await readFile(join(dir, 'ca.key'), 'utf8'), caKey)
+		assert.equal(await readFile(join(dir, 'ca.json'), 'utf8'), '{"restricted":true}')
+	})
+
+	test('a damaged ca.json with no certificate is not turned into a new authority', async () => {
+		const dir = join(root, 'damaged-ca-empty')
+		await mkdir(dir, {recursive: true})
+		await writeFile(join(dir, 'ca.json'), '{')
+		await assert.rejects(ensureTls({dir, names}), /ca\.json/)
+		assert.equal(await readFile(join(dir, 'ca.json'), 'utf8'), '{')
+		assert.equal((await readdir(dir)).some((name) => name === 'ca.key' || name === 'ca.crt' || name === 'ca.srl'), false)
+	})
+
+	test('a brand-new directory still gets a certificate', async () => {
+		const dir = join(root, 'brand-new')
+		const made = await ensureTls({dir, names})
+		assert.match(made.cert, /BEGIN CERTIFICATE/)
+		assert.match(made.key, /BEGIN/)
+		assert.match(made.ca, /BEGIN CERTIFICATE/)
+		assert.equal(JSON.parse(await readFile(join(dir, 'ca.json'), 'utf8')).restricted, true)
+		assert.equal(typeof JSON.parse(await readFile(join(dir, 'server.json'), 'utf8')).expires, 'number')
+		assert.equal((await stat(join(dir, 'ca.json'))).mode & 0o777, 0o600)
+		assert.equal((await stat(join(dir, 'server.json'))).mode & 0o777, 0o600)
+		execFileSync('openssl', ['verify', '-CAfile', join(dir, 'ca.crt'), join(dir, 'server.crt')], {stdio: 'ignore'})
+	})
+
+	test('a damaged policy.json reads as https off and is left in place', async () => {
+		const dir = join(root, 'damaged-policy')
+		await mkdir(dir, {recursive: true})
+		await writeFile(join(dir, 'policy.json'), '')
+		const read = await logged(() => readPolicy(dir))
+		assert.deepEqual(read.value, {alwaysHttps: false})
+		assert.deepEqual(read.lines, ['[omarchy-server] TLS metadata damaged: policy.json'])
+		assert.equal(await readFile(join(dir, 'policy.json'), 'utf8'), '')
+		await writeFile(join(dir, 'policy.json'), '[]')
+		assert.deepEqual(await readPolicy(dir), {alwaysHttps: false})
+		assert.equal(await readFile(join(dir, 'policy.json'), 'utf8'), '[]')
+		if (process.getuid?.() === 0) return
+		await writeFile(join(dir, 'policy.json'), '{"alwaysHttps":true}', {mode: 0o600})
+		await chmod(join(dir, 'policy.json'), 0o000)
+		try {
+			await assert.rejects(readPolicy(dir), {code: 'EACCES'})
+		} finally {
+			await chmod(join(dir, 'policy.json'), 0o600)
+		}
+		assert.equal(await readFile(join(dir, 'policy.json'), 'utf8'), '{"alwaysHttps":true}')
+	})
+
+	test('an unreadable policy.json does not reject startup and is read once it is allowed', async (t) => {
+		if (process.getuid?.() === 0) return t.skip('root ignores file mode')
+		const dir = join(root, 'policy-context')
+		await mkdir(dir, {recursive: true})
+		await writeFile(join(dir, 'policy.json'), '{"alwaysHttps":true}', {mode: 0o600})
+		await chmod(join(dir, 'policy.json'), 0o000)
+		const lines = []
+		const orig = console.error
+		console.error = (...parts) => lines.push(parts.map(String).join(' '))
+		const secure = tlsContext({dir, lazy: true})
+		try {
+			const error = await secure.start().then(() => null, (reason) => reason)
+			assert.equal(error, null)
+			assert.equal(secure.policy().alwaysHttps, false)
+			assert.ok(lines.some((line) => line.includes('policy.json') && line.includes('EACCES') && !line.includes(dir) && !line.includes('\n')))
+			await chmod(join(dir, 'policy.json'), 0o600)
+			const deadline = Date.now() + 8_000
+			while (!secure.policy().alwaysHttps && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100))
+			assert.equal(secure.policy().alwaysHttps, true)
+		} finally {
+			secure.close()
+			console.error = orig
+			await chmod(join(dir, 'policy.json'), 0o600).catch(() => {})
+		}
+	})
+
+	test('a write-only CA key is not replaced when its certificate is gone', async (t) => {
+		if (process.getuid?.() === 0) return t.skip('root ignores file mode')
+		const dir = join(root, 'writeonly-key')
+		await ensureTls({dir, names})
+		const caKey = await readFile(join(dir, 'ca.key'))
+		await chmod(join(dir, 'ca.key'), 0o200)
+		await rm(join(dir, 'ca.crt'))
+		try {
+			await assert.rejects(ensureTls({dir, names}), {code: 'EACCES'})
+		} finally {
+			await chmod(join(dir, 'ca.key'), 0o600)
+		}
+		assert.deepEqual(await readFile(join(dir, 'ca.key')), caKey)
+	})
+
+	test('a certificate that cannot be read is not replaced', async (t) => {
+		if (process.getuid?.() === 0) return t.skip('root ignores file mode')
+		const dir = join(root, 'unreadable-ca')
+		await ensureTls({dir, names})
+		const caKey = await readFile(join(dir, 'ca.key'), 'utf8')
+		const mode = (await stat(join(dir, 'ca.crt'))).mode & 0o777
+		await chmod(join(dir, 'ca.crt'), 0o000)
+		try {
+			await assert.rejects(ensureTls({dir, names}), {code: 'EACCES'})
+		} finally {
+			await chmod(join(dir, 'ca.crt'), mode)
+		}
+		assert.equal(await readFile(join(dir, 'ca.key'), 'utf8'), caKey)
+		assert.equal(await readFile(join(dir, 'ca.crt'), 'utf8').then((text) => text.length > 0), true)
 	})
 })
 
