@@ -40,11 +40,19 @@ export function slug(name) {
 	)
 }
 
+// A path under a share. "." and ".." would copy or bind outside the folder chosen here.
+function restStaysInside(rest) {
+	return String(rest)
+		.split('/')
+		.every((p) => p !== '.' && p !== '..' && !p.includes('\\') && !p.includes('\0') && !/[\r\n]/.test(p))
+}
+
 // Where a path on Unraid is: in appdata, in a user share, or somewhere else.
 export function unraidPath(p) {
 	const m = /^\/mnt\/(?:user0?|cache|disk\d+|[A-Za-z0-9_-]+)\/([^/]+)(?:\/(.*))?$/.exec(String(p))
 	if (!m || /^\/mnt\/(?:disks|remotes|addons|rootshare)\//.test(p)) return {kind: 'other'}
 	const [, share, rest = ''] = m
+	if (!restStaysInside(rest)) return {kind: 'other'}
 	if (share === 'appdata') return {kind: 'appdata', rest}
 	return {kind: 'share', share, rest}
 }
