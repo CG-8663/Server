@@ -10,12 +10,12 @@ import {createApp, SLOW, timeoutFor} from '../server/app.mjs'
 import {createStore} from '../server/store.mjs'
 import {startFakeserverd} from './fake-omarchyd.mjs'
 
-async function startTouch({backendUrl, appHosts} = {}) {
+async function startTouch({backendUrl, appHosts, relayPortBase = 0} = {}) {
 	const dir = await mkdtemp(join(tmpdir(), 'touch-'))
 	const store = await createStore(dir)
 	if (backendUrl) await store.setConfig({backendUrl})
 	if (appHosts) await store.setConfig({appHosts})
-	const app = createApp({store, relayPortBase: 0, relayHost: '127.0.0.1'})
+	const app = createApp({store, relayPortBase, relayHost: '127.0.0.1'})
 	const server = await new Promise((r) => {
 		const s = app.listen(0, '127.0.0.1', () => r(s))
 	})
@@ -935,6 +935,31 @@ describe('always use the secure address', () => {
 			assert.notEqual((await fetch(`${base}/settings`, {headers: {...nav, host: 'evil.example/"'}, redirect: 'manual'})).headers.get('location')?.includes('"'), true)
 		} finally {
 			server.close()
+		}
+	})
+})
+
+describe('app relays', () => {
+	test('a relay closes when its app is uninstalled, so later apps can still open', async () => {
+		const fake = await startFakeserverd()
+		const touch = await startTouch({backendUrl: fake.url, relayPortBase: 40100})
+		try {
+			assert.equal((await touch.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})).status, 200)
+			let first = null
+			for (let i = 0; i < 101; i++) {
+				const id = `temp-${i}`
+				fake.apps.push({id, name: id, port: 9100, path: '/', state: 'ready'})
+				const open = await touch.req('GET', `/api/app-open?app=${id}`)
+				assert.equal(open.status, 200, `round ${i}: ${open.body?.error?.message ?? ''}`)
+				const port = new URL(open.body.url).port
+				if (i === 0) first = port
+				else assert.equal(port, first, `round ${i} took another relay port`)
+				fake.apps.splice(fake.apps.findIndex((a) => a.id === id), 1)
+			}
+			assert.equal((await touch.req('GET', '/api/app-open?app=nextcloud')).status, 200)
+		} finally {
+			await touch.close()
+			await fake.close()
 		}
 	})
 })

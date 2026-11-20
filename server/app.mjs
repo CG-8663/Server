@@ -1454,6 +1454,20 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		if (ancestor) relay.ancestors.add(ancestor)
 		return relay.port
 	}
+	// Opening an app is when we learn which apps still exist. Relays for the rest are closed
+	// here, or their ports stay taken until this process restarts (only 100 relay ports exist).
+	async function releaseUnusedRelays(apps) {
+		const live = new Set(apps.map((a) => a.id))
+		const drop = async (map) => {
+			for (const [id, relay] of [...map]) {
+				if (live.has(id)) continue
+				await new Promise((resolve) => relay.server.close(() => resolve()))
+				map.delete(id)
+			}
+		}
+		await drop(relays)
+		await drop(relaysByApp)
+	}
 	app.closeRelays = () => {
 		for (const r of relays.values()) r.server.close()
 		relays.clear()
@@ -1560,6 +1574,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			const id = String(req.query.app ?? '')
 			if (!/^[a-zA-Z0-9-]{1,100}$/.test(id)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad app'}})
 			const apps = await authedCall(req, 'apps.list', 'query')
+			await releaseUnusedRelays(apps)
 			const app = apps.find((a) => a.id === id)
 			if (!app?.port) return res.status(404).json({error: {code: 'NOT_FOUND', message: 'That app has no web interface'}})
 			const mode = relayMode(req)
