@@ -36,10 +36,27 @@ test('where a path on Unraid lives', () => {
 	assert.deepEqual(unraidPath('/mnt/disk3/Media'), {kind: 'share', share: 'Media', rest: ''})
 	assert.equal(unraidPath('/boot/config').kind, 'other')
 	assert.equal(unraidPath('/mnt/disks/usbstick/x').kind, 'other')
+	// ".." in the path after the share would copy or bind outside the folder we chose.
+	assert.equal(unraidPath('/mnt/user/appdata/../../.ssh').kind, 'other')
+	assert.equal(unraidPath('/mnt/user/appdata/plex/../../.ssh').kind, 'other')
+	assert.equal(unraidPath('/mnt/cache/Media/../.config').kind, 'other')
 	assert.deepEqual(webuiPort('http://[IP]:[PORT:8096]/web'), {port: 8096, path: '/web'})
 	assert.equal(webuiPort(''), null)
 	assert.equal(slug('Home Assistant!'), 'home-assistant')
 	assert.equal(sq("it's"), `'it'\\''s'`)
+})
+
+test('a container mount that climbs out of appdata is not copied or bind-mounted', () => {
+	const escaped = {
+		...plex,
+		Mounts: [{Type: 'bind', Source: '/mnt/user/appdata/../../.ssh', Destination: '/config', RW: true}],
+	}
+	const p = containerPlan(escaped)
+	assert.equal(p.copies.length, 0)
+	const compose = YAML.parse(p.files['docker-compose.yml'])
+	const volumes = JSON.stringify(compose.services)
+	assert.doesNotMatch(volumes, /\.\./)
+	assert.ok(p.notes.some((n) => n.includes('isn’t brought over')))
 })
 
 test('a container on Unraid becomes the same app here', () => {
