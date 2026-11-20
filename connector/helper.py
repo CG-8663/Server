@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 DEV = re.compile(r"^/dev/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|mmcblk\d{1,2}|hd[a-z])$")
 BY_ID = re.compile(r"^/dev/disk/by-id/[A-Za-z0-9._:+-]+$")
@@ -44,6 +45,8 @@ FSTAB_MARK = "# omarchy-connector pool"
 ZFS_MARK = "# omarchy-connector zfs"
 POOL_OPTIONS = "defaults,noatime,nosuid,nodev,compress=zstd:3,nofail,x-systemd.device-timeout=10s"
 UDEV_SLEEP = "/etc/udev/rules.d/69-omarchy-connector-sleep.rules"
+SMART_CACHE = "/run/omarchy-connector/smart-cache.json"
+SMART_CACHE_TTL = 600
 SLEEP_MINUTES = {0: 0, 10: 120, 20: 240, 30: 241, 60: 242, 120: 244, 240: 248}
 
 
@@ -74,9 +77,38 @@ def default_run(cmd, args):
     return r.stdout
 
 
-def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, files=None, chown=None):
+def parse_smart(j):
+    if not isinstance(j, dict):
+        return False, None
+    power_mode = str(j.get("power_mode") or "")
+    messages = (j.get("smartctl") or {}).get("messages") or []
+    standby = bool(re.match(r"^(standby|sleep)$", power_mode, re.I)) or any(
+        re.search(r"\b(standby|sleep)\b", str((m or {}).get("string") or ""), re.I) for m in messages
+    )
+    attrs = {a.get("id"): (a.get("raw") or {}).get("value") for a in ((j.get("ata_smart_attributes") or {}).get("table") or [])}
+    nvme_log = j.get("nvme_smart_health_information_log")
+    has_data = any(
+        x is not None for x in (j.get("smart_status"), j.get("temperature"), j.get("power_on_time"), nvme_log)
+    ) or bool(attrs)
+    if (standby and not has_data) or (not has_data and (j.get("smartctl") or {}).get("exit_status") == 2):
+        return True, None
+    if not has_data:
+        return False, None
+    nvme = nvme_log or {}
+    return False, {
+        "passed": (j.get("smart_status") or {}).get("passed"),
+        "temperature": (j.get("temperature") or {}).get("current") if j.get("temperature") else nvme.get("temperature"),
+        "powerOnHours": (j.get("power_on_time") or {}).get("hours") if j.get("power_on_time") else nvme.get("power_on_hours"),
+        "lifetimeUsed": nvme.get("percentage_used"),
+        "reallocated": attrs.get(5),
+        "pending": attrs.get(197),
+    }
+
+
+def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, files=None, chown=None, now=None):
     run = run or default_run
     realpath = realpath or os.path.realpath
+    now = now or time.time
     if not user or not user.get("name") or not isinstance(user.get("uid"), int) or user.get("uid") == 0 or not str(user.get("home") or "").startswith("/"):
         fail("Run this through sudo as the person who installed the connector")
     if not re.match(r"^[a-z_][a-z0-9_-]{0,31}$", user["name"]):
@@ -429,7 +461,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         return "ok"
     if verb == "smart":
         d = resolve_disk(args[0] if args else "")
-        return run("smartctl", ["-j", "-a", d["path"]])
+        return run("smartctl", ["-n", "standby", "-j", "-a", d["path"]])
     if verb == "umount":
         d = resolve_disk(args[0] if args else "")
         if any(m in SYSTEM_MOUNTS for m in mounts(d)):
@@ -515,21 +547,35 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                     continue
             return path
 
-        def health(path):
+        use_cache = files is not None or fstab_text is None
+        smart_cache = {}
+        if use_cache:
             try:
-                j = json.loads(run("smartctl", ["-j", "-a", path]))
-                attrs = {a.get("id"): (a.get("raw") or {}).get("value") for a in ((j.get("ata_smart_attributes") or {}).get("table") or [])}
-                nvme_log = j.get("nvme_smart_health_information_log") or {}
-                return {
-                    "passed": (j.get("smart_status") or {}).get("passed"),
-                    "temperature": (j.get("temperature") or {}).get("current") if j.get("temperature") else nvme_log.get("temperature"),
-                    "powerOnHours": (j.get("power_on_time") or {}).get("hours") if j.get("power_on_time") else nvme_log.get("power_on_hours"),
-                    "lifetimeUsed": nvme_log.get("percentage_used"),
-                    "reallocated": attrs.get(5),
-                    "pending": attrs.get(197),
-                }
-            except Exception:
-                return None
+                loaded = json.loads(read_text(SMART_CACHE))
+                if isinstance(loaded, dict):
+                    smart_cache = loaded
+            except (OSError, ValueError, TypeError):
+                pass
+        ts = now()
+        cache_dirty = False
+
+        def health(path, serial):
+            nonlocal cache_dirty
+            cache_key = "%s|%s" % (path, serial or "")
+            hit = smart_cache.get(cache_key)
+            if isinstance(hit, dict) and isinstance(hit.get("at"), (int, float)) and ts - hit["at"] < SMART_CACHE_TTL:
+                return hit.get("value")
+            prev = hit.get("value") if isinstance(hit, dict) else None
+            val = None
+            try:
+                standby, parsed = parse_smart(json.loads(run("smartctl", ["-n", "standby", "-j", "-a", path])))
+                val = prev if standby else parsed
+            except Exception as e:
+                if re.search(r"\b(standby|sleep)\b", str(e), re.I) and prev is not None:
+                    val = prev
+            smart_cache[cache_key] = {"at": ts, "value": val}
+            cache_dirty = True
+            return val
 
         def pool_name(d):
             for m in mounts(d):
@@ -578,8 +624,19 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 "btrfs": {"uuid": btrfs.get("uuid"), "label": btrfs.get("label"), "mounted": any(btrfs.get("mountpoints") or [])} if btrfs and role != "pool" else None,
                 "zfs": {"pool": zmember.get("label")} if zmember and role != "pool" else None,
                 "sleepMinutes": sleeps.get(d.get("serial")) if d.get("serial") else None,
-                "health": health(path),
+                "health": health(path, d.get("serial")),
             })
+        if cache_dirty and use_cache:
+            smart_cache = {
+                k: v for k, v in smart_cache.items()
+                if isinstance(v, dict) and isinstance(v.get("at"), (int, float)) and ts - v["at"] < 3600
+            }
+            try:
+                if files is None:
+                    os.makedirs(os.path.dirname(SMART_CACHE), mode=0o700, exist_ok=True)
+                write_text(SMART_CACHE, json.dumps(smart_cache))
+            except OSError:
+                pass
         return json.dumps(out)
     if verb == "pool-create":
         name = args[0] if args else ""

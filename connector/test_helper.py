@@ -448,6 +448,64 @@ class Helper(unittest.TestCase):
         self.assertEqual(self.handle("zfs-export", ["tank"], **kw), "ok")
         self.assertIn(["umount", "-R", "/home/chris/Pools/tank"], log)
 
+    def test_smart_uses_standby_flag_and_disks_caches_and_preserves_reading(self):
+        lsblk = {
+            "blockdevices": [
+                {"name": "sda", "path": "/dev/sda", "type": "disk", "size": 4000000000000, "rota": True, "serial": "WD-A", "children": []},
+                {"name": "sdb", "path": "/dev/sdb", "type": "disk", "size": 4000000000000, "rota": True, "serial": "WD-B", "children": []},
+            ]
+        }
+        clock = [1000000.0]
+        sda_standby = [False]
+        smart_log = []
+        standby_json = json.dumps({"smartctl": {"exit_status": 2, "messages": [{"string": "Device is in STANDBY mode, exit(2)"}]}})
+
+        def run(cmd, args):
+            if cmd == "lsblk":
+                return json.dumps(lsblk)
+            if cmd == "smartctl":
+                smart_log.append([cmd, *args])
+                if args[-1] == "/dev/sda" and not sda_standby[0]:
+                    return json.dumps({"smart_status": {"passed": True}, "temperature": {"current": 34}, "power_on_time": {"hours": 9000}})
+                return standby_json
+            return ""
+
+        files = {}
+        kw = dict(run=run, user=self.kw["user"], files=files, now=lambda: clock[0])
+
+        res = json.loads(self.handle("smart", ["/dev/sda"], **kw))
+        self.assertTrue(res["smart_status"]["passed"])
+        self.assertEqual(smart_log[-1], ["smartctl", "-n", "standby", "-j", "-a", "/dev/sda"])
+        smart_log.clear()
+
+        disks = {d["name"]: d for d in json.loads(self.handle("disks", [], **kw))}
+        self.assertEqual(disks["sda"]["health"]["temperature"], 34)
+        self.assertIsNone(disks["sdb"]["health"])
+        self.assertEqual(len(smart_log), 2)
+        self.assertTrue(all(c[:3] == ["smartctl", "-n", "standby"] for c in smart_log))
+
+        # Polling 30s later uses cached health and does not invoke smartctl.
+        clock[0] += 30
+        smart_log.clear()
+        disks = {d["name"]: d for d in json.loads(self.handle("disks", [], **kw))}
+        self.assertEqual(disks["sda"]["health"]["temperature"], 34)
+        self.assertEqual(smart_log, [])
+
+        # After cache expires and sda enters standby, last known reading is kept.
+        clock[0] += 660
+        sda_standby[0] = True
+        disks = {d["name"]: d for d in json.loads(self.handle("disks", [], **kw))}
+        self.assertEqual(disks["sda"]["health"]["temperature"], 34)
+        self.assertTrue(disks["sda"]["health"]["passed"])
+        self.assertIsNone(disks["sdb"]["health"])
+        self.assertEqual(len(smart_log), 2)
+
+        # Next 30s poll uses refreshed standby timestamp.
+        clock[0] += 30
+        smart_log.clear()
+        self.handle("disks", [], **kw)
+        self.assertEqual(smart_log, [])
+
 
 if __name__ == "__main__":
     unittest.main()
