@@ -1750,8 +1750,8 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 
 	const proxy = async (req, res) => {
 		const path = req.params.path
+		if (!Object.hasOwn(ALLOWED, path)) return res.status(404).json({error: {code: 'NOT_FOUND', message: `${path} is not available in Omarchy Server`}})
 		const kind = ALLOWED[path]
-		if (!kind) return res.status(404).json({error: {code: 'NOT_FOUND', message: `${path} is not available in Omarchy Server`}})
 		if ((kind === 'query') !== (req.method === 'GET')) {
 			return res.status(405).json({error: {code: 'METHOD_NOT_SUPPORTED', message: 'Wrong method'}})
 		}
@@ -1762,7 +1762,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Malformed input'}})
 		}
 		try {
-			if (LOCAL[path]) return res.json({data: (await LOCAL[path](req, res, input)) ?? null})
+			if (Object.hasOwn(LOCAL, path)) return res.json({data: (await LOCAL[path](req, res, input)) ?? null})
 			const data = await authedCall(req, path, kind, input)
 			res.json({data: data ?? null})
 		} catch (error) {

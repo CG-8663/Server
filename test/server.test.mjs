@@ -98,6 +98,20 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(r.status, 401)
 	})
 
+	test('Object.prototype names are not treated as RPC procedures', async () => {
+		const fresh = await startTouch({backendUrl: fake.url})
+		try {
+			for (const name of ['toString', 'hasOwnProperty', 'valueOf', 'constructor', '__proto__']) {
+				const r = await fresh.req('POST', `/api/rpc/${name}`, {input: {}})
+				assert.equal(r.status, 404, name)
+				assert.equal(r.body?.error?.code, 'NOT_FOUND', name)
+				assert.match(r.body?.error?.message ?? '', /is not available in Omarchy Server/, name)
+			}
+		} finally {
+			await fresh.close()
+		}
+	})
+
 	test('assistant stream is proxied without buffering', async () => {
 		const fresh = await startTouch({backendUrl: fake.url})
 		try {
