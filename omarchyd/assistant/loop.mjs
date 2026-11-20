@@ -233,10 +233,19 @@ export function cardFor(name, args, names = {}) {
 	return {title: 'Approve this step', detail: ''}
 }
 
+const MCP_SECRET = /^(password|passphrase|secret|token|apiKey|api_key|credentials?)$/i
+
 function humanArgValue(value) {
 	if (typeof value === 'string') return value.trim()
 	if (typeof value === 'number' && Number.isFinite(value)) return String(value)
 	if (typeof value === 'boolean') return value ? 'yes' : 'no'
+	if (value && typeof value === 'object') {
+		try {
+			return JSON.stringify(value, (k, v) => (k && MCP_SECRET.test(k) ? undefined : v)) ?? ''
+		} catch {
+			return ''
+		}
+	}
 	return ''
 }
 
@@ -244,7 +253,6 @@ function humanArgValue(value) {
 // So the headline uses the app's description only as a short first sentence, and the card always names the
 // app and the real tool and shows every argument (ids included: they often say what gets changed or
 // deleted). Only secrets are left off.
-const MCP_SECRET = /^(password|passphrase|secret|token|apiKey|api_key|credentials?)$/i
 export function cardForMcp(spec, args) {
 	const shown = plainInput(args)
 	const bits = []
