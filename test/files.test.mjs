@@ -50,6 +50,21 @@ describe('files: paths', () => {
 		await assert.rejects(call('files.createDirectory', {path: '/Home/..'}), (e) => e.code === 'BAD_REQUEST')
 	})
 
+	test("replace into the item's own folder leaves the item in place", async () => {
+		const copied = await call('files.copy', {path: '/Home/Documents/notes.txt', toDirectory: '/Home/Documents', collision: 'replace'})
+		assert.equal(copied, '/Home/Documents/notes.txt')
+		assert.equal(await readFile(join(home, 'Documents', 'notes.txt'), 'utf8'), 'hello')
+		const moved = await call('files.move', {path: '/Home/Documents/notes.txt', toDirectory: '/Home/Documents', collision: 'replace'})
+		assert.equal(moved, '/Home/Documents/notes.txt')
+		assert.equal(await readFile(join(home, 'Documents', 'notes.txt'), 'utf8'), 'hello')
+		await mkdir(join(home, 'Other'))
+		await writeFile(join(home, 'Other', 'notes.txt'), 'old')
+		const replaced = await call('files.copy', {path: '/Home/Documents/notes.txt', toDirectory: '/Home/Other', collision: 'replace'})
+		assert.equal(replaced, '/Home/Other/notes.txt')
+		assert.equal(await readFile(join(home, 'Other', 'notes.txt'), 'utf8'), 'hello')
+		assert.equal(await readFile(join(home, 'Documents', 'notes.txt'), 'utf8'), 'hello')
+	})
+
 	test('an upload over an existing link replaces the link, never the file it points to', async () => {
 		const server = http.createServer((req, res) => files.upload(req, res, new URL(req.url, 'http://x')))
 		await new Promise((r) => server.listen(0, '127.0.0.1', r))

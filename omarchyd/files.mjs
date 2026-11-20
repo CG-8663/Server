@@ -194,6 +194,8 @@ export function createFiles({home, dataDir}) {
 		const {real: dest} = await resolve(toDirectory)
 		if (dest === real || dest.startsWith(real + sep)) throw new RpcError('BAD_REQUEST', '[subdir-of-self]')
 		let target = join(dest, basename(real))
+		// The destination folder is this item's own parent, so replace would delete the source.
+		if (target === real) return toVirtual(real)
 		if (await lstat(target).then(() => true, () => false)) {
 			if (collision === 'error') throw new RpcError('CONFLICT', '[already-exists]')
 			if (collision === 'replace') await rm(target, {recursive: true, force: true})
