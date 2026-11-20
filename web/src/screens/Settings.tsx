@@ -165,7 +165,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	}
 
 
-	if (page === 'storage') return <StoragePage onBack={() => openPage('main')} />
+	if (page === 'storage') return <StoragePage onBack={() => openPage('main')} target="host" />
 	if (page === 'backups' && owner) return <BackupsPage onBack={() => openPage('main')} />
 	if (page === 'unraid' && owner) return <UnraidPage onBack={() => openPage('main')} />
 	if (page === 'assistant') return <AssistantPage onBack={() => openPage('main')} />

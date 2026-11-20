@@ -229,6 +229,7 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 		'machines_capabilities',
 		'usb_list',
 		'swarm_list',
+		'swarm_storage_disks',
 		'omarchy_plugins',
 		'omarchy_listBackgrounds',
 		'appearance_list',
@@ -243,6 +244,11 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 	})
 	assert.equal(READ_TOOLS.find((t) => t.name === 'swarm_list').ownerOnly, true)
 	assert.equal(READ_TOOLS.find((t) => t.name === 'swarm_list').rpc, 'swarm.list')
+	const disks = READ_TOOLS.find((t) => t.name === 'swarm_storage_disks')
+	assert.equal(disks.ownerOnly, true)
+	assert.equal(disks.rpc, 'swarm.storage.disks')
+	assert.equal(disks.parameters.properties.id.type, 'string')
+	assert.match(disks.description, /unmounted|mount state/i)
 	assert.equal(READ_TOOLS.find((t) => t.name === 'appStore_app').parameters.properties.appId.type, 'string')
 	assert.equal(READ_TOOLS.find((t) => t.name === 'machines_details').parameters.properties.id.type, 'string')
 	assert.ok(READ_TOOLS.find((t) => t.name === 'omarchy_plugins').parameters.properties.q)
@@ -276,6 +282,8 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 	assert.match(WRITE_TOOLS.find((t) => t.name === 'omarchy_setBackground').description, /theme/i)
 	assert.equal(toolsFor('member').some((t) => t.name === 'swarm_list'), false)
 	assert.equal(toolsFor('owner').some((t) => t.name === 'swarm_list'), true)
+	assert.equal(toolsFor('member').some((t) => t.name === 'swarm_storage_disks'), false)
+	assert.equal(toolsFor('owner').some((t) => t.name === 'swarm_storage_disks'), true)
 	assert.equal([...READ_TOOLS, ...WRITE_TOOLS].some((t) => /shell|podman|web_search|x_search/i.test(t.name)), false)
 	assert.equal(WRITE_TOOLS.some((t) => t.name === 'apps_install'), true)
 })
@@ -464,6 +472,8 @@ test('a member tool list omits swarm_list and swarm is not loaded', async () => 
 		await box.asst.runTurn({userId: 'sam', role: 'member', message: 'hi', keyId: box.key.id, emit: (e) => events.push(e)})
 		assert.equal(toolsFor('member').some((t) => t.name === 'swarm_list'), false)
 		assert.equal(seen[0].body.tools.some((t) => t.function.name === 'swarm_list'), false)
+		assert.equal(toolsFor('member').some((t) => t.name === 'swarm_storage_disks'), false)
+		assert.equal(seen[0].body.tools.some((t) => t.function.name === 'swarm_storage_disks'), false)
 		assert.equal(calls.some((c) => c.name === 'swarm.list'), false)
 		assert.doesNotMatch(seen[0].body.messages[0].content, /^Swarm:/m)
 		assert.equal(seen[0].body.messages[0].content.includes('nas'), false)

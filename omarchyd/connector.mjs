@@ -3,7 +3,7 @@
 // server's own certificate authority), so the other computer opens no ports.
 //
 // Joining: the owner makes a one-time pairing code (15 minutes, used once) with the abilities they
-// allow (watching is always on; terminal, desktop and manage are optional). The connector trades
+// allow (watching is always on; terminal, desktop, manage and storage are optional). The connector trades
 // it for its own id and key; only a hash of the key is kept here.
 //
 // Two limits on what a computer does: the abilities chosen when pairing, which the connector also
@@ -24,7 +24,8 @@ import {parseResize} from './terminal.mjs'
 
 // backup: the computer backs up folders you choose to this server (see backups.mjs). Its restic
 // uploads through the connector's own pinned connection, and can only add backups, never delete them.
-const ABILITIES = ['terminal', 'desktop', 'manage', 'backup']
+// storage: see its drives, format extra disks, and manage pools on that computer (connector/helper.py).
+const ABILITIES = ['terminal', 'desktop', 'manage', 'storage', 'backup']
 const PAIR_TTL = 15 * 60_000
 const sha = (s) => createHash('sha256').update(String(s)).digest('hex')
 const sameHash = (a, b) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))
@@ -195,6 +196,15 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		return true
 	}
 	const may = (a, ability) => a.allowed[ability] && a.on[ability]
+
+	async function requireAgent(input, needStorage) {
+		await loaded
+		const a = find(String(input?.id ?? ''))
+		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		if (!live.has(a.id)) throw new RpcError('PRECONDITION_FAILED', 'That computer is offline right now')
+		if (needStorage && !may(a, 'storage')) throw new RpcError('FORBIDDEN', `Pair ${a.name} again with Storage switched on`)
+		return a
+	}
 
 	function call(id, name, args = {}, timeout = 10 * 60_000) {
 		const l = live.get(id)
@@ -384,6 +394,169 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			'swarm.rename': {kind: 'mutation', run: rename},
 			'swarm.setAbilities': {kind: 'mutation', run: setAbilities},
 			'swarm.action': {kind: 'mutation', run: action},
+			'swarm.storage.status': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAgent(input, false)
+					const storageAllowed = may(a, 'storage')
+					if (!storageAllowed) return {helperAvailable: false, zfsAvailable: false, storageAllowed: false}
+					try {
+						const s = await call(a.id, 'storage-status', {})
+						return {helperAvailable: !!s?.helperAvailable, zfsAvailable: !!s?.zfsAvailable, storageAllowed: true}
+					} catch (e) {
+						if (/allow Storage|doesn’t allow/i.test(e.message)) return {helperAvailable: false, zfsAvailable: false, storageAllowed: false}
+						throw new RpcError('PRECONDITION_FAILED', `Run the connector install again on ${a.name}.`)
+					}
+				},
+			},
+			'swarm.storage.disks': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						return await call(a.id, 'storage-disks', {})
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', /offline/i.test(e.message) ? e.message : `Run the connector install again on ${a.name}.`)
+					}
+				},
+			},
+			'swarm.storage.unmount': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-unmount', {device: String(input?.device ?? '')})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.mount': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-mount', {device: String(input?.device ?? '')})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.format': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					const filesystem = String(input?.filesystem ?? '')
+					if (!['blank', 'ext4', 'exfat'].includes(filesystem)) throw new RpcError('BAD_REQUEST', 'Choose blank, ext4 or exfat')
+					try {
+						await call(a.id, 'storage-format', {device: String(input?.device ?? ''), filesystem})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.pools': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						return await call(a.id, 'storage-pools', {})
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', /offline/i.test(e.message) ? e.message : `Run the connector install again on ${a.name}.`)
+					}
+				},
+			},
+			'swarm.storage.importable': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						return await call(a.id, 'storage-importable', {})
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', /offline/i.test(e.message) ? e.message : `Run the connector install again on ${a.name}.`)
+					}
+				},
+			},
+			'swarm.storage.createPool': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-createPool', {
+							name: String(input?.name ?? ''),
+							fs: input?.fs,
+							profile: String(input?.profile ?? ''),
+							devices: Array.isArray(input?.devices) ? input.devices.map(String) : [],
+						})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.addToPool': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-addToPool', {name: String(input?.name ?? ''), device: String(input?.device ?? '')})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.importPool': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-importPool', {name: String(input?.name ?? ''), uuid: String(input?.uuid ?? ''), force: input?.force === true})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.forgetPool': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-forgetPool', {name: String(input?.name ?? ''), kind: input?.kind})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.scrub': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-scrub', {name: String(input?.name ?? ''), kind: input?.kind})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
+			'swarm.storage.setSleep': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAgent(input, true)
+					try {
+						await call(a.id, 'storage-setSleep', {device: String(input?.device ?? ''), minutes: Number(input?.minutes)})
+						return true
+					} catch (e) {
+						throw new RpcError('PRECONDITION_FAILED', e.message)
+					}
+				},
+			},
 			// Before showing a computer's screen: can it, and if not, why (in words, not a socket code).
 			'swarm.desktopCheck': {
 				kind: 'query',

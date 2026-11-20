@@ -2,18 +2,21 @@
 // grown, checked for errors), and drive sleep. Pools appear in Files under Home → Pools, and any folder
 // can be shared on the network from Files.
 //
-// Safety: pools are only ever created on blank drives. A drive that holds anything is shown with the
-// one terminal command that erases it, so erasing data is always a deliberate step by a person.
+// Safety: pools are only ever created on blank drives. Format a data drive (choose blank) to make it
+// pool-eligible. Format, Mount and Unmount refuse the system disk and pool members. Format also
+// refuses a mounted disk; Mount only offers unmounted extra disks that already have a filesystem.
 import {useState, type CSSProperties, type ReactNode} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from '../api'
 import {Icon} from '../icons'
+import {canFormat, canMount, canUnmount, formatConfirmToken, formatPhraseMatches, type FormatKind} from '../storageTools'
 import {Card, KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
 
 type Health = {passed: boolean | null; temperature: number | null; powerOnHours: number | null; lifetimeUsed: number | null; reallocated: number | null; pending: number | null}
 export type Drive = {
 	path: string
+	id: string
 	name: string
 	model: string | null
 	serial: string | null
@@ -23,6 +26,8 @@ export type Drive = {
 	removable: boolean
 	role: 'system' | 'pool' | 'blank' | 'data'
 	pool: string | null
+	mounted: boolean
+	mounts: string[]
 	btrfs: {uuid: string; label: string | null; mounted: boolean} | null
 	zfs: {pool: string | null} | null
 	sleepMinutes: number | null
@@ -113,7 +118,9 @@ function DriveRow({d, onClick, trailing}: {d: Drive; onClick?: () => void; trail
 	)
 }
 
-export function StoragePage({onBack}: {onBack: () => void}) {
+export type StorageTarget = 'host' | {agentId: string; name: string}
+
+export function StoragePage({onBack, target = 'host'}: {onBack: () => void; target?: StorageTarget}) {
 	const qc = useQueryClient()
 	const toast = useToast()
 	const confirm = useConfirm()
@@ -122,23 +129,26 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 	const [adding, setAdding] = useState<Pool | null>(null)
 	const [importing, setImporting] = useState<Importable | null>(null)
 	const [busy, setBusy] = useState(false)
+	const swarm = target !== 'host'
+	const rpc = (name: string) => (target === 'host' ? `storage.${name}` : `swarm.storage.${name}`)
+	const args = (extra: object = {}) => (target === 'host' ? extra : {id: target.agentId, ...extra})
 
-	const status = useQuery({queryKey: ['storage.status'], queryFn: () => query<{helperAvailable: boolean; zfsAvailable?: boolean}>('storage.status')})
-	const disksQ = useQuery({queryKey: ['storage.disks'], queryFn: () => query<Drive[]>('storage.disks'), refetchInterval: 30_000})
-	const poolsQ = useQuery({queryKey: ['storage.pools'], queryFn: () => query<Pool[]>('storage.pools'), refetchInterval: 10_000})
-	const importQ = useQuery({queryKey: ['storage.importable'], queryFn: () => query<Importable[]>('storage.importable')})
+	const status = useQuery({queryKey: [rpc('status'), args()], queryFn: () => query<{helperAvailable: boolean; zfsAvailable?: boolean}>(rpc('status'), args())})
+	const disksQ = useQuery({queryKey: [rpc('disks'), args()], queryFn: () => query<Drive[]>(rpc('disks'), args()), refetchInterval: 30_000})
+	const poolsQ = useQuery({queryKey: [rpc('pools'), args()], queryFn: () => query<Pool[]>(rpc('pools'), args()), refetchInterval: 10_000})
+	const importQ = useQuery({queryKey: [rpc('importable'), args()], queryFn: () => query<Importable[]>(rpc('importable'), args())})
 	const drives = disksQ.data ?? []
 	const pools = poolsQ.data ?? []
 	const blank = drives.filter((d) => d.role === 'blank')
 	const ready = status.data?.helperAvailable
 
 	const refresh = () => {
-		for (const k of ['storage.disks', 'storage.pools', 'storage.importable', 'system.diskUsage']) qc.invalidateQueries({queryKey: [k]})
+		for (const k of [rpc('disks'), rpc('pools'), rpc('importable'), 'system.diskUsage']) qc.invalidateQueries({queryKey: [k]})
 	}
-	const act = async (path: string, input: unknown, done: string) => {
+	const act = async (name: string, extra: object, done: string) => {
 		setBusy(true)
 		try {
-			await mutate(path, input)
+			await mutate(rpc(name), args(extra))
 			toast(done)
 			refresh()
 			return true
@@ -151,19 +161,19 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 	}
 	const scrub = async (p: Pool) => {
 		if (await confirm({title: `Check “${p.name}” for errors?`, body: 'Every block is read and, where there’s a good copy, repaired. It runs in the background and can take hours on big drives. You can keep using the pool.', confirm: 'Start check', icon: 'shield'}))
-			act('storage.scrub', {name: p.name, kind: p.kind}, 'Error check started')
+			act('scrub', {name: p.name, kind: p.kind}, 'Error check started')
 	}
 	const importZfs = async (i: Importable) => {
 		const ok = await confirm(
 			i.otherSystem
 				? {title: `Import “${i.label}” anyway?`, body: `This ZFS pool was last used by another system. Only continue if that system is off or no longer using these drives: two systems using one pool at once can destroy it.${i.note && !/another system/i.test(i.note) ? ` ${i.note}` : ''}`, confirm: 'Import anyway', danger: true}
-				: {title: `Import “${i.label}”?`, body: 'The ZFS pool is imported as it is, with nothing on it changed, and shows up in Files under Home → Pools.', confirm: 'Import', icon: 'download'},
+				: {title: `Import “${i.label}”?`, body: swarm ? 'The ZFS pool is imported as it is, with nothing on it changed, and is mounted at ~/Pools on this computer.' : 'The ZFS pool is imported as it is, with nothing on it changed, and shows up in Files under Home → Pools.', confirm: 'Import', icon: 'download'},
 		)
-		if (ok) act('storage.importPool', {uuid: i.uuid, force: !!i.otherSystem}, `${i.label} imported`)
+		if (ok) act('importPool', {uuid: i.uuid, force: !!i.otherSystem}, `${i.label} imported`)
 	}
 	const forget = async (p: Pool) => {
-		if (await confirm({title: `Remove “${p.name}” from Omarchy Server?`, body: `The pool is ${p.kind === 'zfs' ? 'exported' : 'unmounted'} and no longer mounted at startup. Nothing on its drives is erased, and you can import it again later. Stop apps and shares that use it first.`, confirm: 'Remove', danger: true}))
-			act('storage.forgetPool', {name: p.name, kind: p.kind}, `${p.name} removed`)
+		if (await confirm({title: swarm ? `Remove “${p.name}” from this computer?` : `Remove “${p.name}” from Omarchy Server?`, body: `The pool is ${p.kind === 'zfs' ? 'exported' : 'unmounted'} and no longer mounted at startup. Nothing on its drives is erased, and you can import it again later. Stop apps and shares that use it first.`, confirm: 'Remove', danger: true}))
+			act('forgetPool', {name: p.name, kind: p.kind}, `${p.name} removed`)
 	}
 
 	return (
@@ -173,7 +183,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 					<Icon name="back" size={20} />
 				</button>
 				<h1 className="title" style={{flex: 1}}>
-					Storage
+					{swarm ? `Storage · ${target.name}` : 'Storage'}
 				</h1>
 				<button className="btn scan-btn" onClick={() => (haptic(6), refresh())}>
 					<Icon name="restart" size={17} />
@@ -185,7 +195,9 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 				<Card style={{marginBottom: 18}}>
 					<b>Storage tools aren’t set up</b>
 					<p className="muted" style={{margin: '6px 0 0', fontSize: 14}}>
-						Run the Omarchy Server installer again on the server. It adds the small helper that manages drives, pools and network shares, then come back here.
+						{swarm
+							? 'Run the connector install again on this computer (Machines → Local swarm → Add a computer).'
+							: 'Run the Omarchy Server installer again on the server. It adds the small helper that manages drives, pools and network shares, then come back here.'}
 					</p>
 				</Card>
 			)}
@@ -199,9 +211,13 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 				}
 				footer={
 					pools.length
-						? 'Pools are in Files under Home → Pools. Share any folder in them from Files.'
+						? swarm
+							? 'Pools are mounted at ~/Pools on this computer.'
+							: 'Pools are in Files under Home → Pools. Share any folder in them from Files.'
 						: blank.length
-							? 'A pool turns one or more blank drives into space for your files, mirrored if you like. It shows up in Files under Home → Pools.'
+							? swarm
+								? 'A pool turns one or more blank drives into space for your files, mirrored if you like. It is mounted at ~/Pools on this computer.'
+								: 'A pool turns one or more blank drives into space for your files, mirrored if you like. It shows up in Files under Home → Pools.'
 							: 'Connect a blank drive to make a pool. Drives that already hold data are listed below with how to free them.'
 				}
 			>
@@ -294,19 +310,19 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 				</Section>
 			)}
 
-			<Section title="Drives" footer={drives.some((d) => d.role === 'data' && !d.btrfs) ? 'A drive that has data can’t be used for a pool until it’s erased. Open it to see how.' : undefined}>
+			<Section title="Drives" footer={drives.some((d) => d.role === 'data' && !d.btrfs) ? 'A drive that has data can’t be used for a pool until you format it (choose blank).' : undefined}>
 				{disksQ.isLoading ? <div className="row static muted">Loading…</div> : drives.map((d) => <DriveRow key={d.path} d={d} onClick={() => setDrive(d)} />)}
 			</Section>
 
-			<DriveSheet d={drive} onClose={() => setDrive(null)} onChanged={refresh} />
-			{ready && !status.data?.zfsAvailable && (
+			<DriveSheet d={drive} onClose={() => setDrive(null)} onChanged={refresh} rpc={rpc} args={args} />
+			{ready && !status.data?.zfsAvailable && !swarm && (
 				<p className="footer-note storage-note" style={{marginTop: -8}}>
 					ZFS isn’t installed. To add it, run the Omarchy Server installer with <code>--zfs</code> on the server.
 				</p>
 			)}
-			{creating && <NewPool drives={blank} zfs={!!status.data?.zfsAvailable} taken={pools.map((p) => p.name)} onClose={() => setCreating(false)} onDone={refresh} />}
-			{adding && <AddDrive pool={adding} drives={blank} onClose={() => setAdding(null)} onDone={refresh} />}
-			{importing && <ImportPool fs={importing} taken={pools.map((p) => p.name)} onClose={() => setImporting(null)} onDone={refresh} />}
+			{creating && <NewPool drives={blank} zfs={!!status.data?.zfsAvailable} taken={pools.map((p) => p.name)} onClose={() => setCreating(false)} onDone={refresh} rpc={rpc} args={args} />}
+			{adding && <AddDrive pool={adding} drives={blank} onClose={() => setAdding(null)} onDone={refresh} rpc={rpc} args={args} />}
+			{importing && <ImportPool fs={importing} taken={pools.map((p) => p.name)} onClose={() => setImporting(null)} onDone={refresh} rpc={rpc} args={args} />}
 		</div>
 	)
 }
@@ -318,17 +334,28 @@ const SLEEP = [
 	{id: '240', label: '4 hr'},
 ] as const
 
-function DriveSheet({d, onClose, onChanged}: {d: Drive | null; onClose: () => void; onChanged: () => void}) {
+type StorageCall = {rpc: (name: string) => string; args: (extra?: object) => object}
+
+function DriveSheet({d, onClose, onChanged, rpc, args}: {d: Drive | null; onClose: () => void; onChanged: () => void} & StorageCall) {
 	const toast = useToast()
 	const [sleep, setSleep] = useState<string | null>(null)
+	const [formatting, setFormatting] = useState(false)
+	const [busy, setBusy] = useState(false)
 	const h = d?.health
 	const issues = d ? driveIssues(d) : []
 	const current = sleep ?? String(d?.sleepMinutes ?? 0)
+	const device = d ? d.id || d.path : ''
+	const close = () => {
+		setSleep(null)
+		setFormatting(false)
+		setBusy(false)
+		onClose()
+	}
 	const setSleepTo = async (v: string) => {
 		if (!d) return
 		setSleep(v)
 		try {
-			await mutate('storage.setSleep', {device: d.path, minutes: Number(v)})
+			await mutate(rpc('setSleep'), args({device: d.path, minutes: Number(v)}))
 			toast(v === '0' ? 'This drive won’t sleep' : 'Sleep time saved')
 			onChanged()
 		} catch (e) {
@@ -336,11 +363,53 @@ function DriveSheet({d, onClose, onChanged}: {d: Drive | null; onClose: () => vo
 			toast((e as Error).message, true)
 		}
 	}
+	const unmount = async () => {
+		if (!d) return
+		setBusy(true)
+		try {
+			await mutate(rpc('unmount'), args({device}))
+			toast('Drive unmounted')
+			onChanged()
+			close()
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setBusy(false)
+		}
+	}
+	const mount = async () => {
+		if (!d) return
+		setBusy(true)
+		try {
+			await mutate(rpc('mount'), args({device}))
+			toast('Drive mounted')
+			onChanged()
+			close()
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setBusy(false)
+		}
+	}
+	const format = async (filesystem: FormatKind) => {
+		if (!d) return
+		setBusy(true)
+		try {
+			await mutate(rpc('format'), args({device, filesystem}))
+			toast(filesystem === 'blank' ? 'Drive wiped' : `Drive formatted as ${filesystem === 'exfat' ? 'exFAT' : filesystem}`)
+			onChanged()
+			close()
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setBusy(false)
+		}
+	}
 	return (
-		<Sheet open={!!d} onClose={() => (setSleep(null), onClose())} label="Drive">
+		<Sheet open={!!d} onClose={close} label="Drive">
 			{d && (
 				<>
-					<SheetHeader title={d.model ?? d.name} subtitle={`${KIND[d.kind]} · ${tb(d.size)} · ${d.path}`} onClose={() => (setSleep(null), onClose())} />
+					<SheetHeader title={d.model ?? d.name} subtitle={`${KIND[d.kind]} · ${tb(d.size)} · ${d.path}`} onClose={close} />
 					{issues.length > 0 && (
 						<div className="error" style={{marginBottom: 14}}>
 							<Icon name="alert" size={18} />
@@ -366,24 +435,92 @@ function DriveSheet({d, onClose, onChanged}: {d: Drive | null; onClose: () => vo
 							<Segmented label="Sleep when idle" value={(SLEEP.some((s) => s.id === current) ? current : '0') as (typeof SLEEP)[number]['id']} options={[...SLEEP]} onChange={setSleepTo} />
 						</div>
 					)}
-					{d.role === 'data' && !d.btrfs && (
-						<Card style={{marginTop: 18}}>
-							<b style={{fontSize: 14}}>Use this drive for a pool</b>
-							<p className="muted" style={{fontSize: 13, margin: '6px 0 8px'}}>
-								It has data on it. Omarchy Server never erases a drive by itself. If you’re sure nothing on it is needed, erase it in a terminal on the server:
+					<div style={{marginTop: 18}}>
+						{d.role === 'system' && (
+							<p className="muted" style={{fontSize: 13, margin: 0}}>
+								This is the system disk.
 							</p>
-							<code className="mono" style={{display: 'block', fontSize: 13, userSelect: 'all'}}>
-								sudo wipefs -a {d.path}
-							</code>
-						</Card>
-					)}
+						)}
+						{d.role === 'pool' && (
+							<p className="muted" style={{fontSize: 13, margin: 0}}>
+								In pool “{d.pool}”.
+							</p>
+						)}
+						{d.mounted && d.role !== 'system' && d.role !== 'pool' && (
+							<p className="muted" style={{fontSize: 13, margin: '0 0 10px'}}>
+								Unmount this drive before formatting.
+							</p>
+						)}
+						{canUnmount(d) && (
+							<button className="btn block" disabled={busy} onClick={() => (haptic(6), unmount())}>
+								{busy ? <span className="spinner" /> : null}
+								Unmount
+							</button>
+						)}
+						{canMount(d) && (
+							<button className="btn block" disabled={busy} onClick={() => (haptic(6), mount())}>
+								{busy ? <span className="spinner" /> : null}
+								Mount
+							</button>
+						)}
+						{canFormat(d) && (
+							<button className="btn block danger" disabled={busy} onClick={() => (haptic(6), setFormatting(true))}>
+								Format
+							</button>
+						)}
+					</div>
+					{formatting && <FormatDialog d={d} busy={busy} onClose={() => setFormatting(false)} onConfirm={format} />}
 				</>
 			)}
 		</Sheet>
 	)
 }
 
-function NewPool({drives, zfs, taken, onClose, onDone}: {drives: Drive[]; zfs: boolean; taken: string[]; onClose: () => void; onDone: () => void}) {
+const FORMAT_FS: {id: FormatKind; label: string}[] = [
+	{id: 'blank', label: 'Blank'},
+	{id: 'ext4', label: 'ext4'},
+	{id: 'exfat', label: 'exFAT'},
+]
+
+function FormatDialog({d, busy, onClose, onConfirm}: {d: Drive; busy: boolean; onClose: () => void; onConfirm: (fs: FormatKind) => void}) {
+	const [filesystem, setFilesystem] = useState<FormatKind>('blank')
+	const [typed, setTyped] = useState('')
+	const token = formatConfirmToken(d)
+	const ok = formatPhraseMatches(d, typed)
+	const about = filesystem === 'blank' ? 'Wipes the drive. Use this before adding it to a pool.' : filesystem === 'ext4' ? 'A Linux filesystem. Fine for files on this computer.' : 'Works with Windows and macOS too.'
+	return (
+		<Sheet open onClose={onClose} label="Format">
+			<SheetHeader title="Format this drive?" subtitle={`${d.model ?? d.name} · ${tb(d.size)}`} onClose={onClose} />
+			<p className="muted" style={{fontSize: 14, marginTop: 0}}>
+				This erases everything on the drive. There is no undo.
+			</p>
+			<Segmented label="Filesystem" value={filesystem} options={FORMAT_FS} onChange={setFilesystem} />
+			<p className="muted" style={{fontSize: 13, margin: '10px 0 0'}}>
+				{about}
+			</p>
+			<label className="field-label" htmlFor="format-confirm" style={{marginTop: 16}}>
+				Type “{token}” to confirm
+			</label>
+			<input
+				id="format-confirm"
+				className="field"
+				style={{width: '100%'}}
+				value={typed}
+				autoCapitalize="off"
+				autoCorrect="off"
+				spellCheck={false}
+				placeholder={token}
+				onChange={(e) => setTyped(e.target.value)}
+			/>
+			<button className="btn block danger solid" style={{marginTop: 16}} disabled={busy || !ok} onClick={() => onConfirm(filesystem)}>
+				{busy ? <span className="spinner" /> : null}
+				{busy ? 'Formatting…' : 'Format'}
+			</button>
+		</Sheet>
+	)
+}
+
+function NewPool({drives, zfs, taken, onClose, onDone, rpc, args}: {drives: Drive[]; zfs: boolean; taken: string[]; onClose: () => void; onDone: () => void} & StorageCall) {
 	const toast = useToast()
 	const confirm = useConfirm()
 	const [name, setName] = useState(taken.includes('storage') ? '' : 'storage')
@@ -416,7 +553,7 @@ function NewPool({drives, zfs, taken, onClose, onDone}: {drives: Drive[]; zfs: b
 		if (!(await confirm({title: `Create pool “${name}”?`, body: `${list} will be formatted for the pool. They’re blank now, so nothing is lost.`, confirm: 'Create pool', icon: 'shield'}))) return
 		setBusy(true)
 		try {
-			await mutate('storage.createPool', {name, fs: fsKind, profile: effective, devices: sel.map((d) => d.path)})
+			await mutate(rpc('createPool'), args({name, fs: fsKind, profile: effective, devices: sel.map((d) => d.path)}))
 			toast(`Pool ${name} is ready in Files → Home → Pools`)
 			onDone()
 			onClose()
@@ -479,7 +616,7 @@ function NewPool({drives, zfs, taken, onClose, onDone}: {drives: Drive[]; zfs: b
 	)
 }
 
-function AddDrive({pool, drives, onClose, onDone}: {pool: Pool; drives: Drive[]; onClose: () => void; onDone: () => void}) {
+function AddDrive({pool, drives, onClose, onDone, rpc, args}: {pool: Pool; drives: Drive[]; onClose: () => void; onDone: () => void} & StorageCall) {
 	const toast = useToast()
 	const confirm = useConfirm()
 	const [busy, setBusy] = useState(false)
@@ -487,7 +624,7 @@ function AddDrive({pool, drives, onClose, onDone}: {pool: Pool; drives: Drive[];
 		if (!(await confirm({title: `Add ${d.model ?? d.name} to “${pool.name}”?`, body: `It’s formatted into the pool, then your files are rebalanced across all drives in the background. That can take hours; the pool stays usable.`, confirm: 'Add drive', icon: 'plus'}))) return
 		setBusy(true)
 		try {
-			await mutate('storage.addToPool', {name: pool.name, device: d.path})
+			await mutate(rpc('addToPool'), args({name: pool.name, device: d.path}))
 			toast(`${d.model ?? d.name} added. Rebalancing in the background.`)
 			onDone()
 			onClose()
@@ -509,7 +646,7 @@ function AddDrive({pool, drives, onClose, onDone}: {pool: Pool; drives: Drive[];
 	)
 }
 
-function ImportPool({fs, taken, onClose, onDone}: {fs: Importable; taken: string[]; onClose: () => void; onDone: () => void}) {
+function ImportPool({fs, taken, onClose, onDone, rpc, args}: {fs: Importable; taken: string[]; onClose: () => void; onDone: () => void} & StorageCall) {
 	const toast = useToast()
 	const suggestion = (fs.label ?? 'imported').toLowerCase().replace(/^omarchy-/, '').replace(/[^a-z0-9-]/g, '-').replace(/^[^a-z]+/, '').slice(0, 32) || 'imported'
 	const [name, setName] = useState(taken.includes(suggestion) ? '' : suggestion)
@@ -518,7 +655,7 @@ function ImportPool({fs, taken, onClose, onDone}: {fs: Importable; taken: string
 	const go = async () => {
 		setBusy(true)
 		try {
-			await mutate('storage.importPool', {name, uuid: fs.uuid})
+			await mutate(rpc('importPool'), args({name, uuid: fs.uuid}))
 			toast(`Imported. It’s in Files → Home → Pools → ${name}`)
 			onDone()
 			onClose()

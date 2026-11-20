@@ -45,6 +45,7 @@ if [ "$UNINSTALL" = 1 ]; then
 	rm -f "$UNIT"
 	systemctl --user daemon-reload 2>/dev/null || true
 	rm -rf "$DIR" "$CONF"
+	sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector 2>/dev/null || true
 	say "Done. Remove this computer in Machines → Local swarm too, if it's still listed."
 	exit 0
 fi
@@ -64,6 +65,13 @@ has manage && ! command -v git >/dev/null && pkgs+=(git)
 if has desktop; then
 	command -v x11vnc >/dev/null || pkgs+=(x11vnc)
 	command -v wayvnc >/dev/null || pkgs+=(wayvnc)
+fi
+if has storage; then
+	command -v smartctl >/dev/null || pkgs+=(smartmontools)
+	command -v mkfs.ext4 >/dev/null || pkgs+=(e2fsprogs)
+	command -v mkfs.exfat >/dev/null || pkgs+=(exfatprogs)
+	command -v mkfs.btrfs >/dev/null || pkgs+=(btrfs-progs)
+	command -v hdparm >/dev/null || pkgs+=(hdparm)
 fi
 if [ ${#pkgs[@]} -gt 0 ]; then
 	say "Installing ${pkgs[*]} (sudo needed)"
@@ -99,11 +107,24 @@ python3 -m py_compile "$DIR/agent.py.new" || die "The downloaded connector didn'
 mv "$DIR/agent.py.new" "$DIR/agent.py"
 chmod 700 "$DIR/agent.py"
 
+if has storage; then
+	say "Installing the storage helper"
+	curl -fsSL --max-time 60 "${SOURCE%/}/main/connector/helper.py" -o "$tmp.helper.py" || die "Couldn't download the storage helper."
+	python3 -m py_compile "$tmp.helper.py" || die "The downloaded storage helper didn't check out."
+	sudo install -D -m 755 "$tmp.helper.py" /usr/local/libexec/omarchy-connector/helper.py
+	rm -f "$tmp.helper.py"
+	printf '%s ALL=(root) NOPASSWD: /usr/local/libexec/omarchy-connector/helper.py\n' "$USER" | sudo tee /etc/sudoers.d/omarchy-connector >/dev/null
+	sudo chmod 440 /etc/sudoers.d/omarchy-connector
+fi
+
 # 4. Join, with this one-time code.
 say "Joining your server"
 name=$(python3 "$DIR/agent.py" enroll "$SERVER" "$TOKEN" "$ALLOW") || die "Joining didn't work (see above)."
 
 # 5. Keep it running, as you, from now on.
+# Storage needs sudo to the helper, so NoNewPrivileges stays off only when Storage was allowed.
+nnp=""
+has storage || nnp="NoNewPrivileges=yes"
 mkdir -p "$UNIT_DIR"
 cat >"$UNIT" <<EOF
 [Unit]
@@ -115,7 +136,7 @@ Wants=network-online.target
 ExecStart=/usr/bin/env python3 $DIR/agent.py
 Restart=always
 RestartSec=5
-NoNewPrivileges=yes
+$nnp
 
 [Install]
 WantedBy=default.target
