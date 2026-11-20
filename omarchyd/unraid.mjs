@@ -209,10 +209,20 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 	}
 }
 
+const XML_ENTITIES = {amp: '&', lt: '<', gt: '>', quot: '"', apos: "'"}
+function unescapeXml(s) {
+	return String(s).replace(/&(?:#(\d+)|#x([0-9a-fA-F]+)|(amp|lt|gt|quot|apos));/g, (m, dec, hex, named) => {
+		if (named) return XML_ENTITIES[named]
+		const cp = dec ? Number.parseInt(dec, 10) : Number.parseInt(hex, 16)
+		return Number.isInteger(cp) && cp > 0 && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff) ? String.fromCodePoint(cp) : m
+	})
+}
+
 // virsh dumpxml → what's needed to make a machine here.
 export function vmPlan(xml, state = '') {
 	const text = String(xml)
-	const name = /<name>([^<]+)<\/name>/.exec(text)?.[1] ?? 'VM'
+	const nameMatch = /<name>([^<]+)<\/name>/.exec(text)
+	const name = nameMatch ? unescapeXml(nameMatch[1]) : 'VM'
 	const memKiB = Number(/<memory[^>]*unit=['"]KiB['"][^>]*>(\d+)</.exec(text)?.[1] ?? /<memory[^>]*>(\d+)</.exec(text)?.[1] ?? 0)
 	const cores = Number(/<vcpu[^>]*>(\d+)</.exec(text)?.[1] ?? 1)
 	const firmware = /<loader[^>]*>[^<]*(?:OVMF|ovmf|edk2)[^<]*<\/loader>/.test(text) || /firmware=['"]efi['"]/.test(text) ? 'efi' : 'bios'
@@ -222,7 +232,9 @@ export function vmPlan(xml, state = '') {
 	for (const m of text.matchAll(/<disk\s+type=['"](\w+)['"]\s+device=['"](\w+)['"][^>]*>([\s\S]*?)<\/disk>/g)) {
 		const [, type, device, body] = m
 		if (device !== 'disk') continue
-		const file = /<source\s+(?:file|dev)=['"]([^'"]+)['"]/.exec(body)?.[1]
+		const srcMatch = /<source\b[^>]*?\s(?:file|dev)=(?:'([^']+)'|"([^"]+)")/.exec(body)
+		const rawFile = srcMatch ? (srcMatch[1] ?? srcMatch[2]) : undefined
+		const file = rawFile ? unescapeXml(rawFile) : undefined
 		const bus = /<target[^>]*bus=['"](\w+)['"]/.exec(body)?.[1] ?? 'sata'
 		const format = /<driver[^>]*type=['"](\w+)['"]/.exec(body)?.[1] ?? 'raw'
 		if (type !== 'file' || !file) {

@@ -153,6 +153,25 @@ test('a VM on Unraid: its settings and disks', () => {
 	assert.deepEqual(vmPlan('<domain><name>x</name></domain>').problems, ['It has no disk image to copy'])
 })
 
+test('a VM dump unescapes XML entities in its name and disk paths', () => {
+	const xml = `<domain type='kvm'><name>Games &amp; Media</name><memory unit='KiB'>4194304</memory><vcpu>2</vcpu>
+<devices>
+<disk type='file' device='disk'><driver name='qemu' type='raw'/><source file='/mnt/user/Games &amp; Stuff/Bob&apos;s PC/vdisk1.img'/><target dev='hdc' bus='virtio'/></disk>
+<disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='/mnt/user/Data &#x26; Logs/&#39;keep&amp;apos;&#39;/vdisk2.qcow2'/><target dev='hdd' bus='sata'/></disk>
+<disk type='file' device='disk'><driver name='qemu' type='raw'/><source file="/mnt/user/Bob's PC/vdisk3.img"/><target dev='hde' bus='sata'/></disk>
+</devices></domain>`
+	const v = vmPlan(xml, 'shut off')
+	assert.equal(v.name, 'Games & Media')
+	assert.deepEqual(
+		v.disks.map((d) => d.file),
+		[
+			"/mnt/user/Games & Stuff/Bob's PC/vdisk1.img",
+			"/mnt/user/Data & Logs/'keep&apos;'/vdisk2.qcow2",
+			"/mnt/user/Bob's PC/vdisk3.img",
+		],
+	)
+})
+
 test('rsync progress', () => {
 	assert.deepEqual(rsyncProgress('    1,234,567  45%   10.00MB/s    0:01:23 (xfr#3, to-chk=0/9)'), {bytes: 1234567, percent: 0.45})
 	assert.equal(rsyncProgress('sending incremental file list'), null)
