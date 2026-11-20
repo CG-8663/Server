@@ -143,13 +143,21 @@ describe('damaged tls metadata', () => {
 		assert.equal(await readFile(join(dir, 'server.json'), 'utf8').catch((error) => error.code), 'ENOENT')
 		assert.doesNotMatch(sans(dir), /example\.com/)
 		const info = await authorityInfo(dir)
-		assert.equal(info.exists, true)
+		assert.deepEqual(info, {exists: true, restricted: true})
 		assert.equal(await readFile(join(dir, 'ca.json'), 'utf8'), '')
 		await writeFile(join(dir, 'ca.json'), 'null')
 		const typed = await ensureTls({dir, names})
 		assert.equal(typed.cert, first.cert)
 		assert.equal(await readFile(join(dir, 'ca.json'), 'utf8'), 'null')
 		assert.equal(await readFile(join(dir, 'ca.key'), 'utf8'), caKey)
+		assert.equal((await authorityInfo(dir)).restricted, true)
+		// The restriction flag is set, but the permitted names are not. Still restricted.
+		await writeFile(join(dir, 'ca.json'), '{"restricted":true}')
+		assert.deepEqual(await authorityInfo(dir), {exists: true, restricted: true})
+		const narrow = await ensureTls({dir, names})
+		assert.equal(narrow.cert, first.cert)
+		assert.equal(await readFile(join(dir, 'ca.key'), 'utf8'), caKey)
+		assert.equal(await readFile(join(dir, 'ca.json'), 'utf8'), '{"restricted":true}')
 	})
 
 	test('a damaged ca.json with no certificate is not turned into a new authority', async () => {
@@ -194,6 +202,21 @@ describe('damaged tls metadata', () => {
 			await chmod(join(dir, 'policy.json'), 0o600)
 		}
 		assert.equal(await readFile(join(dir, 'policy.json'), 'utf8'), '{"alwaysHttps":true}')
+	})
+
+	test('a write-only CA key is not replaced when its certificate is gone', async (t) => {
+		if (process.getuid?.() === 0) return t.skip('root ignores file mode')
+		const dir = join(root, 'writeonly-key')
+		await ensureTls({dir, names})
+		const caKey = await readFile(join(dir, 'ca.key'))
+		await chmod(join(dir, 'ca.key'), 0o200)
+		await rm(join(dir, 'ca.crt'))
+		try {
+			await assert.rejects(ensureTls({dir, names}), {code: 'EACCES'})
+		} finally {
+			await chmod(join(dir, 'ca.key'), 0o600)
+		}
+		assert.deepEqual(await readFile(join(dir, 'ca.key')), caKey)
 	})
 
 	test('a certificate that cannot be read is not replaced', async (t) => {

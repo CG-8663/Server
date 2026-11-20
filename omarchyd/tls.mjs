@@ -14,7 +14,8 @@
 // authority your devices already trust until the owner chooses to replace it (rotateAuthority).
 import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
-import {mkdir, readFile, rename, rm, stat, writeFile} from 'node:fs/promises'
+import {constants} from 'node:fs'
+import {access, mkdir, readFile, rename, rm, stat, writeFile} from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import {basename, join} from 'node:path'
@@ -172,7 +173,14 @@ export async function ensureTls({dir = defaultTlsDir(), names = serverNames()} =
 		let chosen = decision.chosen
 		const current = decision.state
 		const host = os.hostname().replace(/[^A-Za-z0-9.-]/g, '') || 'omarchy'
-		if (!(await exists(join(dir, 'ca.key'))) || !current.ca) {
+		const caKey = join(dir, 'ca.key')
+		if (!(await exists(caKey)) || !current.ca) {
+			// -keyout truncates first. stat still sees a write-only key (mode 0200); do not destroy it.
+			try {
+				await access(caKey, constants.R_OK)
+			} catch (error) {
+				if (error.code !== 'ENOENT') throw error
+			}
 			const short = host.toLowerCase()
 			await openssl(['req', '-x509', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-days', '3650', '-subj', `/O=Omarchy Server/CN=Omarchy Server ${host}`, '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0', '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-addext', nameConstraints(short)], {cwd: dir})
 			await writeAtomic(join(dir, 'ca.json'), JSON.stringify({restricted: true, dns: permittedDns(short), created: Date.now()}), {mode: 0o600})
@@ -197,7 +205,8 @@ export async function ensureTls({dir = defaultTlsDir(), names = serverNames()} =
 export async function authorityInfo(dir = defaultTlsDir()) {
 	const meta = await readJson(join(dir, 'ca.json'))
 	if (meta === damaged) reportDamaged(join(dir, 'ca.json'))
-	return {exists: await exists(join(dir, 'ca.crt')), restricted: meta !== damaged && !!meta?.restricted}
+	// Damaged metadata is still the authority devices trust. Only a missing file is unrestricted.
+	return {exists: await exists(join(dir, 'ca.crt')), restricted: meta === damaged || !!meta?.restricted}
 }
 
 // Replace the authority with a new, restricted one. The old files are kept in retired-<time>/
