@@ -30,6 +30,24 @@ const PAIR_TTL = 15 * 60_000
 const sha = (s) => createHash('sha256').update(String(s)).digest('hex')
 const sameHash = (a, b) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))
 const clip = (v, n = 120) => String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, n)
+// RFC 6455: a close reason longer than 123 bytes throws RangeError inside ws and takes the process down.
+// clip() counts characters, so a name in another language still overflows. Cut on a byte boundary instead.
+export function closeReason(text) {
+	const clean = String(text ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ')
+	const buf = Buffer.from(clean)
+	if (buf.length <= 123) return clean
+	let end = 123
+	while (end > 0 && (buf[end] & 0xc0) === 0x80) end--
+	return buf.subarray(0, end).toString('utf8')
+}
+function closeSocket(ws, code, reason) {
+	try {
+		ws.close(code, closeReason(reason))
+	} catch (e) {
+		if (!(e instanceof RangeError)) throw e
+		ws.close(code)
+	}
+}
 const num = (v) => (v == null || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null)
 
 // Only the facts the page shows, checked and trimmed (a connector is another computer: don't
@@ -305,7 +323,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 					a.metrics = l.metrics
 				} else if (msg.op === 'closed') {
 					const ch = l.channels.get(Number(msg.ch))
-					if (ch) (l.channels.delete(Number(msg.ch)), ch.ws.close(msg.code === 1011 ? 1011 : 1000, clip(msg.reason, 120)))
+					if (ch) (l.channels.delete(Number(msg.ch)), closeSocket(ch.ws, msg.code === 1011 ? 1011 : 1000, msg.reason))
 				} else if (msg.op === 'progress') {
 					// A long call (a backup) saying how far it's got.
 					l.progress = {call: Number(msg.id), percent: Math.max(0, Math.min(1, num(msg.percent) ?? 0)), step: clip(msg.step, 80), at: now()}
@@ -337,7 +355,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		const a = find(agentId)
 		const l = live.get(agentId)
 		const ability = kind === 'pty' ? 'terminal' : 'desktop'
-		if (!a || !l || !may(a, ability)) return browserWs.close(1011, !a ? 'Unknown computer' : !l ? 'That computer is offline' : `${ability === 'terminal' ? 'The terminal' : 'The desktop'} isn’t switched on for ${a.name}`)
+		if (!a || !l || !may(a, ability)) return closeSocket(browserWs, 1011, !a ? 'Unknown computer' : !l ? 'That computer is offline' : `${ability === 'terminal' ? 'The terminal' : 'The desktop'} isn’t switched on for ${a.name}`)
 		const ch = ++l.nextCh
 		l.channels.set(ch, {ws: browserWs})
 		l.ws.send(JSON.stringify({op: 'open', ch, kind, cols: opts.cols, rows: opts.rows}))
