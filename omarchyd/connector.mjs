@@ -170,8 +170,24 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		pairings.set(sha(token), {abilities, expires: now() + PAIR_TTL})
 		return {token, ca: await caFingerprint(), expiresAt: now() + PAIR_TTL, abilities, source: await source(), port: webPort, addresses: serverAddresses()}
 	}
+	// Fleet gauges sample only while this server is reading them. A list (the swarm
+	// screen, or the assistant) asks each computer to sample; the connector stops
+	// on its own about 15s after the last ask.
+	let watchedAt = 0
+	function watchLive() {
+		const t = Date.now()
+		if (t - watchedAt < 2_000) return
+		watchedAt = t
+		for (const l of live.values()) {
+			if (l.ws.readyState !== l.ws.OPEN) continue
+			try {
+				l.ws.send(JSON.stringify({op: 'watch'}))
+			} catch {}
+		}
+	}
 	async function list() {
 		await loaded
+		watchLive()
 		return state.agents.map(view)
 	}
 	async function remove(input) {

@@ -580,21 +580,200 @@ def _check_updates(pkg):
         _updates["busy"] = False
 
 
-def metrics(pkg):
-    mem, swap = meminfo()
+DEFAULT_INTERVALS = {
+    "cpu": 1,
+    "memory": 1,
+    "gpu": 1,
+    "temp": 5,
+    "battery": 5,
+    "disk": 30,
+    "uptime": 60,
+}
+_TICK = 0.25
+IDLE_S = 15
+
+
+def empty_snapshot():
     return {
-        "cpu": cpu_percent(),
+        "cpu": None,
         "cores": os.cpu_count(),
-        "load": list(os.getloadavg()),
-        "mem": mem,
-        "swap": swap,
-        "disks": disks(),
-        "gpus": gpus(),
-        "batteries": batteries(),
-        "temp": temperature(),
-        "uptime": float(read("/proc/uptime", "0").split()[0] or 0),
-        "updates": updates_waiting(pkg),
+        "load": [],
+        "mem": {},
+        "swap": {},
+        "disks": [],
+        "gpus": [],
+        "batteries": [],
+        "temp": None,
+        "uptime": 0,
+        "updates": None,
     }
+
+
+def default_reads():
+    return {
+        "cpu": cpu_percent,
+        "memory": meminfo,
+        "gpu": gpus,
+        "temp": temperature,
+        "battery": batteries,
+        "disk": disks,
+        "uptime": lambda: float(read("/proc/uptime", "0").split()[0] or 0),
+    }
+
+
+class Sampler:
+    def __init__(self, now=time.time, intervals=None, read=None, spawn=None):
+        self._now = now
+        self._intervals = {**DEFAULT_INTERVALS, **(intervals or {})}
+        self._read = read or default_reads()
+        self._last = {}
+        self._snap = empty_snapshot()
+        self._stopped = False
+        self._thread = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._last_read = 0
+        self._primed = False
+        if spawn is not None:
+            self._spawn = spawn
+
+    def _due(self, key):
+        return self._last.get(key) is None or self._now() - self._last[key] >= self._intervals.get(key, DEFAULT_INTERVALS[key])
+
+    def _take(self, key, apply, t):
+        if not self._due(key) or key not in self._read:
+            return
+        try:
+            apply(self._read[key]())
+            self._last[key] = t
+        except Exception:
+            pass
+
+    def tick(self, wait_gpu=True):
+        if self._stopped:
+            return self._snap
+        t = self._now()
+        self._take("cpu", lambda v: self._snap.update(cpu=v, cores=os.cpu_count(), load=list(os.getloadavg())), t)
+        def mem(v):
+            if isinstance(v, tuple):
+                self._snap["mem"], self._snap["swap"] = v
+            else:
+                self._snap["mem"] = v
+        self._take("memory", mem, t)
+        self._take("temp", lambda v: self._snap.update(temp=v), t)
+        self._take("battery", lambda v: self._snap.update(batteries=v), t)
+        self._take("disk", lambda v: self._snap.update(disks=v), t)
+        self._take("uptime", lambda v: self._snap.update(uptime=v), t)
+        if self._due("gpu") and "gpu" in self._read:
+            self._last["gpu"] = t
+
+            def run_gpu():
+                try:
+                    self._snap["gpus"] = self._read["gpu"]()
+                except Exception:
+                    pass
+
+            if wait_gpu:
+                run_gpu()
+            else:
+                threading.Thread(target=run_gpu, daemon=True).start()
+        return self._snap
+
+    def _spawn(self, target):
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        return thread
+
+    def _prime_cpu(self):
+        # cpu percent needs one throwaway read before the first real sample.
+        if self._primed or "cpu" not in self._read:
+            return
+        self._primed = True
+        try:
+            self._read["cpu"]()
+        except Exception:
+            pass
+
+    def _ensure(self):
+        with self._lock:
+            if self._stopped or self._thread is not None:
+                return
+            self._stop.clear()
+            self._thread = self._spawn(self._loop)
+
+    def _loop(self):
+        while not self._stop.wait(_TICK):
+            if not self.service():
+                return
+
+    def service(self):
+        """One timer tick. False means nobody has read lately, so the timer stops."""
+        if self._stopped or self._now() - self._last_read >= IDLE_S:
+            with self._lock:
+                self._thread = None
+            self._stop.set()
+            return False
+        self.tick(wait_gpu=False)
+        return True
+
+    def _note(self, refresh):
+        self._last_read = self._now()
+        if self._stopped:
+            return
+        was_idle = self._thread is None
+        self._ensure()
+        if was_idle and refresh and self._last.get("cpu") is not None:
+            self._spawn(lambda: self.tick(wait_gpu=False))
+
+    def active(self):
+        return self._thread is not None and not self._stopped
+
+    def peek(self):
+        return self._snap
+
+    def snapshot(self):
+        self._note(True)
+        return self._snap
+
+    def get(self):
+        if self._stopped:
+            return self._snap
+        cold = self._last.get("cpu") is None
+        if cold:
+            self._prime_cpu()
+        self._note(not cold)
+        if cold:
+            self.tick(wait_gpu=False)
+        return self._snap
+
+    def start(self):
+        # A connection coming back may sample again. A read is what starts the timer.
+        self._stopped = False
+
+    def stop(self):
+        self._stopped = True
+        self._stop.set()
+        with self._lock:
+            self._thread = None
+
+
+def create_sampler(now=time.time, intervals=None, read=None, spawn=None):
+    return Sampler(now=now, intervals=intervals, read=read, spawn=spawn)
+
+
+_process_sampler = None
+
+
+def metrics(pkg, sampler=None):
+    global _process_sampler
+    s = sampler
+    if s is None:
+        if _process_sampler is None:
+            _process_sampler = create_sampler()
+        s = _process_sampler
+    snap = s.get()
+    snap["updates"] = updates_waiting(pkg)
+    return snap
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1272,16 +1451,26 @@ class Connection:
         self.send({"op": "hello", "info": info(), "abilities": self.allowed})
         stop = threading.Event()
 
+        global _process_sampler
+        if _process_sampler is None:
+            _process_sampler = create_sampler()
+        live_sampler = _process_sampler
+        live_sampler.start()
+        self.sampler = live_sampler
+
         def report():
-            cpu_percent()
-            while not stop.wait(10):
-                self.send({"op": "metrics", "metrics": metrics(self.pkg)})
+            while not stop.wait(3):
+                # Push the last snapshot only while someone is reading. Calling metrics()
+                # here would count as a read and the sampler would never go idle.
+                if live_sampler.active():
+                    snap = dict(live_sampler.peek())
+                    snap["updates"] = updates_waiting(self.pkg)
+                    self.send({"op": "metrics", "metrics": snap})
                 # Facts change now and then (plugins, theme, a desktop session starting).
                 if int(time.time()) % 300 < 10:
                     self.send({"op": "hello", "info": info(), "abilities": self.allowed})
 
         threading.Thread(target=report, daemon=True).start()
-        self.send({"op": "metrics", "metrics": metrics(self.pkg)})
         try:
             while True:
                 op, data = self.ws.recv()
@@ -1294,6 +1483,7 @@ class Connection:
                 self.handle(json.loads(data))
         finally:
             stop.set()
+            live_sampler.stop()
             for ch in list(self.channels.values()):
                 ch.close()
             self.channels.clear()
@@ -1321,6 +1511,10 @@ class Connection:
             ch = self.channels.pop(int(msg.get("ch", 0)), None)
             if ch:
                 ch.close()
+        elif op == "watch":
+            # The server asks while a screen is open. Return the last snapshot now and refresh.
+            if getattr(self, "sampler", None) is not None:
+                self.send({"op": "metrics", "metrics": metrics(self.pkg, sampler=self.sampler)})
         elif op == "call":
             threading.Thread(target=self.call, args=(msg,), daemon=True).start()
         elif op == "removed":

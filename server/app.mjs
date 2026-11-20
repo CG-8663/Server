@@ -20,7 +20,7 @@ import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.51'
+export const VERSION = '0.9.52'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -84,6 +84,7 @@ export const ALLOWED = {
 	'system.uptime': 'query',
 	'system.deviceName': 'query',
 	'system.cpuTemperature': 'query',
+	'system.stats': 'query',
 	'system.cpuUsage': 'query',
 	'system.memoryUsage': 'query',
 	'system.diskUsage': 'query',

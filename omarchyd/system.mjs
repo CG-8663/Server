@@ -218,16 +218,40 @@ async function nvidiaGpus(run) {
 	return gpus
 }
 
-async function drmGpus(list, readText) {
+const VENDOR_NVIDIA = '0x10de'
+const VENDOR_AMD = '0x1002'
+const VENDOR_INTEL = '0x8086'
+
+function pciVendor(text) {
+	return String(text ?? '').trim().toLowerCase()
+}
+
+function drmFallbackName(vendor, card) {
+	if (vendor === VENDOR_INTEL) return 'Intel Graphics'
+	if (vendor === VENDOR_AMD) return 'AMD Graphics'
+	if (vendor === VENDOR_NVIDIA) return 'NVIDIA Graphics'
+	return card
+}
+
+async function drmGpus(list, readText, {skipVendors = new Set()} = {}) {
 	const names = await list('/sys/class/drm').catch(() => [])
 	const cards = names.filter((n) => /^card\d+$/.test(n)).sort((a, b) => Number(a.slice(4)) - Number(b.slice(4)))
 	const gpus = []
 	for (const card of cards) {
 		const dir = `/sys/class/drm/${card}/device`
+		const vendor = pciVendor(await readText(`${dir}/vendor`))
+		if (skipVendors.has(vendor)) continue
 		const used = num(await readText(`${dir}/gpu_busy_percent`))
-		const memoryUsed = num(await readText(`${dir}/mem_info_vram_used`))
-		const memoryTotal = num(await readText(`${dir}/mem_info_vram_total`))
-		if (used == null && memoryUsed == null && memoryTotal == null) continue
+		let memoryUsed = num(await readText(`${dir}/mem_info_vram_used`))
+		let memoryTotal = num(await readText(`${dir}/mem_info_vram_total`))
+		if (memoryTotal == null) {
+			const lmemTotal = num(await readText(`${dir}/lmem_total_bytes`))
+			const lmemFree = num(await readText(`${dir}/lmem_free_bytes`))
+			if (lmemTotal != null) {
+				memoryTotal = lmemTotal
+				memoryUsed = lmemFree == null ? null : Math.max(0, lmemTotal - lmemFree)
+			}
+		}
 		let temperature = null
 		for (const hw of await list(`${dir}/hwmon`).catch(() => [])) {
 			const t = num(await readText(`${dir}/hwmon/${hw}/temp1_input`))
@@ -236,17 +260,26 @@ async function drmGpus(list, readText) {
 				break
 			}
 		}
-		const name = (await readText(`${dir}/product_name`)).trim() || card
+		const product = (await readText(`${dir}/product_name`)).trim()
+		const name = product || drmFallbackName(vendor, card)
+		if (!vendor && used == null && memoryUsed == null && memoryTotal == null && temperature == null && !product) continue
 		gpus.push({id: `drm-${card}`, index: Number(card.slice(4)), name, used, memoryUsed, memoryTotal, temperature})
 	}
 	return gpus
 }
 
-// Each GPU we can see: NVIDIA through nvidia-smi, otherwise AMD (and similar) through sysfs.
+// Each GPU we can see: NVIDIA through nvidia-smi, AMD and Intel through DRM sysfs.
 // A hybrid laptop powers its NVIDIA card down when idle; nvidia-smi would wake it on every poll.
 // When every NVIDIA display device is runtime-suspended, show the last reading as idle instead.
+// nvidia-smi does not hide AMD/Intel cards; NVIDIA DRM nodes are skipped only while smi already listed them.
 const PCI = '/sys/bus/pci/devices'
+const NVIDIA_SMI_MS = 3000
 let lastNvidia = null
+let lastNvidiaAt = -Infinity
+export function forgetGpus() {
+	lastNvidia = null
+	lastNvidiaAt = -Infinity
+}
 export async function nvidiaAsleep({list = readdir, read: readText = read} = {}) {
 	let found = false
 	for (const d of await list(PCI).catch(() => [])) {
@@ -258,15 +291,23 @@ export async function nvidiaAsleep({list = readdir, read: readText = read} = {})
 	return found
 }
 
-export async function gpuUsage({run = sh, list = readdir, read: readText = read} = {}) {
+export async function gpuUsage({run = sh, list = readdir, read: readText = read, now = Date.now} = {}) {
 	try {
+		const t = now()
+		let nvidia
 		if (lastNvidia && (await nvidiaAsleep({list, read: readText}))) {
-			return {gpus: lastNvidia.map((g) => ({...g, used: 0, memoryUsed: 0, temperature: null}))}
+			nvidia = lastNvidia.map((g) => ({...g, used: 0, memoryUsed: 0, temperature: null}))
+			lastNvidiaAt = -Infinity
+		} else if (lastNvidia && t - lastNvidiaAt < NVIDIA_SMI_MS) {
+			nvidia = lastNvidia
+		} else {
+			nvidia = await nvidiaGpus(run)
+			lastNvidia = nvidia.length ? nvidia : null
+			lastNvidiaAt = t
 		}
-		const nvidia = await nvidiaGpus(run)
-		lastNvidia = nvidia.length ? nvidia : null
-		if (nvidia.length) return {gpus: nvidia}
-		return {gpus: await drmGpus(list, readText)}
+		const skipVendors = nvidia.length ? new Set([VENDOR_NVIDIA]) : new Set()
+		const others = await drmGpus(list, readText, {skipVendors})
+		return {gpus: [...nvidia, ...others]}
 	} catch {
 		return {gpus: []}
 	}

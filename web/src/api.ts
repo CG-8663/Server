@@ -145,6 +145,15 @@ export type BatteryInfo = {
 	energyFull: number | null
 }
 export type BatteryUsage = {batteries: BatteryInfo[]}
+export type SystemStats = {
+	cpu: CpuUsage
+	memory: MemoryUsage
+	disk: DiskUsage
+	temp: Temperature
+	gpu: GpuUsage
+	battery: BatteryUsage
+	uptime: number
+}
 /** Share of the space you can use that's in use (like df: space kept back for the system isn't counted). */
 export const diskPct = (d: DiskUsage) => (d.totalUsed + d.available > 0 ? (100 * d.totalUsed) / (d.totalUsed + d.available) : 0)
 

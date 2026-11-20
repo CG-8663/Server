@@ -4,6 +4,13 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.52',
+		date: '2026-11-20',
+		title: 'Lighter live gauges, and updates from a local copy',
+		added: ['A server can update itself and its app store from a local copy of the source instead of GitHub (see the README).'],
+		fixed: ['Live gauges for this server, its machines, apps and swarm computers come in one request, and the server only measures while someone is looking, so idle servers and computers stay quiet.'],
+	},
+	{
 		version: '0.9.51',
 		date: '2026-11-20',
 		title: 'Sturdier when files are damaged, and assistant installs that finish',
