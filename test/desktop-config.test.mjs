@@ -1,0 +1,152 @@
+// Signing out must drop the desktop that lived in this tab, including a save already on the wire.
+import assert from 'node:assert/strict'
+import {test} from 'node:test'
+
+const bag = new Map()
+globalThis.localStorage = {
+	getItem: (k) => (bag.has(k) ? bag.get(k) : null),
+	setItem: (k, v) => bag.set(k, String(v)),
+	removeItem: (k) => bag.delete(k),
+}
+globalThis.window = {
+	setTimeout: globalThis.setTimeout.bind(globalThis),
+	clearTimeout: globalThis.clearTimeout.bind(globalThis),
+	addEventListener: () => {},
+	setInterval: () => 0,
+}
+globalThis.document = {
+	addEventListener: () => {},
+	visibilityState: 'visible',
+}
+
+const posts = []
+let fetchImpl = async () => ({ok: true, json: async () => ({desktop: null})})
+globalThis.fetch = (url, opts) => fetchImpl(url, opts)
+
+const KEY = 'omarchy-server:desktop-config'
+const REV = `${KEY}:rev`
+const DIRTY = `${KEY}:dirty`
+
+const {patchDeskConfig, resetDeskConfig, syncDeskConfig} = await import('../web/src/desktop/config.ts')
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test('the next account does not inherit this tab’s desktop', async () => {
+	assert.equal(typeof resetDeskConfig, 'function', 'resetDeskConfig is not exported')
+
+	patchDeskConfig({wallpaper: 'valley', dock: {position: 'bottom'}})
+	assert.match(localStorage.getItem(KEY), /"bottom"/)
+	localStorage.setItem(REV, '3')
+	localStorage.setItem(DIRTY, '1')
+	resetDeskConfig()
+	assert.equal(localStorage.getItem(KEY), null)
+	assert.equal(localStorage.getItem(REV), null)
+	assert.equal(localStorage.getItem(DIRTY), null)
+
+	posts.length = 0
+	fetchImpl = async (_url, opts) => {
+		if (opts?.method === 'POST') {
+			posts.push(String(opts.body))
+			return {ok: true, json: async () => ({desktop: {rev: 1}})}
+		}
+		return {ok: true, json: async () => ({desktop: null})}
+	}
+	syncDeskConfig()
+	await wait(800)
+	const posted = posts.join('\n')
+	assert.equal(posted.includes('"bottom"'), false, 'push still has the previous dock')
+	assert.equal(posted.includes('valley'), false, 'push still has the previous wallpaper')
+
+	patchDeskConfig({wallpaper: 'valley', dock: {position: 'bottom'}})
+	localStorage.setItem(REV, '3')
+	resetDeskConfig()
+	posts.length = 0
+	fetchImpl = async (_url, opts) => {
+		if (opts?.method === 'POST') {
+			posts.push(String(opts.body))
+			return {ok: true, json: async () => ({desktop: {rev: 4}})}
+		}
+		return {ok: true, json: async () => ({desktop: {config: {wallpaper: 'surf', dock: {position: 'top'}}, rev: 3}})}
+	}
+	syncDeskConfig()
+	await wait(50)
+	const saved = JSON.parse(localStorage.getItem(KEY))
+	assert.equal(saved.wallpaper, 'surf')
+	assert.equal(saved.dock.position, 'top')
+	assert.equal(localStorage.getItem(REV), '3')
+	const again = posts.join('\n')
+	assert.equal(again.includes('valley'), false, 'posted the previous wallpaper')
+	assert.equal(again.includes('"bottom"'), false, 'posted the previous dock')
+
+	let release
+	fetchImpl = async (_url, opts) => {
+		if (opts?.method === 'POST') {
+			posts.push(String(opts.body))
+			return new Promise((resolve) => {
+				release = () => resolve({ok: true, json: async () => ({desktop: {rev: 9}})})
+			})
+		}
+		return {ok: true, json: async () => ({desktop: null})}
+	}
+	patchDeskConfig({wallpaper: 'dunes', dock: {position: 'right'}})
+	await wait(700)
+	assert.equal(typeof release, 'function', 'the push never left')
+	resetDeskConfig()
+	release()
+	await wait(0)
+	assert.equal(localStorage.getItem(REV), null, 'a late save wrote the previous rev')
+
+	resetDeskConfig()
+	let releaseGet
+	fetchImpl = () =>
+		new Promise((resolve) => {
+			releaseGet = () => resolve({ok: true, json: async () => ({desktop: {config: {wallpaper: 'meadow', dock: {position: 'bottom'}}, rev: 8}})})
+		})
+	syncDeskConfig()
+	await wait(30)
+	assert.equal(typeof releaseGet, 'function', 'the load never started')
+	fetchImpl = async (_url, opts) => {
+		if (opts?.method === 'POST') return {ok: true, json: async () => ({desktop: {rev: 1}})}
+		return {ok: true, json: async () => ({desktop: {config: {wallpaper: 'pier', dock: {position: 'right'}}, rev: 4}})}
+	}
+	resetDeskConfig()
+	// The next account mounts while that load is still in flight.
+	syncDeskConfig()
+	releaseGet()
+	await wait(50)
+	const followed = JSON.parse(localStorage.getItem(KEY))
+	assert.equal(followed.wallpaper, 'pier', 'the load that was in flight swallowed the next account')
+	assert.equal(followed.dock.position, 'right')
+})
+
+test('a signed-out pull does not throttle the next account desktop', async () => {
+	resetDeskConfig()
+	let releaseGet
+	let gets = 0
+	fetchImpl = () => {
+		gets++
+		if (gets === 1) {
+			return new Promise((resolve) => {
+				releaseGet = () => resolve({ok: false, status: 401, json: async () => ({})})
+			})
+		}
+		// The follow-up that sign-out used to start is still signed out.
+		return Promise.resolve({ok: false, status: 401, json: async () => ({})})
+	}
+	syncDeskConfig()
+	await wait(30)
+	assert.equal(typeof releaseGet, 'function', 'the load never started')
+	resetDeskConfig()
+	releaseGet()
+	await wait(30)
+	let nextGets = 0
+	fetchImpl = async () => {
+		nextGets++
+		return {ok: true, json: async () => ({desktop: {config: {wallpaper: 'dahlia', dock: {position: 'top'}}, rev: 6}})}
+	}
+	syncDeskConfig()
+	await wait(50)
+	assert.equal(nextGets, 1, 'signed-out pull left the next syncDeskConfig behind the 3 second throttle')
+	const raw = localStorage.getItem(KEY)
+	assert.equal(raw && JSON.parse(raw).wallpaper, 'dahlia', 'the next account desktop was not loaded')
+})

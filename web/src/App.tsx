@@ -12,6 +12,7 @@ import {Apps} from './screens/Apps'
 import {Connect, Login} from './screens/Auth'
 import {Home} from './screens/Home'
 import {Desktop} from './desktop/Desktop'
+import {resetDeskConfig} from './desktop/config'
 import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, scrollPhoneToTop, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
 import {LayoutChooser} from './LayoutChooser'
@@ -71,6 +72,7 @@ export function App() {
 
 	useEffect(() => {
 		const onOut = () => {
+			resetDeskConfig()
 			resetAssistantTurn()
 			qc.removeQueries({predicate: (q) => q.queryKey[0] !== 'bootstrap'})
 			refresh()
