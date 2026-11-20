@@ -14,7 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pasteKeySequence, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, mouseButtonFromEvent, pasteKeySequence, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -767,6 +767,8 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 
 		// A real mouse (desktop) maps straight through.
 		if (e.pointerType === 'mouse') {
+			const button = mouseButtonFromEvent(e.button)
+			if (button === null) return
 			// On a desktop, clicking the screen gives the VM your physical keyboard
 			// (noVNC's own handler: every key and shortcut, modifiers included).
 			if (embedded) window.setTimeout(() => rfbRef.current?.focus(), 0)
@@ -775,7 +777,6 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			st.kind = 'mouse'
 			;(e.target as Element).setPointerCapture?.(e.pointerId)
 			cursor.current = fb
-			const button = e.button === 2 ? BTN.right : e.button === 1 ? BTN.middle : BTN.left
 			press(fb, button)
 			return
 		}
@@ -933,8 +934,8 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				if (mask.current) send(toFb(p) ?? cursor.current, 0)
 				return
 			}
-			const button = e.button === 2 ? BTN.right : e.button === 1 ? BTN.middle : BTN.left
-			if (!(mask.current & button)) return
+			const button = mouseButtonFromEvent(e.button)
+			if (button === null || !(mask.current & button)) return
 			const fb = toFb(p) ?? cursor.current
 			release(fb, button)
 			return

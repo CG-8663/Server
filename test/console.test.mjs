@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {describe, test} from 'node:test'
 
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pasteKeySequence, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, wheelButtons} from '../web/src/consoleHelpers.ts'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, mouseButtonFromEvent, pasteKeySequence, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, wheelButtons} from '../web/src/consoleHelpers.ts'
 
 describe('console helpers', () => {
 	test('#120: reconnects on clean and unclean disconnects unless disposed or superseded', async () => {
@@ -224,5 +224,19 @@ describe('console helpers', () => {
 
 		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
 		assert.match(src, /pasteKeySequence\(/)
+	})
+
+	test('#373: ignores unmapped mouse buttons such as Back and Forward', async () => {
+		assert.equal(mouseButtonFromEvent(0), BTN.left)
+		assert.equal(mouseButtonFromEvent(1), BTN.middle)
+		assert.equal(mouseButtonFromEvent(2), BTN.right)
+		assert.equal(mouseButtonFromEvent(3), null)
+		assert.equal(mouseButtonFromEvent(4), null)
+		assert.equal(mouseButtonFromEvent(-1), null)
+		assert.equal(mouseButtonFromEvent(5), null)
+
+		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
+		assert.match(src, /mouseButtonFromEvent\(/)
+		assert.doesNotMatch(src, /e\.button === 2 \? BTN\.right : e\.button === 1 \? BTN\.middle : BTN\.left/)
 	})
 })

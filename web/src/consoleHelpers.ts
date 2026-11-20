@@ -156,3 +156,11 @@ export function pasteKeySequence({
 	if (needCtrl) keys.push({keysym: 0xffe3, code: 'ControlLeft', down: false})
 	return {releaseSuper: meta, keys}
 }
+
+// Map DOM mouse button numbers (0..2) to VNC button masks; ignore extra buttons like Back/Forward.
+export function mouseButtonFromEvent(button: number): number | null {
+	if (button === 0) return BTN.left
+	if (button === 1) return BTN.middle
+	if (button === 2) return BTN.right
+	return null
+}
