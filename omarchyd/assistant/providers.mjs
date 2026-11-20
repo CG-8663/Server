@@ -5,8 +5,8 @@ import {anthropicHeaders} from './anthropic.mjs'
 const completeArgs = (s) => {
 	if (!s) return false
 	try {
-		JSON.parse(s)
-		return true
+		const v = JSON.parse(s)
+		return !!v && typeof v === 'object' && !Array.isArray(v)
 	} catch {
 		return false
 	}
@@ -169,7 +169,7 @@ function parseEvent(event, pending) {
 		.filter((l) => l.startsWith('data:'))
 		.map((l) => l.slice(5).replace(/^ /, ''))
 		.join('\n')
-	const out = {content: '', tools: []}
+	const out = {content: '', finishReason: null}
 	if (!data || data === '[DONE]') return out
 	let json
 	try {
@@ -179,21 +179,17 @@ function parseEvent(event, pending) {
 	}
 	const choice = json.choices?.[0] ?? {}
 	const delta = choice.delta ?? {}
+	if (typeof choice.finish_reason === 'string' && choice.finish_reason) out.finishReason = choice.finish_reason
 	if (typeof delta.content === 'string' && delta.content) out.content += delta.content
 	if (typeof choice.message?.content === 'string' && choice.message.content) out.content += choice.message.content
 	const addCall = (tc) => {
 		if (!tc || typeof tc !== 'object') return
 		const i = tc.index ?? pending.length
-		const row = pending[i] ?? (pending[i] = {id: '', name: '', arguments: '', done: false})
+		const row = pending[i] ?? (pending[i] = {id: '', name: '', arguments: ''})
 		if (tc.id) row.id = tc.id
 		if (tc.function?.name) row.name = tc.function.name
 		if (typeof tc.function?.arguments === 'string') row.arguments += tc.function.arguments
 		else if (tc.function?.arguments && typeof tc.function.arguments === 'object') row.arguments = JSON.stringify(tc.function.arguments)
-		if (!row.done && row.name && completeArgs(row.arguments)) {
-			row.done = true
-			if (!row.id) row.id = callId()
-			out.tools.push({type: 'tool', id: row.id, name: row.name, arguments: row.arguments})
-		}
 	}
 	for (const tc of delta.tool_calls ?? []) addCall(tc)
 	for (const tc of choice.message?.tool_calls ?? []) addCall(tc)
@@ -230,17 +226,19 @@ export async function* streamChat({baseUrl, apiKey, model, messages, tools, tool
 		return
 	}
 	const pending = []
+	const xmlTools = []
 	const decoder = new TextDecoder()
 	let buf = ''
 	let contentBuf = ''
+	let finishReason = null
 	const pump = function* (event, final) {
 		const parsed = parseEvent(event, pending)
+		if (parsed.finishReason) finishReason = parsed.finishReason
 		if (parsed.content) contentBuf += parsed.content
 		const next = takeXmlTools(contentBuf, final, schemas)
 		contentBuf = next.rest
 		if (next.text) yield {type: 'text', text: next.text}
-		for (const t of next.tools) yield t
-		for (const t of parsed.tools) yield t
+		for (const t of next.tools) xmlTools.push(t)
 	}
 	const body = res.body
 	if (body) {
@@ -258,13 +256,22 @@ export async function* streamChat({baseUrl, apiKey, model, messages, tools, tool
 	buf += decoder.decode()
 	if (buf.trim()) yield* pump(buf.replace(/\r\n/g, '\n'), false)
 	yield* pump('', true)
-	for (const row of pending) {
-		if (row?.done || !row?.name) continue
-		const args = row.arguments && completeArgs(row.arguments) ? row.arguments : '{}'
-		row.done = true
-		if (!row.id) row.id = callId()
-		yield {type: 'tool', id: row.id, name: row.name, arguments: args}
+	if (signal?.aborted) return
+	if (finishReason === 'length') {
+		yield {type: 'error', message: 'The answer was cut off; try again'}
+		return
 	}
+	const ready = [...xmlTools]
+	for (const row of pending) {
+		if (!row) continue
+		const raw = String(row.arguments ?? '').trim()
+		if (!row.name || (raw && !completeArgs(row.arguments))) {
+			yield {type: 'error', message: 'The answer was cut off; try again'}
+			return
+		}
+		ready.push({type: 'tool', id: row.id || callId(), name: row.name, arguments: raw ? row.arguments : '{}'})
+	}
+	for (const t of ready) yield t
 }
 
 // ---- The Responses API ---------------------------------------------------------------------------
@@ -315,12 +322,11 @@ export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', a
 	}
 	const calls = new Map() // function_call items by item id, arguments filled in from deltas
 	const emitted = new Set()
+	const toolEvents = [] // held until response.completed says the turn finished cleanly
+	let badToolArgs = false
+	let errored = false
 	let contentBuf = ''
 	let finished = false
-	const toolEvent = (id, name, args) => {
-		emitted.add(id)
-		return {type: 'tool', id, name, arguments: completeArgs(args) ? args : '{}'}
-	}
 	const handle = function* (event, final) {
 		const data = event.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).replace(/^ /, '')).join('\n')
 		let ev = null
@@ -334,7 +340,7 @@ export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', a
 		const next = takeXmlTools(contentBuf, final, schemas)
 		contentBuf = next.rest
 		if (next.text) yield {type: 'text', text: next.text}
-		for (const t of next.tools) yield t
+		for (const t of next.tools) toolEvents.push(t)
 		if (!ev) return
 		const item = ev.item
 		if (ev.type === 'response.output_item.added' && item?.type === 'function_call') {
@@ -347,10 +353,19 @@ export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', a
 			calls.delete(item.id ?? item.call_id)
 			const id = item.call_id || row.id
 			const name = item.name || row.name
-			if (name && !emitted.has(id)) yield toolEvent(id, name, typeof item.arguments === 'string' && item.arguments ? item.arguments : row.arguments)
+			if (name && !emitted.has(id)) {
+				const args = typeof item.arguments === 'string' && item.arguments ? item.arguments : row.arguments
+				const raw = String(args ?? '').trim()
+				if (raw && !completeArgs(args)) badToolArgs = true
+				else {
+					emitted.add(id)
+					toolEvents.push({type: 'tool', id, name, arguments: raw ? args : '{}'})
+				}
+			}
 		} else if (ev.type === 'response.completed') finished = true
 		else if (ev.type === 'response.failed' || ev.type === 'response.incomplete' || ev.type === 'error') {
 			finished = true
+			errored = true
 			const err = ev.response?.error ?? ev.error ?? ev
 			const why = ev.response?.incomplete_details?.reason
 			yield {type: 'error', message: String(err?.message || (why ? `The answer stopped early (${why})` : 'The assistant did not answer')), status: Number(err?.status) || 0}
@@ -372,8 +387,18 @@ export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', a
 	buf += decoder.decode()
 	if (buf.trim()) yield* handle(buf.replace(/\r\n/g, '\n'), false)
 	yield* handle('', true)
+	if (signal?.aborted) return
 	// An interrupted stream is a failure, not an answer.
-	if (!finished && !signal?.aborted) yield {type: 'error', message: 'The answer was cut off; try again'}
+	if (!finished) {
+		yield {type: 'error', message: 'The answer was cut off; try again'}
+		return
+	}
+	if (errored) return
+	if (badToolArgs || calls.size > 0) {
+		yield {type: 'error', message: 'The answer was cut off; try again'}
+		return
+	}
+	for (const t of toolEvents) yield t
 }
 
 // ---- Tools as text, for models that can't take them natively ----------------------------------

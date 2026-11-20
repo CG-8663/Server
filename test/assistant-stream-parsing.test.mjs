@@ -158,3 +158,116 @@ test('XML tool calls preserve object, array, number and boolean argument types',
 	}))
 	assert.deepEqual(JSON.parse(fallbackOut.find((e) => e.type === 'tool').arguments), {enabled: true, label: 'true'})
 })
+
+test('cut-off tool calls fail with an error instead of running with empty arguments', async () => {
+	const tools = [{type: 'function', function: {name: 'apps_uninstall'}}]
+
+	// Chat Completions: truncated JSON + finish_reason: length
+	const cutLength = await collect(streamChat({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools,
+		fetchImpl: async () => chatSse([
+			{choices: [{delta: {tool_calls: [{index: 0, id: 'c1', function: {name: 'apps_uninstall', arguments: '{"appId":"nextc'}}]}}]},
+			{choices: [{delta: {}, finish_reason: 'length'}]},
+		]),
+	}))
+	assert.equal(cutLength.some((e) => e.type === 'tool'), false)
+	assert.equal(cutLength.at(-1).type, 'error')
+	assert.match(cutLength.at(-1).message, /cut off/)
+
+	// Chat Completions: truncated JSON when the stream ends early with no finish_reason
+	const cutDrop = await collect(streamChat({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools,
+		fetchImpl: async () => chatSse([
+			{choices: [{delta: {tool_calls: [{index: 0, id: 'c1', function: {name: 'apps_uninstall', arguments: '{"appId":"nextc'}}]}}]},
+		]),
+	}))
+	assert.equal(cutDrop.some((e) => e.type === 'tool'), false)
+	assert.equal(cutDrop.at(-1).type, 'error')
+
+	// Chat Completions: cut off by length before any arguments arrived
+	const cutEmptyLength = await collect(streamChat({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools,
+		fetchImpl: async () => chatSse([
+			{choices: [{delta: {tool_calls: [{index: 0, id: 'c1', function: {name: 'apps_uninstall', arguments: ''}}]}}]},
+			{choices: [{delta: {}, finish_reason: 'length'}]},
+		]),
+	}))
+	assert.equal(cutEmptyLength.some((e) => e.type === 'tool'), false)
+	assert.equal(cutEmptyLength.at(-1).type, 'error')
+
+	// Chat Completions: normal zero-argument tool call still defaults to {}
+	const okEmpty = await collect(streamChat({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools: [{type: 'function', function: {name: 'apps_list'}}],
+		fetchImpl: async () => chatSse([
+			{choices: [{delta: {tool_calls: [{index: 0, id: 'c1', function: {name: 'apps_list', arguments: ''}}]}}]},
+			{choices: [{delta: {}, finish_reason: 'tool_calls'}]},
+		]),
+	}))
+	assert.deepEqual(okEmpty, [{type: 'tool', id: 'c1', name: 'apps_list', arguments: '{}'}])
+
+	// Responses API: truncated arguments on a finished function_call item
+	const respCut = await collect(streamResponses({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools,
+		fetchImpl: async () => responsesSse([
+			{type: 'response.output_item.added', item: {type: 'function_call', id: 'fc_1', call_id: 'c1', name: 'apps_uninstall', arguments: ''}},
+			{type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '{"appId":"nextc'},
+			{type: 'response.output_item.done', item: {type: 'function_call', id: 'fc_1', call_id: 'c1', name: 'apps_uninstall'}},
+			{type: 'response.completed'},
+		]),
+	}))
+	assert.equal(respCut.some((e) => e.type === 'tool'), false)
+	assert.equal(respCut.at(-1).type, 'error')
+	assert.match(respCut.at(-1).message, /cut off/)
+
+	// Responses API: normal zero-argument tool call still defaults to {}
+	const respEmpty = await collect(streamResponses({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools: [{type: 'function', function: {name: 'apps_list'}}],
+		fetchImpl: async () => responsesSse([
+			{type: 'response.output_item.added', item: {type: 'function_call', id: 'fc_1', call_id: 'c1', name: 'apps_list', arguments: ''}},
+			{type: 'response.output_item.done', item: {type: 'function_call', id: 'fc_1', call_id: 'c1', name: 'apps_list'}},
+			{type: 'response.completed'},
+		]),
+	}))
+	assert.deepEqual(respEmpty, [{type: 'tool', id: 'c1', name: 'apps_list', arguments: '{}'}])
+
+	// Responses API: incomplete response runs no tool calls
+	const respIncomplete = await collect(streamResponses({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools,
+		fetchImpl: async () => responsesSse([
+			{type: 'response.output_item.added', item: {type: 'function_call', id: 'fc_1', call_id: 'c1', name: 'apps_uninstall', arguments: ''}},
+			{type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '{"appId":"nextcloud"}'},
+			{type: 'response.output_item.done', item: {type: 'function_call', id: 'fc_1', call_id: 'c1', name: 'apps_uninstall'}},
+			{type: 'response.incomplete', response: {incomplete_details: {reason: 'max_output_tokens'}}},
+		]),
+	}))
+	assert.equal(respIncomplete.some((e) => e.type === 'tool'), false)
+	assert.equal(respIncomplete.at(-1).type, 'error')
+})
