@@ -6,6 +6,7 @@ import {logout, mutate, query, type ActiveSession, type AssistantApi, type Assis
 import {resetAssistantTurn} from '../assistantTurn'
 import {resetDeskConfig} from '../desktop/config'
 import {useBootstrap, useUser} from '../data'
+import {checkLiveText} from '../focus'
 import {Icon, type IconName} from '../icons'
 import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
 import {Appearance} from './More'
@@ -453,19 +454,26 @@ const MODEL_PLACEHOLDER: Record<AssistantProvider, string> = {
 // The result of a live check, under a key or in Add provider.
 function CheckLine({check, busy}: {check: Pick<AssistantCheck, 'ok' | 'message'> | null; busy?: boolean}) {
 	const style: CSSProperties = {textAlign: 'left', margin: '2px 6px 8px', display: 'flex', gap: 6, alignItems: 'center'}
-	if (busy) {
-		return (
-			<p className="footer-note" style={style}>
-				<span className="spinner" /> Checking…
-			</p>
-		)
-	}
-	if (!check) return null
+	const live = checkLiveText(check, busy)
 	return (
-		<p className="footer-note" role="status" style={{...style, color: check.ok ? 'var(--green)' : 'var(--red)'}}>
-			<Icon name={check.ok ? 'check' : 'alert'} size={15} />
-			{check.message}
-		</p>
+		<>
+			<div role="status" aria-live="polite" aria-atomic="true">
+				{live.status ? (
+					<p className="footer-note" style={busy ? style : {...style, color: 'var(--green)'}}>
+						{busy ? <span className="spinner" /> : <Icon name="check" size={15} />}
+						{live.status}
+					</p>
+				) : null}
+			</div>
+			<div role="alert" aria-live="assertive" aria-atomic="true">
+				{live.alert ? (
+					<p className="footer-note" style={{...style, color: 'var(--red)'}}>
+						<Icon name="alert" size={15} />
+						{live.alert}
+					</p>
+				) : null}
+			</div>
+		</>
 	)
 }
 
@@ -647,7 +655,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 							</span>
 						</span>
 					</div>
-					{k.check && <CheckLine check={k.check} />}
+					<CheckLine check={k.check ?? null} />
 					<Row
 						icon="check"
 						color="var(--green)"

@@ -6,7 +6,7 @@ import type {AppState, Machine, Wallpaper} from './api'
 import {AssistantAvatar, cleanLook, type AssistantLook} from './character/AssistantCharacter'
 import {detectDesktop, LAYOUT_POINTER} from './layout'
 export {detectDesktop}
-import {useDialogFocus} from './focus'
+import {liveRegionText, useDialogFocus} from './focus'
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
@@ -591,12 +591,41 @@ export const useToast = () => useContext(ToastContext)
 
 export function Providers({children}: {children: ReactNode}) {
 	const [toast, setToast] = useState<Toast | null>(null)
+	const [announced, setAnnounced] = useState<Toast | null>(null)
+	const announcedRef = useRef<Toast | null>(null)
+	announcedRef.current = announced
 	const timer = useRef<number>()
+	const rafRef = useRef<number>()
+	useEffect(() => {
+		return () => {
+			window.clearTimeout(timer.current)
+			if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current)
+		}
+	}, [])
 	const show = useCallback((text: string, error = false) => {
 		haptic(error ? [20, 40, 20] : 10)
-		setToast({id: Date.now(), text, error})
+		const next: Toast = {id: Date.now(), text, error}
+		setToast(next)
+		if (rafRef.current !== undefined) {
+			cancelAnimationFrame(rafRef.current)
+			rafRef.current = undefined
+		}
+		const prev = announcedRef.current
+		if (prev && prev.text === text && !!prev.error === error) {
+			// Clear and restore on the next frame so repeating the same toast re-announces it.
+			setAnnounced(null)
+			rafRef.current = requestAnimationFrame(() => {
+				rafRef.current = undefined
+				setAnnounced(next)
+			})
+		} else {
+			setAnnounced(next)
+		}
 		window.clearTimeout(timer.current)
-		timer.current = window.setTimeout(() => setToast(null), error ? 4500 : 2600)
+		timer.current = window.setTimeout(() => {
+			setToast(null)
+			setAnnounced(null)
+		}, error ? 4500 : 2600)
 	}, [])
 
 	const [pending, setPending] = useState<(ConfirmOptions & {resolve: (v: boolean) => void}) | null>(null)
@@ -608,6 +637,7 @@ export function Providers({children}: {children: ReactNode}) {
 		pending?.resolve(v)
 		setPending(null)
 	}
+	const live = liveRegionText(announced)
 
 	return (
 		<ToastContext.Provider value={show}>
@@ -637,8 +667,14 @@ export function Providers({children}: {children: ReactNode}) {
 						</div>
 					)}
 				</Sheet>
+				<div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+					{live.status}
+				</div>
+				<div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">
+					{live.alert}
+				</div>
 				{toast && (
-					<div key={toast.id} className={`toast${toast.error ? ' error' : ''}`} role="status" aria-live="polite">
+					<div key={toast.id} className={`toast${toast.error ? ' error' : ''}`} aria-hidden="true">
 						<span className="ico">
 							<Icon name={toast.error ? 'alert' : 'check'} size={15} stroke={2.6} />
 						</span>

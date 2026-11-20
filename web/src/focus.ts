@@ -324,3 +324,14 @@ export function useInert(ref: RefObject<HTMLElement | null>, active: boolean): v
 		}
 	}, [ref, active])
 }
+
+export function liveRegionText(toast: {text: string; error?: boolean} | null): {status: string; alert: string} {
+	if (!toast) return {status: '', alert: ''}
+	return toast.error ? {status: '', alert: toast.text} : {status: toast.text, alert: ''}
+}
+
+export function checkLiveText(check: {ok: boolean; message: string} | null | undefined, busy?: boolean): {status: string; alert: string} {
+	if (busy) return {status: 'Checking…', alert: ''}
+	if (!check) return {status: '', alert: ''}
+	return check.ok ? {status: check.message, alert: ''} : {status: '', alert: check.message}
+}
