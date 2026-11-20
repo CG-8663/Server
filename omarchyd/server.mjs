@@ -10,6 +10,7 @@ import os from 'node:os'
 import {dirname, extname, join} from 'node:path'
 
 import {openAccounts} from './accounts.mjs'
+import {writeAtomic} from './atomic.mjs'
 import {createAssistant} from './assistant.mjs'
 import {createBackups} from './backups.mjs'
 import {createUnraid} from './unraid.mjs'
@@ -72,9 +73,17 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		helper: (verb, args) => storage.helper(verb, args),
 	})
 	// Security settings kept by omarchyd itself (the https setting lives with the certificates,
-	// where the web server reads it too).
+	// where the web server reads it too). An empty or invalid file starts locked and is not
+	// rewritten (it may still be recoverable). Any other read error stops startup.
 	const securityFile = join(dataDir, 'security.json')
-	const security = {lockAfterRemote: true, ...JSON.parse((await readFile(securityFile, 'utf8').catch(() => null)) ?? '{}')}
+	let saved = {}
+	try {
+		saved = JSON.parse(await readFile(securityFile, 'utf8'))
+	} catch (e) {
+		if (e instanceof SyntaxError) console.error(`[omarchyd] ${securityFile} is empty or invalid and was left unchanged`)
+		else if (e.code !== 'ENOENT') throw e
+	}
+	const security = {lockAfterRemote: true, ...saved}
 	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).
 	const tickets = new Map()
 	const release = await system.osRelease()
@@ -295,7 +304,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 				}
 				if (typeof input?.lockAfterRemote === 'boolean') {
 					security.lockAfterRemote = input.lockAfterRemote
-					await writeFile(securityFile, JSON.stringify(security), {mode: 0o600})
+					await writeAtomic(securityFile, JSON.stringify(security), {mode: 0o600})
 				}
 				return true
 			},

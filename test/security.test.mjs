@@ -2,7 +2,7 @@
 // locking the desktop again after a sign-in from the web.
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -197,5 +197,117 @@ describe('one certificate folder for omarchyd and the web server', () => {
 		const web = await readFile(new URL('../server/cli.mjs', import.meta.url), 'utf8')
 		assert.match(cli, /tlsDir: defaultTlsDir\(\)/)
 		assert.match(web, /tlsContext\(\{dir: defaultTlsDir\(\)\}\)/)
+	})
+})
+
+describe('security.json on startup', () => {
+	const startWithSecurity = async (name, bytes) => {
+		const data = join(root, name)
+		const accounts = await openAccounts(data)
+		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+		const file = join(data, 'security.json')
+		let original = null
+		if (bytes !== undefined) {
+			await writeFile(file, bytes)
+			original = await readFile(file)
+		}
+		const lines = []
+		const orig = console.error
+		console.error = (...args) => lines.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(' '))
+		try {
+			const d = await startOmarchyd({port: 0, dataDir: data, home: root, machineOptions: {run: async () => ''}})
+			return {d, data, file, lines, original}
+		} finally {
+			console.error = orig
+		}
+	}
+	const authed = async (d) => {
+		const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 'sec'}})})).json()
+		if (!login.result?.data?.accessToken) throw new Error(JSON.stringify(login))
+		const headers = {authorization: `Bearer ${login.result.data.accessToken}`, 'content-type': 'application/json'}
+		return async (path, input, kind = 'mutation') => {
+			const res = await (kind === 'query' ? fetch(`${d.url}/trpc/${path}`, {headers}) : fetch(`${d.url}/trpc/${path}`, {method: 'POST', headers, body: JSON.stringify(input ?? null)}))
+			const r = await res.json()
+			if (r.error) throw new Error(r.error.message ?? JSON.stringify(r.error))
+			return r.result.data
+		}
+	}
+
+	test('an empty security.json still starts, with the lock on, and the file is left byte for byte', async () => {
+		const {d, file, lines, original} = await startWithSecurity('empty-sec', '')
+		try {
+			const call = await authed(d)
+			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, true)
+			assert.deepEqual(await readFile(file), original)
+			assert.equal(original.length, 0)
+			const notes = lines.filter((l) => l.includes(file))
+			assert.equal(notes.length, 1)
+			assert.match(notes[0], /left unchanged/)
+		} finally {
+			await d?.close()
+		}
+	})
+
+	test('a truncated security.json still starts and is left unchanged, without logging its contents', async () => {
+		const raw = '{"lockAfterRemote":false'
+		const {d, file, lines, original} = await startWithSecurity('trunc-sec', raw)
+		try {
+			const call = await authed(d)
+			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, true)
+			assert.deepEqual(await readFile(file), original)
+			const notes = lines.filter((l) => l.includes(file))
+			assert.equal(notes.length, 1)
+			assert.match(notes[0], /left unchanged/)
+			assert.equal(notes.some((l) => l.includes(raw) || l.includes('lockAfterRemote')), false)
+		} finally {
+			await d?.close()
+		}
+	})
+
+	test('a saved lockAfterRemote of false still loads', async () => {
+		const {d, file, lines, original} = await startWithSecurity('off-sec', '{"lockAfterRemote":false}')
+		try {
+			const call = await authed(d)
+			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, false)
+			assert.deepEqual(await readFile(file), original)
+			assert.equal(lines.some((l) => /left unchanged/.test(l)), false)
+		} finally {
+			await d?.close()
+		}
+	})
+
+	test('setSecurity still round-trips', async () => {
+		const {d, file, data} = await startWithSecurity('round-sec')
+		try {
+			await assert.rejects(stat(file), {code: 'ENOENT'})
+			const call = await authed(d)
+			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, true)
+			await call('system.setSecurity', {lockAfterRemote: false})
+			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, false)
+			assert.equal(JSON.parse(await readFile(file, 'utf8')).lockAfterRemote, false)
+			assert.equal((await stat(file)).mode & 0o777, 0o600)
+		} finally {
+			await d?.close()
+		}
+		const d2 = await startOmarchyd({port: 0, dataDir: data, home: root, machineOptions: {run: async () => ''}})
+		try {
+			const call = await authed(d2)
+			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, false)
+			await call('system.setSecurity', {lockAfterRemote: true})
+			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, true)
+			assert.equal(JSON.parse(await readFile(file, 'utf8')).lockAfterRemote, true)
+		} finally {
+			await d2.close()
+		}
+	})
+
+	test('a security.json that cannot be read still stops startup and is left alone', async () => {
+		const data = join(root, 'dir-sec')
+		const accounts = await openAccounts(data)
+		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+		const file = join(data, 'security.json')
+		await mkdir(file)
+		await assert.rejects(startOmarchyd({port: 0, dataDir: data, home: root, machineOptions: {run: async () => ''}}), {code: 'EISDIR'})
+		assert.equal((await stat(file)).isDirectory(), true)
 	})
 })
