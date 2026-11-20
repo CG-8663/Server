@@ -490,6 +490,7 @@ describe('machines.json registry', () => {
 			assert.equal(await readFile(file, 'utf8'), damaged)
 			assert.equal(logs.length, 1)
 			assert.match(logs[0], /machines\.json/)
+			assert.equal(logs[0].includes(root), false)
 			assert.equal(logs[0].includes('do-not-log'), false)
 			assert.equal(logs[0].includes('abcd1234'), false)
 		} finally {

@@ -110,10 +110,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			if (data && typeof data === 'object' && !Array.isArray(data) && Array.isArray(data.machines)) {
 				machines = data.machines
 				loaded = true
-			} else console.error(`[omarchyd] couldn’t load ${stateFile}; leaving it unchanged`)
+			} else console.error('[omarchyd] couldn’t load machines.json; leaving it unchanged')
 		} catch (error) {
 			if (error.code === 'ENOENT') loaded = true
-			else console.error(`[omarchyd] couldn’t load ${stateFile}; leaving it unchanged`)
+			else console.error('[omarchyd] couldn’t load machines.json; leaving it unchanged')
 		}
 		if (loaded) {
 			// A create that was interrupted by a restart can't resume: show it as failed.
