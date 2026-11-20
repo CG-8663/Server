@@ -199,10 +199,18 @@ export function createUpdater({
 	async function update() {
 		await ready
 		if (busy) throw new RpcError('CONFLICT', 'An update is already running')
-		const {available, version} = await check({force: true})
-		if (!available) throw new RpcError('BAD_REQUEST', 'Omarchy Server is already up to date')
-		if (!(await run('git', ['-C', appDir, 'rev-parse', 'HEAD']).then(() => true, () => false))) throw new RpcError('PRECONDITION_FAILED', `This copy can’t update itself. Run the installer: ${await installerHint()}`)
+		// Claim it before the first await, so a second request in the meantime is refused too.
 		busy = true
+		let version
+		try {
+			const checked = await check({force: true})
+			version = checked.version
+			if (!checked.available) throw new RpcError('BAD_REQUEST', 'Omarchy Server is already up to date')
+			if (!(await run('git', ['-C', appDir, 'rev-parse', 'HEAD']).then(() => true, () => false))) throw new RpcError('PRECONDITION_FAILED', `This copy can’t update itself. Run the installer: ${await installerHint()}`)
+		} catch (error) {
+			busy = false
+			throw error
+		}
 		status = {running: true, progress: 2, description: 'Starting', error: false, target: version}
 		await save()
 		;(async () => {

@@ -17,6 +17,7 @@ import express from 'express'
 import WebSocket, {WebSocketServer} from 'ws'
 
 import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
+import {linkProxy} from '../omarchyd/proxy-link.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
@@ -451,8 +452,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			ur.pipe(res)
 		})
 		up.setTimeout(10 * 60_000, () => up.destroy())
+		linkProxy(req, res, up)
 		up.on('error', () => {
-			if (!res.headersSent) res.writeHead(502, {'content-type': 'text/plain'})
+			if (res.headersSent) return
+			res.writeHead(502, {'content-type': 'text/plain'})
 			res.end()
 		})
 		req.pipe(up)
@@ -470,6 +473,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			}
 		}
 		shareAppSession(req, res, store.getSession(req.sid))
+		if (req.sid) keepAppPassFresh(req.sid)
 		next()
 	})
 
@@ -986,7 +990,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		// The same login also returns Omarchy Server's app-gateway session (OMARCHY_APP_SESSION). Touch
 		// keeps it server-side so app windows open without Omarchy Server's separate app sign-in.
 		const appCookie = cookies.find((c) => /^OMARCHY_APP_SESSION=/.test(c)) ?? null
-		return {token, cookie, appCookie, renewedAt: Date.now()}
+		return {token, cookie, appCookie, renewedAt: Date.now(), appPassAt: Date.now()}
 	}
 
 	// The server-held browser-style session: dashboard token + browser cookie. omarchyd
@@ -1319,8 +1323,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 							return res.end('<!doctype html><meta charset="utf-8"><body style="font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0;color:#888;text-align:center;padding:24px">Your Omarchy Server app session ended.<br>Sign out of Omarchy Server and back in, then reopen this app.</body>')
 						}
 						if (to.port === String(relay.targetPort) && (to.hostname === hostname || isLoopback(to.hostname) || to.hostname === serverHost)) {
-							to.host = req.headers.host
-							headers.location = to.href
+							// Back to the address the browser used: its scheme and its host, port and all (an
+							// app address behind a TLS proxy has no port, and \`to.host = …\` would keep the old one).
+							const proto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() || (req.socket.encrypted ? 'https' : 'http')
+							headers.location = `${proto === 'https' ? 'https' : 'http'}://${req.headers.host}${to.pathname}${to.search}${to.hash}`
 						}
 					} catch {
 						/* leave it */
@@ -1330,8 +1336,10 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				res.writeHead(ur.statusCode ?? 502, ur.statusMessage, headers)
 				ur.pipe(res)
 			})
+			linkProxy(req, res, up)
 			up.on('error', () => {
-				if (!res.headersSent) res.writeHead(502, {'content-type': 'text/plain; charset=utf-8'})
+				if (res.headersSent) return
+				res.writeHead(502, {'content-type': 'text/plain; charset=utf-8'})
 				res.end('The app isn’t answering right now.')
 			})
 			req.pipe(up)
@@ -1705,14 +1713,35 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		}
 		await store.deleteSessionByKey(key)
 	}
-	// Signing other devices out also ends their app passes; this browser gets a new one.
+	// Signing a device out ends every app pass this person holds (passes have one generation per
+	// person). Every device of theirs that is still signed in here gets the new one, not just this one.
 	async function renewAppPass(req, res) {
 		const cookie = await authedCall(req, 'user.revokeAppPasses', 'mutation').catch(() => null)
 		const session = store.getSession(req.sid)
 		if (typeof cookie !== 'string' || !session?.console) return
 		const appCookie = cookie.split(';')[0]
-		await store.updateSession(req.sid, {console: {...session.console, appCookie}})
+		for (const {key, session: s} of store.sessionEntries()) {
+			if (s.accountId !== session.accountId || !s.console) continue
+			await store.updateSessionByKey(key, {console: {...s.console, appCookie, appPassAt: Date.now()}})
+		}
+		await store.updateSession(req.sid, {console: {...store.getSession(req.sid).console, appCookie, appPassAt: Date.now()}})
 		shareAppSession(req, res, store.getSession(req.sid))
+	}
+	// App passes last 30 days; this sign-in lasts a year. Swap in a new pass once a week while it's used.
+	const APP_PASS_RENEW_MS = 7 * 86_400_000
+	const renewingPass = new Set()
+	function keepAppPassFresh(sid) {
+		const s = store.getSession(sid)
+		if (!s?.console?.appCookie || renewingPass.has(sid) || Date.now() - (s.console.appPassAt ?? 0) < APP_PASS_RENEW_MS) return
+		renewingPass.add(sid)
+		;(async () => {
+			const auth = await browserAuth(sid)
+			const cookie = await getClient()?.mutation('user.appPass', undefined, auth)
+			const cur = store.getSession(sid)
+			if (typeof cookie === 'string' && cur?.console) await store.updateSession(sid, {console: {...cur.console, appCookie: cookie.split(';')[0], appPassAt: Date.now()}})
+		})()
+			.catch(() => {})
+			.finally(() => renewingPass.delete(sid))
 	}
 	const mine = (req) => {
 		const me = store.getSession(req.sid)

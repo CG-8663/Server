@@ -248,6 +248,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'user.generateTotpUri': {kind: 'query', run: (_i, {auth}) => accounts.totpUri(auth.userId)},
 		'user.enable2fa': {kind: 'mutation', run: async (input, {auth}) => (await accounts.enable2fa(auth.userId, input ?? {}), true)},
 		'user.disable2fa': {kind: 'mutation', run: async (input, {auth}) => (await accounts.disable2fa(auth.userId, input ?? {}), true)},
+		// A fresh app pass for this person, for a device whose pass is getting old (passes last 30 days).
+		'user.appPass': {kind: 'mutation', run: async (_i, {auth}) => apps.sessionCookie(apps.issueSession(auth.userId))},
 		// A fresh app pass for this person, ending the ones their other devices hold.
 		'user.revokeAppPasses': {kind: 'mutation', run: async (_i, {auth}) => apps.sessionCookie(await apps.revokePasses(auth.userId))},
 		'system.factoryReset': {

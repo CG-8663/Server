@@ -18,6 +18,8 @@ import {access, chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile} fr
 import os from 'node:os'
 import {dirname, join, relative, sep} from 'node:path'
 
+import {pipeline} from 'node:stream/promises'
+
 import {writeAtomic} from './atomic.mjs'
 import {RpcError} from './rpc.mjs'
 
@@ -813,7 +815,8 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		res.writeHead(range ? 206 : 200, {'content-type': 'application/octet-stream', 'content-length': end - start + 1, ...(range ? {'content-range': `bytes ${start}-${end}/${st.size}`} : {})})
 		if (req.method === 'HEAD') return res.end()
 		const {createReadStream} = await import('node:fs')
-		createReadStream(file, {start, end}).pipe(res)
+		// pipeline closes the file when the computer's connection goes away mid-download.
+		pipeline(createReadStream(file, {start, end}), res).catch(() => {})
 	}
 
 	// ---- schedule ------------------------------------------------------------------------------
