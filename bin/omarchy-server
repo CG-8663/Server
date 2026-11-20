@@ -234,13 +234,27 @@ case "$cmd" in
 		no_extra_args open "$@"
 		xdg-open "http://localhost:$PORT" >/dev/null 2>&1 &
 		;;
-	start | stop | restart)
+	start | restart)
 		no_extra_args "$cmd" "$@"
-		systemctl --user "$cmd" "${UNITS[@]}"
+		fail=0
+		systemctl --user "$cmd" "${UNITS[@]}" || fail=1
 		# Desktop sharing only runs inside a signed-in Omarchy session.
 		systemctl --user is-active --quiet graphical-session.target 2>/dev/null && systemctl --user "$cmd" "$DESKTOP_UNIT" 2>/dev/null
 		sleep 1
-		if [ "$cmd" = stop ]; then notify "Stopped"; elif running; then notify "Running at http://$(ip_addr):$PORT"; else notify "Didn't start. See: omarchy-server logs"; fi
+		if [ "$fail" = 0 ] && running; then
+			notify "Running at http://$(ip_addr):$PORT"
+		else
+			notify "Didn't start. See: omarchy-server logs"
+			exit 1
+		fi
+		;;
+	stop)
+		no_extra_args stop "$@"
+		systemctl --user stop "${UNITS[@]}"
+		# Desktop sharing only runs inside a signed-in Omarchy session.
+		systemctl --user is-active --quiet graphical-session.target 2>/dev/null && systemctl --user stop "$DESKTOP_UNIT" 2>/dev/null
+		sleep 1
+		notify "Stopped"
 		;;
 	logs)
 		if wants_help "$@"; then usage logs; exit 0; fi

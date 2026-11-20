@@ -129,3 +129,32 @@ test('#607: logs handles -f, --follow, -n, --lines, and --since', async () => {
 		'journalctl --user -u omarchyd -u omarchy-server-web -n 50 -f',
 	])
 })
+
+test('#260: start and restart exit 1 when services fail or are inactive', async () => {
+	const failBox = await makeSandbox('start-fail', {
+		systemctl: 'echo "systemctl $*" >>"$FAKE_LOG"\ncase "$*" in *is-active*) exit 3;; esac\nexit 1',
+	})
+	for (const cmd of ['start', 'restart']) {
+		const r = runCli(failBox, [cmd])
+		assert.equal(r.status, 1, `${cmd} should exit 1 when systemctl fails`)
+		assert.match(r.stdout, /Didn't start\. See: omarchy-server logs/)
+	}
+
+	const crashBox = await makeSandbox('start-crash', {
+		systemctl: 'echo "systemctl $*" >>"$FAKE_LOG"\ncase "$*" in *is-active*) exit 3;; esac\nexit 0',
+	})
+	for (const cmd of ['start', 'restart']) {
+		const r = runCli(crashBox, [cmd])
+		assert.equal(r.status, 1, `${cmd} should exit 1 when services are inactive after start`)
+		assert.match(r.stdout, /Didn't start\. See: omarchy-server logs/)
+	}
+
+	const okBox = await makeSandbox('start-ok', {
+		systemctl: 'echo "systemctl $*" >>"$FAKE_LOG"\nexit 0',
+	})
+	for (const cmd of ['start', 'restart']) {
+		const r = runCli(okBox, [cmd])
+		assert.equal(r.status, 0, `${cmd} should exit 0 when services are active`)
+		assert.match(r.stdout, /Running at http:\/\//)
+	}
+})
