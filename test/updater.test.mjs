@@ -250,7 +250,7 @@ test('check: reads the local clone, not GitHub', async () => {
 	assert.equal(c.version, '0.6.1')
 	assert.match(c.releaseNotes, /0\.6\.1 · Fixes/)
 	assert.match(c.releaseNotes, /OMARCHY_SERVER_REPO=/)
-	assert.ok(c.releaseNotes.includes(`bash ${join(src, 'install.sh')}`))
+	assert.ok(c.releaseNotes.includes(`bash '${join(src, 'install.sh')}'`))
 })
 
 test('check: same version with a different clone commit is an update', async () => {

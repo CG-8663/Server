@@ -17,8 +17,8 @@ import {RpcError} from './rpc.mjs'
 
 export const REPO_RAW = 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server'
 export const INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash'
-export const installCommand = (sourceDir) => (sourceDir ? `OMARCHY_SERVER_REPO=${sourceDir} bash ${join(sourceDir, 'install.sh')}` : INSTALL_COMMAND)
 const shQuote = (value) => `'${String(value).replaceAll("'", `'\\''`)}'`
+export const installCommand = (sourceDir) => (sourceDir ? `OMARCHY_SERVER_REPO=${shQuote(sourceDir)} bash ${shQuote(join(sourceDir, 'install.sh'))}` : INSTALL_COMMAND)
 // The sign-in prompt runs this in a terminal. With a local source it must run that clone's
 // install.sh, and keep the isolation variables, or the installer would rewrite the service
 // without them and the next start would update from GitHub.
