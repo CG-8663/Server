@@ -129,3 +129,30 @@ export function touchReleaseAction(input: TouchReleaseInput): TouchReleaseOutcom
 	}
 	return {action: 'none'}
 }
+
+export type PasteKeyStep = {keysym: number; code: string; down: boolean}
+
+// Build the V keystroke sequence for delayed clipboard paste, ensuring Ctrl/Shift are held if already released.
+export function pasteKeySequence({
+	meta,
+	shift = false,
+	ctrlHeld,
+	shiftHeld = false,
+}: {
+	meta: boolean
+	shift?: boolean
+	ctrlHeld: boolean
+	shiftHeld?: boolean
+}): {releaseSuper: boolean; keys: PasteKeyStep[]} {
+	const needCtrl = meta || !ctrlHeld
+	const needShift = shift && !shiftHeld
+	const keys: PasteKeyStep[] = []
+	if (needCtrl) keys.push({keysym: 0xffe3, code: 'ControlLeft', down: true})
+	if (needShift) keys.push({keysym: 0xffe1, code: 'ShiftLeft', down: true})
+	const vSym = shift ? 0x56 : 0x76
+	keys.push({keysym: vSym, code: 'KeyV', down: true})
+	keys.push({keysym: vSym, code: 'KeyV', down: false})
+	if (needShift) keys.push({keysym: 0xffe1, code: 'ShiftLeft', down: false})
+	if (needCtrl) keys.push({keysym: 0xffe3, code: 'ControlLeft', down: false})
+	return {releaseSuper: meta, keys}
+}

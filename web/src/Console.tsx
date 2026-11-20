@@ -14,7 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pasteKeySequence, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -357,33 +357,47 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	useEffect(() => {
 		const root = rootRef.current
 		if (!root || !deskUi) return
-		let pending: {meta: boolean; timer: number} | null = null
-		const sendV = (meta: boolean) => {
+		const heldCtrl = new Set<string>()
+		const heldShift = new Set<string>()
+		let pending: {meta: boolean; shift: boolean; timer: number} | null = null
+		let sendTimer = 0
+		const sendV = (meta: boolean, shift: boolean) => {
 			const r = rfbRef.current
 			if (!r) return
-			if (meta) {
-				sendSuper(false)
-				r.sendKey(KEY.Ctrl, 'ControlLeft', true)
-			}
-			r.sendKey(0x76, 'KeyV', true)
-			r.sendKey(0x76, 'KeyV', false)
-			if (meta) r.sendKey(KEY.Ctrl, 'ControlLeft', false)
+			const seq = pasteKeySequence({meta, shift, ctrlHeld: heldCtrl.size > 0, shiftHeld: heldShift.size > 0})
+			if (seq.releaseSuper) sendSuper(false)
+			for (const k of seq.keys) r.sendKey(k.keysym, k.code, k.down)
 		}
 		const finish = (text?: string) => {
 			if (!pending) return
-			const {meta, timer} = pending
+			const {meta, shift, timer} = pending
 			window.clearTimeout(timer)
 			pending = null
 			if (text) pushClipboard(text)
 			// A moment for the machine to take the new clipboard before the keystroke.
-			window.setTimeout(() => sendV(meta), text ? 60 : 0)
+			window.clearTimeout(sendTimer)
+			sendTimer = window.setTimeout(() => sendV(meta, shift), text ? 60 : 0)
 		}
 		const onKey = (e: KeyboardEvent) => {
-			if (e.code !== 'KeyV' || !(e.ctrlKey || e.metaKey) || e.altKey || !canvasHost.current?.contains(e.target as Node)) return
+			if (!canvasHost.current?.contains(e.target as Node)) return
+			if (e.type === 'keydown') {
+				if (e.code === 'ControlLeft' || e.code === 'ControlRight') heldCtrl.add(e.code)
+				if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') heldShift.add(e.code)
+			}
+			if (e.code !== 'KeyV' || !(e.ctrlKey || e.metaKey) || e.altKey) return
 			// noVNC mustn't send the V yet; the browser's default action stays, so it fires "paste".
 			e.stopImmediatePropagation()
 			if (e.type !== 'keydown' || e.repeat) return
-			pending = {meta: e.metaKey && !e.ctrlKey, timer: window.setTimeout(() => finish(), 400)}
+			if (pending) window.clearTimeout(pending.timer)
+			pending = {meta: e.metaKey && !e.ctrlKey, shift: e.shiftKey, timer: window.setTimeout(() => finish(), 400)}
+		}
+		const onWinKeyUp = (e: KeyboardEvent) => {
+			heldCtrl.delete(e.code)
+			heldShift.delete(e.code)
+		}
+		const clearHeld = () => {
+			heldCtrl.clear()
+			heldShift.clear()
 		}
 		const onPaste = (e: ClipboardEvent) => {
 			if (!pending) return
@@ -398,13 +412,19 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		root.addEventListener('pointerdown', onPointer, true)
 		root.addEventListener('pointerenter', syncClipboard)
 		document.addEventListener('paste', onPaste, true)
+		window.addEventListener('keyup', onWinKeyUp, true)
+		window.addEventListener('blur', clearHeld)
 		window.addEventListener('focus', syncClipboard)
 		return () => {
+			if (pending) window.clearTimeout(pending.timer)
+			window.clearTimeout(sendTimer)
 			root.removeEventListener('keydown', onKey, true)
 			root.removeEventListener('keyup', onKey, true)
 			root.removeEventListener('pointerdown', onPointer, true)
 			root.removeEventListener('pointerenter', syncClipboard)
 			document.removeEventListener('paste', onPaste, true)
+			window.removeEventListener('keyup', onWinKeyUp, true)
+			window.removeEventListener('blur', clearHeld)
 			window.removeEventListener('focus', syncClipboard)
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps

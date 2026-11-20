@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {describe, test} from 'node:test'
 
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, wheelButtons} from '../web/src/consoleHelpers.ts'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, pasteKeySequence, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, wheelButtons} from '../web/src/consoleHelpers.ts'
 
 describe('console helpers', () => {
 	test('#120: reconnects on clean and unclean disconnects unless disposed or superseded', async () => {
@@ -170,5 +170,59 @@ describe('console helpers', () => {
 		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
 		assert.match(src, /touchReleaseAction\(/)
 		assert.doesNotMatch(src, /onPointerCancel=\{onPointerUp\}/)
+	})
+
+	test('#370: holds Ctrl and Shift around delayed V when physical keys were already released', async () => {
+		// Quick Ctrl+V where Ctrl was already released before the 60ms send timer
+		assert.deepEqual(pasteKeySequence({meta: false, shift: false, ctrlHeld: false, shiftHeld: false}), {
+			releaseSuper: false,
+			keys: [
+				{keysym: 0xffe3, code: 'ControlLeft', down: true},
+				{keysym: 0x76, code: 'KeyV', down: true},
+				{keysym: 0x76, code: 'KeyV', down: false},
+				{keysym: 0xffe3, code: 'ControlLeft', down: false},
+			],
+		})
+		// Held Ctrl+V leaves physical Ctrl alone
+		assert.deepEqual(pasteKeySequence({meta: false, shift: false, ctrlHeld: true, shiftHeld: false}), {
+			releaseSuper: false,
+			keys: [
+				{keysym: 0x76, code: 'KeyV', down: true},
+				{keysym: 0x76, code: 'KeyV', down: false},
+			],
+		})
+		// Cmd+V releases Super and wraps with Ctrl
+		assert.deepEqual(pasteKeySequence({meta: true, shift: false, ctrlHeld: false, shiftHeld: false}), {
+			releaseSuper: true,
+			keys: [
+				{keysym: 0xffe3, code: 'ControlLeft', down: true},
+				{keysym: 0x76, code: 'KeyV', down: true},
+				{keysym: 0x76, code: 'KeyV', down: false},
+				{keysym: 0xffe3, code: 'ControlLeft', down: false},
+			],
+		})
+		// Quick Ctrl+Shift+V wraps with Ctrl and Shift
+		assert.deepEqual(pasteKeySequence({meta: false, shift: true, ctrlHeld: false, shiftHeld: false}), {
+			releaseSuper: false,
+			keys: [
+				{keysym: 0xffe3, code: 'ControlLeft', down: true},
+				{keysym: 0xffe1, code: 'ShiftLeft', down: true},
+				{keysym: 0x56, code: 'KeyV', down: true},
+				{keysym: 0x56, code: 'KeyV', down: false},
+				{keysym: 0xffe1, code: 'ShiftLeft', down: false},
+				{keysym: 0xffe3, code: 'ControlLeft', down: false},
+			],
+		})
+		// Held Ctrl+Shift+V sends only uppercase V
+		assert.deepEqual(pasteKeySequence({meta: false, shift: true, ctrlHeld: true, shiftHeld: true}), {
+			releaseSuper: false,
+			keys: [
+				{keysym: 0x56, code: 'KeyV', down: true},
+				{keysym: 0x56, code: 'KeyV', down: false},
+			],
+		})
+
+		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
+		assert.match(src, /pasteKeySequence\(/)
 	})
 })
