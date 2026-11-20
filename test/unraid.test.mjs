@@ -102,6 +102,20 @@ test('what can’t come across is left out and said', () => {
 	for (const what of [/privileged/, /NET_ADMIN/, /below 1024 \(53\)/, /\/boot\/config/]) assert.ok(p.notes.some((n) => what.test(n)), String(what))
 })
 
+test('an HTTPS WebUI label sets web.https on the imported app', () => {
+	assert.deepEqual(webuiPort('https://[IP]:[PORT:8443]/'), {port: 8443, path: '', https: true})
+	assert.deepEqual(webuiPort('HTTPS://[IP]:[PORT:8443]/admin'), {port: 8443, path: '/admin', https: true})
+	assert.deepEqual(webuiPort('http://[IP]:[PORT:8096]/web'), {port: 8096, path: '/web'})
+	const p = containerPlan({
+		Name: '/vaultwarden',
+		State: {Running: true},
+		Config: {Image: 'vaultwarden/server:latest', Labels: {'net.unraid.docker.webui': 'https://[IP]:[PORT:8443]/'}},
+		HostConfig: {PortBindings: {'8443/tcp': [{HostPort: '8443'}]}},
+	})
+	const app = YAML.parse(p.files['omarchy-app.yml'])
+	assert.deepEqual(app.web, {service: 'vaultwarden', port: 8443, https: true})
+})
+
 test('a VM on Unraid: its settings and disks', () => {
 	const xml = `<domain type='kvm'><name>Win11</name><memory unit='KiB'>8388608</memory><vcpu placement='static'>4</vcpu>
 <os><loader readonly='yes' type='pflash'>/usr/share/qemu/ovmf-x64/OVMF_CODE-pure-efi.fd</loader><type arch='x86_64' machine='pc-q35-7.2'>hvm</type></os>

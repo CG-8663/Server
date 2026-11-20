@@ -60,8 +60,10 @@ export function unraidPath(p) {
 
 // The web address an Unraid template shows, e.g. "http://[IP]:[PORT:8096]/web".
 export function webuiPort(label) {
-	const m = /\[PORT:(\d{1,5})\]([^\s]*)/.exec(String(label ?? ''))
-	return m ? {port: Number(m[1]), path: m[2] && m[2] !== '/' ? m[2] : ''} : null
+	const s = String(label ?? '')
+	const m = /\[PORT:(\d{1,5})\]([^\s]*)/.exec(s)
+	if (!m) return null
+	return {port: Number(m[1]), path: m[2] && m[2] !== '/' ? m[2] : '', ...(/^\s*https:\/\//i.test(s) ? {https: true} : {})}
 }
 
 // One container (docker inspect) → an app listing (omarchy-app.yml + docker-compose.yml), what to copy
@@ -178,7 +180,7 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 		tagline: 'Brought over from Unraid',
 		category: 'utilities',
 		version: (image.split(':')[1] ?? 'latest').slice(0, 40),
-		...(publicPort && webPort ? {port: publicPort, web: {service, port: webPort}, path: ui?.path ?? ''} : {}),
+		...(publicPort && webPort ? {port: publicPort, web: {service, port: webPort, ...(ui?.https ? {https: true} : {})}, path: ui?.path ?? ''} : {}),
 		...(kept.length ? {openPorts: [...new Set(kept.map((p) => p.host))]} : {}),
 		description: `${name}, moved from your Unraid server (${image}).`,
 		developer: 'Imported',
