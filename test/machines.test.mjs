@@ -14,6 +14,7 @@ import WebSocket from 'ws'
 import {openAccounts} from '../omarchyd/accounts.mjs'
 import {cloudUserData, isWindowsClientLabel, omarchyConfiguration, windowsAnswerFile} from '../omarchyd/machine-media.mjs'
 import {createMachines, findChecksum} from '../omarchyd/machines.mjs'
+import {RpcError} from '../omarchyd/rpc.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 test('catalog: reads a local file:// catalog without GitHub', async () => {
@@ -595,4 +596,160 @@ describe('machines.json registry', () => {
 			await rm(root, {recursive: true, force: true})
 		}
 	})
+})
+
+test('Start on a failed clone does not boot the original machine\'s disks', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-clone-'))
+	const dataDir = join(root, 'data')
+	const id = 'a1b2c3d4'
+	const vm = join(dataDir, 'machines', 'vms', id)
+	const disk0 = join(vm, 'disk.qcow2')
+	const disk1 = join(vm, 'disk1.qcow2')
+	const defined = []
+	try {
+		await mkdir(vm, {recursive: true})
+		await writeFile(disk0, 'disk-zero')
+		await writeFile(disk1, 'disk-one')
+		await mkdir(join(dataDir, 'machines'), {recursive: true})
+		await writeFile(
+			join(dataDir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [{
+					id,
+					name: 'Source',
+					osId: 'testos-amd64',
+					cores: 1,
+					memoryGb: 1,
+					diskSizeGb: 10,
+					state: 'stopped',
+					portForwards: [],
+					createdAt: 1,
+					mac: '52:54:00:11:22:33',
+					boot: ['disk0', 'disk1'],
+					layout: {
+						firmware: 'bios',
+						machineType: 'q35',
+						nic: 'virtio',
+						video: 'vga',
+						disks: [
+							{id: 'disk0', file: disk0, device: 'disk', bus: 'virtio', format: 'qcow2', sizeGb: 10},
+							{id: 'disk1', file: disk1, device: 'disk', bus: 'virtio', format: 'qcow2', sizeGb: 10},
+						],
+					},
+				}],
+			}),
+		)
+		const kvmDevice = join(root, 'kvm')
+		await writeFile(kvmDevice, '')
+		const run = async (cmd, args) => {
+			if (cmd === 'virsh') {
+				const a = args[0] === '-c' ? args.slice(2) : args
+				if (a[0] === 'list') return ' Id   Name   State\n------------------\n'
+				if (a[0] === 'define') {
+					defined.push(await readFile(a[1], 'utf8'))
+					return ''
+				}
+				if (a[0] === 'start') return ''
+				return ''
+			}
+			if (cmd === 'qemu-img' && args[0] === 'convert') {
+				const src = args.at(-2)
+				const dst = args.at(-1)
+				if (src === disk1) {
+					await writeFile(dst, 'partial')
+					throw new Error('qemu-img: No space left on device')
+				}
+				await copyFile(src, dst)
+				return ''
+			}
+			return ''
+		}
+		const machines = createMachines({dataDir, run, kvmDevice})
+		await machines.ready
+		const {id: copyId} = await machines.procedures['machines.clone'].run({id, name: 'Source copy'})
+		const end = Date.now() + 5000
+		let copy
+		for (;;) {
+			copy = (await machines.procedures['machines.list'].run()).find((m) => m.id === copyId)
+			if (copy?.state === 'error') break
+			if (Date.now() > end) throw new Error(`clone did not reach error (state ${copy?.state})`)
+			await new Promise((r) => setTimeout(r, 20))
+		}
+		assert.match(copy.errorMessage, /No space left on device/)
+		await assert.rejects(
+			() => machines.procedures['machines.start'].run({id: copyId}),
+			(err) => err instanceof RpcError && err.code === 'PRECONDITION_FAILED' && err.message === 'Source copy didn’t finish setting up. Delete it and create it again.',
+		)
+		assert.equal(defined.some((xml) => xml.includes(disk0) || xml.includes(disk1)), false)
+		const after = (await machines.procedures['machines.list'].run()).find((m) => m.id === copyId)
+		assert.equal(after.state, 'error')
+		assert.equal(await readFile(disk0, 'utf8'), 'disk-zero')
+		assert.equal(await readFile(disk1, 'utf8'), 'disk-one')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('Start still finishes an error machine whose disks are already in its folder', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-own-'))
+	const dataDir = join(root, 'data')
+	const id = 'b1b2c3d4'
+	const vm = join(dataDir, 'machines', 'vms', id)
+	const disk0 = join(vm, 'disk.qcow2')
+	const defined = []
+	try {
+		await mkdir(vm, {recursive: true})
+		await writeFile(disk0, 'own-disk')
+		await writeFile(
+			join(dataDir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [{
+					id,
+					name: 'Almost',
+					osId: 'testos-amd64',
+					cores: 1,
+					memoryGb: 1,
+					diskSizeGb: 10,
+					state: 'error',
+					errorMessage: 'define failed',
+					portForwards: [],
+					createdAt: 1,
+					mac: '52:54:00:11:22:44',
+					boot: ['disk0'],
+					layout: {
+						firmware: 'bios',
+						machineType: 'q35',
+						nic: 'virtio',
+						video: 'vga',
+						disks: [{id: 'disk0', file: disk0, device: 'disk', bus: 'virtio', format: 'qcow2', sizeGb: 10}],
+					},
+				}],
+			}),
+		)
+		const kvmDevice = join(root, 'kvm')
+		await writeFile(kvmDevice, '')
+		let started = false
+		const run = async (cmd, args) => {
+			if (cmd === 'virsh') {
+				const a = args[0] === '-c' ? args.slice(2) : args
+				if (a[0] === 'define') defined.push(await readFile(a[1], 'utf8'))
+				if (a[0] === 'start') started = true
+				if (a[0] === 'list') return started ? ' Id   Name   State\n------------------\n -    omarchy-b1b2c3d4   running\n' : ' Id   Name   State\n------------------\n'
+				return ''
+			}
+			return ''
+		}
+		const machines = createMachines({dataDir, run, kvmDevice})
+		await machines.ready
+		assert.equal(await machines.procedures['machines.start'].run({id}), true)
+		assert.equal(started, true)
+		assert.equal(defined.length, 1)
+		assert.ok(defined[0].includes(disk0))
+		const saved = JSON.parse(await readFile(join(dataDir, 'machines', 'machines.json'), 'utf8'))
+		const rec = saved.machines.find((m) => m.id === id)
+		assert.equal(rec.state, undefined)
+		assert.equal(rec.errorMessage, undefined)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
 })
