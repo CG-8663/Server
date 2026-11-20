@@ -6,6 +6,7 @@ import type {AppState, Machine, Wallpaper} from './api'
 import {AssistantAvatar, cleanLook, type AssistantLook} from './character/AssistantCharacter'
 import {detectDesktop, LAYOUT_POINTER} from './layout'
 export {detectDesktop}
+import {isTopDialog, popDialog, pushDialog} from './focus'
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
@@ -416,12 +417,19 @@ export function Sheet({open, onClose, label, children, tall}: {open: boolean; on
 	const [drag, setDrag] = useState(0)
 	useEffect(() => {
 		if (!open) return
-		const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+		const id = pushDialog(undefined, ref.current)
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== 'Escape' || !isTopDialog(id) || e.defaultPrevented) return
+			e.preventDefault()
+			e.stopPropagation()
+			onClose()
+		}
 		document.addEventListener('keydown', onKey)
 		const release = lockPageScroll()
 		ref.current?.focus({preventScroll: true})
 		return () => {
 			document.removeEventListener('keydown', onKey)
+			popDialog(id)
 			release()
 		}
 	}, [open, onClose])
