@@ -16,11 +16,15 @@ const callId = () => 'call_' + randomBytes(4).toString('hex')
 
 const TOOL_PREFIXES = ['<tool_call', '<function=']
 
-function incompleteToolStart(rest) {
+function incompleteToolStart(rest, final) {
 	const unclosedCall = rest.search(/<tool_call>/)
-	if (unclosedCall >= 0 && !rest.includes('</tool_call>', unclosedCall)) return unclosedCall
 	const unclosedFn = rest.search(/<function=/)
-	if (unclosedFn >= 0 && !rest.includes('</function>', unclosedFn)) return unclosedFn
+	const hasCall = unclosedCall >= 0 && !rest.includes('</tool_call>', unclosedCall)
+	const hasFn = unclosedFn >= 0 && !rest.includes('</function>', unclosedFn)
+	if (hasCall && hasFn) return Math.min(unclosedCall, unclosedFn)
+	if (hasCall) return unclosedCall
+	if (hasFn) return unclosedFn
+	if (final) return -1
 	const lt = rest.lastIndexOf('<')
 	if (lt >= 0) {
 		const tail = rest.slice(lt)
@@ -86,7 +90,7 @@ export function takeXmlTools(buf, final) {
 		rest = rest.slice(at + raw.length).replace(/^\s*<\/(?:tool_call|function)>/, '')
 	}
 	rest = rest.replace(/^\s*<\/(?:tool_call|function)>/, '')
-	const hold = incompleteToolStart(rest)
+	const hold = incompleteToolStart(rest, final)
 	if (hold >= 0) {
 		text += rest.slice(0, hold)
 		rest = final ? '' : rest.slice(hold)
