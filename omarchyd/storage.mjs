@@ -51,7 +51,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 
 	async function blockDevices() {
 		const j = JSON.parse(await run('lsblk', ['-J', '-b', '-o', 'NAME,PATH,TYPE,SIZE,ROTA,TRAN,MODEL,SERIAL,FSTYPE,LABEL,UUID,MOUNTPOINTS,RM,HOTPLUG']))
-		return (j.blockdevices ?? []).filter((d) => d.type === 'disk' && !/^(zram|loop|sr|ram)/.test(d.name) && Number(d.size) > 0)
+		return (j.blockdevices ?? []).filter((d) => d.type === 'disk' && !/^(zram|loop|sr|ram)|^mmcblk\d+boot|rpmb$/.test(d.name) && Number(d.size) > 0)
 	}
 	async function fstabPools() {
 		const text = await readFile(fstabPath, 'utf8').catch(() => '')

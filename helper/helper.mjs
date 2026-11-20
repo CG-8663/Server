@@ -41,7 +41,7 @@ import {execFile} from 'node:child_process'
 import {chown, mkdir, readdir, readFile, realpath, rename, writeFile} from 'node:fs/promises'
 import {join, sep} from 'node:path'
 
-const DEV = /^\/dev\/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|hd[a-z])$/
+const DEV = /^\/dev\/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|mmcblk\d{1,2}|hd[a-z])$/
 const BY_ID = /^\/dev\/disk\/by-id\/[A-Za-z0-9._:+-]+$/
 const NAME = /^[a-z][a-z0-9-]{0,31}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/

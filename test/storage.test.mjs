@@ -760,6 +760,54 @@ errors: No known data errors
 		assert.equal(safe.at(-2), '/dev/sde1')
 		assert.equal(safe.at(-1), '/run/media/chris/My_Disk-2')
 	})
+
+	test('SD cards and eMMC (mmcblkN): whole disks work, boot/rpmb and partitions are rejected', async () => {
+		const mmcLsblk = {
+			blockdevices: [
+				{
+					name: 'mmcblk0',
+					path: '/dev/mmcblk0',
+					type: 'disk',
+					size: 62534975488,
+					rota: false,
+					tran: 'mmc',
+					serial: 'SD1',
+					children: [{name: 'mmcblk0p1', path: '/dev/mmcblk0p1', type: 'part', fstype: 'exfat', label: 'SDCARD', mountpoints: [null]}],
+				},
+				{name: 'mmcblk0boot0', path: '/dev/mmcblk0boot0', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+				{name: 'mmcblk0boot1', path: '/dev/mmcblk0boot1', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+				{name: 'mmcblk0rpmb', path: '/dev/mmcblk0rpmb', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+			],
+		}
+		let mounted = false
+		const log = []
+		const run = async (cmd, args) => {
+			log.push([cmd, ...args])
+			if (cmd === 'lsblk') {
+				return JSON.stringify({
+					blockdevices: mmcLsblk.blockdevices.map((d) =>
+						d.name === 'mmcblk0' && mounted ? {...d, children: [{...d.children[0], mountpoints: ['/run/media/chris/SDCARD']}]} : d,
+					),
+				})
+			}
+			if (cmd === 'wipefs') return JSON.stringify({signatures: []})
+			if (cmd === 'smartctl') return JSON.stringify({smart_status: {passed: true}})
+			return ''
+		}
+		const h = createHelper({user, run, fs: fakeFs()})
+		await assert.rejects(h.handle('mount', ['/dev/mmcblk0p1']), /Not a drive/)
+		await assert.rejects(h.handle('mount', ['/dev/mmcblk0boot0']), /Not a drive/)
+		await assert.rejects(h.handle('format', ['/dev/mmcblk0rpmb', 'blank']), /Not a drive/)
+		assert.equal(await h.handle('mount', ['/dev/mmcblk0']), 'ok')
+		assert.ok(log.some((l) => l[0] === 'mount' && l.includes('/dev/mmcblk0p1') && l.includes('/run/media/chris/SDCARD')))
+		mounted = true
+		assert.equal(await h.handle('umount', ['/dev/mmcblk0']), 'ok')
+		assert.ok(log.some((l) => l[0] === 'umount' && l[1] === '/run/media/chris/SDCARD'))
+		mounted = false
+		assert.equal(await h.handle('format', ['/dev/mmcblk0', 'blank']), 'ok')
+		assert.ok(log.some((l) => l[0] === 'wipefs' && l[1] === '-a' && l[2] === '/dev/mmcblk0'))
+		assert.ok(JSON.parse(await h.handle('smart', ['/dev/mmcblk0'])).smart_status.passed)
+	})
 })
 
 describe('omarchyd storage', () => {
@@ -984,5 +1032,37 @@ describe('omarchyd storage', () => {
 		} finally {
 			await rm(scratch, {recursive: true, force: true})
 		}
+	})
+
+	test('storage.disks lists mmcblkN and hides mmcblk boot and rpmb nodes', async () => {
+		const mmcLsblk = {
+			blockdevices: [
+				{
+					name: 'mmcblk0',
+					path: '/dev/mmcblk0',
+					type: 'disk',
+					size: 62534975488,
+					rota: false,
+					tran: 'mmc',
+					serial: 'SD1',
+					children: [{name: 'mmcblk0p1', path: '/dev/mmcblk0p1', type: 'part', fstype: 'exfat', label: 'SDCARD', mountpoints: [null]}],
+				},
+				{name: 'mmcblk0boot0', path: '/dev/mmcblk0boot0', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+				{name: 'mmcblk0boot1', path: '/dev/mmcblk0boot1', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+				{name: 'mmcblk0rpmb', path: '/dev/mmcblk0rpmb', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+			],
+		}
+		const run = async (cmd, args) => {
+			if (cmd === 'lsblk') return JSON.stringify(mmcLsblk)
+			if (cmd === 'sudo' && args[2] === 'ping') return 'ok\n'
+			if (cmd === 'sudo' && args[2] === 'zfs-available') return 'no\n'
+			if (cmd === 'sudo' && args[2] === 'smart') return JSON.stringify({smart_status: {passed: true}})
+			return ''
+		}
+		const data = join(root, 'mmc-data')
+		await mkdir(data)
+		const s = createStorage({dataDir: data, home: '/home/chris', files: {resolve: async () => ({real: '', top: 'Home'})}, run, fstabPath: fstab})
+		const disks = await s.procedures['storage.disks'].run()
+		assert.deepEqual(disks.map((d) => ({name: d.name, role: d.role})), [{name: 'mmcblk0', role: 'data'}])
 	})
 })
