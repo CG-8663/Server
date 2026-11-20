@@ -211,3 +211,10 @@ test('AppViewer uses useDialogFocus with tabIndex={-1} and aria-modal="true"', (
 	assert.match(src, /useDialogFocus\(true, dialogRef, back\)/)
 	assert.match(src, /role="dialog"\s+aria-modal="true"[\s\S]*?tabIndex=\{-1\}/)
 })
+
+test('FileViewer uses useDialogFocus with tabIndex={-1} and modal stack guard', () => {
+	const src = readFileSync(join(rootDir, 'web/src/screens/viewer/FileViewer.tsx'), 'utf8')
+	assert.match(src, /useDialogFocus\(!!f, dialogRef, close/)
+	assert.match(src, /ref=\{dialogRef\}[\s\S]*?role="dialog"[\s\S]*?aria-modal="true"[\s\S]*?tabIndex=\{-1\}/)
+	assert.match(src, /if \(!isTop\(\)/)
+})
