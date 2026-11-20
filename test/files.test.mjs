@@ -137,6 +137,8 @@ describe('files: Trash', () => {
 
 	test('a .trashinfo pointing outside Home restores into Home instead', async () => {
 		const trash = join(home, '.local/share/Trash')
+		await mkdir(join(trash, 'files'), {recursive: true})
+		await mkdir(join(trash, 'info'), {recursive: true})
 		const cases = [
 			['dots.txt', `${home}/../outside/dots.txt`], // starts with Home but climbs out
 			['abs.txt', `${outside}/abs.txt`],
