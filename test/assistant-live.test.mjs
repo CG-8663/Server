@@ -13,6 +13,8 @@ import {
 	finishAssistantTurn,
 	keepAssistantWindow,
 	openAssistantView,
+	assistantEpoch,
+	registerAssistantAbort,
 	resetAssistantTurn,
 	setTurnConversationId,
 	setTurnError,
@@ -121,4 +123,32 @@ test('signing out clears the previous person\'s assistant chat', () => {
 	assert.equal(activity.open, false)
 	assert.equal(activity.composing, false)
 	assert.equal(activity.successAt, 0)
+})
+
+test('reset aborts a registered approve controller and bumps the assistant epoch', () => {
+	resetAssistantTurn()
+	const before = assistantEpoch()
+	const own = new AbortController()
+	registerAssistantAbort(own)
+	resetAssistantTurn()
+	assert.equal(own.signal.aborted, true)
+	assert.notEqual(assistantEpoch(), before)
+})
+
+test('an in-flight send does not restore the conversation id after reset', async () => {
+	resetAssistantTurn()
+	const since = assistantEpoch()
+	let release = () => {}
+	const gate = new Promise((resolve) => {
+		release = resolve
+	})
+	const pending = (async () => {
+		await gate
+		// send() writes the id it just looked up only when this generation is still current.
+		setTurnConversationId('conv-previous', since)
+	})()
+	resetAssistantTurn()
+	release()
+	await pending
+	assert.equal(assistantTurn().conversationId, undefined)
 })

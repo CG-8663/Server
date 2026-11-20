@@ -21,6 +21,21 @@ const empty = (): AssistantTurn => ({open: false, streaming: false, unread: 0, i
 let controller: AbortController | null = null
 let state: AssistantTurn = empty()
 const listeners = new Set<() => void>()
+// Sign-out bumps this. A send, approve, or follow-up keeps the value it started with.
+let epoch = 0
+const approveAborts = new Set<AbortController>()
+
+export function assistantEpoch() {
+	return epoch
+}
+
+// decide() registers its own controller here. Reset aborts it with the turn.
+export function registerAssistantAbort(ac: AbortController) {
+	approveAborts.add(ac)
+	return () => {
+		approveAborts.delete(ac)
+	}
+}
 
 function emit(next: AssistantTurn) {
 	state = next
@@ -45,8 +60,11 @@ export function assistantTurn() {
 }
 
 export function resetAssistantTurn() {
+	epoch += 1
 	controller?.abort()
 	controller = null
+	for (const ac of approveAborts) ac.abort()
+	approveAborts.clear()
 	emit(empty())
 	resetAssistantActivity()
 }
@@ -72,7 +90,8 @@ function syncPhase() {
 	setAssistantActivity({phase, pending})
 }
 
-export function beginAssistantTurn(ac: AbortController) {
+export function beginAssistantTurn(ac: AbortController, since?: number) {
+	if (since !== undefined && since !== epoch) return
 	if (controller && controller !== ac) controller.abort()
 	controller = ac
 	set({...state, streaming: true, error: null})
@@ -95,7 +114,8 @@ export function openAssistantView() {
 	setAssistantActivity({open: true})
 }
 
-export function finishAssistantTurn(ac?: AbortController) {
+export function finishAssistantTurn(ac?: AbortController, since?: number) {
+	if (since !== undefined && since !== epoch) return
 	if (ac && controller !== ac) return
 	controller = null
 	const unread = state.open ? state.unread : state.unread + 1
@@ -126,7 +146,8 @@ export function setTurnError(error: string | null) {
 	syncPhase()
 }
 
-export function setTurnConversationId(conversationId: string | undefined) {
+export function setTurnConversationId(conversationId: string | undefined, since?: number) {
+	if (since !== undefined && since !== epoch) return
 	set({...state, conversationId})
 }
 

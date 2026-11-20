@@ -403,7 +403,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 			</p>
 
 			<NameSheet open={sheet === 'name'} current={user.data?.name ?? ''} onClose={close} />
-			<PasswordSheet open={sheet === 'password'} onClose={close} onSignedOut={onSignedOut} />
+			<PasswordSheet open={sheet === 'password'} onClose={close} />
 			<TwoFactorSheet open={sheet === '2fa'} enabled={!!twoFactor.data} onClose={close} />
 			<HostnameSheet open={sheet === 'hostname'} current={hostname.data ?? ''} onClose={close} />
 			{sheet === 'wifi' && <WifiSheet onClose={close} connected={wifi.data?.status === 'connected' ? wifi.data.ssid : undefined} />}
@@ -993,7 +993,7 @@ function NameSheet({open, current, onClose}: {open: boolean; current: string; on
 	)
 }
 
-function PasswordSheet({open, onClose, onSignedOut}: {open: boolean; onClose: () => void; onSignedOut: () => void}) {
+function PasswordSheet({open, onClose}: {open: boolean; onClose: () => void}) {
 	const save = useSave()
 	const [oldPassword, setOld] = useState('')
 	const [newPassword, setNew] = useState('')
@@ -1020,12 +1020,9 @@ function PasswordSheet({open, onClose, onSignedOut}: {open: boolean; onClose: ()
 						onSuccess: async () => {
 							onClose()
 							// Omarchy Server may sign every session out after a password change.
-							// This fetch does not go through the client that fires touch:signed-out, so clear the chat here.
+							// This fetch does not go through the client that fires touch:signed-out.
 							const still = await fetch('/api/rpc/user.get', {credentials: 'same-origin'}).catch(() => null)
-							if (still?.status === 401) {
-								resetAssistantTurn()
-								onSignedOut()
-							}
+							if (still?.status === 401) window.dispatchEvent(new Event('touch:signed-out'))
 						},
 					},
 				)
