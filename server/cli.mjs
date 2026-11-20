@@ -8,7 +8,7 @@ import {parseArgs} from 'node:util'
 
 import {createApp, normalizeAppHosts, normalizeBackendUrl, VERSION} from './app.mjs'
 import {createStore} from './store.mjs'
-import {parsePort} from '../omarchyd/cli-args.mjs'
+import {formatDataDirError, parsePort} from '../omarchyd/cli-args.mjs'
 import {defaultTlsDir, dualProtocolServer, tlsContext} from '../omarchyd/tls.mjs'
 
 let values
@@ -57,7 +57,12 @@ try {
 	process.exit(1)
 }
 const host = values.host || process.env.HOST || '0.0.0.0'
-const dataDir = values.data ?? process.env.OMARCHY_SERVER_DATA ?? join(homedir(), '.config', 'omarchy-server')
+const dataFromFlag = values.data !== undefined
+const dataDir = dataFromFlag ? values.data : process.env.OMARCHY_SERVER_DATA || join(homedir(), '.config', 'omarchy-server')
+if (!String(dataDir).trim()) {
+	console.error(`[omarchy-server] ${dataFromFlag ? '--data' : 'OMARCHY_SERVER_DATA'} cannot be empty`)
+	process.exit(1)
+}
 const staticDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist')
 
 const backendFromFlag = values.backend !== undefined
@@ -87,9 +92,15 @@ if (rawAppHosts !== undefined) {
 	}
 }
 
-const store = await createStore(dataDir)
-if (backendUrl !== undefined) await store.setConfig({backendUrl})
-if (rawAppHosts !== undefined) await store.setConfig({appHosts: appHostsUpdate})
+let store
+try {
+	store = await createStore(dataDir)
+	if (backendUrl !== undefined) await store.setConfig({backendUrl})
+	if (rawAppHosts !== undefined) await store.setConfig({appHosts: appHostsUpdate})
+} catch (error) {
+	console.error(`[omarchy-server] ${formatDataDirError(dataDir, error)}`)
+	process.exit(1)
+}
 
 // https:// on the same port as http:// (see omarchyd/tls.mjs). The certificate is shared with omarchyd.
 const secure = tlsContext({dir: defaultTlsDir()})

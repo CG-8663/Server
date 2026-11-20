@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import {spawn, spawnSync} from 'node:child_process'
 import {existsSync} from 'node:fs'
-import {mkdtemp, readFile, rm} from 'node:fs/promises'
+import {chmod, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -265,5 +265,33 @@ test('#617: normalizeAppHosts accepts valid patterns, clears on empty/off, and r
 	assert.equal(normalizeAppHosts('   '), null)
 	for (const bad of ['touch.example.com', '{app}_touch.example.com', 'https://{app}.example.com', '{app}', '{app}-{app}.example.com', '{app}.', '.{app}.com', '{app}..com']) {
 		assert.throws(() => normalizeAppHosts(bad), /must look like/)
+	}
+})
+
+test('#614: unusable --data prints a clean one-line error and exits 1 with no stack trace', async () => {
+	const filePath = join(root, 'server-not-a-dir')
+	await writeFile(filePath, 'x')
+
+	const rFile = runSync(['--data', filePath])
+	assert.equal(rFile.status, 1)
+	assert.match(rFile.stderr, /^\[omarchy-server\] .*not a directory/m)
+	assert.doesNotMatch(rFile.stderr, /^\s+at /m)
+
+	const rEmpty = runSync(['--data', ''])
+	assert.equal(rEmpty.status, 1)
+	assert.match(rEmpty.stderr, /^\[omarchy-server\] --data cannot be empty/m)
+	assert.doesNotMatch(rEmpty.stderr, /^\s+at /m)
+
+	if (process.getuid?.() !== 0) {
+		const locked = await mkdtemp(join(root, 'server-locked-'))
+		await chmod(locked, 0o000)
+		try {
+			const rLocked = runSync(['--data', join(locked, 'sub')])
+			assert.equal(rLocked.status, 1)
+			assert.match(rLocked.stderr, /^\[omarchy-server\] .*permission denied/m)
+			assert.doesNotMatch(rLocked.stderr, /^\s+at /m)
+		} finally {
+			await chmod(locked, 0o700)
+		}
 	}
 })

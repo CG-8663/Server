@@ -1,7 +1,7 @@
 // Accounts and sessions. Passwords are scrypt-hashed; tokens are random and held server-side only.
 // The owner account is created on the server itself (`omarchyd create-owner`), never over the web.
 import {createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual} from 'node:crypto'
-import {chmod, mkdir, readFile, rename, writeFile} from 'node:fs/promises'
+import {chmod, mkdir, readFile, rename, stat, writeFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import {promisify} from 'node:util'
 
@@ -94,8 +94,17 @@ function accountsObject(value) {
 // The message names the file and nothing else, so a log cannot leak the path or a totp secret.
 const damagedAccounts = () => new Error('accounts.json is damaged or unreadable')
 
-export async function openAccounts(dataDir) {
-	await mkdir(dataDir, {recursive: true, mode: 0o700})
+export async function openAccounts(dataDir, {create = true} = {}) {
+	if (create) {
+		await mkdir(dataDir, {recursive: true, mode: 0o700})
+	} else {
+		const st = await stat(dataDir).catch((error) => {
+			if (error?.code === 'ENOENT') return null
+			throw error
+		})
+		if (st && !st.isDirectory()) throw Object.assign(new Error('not a directory'), {code: 'ENOTDIR'})
+		if (!st) return {hasOwner: () => false}
+	}
 	const file = join(dataDir, 'accounts.json')
 	let raw = null
 	try {

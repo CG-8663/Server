@@ -13,3 +13,12 @@ export function parsePort(flagValue, envValue, {flag = '--port', env = null, fal
 	if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error(`${label} must be a number from 1 to 65535`)
 	return n
 }
+
+export function formatDataDirError(dataDir, error) {
+	const code = error?.code
+	if (code === 'EEXIST' || code === 'ENOTDIR') return `can't use ${dataDir} as the data folder: not a directory`
+	if (code === 'EACCES' || code === 'EPERM') return `can't use ${dataDir} as the data folder: permission denied`
+	if (code === 'EROFS') return `can't use ${dataDir} as the data folder: read-only file system`
+	if (code === 'ENOENT') return `can't use ${dataDir} as the data folder: folder does not exist`
+	return error?.message ?? String(error)
+}
