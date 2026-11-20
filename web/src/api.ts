@@ -198,6 +198,7 @@ export type Bootstrap = {
 	server: null | {
 		url: string
 		host: string
+		local?: boolean
 		reachable: boolean
 		version?: string
 		name?: string

@@ -2,7 +2,7 @@ import {lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type 
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {getBootstrap, query, type Bootstrap, type User, type UserApp} from './api'
-import {useServerReachable} from './connection'
+import {bootstrapPollInterval, useServerReachable} from './connection'
 import {AppSheet} from './AppSheet'
 import {AppViewer} from './AppViewer'
 import {VIEW_APP} from './openApp'
@@ -55,7 +55,13 @@ const tabFromHash = (): Tab => {
 
 export function App() {
 	const qc = useQueryClient()
-	const boot = useQuery({queryKey: ['bootstrap'], queryFn: getBootstrap, retry: 1, refetchOnWindowFocus: false})
+	const boot = useQuery({
+		queryKey: ['bootstrap'],
+		queryFn: getBootstrap,
+		retry: 1,
+		refetchInterval: (q) => bootstrapPollInterval(q.state),
+		refetchOnWindowFocus: (q) => bootstrapPollInterval(q.state) !== false,
+	})
 	const signedIn = !!boot.data?.session && !!boot.data?.server?.reachable
 	const user = useQuery({queryKey: ['user.get'], queryFn: () => query<User>('user.get'), enabled: signedIn, staleTime: 5 * 60_000})
 	const [loginId, setLoginId] = useState<string>()
@@ -66,6 +72,11 @@ export function App() {
 	const look = useMemo(() => cleanLook(prefs.assistantLook ?? DEFAULT_LOOK), [prefs.assistantLook])
 	const lookValue = useMemo(() => ({look, setLook: (next: AssistantLook) => setPrefs({...prefs, assistantLook: next})}), [look, prefs, setPrefs])
 	const refresh = useCallback(() => qc.invalidateQueries({queryKey: ['bootstrap']}), [qc])
+	const retryBootstrap = useCallback(async () => {
+		const res = await boot.refetch()
+		if (res.error) throw res.error
+		return res.data ?? null
+	}, [boot])
 	const layout = useLayout()
 	// The first time anyone signs in on this device: Desktop or Phone & tablet (then What's New).
 	const [askLayout, setAskLayout] = useState(() => !layoutAsked())
@@ -99,13 +110,13 @@ export function App() {
 			<main className="auth center screen">
 				<h1>Omarchy Server is offline</h1>
 				<p className="lead">The Omarchy Server server isn’t answering. Is it still running?</p>
-				<button className="btn primary block" onClick={refresh}>
+				<button className="btn primary block" onClick={() => void boot.refetch()}>
 					Try again
 				</button>
 			</main>
 		)
 	} else if (!b.configured) content = <Connect onDone={refresh} />
-	else if (!b.server?.reachable) content = <Connect onDone={refresh} unreachable={b.server} />
+	else if (!b.server?.reachable) content = <Connect onDone={refresh} onRetry={retryBootstrap} unreachable={b.server} />
 	else if (!b.session) content = <Login boot={b} userId={loginId} setUserId={setLoginId} onDone={refresh} />
 	else
 		content = (

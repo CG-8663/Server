@@ -102,3 +102,22 @@ export function useServerReachable(): ConnectionState {
 	)
 	return useMemo(() => connectionStateFor(status, browserOnline), [status, browserOnline])
 }
+
+export function bootstrapPollInterval(state: {
+	status: string
+	data?: {configured?: boolean; server?: {reachable?: boolean} | null}
+}): number | false {
+	if (state.status === 'error') return 3000
+	if (state.data?.configured && !state.data?.server?.reachable) return 3000
+	return false
+}
+
+export function connectSubmitMode(
+	unreachable: {url?: string} | null | undefined,
+	enteredUrl: string,
+): 'retry' | 'setup' {
+	if (!unreachable) return 'setup'
+	const trimmed = enteredUrl.trim()
+	if (!trimmed || trimmed === (unreachable.url ?? '').trim()) return 'retry'
+	return 'setup'
+}
