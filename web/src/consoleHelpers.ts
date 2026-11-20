@@ -28,3 +28,43 @@ export function screenshotFilename(name: string, now: LocalDateLike = new Date()
 	const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`
 	return `${base}-${stamp}.png`
 }
+
+export type ConsoleWheelEvent = {
+	ctrlKey: boolean
+	clientX: number
+	clientY: number
+	deltaX: number
+	deltaY: number
+	preventDefault: () => void
+}
+
+// Handle wheel zoom and scroll events in the console touch layer.
+export function handleConsoleWheel(
+	e: ConsoleWheelEvent,
+	opts: {
+		connected: boolean
+		onZoom: (deltaY: number, p: {x: number; y: number}) => void
+		onScroll: (buttons: number[], p: {x: number; y: number}) => void
+	},
+) {
+	const p = {x: e.clientX, y: e.clientY}
+	if (e.ctrlKey) {
+		e.preventDefault()
+		if (opts.connected) opts.onZoom(e.deltaY, p)
+		return
+	}
+	if (!opts.connected) return
+	const buttons = wheelButtons(e.deltaX, e.deltaY)
+	if (!buttons.length) return
+	e.preventDefault()
+	opts.onScroll(buttons, p)
+}
+
+// Register a native wheel listener with passive: false so preventDefault works.
+export function bindConsoleWheel(
+	el: Pick<HTMLElement, 'addEventListener' | 'removeEventListener'>,
+	onWheel: (e: WheelEvent) => void,
+) {
+	el.addEventListener('wheel', onWheel, {passive: false})
+	return () => el.removeEventListener('wheel', onWheel)
+}

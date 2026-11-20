@@ -14,7 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
-import {BTN, consoleDisconnectAction, screenshotFilename, wheelButtons} from './consoleHelpers'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, screenshotFilename} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -98,6 +98,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	const screenRef = useRef<HTMLDivElement>(null) // the visible viewport
 	const stageRef = useRef<HTMLDivElement>(null) // zoomed/panned layer holding noVNC
 	const canvasHost = useRef<HTMLDivElement>(null)
+	const touchRef = useRef<HTMLDivElement>(null)
 	const cursorRef = useRef<HTMLDivElement>(null)
 	const input = useRef<HTMLTextAreaElement>(null)
 	const rfbRef = useRef<InstanceType<RFBClass>>()
@@ -963,17 +964,22 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		if (st.pointers.size === 0) st.kind = 'none'
 	}
 
-	const onWheel = (e: React.WheelEvent) => {
-		if (state !== 'connected') return
-		const p = {x: e.clientX, y: e.clientY}
-		if (e.ctrlKey) {
-			// trackpad pinch / ctrl+wheel on desktop zooms the view
-			zoomAt(view.current.z * Math.exp(-e.deltaY / 200), p)
-			return
-		}
-		const fb = toFb(p)
-		if (fb) for (const b of wheelButtons(e.deltaX, e.deltaY)) wheel(fb, b)
+	const onWheelRef = useRef<(e: WheelEvent) => void>(() => {})
+	onWheelRef.current = (e: WheelEvent) => {
+		handleConsoleWheel(e, {
+			connected: state === 'connected',
+			onZoom: (dy, p) => zoomAt(view.current.z * Math.exp(-dy / 200), p),
+			onScroll: (buttons, p) => {
+				const fb = toFb(p)
+				if (fb) for (const b of buttons) wheel(fb, b)
+			},
+		})
 	}
+	useEffect(() => {
+		const el = touchRef.current
+		if (!el || deskUi) return
+		return bindConsoleWheel(el, (e) => onWheelRef.current(e))
+	}, [deskUi])
 
 	// ---- keyboard ----------------------------------------------------------------
 	const tapKey = (keysym: number) => {
@@ -1226,12 +1232,12 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				</div>
 				{/* Every touch lands here, above noVNC's canvas, so our gestures decide what the VM gets. */}
 				{!deskUi && <div
+					ref={touchRef}
 					className="console-touch"
 					onPointerDown={onPointerDown}
 					onPointerMove={onPointerMove}
 					onPointerUp={onPointerUp}
 					onPointerCancel={onPointerUp}
-					onWheel={onWheel}
 					onContextMenu={(e) => e.preventDefault()}
 				/>}
 				<div ref={cursorRef} className={`console-cursor${mode === 'mouse' && !deskUi ? '' : ' hidden'}`} aria-hidden="true">

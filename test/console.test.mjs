@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {describe, test} from 'node:test'
 
-import {BTN, consoleDisconnectAction, screenshotFilename, wheelButtons} from '../web/src/consoleHelpers.ts'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, screenshotFilename, wheelButtons} from '../web/src/consoleHelpers.ts'
 
 describe('console helpers', () => {
 	test('#120: reconnects on clean and unclean disconnects unless disposed or superseded', async () => {
@@ -25,7 +25,7 @@ describe('console helpers', () => {
 		assert.deepEqual(wheelButtons(10, -10), [BTN.wheelUp, BTN.wheelRight])
 
 		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
-		assert.match(src, /wheelButtons\(/)
+		assert.match(src, /handleConsoleWheel\(|wheelButtons\(/)
 	})
 
 	test('#124: keeps Unicode machine names and uses local time in screenshot filenames', async () => {
@@ -47,5 +47,55 @@ describe('console helpers', () => {
 
 		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
 		assert.match(src, /screenshotFilename\(machine\.name\)/)
+	})
+
+	test('#122: binds non-passive wheel listener and prevents default on Ctrl+wheel', async () => {
+		const calls = []
+		const fakeEl = {
+			addEventListener(type, fn, opts) {
+				calls.push(['add', type, fn, opts])
+			},
+			removeEventListener(type, fn) {
+				calls.push(['remove', type, fn])
+			},
+		}
+		const listener = () => {}
+		const unbind = bindConsoleWheel(fakeEl, listener)
+		assert.deepEqual(calls[0], ['add', 'wheel', listener, {passive: false}])
+		unbind()
+		assert.deepEqual(calls[1], ['remove', 'wheel', listener])
+
+		let prevented = 0
+		let zoomed = null
+		let scrolled = null
+		handleConsoleWheel(
+			{ctrlKey: true, clientX: 50, clientY: 60, deltaX: 0, deltaY: -100, preventDefault: () => prevented++},
+			{connected: true, onZoom: (dy, p) => (zoomed = {dy, p}), onScroll: (b, p) => (scrolled = {b, p})},
+		)
+		assert.equal(prevented, 1)
+		assert.deepEqual(zoomed, {dy: -100, p: {x: 50, y: 60}})
+		assert.equal(scrolled, null)
+
+		let preventedDisconnected = 0
+		let zoomedDisconnected = 0
+		handleConsoleWheel(
+			{ctrlKey: true, clientX: 10, clientY: 20, deltaX: 0, deltaY: -50, preventDefault: () => preventedDisconnected++},
+			{connected: false, onZoom: () => zoomedDisconnected++, onScroll: () => {}},
+		)
+		assert.equal(preventedDisconnected, 1)
+		assert.equal(zoomedDisconnected, 0)
+
+		let preventedScroll = 0
+		let scrolledRes = null
+		handleConsoleWheel(
+			{ctrlKey: false, clientX: 30, clientY: 40, deltaX: 12, deltaY: 0, preventDefault: () => preventedScroll++},
+			{connected: true, onZoom: () => {}, onScroll: (b, p) => (scrolledRes = {b, p})},
+		)
+		assert.equal(preventedScroll, 1)
+		assert.deepEqual(scrolledRes, {b: [BTN.wheelRight], p: {x: 30, y: 40}})
+
+		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
+		assert.match(src, /bindConsoleWheel\(/)
+		assert.doesNotMatch(src, /onWheel=\{onWheel\}/)
 	})
 })
