@@ -3672,7 +3672,9 @@ html.desk-mode body {
 	cursor: default;
 }
 .sys-pop button:hover,
-.ctx-menu button:hover {
+.sys-pop button:focus-visible,
+.ctx-menu button:hover,
+.ctx-menu button:focus-visible {
 	background: rgba(255, 255, 255, 0.1);
 }
 .sys-pop button.danger,
@@ -4905,7 +4907,9 @@ html.desk-mode body {
 	color: rgba(0, 0, 0, 0.5) !important;
 }
 .style-daylight .sys-pop button:hover,
-.style-daylight .ctx-menu button:hover {
+.style-daylight .sys-pop button:focus-visible,
+.style-daylight .ctx-menu button:hover,
+.style-daylight .ctx-menu button:focus-visible {
 	background: rgba(0, 0, 0, 0.07);
 }
 .style-daylight .pop-note {

@@ -10,10 +10,12 @@ import {
 	dialogStackSize,
 	getFocusable,
 	getInitialFocusTarget,
+	getMenuItems,
 	getTabTrapTarget,
 	hasOpenDialog,
 	isElementFocusable,
 	isTopDialog,
+	nextMenuIndex,
 	pickFocusTarget,
 	popDialog,
 	pushDialog,
@@ -217,4 +219,27 @@ test('FileViewer uses useDialogFocus with tabIndex={-1} and modal stack guard', 
 	assert.match(src, /useDialogFocus\(!!f, dialogRef, close/)
 	assert.match(src, /ref=\{dialogRef\}[\s\S]*?role="dialog"[\s\S]*?aria-modal="true"[\s\S]*?tabIndex=\{-1\}/)
 	assert.match(src, /if \(!isTop\(\)/)
+})
+
+test('nextMenuIndex and getMenuItems support arrow, Home/End navigation and skip disabled items', () => {
+	assert.equal(nextMenuIndex(0, -1, 'ArrowDown'), null)
+	assert.equal(nextMenuIndex(4, -1, 'ArrowDown'), 0)
+	assert.equal(nextMenuIndex(4, -1, 'ArrowUp'), 3)
+	assert.equal(nextMenuIndex(4, 3, 'ArrowDown'), 0)
+	assert.equal(nextMenuIndex(4, 0, 'ArrowUp'), 3)
+	assert.equal(nextMenuIndex(4, 2, 'Home'), 0)
+	assert.equal(nextMenuIndex(4, 1, 'End'), 3)
+	assert.equal(nextMenuIndex(4, 1, 'Enter'), null)
+
+	const item1 = makeMockEl({id: 'open', tabIndex: 0})
+	const disabled = makeMockEl({id: 'dis', disabled: true, tabIndex: 0})
+	const ariaDisabled = makeMockEl({id: 'aria-dis', tabIndex: 0, attrs: {'aria-disabled': 'true'}})
+	const item2 = makeMockEl({id: 'close', tabIndex: 0})
+	const menu = makeMockContainer([item1, disabled, ariaDisabled, item2])
+	assert.deepEqual(getMenuItems(menu), [item1, item2])
+
+	const desk = readFileSync(join(rootDir, 'web/src/desktop/Desktop.tsx'), 'utf8')
+	assert.match(desk, /className="menu-scrim" aria-label="Close menu" tabIndex=\{-1\}/)
+	assert.match(desk, /useMenuFocus\(true, ref, onClose, menu\.opener\)/)
+	assert.match(desk, /useMenuFocus\(p\.menu === 'system', sysRef, closeTopMenu\)/)
 })

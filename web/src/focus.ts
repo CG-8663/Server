@@ -222,3 +222,94 @@ export function useDialogFocus(
 
 	return () => dialogIdRef.current !== null && isTopDialog(dialogIdRef.current)
 }
+
+export function nextMenuIndex(count: number, current: number, key: string): number | null {
+	if (count <= 0) return null
+	if (key === 'ArrowDown') return current < 0 ? 0 : (current + 1) % count
+	if (key === 'ArrowUp') return current < 0 ? count - 1 : (current - 1 + count) % count
+	if (key === 'Home') return 0
+	if (key === 'End') return count - 1
+	return null
+}
+
+export function getMenuItems(container: ContainerLike): FocusableLike[] {
+	if (!container.querySelectorAll) return []
+	return Array.from(container.querySelectorAll('[role="menuitem"]:not([disabled])')).filter(
+		(el) => el.getAttribute?.('aria-disabled') !== 'true' && isElementFocusable(el),
+	)
+}
+
+export function useMenuFocus(
+	open: boolean,
+	ref: RefObject<HTMLElement | null>,
+	onClose: () => void,
+	explicitOpener?: HTMLElement | null,
+): (fn: () => void) => void {
+	const onCloseRef = useRef(onClose)
+	onCloseRef.current = onClose
+	const openerRef = useRef<HTMLElement | null>(null)
+	const wasOpenRef = useRef(false)
+	const skipRestoreRef = useRef(false)
+
+	if (open && !wasOpenRef.current && !openerRef.current && typeof document !== 'undefined') {
+		skipRestoreRef.current = false
+		const active = explicitOpener ?? document.activeElement
+		if (active instanceof HTMLElement && active !== document.body && !(ref.current && ref.current.contains(active))) {
+			openerRef.current = active
+		}
+	}
+
+	useEffect(() => {
+		if (!open) return
+		const el = ref.current
+		if (!el) return
+		wasOpenRef.current = true
+		skipRestoreRef.current = false
+		if (!openerRef.current) {
+			const active = explicitOpener ?? document.activeElement
+			if (active instanceof HTMLElement && active !== document.body && !el.contains(active)) {
+				openerRef.current = active
+			}
+		}
+		const id = pushDialog(undefined, el)
+		const items = getMenuItems(el)
+		;(items[0] ?? el).focus?.({preventScroll: true})
+
+		const onKey = (e: KeyboardEvent) => {
+			if (!isTopDialog(id) || e.defaultPrevented) return
+			if (e.key === 'Escape' || e.key === 'Tab') {
+				e.preventDefault()
+				e.stopPropagation()
+				onCloseRef.current()
+				return
+			}
+			const currentItems = getMenuItems(el)
+			const active = document.activeElement as FocusableLike | null
+			const idx = active ? currentItems.indexOf(active) : -1
+			const next = nextMenuIndex(currentItems.length, idx, e.key)
+			if (next !== null) {
+				e.preventDefault()
+				currentItems[next]?.focus?.({preventScroll: true})
+			}
+		}
+		document.addEventListener('keydown', onKey)
+		return () => {
+			document.removeEventListener('keydown', onKey)
+			popDialog(id)
+			wasOpenRef.current = false
+			const opener = openerRef.current
+			openerRef.current = null
+			if (!skipRestoreRef.current) {
+				restoreFocus(opener, topDialogElement())
+			}
+			skipRestoreRef.current = false
+		}
+	}, [open, ref])
+
+	return (fn: () => void) => {
+		skipRestoreRef.current = true
+		restoreFocus(openerRef.current)
+		onCloseRef.current()
+		fn()
+	}
+}

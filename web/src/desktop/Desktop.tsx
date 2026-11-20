@@ -15,6 +15,7 @@ import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../osLook'
 import {closeAssistantView, keepAssistantWindow, openAssistantView, resetAssistantTurn} from '../assistantTurn'
 import {AssistantCharacterWidget} from '../character/widgets'
+import {hasOpenDialog, useDialogFocus, useMenuFocus} from '../focus'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, resetDeskConfig, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
@@ -274,7 +275,7 @@ const cellAt = (x: number, y: number) => {
 }
 
 type MenuItem = {label: string; icon?: IconName; onClick: () => void; danger?: boolean; disabled?: boolean} | 'sep'
-type Menu = {x: number; y: number; title?: string; items: MenuItem[]}
+type Menu = {x: number; y: number; title?: string; items: MenuItem[]; opener?: HTMLElement | null}
 
 // ---- the desktop -------------------------------------------------------------------------------
 export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Bootstrap; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; reopenAssistant?: boolean}) {
@@ -656,8 +657,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				if (cfg.shell === 'hyprland') return
 			}
 			if (e.key === 'Escape') {
-				setMenu(null)
-				setTopMenu(null)
+				if (hasOpenDialog()) return
 				setOverview(null)
 				setLauncher(false)
 				setCheatsheet(false)
@@ -719,7 +719,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		if (active && itemOfWin(active) === key && !top.min) mine.forEach((w) => minimize(w.id))
 		else [...mine].sort((a, b) => a.z - b.z).forEach((w) => focus(w.id))
 	}
-	const itemMenu = (key: string, x: number, y: number, where: 'dock' | 'desktop' | 'overview') => {
+	const itemMenu = (key: string, x: number, y: number, where: 'dock' | 'desktop' | 'overview', opener?: HTMLElement | null) => {
 		const it = info(key)
 		const app = key.startsWith('app:') ? appList.find((a) => a.id === key.slice(4)) : undefined
 		const machine = key.startsWith('machine:') ? machineList.find((m) => m.id === key.slice(8)) : undefined
@@ -745,7 +745,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		items.push(cfg.icons.some((i) => i.key === key) ? {label: 'Remove from desktop', icon: 'close', onClick: () => api.removeIcon(key)} : {label: 'Add to desktop', icon: 'plus', onClick: () => api.addIcon(key)})
 		if (mine.length && !key.startsWith('folder:'))
 			items.push('sep', {label: mine.length > 1 ? `Close ${mine.length} windows` : 'Close window', icon: 'close', danger: true, onClick: () => mine.forEach((w) => close(w.id))})
-		setMenu({x, y, title: it.label, items})
+		setMenu({x, y, title: it.label, items, opener})
 	}
 
 	const power = async (kind: 'restart' | 'shutdown') => {
@@ -809,10 +809,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			})
 			return {...c, icons: sorted.map((i, n) => ({...i, col: Math.floor(n / rows), row: n % rows}))}
 		})
-	const desktopMenu = (x: number, y: number) =>
+	const desktopMenu = (x: number, y: number, opener?: HTMLElement | null) =>
 		setMenu({
 			x,
 			y,
+			opener,
 			items: [
 				{label: 'Add icons to the desktop…', icon: 'plus', onClick: () => open('personalize', {tab: 'desktop'})},
 				{label: 'Arrange icons by name', icon: 'sort', onClick: arrangeIcons},
@@ -981,7 +982,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					setCfg={setCfg}
 					info={info}
 					onOpen={api.openItem}
-					onItemMenu={(key, x, y) => itemMenu(key, x, y, 'desktop')}
+					onItemMenu={(key, x, y, opener) => itemMenu(key, x, y, 'desktop', opener)}
 					onDesktopMenu={desktopMenu}
 					onBackgroundClick={() => {
 						setMenu(null)
@@ -1028,15 +1029,16 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					showAppsOn={overview === 'apps'}
 					forceShow={!!overview || !!menu || wins.every((w) => w.min)}
 					onClick={dockClick}
-					onMenu={(k, x, y) => itemMenu(k, x, y, 'dock')}
+					onMenu={(k, x, y, opener) => itemMenu(k, x, y, 'dock', opener)}
 					onShowApps={() => setOverview((o) => (o === 'apps' ? null : 'apps'))}
 					onReorder={(keys) => setCfg((c) => ({...c, dock: {...c.dock, items: keys}}))}
 					onDropToDesktop={(k, x, y) => api.addIcon(k, {x, y})}
-					onDockMenu={(x, y) =>
+					onDockMenu={(x, y, opener) =>
 						setMenu({
 							x,
 							y,
 							title: 'Dock',
+							opener,
 							items: [
 								{label: 'Dock settings…', icon: 'settings', onClick: () => open('personalize', {tab: 'dock'})},
 								{label: cfg.dock.autohide ? 'Always show the dock' : 'Auto-hide the dock', icon: 'apps', onClick: () => setCfg((c) => ({...c, dock: {...c.dock, autohide: !c.dock.autohide}}))},
@@ -1055,11 +1057,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						owner={owner}
 						hasWindows={visible.length > 0}
 						onOpen={(key) => api.openItem(key)}
-						onMenu={(k, x, y) => itemMenu(k, x, y, 'overview')}
+						onMenu={(k, x, y, opener) => itemMenu(k, x, y, 'overview', opener)}
 					/>
 				)}
 
-				{menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
+				{menu && <ContextMenu key={`${menu.x}:${menu.y}:${menu.title ?? ''}`} menu={menu} onClose={() => setMenu(null)} />}
 				{shareFor && (
 					<Suspense fallback={<WinFallback />}>
 						<ShareSheet path={shareFor.path} name={shareFor.name} host={boot.server?.host ?? ''} username={user.data?.sambaUsername} onClose={() => setShareFor(null)} />
@@ -1116,6 +1118,7 @@ function Wall({url}: {url: string}) {
 function ContextMenu({menu, onClose}: {menu: Menu; onClose: () => void}) {
 	const ref = useRef<HTMLDivElement>(null)
 	const [pos, setPos] = useState({x: menu.x, y: menu.y})
+	const runAction = useMenuFocus(true, ref, onClose, menu.opener)
 	useEffect(() => {
 		const el = ref.current
 		if (!el) return
@@ -1125,8 +1128,8 @@ function ContextMenu({menu, onClose}: {menu: Menu; onClose: () => void}) {
 	const items = menu.items.filter((it, i, all) => it !== 'sep' || (i > 0 && i < all.length - 1 && all[i - 1] !== 'sep'))
 	return (
 		<>
-			<button className="menu-scrim" aria-label="Close menu" onClick={onClose} onContextMenu={(e) => (e.preventDefault(), onClose())} />
-			<div ref={ref} className="ctx-menu" style={{left: pos.x, top: pos.y}} role="menu">
+			<button className="menu-scrim" aria-label="Close menu" tabIndex={-1} onClick={onClose} onContextMenu={(e) => (e.preventDefault(), onClose())} />
+			<div ref={ref} className="ctx-menu" style={{left: pos.x, top: pos.y}} role="menu" aria-label={menu.title ?? 'Menu'} tabIndex={-1}>
 				{menu.title && <b className="ctx-title">{menu.title}</b>}
 				{items.map((it, i) =>
 					it === 'sep' ? (
@@ -1137,10 +1140,7 @@ function ContextMenu({menu, onClose}: {menu: Menu; onClose: () => void}) {
 							role="menuitem"
 							className={it.danger ? 'danger' : undefined}
 							disabled={it.disabled}
-							onClick={() => {
-								onClose()
-								it.onClick()
-							}}
+							onClick={() => runAction(it.onClick)}
 						>
 							{it.icon && <Icon name={it.icon} size={16} />}
 							{it.label}
@@ -1197,11 +1197,11 @@ function Dock(p: {
 	showAppsOn: boolean
 	forceShow: boolean
 	onClick: (k: string) => void
-	onMenu: (k: string, x: number, y: number) => void
+	onMenu: (k: string, x: number, y: number, opener?: HTMLElement | null) => void
 	onShowApps: () => void
 	onReorder: (keys: string[]) => void
 	onDropToDesktop: (k: string, x: number, y: number) => void
-	onDockMenu: (x: number, y: number) => void
+	onDockMenu: (x: number, y: number, opener?: HTMLElement | null) => void
 }) {
 	const pos = p.cfg.dock.position
 	const vertical = pos === 'left' || pos === 'right'
@@ -1317,7 +1317,7 @@ function Dock(p: {
 				onContextMenu={(e) => {
 					if ((e.target as HTMLElement).closest('.dock-item')) return
 					e.preventDefault()
-					p.onDockMenu(e.clientX + 4, e.clientY)
+					p.onDockMenu(e.clientX + 4, e.clientY, e.currentTarget)
 				}}
 			>
 				<div className="dock-apps">
@@ -1340,7 +1340,7 @@ function Dock(p: {
 									onContextMenu={(e) => {
 										e.preventDefault()
 										tip.hide()
-										p.onMenu(k, e.clientX + 6, e.clientY)
+										p.onMenu(k, e.clientX + 6, e.clientY, e.currentTarget)
 									}}
 								>
 									{count > 0 && (
@@ -1388,8 +1388,8 @@ function DesktopIcons(p: {
 	setCfg: (fn: (c: DeskConfig) => DeskConfig) => void
 	info: (k: string) => ItemInfo
 	onOpen: (k: string) => void
-	onItemMenu: (k: string, x: number, y: number) => void
-	onDesktopMenu: (x: number, y: number) => void
+	onItemMenu: (k: string, x: number, y: number, opener?: HTMLElement | null) => void
+	onDesktopMenu: (x: number, y: number, opener?: HTMLElement | null) => void
 	onBackgroundClick: () => void
 	empty: boolean
 	deviceName: string
@@ -1524,7 +1524,7 @@ function DesktopIcons(p: {
 				if ((e.target as HTMLElement).closest('.desk-icon')) return
 				setSel(new Set())
 				dropHint()
-				p.onDesktopMenu(e.clientX, e.clientY)
+				p.onDesktopMenu(e.clientX, e.clientY, e.currentTarget)
 			}}
 		>
 			{p.empty && icons.length <= 2 && !hintGone && (
@@ -1554,7 +1554,7 @@ function DesktopIcons(p: {
 							e.preventDefault()
 							e.stopPropagation()
 							if (!sel.has(i.key)) setSel(new Set([i.key]))
-							p.onItemMenu(i.key, e.clientX, e.clientY)
+							p.onItemMenu(i.key, e.clientX, e.clientY, e.currentTarget)
 						}}
 						title={it.status ? `${it.label} · ${it.status === 'running' ? 'running' : it.status === 'stopped' ? 'stopped' : 'busy'}` : it.label}
 					>
@@ -1611,6 +1611,11 @@ function TopBar(p: {
 	const action = useAction()
 	const cpuPct = cpu.data ? Math.round(cpu.data.totalUsed) : null
 	const memPct = mem.data ? Math.round((mem.data.totalUsed / mem.data.size) * 100) : null
+	const clockRef = useRef<HTMLDivElement>(null)
+	const sysRef = useRef<HTMLDivElement>(null)
+	const closeTopMenu = () => p.setMenu(null)
+	useDialogFocus(p.menu === 'clock', clockRef, closeTopMenu)
+	const runSysAction = useMenuFocus(p.menu === 'system', sysRef, closeTopMenu)
 	return (
 		<header className="desk-top">
 			<div className="top-left">
@@ -1665,9 +1670,9 @@ function TopBar(p: {
 				</button>
 			</div>
 
-			{p.menu && <button className="menu-scrim" aria-label="Close menu" onClick={() => p.setMenu(null)} />}
+			{p.menu && <button className="menu-scrim" aria-label="Close menu" tabIndex={-1} onClick={() => p.setMenu(null)} />}
 			{p.menu === 'clock' && (
-				<div className="top-pop clock-pop" role="dialog" aria-label="Notifications and calendar">
+				<div ref={clockRef} className="top-pop clock-pop" role="dialog" aria-modal="true" aria-label="Notifications and calendar" tabIndex={-1}>
 					<div className="pop-notes">
 						<h4>Notifications</h4>
 						{notes.length === 0 && updates.length === 0 ? (
@@ -1708,7 +1713,7 @@ function TopBar(p: {
 				</div>
 			)}
 			{p.menu === 'system' && (
-				<div className="top-pop sys-pop" role="menu">
+				<div ref={sysRef} className="top-pop sys-pop" role="menu" aria-label="System menu" tabIndex={-1}>
 					<div className="sys-head">
 						<span className="dot live" />
 						<span>
@@ -1720,26 +1725,26 @@ function TopBar(p: {
 						</span>
 					</div>
 					<div className="sys-user muted">Signed in as {user.data?.name ?? 'you'}</div>
-					<button role="menuitem" onClick={() => (p.setMenu(null), p.onSettings())}>
+					<button role="menuitem" onClick={() => runSysAction(p.onSettings)}>
 						<Icon name="settings" size={17} /> Settings
 					</button>
-					<button role="menuitem" onClick={() => (p.setMenu(null), p.onPersonalize())}>
+					<button role="menuitem" onClick={() => runSysAction(p.onPersonalize)}>
 						<Icon name="palette" size={17} /> Desktop &amp; Dock
 					</button>
-					<button role="menuitem" onClick={() => (p.setMenu(null), p.onSystem())}>
+					<button role="menuitem" onClick={() => runSysAction(p.onSystem)}>
 						<Icon name="activity" size={17} /> System Monitor
 					</button>
-					<button role="menuitem" onClick={() => (p.setMenu(null), setLayoutPref('phone'))}>
+					<button role="menuitem" onClick={() => runSysAction(() => setLayoutPref('phone'))}>
 						<Icon name="phone" size={17} /> Switch to phone layout
 					</button>
 					<hr />
-					<button role="menuitem" onClick={p.onSignOut}>
+					<button role="menuitem" onClick={() => runSysAction(p.onSignOut)}>
 						<Icon name="signout" size={17} /> Sign out
 					</button>
-					<button role="menuitem" onClick={() => p.onPower('restart')}>
+					<button role="menuitem" onClick={() => runSysAction(() => p.onPower('restart'))}>
 						<Icon name="restart" size={17} /> Restart…
 					</button>
-					<button role="menuitem" className="danger" onClick={() => p.onPower('shutdown')}>
+					<button role="menuitem" className="danger" onClick={() => runSysAction(() => p.onPower('shutdown'))}>
 						<Icon name="power" size={17} /> Shut down…
 					</button>
 				</div>
@@ -1831,7 +1836,7 @@ function Overview({
 	owner: boolean
 	hasWindows: boolean
 	onOpen: (key: string) => void
-	onMenu: (key: string, x: number, y: number) => void
+	onMenu: (key: string, x: number, y: number, opener?: HTMLElement | null) => void
 }) {
 	const [q, setQ] = useState('')
 	const ref = useRef<HTMLInputElement>(null)
@@ -1872,7 +1877,7 @@ function Overview({
 								onClick={() => onOpen(x.key)}
 								onContextMenu={(e) => {
 									e.preventDefault()
-									onMenu(x.key, e.clientX, e.clientY)
+									onMenu(x.key, e.clientX, e.clientY, e.currentTarget)
 								}}
 							>
 								<span className="desk-icon-art">
