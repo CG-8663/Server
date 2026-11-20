@@ -78,7 +78,7 @@ function validCatalog(data) {
 	return ok.length ? ok : null
 }
 
-export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, statsIntervalMs = 1_000, seriesIntervalMs = 10_000}) {
+export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000}) {
 	const base = join(dataDir, 'machines')
 	const imagesDir = join(base, 'images')
 	const vmsDir = join(base, 'vms')
@@ -124,7 +124,6 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			for (const m of machines) normalize(m)
 			await save().catch(() => {})
 		}
-		startSampler()
 		autostart()
 	})()
 	const save = () => writeAtomic(stateFile, () => JSON.stringify({machines}, null, 2))
@@ -460,6 +459,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// ---- procedures -----------------------------------------------------------------------------
 	async function list() {
 		await ready
+		touchWatch()
 		const states = await domainStates()
 		return machines.map((m) => {
 			const b = busy.get(m.id)
@@ -782,57 +782,81 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const series = new Map() // id -> [{t, cpu, memMb, netIn, netOut, diskRead, diskWrite}]
 	const lastPoint = new Map()
 	const lastRaw = new Map() // id -> {t, cpuNs, rx, tx, rd, wr}
+	// libvirt states that still have counters. "shut off" and friends do not.
+	const COUNTED = new Set(['running', 'paused', 'blocked', 'pmsuspended'])
+	let inFlight = false
 	async function sample() {
-		const running = machines.filter((m) => !isBusy(m.id))
-		if (!running.length) return
-		let text = ''
+		if (inFlight) return
+		if (!machines.some((m) => !isBusy(m.id))) return
+		inFlight = true
 		try {
-			text = await virsh('domstats', '--list-running', '--cpu-total', '--balloon', '--interface', '--block')
-		} catch {
-			return
-		}
-		const now = Date.now()
-		for (const block of text.split(/\n(?=Domain: )/)) {
-			const name = /Domain: '([^']+)'/.exec(block)?.[1]
-			const m = machines.find((x) => domain(x.id) === name)
-			if (!m) continue
-			const kv = {}
-			for (const line of block.split('\n')) {
-				const mm = /^\s*([\w.]+)=(\d+)/.exec(line)
-				if (mm) kv[mm[1]] = Number(mm[2])
+			const states = await domainStates()
+			const live = machines.some((m) => !isBusy(m.id) && COUNTED.has(states.get(domain(m.id))))
+			if (!live) return
+			// Counters are read when virsh starts. The rate is divided by the time since the
+			// previous start, not by how long virsh took to return.
+			const now = Date.now()
+			let text = ''
+			try {
+				text = await virsh('domstats', '--list-running', '--cpu-total', '--balloon', '--interface', '--block')
+			} catch {
+				return
 			}
-			const sum = (re) => Object.entries(kv).reduce((a, [k, v]) => (re.test(k) ? a + v : a), 0)
-			const raw = {t: now, cpuNs: kv['cpu.time'] ?? 0, rx: sum(/^net\.\d+\.rx\.bytes$/), tx: sum(/^net\.\d+\.tx\.bytes$/), rd: sum(/^block\.\d+\.rd\.bytes$/), wr: sum(/^block\.\d+\.wr\.bytes$/)}
-			const prev = lastRaw.get(m.id)
-			lastRaw.set(m.id, raw)
-			if (!prev || raw.cpuNs < prev.cpuNs) continue
-			const secs = (raw.t - prev.t) / 1000
-			const vcpus = (m.sockets ?? 1) * m.cores
-			const point = {
-				t: now,
-				cpu: Math.min(100, Math.round(((raw.cpuNs - prev.cpuNs) / (secs * 1e9 * vcpus)) * 1000) / 10),
-				// What the machine actually holds in the server's memory.
-				memMb: Math.round((kv['balloon.rss'] ?? 0) / 1024),
-				netIn: Math.round((raw.rx - prev.rx) / secs),
-				netOut: Math.round((raw.tx - prev.tx) / secs),
-				diskRead: Math.round((raw.rd - prev.rd) / secs),
-				diskWrite: Math.round((raw.wr - prev.wr) / secs),
+			for (const block of text.split(/\n(?=Domain: )/)) {
+				const name = /Domain: '([^']+)'/.exec(block)?.[1]
+				const m = machines.find((x) => domain(x.id) === name)
+				if (!m) continue
+				const kv = {}
+				for (const line of block.split('\n')) {
+					const mm = /^\s*([\w.]+)=(\d+)/.exec(line)
+					if (mm) kv[mm[1]] = Number(mm[2])
+				}
+				const sum = (re) => Object.entries(kv).reduce((a, [k, v]) => (re.test(k) ? a + v : a), 0)
+				const raw = {t: now, cpuNs: kv['cpu.time'] ?? 0, rx: sum(/^net\.\d+\.rx\.bytes$/), tx: sum(/^net\.\d+\.tx\.bytes$/), rd: sum(/^block\.\d+\.rd\.bytes$/), wr: sum(/^block\.\d+\.wr\.bytes$/)}
+				const prev = lastRaw.get(m.id)
+				lastRaw.set(m.id, raw)
+				if (!prev || raw.cpuNs < prev.cpuNs) continue
+				const secs = (raw.t - prev.t) / 1000
+				const vcpus = (m.sockets ?? 1) * m.cores
+				const point = {
+					t: now,
+					cpu: Math.min(100, Math.round(((raw.cpuNs - prev.cpuNs) / (secs * 1e9 * vcpus)) * 1000) / 10),
+					// What the machine actually holds in the server's memory.
+					memMb: Math.round((kv['balloon.rss'] ?? 0) / 1024),
+					netIn: Math.round((raw.rx - prev.rx) / secs),
+					netOut: Math.round((raw.tx - prev.tx) / secs),
+					diskRead: Math.round((raw.rd - prev.rd) / secs),
+					diskWrite: Math.round((raw.wr - prev.wr) / secs),
+				}
+				lastPoint.set(m.id, point)
+				const list = series.get(m.id) ?? []
+				const kept = list.at(-1)
+				if (!kept || now - kept.t >= seriesIntervalMs) {
+					list.push(point)
+					if (list.length > 360) list.splice(0, list.length - 360)
+					series.set(m.id, list)
+				}
 			}
-			lastPoint.set(m.id, point)
-			const list = series.get(m.id) ?? []
-			const kept = list.at(-1)
-			if (!kept || now - kept.t >= seriesIntervalMs) {
-				list.push(point)
-				if (list.length > 360) list.splice(0, list.length - 360)
-				series.set(m.id, list)
-			}
+		} finally {
+			inFlight = false
 		}
 	}
 	let sampler = null
-	function startSampler() {
+	let watchedAt = 0
+	// The interval runs only while someone has listed machines, opened their stats, or
+	// looked at system usage. It stops about 15s after the last of those.
+	function touchWatch() {
+		watchedAt = Date.now()
 		if (sampler) return
 		void sample().catch(() => {})
-		sampler = setInterval(() => sample().catch(() => {}), statsIntervalMs)
+		sampler = setInterval(() => {
+			if (Date.now() - watchedAt >= watchIdleMs) {
+				clearInterval(sampler)
+				sampler = null
+				return
+			}
+			void sample().catch(() => {})
+		}, statsIntervalMs)
 		sampler.unref?.()
 	}
 	function packStats(m) {
@@ -841,6 +865,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 	async function statsFor(input) {
 		await ready
+		touchWatch()
 		if (!input?.id) return Object.fromEntries(machines.map((m) => [m.id, packStats(m)]))
 		return packStats(find(input.id))
 	}
@@ -1534,7 +1559,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 
 	// What each running machine uses right now (for the system usage breakdown): the latest sample.
 	function usage() {
-		startSampler()
+		touchWatch()
 		const out = []
 		for (const m of machines) {
 			const last = lastPoint.get(m.id) ?? (series.get(m.id) ?? []).at(-1)

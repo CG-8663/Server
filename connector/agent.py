@@ -268,7 +268,8 @@ def cpu_percent():
     vals = [int(x) for x in parts] if parts else []
     if len(vals) < 4:
         return None
-    idle, total = vals[3] + (vals[4] if len(vals) > 4 else 0), sum(vals)
+    # guest and guest_nice are already inside user and nice.
+    idle, total = vals[3] + (vals[4] if len(vals) > 4 else 0), sum(vals[:8])
     last, _cpu_last = _cpu_last, (idle, total)
     if not last or total == last[1]:
         return None
@@ -523,6 +524,12 @@ def nvidia_asleep(list_dir=os.listdir, read_file=read, root="/sys/bus/pci/device
     return found
 
 
+def _with_indexes(rows):
+    for i, g in enumerate(rows):
+        g["index"] = i
+    return rows
+
+
 def gpus(run=None, list_dir=os.listdir, read_file=read, now=time.monotonic):
     def _run(cmd, args):
         try:
@@ -533,11 +540,11 @@ def gpus(run=None, list_dir=os.listdir, read_file=read, now=time.monotonic):
     global _last_nvidia
     if _last_nvidia and nvidia_asleep(list_dir, read_file):
         idle = [dict(g, used=0) for g in _last_nvidia]
-        return idle + _drm_gpus(list_dir, read_file, skip_vendors={_VENDOR_NVIDIA}, now=now)
+        return _with_indexes(idle + _drm_gpus(list_dir, read_file, skip_vendors={_VENDOR_NVIDIA}, now=now))
     nvidia = _nvidia_gpus(run or _run)
     _last_nvidia = nvidia or None
     skip = {_VENDOR_NVIDIA} if nvidia else set()
-    return nvidia + _drm_gpus(list_dir, read_file, skip_vendors=skip, now=now)
+    return _with_indexes(nvidia + _drm_gpus(list_dir, read_file, skip_vendors=skip, now=now))
 
 
 def temperature():
@@ -622,8 +629,10 @@ def default_reads():
 
 
 class Sampler:
-    def __init__(self, now=time.time, intervals=None, read=None, spawn=None):
-        self._now = now
+    def __init__(self, now=None, intervals=None, read=None, spawn=None):
+        # Scheduling follows a monotonic clock. A wall clock that steps backward
+        # would otherwise freeze every reading until it caught up.
+        self._now = time.monotonic if now is None else now
         self._intervals = {**DEFAULT_INTERVALS, **(intervals or {})}
         self._read = read or default_reads()
         self._last = {}
@@ -634,18 +643,24 @@ class Sampler:
         self._lock = threading.Lock()
         self._last_read = 0
         self._primed = False
+        self._gpu_running = False
         if spawn is not None:
             self._spawn = spawn
 
     def _due(self, key):
-        return self._last.get(key) is None or self._now() - self._last[key] >= self._intervals.get(key, DEFAULT_INTERVALS[key])
+        last = self._last.get(key)
+        if last is None:
+            return True
+        elapsed = self._now() - last
+        return elapsed < 0 or elapsed >= self._intervals.get(key, DEFAULT_INTERVALS[key])
 
     def _take(self, key, apply, t):
         if not self._due(key) or key not in self._read:
             return
+        # Record the attempt first, so a failure waits out the interval.
+        self._last[key] = t
         try:
             apply(self._read[key]())
-            self._last[key] = t
         except Exception:
             pass
 
@@ -664,14 +679,17 @@ class Sampler:
         self._take("battery", lambda v: self._snap.update(batteries=v), t)
         self._take("disk", lambda v: self._snap.update(disks=v), t)
         self._take("uptime", lambda v: self._snap.update(uptime=v), t)
-        if self._due("gpu") and "gpu" in self._read:
+        if self._due("gpu") and "gpu" in self._read and not self._gpu_running:
             self._last["gpu"] = t
+            self._gpu_running = True
 
             def run_gpu():
                 try:
                     self._snap["gpus"] = self._read["gpu"]()
                 except Exception:
                     pass
+                finally:
+                    self._gpu_running = False
 
             if wait_gpu:
                 run_gpu()
@@ -708,7 +726,15 @@ class Sampler:
 
     def service(self):
         """One timer tick. False means nobody has read lately, so the timer stops."""
-        if self._stopped or self._now() - self._last_read >= IDLE_S:
+        if self._stopped:
+            with self._lock:
+                self._thread = None
+            self._stop.set()
+            return False
+        elapsed = self._now() - self._last_read
+        if elapsed < 0:
+            self._last_read = self._now()
+        elif elapsed >= IDLE_S:
             with self._lock:
                 self._thread = None
             self._stop.set()
@@ -740,7 +766,10 @@ class Sampler:
             return self._snap
         cold = self._last.get("cpu") is None
         if cold:
+            # The priming read and a real sample in the same call are microseconds
+            # apart, so the first percent is noise. Leave cpu empty until the next tick.
             self._prime_cpu()
+            self._last["cpu"] = self._now()
         self._note(not cold)
         if cold:
             self.tick(wait_gpu=False)
@@ -757,7 +786,7 @@ class Sampler:
             self._thread = None
 
 
-def create_sampler(now=time.time, intervals=None, read=None, spawn=None):
+def create_sampler(now=None, intervals=None, read=None, spawn=None):
     return Sampler(now=now, intervals=intervals, read=read, spawn=spawn)
 
 
