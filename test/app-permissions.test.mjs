@@ -149,3 +149,18 @@ test('/lib/modules is a system folder (asks), even where /lib is a link to /usr/
 	// The rest of /usr is still refused.
 	assert.ok(ids(compose('/usr/bin:/host-bin')).includes('refused'))
 })
+
+const portFile = (ports) => `services:\n a:\n  image: x\n  ports:\n${ports.map((p) => `   - ${p}\n`).join('')}`
+const lowPorts = (text) => appPermissions(text).find((p) => p.id === 'low-ports')?.what ?? []
+
+test('a port below 1024 in long syntax or a variable is low-ports', () => {
+	assert.ok(lowPorts(portFile(['"53:53"'])).includes('53'), 'short 53:53')
+	assert.deepEqual(lowPorts(portFile(['published: 53'])), ['53'], 'long published 53')
+	assert.deepEqual(lowPorts(portFile(['published: "80"\n     host_ip: 127.0.0.1\n     target: 8080'])), ['80'], 'long published 80 with host_ip')
+	assert.deepEqual(lowPorts(portFile(['"${PORT:-80}:80"'])), ['80'], '${PORT:-80}')
+	assert.deepEqual(lowPorts(portFile(['"${PORT:-443}:80"'])), ['443'], '${PORT:-443}')
+	assert.deepEqual(lowPorts(portFile(['"${PORT:-8080}:80"'])), [], '${PORT:-8080} is not a low port')
+	assert.deepEqual(lowPorts(portFile(['"80-90:80"'])), ['80'], 'short range 80-90')
+	assert.deepEqual(lowPorts(portFile(['published: "2000-2010"'])), [], 'long range 2000-2010')
+	assert.deepEqual(lowPorts(portFile(['"80"', 'target: 80'])), [], 'container port alone')
+})
