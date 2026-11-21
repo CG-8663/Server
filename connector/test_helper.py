@@ -281,6 +281,403 @@ class Helper(unittest.TestCase):
         self.assertEqual(self.handle("format", ["/dev/sdb", "blank"], **kw), "ok")
         self.assertIn(["wipefs", "-a", "/dev/sdb"], empty.log)
 
+    def test_mmcblk_whole_disks_allowed_and_boot_rpmb_hidden(self):
+        from helper import HelperError
+        lsblk = {
+            "blockdevices": [
+                {
+                    "name": "mmcblk0", "path": "/dev/mmcblk0", "type": "disk", "size": 62534975488, "rota": False, "tran": "mmc", "serial": "SD1",
+                    "children": [{"name": "mmcblk0p1", "path": "/dev/mmcblk0p1", "type": "part", "fstype": "exfat", "label": "SDCARD", "mountpoints": [None]}],
+                },
+                {"name": "mmcblk0boot0", "path": "/dev/mmcblk0boot0", "type": "disk", "size": 4194304, "rota": False, "mountpoints": [None]},
+                {"name": "mmcblk0boot1", "path": "/dev/mmcblk0boot1", "type": "disk", "size": 4194304, "rota": False, "mountpoints": [None]},
+                {"name": "mmcblk0rpmb", "path": "/dev/mmcblk0rpmb", "type": "disk", "size": 4194304, "rota": False, "mountpoints": [None]},
+            ]
+        }
+        mounted = [False]
+        log = []
+
+        def run(cmd, args):
+            log.append([cmd, *args])
+            if cmd == "lsblk":
+                data = copy.deepcopy(lsblk)
+                if mounted[0]:
+                    data["blockdevices"][0]["children"][0]["mountpoints"] = ["/run/media/chris/SDCARD"]
+                return json.dumps(data)
+            if cmd == "wipefs":
+                return json.dumps({"signatures": []})
+            if cmd == "zpool":
+                raise HelperError("zpool: not found")
+            if cmd == "smartctl":
+                return json.dumps({"smart_status": {"passed": True}})
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files={})
+        disks = json.loads(self.handle("disks", [], **kw))
+        self.assertEqual([(d["name"], d["role"]) for d in disks], [("mmcblk0", "data")])
+        for bad in ("/dev/mmcblk0p1", "/dev/mmcblk0boot0", "/dev/mmcblk0rpmb"):
+            with self.assertRaisesRegex(HelperError, "Not a drive"):
+                self.handle("mount", [bad], **kw)
+            with self.assertRaisesRegex(HelperError, "Not a drive"):
+                self.handle("format", [bad, "blank"], **kw)
+        self.assertEqual(self.handle("mount", ["/dev/mmcblk0"], **kw), "ok")
+        self.assertIn(["mount", "-o", "nosuid,nodev,uid=1000,gid=1000", "/dev/mmcblk0p1", "/run/media/chris/SDCARD"], log)
+        mounted[0] = True
+        self.assertEqual(self.handle("umount", ["/dev/mmcblk0"], **kw), "ok")
+        self.assertIn(["umount", "/run/media/chris/SDCARD"], log)
+        mounted[0] = False
+        self.assertEqual(self.handle("format", ["/dev/mmcblk0", "blank"], **kw), "ok")
+        self.assertIn(["wipefs", "-a", "/dev/mmcblk0"], log)
+
+    def test_failed_pool_mount_rolls_back_fstab_and_forget_handles_unmounted(self):
+        from helper import HelperError
+        fail_mount = [True]
+
+        def run(cmd, args):
+            if cmd == "mount" and fail_mount[0]:
+                raise HelperError("mount: wrong fs type, bad option, bad superblock")
+            if cmd == "umount":
+                raise HelperError("umount: /home/chris/Pools/old: not mounted.")
+            return self.fake.run(cmd, args)
+
+        kw = dict(self.kw, run=run)
+        with self.assertRaisesRegex(HelperError, "wrong fs type"):
+            self.handle("pool-import", ["old", "44444444-4444-4444-4444-444444444444"], **kw)
+        self.assertEqual(self.fake.files["/etc/fstab"], "UUID=1111 / btrfs defaults 0 0\n")
+
+        fail_mount[0] = False
+        self.assertEqual(self.handle("pool-import", ["old", "44444444-4444-4444-4444-444444444444"], **kw), "ok")
+        self.assertIn("# omarchy-connector pool old", self.fake.files["/etc/fstab"])
+        self.assertEqual(self.handle("pool-forget", ["old"], **kw), "ok")
+        self.assertNotIn("# omarchy-connector pool old", self.fake.files["/etc/fstab"])
+
+        fail_mount[0] = True
+        with self.assertRaisesRegex(HelperError, "wrong fs type"):
+            self.handle("pool-create", ["tank", "single", "/dev/sda"], **kw)
+        self.assertEqual(self.fake.files["/etc/fstab"], "UUID=1111 / btrfs defaults 0 0\n")
+
+    def test_zfs_export_keeps_bind_mount_and_fstab_when_export_fails(self):
+        from helper import HelperError
+        fstab_before = "UUID=1 / ext4 defaults 0 0\n/tank /home/chris/Pools/tank none bind,nosuid,nodev,nofail,x-systemd.requires=zfs-mount.service 0 0 # omarchy-connector zfs tank\n"
+        files = {"/etc/fstab": fstab_before}
+        log = []
+        mode = ["busy-export"]
+
+        def run(cmd, args):
+            log.append([cmd, *args])
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "tank\n"
+            if cmd == "umount" and mode[0] == "busy-umount":
+                raise HelperError("umount: /home/chris/Pools/tank: target is busy.")
+            if cmd == "umount" and mode[0] == "not-mounted":
+                raise HelperError("umount: /home/chris/Pools/tank: not mounted.")
+            if cmd == "zpool" and args[:1] == ["export"] and mode[0] == "busy-export":
+                raise HelperError("zpool: pool is busy")
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files=files)
+        with self.assertRaisesRegex(HelperError, "in use"):
+            self.handle("zfs-export", ["tank"], **kw)
+        self.assertEqual(files["/etc/fstab"], fstab_before)
+        umount_idx = next(i for i, c in enumerate(log) if c[0] == "umount" and c[-1] == "/home/chris/Pools/tank")
+        export_idx = log.index(["zpool", "export", "tank"])
+        remount_idx = log.index(["mount", "/home/chris/Pools/tank"])
+        self.assertLess(umount_idx, export_idx)
+        self.assertLess(export_idx, remount_idx)
+
+        log.clear()
+        mode[0] = "busy-umount"
+        with self.assertRaisesRegex(HelperError, "in use"):
+            self.handle("zfs-export", ["tank"], **kw)
+        self.assertEqual(files["/etc/fstab"], fstab_before)
+        self.assertFalse(any(c[:2] == ["zpool", "export"] for c in log))
+
+        for success_mode in ("ok", "not-mounted"):
+            files["/etc/fstab"] = fstab_before
+            log.clear()
+            mode[0] = success_mode
+            self.assertEqual(self.handle("zfs-export", ["tank"], **kw), "ok")
+            self.assertEqual(files["/etc/fstab"], "UUID=1 / ext4 defaults 0 0\n")
+            self.assertIn(["systemctl", "daemon-reload"], log)
+
+    def test_zfs_long_pool_names_work_across_import_scrub_and_export(self):
+        from helper import HelperError
+        imported = set()
+        files = {"/etc/fstab": ""}
+
+        def run(cmd, args):
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "\n".join(sorted(imported)) + ("\n" if imported else "")
+            if cmd == "zfs" and args[:1] == ["list"]:
+                return "%s\t/pools/%s\ton\n" % (args[-1], args[-1])
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files=files)
+        for name in ("backup-archive-2019-photos-and-videos", "a" * 64):
+            imported.clear()
+            self.assertEqual(self.handle("zfs-import", [name], **kw), "ok")
+            imported.add(name)
+            self.assertEqual(self.handle("zfs-scrub", [name], **kw), "ok")
+            self.assertEqual(self.handle("zfs-export", [name], **kw), "ok")
+        too_long = "a" * 65
+        imported.add(too_long)
+        for verb in ("zfs-import", "zfs-scrub", "zfs-export"):
+            with self.assertRaisesRegex(HelperError, "Bad pool name"):
+                self.handle(verb, [too_long], **kw)
+
+    def test_zfs_import_uses_rbind_and_export_uses_recursive_umount(self):
+        imported = set()
+        files = {"/etc/fstab": ""}
+        log = []
+
+        def run(cmd, args):
+            log.append([cmd, *args])
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "\n".join(sorted(imported)) + ("\n" if imported else "")
+            if cmd == "zfs" and args[:1] == ["list"]:
+                return "tank\t/tank\ton\ntank/media\t/tank/media\ton\n"
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files=files)
+        self.assertEqual(self.handle("zfs-import", ["tank"], **kw), "ok")
+        self.assertRegex(files["/etc/fstab"], r"^/tank /home/chris/Pools/tank none rbind,nosuid,nodev,nofail,x-systemd\.requires=zfs-mount\.service 0 0 # omarchy-connector zfs tank\n$")
+        self.assertIn(["mount", "/home/chris/Pools/tank"], log)
+
+        imported.add("tank")
+        log.clear()
+        self.assertEqual(self.handle("zfs-export", ["tank"], **kw), "ok")
+        self.assertIn(["umount", "-R", "/home/chris/Pools/tank"], log)
+
+    def test_smart_uses_standby_flag_and_disks_caches_and_preserves_reading(self):
+        lsblk = {
+            "blockdevices": [
+                {"name": "sda", "path": "/dev/sda", "type": "disk", "size": 4000000000000, "rota": True, "serial": "WD-A", "children": []},
+                {"name": "sdb", "path": "/dev/sdb", "type": "disk", "size": 4000000000000, "rota": True, "serial": "WD-B", "children": []},
+            ]
+        }
+        clock = [1000000.0]
+        sda_standby = [False]
+        smart_log = []
+        standby_json = json.dumps({"smartctl": {"exit_status": 2, "messages": [{"string": "Device is in STANDBY mode, exit(2)"}]}})
+
+        def run(cmd, args):
+            if cmd == "lsblk":
+                return json.dumps(lsblk)
+            if cmd == "smartctl":
+                smart_log.append([cmd, *args])
+                if args[-1] == "/dev/sda" and not sda_standby[0]:
+                    return json.dumps({"smart_status": {"passed": True}, "temperature": {"current": 34}, "power_on_time": {"hours": 9000}})
+                return standby_json
+            return ""
+
+        files = {}
+        kw = dict(run=run, user=self.kw["user"], files=files, now=lambda: clock[0])
+
+        res = json.loads(self.handle("smart", ["/dev/sda"], **kw))
+        self.assertTrue(res["smart_status"]["passed"])
+        self.assertEqual(smart_log[-1], ["smartctl", "-n", "standby", "-j", "-a", "/dev/sda"])
+        smart_log.clear()
+
+        disks = {d["name"]: d for d in json.loads(self.handle("disks", [], **kw))}
+        self.assertEqual(disks["sda"]["health"]["temperature"], 34)
+        self.assertIsNone(disks["sdb"]["health"])
+        self.assertEqual(len(smart_log), 2)
+        self.assertTrue(all(c[:3] == ["smartctl", "-n", "standby"] for c in smart_log))
+
+        # Polling 30s later uses cached health and does not invoke smartctl.
+        clock[0] += 30
+        smart_log.clear()
+        disks = {d["name"]: d for d in json.loads(self.handle("disks", [], **kw))}
+        self.assertEqual(disks["sda"]["health"]["temperature"], 34)
+        self.assertEqual(smart_log, [])
+
+        # After cache expires and sda enters standby, last known reading is kept.
+        clock[0] += 660
+        sda_standby[0] = True
+        disks = {d["name"]: d for d in json.loads(self.handle("disks", [], **kw))}
+        self.assertEqual(disks["sda"]["health"]["temperature"], 34)
+        self.assertTrue(disks["sda"]["health"]["passed"])
+        self.assertIsNone(disks["sdb"]["health"])
+        self.assertEqual(len(smart_log), 2)
+
+        # Next 30s poll uses refreshed standby timestamp.
+        clock[0] += 30
+        smart_log.clear()
+        self.handle("disks", [], **kw)
+        self.assertEqual(smart_log, [])
+
+    def test_disks_marks_zfs_drive_as_pool_only_when_imported(self):
+        from helper import HelperError
+        lsblk = {
+            "blockdevices": [
+                {
+                    "name": "sdb", "path": "/dev/sdb", "type": "disk", "size": 4000787030016, "rota": True, "tran": "sata",
+                    "model": "WDC WD40EFRX", "serial": "WD-1", "mountpoints": [None],
+                    "children": [{"name": "sdb1", "path": "/dev/sdb1", "type": "part", "size": 4000777252864, "fstype": "zfs_member", "label": "tank", "uuid": "123456", "mountpoints": [None]}],
+                }
+            ]
+        }
+        zpool_out = [None]
+
+        def run(cmd, args):
+            if cmd == "lsblk":
+                return json.dumps(lsblk)
+            if cmd == "zpool" and args[:1] == ["list"]:
+                if zpool_out[0] is None:
+                    raise HelperError("no zpool")
+                return zpool_out[0]
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files={})
+        for not_imported in (None, ""):
+            zpool_out[0] = not_imported
+            d = json.loads(self.handle("disks", [], **kw))[0]
+            self.assertEqual(d["role"], "data")
+            self.assertIsNone(d["pool"])
+            self.assertEqual(d["zfs"], {"pool": "tank"})
+
+        zpool_out[0] = "tank\n"
+        d = json.loads(self.handle("disks", [], **kw))[0]
+        self.assertEqual(d["role"], "pool")
+        self.assertEqual(d["pool"], "tank")
+        self.assertIsNone(d["zfs"])
+
+    def test_zfs_status_ignores_logs_cache_spares_special_and_dedup(self):
+        status_with_aux = """  pool: tank
+ state: ONLINE
+  scan: scrub repaired 0B in 00:10:00 with 0 errors on Sun Nov  1 00:24:02 2026
+config:
+
+\tNAME                                          STATE     READ WRITE CKSUM
+\ttank                                          ONLINE       0     0     0
+\t  raidz1-0                                    ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-A-part1               ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-B-part1               ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-C-part1               ONLINE       0     0     0
+\tlogs
+\t  mirror-1                                    ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-L1-part1             ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-L2-part1             ONLINE       0     0     0
+\tspecial
+\t  mirror-2                                    ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-S1-part1             ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-S2-part1             ONLINE       0     0     0
+\tdedup
+\t  mirror-3                                    ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-D1-part1             ONLINE       0     0     0
+\t    /dev/disk/by-id/nvme-D2-part1             ONLINE       0     0     0
+\tcache
+\t  /dev/disk/by-id/nvme-C1-part1               ONLINE       0     0     0
+\tspares
+\t  /dev/disk/by-id/ata-SPARE-part1             AVAIL
+
+errors: No known data errors
+"""
+        mixed_data = """  pool: mix
+ state: ONLINE
+config:
+
+\tNAME                                STATE     READ WRITE CKSUM
+\tmix                                 ONLINE       0     0     0
+\t  raidz1-0                          ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-1           ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-2           ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-3           ONLINE       0     0     0
+\t  mirror-1                          ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-4           ONLINE       0     0     0
+\t    /dev/disk/by-id/ata-5           ONLINE       0     0     0
+
+errors: No known data errors
+"""
+
+        def run(cmd, args):
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "tank\t8000\t1000\t7000\tONLINE\nmix\t9000\t1000\t8000\tONLINE\n"
+            if cmd == "zpool" and args[:1] == ["status"]:
+                return mixed_data if args[-1] == "mix" else status_with_aux
+            if cmd == "zfs":
+                return "/tank\n"
+            return ""
+
+        pools = {p["name"]: p for p in json.loads(self.handle("zfs-pools", [], run=run, user=self.kw["user"], files={}))}
+        self.assertEqual(pools["tank"]["layout"], "raidz1")
+        self.assertEqual(
+            [d["path"] for d in pools["tank"]["devices"]],
+            ["/dev/disk/by-id/ata-A-part1", "/dev/disk/by-id/ata-B-part1", "/dev/disk/by-id/ata-C-part1"],
+        )
+        self.assertEqual(pools["mix"]["layout"], "mirror+raidz1")
+        self.assertEqual(len(pools["mix"]["devices"]), 5)
+
+    def test_zfs_pools_report_usable_dataset_space(self):
+        def run(cmd, args):
+            if cmd == "lsblk":
+                return json.dumps({"blockdevices": []})
+            if cmd == "zpool":
+                if args[:1] == ["version"]:
+                    return "zfs-2.2.0\n"
+                if args[:1] == ["list"]:
+                    return "tank\t12000000000000\t4000000000000\t8000000000000\tONLINE\nfallback\t6000\t1000\t5000\tONLINE\n"
+                return ""
+            if cmd == "zfs":
+                if args[:1] == ["get"]:
+                    return "/home/chris/Pools/%s\n" % args[-1]
+                if args[:1] == ["list"] and args[-1] == "tank":
+                    return "2500000000000\t5500000000000\n"
+                if args[:1] == ["list"] and args[-1] == "fallback":
+                    return "-\t-\n"
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files={})
+        zpools = {p["name"]: p for p in json.loads(self.handle("zfs-pools", [], **kw))}
+        self.assertEqual(zpools["tank"]["used"], 2500000000000)
+        self.assertEqual(zpools["tank"]["free"], 5500000000000)
+        self.assertEqual(zpools["tank"]["size"], 8000000000000)
+        self.assertEqual(zpools["fallback"]["used"], 1000)
+        self.assertEqual(zpools["fallback"]["free"], 5000)
+        self.assertEqual(zpools["fallback"]["size"], 6000)
+
+        pools = {p["name"]: p for p in json.loads(self.handle("pools", [], **kw))}
+        self.assertEqual(pools["tank"]["size"], 8000000000000)
+        self.assertEqual(pools["tank"]["free"], 5500000000000)
+
+    def test_system_mounts_include_subpaths_opt_srv_nix_and_owner_home(self):
+        from helper import HelperError
+        sys_paths = ["/var/lib/docker", "/var/log", "/usr/local", "/opt", "/srv", "/nix", "/home/chris"]
+        data_paths = ["/run/media/chris/stick", "/varnish", "/home/chris/extra"]
+        all_paths = sys_paths + data_paths
+        devs = [
+            {
+                "name": "sd%s" % chr(97 + i), "path": "/dev/sd%s" % chr(97 + i), "type": "disk", "size": 1000000000000, "rota": True,
+                "children": [{"name": "sd%s1" % chr(97 + i), "path": "/dev/sd%s1" % chr(97 + i), "type": "part", "fstype": "ext4", "mountpoints": [mp]}],
+            }
+            for i, mp in enumerate(all_paths)
+        ]
+
+        def run(cmd, args):
+            if cmd == "lsblk":
+                return json.dumps({"blockdevices": devs})
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files={})
+        by_mount = {d["mounts"][0]: d["role"] for d in json.loads(self.handle("disks", [], **kw))}
+        for mp in sys_paths:
+            self.assertEqual(by_mount[mp], "system", mp)
+        for mp in data_paths:
+            self.assertEqual(by_mount[mp], "data", mp)
+
+        for i in (0, 3, 4, 5, 6):
+            dev = devs[i]["path"]
+            for verb, extra in (("umount", []), ("format", ["blank"]), ("sleep", ["20"])):
+                with self.assertRaisesRegex(HelperError, "holds the system"):
+                    self.handle(verb, [dev, *extra], **kw)
+            with self.assertRaisesRegex(HelperError, "holds the system"):
+                self.handle("pool-create", ["tank", "single", dev], **kw)
+
+        for i in range(len(sys_paths), len(all_paths)):
+            dev = devs[i]["path"]
+            with self.assertRaisesRegex(HelperError, "is in use"):
+                self.handle("format", [dev, "blank"], **kw)
+
 
 if __name__ == "__main__":
     unittest.main()

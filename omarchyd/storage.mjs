@@ -14,7 +14,17 @@ import {RpcError} from './rpc.mjs'
 export const HELPER = '/usr/local/libexec/omarchy-server/helper.mjs'
 const FSTAB_MARK = '# omarchy-server pool'
 const NAME = /^[a-z][a-z0-9-]{0,31}$/
-const SYSTEM_MOUNTS = new Set(['/', '/boot', '/efi', '/boot/efi', '/home', '/var', '/usr', '[SWAP]'])
+const SYSTEM_MOUNTS = new Set(['/', '/home', '[SWAP]'])
+const SYSTEM_MOUNT_PREFIXES = ['/boot', '/efi', '/var', '/usr', '/opt', '/srv', '/nix']
+const cleanMount = (m) => (typeof m === 'string' && m.length > 1 ? m.replace(/\/+$/, '') || '/' : m)
+function isSystemMount(m, home) {
+	const p = cleanMount(m)
+	if (!p) return false
+	if (SYSTEM_MOUNTS.has(p)) return true
+	const ownerHome = cleanMount(home)
+	if (ownerHome && p === ownerHome) return true
+	return SYSTEM_MOUNT_PREFIXES.some((pre) => p === pre || p.startsWith(`${pre}/`))
+}
 
 function execP(cmd, args, {input, timeout = 10 * 60_000} = {}) {
 	return new Promise((resolve, reject) => {
@@ -32,7 +42,34 @@ function execP(cmd, args, {input, timeout = 10 * 60_000} = {}) {
 const flat = (d) => [d, ...(d.children ?? []).flatMap(flat)]
 const truthy = (v) => v === true || v === 1 || v === '1'
 
-export function createStorage({dataDir, home = os.homedir(), files, run = execP, fstabPath = '/etc/fstab', user = os.userInfo().username, helperFile = HELPER, smbConf = '/etc/samba/smb.conf'}) {
+function parseSmart(j) {
+	const standby =
+		/^(standby|sleep)$/i.test(String(j?.power_mode ?? '')) ||
+		(j?.smartctl?.messages ?? []).some((m) => /\b(standby|sleep)\b/i.test(m?.string ?? ''))
+	const attrs = Object.fromEntries((j?.ata_smart_attributes?.table ?? []).map((a) => [a.id, a.raw?.value]))
+	const nvme = j?.nvme_smart_health_information_log
+	const hasData =
+		j?.smart_status != null ||
+		j?.temperature != null ||
+		j?.power_on_time != null ||
+		nvme != null ||
+		Object.keys(attrs).length > 0
+	if ((standby && !hasData) || (!hasData && j?.smartctl?.exit_status === 2)) return {standby: true, value: null}
+	if (!hasData) return {standby: false, value: null}
+	return {
+		standby: false,
+		value: {
+			passed: j.smart_status?.passed ?? null,
+			temperature: j.temperature?.current ?? nvme?.temperature ?? null,
+			powerOnHours: j.power_on_time?.hours ?? nvme?.power_on_hours ?? null,
+			lifetimeUsed: nvme?.percentage_used ?? null,
+			reallocated: attrs[5] ?? null,
+			pending: attrs[197] ?? null,
+		},
+	}
+}
+
+export function createStorage({dataDir, home = os.homedir(), files, run = execP, fstabPath = '/etc/fstab', user = os.userInfo().username, helperFile = HELPER, smbConf = '/etc/samba/smb.conf', now = Date.now}) {
 	const sharesFile = join(dataDir, 'shares.json')
 	const sleepFile = join(dataDir, 'drive-sleep.json')
 	const passwordFile = join(dataDir, 'share-password')
@@ -51,7 +88,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 
 	async function blockDevices() {
 		const j = JSON.parse(await run('lsblk', ['-J', '-b', '-o', 'NAME,PATH,TYPE,SIZE,ROTA,TRAN,MODEL,SERIAL,FSTYPE,LABEL,UUID,MOUNTPOINTS,RM,HOTPLUG']))
-		return (j.blockdevices ?? []).filter((d) => d.type === 'disk' && !/^(zram|loop|sr|ram)/.test(d.name) && Number(d.size) > 0)
+		return (j.blockdevices ?? []).filter((d) => d.type === 'disk' && !/^(zram|loop|sr|ram)|^mmcblk\d+boot|rpmb$/.test(d.name) && Number(d.size) > 0)
 	}
 	async function fstabPools() {
 		const text = await readFile(fstabPath, 'utf8').catch(() => '')
@@ -65,22 +102,15 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	// SMART summary, normalised across SATA and NVMe.
 	async function health(path) {
 		const hit = smartCache.get(path)
-		if (hit && Date.now() - hit.at < 10 * 60_000) return hit.value
+		if (hit && now() - hit.at < 10 * 60_000) return hit.value
 		let value = null
 		try {
-			const j = JSON.parse(await helper('smart', [path]))
-			const attrs = Object.fromEntries((j.ata_smart_attributes?.table ?? []).map((a) => [a.id, a.raw?.value]))
-			const nvme = j.nvme_smart_health_information_log
-			value = {
-				passed: j.smart_status?.passed ?? null,
-				temperature: j.temperature?.current ?? nvme?.temperature ?? null,
-				powerOnHours: j.power_on_time?.hours ?? nvme?.power_on_hours ?? null,
-				lifetimeUsed: nvme?.percentage_used ?? null,
-				reallocated: attrs[5] ?? null,
-				pending: attrs[197] ?? null,
-			}
-		} catch {}
-		smartCache.set(path, {at: Date.now(), value})
+			const res = parseSmart(JSON.parse(await helper('smart', [path])))
+			value = res.standby ? (hit?.value ?? null) : res.value
+		} catch (error) {
+			if (/\b(standby|sleep)\b/i.test(error?.message ?? '') && hit?.value) value = hit.value
+		}
+		smartCache.set(path, {at: now(), value})
 		return value
 	}
 
@@ -95,7 +125,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 				const btrfs = all.find((x) => x.fstype === 'btrfs')
 				const zmember = all.find((x) => x.fstype === 'zfs_member')
 				const pool = btrfs ? (poolByUuid.get(btrfs.uuid) ?? null) : zmember && zfsNames.has(zmember.label) ? zmember.label : null
-				const system = mounts.some((m) => SYSTEM_MOUNTS.has(m))
+				const system = mounts.some((m) => isSystemMount(m, home))
 				const blank = !d.fstype && !(d.children ?? []).length && !mounts.length
 				const nvme = d.tran === 'nvme' || d.name.startsWith('nvme')
 				const mountList = mounts.filter(Boolean)
