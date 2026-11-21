@@ -64,3 +64,49 @@ test('a successful npm ci replaces node_modules only after it finishes', async (
 	await assert.rejects(readFile(join(dir, 'node_modules/keep.txt')))
 	assert.match(await readFile(join(dir, 'node_modules/.omarchy-packages'), 'utf8'), /^[0-9a-f]{64}\n$/)
 })
+
+test('npm that cannot be started names the spawn error and exits non-zero', async () => {
+	const dir = await place('no-npm')
+	const empty = join(root, 'empty-bin')
+	await mkdir(empty, {recursive: true})
+	const r = spawnSync(process.execPath, [join(dir, 'scripts/deps.mjs')], {
+		env: {PATH: empty, HOME: dir},
+		encoding: 'utf8',
+		timeout: 20000,
+	})
+	assert.notEqual(r.status, 0)
+	assert.match(`${r.stderr}`, /spawnSync npm ENOENT/)
+})
+
+test('a later run removes a stage folder and node_modules.previous left beside a live install', async () => {
+	const dir = await place('killed')
+	await mkdir(join(dir, '.deps-stage-old'))
+	await writeFile(join(dir, '.deps-stage-old/marker.txt'), 'left')
+	await mkdir(join(dir, 'node_modules.previous'))
+	await writeFile(join(dir, 'node_modules.previous/old.txt'), 'left')
+	const npmBin = await fakeNpm('exit 1')
+	const r = run(dir, npmBin)
+	assert.notEqual(r.status, 0)
+	await assert.rejects(readFile(join(dir, '.deps-stage-old/marker.txt')))
+	await assert.rejects(readFile(join(dir, 'node_modules.previous/old.txt')))
+	assert.equal(await readFile(join(dir, 'node_modules/keep.txt'), 'utf8'), 'installed')
+})
+
+test('node_modules.previous is kept when it is the only copy', async () => {
+	const dir = await place('only-prev')
+	await rm(join(dir, 'node_modules'), {recursive: true, force: true})
+	await mkdir(join(dir, 'node_modules.previous'))
+	await writeFile(join(dir, 'node_modules.previous/keep.txt'), 'only')
+	const npmBin = await fakeNpm('exit 1')
+	const r = run(dir, npmBin)
+	assert.notEqual(r.status, 0)
+	const live = await readFile(join(dir, 'node_modules/keep.txt'), 'utf8').catch(() => null)
+	const prev = await readFile(join(dir, 'node_modules.previous/keep.txt'), 'utf8').catch(() => null)
+	assert.equal(live ?? prev, 'only')
+})
+
+test('git ignores deps stage folders and the previous node_modules', async () => {
+	const text = await readFile(new URL('../.gitignore', import.meta.url), 'utf8')
+	assert.match(text, /\.deps-stage-\*/)
+	assert.match(text, /node_modules\.previous/)
+})
