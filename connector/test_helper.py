@@ -61,6 +61,7 @@ def zfs_member_lsblk():
         "type": "part",
         "fstype": "zfs_member",
         "label": "tank",
+        "uuid": "111",
         "mountpoints": [None],
     }]
     return tree
@@ -71,6 +72,9 @@ def run_with_zpool_list(fake, text):
         if cmd == "zpool" and list(args)[:4] == ["list", "-H", "-o", "name"]:
             fake.log.append([cmd, *list(args)])
             return text
+        if cmd == "zpool" and list(args)[:1] == ["get"] and "guid" in list(args):
+            fake.log.append([cmd, *list(args)])
+            return "111\n" if str(text).strip() else ""
         return fake.run(cmd, args)
 
     return run
@@ -379,18 +383,18 @@ class Helper(unittest.TestCase):
         with self.assertRaisesRegex(HelperError, "in use"):
             self.handle("zfs-export", ["tank"], **kw)
         self.assertEqual(files["/etc/fstab"], fstab_before)
-        umount_idx = next(i for i, c in enumerate(log) if c[0] == "umount" and c[-1] == "/home/chris/Pools/tank")
-        export_idx = log.index(["zpool", "export", "tank"])
-        remount_idx = log.index(["mount", "/home/chris/Pools/tank"])
-        self.assertLess(umount_idx, export_idx)
-        self.assertLess(export_idx, remount_idx)
+        self.assertFalse(any(c[0] == "umount" for c in log))
+        self.assertFalse(any(c[0] == "mount" for c in log))
+        self.assertIn(["zpool", "export", "tank"], log)
 
         log.clear()
         mode[0] = "busy-umount"
         with self.assertRaisesRegex(HelperError, "in use"):
             self.handle("zfs-export", ["tank"], **kw)
         self.assertEqual(files["/etc/fstab"], fstab_before)
-        self.assertFalse(any(c[:2] == ["zpool", "export"] for c in log))
+        export_idx = log.index(["zpool", "export", "tank"])
+        umount_idx = next(i for i, c in enumerate(log) if c[0] == "umount" and c[-1] == "/home/chris/Pools/tank")
+        self.assertLess(export_idx, umount_idx)
 
         for success_mode in ("ok", "not-mounted"):
             files["/etc/fstab"] = fstab_before
@@ -398,6 +402,9 @@ class Helper(unittest.TestCase):
             mode[0] = success_mode
             self.assertEqual(self.handle("zfs-export", ["tank"], **kw), "ok")
             self.assertEqual(files["/etc/fstab"], "UUID=1 / ext4 defaults 0 0\n")
+            export_idx = log.index(["zpool", "export", "tank"])
+            umount_idx = next(i for i, c in enumerate(log) if c[0] == "umount")
+            self.assertLess(export_idx, umount_idx)
             self.assertIn(["systemctl", "daemon-reload"], log)
 
     def test_zfs_long_pool_names_work_across_import_scrub_and_export(self):
@@ -526,6 +533,8 @@ class Helper(unittest.TestCase):
                 if zpool_out[0] is None:
                     raise HelperError("no zpool")
                 return zpool_out[0]
+            if cmd == "zpool" and args[:1] == ["get"]:
+                return "123456\n" if zpool_out[0] and "tank" in zpool_out[0] else ""
             return ""
 
         kw = dict(run=run, user=self.kw["user"], files={})
@@ -679,9 +688,244 @@ errors: No known data errors
                 self.handle("format", [dev, "blank"], **kw)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
+    def test_format_checks_mkfs_before_wipefs(self):
+        import helper as h
+        from helper import HelperError
+
+        orig = h.shutil.which
+        seen = []
+
+        def which(cmd, path=None):
+            seen.append((cmd, path))
+            if cmd in ("mkfs.exfat", "mkfs.ext4"):
+                return None
+            return orig(cmd, path=path)
+
+        h.shutil.which = which
+        try:
+            for kind, prog, pattern in (
+                ("exfat", "mkfs.exfat", r"exFAT tools aren't installed on this computer \(exfatprogs\)"),
+                ("ext4", "mkfs.ext4", r"mkfs\.ext4 isn't installed on this computer"),
+            ):
+                fake = Fake()
+
+                def run(cmd, args, prog=prog, fake=fake):
+                    if cmd == prog:
+                        raise FileNotFoundError(prog)
+                    return fake.run(cmd, args)
+
+                kw = dict(run=run, user=self.kw["user"], files=fake.files)
+                with self.assertRaisesRegex(HelperError, pattern):
+                    self.handle("format", ["/dev/sdb", kind], **kw)
+                with self.assertRaisesRegex(HelperError, prog.replace(".", r"\.")):
+                    self.handle("format", ["/dev/sdb", kind], **kw)
+                self.assertFalse(any(c[0] == "wipefs" and "-a" in c for c in fake.log))
+                self.assertTrue(any(c == prog and p and "/usr/bin" in p for c, p in seen))
+        finally:
+            h.shutil.which = orig
+
+    def test_mount_second_drive_with_same_label_gets_a_free_name(self):
+        lsblk = {
+            "blockdevices": [
+                {"name": "sda", "path": "/dev/sda", "type": "disk", "size": 1000, "children": [
+                    {"name": "sda1", "path": "/dev/sda1", "type": "part", "fstype": "vfat", "label": "USB", "mountpoints": ["/run/media/me/USB"]}
+                ]},
+                {"name": "sdb", "path": "/dev/sdb", "type": "disk", "size": 1000, "children": [
+                    {"name": "sdb1", "path": "/dev/sdb1", "type": "part", "fstype": "vfat", "label": "USB", "mountpoints": [None]}
+                ]},
+            ]
+        }
+        fake = Fake(lsblk)
+        user = {"name": "me", "uid": 1000, "gid": 1000, "home": "/home/me"}
+        kw = dict(run=fake.run, user=user, files=fake.files)
+        self.assertEqual(self.handle("mount", ["/dev/sdb"], **kw), "ok")
+        self.assertIn(["mount", "-o", "nosuid,nodev,uid=1000,gid=1000", "/dev/sdb1", "/run/media/me/USB-2"], fake.log)
+        self.assertFalse(any(c[0] == "mount" and c[-1] == "/run/media/me/USB" for c in fake.log))
+
+    def test_umount_deepest_mountpoint_first(self):
+        from helper import HelperError
+
+        lsblk = {
+            "blockdevices": [
+                {"name": "sdb", "path": "/dev/sdb", "type": "disk", "size": 1000, "children": [
+                    {"name": "sdb1", "path": "/dev/sdb1", "type": "part", "fstype": "btrfs", "mountpoints": ["/media/me/data", "/media/me/data/photos"]}
+                ]}
+            ]
+        }
+        mounted = {"/media/me/data", "/media/me/data/photos"}
+        log = []
+
+        def run(cmd, args):
+            log.append([cmd, *args])
+            if cmd == "lsblk":
+                return json.dumps(lsblk)
+            if cmd == "zpool":
+                raise HelperError("zpool: not found")
+            if cmd == "umount":
+                target = args[-1]
+                if any(m != target and m.startswith(target + "/") for m in mounted):
+                    raise HelperError("umount: %s: target is busy." % target)
+                mounted.discard(target)
+                return ""
+            return ""
+
+        kw = dict(run=run, user={"name": "me", "uid": 1000, "gid": 1000, "home": "/home/me"}, files={})
+        self.assertEqual(self.handle("umount", ["/dev/sdb"], **kw), "ok")
+        self.assertEqual([c[-1] for c in log if c[0] == "umount"], ["/media/me/data/photos", "/media/me/data"])
+
+    def test_zfs_status_counts_unit_suffixes(self):
+        status = """  pool: p
+ state: ONLINE
+  scan: scrub repaired 1.50M in 01:00:00 with 3 errors on Sun Nov  8 00:24:04 2026
+config:
+
+	NAME        STATE     READ WRITE CKSUM
+	p           ONLINE       0     0 1.50M
+	  /dev/sda  ONLINE      12K    0 1.50M
+
+errors: 3 data errors, use '-v' for a list
+"""
+
+        def run(cmd, args):
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "p\t1000\t100\t900\tONLINE\n"
+            if cmd == "zpool" and args[:1] == ["status"]:
+                return status
+            if cmd == "zfs":
+                return "/home/chris/Pools/p\n"
+            return ""
+
+        pools = json.loads(self.handle("zfs-pools", [], run=run, user=self.kw["user"], files={}))
+        self.assertEqual(pools[0]["devices"][0]["path"], "/dev/sda")
+        self.assertEqual(pools[0]["devices"][0]["errors"], 12000 + 1500000)
+
+    def test_sleep_rewrites_old_hdparm_paths(self):
+        from helper import UDEV_SLEEP, hdparm_path
+
+        old = "\n".join([
+            "# Drive sleep, set by Omarchy Server",
+            'ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_SERIAL_SHORT}=="WD-A", RUN+="/usr/bin/hdparm -S 241 /dev/%k"',
+            'ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_SERIAL_SHORT}=="WD-B", RUN+="/usr/sbin/hdparm -S 240 /dev/%k"',
+            "",
+        ])
+        files = {"/etc/fstab": "UUID=1111 / btrfs defaults 0 0\n", UDEV_SLEEP: old}
+        fake = Fake()
+        kw = dict(run=fake.run, user=self.kw["user"], files=files)
+        self.assertEqual(self.handle("sleep", ["/dev/sdb", "20"], **kw), "ok")
+        text = files[UDEV_SLEEP]
+        self.assertNotIn("/usr/bin/hdparm", text)
+        self.assertIn(hdparm_path(), text)
+        self.assertIn('ENV{ID_SERIAL_SHORT}=="WD-A"', text)
+        self.assertIn('ENV{ID_SERIAL_SHORT}=="WD-B"', text)
+
+    def test_zfs_pools_unavailable_pool_has_null_sizes(self):
+        def run(cmd, args):
+            if cmd == "zpool" and args[:1] == ["version"]:
+                return "zfs-2.2.2\n"
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "tank\t4000787030016\t1000000\t3999787030016\tONLINE\nusbpool\t-\t-\t-\tUNAVAIL\n"
+            if cmd == "zpool" and args[:1] == ["status"]:
+                return "  pool: x\n state: ONLINE\nconfig:\n\n\tNAME STATE READ WRITE CKSUM\n\tx ONLINE 0 0 0\n\nerrors: No known data errors\n"
+            if cmd == "zfs" and args[:1] == ["list"]:
+                if args[-1] == "usbpool":
+                    return "-\t-\n"
+                return "100\t200\n"
+            if cmd == "zfs":
+                return "/tank\n"
+            return ""
+
+        pools = {p["name"]: p for p in json.loads(self.handle("zfs-pools", [], run=run, user=self.kw["user"], files={}))}
+        self.assertEqual(pools["tank"]["health"], "ONLINE")
+        self.assertEqual(pools["tank"]["size"], 300)
+        self.assertIsNone(pools["usbpool"]["size"])
+        self.assertIsNone(pools["usbpool"]["used"])
+        self.assertIsNone(pools["usbpool"]["free"])
+        self.assertEqual(pools["usbpool"]["health"], "UNAVAIL")
+
+    def test_smartctl_timeout_is_short_and_a_stuck_drive_stays_unknown(self):
+        import subprocess
+
+        import helper
+
+        seen = []
+
+        def fake_run(argv, **kw):
+            seen.append((argv[0], kw.get("timeout")))
+
+            class R:
+                returncode = 0
+                stdout = "{}"
+                stderr = ""
+
+            return R()
+
+        orig = helper.subprocess.run
+        helper.subprocess.run = fake_run
+        try:
+            helper.default_run("smartctl", ["-n", "standby", "-j", "-a", "/dev/sda"])
+            helper.default_run("lsblk", ["-J"])
+        finally:
+            helper.subprocess.run = orig
+        self.assertEqual(seen[0][0], "smartctl")
+        self.assertGreaterEqual(seen[0][1], 10)
+        self.assertLessEqual(seen[0][1], 20)
+        self.assertEqual(seen[1], ("lsblk", 600))
+
+        lsblk = {"blockdevices": [
+            {"name": "sda", "path": "/dev/sda", "type": "disk", "size": 1000, "rota": True, "serial": "A", "children": []},
+            {"name": "sdb", "path": "/dev/sdb", "type": "disk", "size": 1000, "rota": True, "serial": "B", "children": []},
+        ]}
+
+        def run(cmd, args):
+            if cmd == "lsblk":
+                return json.dumps(lsblk)
+            if cmd == "zpool":
+                raise Exception("no zpool")
+            if cmd == "smartctl" and args[-1] == "/dev/sda":
+                raise subprocess.TimeoutExpired(cmd, 15)
+            if cmd == "smartctl":
+                return json.dumps({"smart_status": {"passed": True}, "temperature": {"current": 30}})
+            return ""
+
+        disks = {d["name"]: d for d in json.loads(self.handle("disks", [], run=run, user=self.kw["user"], files={}))}
+        self.assertIsNone(disks["sda"]["health"])
+        self.assertEqual(disks["sdb"]["health"]["temperature"], 30)
+
+    def test_format_allows_foreign_zfs_member_with_the_same_pool_name(self):
+        from helper import HelperError
+
+        real = "1111111111111111111"
+        foreign = "2222222222222222222"
+        lsblk = {"blockdevices": [
+            {"name": "sda", "path": "/dev/sda", "type": "disk", "size": 1000, "children": [
+                {"name": "sda1", "path": "/dev/sda1", "type": "part", "fstype": "zfs_member", "label": "tank", "uuid": real, "mountpoints": [None]}
+            ]},
+            {"name": "sdb", "path": "/dev/sdb", "type": "disk", "size": 1000, "children": [
+                {"name": "sdb1", "path": "/dev/sdb1", "type": "part", "fstype": "zfs_member", "label": "tank", "uuid": foreign, "mountpoints": [None]}
+            ]},
+        ]}
+        log = []
+
+        def run(cmd, args):
+            log.append([cmd, *args])
+            if cmd == "lsblk":
+                return json.dumps(lsblk)
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "tank\n"
+            if cmd == "zpool" and args[:1] == ["get"]:
+                return real + "\n"
+            if cmd == "wipefs":
+                return json.dumps({"signatures": []})
+            return ""
+
+        kw = dict(run=run, user=self.kw["user"], files={})
+        with self.assertRaisesRegex(HelperError, r"/dev/sda is in a pool"):
+            self.handle("format", ["/dev/sda", "blank"], **kw)
+        self.assertFalse(any(c[0] == "wipefs" and "-a" in c and c[-1] == "/dev/sda" for c in log))
+        log.clear()
+        self.assertEqual(self.handle("format", ["/dev/sdb", "blank"], **kw), "ok")
+        self.assertIn(["wipefs", "-a", "/dev/sdb"], log)
 
 
 class OldLsblk(unittest.TestCase):
@@ -715,3 +959,7 @@ class Hdparm(unittest.TestCase):
         p = hdparm_path()
         self.assertTrue(p.startswith("/"))
         self.assertTrue(os.path.exists(p) or p == "/usr/sbin/hdparm")
+
+
+if __name__ == "__main__":
+    unittest.main()

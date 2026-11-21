@@ -117,14 +117,21 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	async function disks() {
 		const [devs, pools, sleep, helperOk, zp] = await Promise.all([blockDevices(), fstabPools(), readJson(sleepFile, {}), status().then((s) => s.helperAvailable), zfsPools()])
 		const poolByUuid = new Map(pools.map((p) => [p.uuid, p.name]))
-		const zfsNames = new Set(zp.map((z) => z.name))
+		const zfsGuidToName = new Map()
+		const namesWithoutGuid = new Set()
+		for (const z of zp) {
+			const guid = String(await run('zpool', ['get', '-H', '-o', 'value', 'guid', z.name]).catch(() => '')).trim()
+			if (guid && guid !== '-') zfsGuidToName.set(guid, z.name)
+			else namesWithoutGuid.add(z.name)
+		}
 		return Promise.all(
 			devs.map(async (d) => {
 				const all = flat(d)
 				const mounts = all.flatMap((x) => (x.mountpoints ?? []).filter(Boolean))
 				const btrfs = all.find((x) => x.fstype === 'btrfs')
 				const zmember = all.find((x) => x.fstype === 'zfs_member')
-				const pool = btrfs ? (poolByUuid.get(btrfs.uuid) ?? null) : zmember && zfsNames.has(zmember.label) ? zmember.label : null
+				const memberId = String(zmember?.uuid ?? '')
+				const pool = btrfs ? (poolByUuid.get(btrfs.uuid) ?? null) : zfsGuidToName.has(memberId) ? zfsGuidToName.get(memberId) : zmember && namesWithoutGuid.has(zmember.label) ? zmember.label : null
 				const system = mounts.some((m) => isSystemMount(m, home))
 				const blank = !d.fstype && !(d.children ?? []).length && !mounts.length
 				const nvme = d.tran === 'nvme' || d.name.startsWith('nvme')

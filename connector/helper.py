@@ -67,6 +67,21 @@ UDEV_SLEEP = "/etc/udev/rules.d/69-omarchy-connector-sleep.rules"
 SMART_CACHE = "/run/omarchy-connector/smart-cache.json"
 SMART_CACHE_TTL = 600
 SLEEP_MINUTES = {0: 0, 10: 120, 20: 240, 30: 241, 60: 242, 120: 244, 240: 248}
+HELPER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+# zpool status prints large counters as 12K or 1.50M. The suffix is a power of 1000.
+_ZFS_MULT = {"": 1, "K": 10**3, "M": 10**6, "G": 10**9, "T": 10**12, "P": 10**15}
+
+
+def zfs_counter(raw):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([KMGTP])?", raw or "", re.I)
+    if not m:
+        return 0
+    unit = (m.group(2) or "").upper()
+    return int(round(float(m.group(1)) * _ZFS_MULT[unit]))
+
+
+def count_or_none(value):
+    return int(value) if isinstance(value, str) and value.isdigit() else None
 
 
 class HelperError(Exception):
@@ -78,7 +93,7 @@ def hdparm_path():
     for p in ("/usr/sbin/hdparm", "/usr/bin/hdparm", "/sbin/hdparm"):
         if os.path.exists(p):
             return os.path.realpath(p)
-    return shutil.which("hdparm", path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin") or "/usr/sbin/hdparm"
+    return shutil.which("hdparm", path=HELPER_PATH) or "/usr/sbin/hdparm"
 
 
 def fail(message):
@@ -87,9 +102,11 @@ def fail(message):
 
 def default_run(cmd, args):
     env = dict(os.environ)
-    env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+    env["PATH"] = HELPER_PATH
     env["LC_ALL"] = "C"
-    r = subprocess.run([cmd, *args], capture_output=True, text=True, timeout=600, env=env)
+    # A drive that never answers smartctl must not hold the disk list for the full command limit.
+    timeout = 15 if cmd == "smartctl" else 600
+    r = subprocess.run([cmd, *args], capture_output=True, text=True, timeout=timeout, env=env)
     if r.returncode and not (cmd == "smartctl" and r.stdout):
         msg = (r.stderr or r.stdout or ("%s failed" % cmd)).strip().split("\n")[-1][:300]
         raise HelperError("%s: %s" % (cmd, msg) if msg else "%s failed" % cmd)
@@ -284,8 +301,11 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         uuids = {x.get("uuid") for x in flat(d) if x.get("uuid")}
         if any(FSTAB_MARK in l and any(u in l for u in uuids) for l in fstab()):
             return True
-        names = set(zfs_pool_names())
-        return any(x.get("fstype") == "zfs_member" and x.get("label") in names for x in flat(d))
+        guids, names_without_guid = zfs_pool_ids()
+        return any(
+            x.get("fstype") == "zfs_member" and ((x.get("uuid") or "") in guids or (x.get("label") or "") in names_without_guid)
+            for x in flat(d)
+        )
 
     def fstab_pools():
         out = []
@@ -356,6 +376,25 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         except Exception:
             return []
 
+    # Imported pools are identified by GUID. Two pools can share a name; lsblk stores the GUID as the
+    # zfs_member UUID, and `zpool get guid` is the imported pool's GUID.
+    def zfs_pool_ids():
+        found = {}
+        # A named pool whose guid could not be read still matches disks by name, so a failed
+        # `zpool get` does not make that pool's disks look free to format.
+        names_without_guid = set()
+        for name in zfs_pool_names():
+            try:
+                guid = run("zpool", ["get", "-H", "-o", "value", "guid", name]).strip()
+            except Exception:
+                names_without_guid.add(name)
+                continue
+            if guid and guid != "-":
+                found[guid] = name
+            else:
+                names_without_guid.add(name)
+        return found, names_without_guid
+
     def by_id(dev):
         directory = "/dev/disk/by-id"
         try:
@@ -406,7 +445,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 devices.append({
                     "path": m.group(1),
                     "state": m.group(2),
-                    "errors": sum(int(re.match(r"\d+", x).group(0)) if re.match(r"\d+", x) else 0 for x in (m.group(3), m.group(4), m.group(5))),
+                    "errors": sum(zfs_counter(x) for x in (m.group(3), m.group(4), m.group(5))),
                 })
         return {
             "state": state_m.group(1) if state_m else "UNKNOWN",
@@ -460,9 +499,9 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 free_bytes = int(sp[1])
                 size_bytes = used_bytes + free_bytes
             else:
-                size_bytes = int(size) if size.isdigit() else 0
-                used_bytes = int(alloc) if alloc.isdigit() else 0
-                free_bytes = int(free) if free.isdigit() else 0
+                size_bytes = count_or_none(size)
+                used_bytes = count_or_none(alloc)
+                free_bytes = count_or_none(free)
             bind = next((l for l in tab if l.endswith("%s %s" % (ZFS_MARK, name))), None)
             if bind:
                 folder = bind.split()[1]
@@ -507,7 +546,8 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             fail("%s holds the system" % d["path"])
         if pool_member(d):
             fail("%s is in a pool" % d["path"])
-        for m in mounts(d):
+        # A mount inside another mount on this drive is busy until the child is gone.
+        for m in sorted(mounts(d), key=len, reverse=True):
             run("umount", [m])
         return "ok"
     if verb == "mount":
@@ -522,7 +562,18 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         targets = [x for x in nodes if x.get("fstype") and x["fstype"] not in SKIP_FS]
         if not targets:
             fail("Nothing to mount")
+        # Names already mounted under /run/media/$USER, so a second stick with the same label
+        # is placed beside the first instead of on top of it.
+        media = "/run/media/%s" % user["name"]
+        prefix = media + "/"
         used = set()
+        for dev in block_devices():
+            for m in mounts(dev):
+                if not m.startswith(prefix):
+                    continue
+                name = m[len(prefix):].split("/")[0]
+                if name:
+                    used.add(name)
         for t in targets:
             name = safe_mount_name(t.get("label")) or safe_mount_name(t.get("uuid")) or safe_mount_name(t.get("name")) or "disk"
             base = name
@@ -561,6 +612,12 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         # even with nothing mounted: those are in use.
         if any(x is not d and x.get("type") != "part" for x in flat(d)):
             fail("%s is in use by encryption, LVM or RAID. Stop that first." % d["path"])
+        if fs_kind in ("ext4", "exfat"):
+            prog = "mkfs.ext4" if fs_kind == "ext4" else "mkfs.exfat"
+            if not shutil.which(prog, path=HELPER_PATH):
+                if fs_kind == "exfat":
+                    fail("exFAT tools aren't installed on this computer (exfatprogs): mkfs.exfat")
+                fail("mkfs.ext4 isn't installed on this computer")
         run("wipefs", ["-a", d["path"]])
         if fs_kind == "ext4":
             run("mkfs.ext4", ["-F", d["path"]])
@@ -625,11 +682,13 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 if FSTAB_MARK in l and any(u in l for u in uuids):
                     return (l[l.index(FSTAB_MARK) + len(FSTAB_MARK) :].strip() or None)
             zmember = next((x for x in flat(d) if x.get("fstype") == "zfs_member"), None)
-            if zmember and zmember.get("label") and zmember["label"] in zfs_names:
-                return zmember["label"]
+            if zmember and (zmember.get("uuid") or "") in zfs_guids:
+                return zfs_guids[zmember["uuid"]]
+            if zmember and (zmember.get("label") or "") in names_without_guid:
+                return zmember.get("label")
             return None
 
-        zfs_names = set(zfs_pool_names())
+        zfs_guids, names_without_guid = zfs_pool_ids()
         sleeps = sleep_map()
         out = []
         for d in block_devices():
@@ -772,6 +831,9 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             text = ""
         needle = 'ENV{ID_SERIAL_SHORT}=="%s"' % serial
         lines = [l for l in text.split("\n") if l and not l.startswith("#") and needle not in l]
+        # Rules written before hdparm_path() still name /usr/bin/hdparm. Repair every line we keep.
+        hd = hdparm_path()
+        lines = [re.sub(r'RUN\+="\S*hdparm ', lambda _match: 'RUN+="%s ' % hd, l) for l in lines]
         if m:
             lines.append('ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", %s, RUN+="%s -S %s /dev/%%k"' % (needle, hdparm_path(), SLEEP_MINUTES[m]))
         write_text(UDEV_SLEEP, "# Drive sleep, set by Omarchy Server\n%s\n" % "\n".join(lines) if lines else "")
@@ -870,23 +932,17 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         bind = next((l for l in fstab() if l.endswith("%s %s" % (ZFS_MARK, name))), None)
         bind_parts = bind.split() if bind else []
         bind_target = bind_parts[1] if len(bind_parts) >= 2 else None
-        unmounted = False
-        if bind_target:
-            try:
-                run("umount", ["-R", bind_target])
-                unmounted = True
-            except Exception as e:
-                if "not mounted" not in str(e).lower():
-                    fail("%s is in use. Stop apps and shares using it, then try again." % name)
+        # Export first: a busy pool fails here and the bind mount and fstab line stay.
         try:
             run("zpool", ["export", name])
         except Exception:
-            if unmounted:
-                try:
-                    run("mount", [bind_target])
-                except Exception:
-                    pass
             fail("%s is in use. Stop apps and shares using it, then try again." % name)
+        if bind_target:
+            try:
+                run("umount", ["-R", bind_target])
+            except Exception as e:
+                if "not mounted" not in str(e).lower():
+                    fail("%s is in use. Stop apps and shares using it, then try again." % name)
         if bind:
             kept = [l for l in fstab() if l != bind]
             write_text("/etc/fstab", ("\n".join(kept) + "\n") if kept else "")
