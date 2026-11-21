@@ -246,6 +246,8 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
 		const name = clip(input?.name, 48).trim()
 		if (!name) throw new RpcError('BAD_REQUEST', 'Give it a name')
+		// Joining already picks a free suffix. A person renaming is told the name is taken.
+		if (name !== a.name && state.agents.some((other) => other.name === name)) throw new RpcError('CONFLICT', 'That name’s already taken')
 		a.name = name
 		await save()
 		return true
