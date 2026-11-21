@@ -24,7 +24,7 @@ def host_path(path):
     """Turn a path inside a mounted folder into the home folder omarchyd checks."""
     if not path.startswith("/"):
         die("Pass an absolute path to the binary")
-    if ".." in path.split("/"):
+    if ".." in path.split("/") or any(c in path for c in "\n\r\t"):
         die("That path can't be published")
     best = None
     if os.path.isfile(MOUNTS):

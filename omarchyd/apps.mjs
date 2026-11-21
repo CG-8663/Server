@@ -743,6 +743,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	const gateways = new Map() // appId -> {server, port}
 	const tickets = new Map() // one-time hand-overs from the web app
 	let registryCache = null
+	let registryGen = 0
+	let registryFlightGen = 0
 	let registryWarm = null
 
 	// Apps come back after a reboot only if Podman's own restart unit is on (it's off by default, and
@@ -1211,17 +1213,26 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		} else await run('git', ['clone', '--depth', '1', '--', url, dir], {timeout: 120_000})
 	}
 	let registryFlight = null
+	// A publish rewrites the local store while a registry read may already be in flight. Drop that
+	// read, and do not let it cache the listing it started with.
+	function dropRegistry() {
+		registryGen += 1
+		registryCache = null
+		registryFlight = null
+	}
 	async function registry({refresh = false} = {}) {
 		await ready
-		if (registryFlight) return registryFlight
-		if (registryCache && !refresh && Date.now() - registryCache.at < 60 * 60_000) return registryCache.list
-		const flight = loadRegistry({refresh}).finally(() => {
+		if (registryFlight && registryFlightGen === registryGen) return registryFlight
+		if (registryCache && registryCache.gen === registryGen && !refresh && Date.now() - registryCache.at < 60 * 60_000) return registryCache.list
+		const gen = registryGen
+		const flight = loadRegistry({refresh, gen}).finally(() => {
 			if (registryFlight === flight) registryFlight = null
 		})
 		registryFlight = flight
+		registryFlightGen = gen
 		return flight
 	}
-	async function loadRegistry({refresh = false} = {}) {
+	async function loadRegistry({refresh = false, gen = registryGen} = {}) {
 		const list = []
 		let dirty = false
 		for (const s of state.stores) {
@@ -1268,7 +1279,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			else delete app.internalHttps
 		}
 		if (dirty) await save()
-		registryCache = {at: Date.now(), list}
+		if (gen === registryGen) registryCache = {at: Date.now(), list, gen}
 		return list
 	}
 	// An app's listing. An installed app stays with the store it came from (two stores can list the
@@ -1877,6 +1888,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				const container = (expand(dest).replace(/\/+$/, '') || '/').replace(/\/+$/, '') || '/'
 				if (!container.startsWith('/') || container.split('/').includes('..')) continue
 				if (!under(hostPath, home) || hostPath === home) continue
+				if (/[\n\r\t]/.test(container) || /[\n\r\t]/.test(hostPath)) continue
 				if (hostPath.slice(home.length).split('/').some((part) => part.startsWith('.'))) continue
 				if (refusedMount(hostPath, home)) continue
 				const line = `${container}\t${hostPath}`
@@ -2381,10 +2393,20 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (!APP_ID.test(id)) throw new RpcError('BAD_REQUEST', 'Use a short lowercase id, such as field-service')
 		const name = String(input?.name ?? '').trim().slice(0, 80)
 		if (!name) throw new RpcError('BAD_REQUEST', 'Give the app a name')
-		const containerPort = Number(input?.containerPort ?? 7860)
-		if (!Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535) throw new RpcError('BAD_REQUEST', 'The app’s own port has to be from 1 to 65535')
 		const installed = state.apps.find((a) => a.id === id)
 		if (installed && installed.store !== PUBLISHED_STORE) throw new RpcError('CONFLICT', `${installed.name} is already installed from another store`)
+		// The port inside the app is the one other containers call. A later publish keeps it.
+		let previousWeb = null
+		if (installed) {
+			try {
+				const prev = YAML.parse(await readFile(join(storeDir(PUBLISHED_STORE), id, 'omarchy-app.yml'), 'utf8'))
+				const n = Number(prev?.web?.port)
+				if (Number.isInteger(n) && n >= 1 && n <= 65535) previousWeb = n
+			} catch { /* the listing is rewritten below */ }
+		}
+		const containerPort = input?.containerPort === undefined ? (previousWeb ?? 7860) : Number(input.containerPort)
+		if (!Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535) throw new RpcError('BAD_REQUEST', 'The app’s own port has to be from 1 to 65535')
+		if (installed && previousWeb !== null && containerPort !== previousWeb) throw new RpcError('PRECONDITION_FAILED', 'Unpublish it before changing the port inside the app')
 		const publicPort = input?.port === undefined ? (installed?.port ?? containerPort) : Number(input.port)
 		if (!Number.isInteger(publicPort) || publicPort < 1024 || publicPort > 65535 || RESERVED(publicPort)) throw new RpcError('BAD_REQUEST', 'Pick a port from 1024 up that Omarchy Server doesn’t keep for itself')
 		if (installed && publicPort !== installed.port) throw new RpcError('PRECONDITION_FAILED', 'Unpublish it before changing its port')
@@ -2414,9 +2436,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				for (const p of other.openPorts ?? []) taken.add(p)
 			}
 			const previousApi = installed?.openPorts?.[0]
-			apiHost = input?.apiPort === undefined ? (previousApi ?? nextHostPort(publicPort, taken)) : Number(input.apiPort)
+			const avoidHost = new Set(taken)
+			if (mcp?.port) avoidHost.add(mcp.port)
+			apiHost = input?.apiPort === undefined ? (previousApi ?? nextHostPort(publicPort, avoidHost)) : Number(input.apiPort)
 			if (!Number.isInteger(apiHost) || apiHost < 1024 || apiHost > 65535 || RESERVED(apiHost)) throw new RpcError('BAD_REQUEST', 'Pick an API port from 1024 up that Omarchy Server doesn’t keep for itself')
 			if (apiHost === publicPort) throw new RpcError('BAD_REQUEST', 'The job API needs its own port')
+			if (mcp?.port && apiHost === mcp.port) throw new RpcError('BAD_REQUEST', 'The job API can’t use the MCP port')
 			if (installed && previousApi !== undefined && apiHost !== previousApi) throw new RpcError('PRECONDITION_FAILED', 'Unpublish it before changing its API port')
 			if ((!installed || previousApi !== apiHost) && (taken.has(apiHost) || !(await portFree(apiHost)))) throw new RpcError('CONFLICT', `Port ${apiHost} is already in use`)
 			const avoid = new Set([containerPort])
@@ -2483,7 +2508,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			? `export APP_${envId}_URL=${internalUrl}\nexport APP_${envId}_HOST=${id}_web_1\nexport APP_${envId}_PORT=${callPort}\nexport APP_${envId}_LAN_PORT=${apiHost}\nexport APP_${envId}_TOKEN='${apiToken}'\n`
 			: `export APP_${envId}_URL=${internalUrl}\nexport APP_${envId}_HOST=${id}_web_1\nexport APP_${envId}_PORT=${containerPort}\n`
 		await writeFile(join(appDirListing, 'exports.sh'), exportsText)
-		registryCache = null
+		// update() keeps a password already on the app and does not copy one from the listing.
+		if (installed && apiToken && !installed.defaultPassword) installed.defaultPassword = apiToken
+		dropRegistry()
 		if (installed) await update({appId: id})
 		else {
 			await install({appId: id, grant: []})
@@ -2502,7 +2529,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (!installed && !(await exists(listing))) throw new RpcError('NOT_FOUND', 'That app isn’t published')
 		if (installed) await uninstall({appId: id})
 		await rm(listing, {recursive: true, force: true})
-		registryCache = null
+		dropRegistry()
 		return true
 	}
 
@@ -2553,7 +2580,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		appDirFor: (id) => appDir(id),
 		installed: (id) => state.apps.some((a) => a.id === id),
 		async installImported(id) {
-			registryCache = null
+			dropRegistry()
 			const plan = await installPlan(id)
 			const grant = new Set()
 			for (const a of plan) for (const p of await permissionsOf({...a, folderIds: [], folders: {}})) grant.add(p.id)
@@ -2709,7 +2736,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 							throw e
 						}
 						state.stores.push({url, meta: loaded.meta, syncedAt: Date.now()})
-						registryCache = null
+						dropRegistry()
 						await save()
 						return true
 					})
@@ -2724,7 +2751,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					if (!s) throw new RpcError('NOT_FOUND', 'That store isn’t added')
 					state.stores = state.stores.filter((x) => x !== s)
 					await rm(storeDir(s.url), {recursive: true, force: true})
-					registryCache = null
+					dropRegistry()
 					await save()
 					return true
 				},
