@@ -27,7 +27,7 @@ if (cmd === 'web') {
 `
 
 describe('Tailscale on the system', () => {
-	let root, data, d, auth, port, helperCalls, helperAnswer, operator, helperFile, prefs, apiRequests, socketPath, api, composeCalls, bin
+	let root, sockDir, data, d, auth, port, helperCalls, helperAnswer, operator, helperFile, prefs, apiRequests, socketPath, api, composeCalls, bin
 	const call = async (path, input, kind = 'mutation') => {
 		const url = new URL(`${d.url}/trpc/${path}`)
 		const init = {method: kind === 'mutation' ? 'POST' : 'GET', headers: {...auth}}
@@ -110,7 +110,8 @@ describe('Tailscale on the system', () => {
 		// Tailscale's local API: only accepts what the real one does (its Host, no Origin or Referer).
 		prefs = {WantRunning: true}
 		apiRequests = []
-		socketPath = join(root, 'tailscaled.sock')
+		sockDir = await mkdtemp('/tmp/om-ts-')
+		socketPath = join(sockDir, 'tailscaled.sock')
 		api = http.createServer((req, res) => {
 			let body = ''
 			req.on('data', (c) => (body += c))
@@ -128,7 +129,13 @@ describe('Tailscale on the system', () => {
 				res.writeHead(404).end()
 			})
 		})
-		await new Promise((r) => api.listen(socketPath, r))
+		await new Promise((resolve, reject) => {
+			api.once('error', reject)
+			api.listen(socketPath, () => {
+				api.off('error', reject)
+				resolve()
+			})
+		})
 		const accounts = await openAccounts(data)
 		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
 		// A store that also lists an app called "tailscale" (as a container).
@@ -143,7 +150,8 @@ describe('Tailscale on the system', () => {
 	after(async () => {
 		await d?.close()
 		api?.close()
-		await rm(root, {recursive: true, force: true})
+		if (sockDir) await rm(sockDir, {recursive: true, force: true})
+		if (root) await rm(root, {recursive: true, force: true})
 	})
 
 	test('listed first, as part of Omarchy Server; a store’s own “tailscale” can’t stand in for it', async () => {

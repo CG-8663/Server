@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import {chmod, mkdtemp, readdir, readFile, stat} from 'node:fs/promises'
+import {chmod, mkdtemp, readdir, readFile, rm, stat} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
@@ -38,7 +38,18 @@ async function startTouch({backendUrl, appHosts, relayPortBase = 0} = {}) {
 		if (set) cookie = set.split(';')[0]
 		return {status: res.status, body: await res.json().catch(() => null), setCookie: set, setCookies: all}
 	}
-	return {dir, store, base, req, getCookie: () => cookie, close: () => (app.closeRelays(), new Promise((r) => server.close(r)))}
+	return {
+		dir,
+		store,
+		base,
+		req,
+		getCookie: () => cookie,
+		close: async () => {
+			app.closeRelays()
+			await new Promise((r) => server.close(r))
+			await rm(dir, {recursive: true, force: true})
+		},
+	}
 }
 
 describe('Omarchy Server server against an omarchyd stand-in', () => {
@@ -378,7 +389,8 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(del.body.prefs.backgroundVersion, null)
 	})
 
-	test('a failed settings save returns an error and keeps what was saved', async () => {
+	test('a failed settings save returns an error and keeps what was saved', async (t) => {
+		if (process.getuid?.() === 0) return t.skip('root ignores file mode')
 		const fresh = await startTouch({backendUrl: fake.url})
 		const origError = console.error
 		const logged = []
@@ -453,7 +465,8 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		}
 	})
 
-	test('overlapping config saves keep both changes, and a failed one does not', async () => {
+	test('overlapping config saves keep both changes, and a failed one does not', async (t) => {
+		if (process.getuid?.() === 0) return t.skip('root ignores file mode')
 		const dir = await mkdtemp(join(tmpdir(), 'touch-cfg-'))
 		const store = await createStore(dir)
 		try {
@@ -485,6 +498,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 			assert.equal(disk.nope, undefined)
 		} finally {
 			await chmod(dir, 0o700).catch(() => {})
+			await rm(dir, {recursive: true, force: true})
 		}
 	})
 
@@ -934,7 +948,9 @@ describe('always use the secure address', () => {
 			assert.equal((await (await fetch(`${base}/api/tls/status`)).json()).alwaysHttps, true)
 			assert.notEqual((await fetch(`${base}/settings`, {headers: {...nav, host: 'evil.example/"'}, redirect: 'manual'})).headers.get('location')?.includes('"'), true)
 		} finally {
-			server.close()
+			app.closeRelays()
+			await new Promise((r) => server.close(r))
+			await rm(dir, {recursive: true, force: true})
 		}
 	})
 })

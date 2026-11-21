@@ -1,14 +1,18 @@
 // VM live stats: background virsh samples; RPCs return the last snapshot.
 import assert from 'node:assert/strict'
-import {mkdir, mkdtemp, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
-import {test} from 'node:test'
+import {after, test} from 'node:test'
 
 import {createMachines} from '../omarchyd/machines.mjs'
 
 const id = 'abcd1234'
 const domain = `omarchy-${id}`
+const tempDirs = []
+after(async () => {
+	for (const dir of tempDirs) await rm(dir, {recursive: true, force: true})
+})
 
 function wait(ms) {
 	return new Promise((r) => setTimeout(r, ms))
@@ -16,6 +20,7 @@ function wait(ms) {
 
 test('machines.stats without an id returns every machine’s last sample', async () => {
 	const root = await mkdtemp(join(os.tmpdir(), 'mx-stats-'))
+	tempDirs.push(root)
 	const dataDir = join(root, 'data')
 	await mkdir(join(dataDir, 'machines'), {recursive: true})
 	await writeFile(
@@ -78,6 +83,7 @@ function machineFile(state) {
 
 async function openMachines({state, listState, statsIntervalMs = 20, watchIdleMs, onDomstats}) {
 	const root = await mkdtemp(join(os.tmpdir(), 'mx-poll-'))
+	tempDirs.push(root)
 	const dataDir = join(root, 'data')
 	await mkdir(join(dataDir, 'machines'), {recursive: true})
 	await writeFile(join(dataDir, 'machines', 'machines.json'), machineFile(state))
