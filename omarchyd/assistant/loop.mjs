@@ -233,10 +233,43 @@ export function cardFor(name, args, names = {}) {
 	return {title: 'Approve this step', detail: ''}
 }
 
+// Exact names, plurals, and the nested forms (access_token, Authorization). A secret key drops the
+// whole value, including an array of secrets. Array indexes are not keys, so objects inside arrays
+// are walked too.
+const MCP_SECRET = /^(?:password|passphrase|secret|tokens?|api[-_]?keys?|credentials?|authorizations?|(?:access|refresh)[-_]?tokens?)$/i
+
+function redactArgs(value) {
+	if (Array.isArray(value)) {
+		const out = []
+		for (const item of value) {
+			const next = redactArgs(item)
+			if (next !== undefined) out.push(next)
+		}
+		return out
+	}
+	if (value && typeof value === 'object') {
+		const out = {}
+		for (const [k, v] of Object.entries(value)) {
+			if (MCP_SECRET.test(k)) continue
+			const next = redactArgs(v)
+			if (next !== undefined) out[k] = next
+		}
+		return out
+	}
+	return value
+}
+
 function humanArgValue(value) {
 	if (typeof value === 'string') return value.trim()
 	if (typeof value === 'number' && Number.isFinite(value)) return String(value)
 	if (typeof value === 'boolean') return value ? 'yes' : 'no'
+	if (value && typeof value === 'object') {
+		try {
+			return JSON.stringify(redactArgs(value)) ?? ''
+		} catch {
+			return ''
+		}
+	}
 	return ''
 }
 
@@ -244,7 +277,6 @@ function humanArgValue(value) {
 // So the headline uses the app's description only as a short first sentence, and the card always names the
 // app and the real tool and shows every argument (ids included: they often say what gets changed or
 // deleted). Only secrets are left off.
-const MCP_SECRET = /^(password|passphrase|secret|token|apiKey|api_key|credentials?)$/i
 export function cardForMcp(spec, args) {
 	const shown = plainInput(args)
 	const bits = []
