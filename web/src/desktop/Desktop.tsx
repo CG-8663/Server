@@ -33,6 +33,7 @@ import {Launcher} from './hyprland/Launcher'
 import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, moveWorkspace, reconcile, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
 import {loadWallpaper} from './wallpaperLoader'
+import {clampWindowRect} from './windowGeometry'
 
 const HINT_KEY = 'omarchy-server:desk-hint-closed'
 
@@ -96,7 +97,7 @@ const snapRect = (snap: Exclude<Snap, null>): Rect => {
 	if (snap === 'right') return {x: a.x + Math.floor(a.w / 2), y: a.y, w: Math.ceil(a.w / 2), h: a.h}
 	return a
 }
-const rectOf = (win: Win): Rect => (win.snap ? snapRect(win.snap) : {x: win.x, y: win.y, w: win.w, h: win.h})
+const rectOf = (win: Win): Rect => (win.snap ? snapRect(win.snap) : clampWindowRect({x: win.x, y: win.y, w: win.w, h: win.h}, area(), {minW: MIN_W, minH: MIN_H}))
 
 const dockThickness = (cfg: DeskConfig) => cfg.dock.iconSize + 26 + (cfg.dock.floating ? 14 : 0)
 const reducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
