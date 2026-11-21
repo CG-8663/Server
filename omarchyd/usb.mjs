@@ -6,6 +6,37 @@ import YAML from 'yaml'
 import {RpcError} from './rpc.mjs'
 
 const USB_DEV = /^[0-9]+-[0-9.]+$/
+// usb_id builds ID_SERIAL from manufacturer and product: whitespace runs become
+// one '_', then anything outside udev's devnode allow-list becomes '_'. Each
+// field is copied into a 63-byte buffer (vendor_str / model_str).
+const UDEV_DEVNODE = /[A-Za-z0-9#+.:=\@_-]/
+
+function udevEncode(value) {
+	const src = String(value ?? '')
+	const len = Math.min(src.length, 63)
+	let i = 0
+	while (i < len && /\s/.test(src[i])) i++
+	let collapsed = ''
+	let spaced = false
+	for (; i < len && collapsed.length < 63; i++) {
+		if (/\s/.test(src[i])) {
+			spaced = true
+			continue
+		}
+		if (spaced) {
+			if (collapsed.length + 1 >= 63) break
+			collapsed += '_'
+			spaced = false
+		}
+		collapsed += src[i]
+	}
+	let out = ''
+	for (const ch of collapsed) {
+		if (ch.codePointAt(0) > 0x7f || UDEV_DEVNODE.test(ch)) out += ch
+		else out += '_'
+	}
+	return out
+}
 
 const hex = (s, n) => {
 	const t = String(s ?? '').trim().toLowerCase()
@@ -56,6 +87,8 @@ export async function listHostUsb({
 			vendorId,
 			productId,
 			serial,
+			manufacturer,
+			product,
 			name: product || [manufacturer, product].filter(Boolean).join(' ') || `${vendorId}:${productId}`,
 			path: null,
 			node: null,
@@ -68,15 +101,26 @@ export async function listHostUsb({
 		const target = await realpath(join(serialById, link)).catch(() => null)
 		const stem = link.replace(/-if\d+.*$/, '')
 		const bySerial = devices.filter((d) => d.serial && (stem.endsWith(`_${d.serial}`) || stem.endsWith(`-${d.serial}`)))
+		// A single serial match keeps the old pairing. Several devices can report the same
+		// placeholder serial; the link's usb-<maker>_<product>_ prefix names the real one.
+		const named =
+			bySerial.length > 1
+				? bySerial.filter((d) => {
+						const vendor = udevEncode(d.manufacturer)
+						const model = udevEncode(d.product)
+						return vendor && model && link.startsWith(`usb-${vendor}_${model}_`)
+					})
+				: []
+		const pool = named.length ? named : bySerial
 		const match =
-			bySerial.reduce((best, d) => (best && best.serial.length >= d.serial.length ? best : d), null) ||
+			pool.reduce((best, d) => (best && best.serial.length >= d.serial.length ? best : d), null) ||
 			devices.find((d) => link.toLowerCase().includes(`${d.vendorId}_${d.productId}`))
 		if (!match) continue
 		match.path = `/dev/serial/by-id/${link}`
 		match.node = target
 		match.id = link
 	}
-	return devices.map((d) => ({
+	return devices.map(({manufacturer: _manufacturer, product: _product, ...d}) => ({
 		...d,
 		id: d.id || (d.serial ? `${d.vendorId}-${d.productId}-${d.serial}` : `${d.vendorId}-${d.productId}`),
 	}))

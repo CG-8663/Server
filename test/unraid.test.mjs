@@ -1052,6 +1052,61 @@ test('a failed job save does not leave the import running', async () => {
 	}
 })
 
+test('two starts at the same moment let one import run and refuse the other', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-double-start-'))
+	await mkdir(join(dir, 'tree', 'Home'), {recursive: true})
+	let rsyncs = 0
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync') {
+			rsyncs++
+			await new Promise((r) => setTimeout(r, 100))
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\n', stderr: ''}
+		if (remote.includes('/mnt/user')) return {stdout: 'Media\t100\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	const u = createUnraid({dataDir: dir, files, apps: {}, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		const settled = await Promise.allSettled([
+			u.procedures['unraid.start'].run({shares: ['Media']}),
+			u.procedures['unraid.start'].run({shares: ['Media']}),
+		])
+		const fulfilled = settled.filter((r) => r.status === 'fulfilled')
+		const rejected = settled.filter((r) => r.status === 'rejected')
+		assert.equal(fulfilled.length, 1)
+		assert.equal(rejected.length, 1)
+		assert.equal(rejected[0].reason?.code, 'CONFLICT')
+		assert.equal(rejected[0].reason?.message, 'An import is already running')
+		const id = fulfilled[0].value.id
+		let st
+		for (let i = 0; i < 50; i++) {
+			st = await u.procedures['unraid.status'].run()
+			if (st.job?.endedAt && st.job.id === id) break
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		assert.equal(st.job?.id, id)
+		assert.ok(st.job?.endedAt)
+		assert.equal(rsyncs, 1)
+	} finally {
+		u.close()
+		for (let i = 0; i < 20; i++) {
+			try {
+				await rm(dir, {recursive: true, force: true})
+				break
+			} catch (error) {
+				if (error?.code !== 'ENOTEMPTY' || i === 19) throw error
+				await new Promise((r) => setTimeout(r, 15))
+			}
+		}
+	}
+})
+
 // End to end against a real SSH server standing in for Unraid (see the test's notes in the PR):
 // OMARCHY_UNRAID_IT="host:port user password".
 const it = process.env.OMARCHY_UNRAID_IT ? false : 'set OMARCHY_UNRAID_IT to run against an SSH stand-in for Unraid'
