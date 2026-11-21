@@ -1,6 +1,6 @@
 // Settings → Backups: this server's apps and settings, encrypted, copied to a NAS on a schedule.
 import {useEffect, useMemo, useState, type CSSProperties, type FormEvent} from 'react'
-import {computerSheetChanged, formatBackupHour, formatBackupStamp, formatBackupWhen, serverLastRun} from './backupHelpers'
+import {backupGapText, computerSheetChanged, computerSnapshotRows, folderListError, formatBackupHour, formatBackupStamp, formatBackupWhen, historyRowTone, serverLastRun} from './backupHelpers'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
@@ -12,7 +12,7 @@ type Nas = {host: string; port?: number; share: string; folder: string; username
 type Schedule = {frequency: 'off' | 'daily' | 'weekly'; hour: number; weekday: number}
 type Keep = {daily: number; weekly: number; monthly: number}
 type Include = {apps: boolean; settings: boolean; machineBackups: boolean}
-type RunItem = {kind: string; id?: string; name: string; ok: boolean; error?: string; warning?: string; added?: number}
+type RunItem = {kind: string; id?: string; name: string; ok: boolean; error?: string; warning?: string; added?: number; skipped?: string[]; unreadable?: boolean; files?: number}
 type Run = {id: string; computer?: string; name?: string; reason: string; startedAt: number; endedAt: number | null; ok: boolean; error: string | null; items: RunItem[]; added: number; nas: {ok: boolean; error?: string; uploaded?: number; uploadedBytes?: number} | null}
 export type BackupStatus = {
 	configured: boolean
@@ -37,10 +37,11 @@ type Computer = {
 	allowed: boolean
 	on: boolean
 	enabled: boolean
+	removed?: boolean
 	folders: string[]
 	schedule: Schedule
 	running: {step: string; progress: number; startedAt: number} | null
-	last: {at: number; ok: boolean; error: string | null; added: number} | null
+	last: {at: number; ok: boolean; error: string | null; added: number; skipped?: string[]; unreadable?: boolean; files?: number} | null
 	nextRunAt: number | null
 	lastRestore: {at: number; ok: boolean; folder?: string; error?: string} | null
 }
@@ -206,27 +207,10 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 					<ScheduleGroup s={s} onChange={set} />
 
 					<Group title="Computers" footer="Computers in Machines › Local swarm back up the folders you choose here, encrypted, then everything goes to the NAS. A computer that’s off at backup time catches up when it’s back.">
-						{(comps.data ?? []).map((c) => (
-							<Row
-								key={c.id}
-								icon="devices"
-								color={c.enabled ? 'var(--green)' : '#8e8e93'}
-								label={c.name}
-								sub={
-									c.running
-										? `${c.running.step}… ${Math.round(c.running.progress * 100)}%`
-										: !c.allowed
-											? 'Backups not allowed on it'
-											: !c.enabled
-												? 'Not backed up'
-												: c.last
-													? `${c.last.ok ? 'Backed up' : 'Problem'} ${ago(c.last.at)} · ${c.folders.join(', ')}`
-													: `${c.folders.join(', ')} · ${c.online ? 'first backup soon' : 'offline'}`
-								}
-								onClick={() => setComputer(c.id)}
-							/>
+						{(comps.data ?? []).filter((c) => !c.removed).map((c) => (
+							<ComputerRow key={c.id} c={c} onOpen={() => setComputer(c.id)} />
 						))}
-						{comps.isSuccess && comps.data.length === 0 && (
+						{comps.isSuccess && (comps.data ?? []).filter((c) => !c.removed).length === 0 && (
 							<div className="row static">
 								<span className="main">
 									<span>No computers yet. Add one in Machines › Local swarm with Backups switched on.</span>
@@ -234,6 +218,14 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 							</div>
 						)}
 					</Group>
+
+					{(comps.data ?? []).some((c) => c.removed) && (
+						<Group title="Removed computers" footer="These computers aren’t in your swarm anymore. You can still restore a backup onto this server, or delete the backups. The NAS copy is removed the next time backups are copied there.">
+							{(comps.data ?? []).filter((c) => c.removed).map((c) => (
+								<ComputerRow key={c.id} c={c} onOpen={() => setComputer(c.id)} />
+							))}
+						</Group>
+					)}
 
 					<Group title="Restore" footer="Restoring puts an app back the way it was in that backup. Its current data is replaced.">
 						{snaps.isLoading && (
@@ -410,35 +402,65 @@ function ScheduleGroup({s, onChange}: {s: BackupStatus; onChange: (input: Record
 	)
 }
 
+function computerRowSub(c: Computer) {
+	if (c.running) return `${c.running.step}… ${Math.round(c.running.progress * 100)}%`
+	const gap = backupGapText(c.last)
+	if (c.removed) return gap ? `Removed · ${gap}` : 'Removed from your swarm'
+	if (!c.allowed) return 'Backups not allowed on it'
+	if (!c.enabled) return 'Not backed up'
+	if (c.last?.ok && gap) return `Backed up ${ago(c.last.at)} · ${gap}`
+	if (c.last) return `${c.last.ok ? 'Backed up' : 'Problem'} ${ago(c.last.at)} · ${c.folders.join(', ')}`
+	return `${c.folders.join(', ')} · ${c.online ? 'first backup soon' : 'offline'}`
+}
+
+function ComputerRow({c, onOpen}: {c: Computer; onOpen: () => void}) {
+	const gap = !c.running && c.last?.ok ? backupGapText(c.last) : ''
+	return (
+		<Row
+			icon={gap || c.removed ? 'alert' : 'devices'}
+			color={gap || c.removed ? 'var(--orange, #f59e0b)' : c.enabled ? 'var(--green)' : '#8e8e93'}
+			label={c.name}
+			sub={computerRowSub(c)}
+			onClick={onOpen}
+		/>
+	)
+}
+
 function HistoryRow({r, timeZone}: {r: Run; timeZone?: string}) {
 	const [open, setOpen] = useState(false)
-	const running = !r.endedAt
-	const sub = running
+	const tone = historyRowTone(r)
+	const gap = r.items.map((i) => backupGapText(i)).filter(Boolean).join(' · ')
+	const sub = tone === 'running'
 		? 'Running'
-		: r.ok
-			? `${bytes(r.added)} new${r.nas?.uploaded ? ` · ${r.nas.uploaded} file${r.nas.uploaded === 1 ? '' : 's'} to the NAS` : ''}`
-			: (r.error ?? 'Failed')
+		: tone === 'warn'
+			? gap
+			: tone === 'ok'
+				? `${bytes(r.added)} new${r.nas?.uploaded ? ` · ${r.nas.uploaded} file${r.nas.uploaded === 1 ? '' : 's'} to the NAS` : ''}`
+				: (r.error ?? 'Failed')
 	return (
 		<>
 			<Row
-				icon={running ? 'clock' : r.ok ? 'check' : 'alert'}
-				color={running ? '#8e8e93' : r.ok ? 'var(--green)' : 'var(--red)'}
+				icon={tone === 'running' ? 'clock' : tone === 'ok' ? 'check' : 'alert'}
+				color={tone === 'running' ? '#8e8e93' : tone === 'ok' ? 'var(--green)' : tone === 'warn' ? 'var(--orange, #f59e0b)' : 'var(--red)'}
 				label={`${r.computer ? r.name : 'This server'} · ${formatBackupStamp(r.startedAt, timeZone)}${r.reason === 'scheduled' ? '' : ' · by hand'}`}
 				sub={sub}
 				onClick={r.items.length ? () => setOpen(!open) : undefined}
 			/>
 			{open &&
-				r.items.map((i, n) => (
+				r.items.map((i, n) => {
+					const itemGap = backupGapText(i)
+					return (
 					<div className="row static bk-item" key={n}>
-						<Icon name={i.ok ? 'check' : 'alert'} size={15} />
+						<Icon name={!i.ok || itemGap ? 'alert' : 'check'} size={15} />
 						<span className="main">
 							<span>
 								{i.name}
-								{i.ok ? ` · ${bytes(i.added ?? 0)} new${i.warning ? ` · ${i.warning}` : ''}` : ` · ${i.error}`}
+								{i.ok ? ` · ${bytes(i.added ?? 0)} new${itemGap ? ` · ${itemGap}` : i.warning ? ` · ${i.warning}` : ''}` : ` · ${i.error}`}
 							</span>
 						</span>
 					</div>
-				))}
+					)
+				})}
 		</>
 	)
 }
@@ -707,7 +729,7 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 		retry: false,
 		staleTime: 60_000,
 	})
-	const snaps = useQuery({queryKey: ['backups.computerSnapshots', c.id], queryFn: () => query<Snapshot[]>('backups.computerSnapshots', {id: c.id}), enabled: c.enabled, retry: false})
+	const snaps = useQuery({queryKey: ['backups.computerSnapshots', c.id], queryFn: () => query<Snapshot[]>('backups.computerSnapshots', {id: c.id}), enabled: c.enabled || !!c.removed, retry: false})
 	const [picked, setPicked] = useState<string[]>(c.folders)
 	const [schedule, setSchedule] = useState<Schedule>(c.schedule)
 	const [busy, setBusy] = useState(false)
@@ -735,18 +757,23 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 	const shown = [...new Set([...(folders.data?.folders.map((f) => f.name) ?? []), ...c.folders])].sort((a, b) => a.localeCompare(b))
 	return (
 		<Sheet open onClose={onClose} label={`Back up ${c.name}`} tall>
-			<SheetHeader title={c.name} subtitle={c.online ? 'Online' : 'Offline. Backups run when it’s back.'} onClose={onClose} />
-			{!c.allowed ? (
+			<SheetHeader title={c.name} subtitle={c.removed ? 'Removed from your swarm. Its backups are still here.' : c.online ? 'Online' : 'Offline. Backups run when it’s back.'} onClose={onClose} />
+			{c.removed && (
+				<p className="prose" style={{fontSize: 14.5}}>
+					This computer isn’t in your swarm anymore. Restoring puts the files on this server, under Home › Restored. Nothing that’s on a computer is changed.
+				</p>
+			)}
+			{!c.removed && !c.allowed ? (
 				<p className="prose" style={{fontSize: 14.5}}>
 					This computer joined without Backups allowed, and the server can’t switch that on by itself (the computer decides). In Machines › Local swarm, remove it and add it again with Backups switched on: it’s one command to paste on that computer.
 				</p>
-			) : !c.on ? (
+			) : !c.removed && !c.on ? (
 				<p className="prose" style={{fontSize: 14.5}}>
 					Backups are switched off for this computer in Machines › Local swarm. Switch them on there first.
 				</p>
 			) : (
 				<>
-					{c.running && (
+					{!c.removed && c.running && (
 						<div className="glass card bk-status">
 							<div className="bk-status-line">
 								<span className="spinner" />
@@ -762,19 +789,19 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 							{c.lastRestore.ok ? `Restored ${ago(c.lastRestore.at)} into ${c.lastRestore.folder}` : `Restore ${ago(c.lastRestore.at)} didn’t work: ${c.lastRestore.error}`}
 						</p>
 					)}
-					<div className="section-head">
+					{!c.removed && <div className="section-head">
 						<h2>Folders to back up</h2>
-					</div>
-					<div className="glass group" style={{marginBottom: 6}}>
+					</div>}
+					{!c.removed && <div className="glass group" style={{marginBottom: 6}}>
 						{folders.isLoading && (
 							<div className="row static">
 								<span className="spinner" />
 							</div>
 						)}
-						{folders.error && !c.folders.length && (
+						{folderListError(folders.error) && (
 							<div className="row static">
 								<span className="main">
-									<span>{(folders.error as Error).message}</span>
+									<span>{folderListError(folders.error)}</span>
 								</span>
 							</div>
 						)}
@@ -788,14 +815,14 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 								</span>
 							</button>
 						))}
-					</div>
-					<p className="footer-note" style={{textAlign: 'left', margin: '0 6px 14px'}}>
+					</div>}
+					{!c.removed && <p className="footer-note" style={{textAlign: 'left', margin: '0 6px 14px'}}>
 						Folders in {folders.data?.home ?? 'its home folder'}. Caches and trash inside them are skipped.
-					</p>
-					<div className="section-head">
+					</p>}
+					{!c.removed && <div className="section-head">
 						<h2>When</h2>
-					</div>
-					<div className="glass group" style={{marginBottom: 14}}>
+					</div>}
+					{!c.removed && <div className="glass group" style={{marginBottom: 14}}>
 						<div className="row static bk-sched">
 							<Segmented
 								label="How often"
@@ -834,8 +861,8 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 								</label>
 							</div>
 						)}
-					</div>
-					{(changed || !c.enabled) && (
+					</div>}
+					{!c.removed && (changed || !c.enabled) && (
 						<button
 							className="btn block primary"
 							disabled={busy || !picked.length}
@@ -845,18 +872,18 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 							{c.enabled ? 'Save' : 'Back up this computer'}
 						</button>
 					)}
-					{c.enabled && !changed && (
+					{!c.removed && c.enabled && !changed && (
 						<button className="btn block primary" disabled={busy || !!c.running || !c.online} onClick={() => act('backups.runComputer', {id: c.id}, 'Backup started')}>
 							<Icon name="history" size={17} /> Back up now
 						</button>
 					)}
-					{c.enabled && (snaps.data?.length ?? 0) > 0 && (
+					{(c.enabled || c.removed) && computerSnapshotRows(snaps.data).length > 0 && (
 						<>
 							<div className="section-head" style={{marginTop: 16}}>
 								<h2>Backups</h2>
 							</div>
 							<div className="glass group">
-								{snaps.data!.slice(0, 20).map((sn, i) => (
+								{computerSnapshotRows(snaps.data).map((sn, i) => (
 									<div className="row static" key={sn.id} style={{minHeight: 56}}>
 										<span className="main">
 											<b style={{fontWeight: 550}}>{formatBackupStamp(sn.time, timeZone)}</b>
@@ -867,11 +894,13 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 										</span>
 										<button
 											className="btn small"
-											disabled={busy || !!c.running || !c.online}
+											disabled={busy || !!c.running || (!c.online && !c.removed)}
 											onClick={async () => {
 												const ok = await confirm({
-													title: `Restore to ${c.name}?`,
-													body: `Its folders as they were on ${formatBackupStamp(sn.time, timeZone)} go into a new “Restored” folder in its home folder. Nothing that’s there now is changed.`,
+													title: c.removed ? `Restore ${c.name}’s backup here?` : `Restore to ${c.name}?`,
+													body: c.removed
+														? `Its folders as they were on ${formatBackupStamp(sn.time, timeZone)} go into Home › Restored › ${c.name} on this server.`
+														: `Its folders as they were on ${formatBackupStamp(sn.time, timeZone)} go into a new “Restored” folder in its home folder. Nothing that’s there now is changed.`,
 													confirm: 'Restore',
 													icon: 'restore',
 												})
@@ -885,9 +914,28 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 							</div>
 						</>
 					)}
-					{c.enabled && (
+					{c.enabled && !c.removed && (
 						<button className="btn block ghost" style={{marginTop: 12}} disabled={busy} onClick={() => act('backups.setComputer', {id: c.id, enabled: false}, `${c.name} won’t be backed up any more`)}>
 							Stop backing up this computer
+						</button>
+					)}
+					{c.removed && (
+						<button
+							className="btn block ghost"
+							style={{marginTop: 12}}
+							disabled={busy}
+							onClick={async () => {
+								const ok = await confirm({
+									title: `Delete ${c.name}’s backups?`,
+									body: 'The backups kept on this server are deleted, including the key that opens them. The copy on the NAS is removed the next time backups are copied there.',
+									confirm: 'Delete',
+									danger: true,
+									icon: 'trash',
+								})
+								if (ok && (await act('backups.setComputer', {id: c.id, remove: true}, `${c.name}’s backups were deleted`))) onClose()
+							}}
+						>
+							Delete these backups
 						</button>
 					)}
 				</>

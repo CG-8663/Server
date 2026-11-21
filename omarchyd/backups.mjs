@@ -736,6 +736,33 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	// the time, it catches up when it next connects. Pruning and the NAS copy happen here, afterwards.
 	const FOLDER = /^(?!\.\.?(?:\/|$))(?!.*\/\.\.?(?:\/|$))[^\x00-\x1f/][^\x00-\x1f]{0,199}$/
 	const computerJobs = new Map() // id -> {step, progress, startedAt}
+	// A progress record belongs to one call. The record still sitting there when this job starts
+	// is the previous backup or restore, and must not move this job's bar.
+	function pollComputerProgress(id, apply) {
+		const baselineCall = swarm?.progress?.(id)?.call ?? null
+		const poll = setInterval(() => {
+			const job = computerJobs.get(id)
+			const p = swarm?.progress?.(id)
+			if (!job || !p || p.call == null || p.call === baselineCall) return
+			if (!(now() - p.at < 30_000)) return
+			apply(job, p)
+		}, 1000)
+		poll.unref?.()
+		return poll
+	}
+	function lastView(last) {
+		if (!last?.endedAt) return null
+		const item = last.items?.find((i) => i?.kind === 'computer')
+		return {
+			at: last.endedAt,
+			ok: last.ok,
+			error: last.error,
+			added: last.added,
+			skipped: Array.isArray(item?.skipped) ? item.skipped : [],
+			unreadable: item?.unreadable === true,
+			files: Number(item?.files) || 0,
+		}
+	}
 	let mirrorChain = Promise.resolve()
 	// One NAS copy at a time; a run that finishes while another copy is going waits for it.
 	const mirrorOnce = (onProgress) => (mirrorChain = mirrorChain.catch(() => {}).then(() => mirror(onProgress)))
@@ -757,11 +784,46 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		return out
 	}
 
+	async function removedComputers(liveIds) {
+		let root
+		try {
+			root = await repoReal({create: false})
+		} catch {
+			return []
+		}
+		const names = await readdir(join(root, 'computers'), {withFileTypes: true}).catch(() => [])
+		const out = []
+		for (const ent of names) {
+			if (!ent.isDirectory()) continue
+			const id = ent.name
+			if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id) || liveIds.has(id)) continue
+			if (!(await exists(join(root, 'computers', id, 'config')))) continue
+			const c = computerConfig(id)
+			const last = history.find((h) => h?.computer === id && h.endedAt)
+			out.push({
+				id,
+				name: history.find((h) => h?.computer === id && h.name)?.name || id,
+				online: false,
+				allowed: true,
+				on: false,
+				removed: true,
+				enabled: true,
+				folders: c.folders,
+				schedule: c.schedule,
+				running: computerJobs.get(id) ?? null,
+				last: lastView(last),
+				nextRunAt: null,
+				lastRestore: c.lastRestore ?? null,
+			})
+		}
+		return out
+	}
+
 	async function computers() {
 		await ready
 		if (!swarm) return []
 		const agents = await swarm.agents()
-		return agents.map((a) => {
+		const live = agents.map((a) => {
 			const c = computerConfig(a.id)
 			const last = history.find((h) => h.computer === a.id && h.endedAt)
 			const sc = c.schedule
@@ -775,17 +837,29 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				folders: c.folders,
 				schedule: sc,
 				running: computerJobs.get(a.id) ?? null,
-				last: last ? {at: last.endedAt, ok: last.ok, error: last.error, added: last.added} : null,
+				last: lastView(last),
 				nextRunAt: c.enabled && sc.frequency !== 'off' ? nextRun(sc, Math.max(now(), c.lastSuccessAt)) : null,
 				lastRestore: c.lastRestore ?? null,
 			}
 		})
+		return [...live, ...(await removedComputers(new Set(agents.map((a) => a.id))))]
 	}
 
 	async function agentOf(id) {
 		const a = (await swarm?.agents())?.find((x) => x.id === String(id ?? ''))
 		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
 		return a
+	}
+
+	// A computer that left the swarm keeps its store. Snapshots and restore still find it there.
+	async function computerTarget(id) {
+		const clean = String(id ?? '')
+		const agents = (await swarm?.agents().catch(() => [])) ?? []
+		const a = agents.find((x) => x.id === clean)
+		if (a) return a
+		const removed = (await removedComputers(new Set(agents.map((x) => x.id)))).find((x) => x.id === clean)
+		if (removed) return removed
+		throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
 	}
 
 	async function computerFolders(input = {}) {
@@ -796,8 +870,34 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		return swarm.call(a.id, 'backup-folders', {}, 30_000)
 	}
 
+	async function removeComputerBackups(id) {
+		await ready
+		const clean = String(id ?? '')
+		if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(clean)) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		const agents = (await swarm?.agents().catch(() => [])) ?? []
+		const live = agents.find((a) => a.id === clean)
+		if (live) throw new RpcError('CONFLICT', `${live.name} is still in your swarm`)
+		const stored = await removedComputers(new Set(agents.map((a) => a.id)))
+		const hasConfig = !!config.computers?.[clean]
+		const hasKey = await exists(computerKey(clean))
+		if (!stored.some((c) => c.id === clean) && !hasConfig && !hasKey) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		if (computerJobs.has(clean)) throw new RpcError('CONFLICT', 'That computer is busy')
+		// The NAS copy is whatever the next mirror uploads and deletes. This does not talk to the NAS.
+		if (hasConfig) {
+			const next = {...config.computers}
+			delete next[clean]
+			config.computers = next
+			await saveConfig()
+		}
+		const root = await repoReal({create: false}).catch(() => null)
+		if (root) await rm(join(root, 'computers', clean), {recursive: true, force: true})
+		await rm(computerKey(clean), {force: true})
+		return true
+	}
+
 	async function setComputer(input = {}) {
 		await ready
+		if (input?.remove === true) return removeComputerBackups(input.id)
 		const a = await agentOf(input.id)
 		if (!config.nas || !(await hasKey())) throw new RpcError('PRECONDITION_FAILED', 'Set up backups for this server first')
 		const c = computerConfig(a.id)
@@ -834,11 +934,9 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		await saveConfig()
 		await saveHistory()
 		computerJobs.set(a.id, {step: 'Getting ready', progress: 0, startedAt: entry.startedAt})
-		const poll = setInterval(() => {
-			const p = swarm.progress(a.id)
-			if (p && computerJobs.has(a.id) && now() - p.at < 30_000) computerJobs.set(a.id, {...computerJobs.get(a.id), step: p.step || 'Backing up', progress: 0.85 * p.percent})
-		}, 1000)
-		poll.unref?.()
+		const poll = pollComputerProgress(a.id, (job, p) => {
+			computerJobs.set(a.id, {...job, step: p.step || 'Backing up', progress: 0.85 * p.percent})
+		})
 		const done = (async () => {
 			try {
 				const repo = await ensureComputerRepo(a.id, {allowInit: false})
@@ -846,7 +944,16 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				computerJobs.set(a.id, {...computerJobs.get(a.id), step: 'Backing up'})
 				const r = await swarm.call(a.id, 'backup-run', {password, folders: c.folders}, 12 * 60 * 60_000)
 				entry.added = Number(r?.added) || 0
-				entry.items.push({kind: 'computer', id: a.id, name: a.name, ok: true, added: entry.added, files: Number(r?.files) || 0, skipped: Array.isArray(r?.skipped) ? r.skipped.slice(0, 20).map(String) : []})
+				entry.items.push({
+					kind: 'computer',
+					id: a.id,
+					name: a.name,
+					ok: true,
+					added: entry.added,
+					files: Number(r?.files) || 0,
+					skipped: Array.isArray(r?.skipped) ? r.skipped.slice(0, 20).map(String) : [],
+					unreadable: r?.unreadable === true,
+				})
 				clearInterval(poll)
 				computerJobs.set(a.id, {...computerJobs.get(a.id), step: 'Tidying old backups', progress: 0.88})
 				const k = config.keep
@@ -896,7 +1003,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 
 	async function computerSnapshots(input = {}) {
 		await ready
-		const a = await agentOf(input.id)
+		const a = await computerTarget(input.id)
 		const repo = await computerRepo(a.id)
 		if (!(await exists(join(repo, 'config'))) || !(await exists(computerKey(a.id)))) return []
 		const {stdout} = await restic(['snapshots', '--json'], {repo, passwordFile: computerKey(a.id), timeout: 120_000})
@@ -907,21 +1014,43 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 
 	// Files from a backup go back onto the computer in a new folder (~/Restored/<date>), never over
 	// what's there now.
+	async function restoreRemovedComputer(a, snapshotId) {
+		if (!(await exists(computerKey(a.id)))) throw new RpcError('PRECONDITION_FAILED', 'The key for those backups is missing, so they can’t be opened')
+		computerJobs.set(a.id, {step: 'Restoring', progress: 0, startedAt: now()})
+		const done = (async () => {
+			const c = computerConfig(a.id)
+			try {
+				const safe = String(a.name || a.id).replace(/[\\/]/g, ' ').replace(/\.\./g, '').trim().slice(0, 48) || a.id
+				const folder = `Restored/${safe}`
+				const {real} = await files.resolve(`/Home/${folder}`, {mustExist: false})
+				await mkdir(real, {recursive: true, mode: 0o700})
+				await restic(['restore', snapshotId, '--target', real], {repo: await computerRepo(a.id), passwordFile: computerKey(a.id), timeout: 12 * 60 * 60_000})
+				c.lastRestore = {at: now(), ok: true, folder}
+			} catch (e) {
+				c.lastRestore = {at: now(), ok: false, error: e.message}
+			} finally {
+				computerJobs.delete(a.id)
+				config.computers = {...(config.computers ?? {}), [a.id]: {...computerConfig(a.id), lastRestore: c.lastRestore}}
+				await saveConfig().catch(() => {})
+			}
+		})()
+		return {started: true, done}
+	}
+
 	async function restoreComputer(input = {}) {
 		await ready
-		const a = await agentOf(input.id)
+		const a = await computerTarget(input.id)
 		const snapshotId = String(input.snapshotId ?? '')
 		if (!SNAPSHOT.test(snapshotId)) throw new RpcError('BAD_REQUEST', 'Bad restore')
 		if (!(await computerSnapshots({id: a.id})).some((x) => x.id === snapshotId)) throw new RpcError('NOT_FOUND', 'That backup isn’t there')
 		if (computerJobs.has(a.id)) throw new RpcError('CONFLICT', `${a.name} is busy`)
+		if (a.removed) return restoreRemovedComputer(a, snapshotId)
 		if (!a.online) throw new RpcError('PRECONDITION_FAILED', `${a.name} is offline right now`)
 		computerJobs.set(a.id, {step: 'Restoring', progress: 0, startedAt: now()})
 		// Big folders take a while: it runs in the background, and the result shows on the computer.
-		const poll = setInterval(() => {
-			const p = swarm.progress(a.id)
-			if (p && computerJobs.has(a.id) && now() - p.at < 30_000) computerJobs.set(a.id, {...computerJobs.get(a.id), step: 'Restoring', progress: p.percent})
-		}, 1000)
-		poll.unref?.()
+		const poll = pollComputerProgress(a.id, (job, p) => {
+			computerJobs.set(a.id, {...job, step: 'Restoring', progress: p.percent})
+		})
 		const done = (async () => {
 			const c = computerConfig(a.id)
 			try {
@@ -1085,7 +1214,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			nextRunAt: configured ? nextRun(config.schedule, now()) : null,
 			timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
 			last: history.find((h) => h && !h.computer && h.endedAt) ?? null,
-			history: history.slice(0, 20),
+			history: history.slice(),
 			engine: engine ? {version: engine.version} : null,
 			damaged: [...damagedFiles].map((file) => basename(file)),
 		}
