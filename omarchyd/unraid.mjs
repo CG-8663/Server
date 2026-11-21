@@ -278,6 +278,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 	const controlPath = join(runtimeDir, `omarchy-unraid-${process.getuid?.() ?? 0}-%C`)
 	let session = null // {host, port, password, version, fingerprint, scannedAt, scan}
 	let job = null
+	let starting = false // set for the gap before job is assigned, so a second start cannot pass the check
 	let idle = null
 	const importedVms = new Map() // vmName -> machineId
 
@@ -531,28 +532,40 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 	}
 
 	async function start(input = {}) {
-		await ready
-		if (!session?.scan) throw new RpcError('PRECONDITION_FAILED', 'Connect and look at your Unraid server first')
-		if (job && !job.endedAt) throw new RpcError('CONFLICT', 'An import is already running')
-		const dest = destRoot(input)
-		const want = (list) => new Set(Array.isArray(list) ? list.map(String) : [])
-		const sharesWanted = want(input.shares)
-		const containersWanted = want(input.containers)
-		const vmsWanted = want(input.vms)
-		const scan = session.scan
-		const items = []
-		for (const s of scan.shares) if (sharesWanted.has(s.name) && s.kind !== 'system' && s.kind !== 'appdata') items.push({kind: 'share', key: s.name, name: s.name, size: s.size, status: 'waiting'})
-		// Containers' share folders point at where those shares are being copied.
-		const shareDest = (share) => (sharesWanted.has(share) ? `${dest}/${share}` : null)
-		for (const c of scan.containers) if (containersWanted.has(c.id)) items.push({kind: 'container', key: c.id, name: c.name, size: c.size, status: 'waiting'})
-		for (const v of scan.vms) if (vmsWanted.has(v.name)) items.push({kind: 'vm', key: v.name, name: v.name, size: v.size, status: 'waiting'})
-		if (!items.length) throw new RpcError('BAD_REQUEST', 'Choose something to bring over')
-		const next = {id: randomBytes(4).toString('hex'), host: session.host, startedAt: now(), endedAt: null, destination: dest, shareOnNetwork: input.shareOnNetwork !== false, pauseContainers: input.pauseContainers !== false, items, shareDest: Object.fromEntries([...sharesWanted].map((s) => [s, `${dest}/${s}`]))}
-		await saveJob(next)
-		job = next
+		if (starting || (job && !job.endedAt)) throw new RpcError('CONFLICT', 'An import is already running')
+		starting = true
+		let dest
+		let shareDest
+		let plans
+		let vmPlans
+		try {
+			await ready
+			if (!session?.scan) throw new RpcError('PRECONDITION_FAILED', 'Connect and look at your Unraid server first')
+			if (job && !job.endedAt) throw new RpcError('CONFLICT', 'An import is already running')
+			dest = destRoot(input)
+			const want = (list) => new Set(Array.isArray(list) ? list.map(String) : [])
+			const sharesWanted = want(input.shares)
+			const containersWanted = want(input.containers)
+			const vmsWanted = want(input.vms)
+			const scan = session.scan
+			const items = []
+			for (const s of scan.shares) if (sharesWanted.has(s.name) && s.kind !== 'system' && s.kind !== 'appdata') items.push({kind: 'share', key: s.name, name: s.name, size: s.size, status: 'waiting'})
+			// Containers' share folders point at where those shares are being copied.
+			shareDest = (share) => (sharesWanted.has(share) ? `${dest}/${share}` : null)
+			for (const c of scan.containers) if (containersWanted.has(c.id)) items.push({kind: 'container', key: c.id, name: c.name, size: c.size, status: 'waiting'})
+			for (const v of scan.vms) if (vmsWanted.has(v.name)) items.push({kind: 'vm', key: v.name, name: v.name, size: v.size, status: 'waiting'})
+			if (!items.length) throw new RpcError('BAD_REQUEST', 'Choose something to bring over')
+			const next = {id: randomBytes(4).toString('hex'), host: session.host, startedAt: now(), endedAt: null, destination: dest, shareOnNetwork: input.shareOnNetwork !== false, pauseContainers: input.pauseContainers !== false, items, shareDest: Object.fromEntries([...sharesWanted].map((s) => [s, `${dest}/${s}`]))}
+			await saveJob(next)
+			job = next
+			plans = new Map(scan.containers.map((c) => [c.id, c]))
+			vmPlans = new Map(scan.vms.map((v) => [v.name, v]))
+		} catch (err) {
+			starting = false
+			throw err
+		}
+		starting = false
 		touch()
-		const plans = new Map(scan.containers.map((c) => [c.id, c]))
-		const vmPlans = new Map(scan.vms.map((v) => [v.name, v]))
 		job.done = (async () => {
 			for (const item of job.items) {
 				if (job.cancelled) {
