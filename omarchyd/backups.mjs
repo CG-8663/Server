@@ -952,6 +952,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			running: job,
 			computersRunning: computerJobs.size,
 			nextRunAt: configured ? nextAt : null,
+			timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
 			history: history.slice(0, 20),
 			engine: engine ? {version: engine.version} : null,
 		}

@@ -476,3 +476,31 @@ test('#435 schedules keep their chosen hour across daylight-saving changes', asy
 		await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {env: {...process.env, TZ: tz}})
 	}
 })
+
+test('#437 backups.status includes the server timeZone', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-437-'))
+	t.after(() => rm(root, {recursive: true, force: true}))
+	const modUrl = new URL('../omarchyd/backups.mjs', import.meta.url).href
+	const script = `
+		import assert from 'node:assert/strict'
+		import {createBackups} from ${JSON.stringify(modUrl)}
+		const root = ${JSON.stringify(root)}
+		const b = createBackups({
+			dataDir: root + '/data',
+			home: root,
+			files: {async resolve(v) { return {real: root + v, top: 'Home'} }},
+			apps: {backupTargets: async () => []},
+			timers: false,
+			run: async () => ({stdout: '', stderr: ''}),
+		})
+		try {
+			const st = await b.procedures['backups.status'].run()
+			assert.equal(st.timeZone, process.env.TZ)
+		} finally {
+			b.close()
+		}
+	`
+	for (const tz of ['UTC', 'America/New_York']) {
+		await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {env: {...process.env, TZ: tz}})
+	}
+})
