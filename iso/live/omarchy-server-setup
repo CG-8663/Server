@@ -35,7 +35,7 @@ if ! archinstall --config /etc/omarchy-server/archinstall.json; then
 fi
 
 printf "\n  ${o}${b}Arch Linux is installed.${r}\n"
-printf "  Remove the USB stick. After the restart, sign in on the screen that appears and\n"
-printf "  Omarchy Server setup continues by itself.\n\n"
+printf "  Remove the USB stick. After the restart, the computer signs you in by itself\n"
+printf "  and setup starts. The password asked for there is your account password (for sudo).\n\n"
 read -rp "  Press Enter to restart now " _
 systemctl reboot

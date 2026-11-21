@@ -1,6 +1,7 @@
 import {useMemo, useState} from 'react'
 
 import type {UserApp} from '../api'
+import {queryProblem, useBrowserOnline} from '../connection'
 import {useAction, useApps, useUpdates} from '../data'
 import {Icon} from '../icons'
 import {AppIcon, Segmented, StatusPill, StoreIcon, TerminalIcon, appStatus, haptic, isAppBusy, useConfirm} from '../ui'
@@ -24,6 +25,8 @@ export function SearchField({value, onChange, placeholder}: {value: string; onCh
 
 export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp) => void; onTerminal?: () => void; onStore?: () => void}) {
 	const apps = useApps()
+	const browserOnline = useBrowserOnline()
+	const problem = queryProblem(apps, browserOnline)
 	const updates = useUpdates()
 	const action = useAction()
 	const confirm = useConfirm()
@@ -74,7 +77,7 @@ export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp
 			<div>
 				<h1 className="title">Apps</h1>
 				<p className="subtitle">
-					{apps.isLoading ? 'Loading…' : `${counts.running} running${counts.stopped ? ` · ${counts.stopped} stopped` : ''}${counts.updates ? ` · ${counts.updates} to update` : ''}`}
+					{apps.isLoading ? 'Loading…' : problem && !apps.data ? 'Can’t reach your server' : `${counts.running} running${counts.stopped ? ` · ${counts.stopped} stopped` : ''}${counts.updates ? ` · ${counts.updates} to update` : ''}`}
 				</p>
 			</div>
 			<div className="system-tiles">
@@ -116,6 +119,11 @@ export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp
 							</div>
 						</div>
 					))}
+				</div>
+			) : problem && !apps.data ? (
+				<div className="error" role="alert">
+					<Icon name="alert" size={18} />
+					{problem}
 				</div>
 			) : shown.length === 0 ? (
 				<div className="glass empty">

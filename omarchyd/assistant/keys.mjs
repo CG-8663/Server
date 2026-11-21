@@ -119,12 +119,14 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			assertWritable()
 			const k = find(String(input?.id ?? ''))
 			if (!k) throw new RpcError('NOT_FOUND', 'That key isn’t here')
+			let makeDefault = false
+			let clearDefault = false
 			if (input?.systemDefault === true) {
 				if (actor.role === 'member') throw new RpcError('FORBIDDEN', 'Only the server’s owner can set the default key')
 				if (k.ownerUserId !== actor.userId) throw new RpcError('FORBIDDEN', 'You can only make a key you own the default')
-				for (const x of state.keys) x.systemDefault = x.id === k.id
+				makeDefault = true
 			} else if (input?.systemDefault === false && k.ownerUserId === actor.userId && actor.role !== 'member') {
-				k.systemDefault = false
+				clearDefault = true
 			}
 			if (k.ownerUserId !== actor.userId && input?.sharedWith === undefined && input?.name === undefined && input?.model === undefined && input?.apiKey === undefined && input?.baseUrl === undefined && input?.api === undefined && input?.effort === undefined && input?.systemDefault === undefined) {
 				throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
@@ -132,34 +134,48 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			if (k.ownerUserId !== actor.userId && (input?.sharedWith || input?.name || input?.model || input?.apiKey || input?.baseUrl || input?.api || input?.effort !== undefined)) {
 				throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
 			}
+			// Work on a copy so a refused update never leaves partial changes behind in memory.
+			const next = {...k}
+			if (clearDefault) next.systemDefault = false
 			if (k.ownerUserId === actor.userId) {
-				if (typeof input?.name === 'string') k.name = input.name.trim().slice(0, 48) || k.name
-				if (typeof input?.model === 'string' && input.model.trim() && input.model.trim() !== k.model) {
-					k.model = input.model.trim().slice(0, 80)
-					delete k.check
+				if (typeof input?.name === 'string') next.name = input.name.trim().slice(0, 48) || next.name
+				if (typeof input?.model === 'string' && input.model.trim() && input.model.trim() !== next.model) {
+					next.model = input.model.trim().slice(0, 80)
+					delete next.check
 				}
-				if (APIS.includes(input?.api)) k.api = input.api
-				if (input?.effort === '' || EFFORTS.includes(input?.effort)) k.effort = input.effort
+				if (APIS.includes(input?.api)) next.api = input.api
+				if (input?.effort === '' || EFFORTS.includes(input?.effort)) next.effort = input.effort
 				if (typeof input?.apiKey === 'string') {
-					const next = input.apiKey.trim()
-					if (next.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
-					if (k.provider !== 'openai-compatible' && next.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')
-					if (k.provider === 'openai-compatible' || next.length >= 4) {
-						k.apiKey = next
-						k.last4 = last4(k.apiKey)
-						delete k.check
+					const secret = input.apiKey.trim()
+					if (secret.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+					if (next.provider !== 'openai-compatible' && secret.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')
+					if (next.provider === 'openai-compatible' || secret.length >= 4) {
+						next.apiKey = secret
+						next.last4 = last4(next.apiKey)
+						delete next.check
 					}
 				}
-				if (k.provider === 'openai-compatible' && typeof input?.baseUrl === 'string') {
+				if (next.provider === 'openai-compatible' && typeof input?.baseUrl === 'string') {
 					if (actor.role !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can change a custom endpoint')
-					k.baseUrl = normalizeBaseUrl(input.baseUrl)
-					delete k.check
+					next.baseUrl = normalizeBaseUrl(input.baseUrl)
+					delete next.check
 				}
-				if (Array.isArray(input?.sharedWith)) k.sharedWith = [...new Set(input.sharedWith.map((id) => String(id)).filter((id) => id && id !== k.ownerUserId))].slice(0, 32)
+				if (Array.isArray(input?.sharedWith)) next.sharedWith = [...new Set(input.sharedWith.map((id) => String(id)).filter((id) => id && id !== next.ownerUserId))].slice(0, 32)
 			}
-			k.updatedAt = now()
+			next.updatedAt = now()
+			if (makeDefault) next.systemDefault = true
+			const id = k.id
+			// Swap in before the write so a key added or removed meanwhile is not lost; every check is done.
+			// Return this key, not whatever later sits at the old index.
+			state = {
+				...state,
+				keys: state.keys.map((x) => {
+					if (x.id === id) return next
+					return makeDefault ? {...x, systemDefault: false} : x
+				}),
+			}
 			await save()
-			return publicOf(k, actor.userId)
+			return publicOf(state.keys.find((x) => x.id === id) ?? next, actor.userId)
 		},
 		async remove(actor, id) {
 			await loaded

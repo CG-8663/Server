@@ -22,6 +22,7 @@ import {Readable} from 'node:stream'
 import {pipeline} from 'node:stream/promises'
 import {fileURLToPath} from 'node:url'
 
+import {fetchErrorMessage, httpDownloadErrorMessage, isNetworkError} from './fetch-error.mjs'
 import {PUBLIC_KEY, cloudMetaData, cloudUserData, hostnameFor, isWindowsClientLabel, isWindowsLabel, omarchyConfiguration, omarchyCredentials, windowsAnswerFile} from './machine-media.mjs'
 import {RpcError} from './rpc.mjs'
 import {hostdevXml, parseUsbLive} from './usb.mjs'
@@ -79,7 +80,7 @@ function validCatalog(data) {
 	return ok.length ? ok : null
 }
 
-export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000}) {
+export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000}) {
 	const base = join(dataDir, 'machines')
 	const imagesDir = join(base, 'images')
 	const vmsDir = join(base, 'vms')
@@ -163,7 +164,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function osImages() {
 		const out = []
 		for (const img of await images()) {
-			if (img.arch !== hostArch()) continue // only what this server can run
+			if (img.arch !== arch) continue // only what this server can run
 			const dl = downloads.get(img.id)
 			const state = dl ? 'downloading' : (await exists(imagePath(img))) ? 'downloaded' : failedImages.has(img.id) ? 'failed' : 'available'
 			out.push({
@@ -196,13 +197,23 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			let expected = img.sha256?.toLowerCase() ?? null
 			const algorithm = expected ? 'sha256' : img.checksums.algorithm
 			if (!expected) {
-				const sums = await fetchImpl(img.checksums.url, {signal: AbortSignal.timeout(30_000)})
-				if (!sums.ok) throw new Error(`Couldn’t get the checksum list for ${img.name} (HTTP ${sums.status})`)
+				let sums
+				try {
+					sums = await fetchImpl(img.checksums.url, {signal: AbortSignal.timeout(30_000)})
+				} catch (error) {
+					throw new Error(fetchErrorMessage(img.name, error))
+				}
+				if (!sums.ok) throw new Error(httpDownloadErrorMessage(img.name, sums.status))
 				expected = findChecksum(await sums.text(), basename(new URL(img.url).pathname), algorithm)
 				if (!expected) throw new Error(`${img.name}’s checksum list doesn’t include this image`)
 			}
-			const res = await fetchImpl(img.url)
-			if (!res.ok || !res.body) throw new Error(`Couldn’t download ${img.name} (HTTP ${res.status})`)
+			let res
+			try {
+				res = await fetchImpl(img.url)
+			} catch (error) {
+				throw new Error(fetchErrorMessage(img.name, error))
+			}
+			if (!res.ok || !res.body) throw new Error(httpDownloadErrorMessage(img.name, res.status))
 			const total = Number(res.headers.get('content-length')) || (Number(img.sizeMb) || 0) * 1024 * 1024
 			const hash = createHash(algorithm)
 			let got = 0
@@ -222,6 +233,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				await rename(part, target)
 			} catch (error) {
 				await rm(part, {force: true})
+				if (isNetworkError(error)) throw new Error(fetchErrorMessage(img.name, error))
 				throw error
 			}
 			return target
@@ -240,7 +252,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const libvirtAvailable = (await has('virsh', ['--version'])) && (await has('qemu-img', ['--version']))
 		const kvmAvailable = await access(kvmDevice, constants.R_OK | constants.W_OK).then(() => true, () => false)
 		return {
-			hostArchitecture: hostArch(),
+			hostArchitecture: arch,
 			libvirtAvailable,
 			kvmAvailable,
 			...(libvirtAvailable && !kvmAvailable ? {performanceWarning: 'Hardware virtualization (KVM) isn’t available, so machines run much slower. Turn on VT-x/AMD-V in the BIOS, or nested virtualization if this is itself a VM.'} : {}),

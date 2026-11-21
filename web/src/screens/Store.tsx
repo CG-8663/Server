@@ -3,6 +3,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {PluginBrowser} from './Plugins'
 
 import {mutate, query, type RegistryApp, type UserApp} from '../api'
+import {queryProblem, useBrowserOnline} from '../connection'
 import {appUrl, useAction, useApps, useBootstrap, useRegistry, useUser} from '../data'
 import {BeforeInstall} from '../beforeInstall'
 import {useDesktop} from '../desktop/Desktop'
@@ -47,6 +48,8 @@ const PLUGINS = '::omarchy-plugins'
 
 export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (app: UserApp) => void; onOpenApp?: (app: UserApp) => void; onBack?: () => void; onTerminal?: (input: string) => void}) {
 	const registry = useRegistry()
+	const browserOnline = useBrowserOnline()
+	const problem = queryProblem(registry, browserOnline)
 	const apps = useApps()
 	const user = useUser()
 	const owner = user.data?.role !== 'member'
@@ -126,7 +129,7 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 				)}
 				<div>
 					<h1 className="title">App Store</h1>
-					<p className="subtitle">{registry.isLoading ? 'Loading the catalog…' : `${all.length} apps for your server`}</p>
+					<p className="subtitle">{registry.isLoading ? 'Loading the catalog…' : problem && !registry.data ? 'Can’t reach your server' : `${all.length} apps for your server`}</p>
 				</div>
 				<button className="btn small stores-btn" style={{marginLeft: 'auto'}} aria-label="Check for new apps" title="Check for new apps" disabled={refresh.isPending} onClick={() => (haptic(5), refresh.mutate())}>
 					{refresh.isPending ? <span className="spinner" /> : <Icon name="restart" size={17} />}
@@ -154,10 +157,10 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 					</button>
 				))}
 			</div>
-			{registry.error && (
-				<div className="error">
+			{problem && (
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
-					{(registry.error as Error).message}
+					{problem}
 				</div>
 			)}
 			{category === PLUGINS && <PluginBrowser q={q} />}
@@ -199,7 +202,7 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 							</section>
 						)
 					})
-				: !registry.isLoading && (
+				: !registry.isLoading && !(problem && !registry.data) && (
 						<div className="list-store" style={{marginTop: 4}}>
 							{shown.map((app) => (
 								<Item key={app.id} app={app} />

@@ -32,6 +32,7 @@ cat >/usr/local/bin/omarchy-server-firstboot <<'EOF'
 #!/usr/bin/env bash
 # First start of a new Omarchy Server: install Omarchy Server, then Omarchy.
 set -u
+set -o pipefail
 b='\033[1m'; r='\033[0m'; o='\033[38;5;208m'
 SERVER_INSTALL="${OMARCHY_SERVER_INSTALL_URL:-https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh}"
 OMARCHY_INSTALL="${OMARCHY_INSTALL_URL:-https://omarchy.org/install}"
@@ -45,8 +46,11 @@ clear
 printf "\n  ${o}${b}Omarchy Server${r} first-time setup\n\n"
 printf "  You'll be asked for your password (for sudo), then to create your Omarchy Server account.\n\n"
 printf "  Waiting for the network…"
-nm-online -t 120 >/dev/null 2>&1 || true
-printf " ok\n\n"
+if nm-online -t 120 >/dev/null 2>&1; then
+	printf " ok\n\n"
+else
+	printf "\n\n"
+fi
 
 # Firewall rules first, so they're in place when Omarchy turns the firewall on later.
 sudo pacman -S --needed --noconfirm ufw curl git >/dev/null
@@ -57,8 +61,11 @@ sudo ufw allow 40000:49999/udp comment 'Omarchy Server machine forwards' >/dev/n
 if ! curl -fsSL "$SERVER_INSTALL" | bash; then
 	printf "\n  ${b}Omarchy Server didn't finish installing.${r} Fix the problem above, then run:\n"
 	printf "    curl -fsSL %s | bash\n\n" "$SERVER_INSTALL"
-	read -rp "  Press Enter for a command line " _
-	exec bash -l
+	if [ -t 0 ]; then
+		read -rp "  Press Enter for a command line " _
+		exec bash -l
+	fi
+	exit 1
 fi
 finish_firstboot
 
@@ -68,7 +75,10 @@ if curl -fsSL "$OMARCHY_INSTALL" | bash; then
 fi
 printf "\n  ${b}Omarchy didn't install.${r} Omarchy Server still works in your browser.\n"
 printf "  Install Omarchy later with:  curl -fsSL %s | bash\n\n" "$OMARCHY_INSTALL"
-read -rp "  Press Enter for a command line " _
-exec bash -l
+if [ -t 0 ]; then
+	read -rp "  Press Enter for a command line " _
+	exec bash -l
+fi
+exit 1
 EOF
 chmod 0755 /usr/local/bin/omarchy-server-firstboot

@@ -576,6 +576,9 @@ test('forgetHost removes non-default port entries and host-key errors match the 
 
 test('the idle timer forgets the Unraid password after an import ends', async () => {
 	// The idle clock is a real timer, not the injected `now`, so only mock timers can move it.
+	// Keep one real timer: the import ends with a file write, and a short setImmediate spin
+	// can return before that write lands when the runner is busy.
+	const realSetTimeout = setTimeout
 	mock.timers.enable({apis: ['setTimeout', 'setInterval', 'Date']})
 	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-idle-'))
 	const dirB = await mkdtemp(join(os.tmpdir(), 'unraid-idle-b-'))
@@ -613,10 +616,13 @@ test('the idle timer forgets the Unraid password after an import ends', async ()
 		assert.equal(mid.connected.host, 'tower.local')
 		releaseRsync()
 		let done
-		for (let i = 0; i < 50; i++) {
+		const waitStart = process.hrtime.bigint()
+		for (;;) {
 			await new Promise((r) => setImmediate(r))
 			done = await u.procedures['unraid.status'].run()
 			if (done.job?.endedAt) break
+			if (process.hrtime.bigint() - waitStart > 5_000_000_000n) break
+			await new Promise((r) => realSetTimeout(r, 20))
 		}
 		assert.ok(done.job?.endedAt, 'the import should have finished')
 		// The window starts again when the import ends. Long after that, the password is gone.

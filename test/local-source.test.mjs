@@ -2,13 +2,14 @@
 // A set value that is not an absolute git directory is an error, not a silent fallback.
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join, resolve} from 'node:path'
 import {after, before, test} from 'node:test'
+import {fileURLToPath, pathToFileURL} from 'node:url'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
-import {localGitDir} from '../omarchyd/local-source.mjs'
+import {fileUrl, localGitDir} from '../omarchyd/local-source.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 async function withEnv(vars, fn) {
@@ -166,8 +167,24 @@ test('OMARCHY_SERVER_SOURCE makes software update read that clone, not GitHub', 
 	}
 })
 
+test('fileUrl round-trips paths that contain #, ?, or %', () => {
+	for (const path of ['/srv/my#store/catalog.json', '/srv/my?store/catalog.json', '/srv/my%20store/catalog.json']) {
+		assert.equal(fileURLToPath(fileUrl(path)), path)
+	}
+})
+
+test('git clone of a fileUrl keeps a directory whose name contains a literal %20', async () => {
+	const src = await initGit(join(root, 'percent%20store'))
+	await writeFile(join(src, 'marker.txt'), 'ok\n')
+	git(['add', 'marker.txt'], src)
+	git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'marker'], src)
+	const dest = join(root, 'percent-clone')
+	git(['clone', '--', fileUrl(src), dest], root)
+	assert.equal(await readFile(join(dest, 'marker.txt'), 'utf8'), 'ok\n')
+})
+
 test('OMARCHY_SERVER_APP_STORE is the default catalog and machines catalog', async () => {
-	const store = await initGit(join(root, 'app-store'))
+	const store = await initGit(join(root, 'my#store'))
 	const arch = os.arch() === 'arm64' ? 'arm64' : 'amd64'
 	await mkdir(join(store, 'machines'), {recursive: true})
 	await writeFile(
@@ -202,10 +219,11 @@ test('OMARCHY_SERVER_APP_STORE is the default catalog and machines catalog', asy
 		const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
 		const auth = {authorization: `Bearer ${login.result.data.accessToken}`}
 		const repos = await (await fetch(`${d.url}/trpc/appStore.repositories`, {headers: auth})).json()
-		assert.equal(repos.result.data[0].url, `file://${resolve(store)}`)
 		const images = await (await fetch(`${d.url}/trpc/machines.osImages`, {headers: auth})).json()
 		assert.equal(fetched, 0, 'must not call GitHub for the machines catalog')
 		assert.equal(images.result.data[0].id, 'local-os')
+		assert.equal(repos.result.data[0].url, pathToFileURL(resolve(store)).href)
+		assert.equal(fileURLToPath(repos.result.data[0].url), resolve(store))
 	} finally {
 		await d.close()
 	}

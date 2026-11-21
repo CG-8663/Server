@@ -92,6 +92,27 @@ describe('installing a plugin', () => {
 		assert.deepEqual((await plugins.list({category: 'Productivity'})).plugins.map((p) => p.id), ['acme.clock'])
 	})
 
+	test('a manifest of `{` does not reject the list or hide the other plugins', async () => {
+		setup()
+		const dir = join(home, '.config', 'omarchy', 'plugins')
+		await mkdir(join(dir, 'acme.weather'), {recursive: true})
+		await writeFile(join(dir, 'acme.weather', 'manifest.json'), JSON.stringify({id: 'acme.weather'}))
+		await mkdir(join(dir, 'acme.clock'), {recursive: true})
+		await writeFile(join(dir, 'acme.clock', 'manifest.json'), '{')
+		try {
+			const page = await plugins.list({})
+			assert.deepEqual(
+				page.plugins.map((p) => p.id),
+				['acme.clock', 'acme.weather'],
+			)
+			assert.equal(page.plugins.find((p) => p.id === 'acme.weather').installed, true)
+			assert.equal(page.plugins.find((p) => p.id === 'acme.clock').installed, true)
+			await plugins.remove({id: 'acme.clock'})
+		} finally {
+			await rm(dir, {recursive: true, force: true})
+		}
+	})
+
 	test('installs the verified commit, validates it, then turns it on in the desktop session', async () => {
 		setup()
 		await plugins.install({id: 'acme.weather'})

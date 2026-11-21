@@ -31,9 +31,33 @@ export function installerPromptCommand({sourceDir, appStoreDir, port, curl}) {
 }
 // Where this copy came from: the GitHub repository it was installed from (its git origin), so a copy
 // installed from omarchy-server-dev checks and updates from there, and one from omarchy-server from there.
+// ssh://, git://, credentials, www., and any host case are the same repository. Anything that is not
+// GitHub is not turned into this raw URL (the caller must not fall back to the official repository).
 export function rawFromOrigin(url) {
-	const m = /^(?:https:\/\/github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(String(url).trim())
-	return m ? `https://raw.githubusercontent.com/${m[1]}/${m[2]}` : null
+	const text = String(url ?? '').trim()
+	if (!text) return null
+	let host = ''
+	let path = ''
+	const proto = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/]+)(\/.*)?$/.exec(text)
+	if (proto) {
+		let authority = proto[1]
+		const at = authority.lastIndexOf('@')
+		if (at !== -1) authority = authority.slice(at + 1)
+		host = authority.replace(/:\d+$/, '')
+		path = proto[2] ?? ''
+	} else {
+		const scp = /^(?:[^@\s]+@)?([^:\s]+):(.+)$/.exec(text)
+		if (!scp) return null
+		host = scp[1]
+		path = scp[2]
+	}
+	if (!/^(?:www\.)?github\.com$/i.test(host)) return null
+	path = path.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '')
+	const parts = path.split('/')
+	if (parts.length !== 2) return null
+	const [owner, repo] = parts
+	if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) return null
+	return `https://raw.githubusercontent.com/${owner}/${repo}`
 }
 const HELPER = '/usr/local/libexec/omarchy-server/helper.mjs'
 
@@ -106,10 +130,57 @@ export function createUpdater({
 	// Only a copy the installer set up (running as a systemd service) is checked; not a dev run.
 	installerCheck = BETA_INSTALLER_PROMPT && !!process.env.INVOCATION_ID,
 }) {
-	let rawBase = raw
-	const source = async () =>
-		(rawBase ??= await run('git', ['-C', appDir, 'remote', 'get-url', 'origin'], {timeout: 10_000}).then(rawFromOrigin, () => null).then((r) => r ?? REPO_RAW))
-	const installerHint = async () => (sourceDir ? installCommand(sourceDir) : `curl -fsSL ${await source()}/${branch}/install.sh | bash`)
+	// raw is a GitHub raw base when this origin is GitHub (or when git has no origin). origin is the
+	// remote URL. A file://, GitLab, or other non-GitHub origin keeps raw null so nothing here reads
+	// REPO_RAW instead of that remote.
+	let resolved = null
+	async function resolveSource() {
+		if (resolved) return resolved
+		if (raw) return (resolved = {raw, origin: null})
+		let origin = ''
+		try {
+			origin = String(await run('git', ['-C', appDir, 'remote', 'get-url', 'origin'], {timeout: 10_000})).trim()
+		} catch {
+			origin = ''
+		}
+		if (!origin) return (resolved = {raw: REPO_RAW, origin: null})
+		const parsed = rawFromOrigin(origin)
+		return (resolved = parsed ? {raw: parsed, origin} : {raw: null, origin})
+	}
+	// Pairing wants a URL for this copy. Non-GitHub installs report their real origin, not REPO_RAW.
+	const source = async () => {
+		const where = await resolveSource()
+		return where.raw ?? where.origin ?? REPO_RAW
+	}
+	const installerHint = async () => {
+		const port = Number(webPort) || 7780
+		const where = await resolveSource()
+		const curl = where.raw
+			? `curl -fsSL ${where.raw}/${branch}/install.sh | bash`
+			: `OMARCHY_SERVER_REPO=${shQuote(where.origin)} bash ${shQuote(join(appDir, 'install.sh'))}`
+		return installerPromptCommand({sourceDir, appStoreDir, port, curl})
+	}
+	let originTree = null
+	let originFetch = null
+	// package.json and the other check files, from a remote that has no raw.githubusercontent URL.
+	async function readGitFile(origin, path) {
+		if (!origin) throw new Error("this install's source cannot be checked")
+		if (!originTree) {
+			originFetch ??= (async () => {
+				const listed = await run('git', ['-C', appDir, 'ls-remote', origin, `refs/heads/${branch}`], {timeout: 20_000})
+				if (!String(listed).trim()) throw new Error("this install's source cannot be checked")
+				await run('git', ['-C', appDir, 'fetch', '--depth', '1', origin, `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {timeout: 15 * 60_000})
+				originTree = `origin/${branch}`
+			})()
+			try {
+				await originFetch
+			} catch (error) {
+				originFetch = null
+				throw error
+			}
+		}
+		return await run('git', ['-C', appDir, 'show', `${originTree}:${path}`], {timeout: 10_000})
+	}
 	const statusFile = join(dataDir, 'update.json')
 	let status = {running: false, progress: 0, description: '', error: false}
 	let cache = null
@@ -140,7 +211,9 @@ export function createUpdater({
 				throw new Error(`${join(sourceDir, path)}: ${error.message}`)
 			}
 		}
-		const res = await fetchImpl(`${await source()}/${branch}/${path}?t=${Date.now()}`, {signal: AbortSignal.timeout(15_000), headers: {'cache-control': 'no-cache'}})
+		const where = await resolveSource()
+		if (!where.raw) return readGitFile(where.origin, path)
+		const res = await fetchImpl(`${where.raw}/${branch}/${path}?t=${Date.now()}`, {signal: AbortSignal.timeout(15_000), headers: {'cache-control': 'no-cache'}})
 		if (!res.ok) throw new Error(`GitHub answered ${res.status}`)
 		return res.text()
 	}
@@ -224,15 +297,19 @@ export function createUpdater({
 		;(async () => {
 			// A failure to read the current revision is a failed update, not a crash.
 			let previous = ''
+			// Set only once a reset is about to change the tree. A failed fetch has not, so it must not restore.
+			let treeChanged = false
 			try {
 				previous = (await run('git', ['-C', appDir, 'rev-parse', 'HEAD'])).trim()
 				await step(10, 'Downloading')
 				if (sourceDir) {
 					await run('git', ['-C', appDir, 'fetch', '--depth', '1', sourceDir, 'HEAD'])
+					treeChanged = true
 					await run('git', ['-C', appDir, 'reset', '--hard', 'FETCH_HEAD'])
 				} else {
 					// Name where it lands: a shallow clone of another branch doesn't track this one otherwise.
 					await run('git', ['-C', appDir, 'fetch', '--depth', '1', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`])
+					treeChanged = true
 					await run('git', ['-C', appDir, 'reset', '--hard', `origin/${branch}`])
 				}
 				await step(35, 'Installing parts')
@@ -245,10 +322,12 @@ export function createUpdater({
 				await run('systemd-run', ['--user', '--collect', `--on-active=${restartDelay}`, `--unit=omarchy-server-update-${Date.now()}`, 'systemctl', '--user', 'restart', 'omarchyd.service', 'omarchy-server-web.service'])
 			} catch (error) {
 				// Put the previous version back so the services keep working. Nothing was changed
-				// when the current revision could not be read, so there is nothing to put back.
+				// when the current revision could not be read, or when fetch failed before reset,
+				// so there is nothing to put back. Leave "Downloading" before any of that work.
 				// Say so if putting it back fails.
 				let restored = true
-				if (previous) {
+				if (previous && treeChanged) {
+					await step(10, 'Restoring').catch(() => {})
 					const back = (p) => p.then(() => true, () => false)
 					restored = (await back(run('git', ['-C', appDir, 'reset', '--hard', previous]))) && (await back(run(process.execPath, ['scripts/deps.mjs'], {cwd: appDir}))) && (await back(run('npm', ['run', 'build'], {cwd: appDir, env: {...process.env, NODE_OPTIONS: '--max-old-space-size=1024'}})))
 				}
@@ -283,13 +362,12 @@ export function createUpdater({
 			if (missing.length) reasons.push(`New system packages are needed: ${missing.join(', ')}.`)
 		}
 		const port = Number(webPort) || 7780
+		const where = await resolveSource()
+		const curl = where.raw
+			? `curl -fsSL ${where.raw}/${branch}/install.sh | OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=${port} bash`
+			: `OMARCHY_SERVER_REPO=${shQuote(where.origin)} OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=${port} bash ${shQuote(join(appDir, 'install.sh'))}`
 		const value = reasons.length
-			? {needed: true, reasons, command: installerPromptCommand({
-				sourceDir,
-				appStoreDir,
-				port,
-				curl: `curl -fsSL ${await source()}/${branch}/install.sh | OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=${port} bash`,
-			})}
+			? {needed: true, reasons, command: installerPromptCommand({sourceDir, appStoreDir, port, curl})}
 			: {needed: false, reasons: []}
 		installerCache = {at: Date.now(), value}
 		return value

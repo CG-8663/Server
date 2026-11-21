@@ -11,13 +11,21 @@ applyPrefs(readPrefs())
 watchKeyboardViewport()
 watchStandaloneGap()
 
+const noRetry = (error: unknown) =>
+	error instanceof ApiError &&
+	((error.status >= 400 && error.status < 500) || error.code === 'TIMEOUT' || error.code === 'OFFLINE' || error.code === 'ABORTED')
+
 const client = new QueryClient({
 	defaultOptions: {
 		queries: {
-			// Don't hammer omarchyd with retries for auth or permission errors.
-			retry: (count, error) => !(error instanceof ApiError && error.status >= 400 && error.status < 500) && count < 2,
+			// Don't hammer omarchyd with retries for auth/permission errors or requests that already timed out or are offline.
+			retry: (count, error) => !noRetry(error) && count < 2,
 			refetchOnWindowFocus: true,
 			staleTime: 2000,
+		},
+		mutations: {
+			// Let actions fail immediately instead of queueing silently while the browser is offline.
+			networkMode: 'always',
 		},
 	},
 })

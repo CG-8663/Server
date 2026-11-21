@@ -209,17 +209,19 @@ test('streamAnthropic reports a rejected key, an overloaded stream and a cut-off
 })
 
 test('listModels asks Anthropic with its own headers and keeps display names', async () => {
+	let seenUrl
 	let headers
 	const models = await listModels({
 		provider: 'anthropic',
 		baseUrl: 'https://api.anthropic.com/v1',
 		apiKey: SECRET,
 		fetchImpl: async (url, opts) => {
+			seenUrl = url
 			headers = opts.headers
-			assert.equal(url, 'https://api.anthropic.com/v1/models?limit=1000')
 			return json(200, {data: [{id: 'claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5'}]})
 		},
 	})
+	assert.equal(seenUrl, 'https://api.anthropic.com/v1/models?limit=1000')
 	assert.deepEqual(models, [{id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5'}])
 	assert.equal(headers['x-api-key'], SECRET)
 	assert.equal(headers.authorization, undefined)

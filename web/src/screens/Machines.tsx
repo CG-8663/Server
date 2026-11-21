@@ -1,6 +1,7 @@
 import {lazy, Suspense, useState} from 'react'
 
 import {SERVER_DESKTOP, type Machine} from '../api'
+import {queryProblem, useBrowserOnline} from '../connection'
 import {useDesktop} from '../desktop/Desktop'
 import {useMachines, useUser} from '../data'
 import {useMachineDetails} from '../machines/api'
@@ -18,6 +19,8 @@ const LocalSwarm = lazy(() => import('../swarm/Swarm').then((m) => ({default: m.
 export function Machines() {
 	const desk = useDesktop()
 	const machines = useMachines()
+	const browserOnline = useBrowserOnline()
+	const problem = queryProblem(machines, browserOnline)
 	const owner = useUser().data?.role !== 'member'
 	const [selectedId, setSelectedId] = useState<string | null>(null)
 	const [consoleId, setConsoleId] = useState<string | null>(null)
@@ -41,7 +44,7 @@ export function Machines() {
 					<Icon name="plus" size={18} stroke={2.4} /> New
 				</button>
 				<h1 className="title">Machines</h1>
-				<p className="subtitle">{machines.isLoading ? 'Loading…' : list.length ? `${running} of ${list.length} running` : 'Virtual machines on your server'}</p>
+				<p className="subtitle">{machines.isLoading ? 'Loading…' : problem && !machines.data ? 'Can’t reach your server' : list.length ? `${running} of ${list.length} running` : 'Virtual machines on your server'}</p>
 			</div>
 			{/* This server’s own desktop is the owner’s signed-in session: owner-only. */}
 			{owner && (
@@ -63,10 +66,10 @@ export function Machines() {
 					<Icon name="chevron" size={18} className="chev" />
 				</button>
 			)}
-			{machines.error && (
-				<div className="error">
+			{problem && (
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
-					{(machines.error as Error).message}
+					{problem}
 				</div>
 			)}
 			{machines.isLoading && Array.from({length: 2}, (_, i) => <div key={i} className="skeleton" style={{height: 130, borderRadius: 26, marginBottom: 12}} />)}
@@ -121,7 +124,7 @@ export function Machines() {
 					</button>
 				)
 			})}
-			{!machines.isLoading && !machines.error && list.length === 0 && (
+			{!machines.isLoading && !problem && machines.isSuccess && list.length === 0 && (
 				<div className="glass empty">
 					<span className="big">
 						<Icon name="machine" size={30} />
@@ -211,7 +214,7 @@ function MachineSheet({machine: m, onClose, onConsole}: {machine: Machine; onClo
 			{m.errorMessage && (
 				<div className="error">
 					<Icon name="alert" size={18} />
-					{m.errorMessage.replace(/^\[|\]$/g, '').replace(/-/g, ' ')}
+					{/^\[[\w-]+\]$/.test(m.errorMessage) ? m.errorMessage.slice(1, -1).replace(/-/g, ' ') : m.errorMessage}
 				</div>
 			)}
 			<div className="primary-row">
