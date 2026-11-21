@@ -9,6 +9,7 @@ export {detectDesktop}
 import {fieldAria, liveRegionText, useDialogFocus} from './focus'
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
+import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
 
@@ -943,12 +944,13 @@ export function usePrefs(brandHsl: string | null | undefined, signedIn: boolean)
 		}
 	}, [signedIn])
 	const setPrefs = useCallback(
-		(next: Prefs) => {
+		(next: Prefs | ((current: Prefs) => Prefs)) => {
 			const before = now.current
-			now.current = next
-			setLocal(next)
+			const resolved = resolvePrefsUpdate(before, next)
+			now.current = resolved
+			setLocal(resolved)
 			if (!signedIn) return
-			void syncRef.current?.update(before, next)
+			void syncRef.current?.update(before, resolved)
 		},
 		[signedIn],
 	)
