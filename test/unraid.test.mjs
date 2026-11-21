@@ -616,15 +616,21 @@ test('the idle timer forgets the Unraid password after an import ends', async ()
 		assert.equal(mid.connected.host, 'tower.local')
 		releaseRsync()
 		let done
+		let saved = ''
+		const jobFile = join(dir, 'unraid', 'job.json')
 		const waitStart = process.hrtime.bigint()
 		for (;;) {
 			await new Promise((r) => setImmediate(r))
 			done = await u.procedures['unraid.status'].run()
-			if (done.job?.endedAt) break
+			// endedAt is set in memory before the file write finishes. Removing the directory
+			// in that gap races writeAtomic's temp file and fails with ENOTEMPTY.
+			saved = await readFile(jobFile, 'utf8').catch(() => '')
+			if (done.job?.endedAt && /"endedAt": \d/.test(saved)) break
 			if (process.hrtime.bigint() - waitStart > 5_000_000_000n) break
 			await new Promise((r) => realSetTimeout(r, 20))
 		}
 		assert.ok(done.job?.endedAt, 'the import should have finished')
+		assert.match(saved, /"endedAt": \d/)
 		// The window starts again when the import ends. Long after that, the password is gone.
 		mock.timers.tick(48 * 60 * 60 * 1000)
 		assert.equal((await u.procedures['unraid.status'].run()).connected, null)
