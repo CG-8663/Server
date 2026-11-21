@@ -2051,11 +2051,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		await ready
 		const app = findInstalled(String(input?.appId ?? ''))
 		if (busy.has(app.id)) throw new RpcError('CONFLICT', `${app.name} is busy`)
+		const verb = {up: 'start', stop: 'stop', restart: 'restart'}[args[0]] ?? pending
 		busy.set(app.id, {state: pending})
 		try {
 			let pluggedIds = null
 			if (!app.system && (args[0] === 'up' || args[0] === 'restart')) pluggedIds = await writeUsbOverlay(app)
-			if (app.system) await systemApps[{up: 'start', stop: 'stop', restart: 'restart'}[args[0]]](app)
+			if (app.system) await systemApps[verb](app)
 			// `restart` leaves the running container on the old device list. Recreate so the overlay just written is what runs.
 			else if (args[0] === 'restart') await compose(app, 'up', '-d', '--force-recreate')
 			else await compose(app, ...args)
@@ -2066,6 +2067,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					await save()
 				}
 			}
+		} catch (error) {
+			if (error instanceof RpcError) throw error
+			console.error(`[omarchyd] ${verb} ${app.id}:`, error)
+			const detail = String(error?.message ?? error).replace(/\s+/g, ' ').trim().slice(-300)
+			throw new RpcError('BAD_GATEWAY', `${app.name ?? app.id} couldn’t ${verb}: ${detail}`)
 		} finally {
 			busy.delete(app.id)
 		}
