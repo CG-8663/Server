@@ -669,7 +669,7 @@ export async function podmanHealth(run, env, home) {
 	}
 }
 
-export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000, systemApps = null}) {
+export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000, systemApps = null, deviceExists = exists}) {
 	const base = join(dataDir, 'apps')
 	const storesDir = join(base, 'stores')
 	const installedDir = join(base, 'installed')
@@ -1279,7 +1279,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const text = await readFile(join(appDir(app.id), 'compose.omarchy.yml'), 'utf8').catch(() => '')
 		const names = Object.keys((YAML.parse(text) ?? {}).services ?? {})
 		const plugged = []
-		for (const d of app.usbDevices ?? []) if (d?.path && (await exists(d.path))) plugged.push(d)
+		// deviceExists is access() on the server. A test can answer for a stick path when a private /dev is not available.
+		for (const d of app.usbDevices ?? []) if (d?.path && (await deviceExists(d.path))) plugged.push(d)
 		const overlay = usbComposeOverlay(names, plugged)
 		if (!overlay) await rm(path, {force: true})
 		else await writeFile(path, overlay, {mode: 0o600})
