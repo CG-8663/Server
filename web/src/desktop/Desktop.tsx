@@ -21,7 +21,9 @@ import {ScreenErrorBoundary} from '../screenBoundary'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, resetDeskConfig, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {desktopIconKeysApply, iconSelectionClearsOnFocus} from './iconKeys'
+import {iconsInView} from './iconsInView'
 import {desktopMachineStatus, machineOpenAction} from './machineOpen'
+import {startAlreadyPending} from './startPending'
 import {ignoreRepeatedDesktopShortcut} from './shortcutRepeat'
 import {nextStarting, type StartingWatch} from './startingWatch'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
@@ -303,6 +305,9 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const [preview, setPreview] = useState<Rect | null>(null)
 	const [dragging, setDragging] = useState(false)
 	const [starting, setStarting] = useState<StartingWatch[]>([])
+	const startingRef = useRef(starting)
+	startingRef.current = starting
+	const startingFlightRef = useRef(new Set<string>())
 	const hypr = cfg.shell === 'hyprland'
 	const [hyprWs, setHyprWs] = useState(() => loadLayout().workspace)
 	const [trees, setTrees] = useState<Record<number, Node | null>>(() => loadLayout().trees)
@@ -565,6 +570,10 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		const t = window.setInterval(() => qc.invalidateQueries({queryKey: ['machines.list']}), 3000)
 		return () => window.clearInterval(t)
 	}, [starting.length, qc])
+	useEffect(() => {
+		const flying = startingFlightRef.current
+		for (const watch of starting) flying.delete(watch.id)
+	}, [starting])
 
 	// Which apps must open in a browser tab (they refuse to be shown inside a window).
 	const runningAppIds = useMemo(() => appList.filter((a) => a.port && (a.state === 'ready' || a.state === 'running')).map((a) => a.id), [appList])
@@ -616,13 +625,21 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					const action = machineOpenAction(m.state)
 					if (action === 'open') return openConsole(id)
 					if (action === 'start') {
+						if (startAlreadyPending(startingFlightRef.current, startingRef.current, id)) {
+							toast(`${m.name} is already starting.`)
+							return
+						}
+						startingFlightRef.current.add(id)
 						mutate('machines.start', {id})
 							.then(() => {
 								const listUpdatedAt = qc.getQueryState<Machine[]>(['machines.list'])?.dataUpdatedAt ?? 0
 								toast(`Starting ${m.name}. Its console opens when it’s ready.`)
 								setStarting((s) => (s.some((w) => w.id === id) ? s : [...s, {id, listUpdatedAt}]))
 							})
-							.catch((e) => toast((e as Error).message, true))
+							.catch((e) => {
+								startingFlightRef.current.delete(id)
+								toast((e as Error).message, true)
+							})
 						return
 					}
 					toast(`${m.name} is ${m.state}. Try again in a moment.`)
@@ -1544,9 +1561,15 @@ function DesktopIcons(p: {
 	}, [p.empty])
 	const [band, setBand] = useState<Rect | null>(null)
 	const [move, setMove] = useState<{dx: number; dy: number} | null>(null)
-	const icons = p.cfg.showIcons ? p.cfg.icons.filter((i) => !p.info(i.key).missing) : []
+	const storedIcons = p.cfg.showIcons ? p.cfg.icons.filter((i) => !p.info(i.key).missing) : []
+	const {cols, rows} = gridSize()
+	const icons = iconsInView(storedIcons, cols, rows)
+	const shown = new Map(icons.map((i) => [i.key, i]))
 	const o = gridOrigin()
-	const posOf = (i: DeskIcon) => ({x: o.x + i.col * CELL_W, y: o.y + i.row * CELL_H})
+	const posOf = (i: DeskIcon) => {
+		const v = shown.get(i.key) ?? i
+		return {x: o.x + v.col * CELL_W, y: o.y + v.row * CELL_H}
+	}
 
 	// Keyboard on the desktop itself (nothing else focused): open, remove, select all.
 	useEffect(() => {

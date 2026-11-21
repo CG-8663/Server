@@ -13,6 +13,11 @@ export function markReopenAssistant() {
 	}
 }
 
+// The reload that asked for the assistant opens it once. Later mounts of the same page do not.
+export function reopenOnMount(flag: boolean, alreadyConsumed: boolean): boolean {
+	return flag && !alreadyConsumed
+}
+
 export function consumeReopenAssistant() {
 	try {
 		const raw = localStorage.getItem(REOPEN_ASSISTANT) ?? sessionStorage.getItem(REOPEN_ASSISTANT)
