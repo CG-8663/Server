@@ -10,7 +10,7 @@ import {defaultSelectedVms, formatBytes, formatTotalSize, isKeyChangedError, ite
 type Share = {name: string; size: number | null; kind: 'share' | 'appdata' | 'system' | 'domains' | 'isos'}
 type Container = {id: string; name: string; image: string; running: boolean; icon: string | null; web: {port: number} | null; copies: {from: string; to: string; file?: boolean}[]; shares: string[]; notes: string[]; problems: string[]; size: number | null; installed: boolean}
 type Vm = {name: string; state: string; cores: number; memoryMb: number; firmware: string; disks: {file: string}[]; notes: string[]; problems: string[]; size: number; installed?: boolean}
-type Scan = {shares: Share[]; containers: Container[]; vms: Vm[]; at: number}
+type Scan = {shares: Share[]; containers: Container[]; vms: Vm[]; at: number; skippedShares?: string[]; skippedVms?: string[]}
 type Status = {connected: {host: string; version: string; fingerprint: string | null} | null; scanned: boolean; job: Job | null}
 
 const SHARE_NOTE: Record<Share['kind'], string> = {
@@ -228,6 +228,18 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 		[scan, shares, containers, vms],
 	)
 	const count = shares.size + containers.size + vms.size
+	const unsupported = (names: string[]) =>
+		names.map((name) => (
+			<div key={name} className="row static" style={{minHeight: 56}}>
+				<span className="row-ico" style={{'--c': '#8e8e93'} as CSSProperties}>
+					<Icon name="alert" size={18} />
+				</span>
+				<span className="main">
+					<b style={{fontWeight: 550}}>{name}</b>
+					<span>Not supported yet</span>
+				</span>
+			</div>
+		))
 	return (
 		<>
 			<div className="glass card bk-status">
@@ -257,6 +269,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 						</button>
 					)
 				})}
+				{unsupported(scan.skippedShares ?? [])}
 			</Group>
 
 			{scan.containers.length > 0 && (
@@ -285,7 +298,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 				</Group>
 			)}
 
-			{scan.vms.length > 0 && (
+			{(scan.vms.length > 0 || (scan.skippedVms ?? []).length > 0) && (
 				<Group title="VMs" footer="Shut a VM down on Unraid before it comes over: its disks are copied as they are.">
 					{scan.vms.map((v) => {
 						const off = v.state === 'shut off'
@@ -311,6 +324,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 							</div>
 						)
 					})}
+					{unsupported(scan.skippedVms ?? [])}
 				</Group>
 			)}
 

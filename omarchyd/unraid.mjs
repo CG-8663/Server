@@ -486,11 +486,15 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		if (!session) throw new RpcError('PRECONDITION_FAILED', 'Connect to your Unraid server first')
 		// Shares and their sizes (each size gets a minute; very large ones may show as unknown).
 		const sharesOut = await remote(`for d in /mnt/user/*/; do n="\${d%/}"; n="\${n##*/}"; s=$(timeout 60 du -sb "$d" 2>/dev/null | cut -f1); printf '%s\\t%s\\n' "$n" "\${s:-}"; done`, {timeout: 30 * 60_000})
-		const shares = sharesOut
+		const shareRows = sharesOut
 			.split('\n')
 			.map((l) => l.split('\t'))
-			.filter(([n]) => n && SHARE.test(n))
+			.filter(([n]) => n)
+		// Names outside SHARE stay listed as skipped. The pattern is unchanged, and start() only copies shares.
+		const shares = shareRows
+			.filter(([n]) => SHARE.test(n))
 			.map(([n, size]) => ({name: n, size: size ? Number(size) : null, kind: n === 'appdata' ? 'appdata' : n === 'system' ? 'system' : n === 'domains' ? 'domains' : n === 'isos' ? 'isos' : 'share'}))
+		const skippedShares = shareRows.filter(([n]) => !SHARE.test(n)).map(([n]) => n)
 		let containers = []
 		if (session.docker) {
 			const names = (await remote(`docker ps -a --format '{{.Names}}'`)).split('\n').filter((n) => CONTAINER.test(n))
@@ -536,8 +540,11 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 			}
 		}
 		let vms = []
+		let skippedVms = []
 		if (session.virsh) {
-			const names = (await remote('virsh list --all --name 2>/dev/null')).split('\n').map((n) => n.trim()).filter((n) => VM_NAME.test(n))
+			const listed = (await remote('virsh list --all --name 2>/dev/null')).split('\n').map((n) => n.trim()).filter(Boolean)
+			const names = listed.filter((n) => VM_NAME.test(n))
+			skippedVms = listed.filter((n) => !VM_NAME.test(n))
 			for (const n of names) {
 				const [xml, st] = await Promise.all([remote(`virsh dumpxml ${sq(n)}`), remote(`virsh domstate ${sq(n)}`).catch(() => '')])
 				const plan = vmPlan(xml, st.trim())
@@ -545,7 +552,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 				vms.push({...plan, size: sizes.split('\n').filter(Boolean).reduce((t, s) => t + Number(s), 0), installed: vmInstalled(plan.name)})
 			}
 		}
-		session.scan = {shares, containers, vms, at: now()}
+		session.scan = {shares, containers, vms, skippedShares, skippedVms, at: now()}
 		return {...session.scan, containers: containers.map(({files: _f, ...c}) => c)}
 	}
 
@@ -571,7 +578,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		const src = from.replace(/\/+$/, '')
 		const args = file
 			? ['-lt', '--partial', '--protect-args', '--info=progress2', '-e', e, `${session.host}:${src}`, to]
-			: ['-rlt', '--partial', '--protect-args', '--info=progress2', '--no-inc-recursive', '-e', e, `${session.host}:${src}/`, `${to}/`]
+			: ['-rlt', '-H', '--partial', '--protect-args', '--info=progress2', '--no-inc-recursive', '-e', e, `${session.host}:${src}/`, `${to}/`]
 		try {
 			await run('rsync', args, {
 				env: sshEnv(),

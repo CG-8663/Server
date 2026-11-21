@@ -62,6 +62,37 @@ test('interrupted and cancelled Unraid jobs never say Everything came over or sp
 	assert.equal(itemStatusForView({status: 'running'}, true), 'running')
 	assert.equal(itemStatusForView({status: 'waiting'}, true), 'waiting')
 
+	// Stopped after the first of three: skipped items and cancelled must not read as a full success.
+	const stoppedEarly = {
+		host: 'tower.local',
+		endedAt: 1000,
+		cancelled: true,
+		items: [
+			{kind: 'share', key: 'Docs', name: 'Docs', size: 10, status: 'done'},
+			{kind: 'share', key: 'Media', name: 'Media', size: 20, status: 'skipped'},
+			{kind: 'vm', key: 'Win11', name: 'Win11', size: 30, status: 'skipped'},
+		],
+	}
+	const early = jobSummary(stoppedEarly, true)
+	assert.equal(early.done, 1)
+	assert.equal(stoppedEarly.items.filter((i) => i.status === 'skipped').length, 2)
+	assert.equal(early.heading, '1 of 3 came over')
+	assert.notEqual(early.heading, 'Everything came over')
+	assert.equal(early.incomplete, true)
+	assert.equal(early.canRetry, true)
+
+	const skippedOnly = {
+		host: 'tower.local',
+		endedAt: 1000,
+		items: [
+			{kind: 'share', key: 'Docs', name: 'Docs', size: 10, status: 'done'},
+			{kind: 'share', key: 'Media', name: 'Media', size: 20, status: 'skipped'},
+		],
+	}
+	assert.equal(jobSummary(skippedOnly, true).heading, '1 of 2 came over')
+	assert.equal(jobSummary(skippedOnly, true).canRetry, true)
+	assert.equal(jobSummary(skippedOnly, true).incomplete, true)
+
 	const src = await readFile(new URL('../web/src/unraid.tsx', import.meta.url), 'utf8')
 	assert.match(src, /from '\.\/unraidView'/)
 	assert.match(src, /jobSummary\(/)
@@ -106,6 +137,16 @@ test('installed VMs are deselected by default and disabled in Choose', async () 
 	assert.match(src, /defaultSelectedVms\(scan\.vms\)/)
 	assert.match(src, /disabled=\{\!\!v\.installed \|\| \!\!v\.problems\.length\}/)
 	assert.match(src, /v\.installed \? 'Already here'/)
+})
+
+test('unsupported share and VM names from the scan stay in the list', async () => {
+	const src = await readFile(new URL('../web/src/unraid.tsx', import.meta.url), 'utf8')
+	const choose = src.slice(src.indexOf('function Choose'))
+	assert.match(choose, /skippedShares/)
+	assert.match(choose, /skippedVms/)
+	assert.match(choose, /Not supported yet/)
+	assert.match(choose, /skippedShares \?\? \[\]/)
+	assert.match(choose, /skippedVms \?\? \[\]/)
 })
 
 test('the share step does not promise Unraid’s name is reused unchanged', async () => {
