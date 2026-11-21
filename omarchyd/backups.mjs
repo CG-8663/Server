@@ -130,12 +130,13 @@ function smbMessage(errors) {
 export function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 60_000, split = /\n/} = {}) {
 	return new Promise((resolve, reject) => {
 		const child = spawn(cmd, args, {env, stdio: ['pipe', 'pipe', 'pipe']})
+		child.stdout.setEncoding('utf8')
+		child.stderr.setEncoding('utf8')
 		let out = ''
 		let err = ''
 		let buf = ''
 		const timer = setTimeout(() => child.kill('SIGTERM'), timeout)
-		child.stdout.on('data', (d) => {
-			const s = d.toString()
+		child.stdout.on('data', (s) => {
 			out += s
 			if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024)
 			if (onLine) {
@@ -145,7 +146,7 @@ export function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 
 				for (const l of lines) onLine(l)
 			}
 		})
-		child.stderr.on('data', (d) => (err = (err + d.toString()).slice(-64 * 1024)))
+		child.stderr.on('data', (d) => (err = (err + d).slice(-64 * 1024)))
 		child.on('error', (e) => (clearTimeout(timer), reject(e)))
 		child.on('close', (code) => {
 			clearTimeout(timer)

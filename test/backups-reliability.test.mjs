@@ -504,3 +504,36 @@ test('#437 backups.status includes the server timeZone', async (t) => {
 		await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {env: {...process.env, TZ: tz}})
 	}
 })
+
+test('#451 defaultSpawn decodes multi-byte UTF-8 characters split across stdout and stderr chunks', async () => {
+	const expected = '{"p":"Ünïcödé-日本語-файл"}'
+	const stdoutScript = `
+		const buf = Buffer.from(${JSON.stringify(expected + '\n')}, 'utf8')
+		const cut = buf.indexOf(Buffer.from('日', 'utf8')) + 1
+		process.stdout.write(buf.subarray(0, cut))
+		setTimeout(() => process.stdout.write(buf.subarray(cut)), 20)
+	`
+	const lines = []
+	const res = await defaultSpawn(process.execPath, ['-e', stdoutScript], {onLine: (l) => lines.push(l)})
+	assert.equal(res.stdout, `${expected}\n`)
+	assert.deepEqual(lines, [expected])
+	assert.equal(res.stdout.includes('\uFFFD'), false)
+
+	const errText = 'Warning: Ünïcödé-日本語-файл unreadable'
+	const stderrScript = `
+		const buf = Buffer.from(${JSON.stringify(errText + '\n')}, 'utf8')
+		const cut = buf.indexOf(Buffer.from('日', 'utf8')) + 2
+		process.stderr.write(buf.subarray(0, cut))
+		setTimeout(() => {
+			process.stderr.write(buf.subarray(cut))
+			process.exit(1)
+		}, 20)
+	`
+	await assert.rejects(defaultSpawn(process.execPath, ['-e', stderrScript]), (err) => {
+		assert.equal(err.code, 1)
+		assert.equal(err.stderr, `${errText}\n`)
+		assert.ok(err.message.includes(errText))
+		assert.equal(err.stderr.includes('\uFFFD'), false)
+		return true
+	})
+})
