@@ -18,8 +18,18 @@ export type AssistantActivity = {
 	open: boolean
 }
 
-let state: AssistantActivity = {phase: 'idle', pending: 0, composing: false, successAt: 0, activeAt: Date.now(), open: false}
+function idleActivity(): AssistantActivity {
+	return {phase: 'idle', pending: 0, composing: false, successAt: 0, activeAt: Date.now(), open: false}
+}
+
+let state: AssistantActivity = idleActivity()
 const listeners = new Set<() => void>()
+
+// Sign-out drops the previous person's activity. Always notify, even when the values already match.
+export function resetAssistantActivity() {
+	state = idleActivity()
+	for (const l of listeners) l()
+}
 
 export function setAssistantActivity(patch: Partial<AssistantActivity>) {
 	const next = {...state, ...patch}

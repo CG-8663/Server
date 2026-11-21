@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { createPortal } from "react-dom";
 
 import { mutate, type FileEntry } from "../../api";
+import { useDialogFocus } from "../../focus";
 import { Icon, type IconName } from "../../icons";
 import { bytes, haptic, usePortalRoot, useToast } from "../../ui";
 import type { Sheet, Shape, ZipEntry } from "./office";
@@ -155,15 +156,17 @@ export function FileViewer(p: ViewerProps) {
     setI(n);
   };
   const close = () => guard() && p.onClose();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const isTop = useDialogFocus(!!f, dialogRef, close, {
+    canEscape: (e) => !(e.target as HTMLElement | null)?.closest("input, textarea, [contenteditable=true]"),
+  });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
-      if (el.closest("input, textarea, [contenteditable=true]") || document.querySelector(".sheet")) return;
-      if (e.key === "Escape") close();
-      else if (!tools.ownsArrows && e.key === "ArrowLeft") step(-1);
+      if (!isTop() || el.closest("input, textarea, [contenteditable=true]")) return;
+      if (!tools.ownsArrows && e.key === "ArrowLeft") step(-1);
       else if (!tools.ownsArrows && e.key === "ArrowRight") step(1);
     };
-    // Capture phase: runs before a details sheet on top closes itself, so Esc closes one layer.
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
   });
@@ -175,10 +178,12 @@ export function FileViewer(p: ViewerProps) {
   const look = KIND_INFO[kind];
   return createPortal(
     <div
+      ref={dialogRef}
       className="fv"
       role="dialog"
       aria-modal="true"
       aria-label={f.name}
+      tabIndex={-1}
       onTouchStart={(e) => {
         if (!swipeable || e.touches.length !== 1) return (swipe.current = null);
         swipe.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() };

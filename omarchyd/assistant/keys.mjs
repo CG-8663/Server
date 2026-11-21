@@ -1,8 +1,8 @@
-import {mkdir, readFile} from 'node:fs/promises'
+import {mkdir} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
 import {join} from 'node:path'
 
-import {writeAtomic} from '../atomic.mjs'
+import {plainObject, readJsonState, removeAtomic, writeAtomic} from '../atomic.mjs'
 import {RpcError} from '../rpc.mjs'
 import {ANTHROPIC} from './anthropic.mjs'
 
@@ -49,19 +49,39 @@ const publicOf = (k, userId) => ({
 })
 const canUse = (k, userId) => k.ownerUserId === userId || k.sharedWith.includes(userId) || k.systemDefault
 
+const validKeysState = (value) => plainObject(value) && Array.isArray(value.keys)
+
 export function createKeyStore({dataDir, now = () => Date.now()}) {
 	const file = join(dataDir, 'assistant', 'keys.json')
 	let state = {keys: []}
-	const loaded = mkdir(join(dataDir, 'assistant'), {recursive: true, mode: 0o700})
-		.then(() => readFile(file, 'utf8'))
-		.then((t) => {
-			state = JSON.parse(t)
-			if (!Array.isArray(state.keys)) state.keys = []
+	// Factory reset bumps this before it deletes. A write records the generation when it is queued
+	// and writes nothing if a reset has moved on, so the queued write cannot recreate the file.
+	let epoch = 0
+	let damaged = false
+	const damagedError = () => new RpcError('PRECONDITION_FAILED', 'keys.json is damaged and was left unchanged. Repair or remove it before saving.')
+	const assertWritable = () => {
+		if (damaged) throw damagedError()
+	}
+	const loaded = (async () => {
+		await mkdir(join(dataDir, 'assistant'), {recursive: true, mode: 0o700}).catch(() => {})
+		const res = await readJsonState(file, {validate: validKeysState})
+		if (res.damaged) {
+			damaged = true
+			return
+		}
+		if (res.status !== 'ok') return
+		state = {keys: res.value.keys.filter(plainObject)}
+		for (const k of state.keys) {
+			if (!Array.isArray(k.sharedWith)) k.sharedWith = []
 			// Custom endpoints saved with a pasted endpoint path (…/v1/responses) work without re-adding them.
-			for (const k of state.keys) if (k?.provider === 'openai-compatible' && k.baseUrl) k.baseUrl = normalizeBaseUrl(k.baseUrl)
-		})
-		.catch(() => {})
-	const save = () => writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600})
+			if (k.provider === 'openai-compatible' && k.baseUrl) k.baseUrl = normalizeBaseUrl(k.baseUrl)
+		}
+	})()
+	const save = () => {
+		if (damaged) return Promise.reject(damagedError())
+		const seen = epoch
+		return writeAtomic(file, () => (seen !== epoch ? null : JSON.stringify(state, null, '\t')), {mode: 0o600})
+	}
 	const find = (id) => state.keys.find((k) => k.id === id)
 
 	return {
@@ -71,6 +91,7 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 		},
 		async add(actor, input) {
 			await loaded
+			assertWritable()
 			const ownerUserId = actor.userId
 			const provider = ['openai-compatible', 'spacexai', 'openai', 'anthropic'].includes(input?.provider) ? input.provider : null
 			if (!provider) throw new RpcError('BAD_REQUEST', 'Choose Grok, OpenAI, Anthropic or an OpenAI-compatible endpoint')
@@ -95,9 +116,9 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 		},
 		async update(actor, input) {
 			await loaded
-			const idx = state.keys.findIndex((x) => x.id === String(input?.id ?? ''))
-			if (idx < 0) throw new RpcError('NOT_FOUND', 'That key isn’t here')
-			const k = state.keys[idx]
+			assertWritable()
+			const k = find(String(input?.id ?? ''))
+			if (!k) throw new RpcError('NOT_FOUND', 'That key isn’t here')
 			let makeDefault = false
 			let clearDefault = false
 			if (input?.systemDefault === true) {
@@ -142,20 +163,23 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 				if (Array.isArray(input?.sharedWith)) next.sharedWith = [...new Set(input.sharedWith.map((id) => String(id)).filter((id) => id && id !== next.ownerUserId))].slice(0, 32)
 			}
 			next.updatedAt = now()
-			const nextState = {
+			if (makeDefault) next.systemDefault = true
+			const id = k.id
+			// Swap in before the write so a key added or removed meanwhile is not lost; every check is done.
+			// Return this key, not whatever later sits at the old index.
+			state = {
 				...state,
-				keys: state.keys.map((x, i) => {
-					const row = i === idx ? next : x
-					return makeDefault ? {...row, systemDefault: row.id === next.id} : row
+				keys: state.keys.map((x) => {
+					if (x.id === id) return next
+					return makeDefault ? {...x, systemDefault: false} : x
 				}),
 			}
-			// Swap in before the write so a key added or removed meanwhile is not lost; every check is done.
-			state = nextState
 			await save()
-			return publicOf(state.keys[idx], actor.userId)
+			return publicOf(state.keys.find((x) => x.id === id) ?? next, actor.userId)
 		},
 		async remove(actor, id) {
 			await loaded
+			assertWritable()
 			const k = find(id)
 			if (!k) throw new RpcError('NOT_FOUND', 'That key isn’t here')
 			if (k.ownerUserId !== actor.userId) throw new RpcError('FORBIDDEN', 'Only the person who added this key can delete it')
@@ -165,6 +189,7 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 		},
 		async recordCheck(id, check) {
 			await loaded
+			assertWritable()
 			const k = find(id)
 			if (!k) return null
 			k.check = {...publicCheck(check), at: now()}
@@ -174,6 +199,15 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 		async getSecret(id) {
 			await loaded
 			return find(id) ?? null
+		},
+		// Factory reset: the key list is empty in memory and the file is gone, so the next owner
+		// does not inherit these keys. A write queued before this bump does not put the file back.
+		async reset() {
+			await loaded
+			epoch++
+			damaged = false
+			state = {keys: []}
+			await removeAtomic(file)
 		},
 		async resolveForUser(userId, keyId) {
 			await loaded

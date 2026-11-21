@@ -89,6 +89,16 @@ test('a rejected API key update leaves the key and other defaults untouched in m
 		assert.equal(customAfter.name, 'Local')
 		assert.equal(customAfter.model, 'llama-a')
 		assert.equal(customAfter.baseUrl, 'http://127.0.0.1:11434/v1')
+
+		// A removal during the write shifts the list. The reply is the key that was edited.
+		const keep = await ks.add(OWNER, {provider: 'openai', apiKey: 'sk-keep-2222', model: 'gpt-keep', name: 'Keep'})
+		const [updated] = await Promise.all([
+			ks.update(OWNER, {id: keep.id, name: 'Kept'}),
+			ks.remove(OWNER, first.id),
+		])
+		assert.equal(updated.id, keep.id)
+		assert.equal(updated.name, 'Kept')
+		assert.equal((await ks.listPublic('owner')).some((x) => x.id === first.id), false)
 	} finally {
 		await rm(dataDir, {recursive: true, force: true})
 	}
@@ -338,6 +348,10 @@ test('Anthropic requests always start with a user message and never split tool c
 		await asst3.runTurnContinue({userId: 'owner', role: 'owner', conversationId: deepChat.id, emit: () => {}})
 		assert.equal(deepBodies.length, 1)
 		assertValidAnthropicHistory(deepBodies[0].messages, 'deep tool chain')
+		const deepText = JSON.stringify(deepBodies[0].messages)
+		assert.ok(deepBodies[0].messages.length <= 40, 'deep tool chain stays within 40 messages')
+		assert.equal(deepText.includes('toolu_d0'), false)
+		assert.equal(deepText.includes('toolu_d21'), true)
 	} finally {
 		await rm(dataDir, {recursive: true, force: true})
 	}

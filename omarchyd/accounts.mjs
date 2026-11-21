@@ -1,7 +1,8 @@
 // Accounts and sessions. Passwords are scrypt-hashed; tokens are random and held server-side only.
 // The owner account is created on the server itself (`omarchyd create-owner`), never over the web.
 import {createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual} from 'node:crypto'
-import {chmod, mkdir, readFile, rename, writeFile} from 'node:fs/promises'
+import {readFileSync} from 'node:fs'
+import {chmod, mkdir, readFile, rename, stat, writeFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import {promisify} from 'node:util'
 
@@ -81,24 +82,71 @@ async function checkPassword(password, user) {
 	return a.length === b.length && timingSafeEqual(a, b)
 }
 
-export async function openAccounts(dataDir) {
-	await mkdir(dataDir, {recursive: true, mode: 0o700})
+// null and arrays are not plain objects. JSON values have no other prototypes.
+const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+function accountsObject(value) {
+	if (!plainObject(value) || !Array.isArray(value.users)) return false
+	if ('devices' in value && !plainObject(value.devices)) return false
+	if ('browsers' in value && !plainObject(value.browsers)) return false
+	return true
+}
+
+// The message names the file and nothing else, so a log cannot leak the path or a totp secret.
+const damagedAccounts = () => new Error('accounts.json is damaged or unreadable')
+
+export async function openAccounts(dataDir, {create = true} = {}) {
+	if (create) {
+		await mkdir(dataDir, {recursive: true, mode: 0o700})
+	} else {
+		const st = await stat(dataDir).catch((error) => {
+			if (error?.code === 'ENOENT') return null
+			throw error
+		})
+		if (st && !st.isDirectory()) throw Object.assign(new Error('not a directory'), {code: 'ENOTDIR'})
+		if (!st) return {hasOwner: () => false}
+	}
 	const file = join(dataDir, 'accounts.json')
-	let state = {users: [], devices: {}, browsers: {}}
+	let raw = null
 	try {
-		state = {...state, ...JSON.parse(await readFile(file, 'utf8'))}
-	} catch {}
+		raw = await readFile(file, 'utf8')
+	} catch (error) {
+		// Only a missing file means there is no owner yet. Any other read error must not
+		// look like an empty server, or createOwner would save over the real accounts.
+		if (error?.code !== 'ENOENT') throw damagedAccounts()
+	}
+	let state = {users: [], devices: {}, browsers: {}}
+	if (raw !== null) {
+		let parsed
+		try {
+			parsed = JSON.parse(raw)
+		} catch {
+			throw damagedAccounts()
+		}
+		if (!accountsObject(parsed)) throw damagedAccounts()
+		state = {...state, ...parsed}
+	}
 	// Short-lived tokens stay in memory; device and browser sessions survive restarts.
 	const access = new Map() // accessToken -> {userId, sessionId, expiresAt}
 	const urlTokens = new Map() // url token -> {browserToken, expiresAt}
 	let saving = Promise.resolve()
-	const save = () =>
-		(saving = saving.then(async () => {
+	// One write at a time. A failed write is reported to its caller only: the next save starts fresh.
+	// `snapshot` is what gets written. Callers that must not publish a change until it is durable
+	// pass a copy and assign `state` only after this resolves.
+	const save = (snapshot = state) => {
+		const next = saving.then(async () => {
 			const tmp = `${file}.tmp`
-			await writeFile(tmp, JSON.stringify(state, null, '\t'), {mode: 0o600})
+			await writeFile(tmp, JSON.stringify(snapshot, null, '\t'), {mode: 0o600})
 			await rename(tmp, file)
 			await chmod(file, 0o600).catch(() => {})
-		}))
+		})
+		saving = next.catch(() => {})
+		return next
+	}
+	const commit = async (snapshot) => {
+		await save(snapshot)
+		state = snapshot
+	}
 	const now = () => Date.now()
 	const prune = () => {
 		for (const [k, v] of access) if (v.expiresAt < now()) access.delete(k)
@@ -106,7 +154,32 @@ export async function openAccounts(dataDir) {
 		for (const [k, v] of Object.entries(state.devices)) if (v.expiresAt < now()) delete state.devices[k]
 		for (const [k, v] of Object.entries(state.browsers)) if (v.expiresAt < now()) delete state.browsers[k]
 	}
-	const userById = (id) => state.users.find((u) => u.userId === id)
+	// No owner in this process yet: create-owner (or the step after a reset) may have written
+	// the file from another process. Once an owner is loaded, do not read again — that would
+	// drop devices and browser sessions that exist only in this process.
+	const adoptOwnerFromDisk = () => {
+		if (state.users.length > 0) return
+		let raw
+		try {
+			raw = readFileSync(file, 'utf8')
+		} catch (error) {
+			if (error?.code === 'ENOENT') return
+			throw damagedAccounts()
+		}
+		let parsed
+		try {
+			parsed = JSON.parse(raw)
+		} catch {
+			throw damagedAccounts()
+		}
+		if (!accountsObject(parsed)) throw damagedAccounts()
+		if (parsed.users.length === 0) return
+		state = {users: [], devices: {}, browsers: {}, ...parsed}
+	}
+	const userById = (id) => {
+		adoptOwnerFromDisk()
+		return state.users.find((u) => u.userId === id)
+	}
 	const publicUser = (u) => ({userId: u.userId, name: u.name, role: u.role, language: u.language ?? 'en', wallpaper: u.wallpaper ?? {id: 'omarchy'}})
 
 	// Guessing passwords: checks for an account run one at a time, and after a few wrong ones each
@@ -116,6 +189,7 @@ export async function openAccounts(dataDir) {
 	const queues = new Map() // userId -> promise of the check in progress
 	const usedSteps = new Map() // userId -> last 2FA time step used (a code works once)
 	async function verify(input, opts) {
+		adoptOwnerFromDisk()
 		const key = input?.userId ?? state.users[0]?.userId ?? '-'
 		const prev = queues.get(key) ?? Promise.resolve()
 		const run = prev.catch(() => {}).then(async () => {
@@ -139,6 +213,7 @@ export async function openAccounts(dataDir) {
 		}
 	}
 	async function check({userId, password, totpToken}, {twoFactor = true} = {}) {
+		adoptOwnerFromDisk()
 		const user = userId ? userById(userId) : state.users[0]
 		if (!user || typeof password !== 'string' || !(await checkPassword(password, user))) {
 			await new Promise((r) => setTimeout(r, 300 + Math.random() * 300))
@@ -172,23 +247,30 @@ export async function openAccounts(dataDir) {
 	}
 
 	return {
-		hasOwner: () => state.users.length > 0,
+		hasOwner: () => {
+			adoptOwnerFromDisk()
+			return state.users.length > 0
+		},
 		async createOwner({name, password}) {
+			adoptOwnerFromDisk()
 			if (state.users.length) throw new Error('An owner account already exists')
-			if (!/^[\p{L}\p{N} ._-]{1,40}$/u.test(name ?? '')) throw new Error('Use 1-40 letters, numbers, spaces, dots, dashes or underscores for the name')
+			const clean = String(name ?? '').trim()
+			if (!/^[\p{L}\p{N} ._-]{1,40}$/u.test(clean)) throw new Error('Use 1-40 letters, numbers, spaces, dots, dashes or underscores for the name')
 			if (typeof password !== 'string' || password.length < 8) throw new Error('Use a password of at least 8 characters')
-			state.users.push({userId: 'owner', name: name.trim(), role: 'owner', language: 'en', ...(await hashPassword(password)), createdAt: now()})
-			await save()
+			await commit({...state, users: [...state.users, {userId: 'owner', name: clean, role: 'owner', language: 'en', ...(await hashPassword(password)), createdAt: now()}]})
 		},
 		async setPassword(userId, {oldPassword, newPassword}) {
 			const user = await verify({userId, password: oldPassword}, {twoFactor: false})
 			if (typeof newPassword !== 'string' || newPassword.length < 8) throw new RpcError('BAD_REQUEST', 'Use a password of at least 8 characters')
-			Object.assign(user, await hashPassword(newPassword))
-			// A new password signs out every other session.
-			state.devices = {}
-			state.browsers = {}
+			const hashed = await hashPassword(newPassword)
+			// A new password signs out every other session, but only once the file is saved.
+			await commit({
+				...state,
+				users: state.users.map((u) => (u.userId === user.userId ? {...u, ...hashed} : u)),
+				devices: {},
+				browsers: {},
+			})
 			access.clear()
-			await save()
 		},
 		// Asked again before sensitive actions (signing in the desktop).
 		confirmPassword: async (userId, password) => (await verify({userId, password}, {twoFactor: false}), true),
@@ -204,24 +286,28 @@ export async function openAccounts(dataDir) {
 			const secret = secretFromUri(totpUri)
 			if (!u || !secret) throw new RpcError('BAD_REQUEST', 'Scan the code again')
 			if (!totpOk(secret, totpToken)) throw new RpcError('BAD_REQUEST', 'That code isn’t right. Enter the one your app shows now.')
-			u.totp = secret.toString('base64')
-			await save()
+			await commit({...state, users: state.users.map((user) => (user.userId === u.userId ? {...user, totp: secret.toString('base64')} : user))})
 		},
 		async disable2fa(userId, {totpToken} = {}) {
 			const u = userById(userId)
 			if (!u?.totp) return
 			if (!totpOk(Buffer.from(u.totp, 'base64'), totpToken)) throw new RpcError('BAD_REQUEST', 'That code isn’t right. Enter the one your app shows now.')
-			delete u.totp
-			await save()
+			await commit({...state, users: state.users.map((user) => {
+				if (user.userId !== u.userId) return user
+				const {totp: _totp, ...rest} = user
+				return rest
+			})})
 		},
 		// Factory reset: every account and sign-in goes; the next visit starts first-time setup.
 		async reset() {
-			state = {users: [], devices: {}, browsers: {}}
+			await commit({users: [], devices: {}, browsers: {}})
 			access.clear()
 			urlTokens.clear()
-			await save()
 		},
-		listAccounts: () => state.users.map(publicUser),
+		listAccounts: () => {
+			adoptOwnerFromDisk()
+			return state.users.map(publicUser)
+		},
 		getUser: (userId) => {
 			const u = userById(userId)
 			return u ? publicUser(u) : null
@@ -229,10 +315,11 @@ export async function openAccounts(dataDir) {
 		async updateUser(userId, patch) {
 			const u = userById(userId)
 			if (!u) throw new RpcError('NOT_FOUND', 'No such account')
-			if (typeof patch?.name === 'string' && patch.name.trim()) u.name = patch.name.trim().slice(0, 40)
-			if (typeof patch?.language === 'string') u.language = patch.language.slice(0, 10)
-			if (typeof patch?.wallpaper === 'string') u.wallpaper = {id: patch.wallpaper.slice(0, 40)}
-			await save()
+			const nextUser = {...u}
+			if (typeof patch?.name === 'string' && patch.name.trim()) nextUser.name = patch.name.trim().slice(0, 40)
+			if (typeof patch?.language === 'string') nextUser.language = patch.language.slice(0, 10)
+			if (typeof patch?.wallpaper === 'string') nextUser.wallpaper = {id: patch.wallpaper.slice(0, 40)}
+			await commit({...state, users: state.users.map((user) => (user.userId === u.userId ? nextUser : user))})
 		},
 
 		// Native login: a short access token plus a long-lived device token to refresh it.

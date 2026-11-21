@@ -78,7 +78,7 @@ describe('omarchyd apps', () => {
 		await writeFile(sock, '')
 		process.env.DOCKER_HOST = `unix://${sock}`
 		// Below Linux's ephemeral range (32768+), so an outgoing connection elsewhere can never take
-		// it mid-test; above the internal ports apps get (20000-28999). Tests use up to appPort + 18.
+		// it mid-test; above the internal ports apps get (20000-28999). Tests use up to appPort + 22.
 		appPort = 30000 + Math.floor(Math.random() * 2700)
 		// A store: one good app, one folder with a mismatched id (ignored).
 		const store = join(root, 'store')
@@ -187,6 +187,8 @@ describe('omarchyd apps', () => {
 		// The web app can ask whether a session is valid.
 		assert.equal((await fetch(`${d.url}/app-auth/v1/account/session?app=demo-app`, {headers: {cookie}})).status, 200)
 		assert.equal((await fetch(`${d.url}/app-auth/v1/account/session?app=demo-app`)).status, 401)
+		// #324: a cookie with a broken percent escape is just not a session.
+		assert.equal((await fetch(`${d.url}/app-auth/v1/account/session?app=demo-app`, {headers: {cookie: 'OMARCHY_APP_SESSION=%E0%A4%A'}})).status, 401)
 		// WebSockets: refused without a session, echoed with one.
 		const anonWs = new WebSocket(`ws://127.0.0.1:${appPort}/ws`)
 		await new Promise((r) => anonWs.on('error', r))
@@ -639,5 +641,61 @@ describe('omarchyd apps', () => {
 		await assert.rejects(fetch(`http://127.0.0.1:${appPort}/`), 'gateway closed')
 		await call('appStore.removeRepository', {url: storeUrl})
 		assert.deepEqual(await q('appStore.registry'), [])
+	})
+
+	test('uninstall fails when compose down fails, and the app stays installed', async () => {
+		const store = join(root, 'sticky-apps')
+		await mkdir(join(store, 'sticky'), {recursive: true})
+		await writeFile(join(store, 'sticky', 'umbrel-app.yml'), `manifestVersion: 1\nid: sticky\nname: Sticky\nport: ${appPort + 20}\n`)
+		await writeFile(join(store, 'sticky', 'docker-compose.yml'), 'services:\n  web:\n    image: x\n')
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		await call('apps.install', {appId: 'sticky'})
+		await until(async () => (await q('apps.list')).find((a) => a.id === 'sticky' && a.state === 'running'))
+		const original = run
+		runImpl.current = async (cmd, args, opts) => {
+			if (cmd === 'docker-compose' && args[1] === 'omarchy-sticky' && args[4] === 'down') throw new Error('Cannot connect to the Docker daemon')
+			return original(cmd, args, opts)
+		}
+		try {
+			await assert.rejects(call('apps.uninstall', {appId: 'sticky'}), /Couldn’t uninstall Sticky: Cannot connect to the Docker daemon/)
+			assert.ok((await q('apps.list')).some((a) => a.id === 'sticky'), 'the app is gone from the list')
+			assert.equal(up.has('omarchy-sticky'), true)
+			assert.equal(await stat(join(data, 'apps', 'installed', 'sticky', 'compose.omarchy.yml')).then(() => true, () => false), true)
+		} finally {
+			runImpl.current = original
+		}
+		await call('apps.uninstall', {appId: 'sticky'})
+		await call('appStore.removeRepository', {url: `file://${store}`})
+	})
+
+	test('the shared Tor proxy stops when the last app that uses it is uninstalled', async () => {
+		const store = join(root, 'tor-apps')
+		const compose = 'services:\n  web:\n    image: x\n    environment:\n      TOR_PROXY: ${TOR_PROXY_IP}:${TOR_PROXY_PORT}\n'
+		for (const id of ['tor-a', 'tor-b']) {
+			await mkdir(join(store, id), {recursive: true})
+			await writeFile(join(store, id, 'umbrel-app.yml'), `manifestVersion: 1\nid: ${id}\nname: ${id}\nport: ${appPort + (id === 'tor-a' ? 21 : 22)}\n`)
+			await writeFile(join(store, id, 'docker-compose.yml'), compose)
+		}
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		const torDir = join(data, 'apps', 'system', 'tor')
+		await call('appStore.addRepository', {url: `file://${store}`})
+		await call('apps.install', {appId: 'tor-a'})
+		await call('apps.install', {appId: 'tor-b'})
+		await until(async () => (await q('apps.list')).filter((a) => a.id === 'tor-a' || a.id === 'tor-b').every((a) => a.state === 'running') && (await q('apps.list')).some((a) => a.id === 'tor-b'))
+		assert.equal(up.has('omarchy-tor'), true)
+		assert.equal(await stat(torDir).then(() => true, () => false), true)
+		await call('apps.uninstall', {appId: 'tor-a'})
+		assert.equal(up.has('omarchy-tor'), true, 'another app still uses Tor')
+		assert.equal(await stat(torDir).then(() => true, () => false), true)
+		await call('apps.uninstall', {appId: 'tor-b'})
+		assert.equal(up.has('omarchy-tor'), false)
+		assert.equal(await stat(torDir).then(() => true, () => false), false)
+		assert.equal((await q('apps.list')).some((a) => a.id === 'tor-a' || a.id === 'tor-b'), false)
+		await call('appStore.removeRepository', {url: `file://${store}`})
 	})
 })

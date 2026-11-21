@@ -16,9 +16,10 @@
 import {randomBytes} from 'node:crypto'
 import {access, chmod, mkdir, readFile, rename, rm, stat, writeFile} from 'node:fs/promises'
 import os from 'node:os'
-import {join} from 'node:path'
+import {dirname, join} from 'node:path'
 import YAML from 'yaml'
 
+import {writeAtomic} from './atomic.mjs'
 import {defaultSpawn} from './backups.mjs'
 import {RpcError} from './rpc.mjs'
 
@@ -59,13 +60,26 @@ export function unraidPath(p) {
 
 // The web address an Unraid template shows, e.g. "http://[IP]:[PORT:8096]/web".
 export function webuiPort(label) {
-	const m = /\[PORT:(\d{1,5})\]([^\s]*)/.exec(String(label ?? ''))
-	return m ? {port: Number(m[1]), path: m[2] && m[2] !== '/' ? m[2] : ''} : null
+	const s = String(label ?? '')
+	const m = /\[PORT:(\d{1,5})\]([^\s]*)/.exec(s)
+	if (!m) return null
+	return {port: Number(m[1]), path: m[2] && m[2] !== '/' ? m[2] : '', ...(/^\s*https:\/\//i.test(s) ? {https: true} : {})}
 }
+
+function imageVersion(image) {
+	const name = String(image ?? '').split('@')[0]
+	const last = name.slice(name.lastIndexOf('/') + 1)
+	const colon = last.indexOf(':')
+	const tag = colon >= 0 ? last.slice(colon + 1) : ''
+	return (tag || 'latest').slice(0, 40)
+}
+
+// Compose would read "$" as one of its variables.
+const escapeCompose = (s) => String(s).replace(/\$/g, '$$$$')
 
 // One container (docker inspect) → an app listing (omarchy-app.yml + docker-compose.yml), what to copy
 // for it, and anything that doesn't come across.
-export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = () => null, takenIds = new Set()} = {}) {
+export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = () => null, takenIds = new Set(), appdataFiles = new Set()} = {}) {
 	const name = String(c?.Name ?? '').replace(/^\//, '')
 	let id = `unraid-${slug(name)}`
 	for (let n = 2; takenIds.has(id); n++) id = `unraid-${slug(name).slice(0, 44)}-${n}`
@@ -84,8 +98,7 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 		if (k === 'PATH' || k === 'HOST_OS' || k === 'HOST_HOSTNAME' || k === 'HOST_CONTAINERNAME') continue
 		// Unraid runs apps as nobody:users (99:100); here they run as the app user Omarchy Server sets.
 		if (k === 'PUID' || k === 'PGID') env[k] = `\${${k}}`
-		// Compose would read "$" as one of its variables.
-		else env[k] = v.replace(/\$/g, '$$$$')
+		else env[k] = escapeCompose(v)
 	}
 	const hc = c?.HostConfig ?? {}
 	if (hc.Privileged) notes.push('It ran with full access to the Unraid server (privileged). It’s brought over without that.')
@@ -130,26 +143,27 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 		}
 		const ro = m.RW === false ? ':ro' : ''
 		const src = String(m.Source ?? '')
+		const dst = escapeCompose(m.Destination)
 		if (src === '/etc/localtime') {
-			volumes.push(`/etc/localtime:${m.Destination}:ro`)
+			volumes.push(`/etc/localtime:${dst}:ro`)
 			continue
 		}
 		if (src === '/var/run/docker.sock' || src === '/run/docker.sock') {
-			volumes.push(`/var/run/docker.sock:${m.Destination}${ro}`)
+			volumes.push(`/var/run/docker.sock:${dst}${ro}`)
 			notes.push('It manages containers. Here it gets your own (rootless) container engine, not a root one.')
 			continue
 		}
 		const where = unraidPath(src)
 		if (where.kind === 'appdata') {
 			const rel = where.rest.replace(/\/+$/, '') || 'appdata'
-			copies.push({from: src, to: rel})
-			volumes.push(`\${APP_DATA_DIR:-.}/data/${rel}:${m.Destination}${ro}`)
+			copies.push({from: src, to: rel, ...(appdataFiles.has(src) ? {file: true} : {})})
+			volumes.push(`\${APP_DATA_DIR:-.}/data/${escapeCompose(rel)}:${dst}${ro}`)
 		} else if (where.kind === 'share') {
 			shares.add(where.share)
 			const dest = shareDest(where.share)
-			if (dest) volumes.push(`${join(dest, where.rest)}:${m.Destination}${ro}`)
+			if (dest) volumes.push(`${escapeCompose(join(dest, where.rest))}:${dst}${ro}`)
 			else {
-				volumes.push(`\${APP_DATA_DIR:-.}/data/shares/${slug(where.share)}${where.rest ? `/${where.rest}` : ''}:${m.Destination}${ro}`)
+				volumes.push(`\${APP_DATA_DIR:-.}/data/shares/${slug(where.share)}${where.rest ? `/${escapeCompose(where.rest)}` : ''}:${dst}${ro}`)
 				notes.push(`It uses the ${where.share} share. Bring that share over too, or it starts with an empty folder there.`)
 			}
 		} else if (src.startsWith('/tmp')) {
@@ -162,9 +176,9 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 	if (Object.keys(env).length) svc.environment = env
 	const user = String(c?.Config?.User ?? '')
 	if (/^(99|nobody)(:(100|users))?$/.test(user)) svc.user = '${PUID}:${PGID}'
-	else if (user) svc.user = user
+	else if (user) svc.user = escapeCompose(user)
 	const cmd = c?.Config?.Cmd
-	if (Array.isArray(cmd) && cmd.length && JSON.stringify(cmd) !== JSON.stringify(imageCmd)) svc.command = cmd
+	if (Array.isArray(cmd) && cmd.length && JSON.stringify(cmd) !== JSON.stringify(imageCmd)) svc.command = cmd.map(escapeCompose)
 	if (volumes.length) svc.volumes = volumes
 	const portLines = []
 	if (webBinding || (publicPort && webPort)) portLines.push(`${publicPort}:${webPort}`)
@@ -176,8 +190,8 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 		name,
 		tagline: 'Brought over from Unraid',
 		category: 'utilities',
-		version: (image.split(':')[1] ?? 'latest').slice(0, 40),
-		...(publicPort && webPort ? {port: publicPort, web: {service, port: webPort}, path: ui?.path ?? ''} : {}),
+		version: imageVersion(image),
+		...(publicPort && webPort ? {port: publicPort, web: {service, port: webPort, ...(ui?.https ? {https: true} : {})}, path: ui?.path ?? ''} : {}),
 		...(kept.length ? {openPorts: [...new Set(kept.map((p) => p.host))]} : {}),
 		description: `${name}, moved from your Unraid server (${image}).`,
 		developer: 'Imported',
@@ -198,10 +212,20 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 	}
 }
 
+const XML_ENTITIES = {amp: '&', lt: '<', gt: '>', quot: '"', apos: "'"}
+function unescapeXml(s) {
+	return String(s).replace(/&(?:#(\d+)|#x([0-9a-fA-F]+)|(amp|lt|gt|quot|apos));/g, (m, dec, hex, named) => {
+		if (named) return XML_ENTITIES[named]
+		const cp = dec ? Number.parseInt(dec, 10) : Number.parseInt(hex, 16)
+		return Number.isInteger(cp) && cp > 0 && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff) ? String.fromCodePoint(cp) : m
+	})
+}
+
 // virsh dumpxml → what's needed to make a machine here.
 export function vmPlan(xml, state = '') {
 	const text = String(xml)
-	const name = /<name>([^<]+)<\/name>/.exec(text)?.[1] ?? 'VM'
+	const nameMatch = /<name>([^<]+)<\/name>/.exec(text)
+	const name = nameMatch ? unescapeXml(nameMatch[1]) : 'VM'
 	const memKiB = Number(/<memory[^>]*unit=['"]KiB['"][^>]*>(\d+)</.exec(text)?.[1] ?? /<memory[^>]*>(\d+)</.exec(text)?.[1] ?? 0)
 	const cores = Number(/<vcpu[^>]*>(\d+)</.exec(text)?.[1] ?? 1)
 	const firmware = /<loader[^>]*>[^<]*(?:OVMF|ovmf|edk2)[^<]*<\/loader>/.test(text) || /firmware=['"]efi['"]/.test(text) ? 'efi' : 'bios'
@@ -211,7 +235,9 @@ export function vmPlan(xml, state = '') {
 	for (const m of text.matchAll(/<disk\s+type=['"](\w+)['"]\s+device=['"](\w+)['"][^>]*>([\s\S]*?)<\/disk>/g)) {
 		const [, type, device, body] = m
 		if (device !== 'disk') continue
-		const file = /<source\s+(?:file|dev)=['"]([^'"]+)['"]/.exec(body)?.[1]
+		const srcMatch = /<source\b[^>]*?\s(?:file|dev)=(?:'([^']+)'|"([^"]+)")/.exec(body)
+		const rawFile = srcMatch ? (srcMatch[1] ?? srcMatch[2]) : undefined
+		const file = rawFile ? unescapeXml(rawFile) : undefined
 		const bus = /<target[^>]*bus=['"](\w+)['"]/.exec(body)?.[1] ?? 'sata'
 		const format = /<driver[^>]*type=['"](\w+)['"]/.exec(body)?.[1] ?? 'raw'
 		if (type !== 'file' || !file) {
@@ -252,16 +278,65 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 	const controlPath = join(runtimeDir, `omarchy-unraid-${process.getuid?.() ?? 0}-%C`)
 	let session = null // {host, port, password, version, fingerprint, scannedAt, scan}
 	let job = null
+	let starting = false // set for the gap before job is assigned, so a second start cannot pass the check
 	let idle = null
+	const importedVms = new Map() // vmName -> machineId
 
 	const ready = (async () => {
 		await mkdir(dir, {recursive: true, mode: 0o700})
 		await writeFile(askpass, '#!/bin/sh\nprintf \'%s\\n\' "$OMARCHY_UNRAID_SECRET"\n', {mode: 0o700})
 		await chmod(askpass, 0o700)
-		job = JSON.parse((await readFile(jobFile, 'utf8').catch(() => null)) ?? 'null')
-		if (job && !job.endedAt) Object.assign(job, {endedAt: now(), stopped: 'The server restarted. Connect again and choose Continue to pick up where it left off.'})
+		// A missing file is no previous job. Empty, truncated, or non-object JSON stays on disk;
+		// rewriting it here would destroy the only copy. The log names the file, never its path or contents.
+		const text = await readFile(jobFile, 'utf8').catch(() => null)
+		if (text !== null) {
+			let parsed = null
+			try {
+				parsed = JSON.parse(text)
+			} catch {
+				/* not JSON */
+			}
+			if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) console.error('[omarchyd] job.json is empty or invalid and was left unchanged')
+			else {
+				job = parsed
+				for (const item of job.items ?? []) {
+					if (item?.kind === 'vm' && item.status === 'done' && item.machineId) importedVms.set(item.key || item.name, item.machineId)
+				}
+				if (!job.endedAt) {
+					const paused = typeof job.paused === 'string' && job.paused ? job.paused : null
+					const stopped = paused
+						? `The server restarted while ${paused} was paused on Unraid. Start ${paused} on Unraid, then choose Done and connect again to pick up where it left off.`
+						: 'The server restarted. Choose Done, then connect again to pick up where it left off.'
+					Object.assign(job, {endedAt: now(), stopped})
+					if (Array.isArray(job.items)) {
+						for (const item of job.items) {
+							if (item?.status === 'running') {
+								item.status = 'failed'
+								item.error = paused && item.name === paused ? `Stopped when the server restarted. Start ${paused} on Unraid.` : 'Stopped when the server restarted'
+								delete item.step
+							} else if (item?.status === 'waiting') {
+								item.status = 'skipped'
+								delete item.step
+							}
+						}
+					}
+				}
+			}
+		}
 	})()
-	const saveJob = () => writeFile(jobFile, JSON.stringify(job, null, '\t'), {mode: 0o600})
+	const saveJob = (record = job) => writeAtomic(jobFile, JSON.stringify(record, null, '\t'), {mode: 0o600})
+
+	function vmInstalled(name) {
+		if (machines?.importedVm?.(name)) return true
+		const id = importedVms.get(name)
+		if (!id) return false
+		const st = machines?.importState?.(id)
+		if (st && st.error === 'It was removed') {
+			importedVms.delete(name)
+			return false
+		}
+		return true
+	}
 
 	function baseEnv() {
 		const env = {LC_ALL: 'C'}
@@ -285,9 +360,10 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 	const sshEnv = () => ({...baseEnv(), SSH_ASKPASS: askpass, SSH_ASKPASS_REQUIRE: 'force', DISPLAY: ':0', OMARCHY_UNRAID_SECRET: session.password})
 	function touch() {
 		clearTimeout(idle)
-		// Forget the password when nothing has happened for a while (and no import is running).
+		// Forget the password when nothing has happened for a while. rsync never calls remote, so a running import arms the next window instead of dropping it.
 		idle = setTimeout(() => {
-			if (!job || job.endedAt) forget()
+			if (job && !job.endedAt) touch()
+			else forget()
 		}, 2 * 60 * 60_000)
 		idle.unref?.()
 	}
@@ -306,23 +382,28 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 			const msg = String(e.message)
 			if (e.code === 'ENOENT') throw new RpcError('PRECONDITION_FAILED', 'This server needs ssh. Run Omarchy Server’s installer once more.')
 			if (/Permission denied|Authentication failed/i.test(msg)) throw new RpcError('FORBIDDEN', 'Unraid didn’t accept that password (it’s the root password, the one you sign in to Unraid’s web page with).')
-			if (/Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(msg)) throw new RpcError('FORBIDDEN', 'That server isn’t the one you connected to before (its key changed). If you reinstalled Unraid, choose Forget it and connect again.')
+			if (/Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(msg)) throw new RpcError('FORBIDDEN', 'That server isn’t the one you connected to before (its key changed). If you reinstalled Unraid, choose Forget this server’s key and connect again.')
 			if (/Connection refused/i.test(msg)) throw new RpcError('PRECONDITION_FAILED', 'Unraid isn’t accepting SSH. Turn it on in Unraid: Settings › Management Access › Use SSH.')
 			if (/timed out|No route|Could not resolve|Name or service not known/i.test(msg)) throw new RpcError('PRECONDITION_FAILED', 'Couldn’t reach that server. Check its name or address, and that it’s on.')
 			throw new RpcError('INTERNAL_SERVER_ERROR', msg.replace(/^ssh: /, '').slice(0, 300))
 		}
 	}
 
-	// ---- connect and look around ---------------------------------------------------------------
-	async function connect(input = {}) {
-		await ready
-		if (job && !job.endedAt) throw new RpcError('CONFLICT', 'An import is running')
+	function parseHostPort(input = {}) {
 		let host = String(input.host ?? '').trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
 		let port = 22
 		const hp = /^(.+):(\d{1,5})$/.exec(host)
 		if (hp) [host, port] = [hp[1], Number(hp[2])]
-		if (input.port) port = Number(input.port)
-		if (!HOST.test(host) || !(port > 0 && port < 65536)) throw new RpcError('BAD_REQUEST', 'Enter your Unraid server’s name or address, like tower.local or 192.168.1.10')
+		if (input.port !== undefined && input.port !== null && input.port !== '') port = Number(input.port)
+		return {host, port}
+	}
+
+	// ---- connect and look around ---------------------------------------------------------------
+	async function connect(input = {}) {
+		await ready
+		if (job && !job.endedAt) throw new RpcError('CONFLICT', 'An import is running')
+		const {host, port} = parseHostPort(input)
+		if (!HOST.test(host) || !Number.isInteger(port) || !(port > 0 && port < 65536)) throw new RpcError('BAD_REQUEST', 'Enter your Unraid server’s name or address, like tower.local or 192.168.1.10')
 		const password = String(input.password ?? '')
 		if (!password || /[\r\n]/.test(password) || password.length > 512) throw new RpcError('BAD_REQUEST', 'Enter Unraid’s root password')
 		forget()
@@ -343,9 +424,10 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 
 	async function forgetHost(input = {}) {
 		await ready
-		const host = String(input.host ?? '').trim()
-		if (!HOST.test(host)) throw new RpcError('BAD_REQUEST', 'Bad host')
-		await run('ssh-keygen', ['-R', host, '-f', knownHosts], {env: baseEnv(), timeout: 10_000}).catch(() => {})
+		const {host, port} = parseHostPort(input)
+		if (!HOST.test(host) || !Number.isInteger(port) || !(port > 0 && port < 65536)) throw new RpcError('BAD_REQUEST', 'Bad host')
+		const target = port === 22 ? host : `[${host}]:${port}`
+		await run('ssh-keygen', ['-R', target, '-f', knownHosts], {env: baseEnv(), timeout: 10_000}).catch(() => {})
 		return true
 	}
 
@@ -368,20 +450,27 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 				const imageInfo = images.length ? JSON.parse(await remote(`docker image inspect ${images.map(sq).join(' ')}`, {timeout: 120_000})) : []
 				const byImage = new Map(imageInfo.map((i) => [i.Id, i]))
 				const appdataSizes = new Map()
+				const appdataFiles = new Set()
 				const appdataPaths = [...new Set(inspect.flatMap((c) => (c.Mounts ?? []).map((m) => m.Source).filter((s) => unraidPath(s).kind === 'appdata')))]
 				if (appdataPaths.length) {
-					const out = await remote(`for p in ${appdataPaths.map(sq).join(' ')}; do printf '%s\\t%s\\n' "$p" "$(timeout 60 du -sb "$p" 2>/dev/null | cut -f1)"; done`, {timeout: 20 * 60_000})
+					const out = await remote(`for p in ${appdataPaths.map(sq).join(' ')}; do t=d; [ -f "$p" ] && t=f; printf '%s\\t%s\\t%s\\n' "$p" "$(timeout 60 du -sb "$p" 2>/dev/null | cut -f1)" "$t"; done`, {timeout: 20 * 60_000})
 					for (const l of out.split('\n')) {
-						const [p, s] = l.split('\t')
-						if (p) appdataSizes.set(p, Number(s) || 0)
+						const [p, s, t] = l.split('\t')
+						if (!p) continue
+						const rawSize = (s ?? '').trim()
+						appdataSizes.set(p, /^\d+$/.test(rawSize) ? Number(rawSize) : null)
+						if (t?.trim() === 'f') appdataFiles.add(p)
 					}
 				}
 				const taken = new Set()
 				containers = inspect.map((c) => {
 					const img = byImage.get(c.Image)
-					const plan = containerPlan(c, {imageEnv: img?.Config?.Env ?? [], imageCmd: img?.Config?.Cmd ?? null, takenIds: taken})
+					const plan = containerPlan(c, {imageEnv: img?.Config?.Env ?? [], imageCmd: img?.Config?.Cmd ?? null, takenIds: taken, appdataFiles})
 					taken.add(plan.id)
-					return {...plan, size: plan.copies.reduce((t, cp) => t + (appdataSizes.get(cp.from) ?? 0), 0), installed: apps.installed(plan.id)}
+					const size = plan.copies.some((cp) => appdataSizes.get(cp.from) == null)
+						? null
+						: plan.copies.reduce((t, cp) => t + appdataSizes.get(cp.from), 0)
+					return {...plan, size, installed: apps.installed(plan.id)}
 				})
 			}
 		}
@@ -392,7 +481,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 				const [xml, st] = await Promise.all([remote(`virsh dumpxml ${sq(n)}`), remote(`virsh domstate ${sq(n)}`).catch(() => '')])
 				const plan = vmPlan(xml, st.trim())
 				const sizes = plan.disks.length ? await remote(`stat -c %s ${plan.disks.map((d) => sq(d.file)).join(' ')}`).catch(() => '') : ''
-				vms.push({...plan, size: sizes.split('\n').filter(Boolean).reduce((t, s) => t + Number(s), 0)})
+				vms.push({...plan, size: sizes.split('\n').filter(Boolean).reduce((t, s) => t + Number(s), 0), installed: vmInstalled(plan.name)})
 			}
 		}
 		session.scan = {shares, containers, vms, at: now()}
@@ -415,11 +504,15 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		return (await files.resolve(virtual)).real
 	}
 
-	async function rsync(from, to, onProgress) {
-		await mkdir(to, {recursive: true})
+	async function rsync(from, to, onProgress, {file = false} = {}) {
+		await mkdir(file ? dirname(to) : to, {recursive: true})
 		const e = ['ssh', ...sshOpts(false)].map((a) => (/[\s'"]/.test(a) ? `'${a}'` : a)).join(' ')
+		const src = from.replace(/\/+$/, '')
+		const args = file
+			? ['-lt', '--partial', '--protect-args', '--info=progress2', '-e', e, `${session.host}:${src}`, to]
+			: ['-rlt', '--partial', '--protect-args', '--info=progress2', '--no-inc-recursive', '-e', e, `${session.host}:${src}/`, `${to}/`]
 		try {
-			await run('rsync', ['-rlt', '--partial', '--protect-args', '--info=progress2', '--no-inc-recursive', '-e', e, `${session.host}:${from.replace(/\/+$/, '')}/`, `${to}/`], {
+			await run('rsync', args, {
 				env: sshEnv(),
 				timeout: 7 * 24 * 60 * 60_000,
 				split: /[\r\n]/,
@@ -429,32 +522,50 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 				},
 			})
 		} catch (err) {
+			if (err?.code === 24) {
+				console.warn('[omarchyd] unraid rsync: some source files vanished while copying (exit 24)')
+				return
+			}
 			if (err.code === 'ENOENT') throw new RpcError('PRECONDITION_FAILED', 'This server needs rsync. Run Omarchy Server’s installer once more.')
 			throw new RpcError('INTERNAL_SERVER_ERROR', `Copying ${from} didn’t finish: ${String(err.message).replace(/^rsync: /, '').slice(0, 200)}`)
 		}
 	}
 
 	async function start(input = {}) {
-		await ready
-		if (!session?.scan) throw new RpcError('PRECONDITION_FAILED', 'Connect and look at your Unraid server first')
-		if (job && !job.endedAt) throw new RpcError('CONFLICT', 'An import is already running')
-		const dest = destRoot(input)
-		const want = (list) => new Set(Array.isArray(list) ? list.map(String) : [])
-		const sharesWanted = want(input.shares)
-		const containersWanted = want(input.containers)
-		const vmsWanted = want(input.vms)
-		const scan = session.scan
-		const items = []
-		for (const s of scan.shares) if (sharesWanted.has(s.name) && s.kind !== 'system' && s.kind !== 'appdata') items.push({kind: 'share', key: s.name, name: s.name, size: s.size, status: 'waiting'})
-		// Containers' share folders point at where those shares are being copied.
-		const shareDest = (share) => (sharesWanted.has(share) ? `${dest}/${share}` : null)
-		for (const c of scan.containers) if (containersWanted.has(c.id)) items.push({kind: 'container', key: c.id, name: c.name, size: c.size, status: 'waiting'})
-		for (const v of scan.vms) if (vmsWanted.has(v.name)) items.push({kind: 'vm', key: v.name, name: v.name, size: v.size, status: 'waiting'})
-		if (!items.length) throw new RpcError('BAD_REQUEST', 'Choose something to bring over')
-		job = {id: randomBytes(4).toString('hex'), host: session.host, startedAt: now(), endedAt: null, destination: dest, shareOnNetwork: input.shareOnNetwork !== false, pauseContainers: input.pauseContainers !== false, items, shareDest: Object.fromEntries([...sharesWanted].map((s) => [s, `${dest}/${s}`]))}
-		await saveJob()
-		const plans = new Map(scan.containers.map((c) => [c.id, c]))
-		const vmPlans = new Map(scan.vms.map((v) => [v.name, v]))
+		if (starting || (job && !job.endedAt)) throw new RpcError('CONFLICT', 'An import is already running')
+		starting = true
+		let dest
+		let shareDest
+		let plans
+		let vmPlans
+		try {
+			await ready
+			if (!session?.scan) throw new RpcError('PRECONDITION_FAILED', 'Connect and look at your Unraid server first')
+			if (job && !job.endedAt) throw new RpcError('CONFLICT', 'An import is already running')
+			dest = destRoot(input)
+			const want = (list) => new Set(Array.isArray(list) ? list.map(String) : [])
+			const sharesWanted = want(input.shares)
+			const containersWanted = want(input.containers)
+			const vmsWanted = want(input.vms)
+			const scan = session.scan
+			const items = []
+			for (const s of scan.shares) if (sharesWanted.has(s.name) && s.kind !== 'system' && s.kind !== 'appdata') items.push({kind: 'share', key: s.name, name: s.name, size: s.size, status: 'waiting'})
+			// Containers' share folders point at where those shares are being copied.
+			shareDest = (share) => (sharesWanted.has(share) ? `${dest}/${share}` : null)
+			for (const c of scan.containers) if (containersWanted.has(c.id)) items.push({kind: 'container', key: c.id, name: c.name, size: c.size, status: 'waiting'})
+			for (const v of scan.vms) if (vmsWanted.has(v.name)) items.push({kind: 'vm', key: v.name, name: v.name, size: v.size, status: 'waiting'})
+			if (!items.length) throw new RpcError('BAD_REQUEST', 'Choose something to bring over')
+			const next = {id: randomBytes(4).toString('hex'), host: session.host, startedAt: now(), endedAt: null, destination: dest, shareOnNetwork: input.shareOnNetwork !== false, pauseContainers: input.pauseContainers !== false, items, shareDest: Object.fromEntries([...sharesWanted].map((s) => [s, `${dest}/${s}`]))}
+			await saveJob(next)
+			job = next
+			plans = new Map(scan.containers.map((c) => [c.id, c]))
+			vmPlans = new Map(scan.vms.map((v) => [v.name, v]))
+		} catch (err) {
+			starting = false
+			throw err
+		}
+		starting = false
+		touch()
 		job.done = (async () => {
 			for (const item of job.items) {
 				if (job.cancelled) {
@@ -477,6 +588,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 				await saveJob().catch(() => {})
 			}
 			job.endedAt = now()
+			touch()
 			await saveJob().catch(() => {})
 		})()
 		return {id: job.id}
@@ -511,7 +623,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 					// "${APP_DATA_DIR:-.}/data/shares/<share>[/rest]:<in the container>[:ro]" (the variable has a colon of its own).
 					const m = /^\$\{APP_DATA_DIR:-\.\}\/data\/shares\/([^/:]+)((?:\/[^:]*)?)(:.+)$/.exec(String(v))
 					const share = m && plan.shares.find((s) => slug(s) === m[1])
-					if (share && shareDest(share)) return `${join(await realOf(shareDest(share)), m[2] ?? '')}${m[3]}`
+					if (share && shareDest(share)) return `${join(escapeCompose(await realOf(shareDest(share))), m[2] ?? '')}${m[3]}`
 					return v
 				}),
 			)
@@ -524,17 +636,31 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		let n = 0
 		for (const cp of plan.copies) {
 			item.step = 'Copying its files'
-			await rsync(cp.from, join(appData, cp.to), (p) => (item.progress = 0.7 * ((n + p.percent) / total)))
+			await rsync(cp.from, join(appData, cp.to), (p) => (item.progress = 0.7 * ((n + p.percent) / total)), {file: !!cp.file})
 			n++
 		}
 		const pause = job.pauseContainers && plan.running && plan.copies.length
 		if (pause) {
 			item.step = 'Copying the last changes (paused on Unraid)'
-			await remote(`docker stop ${sq(plan.name)}`, {timeout: 5 * 60_000})
+			job.paused = plan.name
+			await saveJob().catch(() => {})
 			try {
-				for (const cp of plan.copies) await rsync(cp.from, join(appData, cp.to), () => {})
+				await remote(`docker stop ${sq(plan.name)}`, {timeout: 5 * 60_000})
+				for (const cp of plan.copies) await rsync(cp.from, join(appData, cp.to), () => {}, {file: !!cp.file})
 			} finally {
-				await remote(`docker start ${sq(plan.name)}`, {timeout: 5 * 60_000}).catch((e) => (item.note = `It didn’t start again on Unraid: ${e.message}`))
+				let restarted = false
+				await remote(`docker start ${sq(plan.name)}`, {timeout: 5 * 60_000}).then(
+					() => {
+						restarted = true
+					},
+					(e) => {
+						item.note = [item.note, `It may still be stopped on Unraid — start ${plan.name} there (${e.message}).`].filter(Boolean).join(' ')
+					},
+				)
+				if (restarted) {
+					delete job.paused
+					await saveJob().catch(() => {})
+				}
 			}
 		}
 		item.step = 'Installing'
@@ -558,6 +684,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		if (!plan) throw new Error('It isn’t on the Unraid server any more')
 		const st = (await remote(`virsh domstate ${sq(plan.name)}`).catch(() => '')).trim()
 		if (st && st !== 'shut off') throw new Error(`Shut down ${plan.name} on Unraid first (it’s ${st}), then bring it over`)
+		if (vmInstalled(plan.name)) throw new Error('It’s already here')
 		const stage = join(stagingDir, `vm-${randomBytes(4).toString('hex')}`)
 		await mkdir(stage, {recursive: true, mode: 0o700})
 		try {
@@ -589,16 +716,26 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 			item.progress = 0.85
 			const {id} = await machines.importVm({...plan, disks: local})
 			const end = now() + 12 * 60 * 60_000
+			let finalState
 			for (;;) {
 				const s = machines.importState(id)
 				if (s.done) {
 					if (s.error) throw new Error(s.error)
+					finalState = s
 					break
 				}
 				if (now() > end) throw new Error('Making the machine took too long')
 				await new Promise((r) => setTimeout(r, 3000))
 			}
-			if (plan.notes.length) item.note = plan.notes.join(' ')
+			item.machineId = id
+			importedVms.set(plan.name, id)
+			const notes = [...plan.notes]
+			const finalName = finalState?.name || plan.name
+			if (finalName !== plan.name) {
+				item.machineName = finalName
+				notes.unshift(`Saved here as “${finalName}” because a machine named ${plan.name} already existed.`)
+			}
+			if (notes.length) item.note = notes.join(' ')
 		} finally {
 			await rm(stage, {recursive: true, force: true})
 		}

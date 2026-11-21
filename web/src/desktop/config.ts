@@ -161,25 +161,36 @@ const store = (k: string, v: string | null) => {
 }
 const knownRev = () => Number(stored(REV_KEY)) || 0
 const keepLocal = (c: DeskConfig) => store(KEY, JSON.stringify(c))
+// The revision this tab itself last loaded or saved; shared localStorage rev moves when another tab writes.
+let appliedRev = stored(KEY) !== null ? knownRev() : 0
 // Changes made here that the server doesn't have yet (counted, so a save that was already on its way
 // doesn't clear a change made after it left).
 let edits = stored(DIRTY_KEY) ? 1 : 0
 let pushTimer: number | undefined
+// Sign-out bumps this. A save or load already in flight captured the old value and must not
+// write this browser once the next account is in the same tab.
+let epoch = 0
 function push() {
 	window.clearTimeout(pushTimer)
 	pushTimer = window.setTimeout(async () => {
-		if (!current) return
+		const mine = epoch
+		if (!current || mine !== epoch) return
 		const sent = edits
+		const config = current
 		try {
 			const r = await fetch('/api/desktop', {
 				method: 'POST',
 				credentials: 'same-origin',
 				headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
-				body: JSON.stringify({config: current}),
+				body: JSON.stringify({config}),
 			})
-			if (!r.ok) return
+			if (mine !== epoch || !r.ok) return
 			const saved = (await r.json())?.desktop as {rev?: number} | null
-			if (saved?.rev) store(REV_KEY, String(saved.rev))
+			if (mine !== epoch) return
+			if (saved?.rev) {
+				appliedRev = Number(saved.rev) || appliedRev
+				store(REV_KEY, String(saved.rev))
+			}
 			if (edits === sent) (edits = 0), store(DIRTY_KEY, null)
 		} catch {
 			/* offline: saved next time */
@@ -188,21 +199,33 @@ function push() {
 }
 let lastPull = 0
 let syncing = false
+// A pull asked for while one is already running. Sign-out must not start a pull of its
+// own: that request is signed out, and stamping lastPull there blocks the next account.
+let pullAgain = false
 async function pull() {
-	if (syncing || Date.now() - lastPull < 3000) return
+	if (syncing) {
+		pullAgain = true
+		return
+	}
+	if (Date.now() - lastPull < 3000) return
+	const mine = epoch
 	syncing = true
-	lastPull = Date.now()
 	try {
 		const r = await fetch('/api/desktop', {credentials: 'same-origin'})
-		if (!r.ok) return
+		// A 401, or a pull sign-out invalidated, must leave lastPull unset. resetDeskConfig
+		// already zeroes it; setting it here makes the next account's sync wait 3 seconds.
+		if (mine !== epoch || !r.ok) return
 		const saved = (await r.json())?.desktop as {config: unknown; rev?: number; updatedAt?: number} | null
+		if (mine !== epoch) return
+		lastPull = Date.now()
 		const rev = saved ? Number(saved.rev) || 1 : 0
 		if (edits) {
 			// This browser has the newest changes: save them for the others.
 			current ??= loadConfig()
 			push()
-		} else if (saved && rev !== knownRev()) {
+		} else if (saved && rev !== appliedRev) {
 			current = clean(saved.config)
+			appliedRev = rev
 			keepLocal(current)
 			store(REV_KEY, String(rev))
 			listeners.forEach((l) => l(current!))
@@ -215,18 +238,65 @@ async function pull() {
 		/* offline: this browser's copy stays */
 	} finally {
 		syncing = false
+		// One follow-up for a pull that arrived while this one was running. Not because
+		// the epoch changed: that started a signed-out pull which stamped lastPull.
+		if (pullAgain) {
+			pullAgain = false
+			void pull()
+		}
 	}
 }
+function clearTabState() {
+	epoch++
+	window.clearTimeout(pushTimer)
+	pushTimer = undefined
+	current = null
+	appliedRev = 0
+	edits = 0
+	lastPull = 0
+	pullAgain = false
+	listeners.forEach((l) => l(DEFAULT_CONFIG))
+}
+function onStorage(e: StorageEvent) {
+	try {
+		if (e.storageArea && e.storageArea !== localStorage) return
+	} catch {
+		return
+	}
+	if (e.key !== KEY && e.key !== REV_KEY && e.key !== null) return
+	if (e.key === null || (e.key === KEY && e.newValue === null)) {
+		clearTabState()
+		return
+	}
+	if (edits) return
+	const raw = stored(KEY)
+	if (raw === null) return
+	try {
+		current = clean(JSON.parse(raw))
+	} catch {
+		return
+	}
+	appliedRev = knownRev()
+	listeners.forEach((l) => l(current!))
+}
 let started = false
-function startSync() {
-	if (started) return
-	started = true
-	// Saved by an earlier version, which went by each browser's clock: take the server's copy.
-	store(`${KEY}:at`, null)
+export function syncDeskConfig() {
+	if (!started) {
+		started = true
+		// Saved by an earlier version, which went by each browser's clock: take the server's copy.
+		store(`${KEY}:at`, null)
+		window.addEventListener('focus', () => pull())
+		window.addEventListener('storage', onStorage)
+		document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && pull())
+		window.setInterval(() => document.visibilityState === 'visible' && pull(), 20_000)
+	}
 	pull()
-	window.addEventListener('focus', () => pull())
-	document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && pull())
-	window.setInterval(() => document.visibilityState === 'visible' && pull(), 20_000)
+}
+export function resetDeskConfig() {
+	store(KEY, null)
+	store(REV_KEY, null)
+	store(DIRTY_KEY, null)
+	clearTabState()
 }
 export function patchDeskConfig(patch: Partial<DeskConfig>) {
 	current = clean({...(current ?? loadConfig()), ...patch})
@@ -241,7 +311,7 @@ export function useDeskConfig() {
 	const [cfg, setCfg] = useState<DeskConfig>(() => (current ??= loadConfig()))
 	useEffect(() => {
 		listeners.add(setCfg)
-		startSync()
+		syncDeskConfig()
 		return () => void listeners.delete(setCfg)
 	}, [])
 	const update = useCallback((fn: (c: DeskConfig) => DeskConfig) => {

@@ -1,16 +1,17 @@
 // Settings → Backups: this server's apps and settings, encrypted, copied to a NAS on a schedule.
 import {useEffect, useMemo, useState, type CSSProperties, type FormEvent} from 'react'
+import {computerSheetChanged, formatBackupHour, formatBackupStamp, formatBackupWhen, serverLastRun} from './backupHelpers'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
 import {Icon} from './icons'
-import {Group, Row, Segmented, Sheet, SheetHeader, Switch, haptic, useConfirm, useToast} from './ui'
+import {Field, Group, Row, Segmented, Sheet, SheetHeader, Switch, haptic, useConfirm, useToast} from './ui'
 
 type Nas = {host: string; port?: number; share: string; folder: string; username: string; domain?: string; hasPassword?: boolean}
 type Schedule = {frequency: 'off' | 'daily' | 'weekly'; hour: number; weekday: number}
 type Keep = {daily: number; weekly: number; monthly: number}
 type Include = {apps: boolean; settings: boolean; machineBackups: boolean}
-type RunItem = {kind: string; id?: string; name: string; ok: boolean; error?: string; added?: number}
+type RunItem = {kind: string; id?: string; name: string; ok: boolean; error?: string; warning?: string; added?: number}
 type Run = {id: string; computer?: string; name?: string; reason: string; startedAt: number; endedAt: number | null; ok: boolean; error: string | null; items: RunItem[]; added: number; nas: {ok: boolean; error?: string; uploaded?: number; uploadedBytes?: number} | null}
 export type BackupStatus = {
 	configured: boolean
@@ -23,6 +24,8 @@ export type BackupStatus = {
 	keySaved: boolean
 	running: {step: string; progress: number; startedAt: number} | null
 	nextRunAt: number | null
+	timeZone?: string
+	last?: Run | null
 	history: Run[]
 }
 type Snapshot = {id: string; shortId: string; time: number; tags: string[]; paths: string[]; size: number | null}
@@ -44,7 +47,6 @@ type Found = {host: string; name: string; address?: string}
 type Share = {name: string; comment: string}
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-const hourLabel = (h: number) => new Date(2026, 0, 1, h).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})
 const bytes = (n: number) => {
 	if (n < 1024) return `${n} B`
 	const u = ['KB', 'MB', 'GB', 'TB']
@@ -62,16 +64,6 @@ const ago = (t: number) => {
 	if (s < 86400) return `${Math.round(s / 3600)} h ago`
 	return `${Math.round(s / 86400)} days ago`
 }
-const when = (t: number) => {
-	const d = new Date(t)
-	const today = new Date()
-	const tomorrow = new Date(Date.now() + 86400_000)
-	const time = d.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})
-	if (d.toDateString() === today.toDateString()) return `today at ${time}`
-	if (d.toDateString() === tomorrow.toDateString()) return `tomorrow at ${time}`
-	return `${d.toLocaleDateString([], {weekday: 'long'})} at ${time}`
-}
-const stamp = (t: number) => new Date(t).toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'})
 
 function useStatus() {
 	const q = useQuery({queryKey: ['backups.status'], queryFn: () => query<BackupStatus>('backups.status'), retry: false, refetchInterval: (s) => (s.state.data?.running ? 1500 : 20_000)})
@@ -90,16 +82,6 @@ function useSave() {
 			qc.invalidateQueries({queryKey: ['backups.snapshots']})
 		},
 	})
-}
-
-function Field({id, label, hint, ...input}: {id: string; label: string; hint?: string} & React.InputHTMLAttributes<HTMLInputElement>) {
-	return (
-		<div className="field">
-			<label htmlFor={id}>{label}</label>
-			<input id={id} {...input} />
-			{hint && <span className="hint">{hint}</span>}
-		</div>
-	)
 }
 
 export function BackupsPage({onBack}: {onBack: () => void}) {
@@ -145,9 +127,9 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 	}, [snaps.data])
 	const names = useMemo(() => {
 		const m = new Map<string, string>()
-		for (const r of s?.history ?? []) for (const i of r.items) if (i.kind === 'app' && i.id) m.set(i.id, i.name)
+		for (const r of [...(s?.last ? [s.last] : []), ...(s?.history ?? [])]) for (const i of r.items) if (i.kind === 'app' && i.id) m.set(i.id, i.name)
 		return m
-	}, [s?.history])
+	}, [s?.history, s?.last])
 
 	return (
 		<div className="stagger">
@@ -271,7 +253,7 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 					{s.history.length > 0 && (
 						<Group title="History">
 							{s.history.slice(0, 8).map((r) => (
-								<HistoryRow key={r.id} r={r} />
+								<HistoryRow key={r.id} r={r} timeZone={s.timeZone} />
 							))}
 						</Group>
 					)}
@@ -294,18 +276,19 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 				/>
 			)}
 			{connect && <ConnectSheet onClose={() => setConnect(false)} />}
-			{computer && comps.data?.find((c) => c.id === computer) && <ComputerSheet c={comps.data.find((c) => c.id === computer)!} onClose={() => setComputer(null)} />}
+			{computer && comps.data?.find((c) => c.id === computer) && <ComputerSheet c={comps.data.find((c) => c.id === computer)!} timeZone={s?.timeZone} onClose={() => setComputer(null)} />}
 			{key && <KeySheet recoveryKey={key} saved={!!s?.keySaved} onClose={() => setKey(null)} />}
 			{restore && (
 				<RestoreSheet
 					appId={restore}
 					name={names.get(restore) ?? restore}
 					list={appsBacked.get(restore) ?? []}
+					timeZone={s?.timeZone}
 					onClose={() => setRestore(null)}
 					onRestore={async (sn) => {
 						const ok = await confirm({
 							title: `Restore ${names.get(restore) ?? restore}?`,
-							body: `It goes back to how it was on ${stamp(sn.time)}. Anything it saved since then is replaced. It stops while this happens.`,
+							body: `It goes back to how it was on ${formatBackupStamp(sn.time, s?.timeZone)}. Anything it saved since then is replaced. It stops while this happens.`,
 							confirm: 'Restore',
 							danger: true,
 							icon: 'restore',
@@ -322,7 +305,7 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 
 function StatusCard({s, busy, onRun}: {s: BackupStatus; busy: boolean; onRun: () => void}) {
 	// This server's own runs (computers show in their own rows).
-	const last = s.history.find((r) => r.endedAt && !r.computer)
+	const last = serverLastRun(s)
 	return (
 		<div className="glass card bk-status">
 			{s.running ? (
@@ -344,7 +327,7 @@ function StatusCard({s, busy, onRun}: {s: BackupStatus; busy: boolean; onRun: ()
 						<b>{!last ? 'No backups yet' : last.ok ? `Backed up ${ago(last.endedAt!)}` : `Last backup ${ago(last.endedAt!)} had a problem`}</b>
 					</div>
 					{last && !last.ok && last.error && <p className="bk-err">{last.error}</p>}
-					<p className="muted bk-next">{s.nextRunAt ? `Next backup ${when(s.nextRunAt)}` : 'Scheduled backups are off'}</p>
+					<p className="muted bk-next">{s.nextRunAt ? `Next backup ${formatBackupWhen(s.nextRunAt, s.timeZone)}` : 'Scheduled backups are off'}</p>
 				</>
 			)}
 			<button className="btn primary" disabled={!!s.running || busy} onClick={() => (haptic(8), onRun())}>
@@ -387,11 +370,11 @@ function ScheduleGroup({s, onChange}: {s: BackupStatus; onChange: (input: Record
 						</label>
 					)}
 					<label>
-						<span>Time</span>
+						<span>Time{s.timeZone ? ` (${s.timeZone})` : ''}</span>
 						<select className="field" value={sc.hour} onChange={(e) => put({hour: Number(e.target.value)})}>
 							{Array.from({length: 24}, (_, h) => (
 								<option key={h} value={h}>
-									{hourLabel(h)}
+									{formatBackupHour(h)}
 								</option>
 							))}
 						</select>
@@ -424,7 +407,7 @@ function ScheduleGroup({s, onChange}: {s: BackupStatus; onChange: (input: Record
 	)
 }
 
-function HistoryRow({r}: {r: Run}) {
+function HistoryRow({r, timeZone}: {r: Run; timeZone?: string}) {
 	const [open, setOpen] = useState(false)
 	const running = !r.endedAt
 	const sub = running
@@ -437,7 +420,7 @@ function HistoryRow({r}: {r: Run}) {
 			<Row
 				icon={running ? 'clock' : r.ok ? 'check' : 'alert'}
 				color={running ? '#8e8e93' : r.ok ? 'var(--green)' : 'var(--red)'}
-				label={`${r.computer ? r.name : 'This server'} · ${stamp(r.startedAt)}${r.reason === 'scheduled' ? '' : ' · by hand'}`}
+				label={`${r.computer ? r.name : 'This server'} · ${formatBackupStamp(r.startedAt, timeZone)}${r.reason === 'scheduled' ? '' : ' · by hand'}`}
 				sub={sub}
 				onClick={r.items.length ? () => setOpen(!open) : undefined}
 			/>
@@ -448,7 +431,7 @@ function HistoryRow({r}: {r: Run}) {
 						<span className="main">
 							<span>
 								{i.name}
-								{i.ok ? ` · ${bytes(i.added ?? 0)} new` : ` · ${i.error}`}
+								{i.ok ? ` · ${bytes(i.added ?? 0)} new${i.warning ? ` · ${i.warning}` : ''}` : ` · ${i.error}`}
 							</span>
 						</span>
 					</div>
@@ -569,7 +552,12 @@ function SetupSheet({mode, current, onClose, onDone}: {mode: 'new' | 'nas'; curr
 					<button type="button" className="btn block ghost" onClick={() => setShares(null)} style={{marginTop: 8}}>
 						Back
 					</button>
-					{mode === 'new' && <p className="muted" style={{fontSize: 13, marginTop: 10}}>Backs up apps and server settings every night at {hourLabel(current.schedule.hour)}. You can change this next.</p>}
+					{mode === 'new' && (
+						<p className="muted" style={{fontSize: 13, marginTop: 10}}>
+							Backs up apps and server settings every night at {formatBackupHour(current.schedule.hour)}
+							{current.timeZone ? ` (${current.timeZone})` : ''}. You can change this next.
+						</p>
+					)}
 				</form>
 			)}
 		</Sheet>
@@ -631,7 +619,7 @@ function KeySheet({recoveryKey, saved, onClose}: {recoveryKey: string; saved: bo
 	)
 }
 
-function RestoreSheet({name, list, onClose, onRestore}: {appId: string; name: string; list: Snapshot[]; onClose: () => void; onRestore: (s: Snapshot) => void}) {
+function RestoreSheet({name, list, timeZone, onClose, onRestore}: {appId: string; name: string; list: Snapshot[]; timeZone?: string; onClose: () => void; onRestore: (s: Snapshot) => void}) {
 	return (
 		<Sheet open onClose={onClose} label={`Restore ${name}`}>
 			<SheetHeader title={`Restore ${name}`} subtitle="Choose the backup to go back to." onClose={onClose} />
@@ -639,7 +627,7 @@ function RestoreSheet({name, list, onClose, onRestore}: {appId: string; name: st
 				{list.map((sn, i) => (
 					<div className="row static" key={sn.id} style={{minHeight: 56}}>
 						<span className="main">
-							<b style={{fontWeight: 550}}>{stamp(sn.time)}</b>
+							<b style={{fontWeight: 550}}>{formatBackupStamp(sn.time, timeZone)}</b>
 							<span>
 								{i === 0 ? 'Latest · ' : ''}
 								{ago(sn.time)}
@@ -705,7 +693,7 @@ function ConnectSheet({onClose}: {onClose: () => void}) {
 	)
 }
 
-function ComputerSheet({c, onClose}: {c: Computer; onClose: () => void}) {
+function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; onClose: () => void}) {
 	const qc = useQueryClient()
 	const toast = useToast()
 	const confirm = useConfirm()
@@ -739,7 +727,7 @@ function ComputerSheet({c, onClose}: {c: Computer; onClose: () => void}) {
 			setBusy(false)
 		}
 	}
-	const changed = picked.join('\n') !== c.folders.join('\n') || JSON.stringify(schedule) !== JSON.stringify(c.schedule)
+	const changed = computerSheetChanged(picked, c.folders, schedule, c.schedule)
 	const toggle = (name: string) => setPicked(picked.includes(name) ? picked.filter((x) => x !== name) : [...picked, name])
 	const shown = [...new Set([...(folders.data?.folders.map((f) => f.name) ?? []), ...c.folders])].sort((a, b) => a.localeCompare(b))
 	return (
@@ -832,11 +820,11 @@ function ComputerSheet({c, onClose}: {c: Computer; onClose: () => void}) {
 									</label>
 								)}
 								<label>
-									<span>Time</span>
+									<span>Time{timeZone ? ` (${timeZone})` : ''}</span>
 									<select className="field" value={schedule.hour} onChange={(e) => setSchedule({...schedule, hour: Number(e.target.value)})}>
 										{Array.from({length: 24}, (_, h) => (
 											<option key={h} value={h}>
-												{hourLabel(h)}
+												{formatBackupHour(h)}
 											</option>
 										))}
 									</select>
@@ -868,7 +856,7 @@ function ComputerSheet({c, onClose}: {c: Computer; onClose: () => void}) {
 								{snaps.data!.slice(0, 20).map((sn, i) => (
 									<div className="row static" key={sn.id} style={{minHeight: 56}}>
 										<span className="main">
-											<b style={{fontWeight: 550}}>{stamp(sn.time)}</b>
+											<b style={{fontWeight: 550}}>{formatBackupStamp(sn.time, timeZone)}</b>
 											<span>
 												{i === 0 ? 'Latest · ' : ''}
 												{sn.size ? bytes(sn.size) : ago(sn.time)}
@@ -880,7 +868,7 @@ function ComputerSheet({c, onClose}: {c: Computer; onClose: () => void}) {
 											onClick={async () => {
 												const ok = await confirm({
 													title: `Restore to ${c.name}?`,
-													body: `Its folders as they were on ${stamp(sn.time)} go into a new “Restored” folder in its home folder. Nothing that’s there now is changed.`,
+													body: `Its folders as they were on ${formatBackupStamp(sn.time, timeZone)} go into a new “Restored” folder in its home folder. Nothing that’s there now is changed.`,
 													confirm: 'Restore',
 													icon: 'restore',
 												})

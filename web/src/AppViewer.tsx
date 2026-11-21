@@ -5,6 +5,7 @@ import {createPortal} from 'react-dom'
 import {mutate, type UserApp} from './api'
 import {appUrl, useBootstrap} from './data'
 import {AppFrame} from './desktop/Desktop'
+import {useDialogFocus} from './focus'
 import {Icon} from './icons'
 import {AppIcon, haptic, lockPageScroll, usePortalRoot, useToast} from './ui'
 
@@ -61,14 +62,16 @@ export function AppViewer({app, onClose}: {app: UserApp; onClose: () => void}) {
 		mutate('apps.trackOpen', {appId: app.id}).catch(() => {})
 		return () => window.removeEventListener('popstate', onPop)
 	}, [app.id])
+	const dialogRef = useRef<HTMLDivElement>(null)
 	const back = () => {
 		haptic(6)
 		if (!closed.current && history.state?.omarchyApp === app.id) history.back()
 		else onClose()
 	}
+	useDialogFocus(true, dialogRef, back)
 
 	return createPortal(
-		<div className="console app-viewer" role="dialog" aria-modal aria-label={name}>
+		<div ref={dialogRef} className="console app-viewer" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1}>
 			<header className="console-bar">
 				<button className="round-btn" aria-label="Back" onClick={back}>
 					<Icon name="back" size={20} />

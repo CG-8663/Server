@@ -1,11 +1,12 @@
 // The root helper's checks (with simulated commands and files) and omarchyd's storage module.
 import assert from 'node:assert/strict'
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, realpath, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
 
 import {createHelper} from '../helper/helper.mjs'
+import {createFiles} from '../omarchyd/files.mjs'
 import {createStorage} from '../omarchyd/storage.mjs'
 
 const user = {name: 'chris', uid: 1000, gid: 1000, home: '/home/chris'}
@@ -120,6 +121,40 @@ describe('helper', () => {
 		assert.ok(!log.some((l) => ['mkfs.btrfs', 'wipefs', 'btrfs'].includes(l[0]) && l[1] !== '--no-act'))
 	})
 
+	test('failed pool-import and pool-create roll back fstab so retry works; pool-forget removes unmounted pool', async () => {
+		const log = []
+		let failMount = true
+		const fs = fakeFs({'/etc/fstab': 'UUID=1111 / btrfs defaults 0 0\n'})
+		const h = createHelper({
+			user,
+			fs,
+			run: fakeRun(log, {
+				mount: () => {
+					if (failMount) throw new Error('mount: wrong fs type, bad option, bad superblock')
+					return ''
+				},
+				umount: () => {
+					throw new Error('umount: /home/chris/Pools/media: not mounted.')
+				},
+			}),
+		})
+		await assert.rejects(h.handle('pool-import', ['media', '22222222-2222-2222-2222-222222222222']), /wrong fs type/)
+		assert.equal(fs.files.get('/etc/fstab'), 'UUID=1111 / btrfs defaults 0 0\n')
+		assert.ok(log.filter((l) => l.join(' ') === 'systemctl daemon-reload').length >= 2, 'daemon-reload runs after fstab rollback')
+
+		// Retrying import is not blocked by a stale fstab line.
+		failMount = false
+		await h.handle('pool-import', ['media', '22222222-2222-2222-2222-222222222222'])
+		assert.match(fs.files.get('/etc/fstab'), /# omarchy-server pool media/)
+		assert.equal(await h.handle('pool-forget', ['media']), 'ok')
+		assert.equal(fs.files.get('/etc/fstab'), 'UUID=1111 / btrfs defaults 0 0\n')
+
+		// pool-create rolls back fstab if mount fails too.
+		failMount = true
+		await assert.rejects(h.handle('pool-create', ['tank', 'single', '/dev/sda']), /wrong fs type/)
+		assert.equal(fs.files.get('/etc/fstab'), 'UUID=1111 / btrfs defaults 0 0\n')
+	})
+
 	test('pool-status reads profile, error counters and the last check', async () => {
 		const fs = fakeFs({'/etc/fstab': 'UUID=x /home/chris/Pools/tank btrfs d 0 0 # omarchy-server pool tank\n'})
 		const h = createHelper({
@@ -147,6 +182,12 @@ describe('helper', () => {
 		const h = createHelper({user, run: fakeRun(log), fs})
 		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'etc', path: '/home/chris/link-out'}]})), /inside your home/)
 		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'x]\n[evil', path: '/home/chris/Music'}]})), /Bad share name/)
+		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]}))
+		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Global', path: '/home/chris/Music'}]})), /Bad share name/)
+		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'homes', path: '/home/chris/Music'}]})), /Bad share name/)
+		await assert.rejects(h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'printers', path: '/home/chris/Music'}]})), /Bad share name/)
+		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Photos', path: '/home/chris/Photos 20%used'}]}))
+		assert.match(fs.files.get('/etc/samba/smb.conf'), /path = \/home\/chris\/Photos 20%%used/)
 		await h.handle('shares-apply', [], JSON.stringify({shares: [{name: 'Music', path: '/home/chris/Music'}]}))
 		const conf = fs.files.get('/etc/samba/smb.conf')
 		assert.match(conf, /^# Managed by Omarchy Server/)
@@ -255,6 +296,28 @@ describe('helper', () => {
 		assert.ok(!log.some((l) => l.join(' ') === 'zfs mount -a'))
 	})
 
+	test('ZFS pool names up to 64 characters work across import, scrub and export', async () => {
+		const imported = new Set()
+		const fs = fakeFs({'/etc/fstab': ''})
+		const run = fakeRun([], {
+			zpool: (a) => (a[0] === 'list' ? [...imported].join('\n') : ''),
+			zfs: (a) => (a[0] === 'list' ? `${a.at(-1)}\t/pools/${a.at(-1)}\ton\n` : ''),
+		})
+		const h = createHelper({user, fs, run})
+		for (const name of ['backup-archive-2019-photos-and-videos', 'a'.repeat(64)]) {
+			imported.clear()
+			assert.equal(await h.handle('zfs-import', [name]), 'ok')
+			imported.add(name)
+			assert.equal(await h.handle('zfs-scrub', [name]), 'ok')
+			assert.equal(await h.handle('zfs-export', [name]), 'ok')
+		}
+		const tooLong = 'a'.repeat(65)
+		imported.add(tooLong)
+		for (const verb of ['zfs-import', 'zfs-scrub', 'zfs-export']) {
+			await assert.rejects(h.handle(verb, [tooLong]), /Bad pool name/)
+		}
+	})
+
 	test('ZFS status and import list are parsed', async () => {
 		const status = `  pool: tank
  state: DEGRADED
@@ -292,6 +355,104 @@ errors: No known data errors
 		assert.match(pool.scan, /with 0 errors/)
 		const [imp] = JSON.parse(await h.handle('zfs-importable'))
 		assert.deepEqual([imp.name, imp.state, imp.otherSystem], ['oldtank', 'ONLINE', true])
+	})
+
+	test('ZFS status ignores logs, cache, spares, special and dedup vdevs for layout and drive count', async () => {
+		const statusWithAux = `  pool: tank
+ state: ONLINE
+  scan: scrub repaired 0B in 00:10:00 with 0 errors on Sun Nov  1 00:24:02 2026
+config:
+
+	NAME                                          STATE     READ WRITE CKSUM
+	tank                                          ONLINE       0     0     0
+	  raidz1-0                                    ONLINE       0     0     0
+	    /dev/disk/by-id/ata-A-part1               ONLINE       0     0     0
+	    /dev/disk/by-id/ata-B-part1               ONLINE       0     0     0
+	    /dev/disk/by-id/ata-C-part1               ONLINE       0     0     0
+	logs
+	  mirror-1                                    ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-L1-part1             ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-L2-part1             ONLINE       0     0     0
+	special
+	  mirror-2                                    ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-S1-part1             ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-S2-part1             ONLINE       0     0     0
+	dedup
+	  mirror-3                                    ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-D1-part1             ONLINE       0     0     0
+	    /dev/disk/by-id/nvme-D2-part1             ONLINE       0     0     0
+	cache
+	  /dev/disk/by-id/nvme-C1-part1               ONLINE       0     0     0
+	spares
+	  /dev/disk/by-id/ata-SPARE-part1             AVAIL
+
+errors: No known data errors
+`
+		const mixedData = `  pool: mix
+ state: ONLINE
+config:
+
+	NAME                                STATE     READ WRITE CKSUM
+	mix                                 ONLINE       0     0     0
+	  raidz1-0                          ONLINE       0     0     0
+	    /dev/disk/by-id/ata-1           ONLINE       0     0     0
+	    /dev/disk/by-id/ata-2           ONLINE       0     0     0
+	    /dev/disk/by-id/ata-3           ONLINE       0     0     0
+	  mirror-1                          ONLINE       0     0     0
+	    /dev/disk/by-id/ata-4           ONLINE       0     0     0
+	    /dev/disk/by-id/ata-5           ONLINE       0     0     0
+
+errors: No known data errors
+`
+		const fs = fakeFs({'/etc/fstab': ''})
+		const run = fakeRun([], {
+			zpool: (a) =>
+				a[0] === 'list'
+					? 'tank\t8000\t1000\t7000\tONLINE\nmix\t9000\t1000\t8000\tONLINE\n'
+					: a[0] === 'status'
+						? a.at(-1) === 'mix'
+							? mixedData
+							: statusWithAux
+						: '',
+			zfs: () => '/tank\n',
+		})
+		const h = createHelper({user, fs, run})
+		const pools = JSON.parse(await h.handle('zfs-pools'))
+		const tank = pools.find((p) => p.name === 'tank')
+		assert.equal(tank.layout, 'raidz1')
+		assert.deepEqual(
+			tank.devices.map((d) => d.path),
+			['/dev/disk/by-id/ata-A-part1', '/dev/disk/by-id/ata-B-part1', '/dev/disk/by-id/ata-C-part1'],
+		)
+		const mix = pools.find((p) => p.name === 'mix')
+		assert.equal(mix.layout, 'mirror+raidz1')
+		assert.equal(mix.devices.length, 5)
+	})
+
+	test('ZFS pools report usable dataset space instead of raw pool capacity', async () => {
+		const fs = fakeFs({'/etc/fstab': ''})
+		const run = fakeRun([], {
+			zpool: (a) =>
+				a[0] === 'list'
+					? 'tank\t12000000000000\t4000000000000\t8000000000000\tONLINE\nfallback\t6000\t1000\t5000\tONLINE\n'
+					: '',
+			zfs: (a) => {
+				if (a[0] === 'get') return '/tank\n'
+				if (a[0] === 'list' && a.at(-1) === 'tank') return '2500000000000\t5500000000000\n'
+				if (a[0] === 'list' && a.at(-1) === 'fallback') return '-\t-\n'
+				return ''
+			},
+		})
+		const h = createHelper({user, fs, run})
+		const pools = JSON.parse(await h.handle('zfs-pools'))
+		const tank = pools.find((p) => p.name === 'tank')
+		assert.equal(tank.used, 2500000000000)
+		assert.equal(tank.free, 5500000000000)
+		assert.equal(tank.size, 8000000000000)
+		const fb = pools.find((p) => p.name === 'fallback')
+		assert.equal(fb.used, 1000)
+		assert.equal(fb.free, 5000)
+		assert.equal(fb.size, 6000)
 	})
 
 	test('firewall: app ports only', async () => {
@@ -656,6 +817,187 @@ errors: No known data errors
 		assert.ok(call)
 		assert.match(call.find((a) => String(a).includes('uid=')) ?? '', /nosuid,nodev/)
 	})
+
+	test('mount: a second disk with the same label is mounted beside the first', async () => {
+		const log = []
+		const mkdirs = []
+		const chowns = []
+		const sameLabel = {
+			blockdevices: [
+				{
+					name: 'sda',
+					path: '/dev/sda',
+					type: 'disk',
+					children: [{name: 'sda1', path: '/dev/sda1', type: 'part', fstype: 'exfat', label: 'USB', mountpoints: ['/run/media/chris/USB']}],
+				},
+				{
+					name: 'sdb',
+					path: '/dev/sdb',
+					type: 'disk',
+					children: [{name: 'sdb1', path: '/dev/sdb1', type: 'part', fstype: 'exfat', label: 'USB', mountpoints: [null]}],
+				},
+			],
+		}
+		const run = async (cmd, args) => {
+			log.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(sameLabel)
+			return ''
+		}
+		const fs = fakeFs({'/etc/fstab': ''})
+		fs.mkdir = async (p) => void mkdirs.push(p)
+		fs.chown = async (p, uid, gid) => void chowns.push([p, uid, gid])
+		const h = createHelper({user, run, fs})
+		assert.equal(await h.handle('mount', ['/dev/sdb']), 'ok')
+		const mounted = log.find((l) => l[0] === 'mount')
+		assert.ok(mounted)
+		assert.equal(mounted.at(-2), '/dev/sdb1')
+		assert.equal(mounted.at(-1), '/run/media/chris/USB-2')
+		assert.ok(mkdirs.includes('/run/media/chris/USB-2'))
+		assert.ok(chowns.some((c) => c[0] === '/run/media/chris/USB-2' && c[1] === 1000 && c[2] === 1000))
+		assert.ok(!chowns.some((c) => c[0] === '/run/media/chris/USB'))
+		assert.ok(!mkdirs.includes('/run/media/chris/USB'))
+		assert.ok(chowns.some((c) => c[0] === '/run/media/chris'))
+
+		const twoParts = {
+			blockdevices: [
+				{
+					name: 'sdc',
+					path: '/dev/sdc',
+					type: 'disk',
+					children: [
+						{name: 'sdc1', path: '/dev/sdc1', type: 'part', fstype: 'exfat', label: 'USB', mountpoints: [null]},
+						{name: 'sdc2', path: '/dev/sdc2', type: 'part', fstype: 'exfat', label: 'USB', mountpoints: [null]},
+					],
+				},
+			],
+		}
+		const log2 = []
+		const run2 = async (cmd, args) => {
+			log2.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(twoParts)
+			return ''
+		}
+		const h2 = createHelper({user, run: run2, fs: fakeFs({'/etc/fstab': ''})})
+		assert.equal(await h2.handle('mount', ['/dev/sdc']), 'ok')
+		const dests = log2.filter((l) => l[0] === 'mount').map((l) => [l.at(-2), l.at(-1)])
+		assert.deepEqual(dests, [
+			['/dev/sdc1', '/run/media/chris/USB'],
+			['/dev/sdc2', '/run/media/chris/USB-2'],
+		])
+
+		const safeName = {
+			blockdevices: [
+				{
+					name: 'sdd',
+					path: '/dev/sdd',
+					type: 'disk',
+					children: [{name: 'sdd1', path: '/dev/sdd1', type: 'part', fstype: 'ext4', label: 'My Disk', mountpoints: ['/run/media/chris/My_Disk']}],
+				},
+				{
+					name: 'sde',
+					path: '/dev/sde',
+					type: 'disk',
+					children: [{name: 'sde1', path: '/dev/sde1', type: 'part', fstype: 'ext4', label: 'My Disk', mountpoints: [null]}],
+				},
+			],
+		}
+		const log3 = []
+		const run3 = async (cmd, args) => {
+			log3.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(safeName)
+			return ''
+		}
+		const h3 = createHelper({user, run: run3, fs: fakeFs({'/etc/fstab': ''})})
+		assert.equal(await h3.handle('mount', ['/dev/sde']), 'ok')
+		const safe = log3.find((l) => l[0] === 'mount')
+		assert.ok(safe)
+		assert.equal(safe.at(-2), '/dev/sde1')
+		assert.equal(safe.at(-1), '/run/media/chris/My_Disk-2')
+	})
+
+	test('SD cards and eMMC (mmcblkN): whole disks work, boot/rpmb and partitions are rejected', async () => {
+		const mmcLsblk = {
+			blockdevices: [
+				{
+					name: 'mmcblk0',
+					path: '/dev/mmcblk0',
+					type: 'disk',
+					size: 62534975488,
+					rota: false,
+					tran: 'mmc',
+					serial: 'SD1',
+					children: [{name: 'mmcblk0p1', path: '/dev/mmcblk0p1', type: 'part', fstype: 'exfat', label: 'SDCARD', mountpoints: [null]}],
+				},
+				{name: 'mmcblk0boot0', path: '/dev/mmcblk0boot0', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+				{name: 'mmcblk0boot1', path: '/dev/mmcblk0boot1', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+				{name: 'mmcblk0rpmb', path: '/dev/mmcblk0rpmb', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+			],
+		}
+		let mounted = false
+		const log = []
+		const run = async (cmd, args) => {
+			log.push([cmd, ...args])
+			if (cmd === 'lsblk') {
+				return JSON.stringify({
+					blockdevices: mmcLsblk.blockdevices.map((d) =>
+						d.name === 'mmcblk0' && mounted ? {...d, children: [{...d.children[0], mountpoints: ['/run/media/chris/SDCARD']}]} : d,
+					),
+				})
+			}
+			if (cmd === 'wipefs') return JSON.stringify({signatures: []})
+			if (cmd === 'smartctl') return JSON.stringify({smart_status: {passed: true}})
+			return ''
+		}
+		const h = createHelper({user, run, fs: fakeFs()})
+		await assert.rejects(h.handle('mount', ['/dev/mmcblk0p1']), /Not a drive/)
+		await assert.rejects(h.handle('mount', ['/dev/mmcblk0boot0']), /Not a drive/)
+		await assert.rejects(h.handle('format', ['/dev/mmcblk0rpmb', 'blank']), /Not a drive/)
+		assert.equal(await h.handle('mount', ['/dev/mmcblk0']), 'ok')
+		assert.ok(log.some((l) => l[0] === 'mount' && l.includes('/dev/mmcblk0p1') && l.includes('/run/media/chris/SDCARD')))
+		mounted = true
+		assert.equal(await h.handle('umount', ['/dev/mmcblk0']), 'ok')
+		assert.ok(log.some((l) => l[0] === 'umount' && l[1] === '/run/media/chris/SDCARD'))
+		mounted = false
+		assert.equal(await h.handle('format', ['/dev/mmcblk0', 'blank']), 'ok')
+		assert.ok(log.some((l) => l[0] === 'wipefs' && l[1] === '-a' && l[2] === '/dev/mmcblk0'))
+		assert.ok(JSON.parse(await h.handle('smart', ['/dev/mmcblk0'])).smart_status.passed)
+	})
+
+	test('smart runs smartctl with -n standby so sleeping drives are not woken', async () => {
+		const log = []
+		const h = createHelper({
+			user,
+			fs: fakeFs(),
+			run: fakeRun(log, {smartctl: () => JSON.stringify({smart_status: {passed: true}})}),
+		})
+		await h.handle('smart', ['/dev/sda'])
+		assert.deepEqual(log.find((l) => l[0] === 'smartctl'), ['smartctl', '-n', 'standby', '-j', '-a', '/dev/sda'])
+	})
+
+	test('drives mounted under /var, /usr, /opt, /srv, /nix or owner home are protected as system drives', async () => {
+		const sysPaths = ['/var/lib/docker', '/var/lib/containers', '/var/log', '/usr/local', '/opt', '/opt/apps', '/srv', '/nix', '/home/chris']
+		const dataPaths = ['/run/media/chris/stick', '/varnish', '/home/chris/Pools/media', '/home/chris/extra']
+		const all = [...sysPaths, ...dataPaths]
+		const devs = all.map((mp, i) => ({
+			name: `sd${String.fromCharCode(97 + i)}`,
+			path: `/dev/sd${String.fromCharCode(97 + i)}`,
+			type: 'disk',
+			size: 1e12,
+			rota: true,
+			children: [{name: `sd${String.fromCharCode(97 + i)}1`, path: `/dev/sd${String.fromCharCode(97 + i)}1`, type: 'part', fstype: 'ext4', mountpoints: [mp]}],
+		}))
+		const h = createHelper({user, fs: fakeFs(), run: async (cmd) => (cmd === 'lsblk' ? JSON.stringify({blockdevices: devs}) : cmd === 'wipefs' ? JSON.stringify({signatures: []}) : '')})
+		for (let i = 0; i < sysPaths.length; i++) {
+			const dev = devs[i].path
+			await assert.rejects(h.handle('umount', [dev]), /holds the system/, `${sysPaths[i]} umount`)
+			await assert.rejects(h.handle('format', [dev, 'blank']), /holds the system/, `${sysPaths[i]} format`)
+			await assert.rejects(h.handle('pool-create', ['tank', 'single', dev]), /holds the system/, `${sysPaths[i]} pool-create`)
+		}
+		for (let i = sysPaths.length; i < all.length; i++) {
+			const dev = devs[i].path
+			await assert.rejects(h.handle('format', [dev, 'blank']), /in use|pool/, `${all[i]} is not treated as system`)
+		}
+	})
 })
 
 describe('omarchyd storage', () => {
@@ -790,5 +1132,229 @@ describe('omarchyd storage', () => {
 		await s.procedures['storage.mount'].run({device: '/dev/sdc'})
 		assert.deepEqual(calls.filter((a) => a[0] === 'mount').at(-1), ['mount', '/dev/sdc'])
 		await assert.rejects(s.procedures['storage.format'].run({device: '/dev/sdc', filesystem: 'ntfs'}), /blank, ext4 or exfat/)
+	})
+
+	test('a reserved Samba name is not used, and shares saved together all remain', async () => {
+		const scratch = await mkdtemp(join(os.tmpdir(), 'omarchy-shares-'))
+		await mkdir(join(scratch, 'home'))
+		const home = await realpath(join(scratch, 'home'))
+		const data = join(scratch, 'data')
+		await mkdir(join(home, 'A'), {recursive: true})
+		await mkdir(join(home, 'B'))
+		await mkdir(join(home, 'C'))
+		await mkdir(join(home, 'One', 'Music'), {recursive: true})
+		await mkdir(join(home, 'Two', 'Music'), {recursive: true})
+		for (const name of ['global', 'homes', 'printers', 'Global']) await mkdir(join(home, name))
+		await mkdir(data)
+		const calls = []
+		const run = async (cmd, args, opts) => {
+			if (cmd === 'sh') return '/usr/bin/omarchy\n'
+			if (cmd === 'pacman' && args[0] === '-Q') return `${args[1]} 1\n`
+			calls.push({args, input: opts?.input})
+			if (args[2] === 'shares-apply') await new Promise((r) => setTimeout(r, 40))
+			if (args[2] === 'ping' || args[2] === 'shares-apply' || args[2] === 'smb-password') return 'ok\n'
+			return 'ok\n'
+		}
+		const files = createFiles({home, dataDir: data})
+		const storage = createStorage({dataDir: data, home, files, run, fstabPath: join(scratch, 'fstab'), smbConf: join(scratch, 'smb.conf')})
+		const add = (path) => storage.procedures['files.addShare'].run({path})
+		try {
+			const settled = await Promise.allSettled([add('/Home/A'), add('/Home/B'), add('/Home/C')])
+			assert.deepEqual(settled.map((r) => r.status), ['fulfilled', 'fulfilled', 'fulfilled'])
+			const together = (await storage.procedures['files.shares'].run()).map((s) => s.path).sort()
+			assert.deepEqual(together, ['/Home/A', '/Home/B', '/Home/C'])
+			const last = JSON.parse(calls.filter((c) => c.args[2] === 'shares-apply').at(-1).input).shares.map((s) => s.path)
+			assert.equal(last.length, 3)
+			await Promise.all([add('/Home/One/Music'), add('/Home/Two/Music')])
+			const music = (await storage.procedures['files.shares'].run()).filter((s) => s.path.includes('Music')).map((s) => s.name).sort()
+			assert.deepEqual(music, ['Music', 'Music 2'])
+			for (const name of ['global', 'homes', 'printers', 'Global']) await add(`/Home/${name}`)
+			const reserved = (await storage.procedures['files.shares'].run()).map((s) => s.name)
+			assert.equal(reserved.some((n) => ['global', 'homes', 'printers'].includes(n.toLowerCase())), false)
+		} finally {
+			await rm(scratch, {recursive: true, force: true})
+		}
+	})
+
+	test('renaming, moving or trashing a shared folder updates the share', async () => {
+		const scratch = await mkdtemp(join(os.tmpdir(), 'omarchy-share-move-'))
+		await mkdir(join(scratch, 'home'))
+		const home = await realpath(join(scratch, 'home'))
+		const data = join(scratch, 'data')
+		await mkdir(join(home, 'Music', 'Live'), {recursive: true})
+		await mkdir(join(home, 'MusicVideos'))
+		await mkdir(join(home, 'Docs'))
+		await mkdir(join(home, 'Photos'))
+		await mkdir(join(home, 'Archive'))
+		await mkdir(data)
+		const calls = []
+		const run = async (cmd, args, opts) => {
+			if (cmd === 'sh') return '/usr/bin/omarchy\n'
+			if (cmd === 'pacman' && args[0] === '-Q') return `${args[1]} 1\n`
+			calls.push({args, input: opts?.input})
+			if (args[2] === 'ping' || args[2] === 'shares-apply' || args[2] === 'smb-password') return 'ok\n'
+			return 'ok\n'
+		}
+		const files = createFiles({home, dataDir: data})
+		const storage = createStorage({dataDir: data, home, files, run, fstabPath: join(scratch, 'fstab'), smbConf: join(scratch, 'smb.conf')})
+		const add = (path) => storage.procedures['files.addShare'].run({path})
+		const listed = () => storage.procedures['files.shares'].run()
+		const applied = () => calls.filter((c) => c.args[2] === 'shares-apply').map((c) => JSON.parse(c.input).shares.map((s) => s.path))
+		try {
+			await add('/Home/Music')
+			await add('/Home/Music/Live')
+			await add('/Home/MusicVideos')
+			await files.procedures['files.rename'].run({path: '/Home/Music', newName: 'Tunes'})
+			const afterRename = await listed()
+			assert.deepEqual(afterRename.map((s) => s.path).sort(), ['/Home/MusicVideos', '/Home/Tunes', '/Home/Tunes/Live'])
+			assert.equal(afterRename.every((s) => s.available), true)
+			assert.equal(afterRename.find((s) => s.path === '/Home/Tunes').name, 'Music')
+			assert.ok(applied().at(-1).every((p) => p.endsWith('/Tunes') || p.endsWith('/Tunes/Live') || p.endsWith('/MusicVideos')))
+			await add('/Home/Photos')
+			await files.procedures['files.move'].run({path: '/Home/Photos', toDirectory: '/Home/Archive'})
+			assert.equal((await listed()).find((s) => s.name === 'Photos').path, '/Home/Archive/Photos')
+			await files.procedures['files.copy'].run({path: '/Home/Archive/Photos', toDirectory: '/Home'})
+			assert.equal((await listed()).find((s) => s.name === 'Photos').path, '/Home/Archive/Photos')
+			await add('/Home/Docs')
+			await files.procedures['files.trash'].run({path: '/Home/Docs'})
+			assert.equal((await listed()).find((s) => s.path === '/Home/Docs'), undefined)
+			assert.equal(applied().at(-1).some((p) => p.endsWith('/Docs')), false)
+		} finally {
+			await rm(scratch, {recursive: true, force: true})
+		}
+	})
+
+	test('storage.disks lists mmcblkN and hides mmcblk boot and rpmb nodes', async () => {
+		const mmcLsblk = {
+			blockdevices: [
+				{
+					name: 'mmcblk0',
+					path: '/dev/mmcblk0',
+					type: 'disk',
+					size: 62534975488,
+					rota: false,
+					tran: 'mmc',
+					serial: 'SD1',
+					children: [{name: 'mmcblk0p1', path: '/dev/mmcblk0p1', type: 'part', fstype: 'exfat', label: 'SDCARD', mountpoints: [null]}],
+				},
+				{name: 'mmcblk0boot0', path: '/dev/mmcblk0boot0', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+				{name: 'mmcblk0boot1', path: '/dev/mmcblk0boot1', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+				{name: 'mmcblk0rpmb', path: '/dev/mmcblk0rpmb', type: 'disk', size: 4194304, rota: false, mountpoints: [null]},
+			],
+		}
+		const run = async (cmd, args) => {
+			if (cmd === 'lsblk') return JSON.stringify(mmcLsblk)
+			if (cmd === 'sudo' && args[2] === 'ping') return 'ok\n'
+			if (cmd === 'sudo' && args[2] === 'zfs-available') return 'no\n'
+			if (cmd === 'sudo' && args[2] === 'smart') return JSON.stringify({smart_status: {passed: true}})
+			return ''
+		}
+		const data = join(root, 'mmc-data')
+		await mkdir(data)
+		const s = createStorage({dataDir: data, home: '/home/chris', files: {resolve: async () => ({real: '', top: 'Home'})}, run, fstabPath: fstab})
+		const disks = await s.procedures['storage.disks'].run()
+		assert.deepEqual(disks.map((d) => ({name: d.name, role: d.role})), [{name: 'mmcblk0', role: 'data'}])
+	})
+
+	test('storage.disks keeps last known SMART reading when a drive goes into standby', async () => {
+		let clock = 1_000_000
+		let sdaStandby = false
+		let smartCalls = 0
+		const twoHdds = {
+			blockdevices: [
+				{name: 'sda', path: '/dev/sda', type: 'disk', size: 4e12, rota: true, tran: 'sata', serial: 'WD-A', mountpoints: [null]},
+				{name: 'sdb', path: '/dev/sdb', type: 'disk', size: 4e12, rota: true, tran: 'sata', serial: 'WD-B', mountpoints: [null]},
+			],
+		}
+		const standbyJson = JSON.stringify({smartctl: {exit_status: 2, messages: [{string: 'Device is in STANDBY mode, exit(2)'}]}})
+		const run = async (cmd, args) => {
+			if (cmd === 'lsblk') return JSON.stringify(twoHdds)
+			if (cmd === 'sudo' && args[2] === 'ping') return 'ok\n'
+			if (cmd === 'sudo' && args[2] === 'zfs-available') return 'no\n'
+			if (cmd === 'sudo' && args[2] === 'smart') {
+				smartCalls++
+				if (args[3] === '/dev/sda' && !sdaStandby) {
+					return JSON.stringify({smart_status: {passed: true}, temperature: {current: 34}, power_on_time: {hours: 9000}, ata_smart_attributes: {table: [{id: 5, raw: {value: 0}}]}})
+				}
+				return standbyJson
+			}
+			return ''
+		}
+		const data = join(root, 'standby-data')
+		await mkdir(data)
+		const s = createStorage({dataDir: data, home: '/home/chris', files: {resolve: async () => ({real: '', top: 'Home'})}, run, fstabPath: fstab, now: () => clock})
+
+		let disks = await s.procedures['storage.disks'].run()
+		assert.equal(disks.find((d) => d.name === 'sda').health.temperature, 34)
+		assert.equal(disks.find((d) => d.name === 'sdb').health, null)
+		assert.equal(smartCalls, 2)
+
+		// Cache expires and sda is now in standby: keep previous reading instead of wiping it.
+		clock += 11 * 60_000
+		sdaStandby = true
+		disks = await s.procedures['storage.disks'].run()
+		assert.equal(disks.find((d) => d.name === 'sda').health.temperature, 34)
+		assert.equal(disks.find((d) => d.name === 'sda').health.passed, true)
+		assert.equal(disks.find((d) => d.name === 'sdb').health, null)
+		assert.equal(smartCalls, 4)
+
+		// Subsequent 30s poll uses the refreshed cache entry.
+		clock += 30_000
+		await s.procedures['storage.disks'].run()
+		assert.equal(smartCalls, 4)
+	})
+
+	test('storage.disks treats mounts under /var, /usr, /opt, /srv, /nix or owner home as system', async () => {
+		const sysPaths = ['/var/lib/docker', '/var/log', '/usr/local', '/opt', '/srv', '/nix', '/home/chris']
+		const dataPaths = ['/run/media/chris/stick', '/varnish', '/home/chris/extra']
+		const devs = [...sysPaths, ...dataPaths].map((mp, i) => ({
+			name: `sd${String.fromCharCode(97 + i)}`,
+			path: `/dev/sd${String.fromCharCode(97 + i)}`,
+			type: 'disk',
+			size: 1e12,
+			rota: false,
+			children: [{name: `sd${String.fromCharCode(97 + i)}1`, path: `/dev/sd${String.fromCharCode(97 + i)}1`, type: 'part', fstype: 'ext4', mountpoints: [mp]}],
+		}))
+		const run = async (cmd, args) => {
+			if (cmd === 'lsblk') return JSON.stringify({blockdevices: devs})
+			if (cmd === 'sudo' && args[2] === 'ping') return 'ok\n'
+			if (cmd === 'sudo' && args[2] === 'zfs-available') return 'no\n'
+			return ''
+		}
+		const data = join(root, 'sysmounts-data')
+		await mkdir(data)
+		const s = createStorage({dataDir: data, home: '/home/chris', files: {resolve: async () => ({real: '', top: 'Home'})}, run, fstabPath: fstab})
+		const byMount = Object.fromEntries((await s.procedures['storage.disks'].run()).map((d) => [d.mounts[0], d.role]))
+		for (const mp of sysPaths) assert.equal(byMount[mp], 'system', mp)
+		for (const mp of dataPaths) assert.equal(byMount[mp], 'data', mp)
+	})
+
+	test('a zfs_member is in the imported pool only when its guid matches', async () => {
+		const real = '1111111111111111111'
+		const foreign = '2222222222222222222'
+		const tree = {
+			blockdevices: [
+				{name: 'sda', path: '/dev/sda', type: 'disk', size: 1e12, children: [{name: 'sda1', path: '/dev/sda1', type: 'part', fstype: 'zfs_member', label: 'tank', uuid: real, mountpoints: [null]}]},
+				{name: 'sdb', path: '/dev/sdb', type: 'disk', size: 1e12, children: [{name: 'sdb1', path: '/dev/sdb1', type: 'part', fstype: 'zfs_member', label: 'tank', uuid: foreign, mountpoints: [null]}]},
+			],
+		}
+		const run = async (cmd, args) => {
+			if (cmd === 'lsblk') return JSON.stringify(tree)
+			if (cmd === 'sudo' && args[2] === 'ping') return 'ok\n'
+			if (cmd === 'sudo' && args[2] === 'zfs-available') return 'yes\n'
+			if (cmd === 'sudo' && args[2] === 'zfs-pools') return `${JSON.stringify([{name: 'tank', size: 10, used: 1, free: 9, health: 'ONLINE', mountpoint: '/tank', folder: null, state: 'ONLINE', scan: '', errors: 'No known data errors', layout: 'stripe', devices: []}])}\n`
+			if (cmd === 'sudo' && args[2] === 'smart') return `${JSON.stringify({smart_status: {passed: true}})}\n`
+			if (cmd === 'zpool' && args[0] === 'get') return `${real}\n`
+			return ''
+		}
+		const data = join(root, 'zfs-guid-data')
+		await mkdir(data)
+		const s = createStorage({dataDir: data, home: '/home/chris', files: {resolve: async () => ({real: '', top: 'Home'})}, run, fstabPath: fstab})
+		const by = Object.fromEntries((await s.procedures['storage.disks'].run()).map((d) => [d.name, d]))
+		assert.equal(by.sda.role, 'pool')
+		assert.equal(by.sda.pool, 'tank')
+		assert.equal(by.sdb.role, 'data')
+		assert.equal(by.sdb.pool, null)
+		assert.deepEqual(by.sdb.zfs, {pool: 'tank'})
 	})
 })

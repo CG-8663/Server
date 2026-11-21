@@ -17,11 +17,32 @@ set -euo pipefail
 main() {
 if (: </dev/tty) 2>/dev/null; then exec </dev/tty; else exec </dev/null; fi
 
+usage() {
+	cat <<'EOF'
+Omarchy Server installer
+
+  install.sh [--zfs] [-h|--help]
+
+Options:
+  --zfs       Build and install OpenZFS from the AUR (zfs-utils, zfs-dkms)
+  -h, --help  Show this help
+
+Environment:
+  OMARCHY_SERVER_PORT       Web app port (default 7780)
+  OMARCHY_SERVER_REPO       Git repository URL or local clone path
+  OMARCHY_SERVER_BRANCH     Branch to install (default main)
+  OMARCHY_SERVER_SOURCE     Local omarchy-server git clone (absolute path)
+  OMARCHY_SERVER_APP_STORE  Local app-store git clone (absolute path)
+  OMARCHY_SERVER_FROM_APP   Set to 1 when started from the in-app updater
+EOF
+}
+
 ZFS=0
 for arg in "$@"; do
 	case "$arg" in
 		--zfs) ZFS=1 ;;
-		*) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
+		-h | --help) usage; exit 0 ;;
+		*) printf 'Unknown option: %s\n\n' "$arg" >&2; usage >&2; exit 2 ;;
 	esac
 done
 
@@ -300,10 +321,29 @@ fi
 # 3. Your account, created here in the terminal so the password never crosses the network.
 if ! node "$APP/omarchyd/cli.mjs" has-owner --data "$BASE/omarchyd" >/dev/null 2>&1; then
 	say "Create your Omarchy Server account"
-	if [ -r /dev/tty ]; then
-		node "$APP/omarchyd/cli.mjs" create-owner --data "$BASE/omarchyd" </dev/tty
+	if (: </dev/tty) 2>/dev/null; then
+		# The same rule create-owner enforces (^[\p{L}\p{N} ._-]{1,40}$). A directory login
+		# (an @ or a backslash) is refused only after the password unless it is fixed here.
+		owner_name=$(id -un)
+		owner_args=()
+		account_name_ok() { node -e 'const n=process.argv[1]??""; process.exit(/^[\p{L}\p{N} ._-]{1,40}$/u.test(n)?0:1)' "$1"; }
+		if ! account_name_ok "$owner_name"; then
+			printf 'The login name "%s" cannot be the account name. Use 1-40 letters, numbers, spaces, dots, dashes or underscores, or pass --name.\n' "$owner_name" >&2
+			cleaned=$(node -e 'const n=process.argv[1]??""; process.stdout.write([...n].filter((ch)=>/^[\p{L}\p{N} ._-]$/u.test(ch)).join("").slice(0,40))' "$owner_name")
+			if account_name_ok "$cleaned"; then
+				printf 'Using "%s" instead.\n' "$cleaned" >&2
+				owner_name=$cleaned
+			else
+				printf 'Account name: ' >/dev/tty
+				read -r chosen </dev/tty
+				account_name_ok "$chosen" || die "That name is not allowed. Use 1-40 letters, numbers, spaces, dots, dashes or underscores, or pass --name."
+				owner_name=$chosen
+			fi
+			owner_args=(--name "$owner_name")
+		fi
+		node "$APP/omarchyd/cli.mjs" create-owner "${owner_args[@]}" --data "$BASE/omarchyd" </dev/tty
 	else
-		die "No terminal to type a password in. Run: node $APP/omarchyd/cli.mjs create-owner --data $BASE/omarchyd"
+		die "No terminal to type a password in. Run this installer again from a terminal (ssh -t): the services are created only by a full run."
 	fi
 fi
 
@@ -312,9 +352,9 @@ mkdir -p "$UNITS"
 NODE="$(command -v node)"
 # Persist isolation env only when the installer was given those variables (do not invent paths).
 SOURCE_ENV=""
-if [ -n "$SOURCE" ]; then SOURCE_ENV="${SOURCE_ENV}Environment=OMARCHY_SERVER_SOURCE=$SOURCE
+if [ -n "$SOURCE" ]; then SOURCE_ENV="${SOURCE_ENV}Environment=\"OMARCHY_SERVER_SOURCE=$SOURCE\"
 "; fi
-if [ -n "$APP_STORE" ]; then SOURCE_ENV="${SOURCE_ENV}Environment=OMARCHY_SERVER_APP_STORE=$APP_STORE
+if [ -n "$APP_STORE" ]; then SOURCE_ENV="${SOURCE_ENV}Environment=\"OMARCHY_SERVER_APP_STORE=$APP_STORE\"
 "; fi
 cat >"$UNITS/omarchyd.service" <<EOF
 [Unit]

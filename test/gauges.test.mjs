@@ -27,7 +27,7 @@ test('gpuGaugeItems: no cards means no extra rings', () => {
 
 test('gpuGaugeItems: one card is labelled GPU, with its short name', () => {
 	assert.deepEqual(gpuGaugeItems([gpu()]), [
-		{k: 'GPU', icon: 'gpu', p: 40, sub: 'RTX 3060', ready: true},
+		{k: 'GPU', key: 'gpu-0', icon: 'gpu', p: 40, sub: 'RTX 3060', ready: true},
 	])
 })
 
@@ -40,10 +40,12 @@ test('gpuGaugeItems: two cards are GPU 0 and GPU 1, matching System', () => {
 	assert.equal(items[0].k, 'GPU 0')
 	assert.equal(items[1].k, 'GPU 1')
 	assert.equal(items[1].p, 12)
+	assert.equal(items[0].key, 'gpu-0')
+	assert.equal(items[1].key, 'gpu-1')
 })
 
 test('gpuGaugeItems: a card with no reading is still a ring, not ready', () => {
 	assert.deepEqual(gpuGaugeItems([gpu({used: null})]), [
-		{k: 'GPU', icon: 'gpu', p: 0, sub: 'RTX 3060', ready: false},
+		{k: 'GPU', key: 'gpu-0', icon: 'gpu', p: 0, sub: 'RTX 3060', ready: false},
 	])
 })

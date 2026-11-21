@@ -1,9 +1,10 @@
+import {AsyncLocalStorage} from 'node:async_hooks'
 import {constants} from 'node:fs'
 import {lstat, mkdir, open, readdir, realpath, rm} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
-import {join} from 'node:path'
+import {basename, join} from 'node:path'
 
-import {writeAtomic} from '../atomic.mjs'
+import {removeAtomic, writeAtomic} from '../atomic.mjs'
 import {RpcError} from '../rpc.mjs'
 
 const clipTitle = (s) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, 48) || 'Chat'
@@ -17,10 +18,25 @@ const missingStep = () => new RpcError('NOT_FOUND', 'That step isn’t here')
 const INTERRUPTED = 'Interrupted by a restart'
 
 // One read-modify-write at a time per chat, so a snapshot from before Approve cannot land after it.
+// Re-entrant so writeRow can take the same lock the caller already holds.
 const locks = new Map()
+const held = new AsyncLocalStorage()
 function withLock(id, fn) {
+	const owned = held.getStore()
+	if (owned?.has(id)) return fn()
 	const prev = locks.get(id) ?? Promise.resolve()
-	const run = prev.then(fn, fn)
+	const run = prev.then(
+		() => {
+			const next = new Set(owned)
+			next.add(id)
+			return held.run(next, fn)
+		},
+		() => {
+			const next = new Set(owned)
+			next.add(id)
+			return held.run(next, fn)
+		},
+	)
 	const settled = run.then(() => {}, () => {})
 	locks.set(id, settled)
 	settled.then(() => locks.get(id) === settled && locks.delete(id))
@@ -39,19 +55,23 @@ function canReplace(current, next) {
 
 export function createConversations({dataDir, now = () => Date.now(), recoverRunning = false}) {
 	const dir = join(dataDir, 'assistant', 'conversations')
-	// The path is the real conversations directory plus a safe file name. Symlinks are refused.
-	async function fileAt(base, id) {
-		if (typeof id !== 'string' || !CHAT_ID.test(id)) throw missingChat()
-		const file = join(base, `${id}.json`)
-		if ((await realpath(join(file, '..'))) !== base) throw missingChat()
-		try {
-			const st = await lstat(file)
-			if (!st.isFile()) throw missingChat()
-		} catch (error) {
-			if (error instanceof RpcError) throw error
-			if (error.code !== 'ENOENT') throw missingChat()
+	const loaded = mkdir(dir, {recursive: true, mode: 0o700})
+	// Factory reset bumps this before deleting. A write records the generation when it is queued
+	// and writes nothing if a reset has moved on, so the queued write cannot recreate the chat.
+	let epoch = 0
+	// Paths whose write has been queued but may not be renamed yet, so reset can delete them on that same queue.
+	const writing = new Set()
+	let dirReal = null
+	let recovering = null
+	const root = async () => {
+		await loaded
+		dirReal ??= await realpath(dir)
+		// A restart has no step still running in memory. Close those once, before any chat is read.
+		if (recoverRunning) {
+			recovering ??= recoverInterrupted(dirReal)
+			await recovering
 		}
-		return file
+		return dirReal
 	}
 	async function readText(file) {
 		let fh
@@ -65,6 +85,24 @@ export function createConversations({dataDir, now = () => Date.now(), recoverRun
 		} finally {
 			await fh.close()
 		}
+	}
+	// The path is the real conversations directory plus a safe file name. Symlinks are refused.
+	// base is already the real directory, so recovery does not call root() again.
+	async function fileAt(base, id) {
+		if (typeof id !== 'string' || !CHAT_ID.test(id)) throw missingChat()
+		const file = join(base, `${id}.json`)
+		if ((await realpath(join(file, '..'))) !== base) throw missingChat()
+		try {
+			const st = await lstat(file)
+			if (!st.isFile()) throw missingChat()
+		} catch (error) {
+			if (error instanceof RpcError) throw error
+			if (error.code !== 'ENOENT') throw missingChat()
+		}
+		return file
+	}
+	async function fileFor(id) {
+		return fileAt(await root(), id)
 	}
 	// After a restart no step is still running in memory; close any left open so the chat can go on.
 	async function recoverInterrupted(base) {
@@ -102,18 +140,15 @@ export function createConversations({dataDir, now = () => Date.now(), recoverRun
 					return {...a, status: 'error', error: INTERRUPTED, resolvedAt: t, conversationId: id}
 				})
 				row.updatedAt = t
-				await writeAtomic(file, JSON.stringify(row, null, '\t'), {mode: 0o600})
+				const seen = epoch
+				writing.add(file)
+				try {
+					await writeAtomic(file, () => (seen !== epoch ? null : JSON.stringify(row, null, '\t')), {mode: 0o600})
+				} finally {
+					writing.delete(file)
+				}
 			})
 		}
-	}
-	const ready = mkdir(dir, {recursive: true, mode: 0o700}).then(async () => {
-		const base = await realpath(dir)
-		if (recoverRunning) await recoverInterrupted(base)
-		return base
-	})
-	const root = () => ready
-	async function fileFor(id) {
-		return fileAt(await root(), id)
 	}
 	async function readOwned(userId, id) {
 		const file = await fileFor(id)
@@ -132,9 +167,18 @@ export function createConversations({dataDir, now = () => Date.now(), recoverRun
 		return row
 	}
 	async function writeRow(id, row) {
-		const file = await fileFor(id)
-		row.id = id
-		await writeAtomic(file, JSON.stringify(row, null, '\t'), {mode: 0o600})
+		return withLock(id, async () => {
+			// Taken before the path check awaits, so a reset in that gap still belongs to this write.
+			const seen = epoch
+			const file = await fileFor(id)
+			row.id = id
+			writing.add(file)
+			try {
+				await writeAtomic(file, () => (seen !== epoch ? null : JSON.stringify(row, null, '\t')), {mode: 0o600})
+			} finally {
+				writing.delete(file)
+			}
+		})
 	}
 	async function findAction(userId, actionId) {
 		if (typeof actionId !== 'string' || !ACTION_ID.test(actionId)) throw missingStep()
@@ -152,6 +196,21 @@ export function createConversations({dataDir, now = () => Date.now(), recoverRun
 	}
 
 	return {
+		// Factory reset: every saved chat goes. The folder stays. A write already queued does not put the file back.
+		async reset() {
+			epoch++
+			const base = await root()
+			const files = new Set(writing)
+			for (const name of await readdir(base).catch(() => [])) {
+				if (name.endsWith('.json')) files.add(join(base, name))
+			}
+			for (const file of files) {
+				const id = basename(file).slice(0, -5)
+				const drop = () => removeAtomic(file)
+				if (CHAT_ID.test(id)) await withLock(id, drop)
+				else await drop()
+			}
+		},
 		async list(userId) {
 			const base = await root()
 			const names = (await readdir(base).catch(() => [])).filter((n) => n.endsWith('.json'))
