@@ -28,6 +28,7 @@ import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, scrollPhoneToTop, us
 import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
+import { actionsForItems, batchToast, offersDownload, selectionAfterQuery, type BatchKind } from "./filesRules";
 
 const FileViewer = lazy(() =>
   import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
@@ -412,6 +413,14 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
     else sessionStorage.removeItem("omarchy-server:files-path");
     setSelected(new Set());
   }, [path]);
+  // A new search hides the previous rows, so a selection from that folder must not stay live.
+  // The same query (a folder refresh) keeps the selection.
+  const seenQuery = useRef(q);
+  useEffect(() => {
+    const previous = seenQuery.current;
+    seenQuery.current = q;
+    setSelected((current) => selectionAfterQuery(current, previous, q));
+  }, [q]);
 
   const listing = useListing(path, sort);
   const recents = useQuery({
@@ -540,6 +549,25 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
           ? listing.isLoading
           : false;
 
+  const finishBatch = async (
+    paths: string[],
+    kind: BatchKind,
+    run: (p: string) => Promise<unknown>,
+  ) => {
+    let succeeded = 0;
+    for (const p of paths) {
+      try {
+        await run(p);
+        succeeded++;
+      } catch {
+        // useFileAction already showed this call's error.
+      }
+    }
+    const message = batchToast(succeeded, paths.length - succeeded, kind);
+    if (message) toast(message);
+    setSelected(new Set());
+    setOpen(null);
+  };
   const trashItems = async (paths: string[]) => {
     const ok = await confirm({
       title:
@@ -552,15 +580,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
       icon: "trash",
     });
     if (!ok) return;
-    for (const p of paths)
-      await act("files.trash", { path: p }).catch(() => {});
-    toast(
-      paths.length === 1
-        ? "Moved to Trash"
-        : `${paths.length} items moved to Trash`,
-    );
-    setSelected(new Set());
-    setOpen(null);
+    await finishBatch(paths, "trash", (p) => act("files.trash", { path: p }));
   };
   const deleteForever = async (paths: string[]) => {
     const ok = await confirm({
@@ -574,20 +594,12 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
       icon: "trash",
     });
     if (!ok) return;
-    for (const p of paths)
-      await act("files.delete", { path: p }).catch(() => {});
-    toast("Deleted");
-    setSelected(new Set());
-    setOpen(null);
+    await finishBatch(paths, "delete", (p) => act("files.delete", { path: p }));
   };
   const restore = async (paths: string[]) => {
-    for (const p of paths)
-      await act("files.restore", { path: p, collision: "keep-both" }).catch(
-        () => {},
-      );
-    toast(paths.length === 1 ? "Restored" : `${paths.length} items restored`);
-    setSelected(new Set());
-    setOpen(null);
+    await finishBatch(paths, "restore", (p) =>
+      act("files.restore", { path: p, collision: "keep-both" }),
+    );
   };
   const emptyTrash = async () => {
     if (
@@ -779,12 +791,12 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
           </b>
           <span>{q ? parentOf(f.path) : sub}</span>
         </span>
-        {!selecting && !inTrash && !f.path.startsWith("/Trash/") && (isDir(f) || offersFile(f)) && (
+        {!selecting && !inTrash && !f.path.startsWith("/Trash/") && offersDownload([{ directory: isDir(f) }]) && offersFile(f) && (
           <button
             className="icon-btn row-dl"
             style={{ alignSelf: "center" }}
-            aria-label={isDir(f) ? `Download ${f.name} as a zip` : `Download ${f.name}`}
-            title={isDir(f) ? "Download as zip" : "Download"}
+            aria-label={`Download ${f.name}`}
+            title="Download"
             onClick={(e) => {
               e.stopPropagation();
               download([f.path]);
@@ -1155,10 +1167,17 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
                 </>
               ) : (
                 <>
-                  <button onClick={() => download([...selected])}>
-                    <Icon name="download" size={21} />
-                    Download
-                  </button>
+                  {offersDownload(
+                    [...selected].map((p) => {
+                      const hit = items.find((it) => it.path === p);
+                      return { directory: !hit || isDir(hit) || !offersFile(hit) };
+                    }),
+                  ) && (
+                    <button onClick={() => download([...selected])}>
+                      <Icon name="download" size={21} />
+                      Download
+                    </button>
+                  )}
                   <button
                     onClick={() =>
                       setPicker({ mode: "move", paths: [...selected] })
@@ -1433,11 +1452,18 @@ function ItemSheet(p: {
       ]
     : [
         {
+          id: "download-zip",
+          label: "Download zip",
+          icon: "download",
+          onClick: p.onDownload,
+          show: isDir(f),
+        },
+        {
           id: "share-out",
-          label: isDir(f) ? "Download zip" : "Share",
-          icon: isDir(f) ? "download" : "share",
-          onClick: isDir(f) ? p.onDownload : shareOut,
-          show: true,
+          label: "Share",
+          icon: "share",
+          onClick: shareOut,
+          show: !isDir(f),
         },
         {
           id: "download",
@@ -1492,7 +1518,10 @@ function ItemSheet(p: {
           show: !!desk && isDir(f),
         },
       ];
-  const shown = actions.filter((a) => a.show);
+  const shown = actionsForItems(
+    actions.filter((a) => a.show),
+    [{ directory: isDir(f) }],
+  );
   return (
     <Sheet open onClose={p.onClose} label={f.name}>
       <SheetHeader
