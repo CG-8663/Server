@@ -1,8 +1,8 @@
 // `omarchyd/cli.mjs` option parsing, validation, error handling, and help output.
 import assert from 'node:assert/strict'
-import {spawnSync} from 'node:child_process'
+import {spawn, spawnSync} from 'node:child_process'
 import {existsSync} from 'node:fs'
-import {chmod, mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises'
+import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, test} from 'node:test'
@@ -165,4 +165,125 @@ test('#614: has-owner does not create missing folder, exits 2 on errors, and ser
 			await chmod(locked, 0o700)
 		}
 	}
+})
+
+test('#559: with no owner, serve prints the real create-owner command and the data folder it is using', async () => {
+	const data = await mkdtemp(join(root, 'no-owner-'))
+	const port = 20000 + (process.pid % 20000)
+	const child = spawn(process.execPath, [CLI, 'serve', '--port', String(port), '--data', data], {
+		env: {...process.env, HOME: root, XDG_DATA_HOME: join(root, 'xdg-data'), OMARCHY_TLS_DIR: join(root, 'tls'), OMARCHY_SERVER_SOURCE: '', OMARCHY_SERVER_APP_STORE: ''},
+		stdio: ['ignore', 'pipe', 'pipe'],
+	})
+	let out = ''
+	try {
+		out = await new Promise((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error(`timed out waiting for the owner hint\n${out}`)), 8000)
+			const take = (chunk) => {
+				out += chunk.toString()
+				if (out.includes('No owner yet')) {
+					clearTimeout(timer)
+					resolve(out)
+				}
+			}
+			child.stdout.on('data', take)
+			child.stderr.on('data', take)
+			child.on('exit', () => {
+				clearTimeout(timer)
+				resolve(out)
+			})
+		})
+	} finally {
+		child.kill('SIGTERM')
+	}
+	assert.match(out, /No owner yet\. Create one with: /)
+	assert.ok(out.includes(`node ${CLI} create-owner --data ${data}`), out)
+	assert.doesNotMatch(out, /Create one with: omarchyd create-owner\b/)
+})
+
+function ptyRun(args, env) {
+	const py = `
+import os, pty, select, subprocess, sys, time
+master, slave = pty.openpty()
+proc = subprocess.Popen([sys.executable if False else sys.argv[1], *sys.argv[2:]], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+os.close(slave)
+buf = b''
+end = time.time() + 20
+sent = False
+while time.time() < end:
+    ready, _, _ = select.select([master], [], [], 0.2)
+    if ready:
+        try:
+            chunk = os.read(master, 8192)
+        except OSError:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        if (not sent) and b'Password for ' in buf:
+            os.write(master, b'correct horse\\ncorrect horse\\n')
+            sent = True
+    elif proc.poll() is not None:
+        break
+if proc.poll() is None:
+    proc.kill()
+    proc.wait(timeout=5)
+while True:
+    ready, _, _ = select.select([master], [], [], 0.05)
+    if not ready:
+        break
+    try:
+        chunk = os.read(master, 8192)
+    except OSError:
+        break
+    if not chunk:
+        break
+    buf += chunk
+code = proc.returncode
+sys.stderr.write('__EXIT__%s\\n' % ('' if code is None else code))
+sys.stdout.buffer.write(buf)
+`
+	return spawnSync('python3', ['-c', py, process.execPath, ...args], {env, encoding: 'utf8', timeout: 25_000})
+}
+
+test('#810: a login name with @ or a backslash is cleaned before the password is asked', async () => {
+	const patch = join(root, 'fake-user.cjs')
+	await writeFile(
+		patch,
+		`const os = require('os')
+const orig = os.userInfo.bind(os)
+os.userInfo = () => ({...orig(), username: process.env.FAKE_USER_NAME})
+`,
+	)
+	for (const [login, cleaned] of [
+		['jdoe@corp.example.com', 'jdoecorp.example.com'],
+		['DOMAIN\\jdoe', 'DOMAINjdoe'],
+	]) {
+		const data = await mkdtemp(join(root, 'owner-name-'))
+		const r = ptyRun([CLI, 'create-owner', '--data', data], {
+			...process.env,
+			HOME: root,
+			XDG_DATA_HOME: join(root, 'xdg-data'),
+			FAKE_USER_NAME: login,
+			NODE_OPTIONS: `--require ${patch}`,
+		})
+		const text = `${r.stdout}${r.stderr}`
+		const hint = text.indexOf('--name')
+		const prompt = text.indexOf(`Password for ${cleaned}:`)
+		assert.ok(hint >= 0, `expected --name in the error for ${login}\n${text}`)
+		assert.ok(prompt > hint, `password prompt should follow the name fix for ${login}\n${text}`)
+		assert.doesNotMatch(text, new RegExp(`Password for ${login.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+		assert.match(text, new RegExp(`Created the owner account “${cleaned}”`))
+		assert.match(r.stderr, /__EXIT__0/)
+		const accounts = JSON.parse(await readFile(join(data, 'accounts.json'), 'utf8'))
+		assert.equal(accounts.users[0].name, cleaned)
+	}
+})
+
+test('#810: an explicit --name that is not allowed is refused before any password prompt', async () => {
+	const data = await mkdtemp(join(root, 'bad-name-'))
+	const r = runSync(['create-owner', '--name', 'jdoe@corp', '--data', data])
+	assert.equal(r.status, 1)
+	assert.match(r.stderr, /--name/)
+	assert.doesNotMatch(`${r.stdout}${r.stderr}`, /Password for/)
+	assert.equal(existsSync(join(data, 'accounts.json')), false)
 })
