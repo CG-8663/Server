@@ -218,7 +218,6 @@ export function appPermissions(text, where = {}) {
 		if (s.privileged === true || s.privileged === 'true') add('privileged', name)
 		if (s.network_mode === 'host') add('host-network', name)
 		for (const k of ['pid', 'ipc', 'uts', 'cgroup']) if (s[k] === 'host') add('system', `${k}: host`)
-		if (s.userns_mode) add('system', `userns_mode: ${s.userns_mode}`)
 		for (const o of s.security_opt ?? []) add('system', `security_opt: ${o}`)
 		for (const v of s.volumes ?? []) {
 			const type = typeof v === 'object' ? v?.type : null
@@ -542,6 +541,12 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 	for (const pair of serviceNodes.items) {
 		const s = pair.value
 		if (!YAML.isMap(s)) continue
+		// Podman ignores userns_mode (UsernsMode stays private). Leave it out of the file that
+		// runs, and say so, instead of asking for a system permission that will not be applied.
+		if (s.has('userns_mode')) {
+			console.error(`[omarchyd] ${appId}: userns_mode is ignored by Podman and was left out of ${pairKey(pair)}`)
+			s.delete('userns_mode')
+		}
 		const dep = s.get('depends_on')
 		if (YAML.isSeq(dep)) dep.items = dep.items.filter((item) => asJSON(item) !== 'app_proxy')
 		else if (YAML.isMap(dep)) dep.delete('app_proxy')
@@ -1104,7 +1109,18 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 		return {url, meta: {id: String(meta.id), name: String(meta.name ?? meta.id)}, apps}
 	}
+	const syncFlights = new Map()
 	async function syncStore(url) {
+		const key = url.toLowerCase()
+		const inflight = syncFlights.get(key)
+		if (inflight) return inflight
+		const flight = syncStoreNow(url).finally(() => {
+			if (syncFlights.get(key) === flight) syncFlights.delete(key)
+		})
+		syncFlights.set(key, flight)
+		return flight
+	}
+	async function syncStoreNow(url) {
 		const dir = storeDir(url)
 		if (await exists(join(dir, '.git'))) {
 			// A shallow clone can't `pull --ff-only` once the store has moved on (the new tip doesn't
@@ -1114,18 +1130,27 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			await run('git', ['-C', dir, 'clean', '-fdx'], {timeout: 60_000})
 		} else await run('git', ['clone', '--depth', '1', '--', url, dir], {timeout: 120_000})
 	}
+	let registryFlight = null
 	async function registry({refresh = false} = {}) {
 		await ready
+		if (registryFlight) return registryFlight
 		if (registryCache && !refresh && Date.now() - registryCache.at < 60 * 60_000) return registryCache.list
+		const flight = loadRegistry({refresh}).finally(() => {
+			if (registryFlight === flight) registryFlight = null
+		})
+		registryFlight = flight
+		return flight
+	}
+	async function loadRegistry({refresh = false} = {}) {
 		const list = []
 		let dirty = false
 		for (const s of state.stores) {
 			if (refresh || Date.now() - (s.syncedAt ?? 0) > 60 * 60_000) {
-				try {
-					await syncStore(s.url)
-					s.syncedAt = Date.now()
-					dirty = true
-				} catch {}
+				// A failed download rejects every caller waiting on this read. It is not turned
+				// into an empty store, and the flight is dropped so the next read tries again.
+				await syncStore(s.url)
+				s.syncedAt = Date.now()
+				dirty = true
 			}
 			try {
 				const loaded = await loadStore(s.url)
@@ -1253,9 +1278,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const path = usbFile(app.id)
 		const text = await readFile(join(appDir(app.id), 'compose.omarchy.yml'), 'utf8').catch(() => '')
 		const names = Object.keys((YAML.parse(text) ?? {}).services ?? {})
-		const overlay = usbComposeOverlay(names, app.usbDevices ?? [])
+		const plugged = []
+		for (const d of app.usbDevices ?? []) if (d?.path && (await exists(d.path))) plugged.push(d)
+		const overlay = usbComposeOverlay(names, plugged)
 		if (!overlay) await rm(path, {force: true})
 		else await writeFile(path, overlay, {mode: 0o600})
+		return plugged.map((d) => d.id)
 	}
 	async function compose(app, ...args) {
 		const files = ['-f', join(appDir(app.id), 'compose.omarchy.yml')]
@@ -1748,15 +1776,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const id = String(input?.appId ?? '')
 		return lock(`install:${id}`, async () => {
 			if (stateDamaged) throw new RpcError('PRECONDITION_FAILED', 'apps.json is damaged and was left unchanged.')
-			const failed = state.apps.find((a) => a.id === id && a.state === 'error')
-			if (failed) {
-				// A failed install: clear it away and start over.
-				if (await exists(join(appDir(id), 'compose.omarchy.yml'))) await compose(failed, 'down', '--remove-orphans').catch(() => {})
-				await removeAppDir(id)
-				state.apps = state.apps.filter((a) => a !== failed)
-				await save()
-			}
-			if (state.apps.some((a) => a.id === id)) throw new RpcError('CONFLICT', 'That app is already installed')
+			// A failed install stays until the plan and the checks succeed. Deleting it first
+			// made a later port conflict look like the app was gone.
+			if (state.apps.some((a) => a.id === id && a.state !== 'error')) throw new RpcError('CONFLICT', 'That app is already installed')
 			const plan = await installPlan(id)
 			if (plan.some((src) => !src.system)) {
 				if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
@@ -1769,7 +1791,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			for (const src of plan) {
 				if (!src.port) continue
 				if (src.port < 1024 || src.port > 65535 || RESERVED(src.port)) throw new RpcError('PRECONDITION_FAILED', `${src.name} wants port ${src.port}, which Omarchy Server keeps for itself`)
-				if (ports.has(src.port) || state.apps.some((a) => a.port === src.port) || !(await portFree(src.port))) throw new RpcError('CONFLICT', `Port ${src.port} is already in use, so ${src.name} can’t be installed`)
+				// Error-state apps are about to be replaced, so their recorded ports are not in use.
+				if (ports.has(src.port) || state.apps.some((a) => a.port === src.port && a.state !== 'error') || !(await portFree(src.port))) throw new RpcError('CONFLICT', `Port ${src.port} is already in use, so ${src.name} can’t be installed`)
 				ports.add(src.port)
 			}
 			// Folders you placed yourself (see folderChoices): checked, and made, before anything installs.
@@ -1801,6 +1824,17 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			}
 			const missing = [...new Set([...needs.values()].flat())].filter((p) => !granted.has(p))
 			if (missing.length) throw new RpcError('PRECONDITION_FAILED', `Installing needs your permission: ${missing.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}.`)
+			// Checks passed: clear the failed app and failed dependencies the same way, then start over.
+			let cleared = false
+			for (const src of plan) {
+				const failed = state.apps.find((a) => a.id === src.id && a.state === 'error')
+				if (!failed) continue
+				if (await exists(join(appDir(src.id), 'compose.omarchy.yml'))) await compose(failed, 'down', '--remove-orphans').catch(() => {})
+				await removeAppDir(src.id)
+				state.apps = state.apps.filter((a) => a !== failed)
+				cleared = true
+			}
+			if (cleared) await save()
 			// Every app in the plan shows as installing right away; they then install one after another.
 			const queued = plan.map((src) => {
 				const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
@@ -1897,9 +1931,14 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const composePath = join(appDir(app.id), 'compose.omarchy.yml')
 		const previousCompose = await readFile(composePath).catch(() => null)
 		const previousExports = app.exports
+		const usbPath = usbFile(app.id)
+		const previousUsb = await readFile(usbPath).catch(() => null)
 		let switched = false
+		let usbWritten = false
 		try {
 			const internalPort = await placeApp(src, app)
+			await writeUsbOverlay(app)
+			usbWritten = true
 			await prepareOwnership(app)
 			step = 'downloading the new version'
 			busy.set(app.id, {state: 'updating', progress: 25})
@@ -1930,6 +1969,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			// placeApp rewrites the compose file and exports before pull. Put them back if pull or up fails.
 			if (previousCompose) await writeFile(composePath, previousCompose, {mode: 0o600}).catch(() => {})
 			else await rm(composePath, {force: true}).catch(() => {})
+			if (usbWritten) {
+				if (previousUsb) await writeFile(usbPath, previousUsb, {mode: 0o600}).catch(() => {})
+				else await rm(usbPath, {force: true}).catch(() => {})
+			}
 			if (previousExports === undefined) delete app.exports
 			else app.exports = previousExports
 			if (error instanceof RpcError) throw error
@@ -1951,13 +1994,16 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (busy.has(app.id)) throw new RpcError('CONFLICT', `${app.name} is busy`)
 		busy.set(app.id, {state: pending})
 		try {
-			if (!app.system && (args[0] === 'up' || args[0] === 'restart')) await writeUsbOverlay(app)
+			let pluggedIds = null
+			if (!app.system && (args[0] === 'up' || args[0] === 'restart')) pluggedIds = await writeUsbOverlay(app)
 			if (app.system) await systemApps[{up: 'start', stop: 'stop', restart: 'restart'}[args[0]]](app)
+			// `restart` leaves the running container on the old device list. Recreate so the overlay just written is what runs.
+			else if (args[0] === 'restart') await compose(app, 'up', '-d', '--force-recreate')
 			else await compose(app, ...args)
 			if (args[0] === 'up' || args[0] === 'restart') {
 				markStarted(app.id)
 				if (!app.system) {
-					app.usbApplied = (app.usbDevices ?? []).map((d) => d.id)
+					app.usbApplied = pluggedIds ?? []
 					await save()
 				}
 			}

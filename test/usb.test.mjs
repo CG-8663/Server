@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import {execFileSync} from 'node:child_process'
-import {mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, symlink, writeFile} from 'node:fs/promises'
+import {execFileSync, spawnSync} from 'node:child_process'
+import {rmSync, writeFileSync} from 'node:fs'
+import {access, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {dirname, join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
@@ -601,14 +602,21 @@ describe('app USB compose', () => {
 		calls.length = 0
 		await call('apps.start', {appId: 'demo-app'})
 		const up = calls.find((c) => c.args?.includes('up'))
-		assert.ok(up.args.includes(join(data, 'apps/installed/demo-app/compose.usb.yml')))
-		const overlay = YAML.parse(await readFile(join(data, 'apps/installed/demo-app/compose.usb.yml'), 'utf8'))
-		assert.deepEqual(overlay.services.web.devices, [`${stick.path}:${stick.path}`])
+		const overlayFile = join(data, 'apps/installed/demo-app/compose.usb.yml')
+		const plugged = await access(stick.path).then(() => true, () => false)
+		if (plugged) {
+			assert.ok(up.args.includes(overlayFile))
+			const overlay = YAML.parse(await readFile(overlayFile, 'utf8'))
+			assert.deepEqual(overlay.services.web.devices, [`${stick.path}:${stick.path}`])
+		} else {
+			const text = await readFile(overlayFile, 'utf8').catch(() => '')
+			assert.equal(text.includes(stick.path), false, 'an unplugged path stays out of the overlay')
+		}
 		calls.length = 0
 		const again = await call('usb.attach', {deviceId: stick.id, guest: {kind: 'app', id: 'demo-app'}})
 		assert.equal(again.needsRestart, false)
 		const listed = await call('usb.list', undefined, 'query')
-		assert.equal(listed.devices.find((d) => d.id === stick.id).needsRestart, false)
+		assert.equal(listed.devices.find((d) => d.id === stick.id).needsRestart, !plugged)
 		assert.equal(calls.some((c) => c.args?.includes('up') || c.args?.includes('restart')), false)
 	})
 })
@@ -650,4 +658,164 @@ test('attach persists when the helper is missing', async () => {
 	})
 	await usb.procedures['usb.attach'].run({deviceId: stick.id, guest: {kind: 'app', id: 'homeassistant'}})
 	assert.equal(g.apps[0].usbDevices.some((d) => d.id === stick.id), true)
+})
+
+const PRESENT_STICK = '/dev/serial/by-id/usb-Present_stick'
+const MISSING_STICK = '/dev/serial/by-id/usb-Missing_stick'
+
+function runUsbScenario(name) {
+	const child = join('/tmp/omarchy-w10-apps', `.usb-scenario-${name}.mjs`)
+	writeFileSync(child, `import assert from 'node:assert/strict'
+import {execFileSync} from 'node:child_process'
+import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises'
+import net from 'node:net'
+import os from 'node:os'
+import {join} from 'node:path'
+import YAML from 'yaml'
+import {createApps} from '/tmp/omarchy-w10-apps/omarchyd/apps.mjs'
+const PRESENT_STICK = ${JSON.stringify(PRESENT_STICK)}
+const MISSING_STICK = ${JSON.stringify(MISSING_STICK)}
+async function freeListenPort() {
+	for (let i = 0; i < 40; i++) {
+		const p = 25000 + Math.floor(Math.random() * 7000)
+		const ok = await new Promise((resolve) => {
+			const s = net.createServer()
+			s.once('error', () => resolve(false))
+			s.listen(p, '0.0.0.0', () => s.close(() => resolve(true)))
+		})
+		if (ok) return p
+	}
+	throw new Error('no free port')
+}
+async function withUsbApp(serviceName) {
+	const root = await mkdtemp(join(os.tmpdir(), 'usb-ov-'))
+	const prev = process.env.DOCKER_HOST
+	const sock = join(root, 'podman.sock')
+	await writeFile(sock, '')
+	process.env.DOCKER_HOST = 'unix://' + sock
+	const port = await freeListenPort()
+	const store = join(root, 'store')
+	await mkdir(join(store, 'demo'), {recursive: true})
+	await writeFile(join(store, 'omarchy-app-store.yml'), 'id: demo\\nname: Demo\\n')
+	await writeFile(join(store, 'demo/omarchy-app.yml'), 'manifestVersion: 1\\nid: demo\\nname: Demo\\nversion: "1.0"\\nport: ' + port + '\\nweb:\\n  service: ' + serviceName + '\\n  port: 80\\n')
+	await writeFile(join(store, 'demo/docker-compose.yml'), 'services:\\n  ' + serviceName + ':\\n    image: x\\n')
+	const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'})
+	git(store, 'init', '-q', '-b', 'main')
+	git(store, 'add', '.')
+	git(store, 'commit', '-qm', 'store')
+	const calls = []
+	const networks = new Set()
+	const up = new Set()
+	const run = async (cmd, args, opts = {}) => {
+		if (cmd === 'git') return execFileSync('git', args, {cwd: opts.cwd, stdio: 'pipe'}).toString()
+		if (cmd === 'systemctl' || cmd === 'setfacl' || cmd === 'bwrap') return ''
+		if (cmd === 'podman') {
+			if (args[0] === 'info') return '{}'
+			if (args[0] === 'network' && args[1] === 'exists' && !networks.has(args[2])) throw new Error('no such network')
+			if (args[0] === 'network' && args[1] === 'create') networks.add(args.at(-1))
+			return ''
+		}
+		if (cmd === 'docker-compose') {
+			calls.push(args)
+			if (args[0] === 'version') return 'Docker Compose version v2.30.0'
+			if (args.includes('up') || args.includes('restart')) up.add(args[1])
+			if (args.includes('stop') || args.includes('down')) up.delete(args[1])
+			if (args.includes('ps')) return JSON.stringify([{Service: serviceName, State: up.has(args[1]) ? 'running' : 'exited'}])
+			return ''
+		}
+		throw new Error(cmd + ' not simulated')
+	}
+	const apps = createApps({dataDir: join(root, 'data'), home: join(root, 'home'), allowFileStores: true, gatewayHost: '127.0.0.1', defaultStores: [{url: 'file://' + store}], run, systemApps: null})
+	const until = async (fn) => {
+		const end = Date.now() + 5000
+		for (;;) {
+			const v = await fn()
+			if (v) return v
+			if (Date.now() > end) throw new Error('timed out')
+			await new Promise((r) => setTimeout(r, 20))
+		}
+	}
+	return {root, store, calls, apps, git, until, async close() { apps.close(); if (prev === undefined) delete process.env.DOCKER_HOST; else process.env.DOCKER_HOST = prev; await rm(root, {recursive: true, force: true}) }}
+}
+const name = process.argv[2]
+if (name === 'missing') {
+	const ctx = await withUsbApp('web')
+	try {
+		assert.equal(await ctx.apps.procedures['apps.install'].run({appId: 'demo'}), true)
+		await ctx.until(async () => (await ctx.apps.procedures['apps.list'].run()).find((a) => a.id === 'demo' && a.state === 'running'))
+		await ctx.apps.bindUsb('demo', {id: 'missing-stick', name: 'Missing', vendorId: '1111', productId: '3333', serial: 'm', path: MISSING_STICK})
+		await ctx.apps.bindUsb('demo', {id: 'present-stick', name: 'Present', vendorId: '1111', productId: '2222', serial: 'p', path: PRESENT_STICK})
+		await ctx.apps.procedures['apps.start'].run({appId: 'demo'})
+		const overlay = await readFile(join(ctx.root, 'data/apps/installed/demo/compose.usb.yml'), 'utf8')
+		assert.match(overlay, /usb-Present_stick/)
+		assert.doesNotMatch(overlay, /usb-Missing_stick/)
+		const saved = JSON.parse(await readFile(join(ctx.root, 'data/apps/apps.json'), 'utf8'))
+		assert.deepEqual(saved.apps.find((a) => a.id === 'demo').usbDevices.map((d) => d.id).sort(), ['missing-stick', 'present-stick'])
+	} finally { await ctx.close() }
+} else if (name === 'update') {
+	const ctx = await withUsbApp('web')
+	try {
+		assert.equal(await ctx.apps.procedures['apps.install'].run({appId: 'demo'}), true)
+		await ctx.until(async () => (await ctx.apps.procedures['apps.list'].run()).find((a) => a.id === 'demo' && a.state === 'running'))
+		await ctx.apps.bindUsb('demo', {id: 'present-stick', name: 'Present', vendorId: '1111', productId: '2222', serial: 'p', path: PRESENT_STICK})
+		await ctx.apps.procedures['apps.start'].run({appId: 'demo'})
+		const before = await readFile(join(ctx.root, 'data/apps/installed/demo/compose.usb.yml'), 'utf8')
+		assert.match(before, /\\n  web:\\n/)
+		await writeFile(join(ctx.store, 'demo/omarchy-app.yml'), (await readFile(join(ctx.store, 'demo/omarchy-app.yml'), 'utf8')).replace('version: "1.0"', 'version: "2.0"').replace('service: web', 'service: gate'))
+		await writeFile(join(ctx.store, 'demo/docker-compose.yml'), 'services:\\n  gate:\\n    image: x\\n')
+		ctx.git(ctx.store, 'add', '.')
+		ctx.git(ctx.store, 'commit', '-qm', 'rename')
+		await ctx.apps.procedures['appStore.refresh'].run()
+		assert.equal(await ctx.apps.procedures['apps.update'].run({appId: 'demo'}), true)
+		const overlay = YAML.parse(await readFile(join(ctx.root, 'data/apps/installed/demo/compose.usb.yml'), 'utf8'))
+		assert.deepEqual(Object.keys(overlay.services), ['gate'])
+		assert.match(overlay.services.gate.devices[0], /usb-Present_stick/)
+	} finally { await ctx.close() }
+} else if (name === 'restart') {
+	const ctx = await withUsbApp('web')
+	try {
+		assert.equal(await ctx.apps.procedures['apps.install'].run({appId: 'demo'}), true)
+		await ctx.until(async () => (await ctx.apps.procedures['apps.list'].run()).find((a) => a.id === 'demo' && a.state === 'running'))
+		await ctx.apps.bindUsb('demo', {id: 'present-stick', name: 'Present', vendorId: '1111', productId: '2222', serial: 'p', path: PRESENT_STICK})
+		ctx.calls.length = 0
+		await ctx.apps.procedures['apps.restart'].run({appId: 'demo'})
+		const restart = ctx.calls.find((args) => args.includes('--force-recreate') || args.includes('restart') || args.includes('up'))
+		assert.ok(restart, 'restart ran an engine command')
+		assert.ok(restart.includes('--force-recreate'), 'engine command: ' + restart.join(' '))
+		const overlay = await readFile(join(ctx.root, 'data/apps/installed/demo/compose.usb.yml'), 'utf8')
+		assert.match(overlay, /usb-Present_stick/)
+		const saved = JSON.parse(await readFile(join(ctx.root, 'data/apps/apps.json'), 'utf8'))
+		assert.deepEqual(saved.apps.find((a) => a.id === 'demo').usbApplied, ['present-stick'])
+	} finally { await ctx.close() }
+} else throw new Error('unknown scenario ' + name)
+`)
+	const script = `
+set -eu
+work=$(mktemp -d)
+mkdir -p "$work/serial/by-id" "$work/shm" "$work/pts"
+for n in null zero random urandom tty; do : > "$work/$n"; chmod 666 "$work/$n"; done
+: > "$work/serial/by-id/usb-Present_stick"
+mount --bind "$work" /dev
+mount -t tmpfs tmpfs /dev/shm || true
+exec node --experimental-strip-types ${JSON.stringify(child)} ${JSON.stringify(name)}
+`
+	try {
+		const r = spawnSync('unshare', ['--user', '--map-root-user', '--mount', 'bash', '-c', script], {stdio: 'inherit', timeout: 120000})
+		if (r.error) throw r.error
+		if (r.status !== 0) throw new Error(`usb scenario ${name} failed (${r.status})`)
+	} finally {
+		rmSync(child, {force: true})
+	}
+}
+
+test('usb-overlay-missing-path', () => {
+	runUsbScenario('missing')
+})
+
+test('usb-overlay-update-service', () => {
+	runUsbScenario('update')
+})
+
+test('usb-overlay-restart-recreate', () => {
+	runUsbScenario('restart')
 })

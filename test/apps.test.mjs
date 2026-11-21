@@ -5,6 +5,7 @@ import {execFileSync} from 'node:child_process'
 import {lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
+import net from 'node:net'
 import os from 'node:os'
 import {join, relative} from 'node:path'
 import {after, before, describe, test} from 'node:test'
@@ -12,7 +13,7 @@ import WebSocket, {WebSocketServer} from 'ws'
 import YAML from 'yaml'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
-import {prepareCompose} from '../omarchyd/apps.mjs'
+import {createApps, prepareCompose} from '../omarchyd/apps.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 test('prepareCompose swaps app_proxy for a 127.0.0.1-only port on the named service', () => {
@@ -698,4 +699,94 @@ describe('omarchyd apps', () => {
 		assert.equal((await q('apps.list')).some((a) => a.id === 'tor-a' || a.id === 'tor-b'), false)
 		await call('appStore.removeRepository', {url: `file://${store}`})
 	})
+})
+
+test('retry after a failed dependency ignores error-state ports and keeps both records', async () => {
+	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
+	const root = await mkdtemp(join(os.tmpdir(), 'retry-dep-'))
+	const prev = process.env.DOCKER_HOST
+	const sock = join(root, 'podman.sock')
+	await writeFile(sock, '')
+	process.env.DOCKER_HOST = `unix://${sock}`
+	const takePort = async () => {
+		for (let i = 0; i < 40; i++) {
+			const p = 25000 + Math.floor(Math.random() * 7000)
+			const ok = await new Promise((resolve) => {
+				const s = net.createServer()
+				s.once('error', () => resolve(false))
+				s.listen(p, '0.0.0.0', () => s.close(() => resolve(true)))
+			})
+			if (ok) return p
+		}
+		throw new Error('no free port')
+	}
+	const nodePort = await takePort()
+	const walletPort = await takePort()
+	const store = join(root, 'store')
+	const app = async (id, port, manifest, compose) => {
+		await mkdir(join(store, id), {recursive: true})
+		await writeFile(join(store, id, 'umbrel-app.yml'), `manifestVersion: 1\nid: ${id}\nname: ${id}\nport: ${port}\n${manifest}`)
+		await writeFile(join(store, id, 'docker-compose.yml'), compose)
+	}
+	await app('node', nodePort, '', 'services:\n  web:\n    image: x\n')
+	await app('wallet', walletPort, 'dependencies:\n  - node\n', 'services:\n  web:\n    image: z\n')
+	git(['init', '-q', '-b', 'main'], store)
+	git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+	git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'store'], store)
+	const networks = new Set()
+	const run = async (cmd, args, opts = {}) => {
+		if (cmd === 'git') return git(args, opts.cwd)
+		if (cmd === 'systemctl' || cmd === 'setfacl' || cmd === 'bwrap') return ''
+		if (cmd === 'podman') {
+			if (args[0] === 'info') return '{}'
+			if (args[0] === 'network' && args[1] === 'exists' && !networks.has(args[2])) throw new Error('no such network')
+			if (args[0] === 'network' && args[1] === 'create') networks.add(args.at(-1))
+			if (args[1] === 'rm') return ''
+			return ''
+		}
+		if (cmd === 'docker-compose') {
+			if (args[0] === 'version') return 'Docker Compose version v2.30.0'
+			if (args.includes('pull') && args[1] === 'omarchy-node') throw new Error('registry down')
+			if (args.includes('ps')) return '[]'
+			return ''
+		}
+		throw new Error(`${cmd} not simulated`)
+	}
+	const apps = createApps({dataDir: join(root, 'data'), home: join(root, 'home'), allowFileStores: true, gatewayHost: '127.0.0.1', defaultStores: [{url: `file://${store}`}], run, systemApps: null})
+	const until = async (fn) => {
+		const end = Date.now() + 5000
+		for (;;) {
+			const v = await fn()
+			if (v) return v
+			if (Date.now() > end) throw new Error('timed out')
+			await new Promise((r) => setTimeout(r, 20))
+		}
+	}
+	try {
+		assert.equal(await apps.procedures['apps.install'].run({appId: 'wallet'}), true)
+		await until(async () => {
+			const list = await apps.procedures['apps.list'].run()
+			const node = list.find((a) => a.id === 'node')
+			const wallet = list.find((a) => a.id === 'wallet')
+			return node?.error && wallet?.error ? list : null
+		})
+		await writeFile(join(store, 'wallet/docker-compose.yml'), 'services:\n  web:\n    image: z\n    volumes:\n      - /etc/passwd:/host-passwd:ro\n')
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'refuse'], store)
+		await apps.procedures['appStore.refresh'].run()
+		await assert.rejects(apps.procedures['apps.install'].run({appId: 'wallet'}), (e) => {
+			assert.equal(/already in use/.test(e.message), false, e.message)
+			assert.match(e.message, /never gives an app/)
+			return true
+		})
+		const saved = JSON.parse(await readFile(join(root, 'data/apps/apps.json'), 'utf8'))
+		const ids = saved.apps.map((a) => a.id).sort()
+		assert.deepEqual(ids, ['node', 'wallet'])
+		assert.equal(saved.apps.every((a) => a.state === 'error'), true)
+	} finally {
+		apps.close()
+		if (prev === undefined) delete process.env.DOCKER_HOST
+		else process.env.DOCKER_HOST = prev
+		await rm(root, {recursive: true, force: true})
+	}
 })
