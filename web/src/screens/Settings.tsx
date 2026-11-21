@@ -16,6 +16,7 @@ import {StoragePage} from './Storage'
 import {BackupsPage} from '../backups'
 import {UnraidPage} from '../unraid'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
+import {clearTotpSetupQuery} from './twoFactorQuery'
 
 function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false; staleTime?: number; refetchOnWindowFocus?: boolean; refetchOnReconnect?: boolean} = {}) {
 	return useQuery({queryKey: [path, input], queryFn: () => query<T>(path, input), retry: false, staleTime: 15_000, ...opts})
@@ -1204,8 +1205,9 @@ function PasswordSheet({open, onClose}: {open: boolean; onClose: () => void}) {
 function TwoFactorSheet({open, enabled, onClose}: {open: boolean; enabled: boolean; onClose: () => void}) {
 	const save = useSave()
 	const toast = useToast()
-	// One setup key for the whole setup: fetching again (e.g. after switching to the authenticator
-	// app and back) would make a new key, and the code from the app would never match.
+	const qc = useQueryClient()
+	// One setup key while this sheet is open. Closing it, or turning two-factor on or off,
+	// drops that key so the next open asks for a new one.
 	const uri = useQ<string>('user.generateTotpUri', undefined, {enabled: open && !enabled, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false})
 	const [code, setCode] = useState('')
 	useEffect(() => setCode(''), [open])
@@ -1216,7 +1218,10 @@ function TwoFactorSheet({open, enabled, onClose}: {open: boolean; enabled: boole
 			open={open}
 			title="Two-factor authentication"
 			subtitle={enabled ? 'On' : 'Off'}
-			onClose={onClose}
+			onClose={() => {
+				clearTotpSetupQuery(qc, 'close')
+				onClose()
+			}}
 			submit={enabled ? 'Turn off' : 'Turn on'}
 			danger={enabled}
 			busy={save.isPending}
@@ -1226,7 +1231,10 @@ function TwoFactorSheet({open, enabled, onClose}: {open: boolean; enabled: boole
 					enabled
 						? {path: 'user.disable2fa', input: {totpToken: code.replace(/\s/g, '')}, done: 'Two-factor is off', ...done}
 						: {path: 'user.enable2fa', input: {totpUri: uri.data, totpToken: code.replace(/\s/g, '')}, done: 'Two-factor is on', ...done},
-					{onSuccess: onClose},
+					{onSuccess: () => {
+						clearTotpSetupQuery(qc, 'success')
+						onClose()
+					}},
 				)
 			}
 		>
