@@ -259,7 +259,22 @@ case "$cmd" in
 		;;
 	open)
 		no_extra_args open "$@"
-		xdg-open "http://localhost:$PORT" >/dev/null 2>&1 &
+		up=0
+		running && up=1
+		if [ "$up" = 0 ]; then
+			echo "Omarchy Server is not running."
+		fi
+		# A display is required; over ssh, or with no xdg-open, print the address instead.
+		opened=0
+		if command -v xdg-open >/dev/null 2>&1 && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
+			if xdg-open "http://localhost:$PORT" >/dev/null 2>&1; then
+				opened=1
+			fi
+		fi
+		if [ "$opened" = 0 ] || [ "$up" = 0 ]; then
+			printf '\nOpen http://%s:%s (or http://localhost:%s on this machine)\n' "$(ip_addr)" "$PORT" "$PORT"
+		fi
+		[ "$opened" = 1 ] || exit 1
 		;;
 	start | restart)
 		no_extra_args "$cmd" "$@"
@@ -392,7 +407,7 @@ const [file, mark] = process.argv.slice(2)
 let text = fs.readFileSync(file, 'utf8')
 const list = /"modules-right"\s*:\s*\[/
 if (!list.test(text) || !/^\s*\{/.test(text)) process.exit(1)
-text = text.replace(list, (m) => `${m}\n    "custom/omarchy-server", // ${mark}`)
+text = text.replace(list, (m) => `${m}\n    "custom/omarchy-server", // ${mark}\n`)
 const bin = `${process.env.HOME}/.local/bin/omarchy-server`
 const def = `\n  // ${mark} start\n  "custom/omarchy-server": {\n    "exec": "${bin} waybar",\n    "return-type": "json",\n    "interval": 10,\n    "on-click": "${bin} open",\n    "on-click-right": "${bin} restart"\n  },\n  // ${mark} end`
 text = text.replace(/^(\s*)\{/, (m) => `${m}${def}`)
