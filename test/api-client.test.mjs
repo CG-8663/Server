@@ -37,19 +37,14 @@ test('query, mutate, post, and getBootstrap time out into ApiError', async () =>
 		['query', () => query('apps.list', undefined, {timeoutMs: 25})],
 		['mutate', () => mutate('apps.restart', {appId: 'immich'}, {timeoutMs: 25})],
 		['post', () => post('/api/setup', {url: 'http://127.0.0.1'}, {timeoutMs: 25})],
-		['login', () => login({username: 'chris', password: 'pw'})],
+		['login', () => login({username: 'chris', password: 'pw'}, {timeoutMs: 25})],
 		['getBootstrap', () => getBootstrap({timeoutMs: 25})],
 	]) {
 		let seenSignal = null
 		globalThis.fetch = hangingFetch((sig) => {
 			seenSignal = sig
 		})
-		// login() uses DEFAULT_TIMEOUT_MS unless we test the fallback via a tiny AbortSignal.timeout stub.
-		if (label === 'login') {
-			AbortSignal.timeout = () => originalAbortTimeout(25)
-		} else {
-			AbortSignal.timeout = originalAbortTimeout
-		}
+		AbortSignal.timeout = originalAbortTimeout
 		await assert.rejects(fn, (err) => {
 			assert.ok(err instanceof ApiError, `${label}: expected ApiError`)
 			assert.equal(err.code, 'TIMEOUT', label)

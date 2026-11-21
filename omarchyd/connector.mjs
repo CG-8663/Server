@@ -313,7 +313,9 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 	const enrollTries = []
 	async function enroll(body) {
 		await loaded
-		if (damaged) throw new RpcError('PRECONDITION_FAILED', 'swarm.json is damaged and was left unchanged.')
+		// An error string, the shape the installer already prints, instead of a thrown object.
+		// The pairing code is not used, and this does not count toward the rate limit.
+		if (damaged) return {status: 503, body: {error: 'swarm.json is damaged and was left unchanged.'}}
 		// A handful of tries a minute is plenty for people; it stops guessing.
 		const t = now()
 		while (enrollTries.length && enrollTries[0] < t - 60_000) enrollTries.shift()
@@ -344,6 +346,12 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 
 	async function upgradeAgent(req, socket, head) {
 		await loaded
+		// 401 is the connector's signal that this computer was removed, and it then deletes its key.
+		// A file that cannot be read is not that: answer 503 so the computer keeps its key and retries.
+		if (damaged) {
+			socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n')
+			return socket.destroy()
+		}
 		const a = authAgent(req)
 		if (!a) {
 			socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')

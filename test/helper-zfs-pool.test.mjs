@@ -13,7 +13,7 @@ const lsblk = {
 			type: 'disk',
 			size: 4e12,
 			children: [
-				{name: 'sdb1', path: '/dev/sdb1', type: 'part', fstype: 'zfs_member', label: 'tank', mountpoints: [null]},
+				{name: 'sdb1', path: '/dev/sdb1', type: 'part', fstype: 'zfs_member', label: 'tank', uuid: '111', mountpoints: [null]},
 			],
 		},
 	],
@@ -39,6 +39,7 @@ function runWith(log, zpoolList) {
 		if (cmd === 'lsblk') return JSON.stringify(lsblk)
 		if (cmd === 'zpool') {
 			if (zpoolList instanceof Error) throw zpoolList
+			if (args[0] === 'get') return String(zpoolList).trim() ? '111\n' : ''
 			return zpoolList
 		}
 		if (cmd === 'wipefs') return JSON.stringify({signatures: []})
@@ -68,5 +69,45 @@ describe('helper zfs pool member', () => {
 		const exported = helper(empty, '')
 		assert.equal(await exported.handle('format', ['/dev/sdb', 'blank']), 'ok')
 		assert.ok(empty.some((l) => l[0] === 'wipefs' && l[1] === '-a' && l[2] === '/dev/sdb'))
+	})
+
+	test('format allows a leftover disk whose pool name matches but whose guid does not', async () => {
+		const real = '1111111111111111111'
+		const foreign = '2222222222222222222'
+		const tree = {
+			blockdevices: [
+				{name: 'sda', path: '/dev/sda', type: 'disk', size: 4e12, children: [{name: 'sda1', path: '/dev/sda1', type: 'part', fstype: 'zfs_member', label: 'tank', uuid: real, mountpoints: [null]}]},
+				{name: 'sdb', path: '/dev/sdb', type: 'disk', size: 4e12, children: [{name: 'sdb1', path: '/dev/sdb1', type: 'part', fstype: 'zfs_member', label: 'tank', uuid: foreign, mountpoints: [null]}]},
+			],
+		}
+		const log = []
+		const run = async (cmd, args = []) => {
+			log.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(tree)
+			if (cmd === 'zpool' && args[0] === 'list') return 'tank\n'
+			if (cmd === 'zpool' && args[0] === 'get') return `${real}\n`
+			if (cmd === 'wipefs') return JSON.stringify({signatures: []})
+			return ''
+		}
+		const h = createHelper({user, fs: fakeFs(), run})
+		await assert.rejects(h.handle('format', ['/dev/sda', 'blank']), /\/dev\/sda is in a pool/)
+		assert.equal(log.some((l) => l[0] === 'wipefs' && l[1] === '-a' && l[2] === '/dev/sda'), false)
+		assert.equal(await h.handle('format', ['/dev/sdb', 'blank']), 'ok')
+		assert.ok(log.some((l) => l[0] === 'wipefs' && l[1] === '-a' && l[2] === '/dev/sdb'))
+	})
+
+	test('a failed guid lookup still refuses a disk whose label is an imported pool', async () => {
+		const log = []
+		const run = async (cmd, args = []) => {
+			log.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(lsblk)
+			if (cmd === 'zpool' && args[0] === 'list') return 'tank\n'
+			if (cmd === 'zpool' && args[0] === 'get') throw new Error('zpool get failed')
+			if (cmd === 'wipefs') return JSON.stringify({signatures: []})
+			return ''
+		}
+		const h = createHelper({user, fs: fakeFs(), run})
+		await assert.rejects(h.handle('format', ['/dev/sdb', 'blank']), /\/dev\/sdb is in a pool/)
+		assert.equal(log.some((l) => l[0] === 'wipefs' && l[1] === '-a'), false)
 	})
 })

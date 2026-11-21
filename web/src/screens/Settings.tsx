@@ -6,8 +6,9 @@ import {logout, mutate, query, type ActiveSession, type AssistantApi, type Assis
 import {resetAssistantTurn} from '../assistantTurn'
 import {resetDeskConfig} from '../desktop/config'
 import {useBootstrap, useUser} from '../data'
+import {checkLiveText} from '../focus'
 import {Icon, type IconName} from '../icons'
-import {Card, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
+import {Card, Field, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
 import {Appearance} from './More'
 import {AssistantAppearanceSettings} from '../character/widgets'
 import {OmarchyThemes} from '../OmarchyThemes'
@@ -426,16 +427,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 
 // ---- sheets -------------------------------------------------------------------
 
-function Field({id, label, hint, ...input}: {id: string; label: string; hint?: string} & React.InputHTMLAttributes<HTMLInputElement>) {
-	return (
-		<div className="field">
-			<label htmlFor={id}>{label}</label>
-			<input id={id} {...input} />
-			{hint && <span className="hint">{hint}</span>}
-		</div>
-	)
-}
-
 const PROVIDER_LABEL: Record<AssistantProvider, string> = {
 	spacexai: 'Grok (SpaceXAI)',
 	openai: 'OpenAI API',
@@ -453,19 +444,26 @@ const MODEL_PLACEHOLDER: Record<AssistantProvider, string> = {
 // The result of a live check, under a key or in Add provider.
 function CheckLine({check, busy}: {check: Pick<AssistantCheck, 'ok' | 'message'> | null; busy?: boolean}) {
 	const style: CSSProperties = {textAlign: 'left', margin: '2px 6px 8px', display: 'flex', gap: 6, alignItems: 'center'}
-	if (busy) {
-		return (
-			<p className="footer-note" style={style}>
-				<span className="spinner" /> Checking…
-			</p>
-		)
-	}
-	if (!check) return null
+	const live = checkLiveText(check, busy)
 	return (
-		<p className="footer-note" role="status" style={{...style, color: check.ok ? 'var(--green)' : 'var(--red)'}}>
-			<Icon name={check.ok ? 'check' : 'alert'} size={15} />
-			{check.message}
-		</p>
+		<>
+			<div role="status" aria-live="polite" aria-atomic="true">
+				{live.status ? (
+					<p className="footer-note" style={busy ? style : {...style, color: 'var(--green)'}}>
+						{busy ? <span className="spinner" /> : <Icon name="check" size={15} />}
+						{live.status}
+					</p>
+				) : null}
+			</div>
+			<div role="alert" aria-live="assertive" aria-atomic="true">
+				{live.alert ? (
+					<p className="footer-note" style={{...style, color: 'var(--red)'}}>
+						<Icon name="alert" size={15} />
+						{live.alert}
+					</p>
+				) : null}
+			</div>
+		</>
 	)
 }
 
@@ -647,7 +645,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 							</span>
 						</span>
 					</div>
-					{k.check && <CheckLine check={k.check} />}
+					<CheckLine check={k.check ?? null} />
 					<Row
 						icon="check"
 						color="var(--green)"
@@ -1032,7 +1030,7 @@ function PasswordSheet({open, onClose}: {open: boolean; onClose: () => void}) {
 		>
 			<Field id="old" label="Current password" type="password" autoComplete="current-password" value={oldPassword} onChange={(e) => setOld(e.target.value)} autoFocus />
 			<Field id="new" label="New password" type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNew(e.target.value)} hint="At least 6 characters." />
-			<Field id="repeat" label="Repeat new password" type="password" autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} hint={mismatch ? 'Passwords don’t match.' : undefined} />
+			<Field id="repeat" label="Repeat new password" type="password" autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} error={mismatch ? 'Passwords don’t match.' : undefined} />
 		</FormSheet>
 	)
 }
@@ -1136,7 +1134,8 @@ function HostnameSheet({open, current, onClose}: {open: boolean; current: string
 				spellCheck={false}
 				value={name}
 				onChange={(e) => setName(e.target.value)}
-				hint={valid ? `Reachable at http://${name.trim().toLowerCase()}.local` : 'Letters, numbers and dashes only.'}
+				hint={valid ? `Reachable at http://${name.trim().toLowerCase()}.local` : undefined}
+				error={!valid ? 'Letters, numbers and dashes only.' : undefined}
 				autoFocus
 			/>
 		</FormSheet>

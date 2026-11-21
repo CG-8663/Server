@@ -1,42 +1,106 @@
 #!/usr/bin/env node
-// omarchy-server [--backend <address>] [--port 7780] [--host 0.0.0.0] [--data <dir>]
+// omarchy-server [--backend <address>] [--port 7780] [--host 0.0.0.0] [--data <dir>] [--app-hosts <pattern|off>]
 import http from 'node:http'
 import {networkInterfaces, homedir} from 'node:os'
 import {dirname, join} from 'node:path'
 import {fileURLToPath} from 'node:url'
+import {parseArgs} from 'node:util'
 
-import {createApp, normalizeBackendUrl, VERSION} from './app.mjs'
+import {createApp, normalizeAppHosts, normalizeBackendUrl, VERSION} from './app.mjs'
 import {createStore} from './store.mjs'
+import {formatDataDirError, parsePort} from '../omarchyd/cli-args.mjs'
 import {defaultTlsDir, dualProtocolServer, tlsContext} from '../omarchyd/tls.mjs'
 
-const args = process.argv.slice(2)
-const flag = (name) => {
-	const i = args.indexOf(`--${name}`)
-	return i >= 0 ? args[i + 1] : undefined
+let values
+try {
+	const parsed = parseArgs({
+		strict: true,
+		allowPositionals: false,
+		options: {
+			backend: {type: 'string'},
+			port: {type: 'string'},
+			host: {type: 'string'},
+			data: {type: 'string'},
+			'app-hosts': {type: 'string'},
+			help: {type: 'boolean', short: 'h'},
+		},
+	})
+	values = parsed.values
+} catch (error) {
+	console.error(`[omarchy-server] ${error.message}`)
+	console.error('Run with --help for usage.')
+	process.exit(2)
 }
-if (args.includes('--help') || args.includes('-h')) {
+
+if (values.help) {
 	console.log(`Omarchy Server ${VERSION}
 
-  omarchy-server [--backend <address>] [--port <n>] [--host <addr>] [--data <dir>]
+  omarchy-server [--backend <address>] [--port <n>] [--host <addr>] [--data <dir>] [--app-hosts <pattern|off>]
 
-  --backend  Address of omarchyd, the backend (the installer sets http://127.0.0.1:2021)
-  --port    Port to listen on (default 7780, env PORT)
-  --host    Address to bind (default 0.0.0.0, env HOST)
-  --data    Where config and device sessions live (default ~/.config/omarchy-server)`)
+  --backend    Address of omarchyd, the backend (default http://127.0.0.1:2021 when set by installer, env OMARCHY_BACKEND_URL)
+  --port       Port to listen on (default 7780, env PORT)
+  --host       Address to bind (default 0.0.0.0, env HOST)
+  --data       Where config and device sessions live (default ~/.config/omarchy-server, env OMARCHY_SERVER_DATA)
+  --app-hosts  App subdomain pattern, e.g. "{app}-touch.example.com" ("off" or "" to clear, env TOUCH_APP_HOSTS)
+  -h, --help   Show this help
+
+Environment:
+  OMARCHY_SERVER_SECURE_COOKIES=1  Mark the session cookie Secure (when served only behind HTTPS)`)
 	process.exit(0)
 }
 
-const port = Number(flag('port') ?? process.env.PORT ?? 7780)
-const host = flag('host') ?? process.env.HOST ?? '0.0.0.0'
-const dataDir = flag('data') ?? process.env.OMARCHY_SERVER_DATA ?? join(homedir(), '.config', 'omarchy-server')
+let port
+try {
+	port = parsePort(values.port, process.env.PORT, {flag: '--port', env: 'PORT', fallback: 7780})
+} catch (error) {
+	console.error(`[omarchy-server] ${error.message}`)
+	process.exit(1)
+}
+const host = values.host || process.env.HOST || '0.0.0.0'
+const dataFromFlag = values.data !== undefined
+const dataDir = dataFromFlag ? values.data : process.env.OMARCHY_SERVER_DATA || join(homedir(), '.config', 'omarchy-server')
+if (!String(dataDir).trim()) {
+	console.error(`[omarchy-server] ${dataFromFlag ? '--data' : 'OMARCHY_SERVER_DATA'} cannot be empty`)
+	process.exit(1)
+}
 const staticDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist')
 
-const store = await createStore(dataDir)
-const backendArg = flag('backend') ?? process.env.OMARCHY_BACKEND_URL
-if (backendArg) await store.setConfig({backendUrl: normalizeBackendUrl(backendArg)})
-// App addresses for remote access, e.g. "{app}-touch.example.com"; kept until set to "off".
-const appHosts = flag('app-hosts') ?? process.env.TOUCH_APP_HOSTS
-if (appHosts) await store.setConfig({appHosts: appHosts === 'off' ? null : appHosts})
+const backendFromFlag = values.backend !== undefined
+const backendArg = backendFromFlag ? values.backend : process.env.OMARCHY_BACKEND_URL || undefined
+let backendUrl
+if (backendArg !== undefined) {
+	try {
+		backendUrl = normalizeBackendUrl(backendArg)
+	} catch (error) {
+		const label = backendFromFlag ? '--backend' : 'OMARCHY_BACKEND_URL'
+		const message = error?.code === 'ERR_INVALID_URL' ? 'that is not a valid address' : error.message
+		console.error(`[omarchy-server] ${label}: ${message}`)
+		process.exit(1)
+	}
+}
+// App addresses for remote access, e.g. "{app}-touch.example.com"; kept until set to "off" or "".
+const appHostsFromFlag = values['app-hosts'] !== undefined
+const rawAppHosts = appHostsFromFlag ? values['app-hosts'] : process.env.TOUCH_APP_HOSTS
+let appHostsUpdate
+if (rawAppHosts !== undefined) {
+	try {
+		appHostsUpdate = normalizeAppHosts(rawAppHosts)
+	} catch (error) {
+		const label = appHostsFromFlag ? '--app-hosts' : 'TOUCH_APP_HOSTS'
+		console.error(`[omarchy-server] ${label} ${error.message}`)
+		process.exit(2)
+	}
+}
+
+let store
+try {
+	store = await createStore(dataDir)
+	if (backendUrl !== undefined) await store.setConfig({backendUrl})
+	if (rawAppHosts !== undefined) await store.setConfig({appHosts: appHostsUpdate})
+} catch (error) {
+	console.error(`[omarchy-server] ${formatDataDirError(dataDir, error)}`)
+	process.exit(1)
+}
 
 // https:// on the same port as http:// (see omarchyd/tls.mjs). The certificate is shared with omarchyd.
 const secure = tlsContext({dir: defaultTlsDir()})

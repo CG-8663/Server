@@ -2,7 +2,7 @@ import {useEffect, useState, type CSSProperties} from 'react'
 
 import {useInstallReview} from './data'
 import {Icon} from './icons'
-import {AppIcon, bytes, haptic, useToast} from './ui'
+import {AppIcon, Field, bytes, haptic, useToast} from './ui'
 import {folderKey, folderPathOk, reviewInstallInput, type ReviewInstallInput} from './installReview'
 
 // The store's "Before you install" body. The store sheet and the assistant both use this,
@@ -166,10 +166,18 @@ export function BeforeInstall({
 							</span>
 						</label>
 						{value != null && (
-							<>
-								<div className="field" style={{marginTop: 6}}><input value={value} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setPlaced((p) => ({...p, [k]: e.target.value}))} aria-label={`Folder for ${f.label}`} /></div>
-								{!folderPathOk(value, home) && <p className="muted" style={{fontSize: 13, margin: '6px 0 0', color: 'var(--red)'}}>Pick a folder inside {home} (not a hidden one).</p>}
-							</>
+							<div style={{marginTop: 6}}>
+								<Field
+									label={`Folder for ${f.label}`}
+									labelHidden
+									value={value}
+									spellCheck={false}
+									autoCapitalize="off"
+									autoCorrect="off"
+									onChange={(e) => setPlaced((p) => ({...p, [k]: e.target.value}))}
+									error={!folderPathOk(value, home) ? `Pick a folder inside ${home} (not a hidden one).` : undefined}
+								/>
+							</div>
 						)}
 					</div>
 				)

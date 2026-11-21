@@ -367,6 +367,15 @@ export function normalizeBackendUrl(input) {
 	return `${url.protocol}//${url.host}`
 }
 
+export function normalizeAppHosts(input) {
+	const p = String(input ?? '').trim().toLowerCase()
+	if (!p || p === 'off') return null
+	if (!/^[a-z0-9.-]*\{app\}[a-z0-9.-]*$/.test(p) || !p.includes('.') || p.startsWith('.') || p.endsWith('.') || p.includes('..')) {
+		throw new Error('must look like {app}-touch.example.com (or "off" to clear)')
+	}
+	return p
+}
+
 export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0'}) {
 	const app = express()
 	app.disable('x-powered-by')
@@ -859,13 +868,18 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	const backgroundFile = (accountId) => join(store.dataDir, 'backgrounds', `${accountKey(accountId)}.jpg`)
 	const prefsOf = (accountId) => store.getConfig().prefs?.[accountKey(accountId)] ?? null
 	const savePrefs = async (accountId, patch) => {
-		const all = {...(store.getConfig().prefs ?? {})}
-		const prev = all[accountKey(accountId)] ?? {}
-		// rev: counted here, on the server, so every browser can tell it has the latest without
-		// trusting its own clock.
-		all[accountKey(accountId)] = {...prev, ...patch, rev: (Number(prev.rev) || 0) + 1}
-		await store.setConfig({prefs: all})
-		return all[accountKey(accountId)]
+		const key = accountKey(accountId)
+		let saved
+		await store.setConfig((current) => {
+			const all = {...(current.prefs ?? {})}
+			const prev = all[key] ?? {}
+			// rev: counted here, on the server, so every browser can tell it has the latest without
+			// trusting its own clock.
+			saved = {...prev, ...patch, rev: (Number(prev.rev) || 0) + 1}
+			all[key] = saved
+			return {prefs: all}
+		})
+		return saved
 	}
 	const requireSession = (req, res) => {
 		const session = store.getSession(req.sid)
@@ -927,14 +941,19 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		if (!config || typeof config !== 'object' || Array.isArray(config)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad desktop settings'}})
 		const text = JSON.stringify(config)
 		if (text.length > 60_000) return res.status(413).json({error: {code: 'PAYLOAD_TOO_LARGE', message: 'Desktop settings are too large'}})
-		const all = {...(store.getConfig().desktops ?? {})}
 		const key = accountKey(session.accountId)
-		// The latest change saved wins. rev and updatedAt come from the server (not a browser's clock,
-		// which can be off between devices), so every browser can tell it has the newest.
-		const prevRev = Number(all[key]?.rev) || (all[key] ? 1 : 0)
-		all[key] = {config: JSON.parse(text), rev: prevRev + 1, updatedAt: Date.now()}
-		await store.setConfig({desktops: all})
-		res.json({desktop: all[key]})
+		const parsed = JSON.parse(text)
+		let saved
+		await store.setConfig((current) => {
+			const all = {...(current.desktops ?? {})}
+			// The latest change saved wins. rev and updatedAt come from the server (not a browser's clock,
+			// which can be off between devices), so every browser can tell it has the newest.
+			const prevRev = Number(all[key]?.rev) || (all[key] ? 1 : 0)
+			saved = {config: parsed, rev: prevRev + 1, updatedAt: Date.now()}
+			all[key] = saved
+			return {desktops: all}
+		})
+		res.json({desktop: saved})
 	}))
 
 	// Custom background: the phone resizes the photo to a JPEG before sending it.
@@ -1275,8 +1294,13 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	// App subdomains for remote access (Cloudflare tunnel etc.): TOUCH_APP_HOSTS="{app}-touch.example.com"
 	// routes e.g. forgejo-touch.example.com to Forgejo through the relay, on Touch's own port.
 	const appHostPattern = (() => {
-		const p = String(store.getConfig().appHosts ?? '').trim().toLowerCase()
-		if (!/^[a-z0-9.\-]*\{app\}[a-z0-9.\-]*$/.test(p) || !p.includes('.')) return null
+		let p = null
+		try {
+			p = normalizeAppHosts(store.getConfig().appHosts)
+		} catch {
+			return null
+		}
+		if (!p) return null
 		const [pre, post] = p.split('{app}')
 		const esc = (x) => x.replace(/[.\-]/g, (m) => `\\${m}`)
 		return {post, make: (id) => `${pre}${id.toLowerCase()}${post}`, match: new RegExp(`^${esc(pre)}([a-z0-9-]{1,100})${esc(post)}$`)}

@@ -189,9 +189,9 @@ def _xor(data, mask):
 # Facts about this computer.
 def read(path, default=""):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             return f.read()
-    except OSError:
+    except (OSError, ValueError):
         return default
 
 
@@ -294,12 +294,16 @@ def disks():
     out, seen = [], set()
     for line in read("/proc/mounts").splitlines():
         p = line.split()
-        if len(p) < 3 or p[2] not in REAL_FS or p[0] in seen:
+        if len(p) < 3 or p[2] not in REAL_FS:
+            continue
+        # A ZFS dataset's device is its own name, but every dataset in a pool is one disk.
+        key = p[0].split("/")[0] if p[2] == "zfs" else p[0]
+        if key in seen:
             continue
         mount = p[1].replace("\\040", " ")
         if any(mount == p or mount.startswith(p + "/") for p in ("/boot", "/snap", "/var/lib/docker", "/var/lib/containers")):
             continue
-        seen.add(p[0])
+        seen.add(key)
         try:
             st = os.statvfs(mount)
         except OSError:
@@ -939,7 +943,10 @@ class Shell(Channel):
         pid, fd = pty.fork()
         if pid == 0:
             # The child must never fall back into the connector's own code.
+            # Python ignores SIGPIPE and SIGXFSZ, and exec keeps an ignored signal.
             try:
+                signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+                signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
                 os.chdir(me.pw_dir)
                 env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", HOME=me.pw_dir, SHELL=shell, USER=me.pw_name, LANG=os.environ.get("LANG") or "C.UTF-8")
                 os.execvpe(shell, [shell, "-l"], env)
@@ -1358,6 +1365,7 @@ def start_relay(cfg):
                     headers[h] = self.headers[h]
             length = int(self.headers.get("Content-Length") or 0)
             conn = http.client.HTTPSConnection(u.hostname, u.port or 443, context=ctx, timeout=600)
+            headers_sent = False
             try:
                 conn.putrequest(self.command, "/connector/backup/" + rest, skip_accept_encoding=True)
                 for k, v in headers.items():
@@ -1370,6 +1378,11 @@ def start_relay(cfg):
                         break
                     conn.send(chunk)
                     left -= len(chunk)
+                # The server was told the full Content-Length. Closing here is the failure
+                # it can see; waiting in getresponse() holds the upload open for the timeout.
+                if left > 0:
+                    conn.close()
+                    return
                 r = conn.getresponse()
                 self.send_response(r.status)
                 body_len = r.getheader("Content-Length")
@@ -1380,21 +1393,41 @@ def start_relay(cfg):
                     data = r.read()
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
+                    headers_sent = True
                     self.wfile.write(data)
                     return
                 self.end_headers()
-                while True:
-                    chunk = r.read(1 << 20)
+                headers_sent = True
+                sent = 0
+                need = int(body_len)
+                while sent < need:
+                    chunk = r.read(min(1 << 20, need - sent))
                     if not chunk:
-                        break
+                        # HEAD has no body even when Content-Length names the entity.
+                        if self.command == "HEAD":
+                            break
+                        self.close_connection = True
+                        try:
+                            self.connection.close()
+                        except OSError:
+                            pass
+                        return
                     self.wfile.write(chunk)
+                    sent += len(chunk)
             except OSError:
-                try:
-                    self.send_response(502)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                except OSError:
-                    pass
+                if headers_sent:
+                    self.close_connection = True
+                    try:
+                        self.connection.close()
+                    except OSError:
+                        pass
+                else:
+                    try:
+                        self.send_response(502)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                    except OSError:
+                        pass
             finally:
                 conn.close()
 
@@ -1711,9 +1744,26 @@ def forget():
 
 
 # ---------------------------------------------------------------------------------------------
+USAGE = """Omarchy Server connector: joins this Linux computer to an Omarchy Server's local swarm.
+
+  agent.py                                run the connector (after enrolling)
+  agent.py enroll SERVER TOKEN [ABILITIES]
+                                          join using a one-time pairing token
+  agent.py info                           print machine facts and metrics as JSON
+  agent.py -h | --help | help             show this help"""
+
+
 def enroll(server, token, abilities):
+    u = urllib.parse.urlsplit(server)
+    if u.scheme != "https" or not u.hostname:
+        raise SystemExit("The server address must start with https://")
     body = json.dumps({"token": token, "info": info(), "abilities": abilities}).encode()
-    ctx = ssl.create_default_context(cafile=CA_FILE)
+    try:
+        ctx = ssl.create_default_context(cafile=CA_FILE)
+    except FileNotFoundError:
+        raise SystemExit(f"Server certificate not found ({CA_FILE}). Run the install command from Machines → Local swarm → Add a computer.")
+    except OSError as e:
+        raise SystemExit(f"Couldn't read server certificate ({CA_FILE}): {e}")
     ctx.check_hostname = False
     req = urllib.request.Request(server.rstrip("/") + "/connector/enroll", data=body, headers={"content-type": "application/json"}, method="POST")
     try:
@@ -1724,11 +1774,24 @@ def enroll(server, token, abilities):
             raise SystemExit(json.load(e).get("error") or f"The server said {e.code}")
         except ValueError:
             raise SystemExit(f"The server said {e.code}")
+    except urllib.error.URLError as e:
+        raise SystemExit(f"Couldn't reach {server}: {e.reason}")
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"Couldn't reach {server}: {e}")
 
 
-def main():
-    args = sys.argv[1:]
+def main(argv=None):
+    args = sys.argv[1:] if argv is None else list(argv)
+    if args in (["-h"], ["--help"], ["help"], ["help", "enroll"], ["help", "info"]):
+        print(USAGE)
+        return
     if args[:1] == ["enroll"]:
+        if "-h" in args[1:] or "--help" in args[1:]:
+            print(USAGE)
+            return
+        if len(args) not in (3, 4) or args[1].startswith("-") or args[2].startswith("-") or (len(args) == 4 and args[3].startswith("-")):
+            print("Use: agent.py enroll SERVER TOKEN [ABILITIES]", file=sys.stderr)
+            raise SystemExit(2)
         server, token = args[1], args[2]
         abilities = {k: k in args[3].split(",") for k in ("terminal", "desktop", "manage", "storage", "backup")} if len(args) > 3 else {}
         r = enroll(server, token, abilities)
@@ -1740,8 +1803,17 @@ def main():
         print(r.get("name", ""))
         return
     if args[:1] == ["info"]:
+        if "-h" in args[1:] or "--help" in args[1:]:
+            print(USAGE)
+            return
+        if len(args) != 1:
+            print("Use: agent.py info", file=sys.stderr)
+            raise SystemExit(2)
         print(json.dumps({"info": info(), "metrics": metrics(package_manager())}, indent=2))
         return
+    if args:
+        print(f"Unknown option or command: {args[0]}\nUse: agent.py [enroll SERVER TOKEN [ABILITIES] | info | --help]", file=sys.stderr)
+        raise SystemExit(2)
     try:
         with open(CONFIG) as f:
             cfg = json.load(f)

@@ -27,6 +27,7 @@ import {dirname, join, resolve} from 'node:path'
 import tls from 'node:tls'
 import YAML from 'yaml'
 
+import {createKeyedLock} from './locks.mjs'
 import {RpcError} from './rpc.mjs'
 import {SYSTEM_PERMISSIONS} from './system-apps.mjs'
 import {dualProtocolServer, tlsContext, wantsUpgrade} from './tls.mjs'
@@ -558,6 +559,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	let stateDamaged = false
 	let secret
 	const busy = new Map() // appId -> {state, progress}
+	const lock = createKeyedLock()
 	let statesCache = new Map(), statesAt = 0, statesInFlight = null
 	// When an app stops being busy (installed, started, stopped…), look at it afresh next time.
 	const busyDelete = busy.delete.bind(busy)
@@ -1614,87 +1616,109 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 
 	async function install(input) {
 		await ready
-		if (stateDamaged) throw new RpcError('PRECONDITION_FAILED', 'apps.json is damaged and was left unchanged.')
 		const id = String(input?.appId ?? '')
-		const failed = state.apps.find((a) => a.id === id && a.state === 'error')
-		if (failed) {
-			// A failed install: clear it away and start over.
-			if (await exists(join(appDir(id), 'compose.omarchy.yml'))) await compose(failed, 'down', '--remove-orphans').catch(() => {})
-			await removeAppDir(id)
-			state.apps = state.apps.filter((a) => a !== failed)
+		return lock(`install:${id}`, async () => {
+			if (stateDamaged) throw new RpcError('PRECONDITION_FAILED', 'apps.json is damaged and was left unchanged.')
+			const failed = state.apps.find((a) => a.id === id && a.state === 'error')
+			if (failed) {
+				// A failed install: clear it away and start over.
+				if (await exists(join(appDir(id), 'compose.omarchy.yml'))) await compose(failed, 'down', '--remove-orphans').catch(() => {})
+				await removeAppDir(id)
+				state.apps = state.apps.filter((a) => a !== failed)
+				await save()
+			}
+			if (state.apps.some((a) => a.id === id)) throw new RpcError('CONFLICT', 'That app is already installed')
+			const plan = await installPlan(id)
+			if (plan.some((src) => !src.system)) {
+				if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
+				const h = await engineHealth({fresh: true})
+				if (!h.ok) throw new RpcError('PRECONDITION_FAILED', h.message)
+			}
+			if (plan.some((src) => src.system) && !systemApps) throw new RpcError('PRECONDITION_FAILED', 'This server can’t install system apps')
+			// Check every port first, so nothing starts installing if one of them can't.
+			const ports = new Set()
+			for (const src of plan) {
+				if (!src.port) continue
+				if (src.port < 1024 || src.port > 65535 || RESERVED(src.port)) throw new RpcError('PRECONDITION_FAILED', `${src.name} wants port ${src.port}, which Omarchy Server keeps for itself`)
+				if (ports.has(src.port) || state.apps.some((a) => a.port === src.port) || !(await portFree(src.port))) throw new RpcError('CONFLICT', `Port ${src.port} is already in use, so ${src.name} can’t be installed`)
+				ports.add(src.port)
+			}
+			// Folders you placed yourself (see folderChoices): checked, and made, before anything installs.
+			const placed = new Map()
+			for (const f of Array.isArray(input?.folders) ? input.folders : []) {
+				const src = plan.find((p) => p.id === f?.appId)
+				if (!src || !(src.folders ?? []).some((c) => c.id === f.id) || !f.path) continue
+				const path = String(f.path).replace(/\/+$/, '')
+				if (!folderAllowed(path, home)) throw new RpcError('BAD_REQUEST', `${src.name} can’t use ${path}: pick a folder inside your home folder (not a hidden one).`)
+				// The deepest part that already exists must really be there, not a link to somewhere else.
+				let probe = path
+				while (!(await exists(probe))) probe = probe.slice(0, probe.lastIndexOf('/')) || '/'
+				const real = await realpath(probe)
+				if (real !== probe && !folderAllowed(join(real, path.slice(probe.length)), home)) throw new RpcError('BAD_REQUEST', `${path} leads outside your home folder, so ${src.name} can’t use it.`)
+				if ((await exists(path)) && !(await stat(path)).isDirectory()) throw new RpcError('BAD_REQUEST', `${path} isn’t a folder.`)
+				placed.set(`${src.id}/${f.id}`, path)
+			}
+			for (const path of placed.values()) await mkdir(path, {recursive: true})
+			// Extra access: after folders are placed, so FOLDER_* is the path Compose will expand.
+			const granted = new Set(Array.isArray(input?.grant) ? input.grant.map(String) : [])
+			const needs = new Map()
+			for (const src of plan) {
+				const folderIds = (src.folders ?? []).map((f) => f.id)
+				const folders = Object.fromEntries(folderIds.filter((fid) => placed.has(`${src.id}/${fid}`)).map((fid) => [fid, placed.get(`${src.id}/${fid}`)]))
+				const perms = await permissionsOf({...src, folderIds, folders})
+				const refused = perms.find((p) => p.id === 'refused')
+				if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
+				needs.set(src.id, perms.map((p) => p.id))
+			}
+			const missing = [...new Set([...needs.values()].flat())].filter((p) => !granted.has(p))
+			if (missing.length) throw new RpcError('PRECONDITION_FAILED', `Installing needs your permission: ${missing.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}.`)
+			// Every app in the plan shows as installing right away; they then install one after another.
+			const queued = plan.map((src) => {
+				const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
+				if (leftover) state.apps = state.apps.filter((a) => a !== leftover)
+				const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.requiresHttps ? {requiresHttps: true} : {}), ...(src.web?.https ? {internalHttps: true} : {}), ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.mcp ? {mcp: src.mcp} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), ...(src.folders?.length ? {folderIds: src.folders.map((f) => f.id), folders: Object.fromEntries(src.folders.filter((f) => placed.has(`${src.id}/${f.id}`)).map((f) => [f.id, placed.get(`${src.id}/${f.id}`)]))} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? [], ownSecretsOnly: true}
+				state.apps.push(app)
+				busy.set(app.id, {state: 'installing', progress: 0})
+				return {src, app}
+			})
 			await save()
-		}
-		if (state.apps.some((a) => a.id === id)) throw new RpcError('CONFLICT', 'That app is already installed')
-		const plan = await installPlan(id)
-		if (plan.some((src) => !src.system)) {
-			if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
-			const h = await engineHealth({fresh: true})
-			if (!h.ok) throw new RpcError('PRECONDITION_FAILED', h.message)
-		}
-		if (plan.some((src) => src.system) && !systemApps) throw new RpcError('PRECONDITION_FAILED', 'This server can’t install system apps')
-		// Check every port first, so nothing starts installing if one of them can't.
-		const ports = new Set()
-		for (const src of plan) {
-			if (!src.port) continue
-			if (src.port < 1024 || src.port > 65535 || RESERVED(src.port)) throw new RpcError('PRECONDITION_FAILED', `${src.name} wants port ${src.port}, which Omarchy Server keeps for itself`)
-			if (ports.has(src.port) || state.apps.some((a) => a.port === src.port) || !(await portFree(src.port))) throw new RpcError('CONFLICT', `Port ${src.port} is already in use, so ${src.name} can’t be installed`)
-			ports.add(src.port)
-		}
-		// Folders you placed yourself (see folderChoices): checked, and made, before anything installs.
-		const placed = new Map()
-		for (const f of Array.isArray(input?.folders) ? input.folders : []) {
-			const src = plan.find((p) => p.id === f?.appId)
-			if (!src || !(src.folders ?? []).some((c) => c.id === f.id) || !f.path) continue
-			const path = String(f.path).replace(/\/+$/, '')
-			if (!folderAllowed(path, home)) throw new RpcError('BAD_REQUEST', `${src.name} can’t use ${path}: pick a folder inside your home folder (not a hidden one).`)
-			// The deepest part that already exists must really be there, not a link to somewhere else.
-			let probe = path
-			while (!(await exists(probe))) probe = probe.slice(0, probe.lastIndexOf('/')) || '/'
-			const real = await realpath(probe)
-			if (real !== probe && !folderAllowed(join(real, path.slice(probe.length)), home)) throw new RpcError('BAD_REQUEST', `${path} leads outside your home folder, so ${src.name} can’t use it.`)
-			if ((await exists(path)) && !(await stat(path)).isDirectory()) throw new RpcError('BAD_REQUEST', `${path} isn’t a folder.`)
-			placed.set(`${src.id}/${f.id}`, path)
-		}
-		for (const path of placed.values()) await mkdir(path, {recursive: true})
-		// Extra access: after folders are placed, so FOLDER_* is the path Compose will expand.
-		const granted = new Set(Array.isArray(input?.grant) ? input.grant.map(String) : [])
-		const needs = new Map()
-		for (const src of plan) {
-			const folderIds = (src.folders ?? []).map((f) => f.id)
-			const folders = Object.fromEntries(folderIds.filter((fid) => placed.has(`${src.id}/${fid}`)).map((fid) => [fid, placed.get(`${src.id}/${fid}`)]))
-			const perms = await permissionsOf({...src, folderIds, folders})
-			const refused = perms.find((p) => p.id === 'refused')
-			if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
-			needs.set(src.id, perms.map((p) => p.id))
-		}
-		const missing = [...new Set([...needs.values()].flat())].filter((p) => !granted.has(p))
-		if (missing.length) throw new RpcError('PRECONDITION_FAILED', `Installing needs your permission: ${missing.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}.`)
-		// Every app in the plan shows as installing right away; they then install one after another.
-		const queued = plan.map((src) => {
-			const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
-			if (leftover) state.apps = state.apps.filter((a) => a !== leftover)
-			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.requiresHttps ? {requiresHttps: true} : {}), ...(src.web?.https ? {internalHttps: true} : {}), ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.mcp ? {mcp: src.mcp} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), ...(src.folders?.length ? {folderIds: src.folders.map((f) => f.id), folders: Object.fromEntries(src.folders.filter((f) => placed.has(`${src.id}/${f.id}`)).map((f) => [f.id, placed.get(`${src.id}/${f.id}`)]))} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? [], ownSecretsOnly: true}
-			state.apps.push(app)
-			busy.set(app.id, {state: 'installing', progress: 0})
-			return {src, app}
-		})
-		await save()
-		;(async () => {
-			let broken = null
-			for (const {src, app} of queued) {
-				if (broken) {
-					Object.assign(app, {state: 'error', error: `Couldn’t install ${broken}, which this app needs.`})
-					busy.delete(app.id)
-					continue
-				}
-				busy.set(app.id, {state: 'installing', progress: 5})
-				if (src.system) {
+			;(async () => {
+				let broken = null
+				for (const {src, app} of queued) {
+					if (broken) {
+						Object.assign(app, {state: 'error', error: `Couldn’t install ${broken}, which this app needs.`})
+						busy.delete(app.id)
+						continue
+					}
+					busy.set(app.id, {state: 'installing', progress: 5})
+					if (src.system) {
+						try {
+							app.system = true
+							app.store = BUILTIN_STORE
+							app.internalPort = systemPortFor(app)
+							busy.set(app.id, {state: 'installing', progress: 20})
+							await systemApps.install(app)
+							markStarted(app.id)
+							await openGateways(app)
+							delete app.state
+							delete app.error
+						} catch (error) {
+							Object.assign(app, {state: 'error', error: error.message})
+							broken = app.name
+						} finally {
+							busy.delete(app.id)
+							await save().catch(() => {})
+						}
+						continue
+					}
 					try {
-						app.system = true
-						app.store = BUILTIN_STORE
-						app.internalPort = systemPortFor(app)
-						busy.set(app.id, {state: 'installing', progress: 20})
-						await systemApps.install(app)
+						await sharedRoot()
+						app.internalPort = await placeApp(src, app)
+						await prepareOwnership(app)
+						busy.set(app.id, {state: 'installing', progress: 15})
+						await compose(app, 'pull')
+						busy.set(app.id, {state: 'installing', progress: 85})
+						await compose(app, 'up', '-d', '--remove-orphans')
 						markStarted(app.id)
 						await openGateways(app)
 						delete app.state
@@ -1706,30 +1730,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 						busy.delete(app.id)
 						await save().catch(() => {})
 					}
-					continue
 				}
-				try {
-					await sharedRoot()
-					app.internalPort = await placeApp(src, app)
-					await prepareOwnership(app)
-					busy.set(app.id, {state: 'installing', progress: 15})
-					await compose(app, 'pull')
-					busy.set(app.id, {state: 'installing', progress: 85})
-					await compose(app, 'up', '-d', '--remove-orphans')
-					markStarted(app.id)
-					await openGateways(app)
-					delete app.state
-					delete app.error
-				} catch (error) {
-					Object.assign(app, {state: 'error', error: error.message})
-					broken = app.name
-				} finally {
-					busy.delete(app.id)
-					await save().catch(() => {})
-				}
-			}
-		})()
-		return true
+			})()
+			return true
+		})
 	}
 
 	async function update(input) {
@@ -1737,18 +1741,26 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const app = findInstalled(String(input?.appId ?? ''))
 		if (app.system) throw new RpcError('PRECONDITION_FAILED', `${app.name} is updated with the rest of the system (Omarchy’s updates).`)
 		if (busy.has(app.id)) throw new RpcError('CONFLICT', `${app.name} is busy`)
-		const src = await findInRegistry(app.id)
-		if (!src) throw new RpcError('NOT_FOUND', 'That app is no longer in your stores')
-		// An update never adds access you didn't allow. (Apps installed before permissions existed keep what they run with.)
-		const wantsPerms = await permissionsOf({...src, folderIds: app.folderIds, folders: app.folders && !Array.isArray(app.folders) ? app.folders : undefined})
-		const refused = wantsPerms.find((p) => p.id === 'refused')
-		if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
-		const wants = wantsPerms.map((p) => p.id)
-		app.permissions ??= wants
-		const extra = wants.filter((p) => !app.permissions.includes(p) && !(Array.isArray(input?.grant) && input.grant.includes(p)))
-		if (extra.length) throw new RpcError('PRECONDITION_FAILED', `This update asks for more access (${extra.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}). Uninstall and install it again to allow that.`)
-		// Folders a newer listing lets you place start inside the app; the ones you placed stay put.
-		if (src.folders?.length) app.folderIds = [...new Set([...(app.folderIds ?? []), ...src.folders.map((f) => f.id)])]
+		busy.set(app.id, {state: 'updating', progress: 0})
+		let src
+		let wants
+		try {
+			src = await findInRegistry(app.id)
+			if (!src) throw new RpcError('NOT_FOUND', 'That app is no longer in your stores')
+			// An update never adds access you didn't allow. (Apps installed before permissions existed keep what they run with.)
+			const wantsPerms = await permissionsOf({...src, folderIds: app.folderIds, folders: app.folders && !Array.isArray(app.folders) ? app.folders : undefined})
+			const refused = wantsPerms.find((p) => p.id === 'refused')
+			if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
+			wants = wantsPerms.map((p) => p.id)
+			app.permissions ??= wants
+			const extra = wants.filter((p) => !app.permissions.includes(p) && !(Array.isArray(input?.grant) && input.grant.includes(p)))
+			if (extra.length) throw new RpcError('PRECONDITION_FAILED', `This update asks for more access (${extra.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}). Uninstall and install it again to allow that.`)
+			// Folders a newer listing lets you place start inside the app; the ones you placed stay put.
+			if (src.folders?.length) app.folderIds = [...new Set([...(app.folderIds ?? []), ...src.folders.map((f) => f.id)])]
+		} catch (error) {
+			busy.delete(app.id)
+			throw error
+		}
 		busy.set(app.id, {state: 'updating', progress: 10})
 		let step = 'getting its files ready'
 		// placeApp records the new loopback port before the new containers are up. Keep the old one if that fails.
@@ -2129,25 +2141,27 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					let url = normalize(input?.url)
 					if (localDefault && isGithubAppStore(url)) url = normalize(localDefault.url)
 					checkUrl(url)
-					if (state.stores.some((s) => s.url.toLowerCase() === url.toLowerCase())) throw new RpcError('CONFLICT', 'That store is already added')
-					try {
-						await rm(storeDir(url), {recursive: true, force: true})
-						await syncStore(url)
-					} catch {
-						await rm(storeDir(url), {recursive: true, force: true})
-						throw new RpcError('BAD_REQUEST', 'Couldn’t download that store. Check the address and that the repository is public.')
-					}
-					let loaded
-					try {
-						loaded = await loadStore(url)
-					} catch (e) {
-						await rm(storeDir(url), {recursive: true, force: true})
-						throw e
-					}
-					state.stores.push({url, meta: loaded.meta, syncedAt: Date.now()})
-					registryCache = null
-					await save()
-					return true
+					return lock(`store:${url.toLowerCase()}`, async () => {
+						if (state.stores.some((s) => s.url.toLowerCase() === url.toLowerCase())) throw new RpcError('CONFLICT', 'That store is already added')
+						try {
+							await rm(storeDir(url), {recursive: true, force: true})
+							await syncStore(url)
+						} catch {
+							await rm(storeDir(url), {recursive: true, force: true})
+							throw new RpcError('BAD_REQUEST', 'Couldn’t download that store. Check the address and that the repository is public.')
+						}
+						let loaded
+						try {
+							loaded = await loadStore(url)
+						} catch (e) {
+							await rm(storeDir(url), {recursive: true, force: true})
+							throw e
+						}
+						state.stores.push({url, meta: loaded.meta, syncedAt: Date.now()})
+						registryCache = null
+						await save()
+						return true
+					})
 				},
 			},
 			'appStore.removeRepository': {

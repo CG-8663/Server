@@ -182,7 +182,11 @@ export async function ensureTls({dir = defaultTlsDir(), names = serverNames()} =
 				if (error.code !== 'ENOENT') throw error
 			}
 			const short = host.toLowerCase()
-			await openssl(['req', '-x509', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-days', '3650', '-subj', `/O=Omarchy Server/CN=Omarchy Server ${host}`, '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0', '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-addext', nameConstraints(short)], {cwd: dir})
+			// OpenSSL rejects a common name over 64 bytes. "Omarchy Server " is 15, so a
+			// device name of 50 or more (Settings allows 63) cannot use the host in full.
+			const prefix = 'Omarchy Server '
+			const cn = Buffer.byteLength(prefix + host) <= 64 ? prefix + host : prefix + host.slice(0, 64 - Buffer.byteLength(prefix))
+			await openssl(['req', '-x509', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-days', '3650', '-subj', `/O=Omarchy Server/CN=${cn}`, '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0', '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-addext', nameConstraints(short)], {cwd: dir})
 			await writeAtomic(join(dir, 'ca.json'), JSON.stringify({restricted: true, dns: permittedDns(short), created: Date.now()}), {mode: 0o600})
 			// The new authority can only sign what it's allowed: start over with those names.
 			await rm(join(dir, 'server.json'), {force: true})

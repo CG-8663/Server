@@ -18,6 +18,7 @@ import {access, chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile} fr
 import os from 'node:os'
 import {dirname, join, relative, sep} from 'node:path'
 
+import {Transform} from 'node:stream'
 import {pipeline} from 'node:stream/promises'
 
 import {removeAtomic, writeAtomic} from './atomic.mjs'
@@ -67,21 +68,40 @@ export function recoveryKey(bytes = randomBytes(20)) {
 	return out.match(/.{4}/g).join('-')
 }
 
-// When the next scheduled backup is due, in the server's local time.
-export function nextRun(schedule, from = Date.now()) {
+function slotAt(schedule, from, forward) {
 	if (!schedule || schedule.frequency === 'off') return null
-	const at = new Date(from)
-	at.setSeconds(0, 0)
-	at.setMinutes(0)
-	at.setHours(schedule.hour)
-	if (schedule.frequency === 'weekly') {
-		const add = (schedule.weekday - at.getDay() + 7) % 7
-		at.setDate(at.getDate() + add)
-		if (at.getTime() <= from) at.setDate(at.getDate() + 7)
-	} else if (at.getTime() <= from) {
-		at.setDate(at.getDate() + 1)
+	const base = new Date(from)
+	const y = base.getFullYear()
+	const m = base.getMonth()
+	const d = base.getDate()
+	const step = schedule.frequency === 'weekly' ? 7 : 1
+	let offset =
+		schedule.frequency === 'weekly'
+			? forward
+				? (schedule.weekday - base.getDay() + 7) % 7
+				: -((base.getDay() - schedule.weekday + 7) % 7)
+			: 0
+	let t = new Date(y, m, d + offset, schedule.hour, 0, 0, 0).getTime()
+	while (forward ? t <= from : t > from) {
+		offset += forward ? step : -step
+		t = new Date(y, m, d + offset, schedule.hour, 0, 0, 0).getTime()
 	}
-	return at.getTime()
+	return t
+}
+
+// When the next scheduled backup is due, in the server's local time.
+export const nextRun = (schedule, from = Date.now()) => slotAt(schedule, from, true)
+
+// The latest time the schedule said "back up" (at or before now).
+export const latestSlot = (schedule, at = Date.now()) => slotAt(schedule, at, false)
+
+// avahi-browse -p escapes non-ASCII and special bytes as three-digit decimal \DDD sequences.
+export function unescapeAvahi(text) {
+	return String(text ?? '').replace(/(?:\\(?:25[0-5]|2[0-4]\d|[01]\d\d))+/g, (seq) => {
+		const bytes = []
+		for (let i = 0; i < seq.length; i += 4) bytes.push(Number(seq.slice(i + 1, i + 4)))
+		return Buffer.from(bytes).toString('utf8')
+	})
 }
 
 // smbclient's recursive `ls`: entries, with "\dir\sub" headers (share-absolute) before each folder.
@@ -121,12 +141,13 @@ function smbMessage(errors) {
 export function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 60_000, split = /\n/} = {}) {
 	return new Promise((resolve, reject) => {
 		const child = spawn(cmd, args, {env, stdio: ['pipe', 'pipe', 'pipe']})
+		child.stdout.setEncoding('utf8')
+		child.stderr.setEncoding('utf8')
 		let out = ''
 		let err = ''
 		let buf = ''
 		const timer = setTimeout(() => child.kill('SIGTERM'), timeout)
-		child.stdout.on('data', (d) => {
-			const s = d.toString()
+		child.stdout.on('data', (s) => {
 			out += s
 			if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024)
 			if (onLine) {
@@ -136,7 +157,7 @@ export function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 
 				for (const l of lines) onLine(l)
 			}
 		})
-		child.stderr.on('data', (d) => (err = (err + d.toString()).slice(-64 * 1024)))
+		child.stderr.on('data', (d) => (err = (err + d).slice(-64 * 1024)))
 		child.on('error', (e) => (clearTimeout(timer), reject(e)))
 		child.on('close', (code) => {
 			clearTimeout(timer)
@@ -157,15 +178,18 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	const configFile = join(dir, 'config.json')
 	const secretFile = join(dir, 'secrets.json')
 	const historyFile = join(dir, 'history.json')
+	const pausedFile = join(dir, 'paused-apps.json')
 	const keyFile = join(dir, 'recovery-key')
 	const binDir = join(dir, 'bin')
 	let config = structuredClone(DEFAULTS)
 	let secrets = {} // {nasPassword}
 	let history = []
+	const pausedApps = new Set()
 	let job = null // {step, progress, startedAt}
 	let engine = null // {path, version}
 	let engineInstall = null
 	let timer = null
+	let startedAt = 0
 
 	const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
 	// A missing file stays the default. Empty, invalid, or wrong-shaped JSON is left on disk
@@ -184,6 +208,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	}
 
 	const ready = (async () => {
+		startedAt = now()
 		await mkdir(dir, {recursive: true, mode: 0o700})
 		await chmod(dir, 0o700).catch(() => {})
 		config = {...structuredClone(DEFAULTS), ...(await readBackupFile(configFile, {}, plainObject))}
@@ -192,6 +217,15 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		// Runs that were going when the server stopped (the server's own and any computer's at once).
 		// (Not written back here: startup leaves the files as they are, and the next run saves it.)
 		for (const h of history) if (h && typeof h === 'object' && !h.endedAt) Object.assign(h, {endedAt: h.startedAt, ok: false, error: 'Stopped when the server restarted'})
+		const leftover = await readBackupFile(pausedFile, null, Array.isArray)
+		if (leftover) {
+			for (const id of leftover) {
+				if (typeof id === 'string' && APP_ID.test(id)) {
+					await apps?.resumeAfterBackup?.(id).catch((e) => console.error('[omarchyd] backups: resume paused app', id, e.message))
+				}
+			}
+			await removeAtomic(pausedFile)
+		}
 	})()
 
 	// Factory reset bumps this so a password write queued before the reset does not recreate the file.
@@ -223,7 +257,26 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	})
 	const saveConfig = () => writePrivate(configFile, () => JSON.stringify(config, null, '\t'))
 	const saveSecrets = () => writePrivate(secretFile, () => JSON.stringify(secrets))
-	const saveHistory = () => writePrivate(historyFile, () => JSON.stringify(history.slice(0, 40), null, '\t'))
+	const trimHistory = (list, perSource = 20) => {
+		const counts = new Map()
+		const out = []
+		for (const h of list) {
+			if (!h || typeof h !== 'object') continue
+			const key = h.computer ? `c:${h.computer}` : 'server'
+			const n = counts.get(key) ?? 0
+			if (n >= perSource) continue
+			counts.set(key, n + 1)
+			out.push(h)
+		}
+		return out
+	}
+	const saveHistory = () => {
+		history = trimHistory(history, 20)
+		return writePrivate(historyFile, () => JSON.stringify(history, null, '\t'))
+	}
+	const savePaused = () => (pausedApps.size ? writePrivate(pausedFile, () => JSON.stringify([...pausedApps])) : removeAtomic(pausedFile))
+	const markPaused = (id) => (pausedApps.add(id), savePaused())
+	const unmarkPaused = (id) => (pausedApps.delete(id), savePaused())
 	const hasKey = () => exists(keyFile)
 
 	// ---- the restic engine ----------------------------------------------------------------------
@@ -282,7 +335,8 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		env.HOME ??= home
 		return env
 	}
-	async function repoReal() {
+	async function repoReal({create = true} = {}) {
+		if (!create) return (await files.resolve(config.repo, {mustExist: false})).real
 		const {real} = await files.resolve(config.repo, {mustExist: false}).catch(async (e) => {
 			// Its parent folder isn't there yet: make each level, checking every one stays inside Home.
 			const parts = config.repo.split('/').filter(Boolean)
@@ -362,13 +416,44 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		return parseSmbListing(r.text, nas.folder)
 	}
 
+	async function smbGetFile(nas, password, remotePath) {
+		const tmp = join(dir, `nas-get-${randomBytes(4).toString('hex')}`)
+		try {
+			const r = await smb(nas, password, {lines: [...intoFolder(nas.folder), `get ${q(remotePath)} ${q(tmp)}`], timeout: 60_000})
+			if (r.errors.length) throw new RpcError('PRECONDITION_FAILED', smbMessage(r.errors))
+			return await readFile(tmp).catch(() => {
+				throw new RpcError('PRECONDITION_FAILED', 'Couldn’t read the backup details from the NAS')
+			})
+		} finally {
+			await rm(tmp, {force: true})
+		}
+	}
+
+	const remoteComputerConfigs = (remote) => [...remote.keys()].filter((p) => /^computers\/[^/]+\/config$/.test(p))
+	const hasRemoteStore = (remote) => remote.has('server/config') || remote.has('config') || remoteComputerConfigs(remote).length > 0
+	const localConfigBytes = (root) => readFile(join(root, 'server', 'config')).catch(() => readFile(join(root, 'config')).catch(() => null))
+	async function nasMatchesLocal(nas, password, remote, root) {
+		const localCfg = root ? await localConfigBytes(root) : null
+		if (!localCfg) return false
+		if (remote.has('server/config')) return (await smbGetFile(nas, password, 'server/config')).equals(localCfg)
+		if (remote.has('config')) return (await smbGetFile(nas, password, 'config')).equals(localCfg)
+		for (const p of remoteComputerConfigs(remote)) {
+			const localComp = await readFile(join(root, p)).catch(() => null)
+			if (!localComp || !(await smbGetFile(nas, password, p)).equals(localComp)) return false
+		}
+		return true
+	}
+
 	async function localFiles(root) {
 		const out = new Map()
 		async function walk(d) {
 			for (const e of await readdir(d, {withFileTypes: true}).catch(() => [])) {
 				const p = join(d, e.name)
 				if (e.isDirectory()) await walk(p)
-				else if (e.isFile()) out.set(relative(root, p).split(sep).join('/'), (await stat(p)).size)
+				else if (e.isFile() && !e.name.endsWith('.tmp')) {
+					const st = await stat(p).catch(() => null)
+					if (st) out.set(relative(root, p).split(sep).join('/'), st.size)
+				}
 			}
 		}
 		await walk(root)
@@ -389,10 +474,16 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	}
 	async function mirror(onProgress = () => {}) {
 		const nas = config.nas
-		const root = await repoReal()
-		const local = await localFiles(root)
+		const root = await repoReal({create: false}).catch(() => null)
+		const local = root ? await localFiles(root) : new Map()
 		for (const k of [...local.keys()]) if (!ORDER.includes(part(k))) local.delete(k)
 		const remote = await remoteFiles(nas, secrets.nasPassword)
+		if (hasRemoteStore(remote) && !local.has('server/config')) {
+			throw new RpcError('PRECONDITION_FAILED', 'The local backup store is missing, so the NAS copy wasn’t touched.')
+		}
+		if (hasRemoteStore(remote) && !(await nasMatchesLocal(nas, secrets.nasPassword, remote, root))) {
+			throw new RpcError('PRECONDITION_FAILED', 'That NAS folder holds a different backup. Choose another folder or use “Restore from an existing backup”.')
+		}
 		const send = [...local].filter(([p, size]) => remote.get(p) !== size).sort((a, b) => rank(a[0]) - rank(b[0]))
 		const drop = [...remote.keys()].filter((p) => !local.has(p) && ORDER.includes(part(p))).sort((a, b) => rank(b) - rank(a))
 		const total = send.reduce((t, [, s]) => t + s, 0) || 1
@@ -419,8 +510,9 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			if (bad.length) throw new RpcError('PRECONDITION_FAILED', smbMessage(bad))
 		}
 		// Check: everything the store has is on the NAS, at the same size.
+		const current = root ? await localFiles(root) : new Map()
 		const after = await remoteFiles(nas, secrets.nasPassword)
-		const missing = [...local].filter(([p, size]) => after.get(p) !== size)
+		const missing = [...local].filter(([p, size]) => current.get(p) === size && after.get(p) !== size)
 		if (missing.length) throw new RpcError('PRECONDITION_FAILED', `${missing.length} file${missing.length === 1 ? '' : 's'} didn’t reach the NAS`)
 		return {uploaded: send.length, uploadedBytes: send.reduce((t, [, s]) => t + s, 0), removed: drop.length}
 	}
@@ -451,7 +543,15 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	async function backupOne(paths, tags, extra, step, base, span) {
 		job = {...job, step, progress: base}
 		const args = ['backup', '--json', '--host', 'omarchy-server', ...tags.flatMap((t) => ['--tag', t]), ...extra, ...paths]
-		const {stdout} = await restic(args, {inside: tags.some((t) => t.startsWith('app:')), onLine: progressLine(base, span, step)})
+		let stdout = ''
+		let warning
+		try {
+			stdout = (await restic(args, {inside: tags.some((t) => t.startsWith('app:')), onLine: progressLine(base, span, step)})).stdout
+		} catch (e) {
+			if (e?.code !== 3) throw e
+			stdout = e.stdout ?? ''
+			warning = 'Saved, but some files couldn’t be read'
+		}
 		const summary = stdout
 			.split('\n')
 			.map((l) => {
@@ -462,7 +562,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				}
 			})
 			.find((m) => m?.message_type === 'summary')
-		return {added: summary?.data_added ?? 0, files: summary?.total_files_processed ?? 0}
+		return {added: summary?.data_added ?? 0, files: summary?.total_files_processed ?? 0, ...(warning ? {warning} : {})}
 	}
 
 	async function runBackup(reason = 'manual') {
@@ -475,7 +575,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		job = {step: 'Getting ready', progress: 0, startedAt: entry.startedAt}
 		const done = (async () => {
 			try {
-				await ensureRepo()
+				await ensureRepo({allowInit: false})
 				const targets = config.include.apps ? await apps.backupTargets() : []
 				const steps = targets.length + (config.include.settings ? 1 : 0) + (config.include.machineBackups ? 1 : 0)
 				const span = 0.7 / Math.max(1, steps)
@@ -483,31 +583,45 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				for (const app of targets) {
 					if (!(await exists(app.dir))) continue
 					const pause = config.pauseApps && app.running
-					if (pause) await apps.pauseForBackup(app.id).catch(() => {})
+					if (pause) {
+						await markPaused(app.id)
+						await apps.pauseForBackup(app.id).catch(() => {})
+					}
 					try {
 						const r = await backupOne([app.dir], [`app:${app.id}`], [], `Saving ${app.name}`, n * span, span)
-						entry.items.push({kind: 'app', id: app.id, name: app.name, ok: true, added: r.added})
+						entry.items.push({kind: 'app', id: app.id, name: app.name, ok: true, added: r.added, ...(r.warning ? {warning: r.warning} : {})})
 						entry.added += r.added
 					} catch (e) {
 						entry.items.push({kind: 'app', id: app.id, name: app.name, ok: false, error: e.message})
 					} finally {
-						if (pause) await apps.resumeAfterBackup(app.id).catch((e) => entry.items.push({kind: 'app', id: app.id, name: app.name, ok: false, error: `Didn’t start again: ${e.message}`}))
+						if (pause) {
+							await apps.resumeAfterBackup(app.id).catch((e) => entry.items.push({kind: 'app', id: app.id, name: app.name, ok: false, error: `Didn’t start again: ${e.message}`}))
+							await unmarkPaused(app.id).catch(() => {})
+						}
 					}
 					n++
 				}
 				if (config.include.settings) {
-					const paths = [dataDir, ...((await exists(serverDataDir)) ? [serverDataDir] : [])]
-					const r = await backupOne(paths, ['settings'], settingsExcludes().flatMap((x) => ['--exclude', x]), 'Saving server settings', n * span, span)
-					entry.items.push({kind: 'settings', name: 'Server settings', ok: true, added: r.added})
-					entry.added += r.added
+					try {
+						const paths = [dataDir, ...((await exists(serverDataDir)) ? [serverDataDir] : [])]
+						const r = await backupOne(paths, ['settings'], settingsExcludes().flatMap((x) => ['--exclude', x]), 'Saving server settings', n * span, span)
+						entry.items.push({kind: 'settings', name: 'Server settings', ok: true, added: r.added, ...(r.warning ? {warning: r.warning} : {})})
+						entry.added += r.added
+					} catch (e) {
+						entry.items.push({kind: 'settings', name: 'Server settings', ok: false, error: e.message})
+					}
 					n++
 				}
 				if (config.include.machineBackups) {
-					const {real} = await files.resolve('/Home/Backups/Machines', {mustExist: false})
-					if (await exists(real)) {
-						const r = await backupOne([real], ['machines'], [], 'Saving VM backups', n * span, span)
-						entry.items.push({kind: 'machines', name: 'VM backups', ok: true, added: r.added})
-						entry.added += r.added
+					try {
+						const {real} = await files.resolve('/Home/Backups/Machines', {mustExist: false})
+						if (await exists(real)) {
+							const r = await backupOne([real], ['machines'], [], 'Saving VM backups', n * span, span)
+							entry.items.push({kind: 'machines', name: 'VM backups', ok: true, added: r.added, ...(r.warning ? {warning: r.warning} : {})})
+							entry.added += r.added
+						}
+					} catch (e) {
+						entry.items.push({kind: 'machines', name: 'VM backups', ok: false, error: e.message})
 					}
 					n++
 				}
@@ -542,8 +656,28 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		return {id: entry.id, done}
 	}
 
-	async function ensureRepo() {
+	const LEGACY_ENTRIES = ['keys', 'data', 'index', 'snapshots', 'locks', 'config']
+	async function migrateLegacyRepo(real) {
+		if (!real || !(await exists(join(real, 'config'))) || !(await exists(join(real, 'keys'))) || (await exists(join(real, 'server', 'config')))) return false
+		const server = join(real, 'server')
+		await mkdir(server, {recursive: true, mode: 0o700})
+		for (const name of LEGACY_ENTRIES) {
+			const src = join(real, name)
+			const dst = join(server, name)
+			if ((await exists(src)) && !(await exists(dst))) await rename(src, dst)
+		}
+		return true
+	}
+
+	async function ensureRepo({allowInit = true} = {}) {
+		if (!allowInit) {
+			const real = await repoReal({create: false}).catch(() => null)
+			if (real) await migrateLegacyRepo(real)
+			if (!real || !(await exists(join(real, 'server', 'config')))) throw new RpcError('PRECONDITION_FAILED', 'The backup folder is empty or missing. Is the drive connected?')
+			return
+		}
 		const real = await repoReal()
+		await migrateLegacyRepo(real)
 		const repo = join(real, 'server')
 		if (await exists(join(repo, 'config'))) return
 		await mkdir(real, {recursive: true, mode: 0o700})
@@ -553,7 +687,11 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	}
 	// A computer's own store: its own password (which it's sent for each backup, never kept), plus
 	// the recovery key as a second key, so the one recovery key opens everything.
-	async function ensureComputerRepo(id) {
+	async function ensureComputerRepo(id, {allowInit = true} = {}) {
+		if (!allowInit) {
+			const real = await repoReal({create: false}).catch(() => null)
+			if (!real || !(await exists(join(real, 'server', 'config'))) || !(await exists(join(real, 'computers', id, 'config')))) throw new RpcError('PRECONDITION_FAILED', 'The backup folder is empty or missing. Is the drive connected?')
+		}
 		const repo = await computerRepo(id)
 		if ((await exists(join(repo, 'config'))) && (await exists(computerKey(id)))) return repo
 		await mkdir(join(dir, 'computers'), {recursive: true, mode: 0o700})
@@ -580,15 +718,15 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	let mirrorChain = Promise.resolve()
 	// One NAS copy at a time; a run that finishes while another copy is going waits for it.
 	const mirrorOnce = (onProgress) => (mirrorChain = mirrorChain.catch(() => {}).then(() => mirror(onProgress)))
-	const DEFAULT_COMPUTER = {enabled: false, folders: [], schedule: {frequency: 'daily', hour: 1, weekday: 0}, lastSuccessAt: 0, lastAttemptAt: 0}
+	const DEFAULT_COMPUTER = {enabled: false, folders: [], schedule: {frequency: 'daily', hour: 1, weekday: 0}, lastSuccessAt: 0, lastAttemptAt: 0, failures: 0, failedSlot: 0}
 	const computerConfig = (id) => ({...structuredClone(DEFAULT_COMPUTER), ...(config.computers?.[id] ?? {})})
-	const periodOf = (sc) => (sc.frequency === 'weekly' ? 7 : 1) * 86400_000
-	// The latest time the schedule said "back up" (at or before now).
-	function latestSlot(sc, at) {
-		if (!sc || sc.frequency === 'off') return null
-		let t = nextRun(sc, at - periodOf(sc))
-		while (t > at) t -= periodOf(sc)
-		return t
+	const COMPUTER_RETRY_DELAYS = [0, 30 * 60_000, 2 * 60 * 60_000]
+	function computerDue(c, slot, at) {
+		if (!slot || c.lastSuccessAt >= slot) return false
+		const fails = c.failedSlot === slot ? c.failures || 0 : 0
+		if (fails >= COMPUTER_RETRY_DELAYS.length) return false
+		if (fails === 0) return c.lastAttemptAt === 0 || at - c.lastAttemptAt >= 30 * 60_000
+		return at - c.lastAttemptAt >= COMPUTER_RETRY_DELAYS[fails]
 	}
 
 	function cleanFolders(list) {
@@ -650,6 +788,11 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		}
 		if (c.enabled && !c.folders.length) throw new RpcError('BAD_REQUEST', 'Choose at least one folder to back up')
 		if (c.enabled) await ensureComputerRepo(a.id)
+		if (input.folders !== undefined || input.schedule || input.enabled === true) {
+			c.lastAttemptAt = 0
+			c.failures = 0
+			c.failedSlot = 0
+		}
 		config.computers = {...(config.computers ?? {}), [a.id]: c}
 		await saveConfig()
 		return (await computers()).find((x) => x.id === a.id)
@@ -677,7 +820,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		poll.unref?.()
 		const done = (async () => {
 			try {
-				const repo = await ensureComputerRepo(a.id)
+				const repo = await ensureComputerRepo(a.id, {allowInit: false})
 				const password = (await readFile(computerKey(a.id), 'utf8')).trim()
 				computerJobs.set(a.id, {...computerJobs.get(a.id), step: 'Backing up'})
 				const r = await swarm.call(a.id, 'backup-run', {password, folders: c.folders}, 12 * 60 * 60_000)
@@ -697,15 +840,33 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				entry.error = entry.ok ? null : `Saved on this server, but not copied to the NAS: ${entry.nas.error}`
 				const cc = computerConfig(a.id)
 				cc.lastSuccessAt = entry.startedAt
+				cc.failures = 0
+				cc.failedSlot = 0
 				config.computers = {...(config.computers ?? {}), [a.id]: cc}
 				await saveConfig()
 			} catch (e) {
 				entry.ok = false
 				entry.error = e.message
+				if (reason === 'scheduled') {
+					const cc = computerConfig(a.id)
+					const slot = latestSlot(cc.schedule, entry.startedAt) ?? 0
+					cc.failures = cc.failedSlot === slot ? (cc.failures || 0) + 1 : 1
+					cc.failedSlot = slot
+					config.computers = {...(config.computers ?? {}), [a.id]: cc}
+					await saveConfig().catch(() => {})
+				}
 			} finally {
 				clearInterval(poll)
 				entry.endedAt = now()
 				computerJobs.delete(a.id)
+				if (!entry.ok && entry.error) {
+					const prev = history.find((h) => h !== entry && h.computer === a.id && h.endedAt)
+					if (prev && !prev.ok && prev.error === entry.error && prev.reason === entry.reason) {
+						entry.attempts = (prev.attempts ?? 1) + 1
+						const idx = history.indexOf(prev)
+						if (idx >= 0) history.splice(idx, 1)
+					}
+				}
 				await saveHistory().catch(() => {})
 			}
 		})()
@@ -808,25 +969,24 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		const out = createWriteStream(tmp, {mode: 0o600})
 		let size = 0
 		try {
-			await new Promise((resolve, reject) => {
-				req.on('data', (c) => {
-					size += c.length
-					if (size > MAX_OBJECT) req.destroy(new Error('Too large'))
-				})
-				req.on('error', reject)
-				out.on('error', reject)
-				out.on('finish', resolve)
-				req.pipe(out)
+			const limit = new Transform({
+				transform(chunk, _enc, cb) {
+					size += chunk.length
+					if (size > MAX_OBJECT) return cb(new Error('Too large'))
+					cb(null, chunk)
+				},
 			})
+			await pipeline(req, limit, out)
 			if (type !== 'locks' && (await exists(file))) {
 				await rm(tmp, {force: true})
 				return send(403, 'Already stored')
 			}
 			await rename(tmp, file)
 			return send(200)
-		} catch {
+		} catch (e) {
+			out.destroy()
 			await rm(tmp, {force: true})
-			if (!res.headersSent) send(400, 'Upload failed')
+			if (!res.headersSent) e?.message === 'Too large' ? send(413) : send(400, 'Upload failed')
 		}
 	}
 	async function serveFile(req, res, file) {
@@ -854,28 +1014,32 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	}
 
 	// ---- schedule ------------------------------------------------------------------------------
-	let nextAt = null
-	function plan() {
-		nextAt = config.nas ? nextRun(config.schedule, now()) : null
+	function lastServerActivity() {
+		const last = history.find((h) => h && !h.computer)?.startedAt ?? 0
+		const since = Number(config.scheduleSince) || 0
+		if (last || since) return Math.max(last, since)
+		return startedAt
 	}
 	async function tick() {
 		await ready
 		// Computers: due if a scheduled time has passed since its last good backup (so one that was
 		// off or asleep catches up when it's back), and it hasn't been tried in the last half hour.
 		if (swarm && config.nas && (await hasKey())) {
+			const started = []
 			for (const a of await swarm.agents().catch(() => [])) {
 				const c = computerConfig(a.id)
 				if (!c.enabled || !a.on || !a.online || computerJobs.has(a.id)) continue
 				const slot = latestSlot(c.schedule, now())
-				if (slot && c.lastSuccessAt < slot && now() - c.lastAttemptAt > 30 * 60_000) runComputer(a.id, 'scheduled').catch(() => {})
+				if (computerDue(c, slot, now())) started.push(runComputer(a.id, 'scheduled').catch(() => {}))
 			}
+			await Promise.all(started)
 		}
-		if (!nextAt || job || now() < nextAt) return
-		plan()
+		if (!config.nas || job || !(await hasKey())) return
+		const slot = latestSlot(config.schedule, now())
+		if (!slot || lastServerActivity() >= slot) return
 		await runBackup('scheduled').catch(() => {})
 	}
 	ready.then(() => {
-		plan()
 		if (timers) {
 			timer = setInterval(() => tick().catch(() => {}), 60_000)
 			timer.unref?.()
@@ -897,7 +1061,9 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			keySaved: !!config.keySaved,
 			running: job,
 			computersRunning: computerJobs.size,
-			nextRunAt: configured ? nextAt : null,
+			nextRunAt: configured ? nextRun(config.schedule, now()) : null,
+			timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+			last: history.find((h) => h && !h.computer && h.endedAt) ?? null,
 			history: history.slice(0, 20),
 			engine: engine ? {version: engine.version} : null,
 		}
@@ -912,7 +1078,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				const f = line.split(';')
 				if (f[0] !== '=' || f[2] !== 'IPv4') continue
 				const host = f[6]?.replace(/\.$/, '')
-				if (host && HOST.test(host) && !seen.has(host)) seen.set(host, {host, name: f[3].replace(/\\032/g, ' '), address: f[7]})
+				if (host && HOST.test(host) && !seen.has(host)) seen.set(host, {host, name: unescapeAvahi(f[3]), address: f[7]})
 			}
 			return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
 		} catch {
@@ -948,6 +1114,16 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		}
 	}
 
+	async function checkNasFolder(nas, password) {
+		const remote = await remoteFiles(nas, password)
+		if (!hasRemoteStore(remote)) return
+		if (await hasKey()) {
+			const root = await repoReal({create: false}).catch(() => null)
+			if (await nasMatchesLocal(nas, password, remote, root)) return
+		}
+		throw new RpcError('PRECONDITION_FAILED', 'That folder already has backups. Use “Restore from an existing backup”, or choose another folder.')
+	}
+
 	function cleanOptions(input = {}) {
 		const out = {}
 		if (input.include) out.include = {apps: input.include.apps !== false, settings: input.include.settings !== false, machineBackups: input.include.machineBackups === true}
@@ -973,11 +1149,13 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		const before = structuredClone(config)
 		const out = {}
 		let nasPassword = secrets.nasPassword
+		if (before.nas && (await hasKey()) && (input.repo === undefined || String(input.repo) === before.repo)) await ensureRepo({allowInit: false})
 		if (input.nas) {
 			const nas = cleanNas(input.nas)
 			const password = input.nas.password ? String(input.nas.password) : config.nas?.host === nas.host && config.nas?.username === nas.username ? secrets.nasPassword : ''
 			if (!password) throw new RpcError('BAD_REQUEST', 'Enter the NAS account’s password')
 			await testNas(nas, password)
+			await checkNasFolder(nas, password)
 			nasPassword = password
 			config.nas = nas
 		}
@@ -1010,8 +1188,10 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			secrets.nasPassword = nasPassword
 			await saveSecrets()
 		}
+		if (!before.nas || (opts.schedule && (opts.schedule.frequency !== before.schedule.frequency || opts.schedule.hour !== before.schedule.hour || opts.schedule.weekday !== before.schedule.weekday))) {
+			config.scheduleSince = now()
+		}
 		await saveConfig()
-		plan()
 		return {...(await status()), ...out}
 	}
 
@@ -1029,7 +1209,11 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 
 	async function snapshots() {
 		await ready
-		if (!(await hasKey()) || !(await exists(join(await serverRepo(), 'config')))) return []
+		if (!(await hasKey())) return []
+		const real = await repoReal({create: false}).catch(() => null)
+		if (!real) return []
+		await migrateLegacyRepo(real)
+		if (!(await exists(join(real, 'server', 'config')))) return []
 		const {stdout} = await restic(['snapshots', '--json'], {timeout: 120_000})
 		const list = JSON.parse(stdout || '[]')
 		return list
@@ -1071,20 +1255,32 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			const restored = join(staging, app.dir)
 			if (!(await exists(restored))) throw new Error('The backup had no files for this app')
 			if (app.running) {
-				await apps.pauseForBackup(app.id)
-				stopped = true
+				await markPaused(app.id)
+				try {
+					await apps.pauseForBackup(app.id)
+					stopped = true
+				} catch (e) {
+					await unmarkPaused(app.id).catch(() => {})
+					throw e
+				}
 			}
 			await rename(app.dir, aside)
 			moved = true
 			await rename(restored, app.dir)
 			moved = false
-			if (stopped) await apps.resumeAfterBackup(app.id)
+			if (stopped) {
+				await apps.resumeAfterBackup(app.id)
+				await unmarkPaused(app.id).catch(() => {})
+			}
 			stopped = false
 			await wipe(aside)
 			return {restored: app.name, from: snap.time}
 		} catch (e) {
 			if (moved) await rename(aside, app.dir).catch(() => {})
-			if (stopped) await apps.resumeAfterBackup(app.id).catch(() => {})
+			if (stopped) {
+				await apps.resumeAfterBackup(app.id).catch(() => {})
+				await unmarkPaused(app.id).catch(() => {})
+			}
 			throw new RpcError('INTERNAL_SERVER_ERROR', `Couldn’t restore ${app.name}: ${e.message}`)
 		} finally {
 			await wipe(staging)
@@ -1116,10 +1312,12 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		job = {step: 'Copying the backup from the NAS', progress: 0, startedAt: now()}
 		try {
 			const remote = await remoteFiles(nas, password)
-			if (!remote.has('server/config')) throw new RpcError('NOT_FOUND', 'There’s no Omarchy Server backup in that folder')
+			const legacy = !remote.has('server/config') && remote.has('config')
+			if (!remote.has('server/config') && !legacy) throw new RpcError('NOT_FOUND', 'There’s no Omarchy Server backup in that folder')
 			await ensureEngine()
 			const r = await smb(nas, password, {lines: [...intoFolder(nas.folder), 'recurse ON', 'prompt OFF', `lcd ${q(real)}`, 'mget *']})
 			if (r.errors.length) throw new RpcError('PRECONDITION_FAILED', smbMessage(r.errors))
+			if (legacy) await migrateLegacyRepo(real)
 			await writePrivate(keyFile, `${key}\n`)
 			try {
 				await restic(['cat', 'config'], {timeout: 60_000})
@@ -1134,10 +1332,10 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			}
 			config.nas = nas
 			config.keySaved = true
+			config.scheduleSince = now()
 			secrets.nasPassword = password
 			await saveSecrets()
 			await saveConfig()
-			plan()
 			return status()
 		} catch (e) {
 			config = before

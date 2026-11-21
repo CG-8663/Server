@@ -83,17 +83,14 @@ export class ApiError extends Error {
 }
 
 function makeTimeoutSignal(timeoutMs: number, external?: AbortSignal) {
-	if (!external && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-		const signal = AbortSignal.timeout(timeoutMs)
-		return {signal, cleanup: () => {}, timedOut: () => signal.aborted}
-	}
+	// A ref'd timer, cleared when the request ends. AbortSignal.timeout() does not keep the
+	// event loop alive, so a test (and a quiet tab) never saw the timeout fire.
 	const controller = new AbortController()
 	let expired = false
 	const timer = setTimeout(() => {
 		expired = true
-		controller.abort()
-	}, timeoutMs) as unknown as {unref?: () => void}
-	timer?.unref?.()
+		controller.abort(typeof DOMException === 'function' ? new DOMException('The operation was aborted due to timeout', 'TimeoutError') : undefined)
+	}, timeoutMs)
 	const onExternalAbort = () => controller.abort()
 	if (external) {
 		if (external.aborted) controller.abort()
@@ -102,7 +99,7 @@ function makeTimeoutSignal(timeoutMs: number, external?: AbortSignal) {
 	return {
 		signal: controller.signal,
 		cleanup: () => {
-			clearTimeout(timer as unknown as number)
+			clearTimeout(timer)
 			external?.removeEventListener('abort', onExternalAbort)
 		},
 		timedOut: () => expired,
@@ -216,8 +213,8 @@ export type Bootstrap = {
 
 export const getBootstrap = (options?: RequestOptions) => request<Bootstrap>('/api/bootstrap', {credentials: 'same-origin'}, options, DEFAULT_TIMEOUT_MS)
 export const setup = (url: string) => post<{ok: true; url: string; version: string}>('/api/setup', {url})
-export const login = (body: {username: string; password: string; totpToken?: string}) =>
-	post<{ok: true; accountId: string}>('/api/auth/login', body)
+export const login = (body: {username: string; password: string; totpToken?: string}, options?: RequestOptions) =>
+	post<{ok: true; accountId: string}>('/api/auth/login', body, options)
 export const logout = () => post('/api/auth/logout')
 
 // ---- omarchyd shapes ---------------------------------------------------------
