@@ -1,6 +1,6 @@
 // The root helper's checks (with simulated commands and files) and omarchyd's storage module.
 import assert from 'node:assert/strict'
-import {mkdir, mkdtemp, readFile, realpath, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
@@ -1356,5 +1356,47 @@ describe('omarchyd storage', () => {
 		assert.equal(by.sdb.role, 'data')
 		assert.equal(by.sdb.pool, null)
 		assert.deepEqual(by.sdb.zfs, {pool: 'tank'})
+	})
+
+	test('storage.disks ids a drive by its by-id link, preferring ata- over wwn-', async () => {
+		const byIdDir = join(root, 'by-id')
+		await mkdir(byIdDir)
+		// The partition link resolves to the same disk. It must not win just because its name starts with ata-.
+		await symlink('/dev/sda', join(byIdDir, 'ata-WDC_WD80EFAX-68LHPN0_WD-A-part1'))
+		await symlink('/dev/sda', join(byIdDir, 'wwn-0x5000cca0b0c0d0e0'))
+		await symlink('/dev/sda', join(byIdDir, 'ata-WDC_WD80EFAX-68LHPN0_WD-A'))
+		const run = async (cmd, args) => {
+			if (cmd === 'lsblk')
+				return JSON.stringify({
+					blockdevices: [
+						{name: 'sda', path: '/dev/sda', type: 'disk', size: 4e12, rota: true, tran: 'sata', serial: 'WD-A', mountpoints: [null]},
+						{name: 'sdb', path: '/dev/sdb', type: 'disk', size: 4e12, rota: true, tran: 'sata', serial: 'WD-B', mountpoints: [null]},
+					],
+				})
+			if (cmd === 'sudo' && args[2] === 'ping') return 'ok\n'
+			if (cmd === 'sudo' && args[2] === 'zfs-available') return 'no\n'
+			return ''
+		}
+		const data = join(root, 'byid-data')
+		await mkdir(data)
+		const s = createStorage({
+			dataDir: data,
+			home: '/home/chris',
+			files: {resolve: async () => ({real: '', top: 'Home'})},
+			run,
+			fstabPath: fstab,
+			byIdDir,
+			byIdFs: {
+				readdir: (dir) => readdir(dir),
+				realpath: async (p) => (p.startsWith(`${byIdDir}/`) ? readlink(p) : p),
+			},
+		})
+		const disks = await s.procedures['storage.disks'].run()
+		const sda = disks.find((d) => d.name === 'sda')
+		const sdb = disks.find((d) => d.name === 'sdb')
+		assert.equal(sda.path, '/dev/sda')
+		assert.equal(sda.id, '/dev/disk/by-id/ata-WDC_WD80EFAX-68LHPN0_WD-A')
+		assert.equal(sdb.path, '/dev/sdb')
+		assert.equal(sdb.id, '/dev/sdb')
 	})
 })
