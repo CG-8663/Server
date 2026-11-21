@@ -5,12 +5,22 @@
 import os from 'node:os'
 import {join} from 'node:path'
 import {parseArgs} from 'node:util'
+import {fileURLToPath} from 'node:url'
 
 import {openAccounts} from './accounts.mjs'
 import {formatDataDirError, parsePort} from './cli-args.mjs'
 import {takeLine} from './prompt.mjs'
 import {startOmarchyd} from './server.mjs'
 import {defaultTlsDir} from './tls.mjs'
+
+const CLI_PATH = fileURLToPath(import.meta.url)
+// Same rule as createOwner in accounts.mjs. Checked here so a bad login name fails before the password.
+const NAME_OK = /^[\p{L}\p{N} ._-]{1,40}$/u
+const cleanedAccountName = (raw) => {
+	const cleaned = [...String(raw ?? '')].filter((ch) => /^[\p{L}\p{N} ._-]$/u.test(ch)).join('').slice(0, 40)
+	return NAME_OK.test(cleaned) ? cleaned : ''
+}
+const nameRejected = (name) => `“${name}” can’t be an account name. Use 1-40 letters, numbers, spaces, dots, dashes or underscores, or pass --name.`
 
 const USAGE = `omarchyd: the Omarchy Server backend
 
@@ -120,7 +130,7 @@ if (command === 'serve') {
 		process.exit(1)
 	}
 	console.log(`omarchyd listening on ${server.url} (data in ${dataDir})`)
-	if (!server.accounts.hasOwner()) console.log('No owner yet. Create one with: omarchyd create-owner')
+	if (!server.accounts.hasOwner()) console.log(`No owner yet. Create one with: node ${CLI_PATH} create-owner --data ${dataDir}`)
 } else if (command === 'has-owner') {
 	// Exit 0 if an owner account exists (used by the installer).
 	let accounts
@@ -144,6 +154,10 @@ if (command === 'serve') {
 		console.error('An owner account already exists.')
 		process.exit(1)
 	}
+	if (values.name !== undefined && !NAME_OK.test(values.name)) {
+		console.error(nameRejected(values.name))
+		process.exit(1)
+	}
 	if (!process.stdin.isTTY) {
 		console.error('Run this in a terminal so the password can be typed privately')
 		process.exit(1)
@@ -155,7 +169,37 @@ if (command === 'serve') {
 		console.error(`omarchyd: ${formatDataDirError(dataDir, error)}`)
 		process.exit(1)
 	}
-	const name = values.name ?? os.userInfo().username
+	let name = values.name ?? os.userInfo().username
+	if (!NAME_OK.test(name)) {
+		console.error(nameRejected(name))
+		const cleaned = cleanedAccountName(name)
+		if (cleaned) {
+			console.error(`Using “${cleaned}” instead.`)
+			name = cleaned
+		} else {
+			process.stdout.write('Account name: ')
+			const entered = (await new Promise((resolve) => {
+				const stdin = process.stdin
+				stdin.setEncoding('utf8')
+				let buf = ''
+				const onData = (chunk) => {
+					buf += chunk
+					const at = buf.search(/\r|\n/)
+					if (at < 0) return
+					stdin.pause()
+					stdin.off('data', onData)
+					resolve(buf.slice(0, at).trim())
+				}
+				stdin.on('data', onData)
+				stdin.resume()
+			}))
+			if (!NAME_OK.test(entered)) {
+				console.error('Use 1-40 letters, numbers, spaces, dots, dashes or underscores for the name. Pass --name to set it.')
+				process.exit(1)
+			}
+			name = entered
+		}
+	}
 	try {
 		const password = await askHidden(`Password for ${name}: `)
 		const again = await askHidden('Again: ')

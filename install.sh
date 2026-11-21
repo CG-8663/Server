@@ -322,7 +322,26 @@ fi
 if ! node "$APP/omarchyd/cli.mjs" has-owner --data "$BASE/omarchyd" >/dev/null 2>&1; then
 	say "Create your Omarchy Server account"
 	if (: </dev/tty) 2>/dev/null; then
-		node "$APP/omarchyd/cli.mjs" create-owner --data "$BASE/omarchyd" </dev/tty
+		# The same rule create-owner enforces (^[\p{L}\p{N} ._-]{1,40}$). A directory login
+		# (an @ or a backslash) is refused only after the password unless it is fixed here.
+		owner_name=$(id -un)
+		owner_args=()
+		account_name_ok() { node -e 'const n=process.argv[1]??""; process.exit(/^[\p{L}\p{N} ._-]{1,40}$/u.test(n)?0:1)' "$1"; }
+		if ! account_name_ok "$owner_name"; then
+			printf 'The login name "%s" cannot be the account name. Use 1-40 letters, numbers, spaces, dots, dashes or underscores, or pass --name.\n' "$owner_name" >&2
+			cleaned=$(node -e 'const n=process.argv[1]??""; process.stdout.write([...n].filter((ch)=>/^[\p{L}\p{N} ._-]$/u.test(ch)).join("").slice(0,40))' "$owner_name")
+			if account_name_ok "$cleaned"; then
+				printf 'Using "%s" instead.\n' "$cleaned" >&2
+				owner_name=$cleaned
+			else
+				printf 'Account name: ' >/dev/tty
+				read -r chosen </dev/tty
+				account_name_ok "$chosen" || die "That name is not allowed. Use 1-40 letters, numbers, spaces, dots, dashes or underscores, or pass --name."
+				owner_name=$chosen
+			fi
+			owner_args=(--name "$owner_name")
+		fi
+		node "$APP/omarchyd/cli.mjs" create-owner "${owner_args[@]}" --data "$BASE/omarchyd" </dev/tty
 	else
 		die "No terminal to type a password in. Run this installer again from a terminal (ssh -t): the services are created only by a full run."
 	fi
@@ -333,9 +352,9 @@ mkdir -p "$UNITS"
 NODE="$(command -v node)"
 # Persist isolation env only when the installer was given those variables (do not invent paths).
 SOURCE_ENV=""
-if [ -n "$SOURCE" ]; then SOURCE_ENV="${SOURCE_ENV}Environment=OMARCHY_SERVER_SOURCE=$SOURCE
+if [ -n "$SOURCE" ]; then SOURCE_ENV="${SOURCE_ENV}Environment=\"OMARCHY_SERVER_SOURCE=$SOURCE\"
 "; fi
-if [ -n "$APP_STORE" ]; then SOURCE_ENV="${SOURCE_ENV}Environment=OMARCHY_SERVER_APP_STORE=$APP_STORE
+if [ -n "$APP_STORE" ]; then SOURCE_ENV="${SOURCE_ENV}Environment=\"OMARCHY_SERVER_APP_STORE=$APP_STORE\"
 "; fi
 cat >"$UNITS/omarchyd.service" <<EOF
 [Unit]

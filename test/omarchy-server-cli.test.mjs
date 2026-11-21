@@ -1,7 +1,7 @@
 // `bin/omarchy-server` option handling, help output, and service status exit codes.
 import assert from 'node:assert/strict'
 import {spawnSync} from 'node:child_process'
-import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import {chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {dirname, join} from 'node:path'
 import {after, test} from 'node:test'
@@ -182,4 +182,31 @@ test('#619: stop exits 1 unless systemctl succeeds and both services are inactiv
 	const r3 = runCli(okBox, ['stop'])
 	assert.equal(r3.status, 0)
 	assert.match(r3.stdout, /^Stopped$/m)
+})
+
+test('#556: widget on and off keep a symlinked top-bar file as a symlink', async () => {
+	const box = await makeSandbox('widget-link')
+	const dots = join(box.home, 'dots', 'shell.json')
+	const link = join(box.home, '.config', 'omarchy', 'shell.json')
+	const original = `${JSON.stringify({bar: {layout: {right: ['clock']}}}, null, 2)}\n`
+	await mkdir(join(box.home, 'dots'), {recursive: true})
+	await writeFile(dots, original)
+	await mkdir(join(box.home, '.config', 'omarchy'), {recursive: true})
+	await symlink(dots, link)
+	const env = {XDG_CONFIG_HOME: join(box.home, '.config'), OMARCHY_PATH: join(box.home, 'no-omarchy')}
+	const on = runCli(box, ['widget', 'on'], env)
+	assert.equal(on.status, 0, on.stdout + on.stderr)
+	assert.equal((await lstat(link)).isSymbolicLink(), true, 'widget on must not replace the symlink')
+	assert.equal(await readlink(link), dots)
+	const updated = await readFile(dots, 'utf8')
+	assert.match(updated, /"id": "omarchy-server"/)
+	assert.doesNotMatch(original, /omarchy-server/)
+	const bak = await readFile(`${dots}.omarchy-server.bak`, 'utf8')
+	assert.equal(bak, original)
+	assert.equal((await lstat(link)).isSymbolicLink(), true)
+	const off = runCli(box, ['widget', 'off'], env)
+	assert.equal(off.status, 0, off.stdout + off.stderr)
+	assert.equal((await lstat(link)).isSymbolicLink(), true, 'widget off must not replace the symlink')
+	assert.equal(await readlink(link), dots)
+	assert.doesNotMatch(await readFile(dots, 'utf8'), /omarchy-server/)
 })
