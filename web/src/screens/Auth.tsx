@@ -2,7 +2,7 @@ import {useState, type FormEvent} from 'react'
 
 import {ApiError, login, setup, type Bootstrap} from '../api'
 import {Icon} from '../icons'
-import {VersionTag, haptic} from '../ui'
+import {Field, VersionTag, haptic} from '../ui'
 
 function Logo() {
 	return (
@@ -55,21 +55,19 @@ export function Connect({onDone, unreachable}: {onDone: () => void; unreachable?
 			</p>
 			<form onSubmit={submit}>
 				{error && <ErrorBox message={error} k={tries} />}
-				<div className="field">
-					<label htmlFor="url">Server address</label>
-					<input
-						id="url"
-						inputMode="url"
-						autoCapitalize="off"
-						autoCorrect="off"
-						spellCheck={false}
-						placeholder="192.168.1.50 or omarchy.local"
-						value={url}
-						onChange={(e) => setUrl(e.target.value)}
-						required
-					/>
-					<span className="hint">An IP address is the most reliable. omarchy.local works on most home networks.</span>
-				</div>
+				<Field
+					id="url"
+					label="Server address"
+					inputMode="url"
+					autoCapitalize="off"
+					autoCorrect="off"
+					spellCheck={false}
+					placeholder="192.168.1.50 or omarchy.local"
+					value={url}
+					onChange={(e) => setUrl(e.target.value)}
+					hint="An IP address is the most reliable. omarchy.local works on most home networks."
+					required
+				/>
 				<button className="btn primary block" disabled={busy || !url.trim()}>
 					{busy ? <span className="spinner" /> : <Icon name="link" size={20} />}
 					{busy ? 'Checking…' : unreachable ? 'Try again' : 'Connect'}
@@ -116,56 +114,49 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 			<p className="lead">Use your Omarchy Server username and password.</p>
 			<form onSubmit={submit}>
 				{error && <ErrorBox message={error} k={tries} />}
-				<div className="field">
-					<label htmlFor="username" className="sr-only">
-						Username
-					</label>
-					<input
-						id="username"
-						type="text"
-						placeholder="Username"
-						autoComplete="username"
-						autoCapitalize="off"
-						autoCorrect="off"
-						spellCheck={false}
-						value={username}
-						onChange={(e) => setUsername(e.target.value)}
+				<Field
+					id="username"
+					label="Username"
+					labelHidden
+					type="text"
+					placeholder="Username"
+					autoComplete="username"
+					autoCapitalize="off"
+					autoCorrect="off"
+					spellCheck={false}
+					value={username}
+					onChange={(e) => setUsername(e.target.value)}
+					autoFocus
+					required
+				/>
+				<Field
+					id="password"
+					label="Password"
+					labelHidden
+					type="password"
+					placeholder="Password"
+					autoComplete="current-password"
+					value={password}
+					onChange={(e) => setPassword(e.target.value)}
+					required
+				/>
+				{needTotp && (
+					<Field
+						id="totp"
+						label="Two-factor code"
+						wrapperClassName="screen"
+						inputMode="numeric"
+						autoComplete="one-time-code"
+						pattern="[0-9 ]*"
+						maxLength={7}
+						placeholder="6-digit code"
+						value={totp}
+						onChange={(e) => setTotp(e.target.value)}
+						hint="From your authenticator app."
 						autoFocus
 						required
+						style={{textAlign: 'center', letterSpacing: '0.3em', fontSize: 20}}
 					/>
-				</div>
-				<div className="field">
-					<label htmlFor="password" className="sr-only">
-						Password
-					</label>
-					<input
-						id="password"
-						type="password"
-						placeholder="Password"
-						autoComplete="current-password"
-						value={password}
-						onChange={(e) => setPassword(e.target.value)}
-						required
-					/>
-				</div>
-				{needTotp && (
-					<div className="field screen">
-						<label htmlFor="totp">Two-factor code</label>
-						<input
-							id="totp"
-							inputMode="numeric"
-							autoComplete="one-time-code"
-							pattern="[0-9 ]*"
-							maxLength={7}
-							placeholder="6-digit code"
-							value={totp}
-							onChange={(e) => setTotp(e.target.value)}
-							autoFocus
-							required
-							style={{textAlign: 'center', letterSpacing: '0.3em', fontSize: 20}}
-						/>
-						<span className="hint">From your authenticator app.</span>
-					</div>
 				)}
 				<button className="btn primary block" disabled={busy || !username.trim() || !password}>
 					{busy ? <span className="spinner" /> : <Icon name="key" size={20} />}

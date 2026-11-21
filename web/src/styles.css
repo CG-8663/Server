@@ -1484,6 +1484,12 @@ h1.title {
 	line-height: 1.45;
 	padding-left: 4px;
 }
+.field .hint.field-error {
+	color: var(--red);
+}
+.field input[aria-invalid='true'] {
+	border-color: var(--red);
+}
 .error {
 	display: flex;
 	gap: 9px;
@@ -3672,7 +3678,9 @@ html.desk-mode body {
 	cursor: default;
 }
 .sys-pop button:hover,
-.ctx-menu button:hover {
+.sys-pop button:focus-visible,
+.ctx-menu button:hover,
+.ctx-menu button:focus-visible {
 	background: rgba(255, 255, 255, 0.1);
 }
 .sys-pop button.danger,
@@ -3742,6 +3750,13 @@ html.desk-mode body {
 		opacity: 0;
 		transform: scale(0.96);
 	}
+}
+.win:focus {
+	outline: none;
+}
+.win:focus-visible {
+	outline: 2px solid var(--accent-text);
+	outline-offset: -2px;
 }
 .win.active {
 	box-shadow:
@@ -4053,6 +4068,8 @@ html.desk-mode body {
 	animation: fade 0.2s var(--ease);
 }
 .ov-search {
+	position: relative;
+	z-index: 2;
 	margin-top: 26px;
 	width: min(440px, 80%);
 	height: 42px;
@@ -4125,14 +4142,25 @@ html.desk-mode body {
 		0 0 0 4px color-mix(in srgb, var(--accent) 80%, transparent),
 		0 24px 70px rgba(0, 0, 0, 0.55);
 }
-.win-pick {
+.ov-layer > .ov-windows {
 	position: absolute;
 	inset: 0;
-	z-index: 30;
+	z-index: 1;
+	pointer-events: none;
+}
+.win-pick {
+	position: absolute;
 	border: 0;
 	padding: 0;
+	border-radius: 14px;
 	background: transparent;
 	cursor: default;
+	pointer-events: auto;
+}
+.win-pick:hover,
+.win-pick:focus-visible {
+	box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 80%, transparent);
+	outline: none;
 }
 .pop-note .icon-btn {
 	color: rgba(255, 255, 255, 0.75);
@@ -4905,7 +4933,9 @@ html.desk-mode body {
 	color: rgba(0, 0, 0, 0.5) !important;
 }
 .style-daylight .sys-pop button:hover,
-.style-daylight .ctx-menu button:hover {
+.style-daylight .sys-pop button:focus-visible,
+.style-daylight .ctx-menu button:hover,
+.style-daylight .ctx-menu button:focus-visible {
 	background: rgba(0, 0, 0, 0.07);
 }
 .style-daylight .pop-note {

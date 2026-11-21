@@ -11,7 +11,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query} from '../api'
 import {Icon} from '../icons'
 import {canFormat, canMount, canUnmount, formatConfirmToken, formatPhraseMatches, type FormatKind} from '../storageTools'
-import {Card, KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
+import {Card, Field, KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
 
 type Health = {passed: boolean | null; temperature: number | null; powerOnHours: number | null; lifetimeUsed: number | null; reallocated: number | null; pending: number | null}
 export type Drive = {
@@ -568,11 +568,16 @@ function NewPool({drives, zfs, taken, onClose, onDone, rpc, args}: {drives: Driv
 	return (
 		<Sheet open onClose={onClose} label="New pool">
 			<SheetHeader title="New pool" subtitle="Blank drives become one place for your files" onClose={onClose} />
-			<label className="field-label" htmlFor="pool-name">
-				Name
-			</label>
-			<input id="pool-name" className="field" style={{width: '100%'}} value={name} autoCapitalize="none" autoCorrect="off" onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 32))} placeholder="storage" />
-			{name && !nameOk && <p className="muted" style={{fontSize: 12.5}}>{taken.includes(name) ? 'That name is taken.' : 'Start with a letter; use a-z, 0-9 and -.'}</p>}
+			<Field
+				id="pool-name"
+				label="Name"
+				value={name}
+				autoCapitalize="none"
+				autoCorrect="off"
+				onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 32))}
+				placeholder="storage"
+				error={name && !nameOk ? (taken.includes(name) ? 'That name is taken.' : 'Start with a letter; use a-z, 0-9 and -.') : undefined}
+			/>
 			<div className="section-head" style={{marginTop: 16}}>
 				<h2>Drives</h2>
 			</div>
@@ -673,10 +678,14 @@ function ImportPool({fs, taken, onClose, onDone, rpc, args}: {fs: Importable; ta
 			<p className="muted" style={{fontSize: 14, marginTop: 0}}>
 				Mounts this existing Btrfs filesystem as a pool and at every startup. Nothing on it changes.
 			</p>
-			<label className="field-label" htmlFor="import-name">
-				Name
-			</label>
-			<input id="import-name" className="field" style={{width: '100%'}} value={name} autoCapitalize="none" onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 32))} />
+			<Field
+				id="import-name"
+				label="Name"
+				value={name}
+				autoCapitalize="none"
+				onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 32))}
+				error={name && !ok ? (taken.includes(name) ? 'That name is taken.' : 'Start with a letter; use a-z, 0-9 and -.') : undefined}
+			/>
 			<button className="btn primary block" style={{marginTop: 16}} disabled={busy || !ok} onClick={go}>
 				{busy ? 'Importing…' : 'Import'}
 			</button>

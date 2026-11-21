@@ -1,11 +1,12 @@
 import {createPortal} from 'react-dom'
-import {createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject} from 'react'
+import {createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type InputHTMLAttributes, type ReactNode, type RefObject} from 'react'
 
 import {useQuery} from '@tanstack/react-query'
 import type {AppState, Machine, Wallpaper} from './api'
 import {AssistantAvatar, cleanLook, type AssistantLook} from './character/AssistantCharacter'
 import {detectDesktop, LAYOUT_POINTER} from './layout'
 export {detectDesktop}
+import {fieldAria, liveRegionText, useDialogFocus} from './focus'
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
@@ -414,17 +415,11 @@ export function Sheet({open, onClose, label, children, tall}: {open: boolean; on
 	const portalRoot = usePortalRoot()
 	const start = useRef<{y: number; t: number} | null>(null)
 	const [drag, setDrag] = useState(0)
+	useDialogFocus(open, ref, onClose)
 	useEffect(() => {
 		if (!open) return
-		const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-		document.addEventListener('keydown', onKey)
-		const release = lockPageScroll()
-		ref.current?.focus({preventScroll: true})
-		return () => {
-			document.removeEventListener('keydown', onKey)
-			release()
-		}
-	}, [open, onClose])
+		return lockPageScroll()
+	}, [open])
 	if (!open) return null
 	// Swipe down to dismiss when the sheet is scrolled to the top (the close button is the accessible path).
 	const onTouchStart = (e: React.TouchEvent) => {
@@ -585,6 +580,59 @@ export function Group({title, children, footer}: {title: string; children: React
 	)
 }
 
+export type FieldProps = {
+	id?: string
+	label: string
+	labelHidden?: boolean
+	hint?: ReactNode
+	error?: ReactNode
+	invalid?: boolean
+	wrapperClassName?: string
+} & Omit<InputHTMLAttributes<HTMLInputElement>, 'id'>
+
+export function Field({
+	id,
+	label,
+	labelHidden,
+	hint,
+	error,
+	invalid,
+	wrapperClassName,
+	'aria-describedby': describedByProp,
+	'aria-invalid': ariaInvalidProp,
+	...input
+}: FieldProps) {
+	const autoId = useId()
+	const fieldId = id ?? autoId
+	const a11y = fieldAria(autoId, {
+		hasHint: Boolean(hint),
+		hasError: Boolean(error),
+		invalid,
+		describedBy: describedByProp,
+	})
+	return (
+		<div className={wrapperClassName ? `field ${wrapperClassName}` : 'field'}>
+			<label htmlFor={fieldId} className={labelHidden ? 'sr-only' : undefined}>
+				{label}
+			</label>
+			<input
+				id={fieldId}
+				aria-describedby={a11y.describedBy}
+				aria-invalid={ariaInvalidProp ?? a11y.invalid}
+				{...input}
+			/>
+			{hint && (
+				<span id={a11y.hintId} className="hint">
+					{hint}
+				</span>
+			)}
+			<span id={a11y.errorId} className={error ? 'hint field-error' : 'sr-only'} aria-live="polite" aria-atomic="true">
+				{error || ''}
+			</span>
+		</div>
+	)
+}
+
 // ---- confirmation & toasts ----------------------------------------------------
 type ConfirmOptions = {title: string; body: ReactNode; confirm: string; danger?: boolean; icon?: Parameters<typeof Icon>[0]['name']}
 const ConfirmContext = createContext<(o: ConfirmOptions) => Promise<boolean>>(async () => false)
@@ -596,12 +644,41 @@ export const useToast = () => useContext(ToastContext)
 
 export function Providers({children}: {children: ReactNode}) {
 	const [toast, setToast] = useState<Toast | null>(null)
+	const [announced, setAnnounced] = useState<Toast | null>(null)
+	const announcedRef = useRef<Toast | null>(null)
+	announcedRef.current = announced
 	const timer = useRef<number>()
+	const rafRef = useRef<number>()
+	useEffect(() => {
+		return () => {
+			window.clearTimeout(timer.current)
+			if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current)
+		}
+	}, [])
 	const show = useCallback((text: string, error = false) => {
 		haptic(error ? [20, 40, 20] : 10)
-		setToast({id: Date.now(), text, error})
+		const next: Toast = {id: Date.now(), text, error}
+		setToast(next)
+		if (rafRef.current !== undefined) {
+			cancelAnimationFrame(rafRef.current)
+			rafRef.current = undefined
+		}
+		const prev = announcedRef.current
+		if (prev && prev.text === text && !!prev.error === error) {
+			// Clear and restore on the next frame so repeating the same toast re-announces it.
+			setAnnounced(null)
+			rafRef.current = requestAnimationFrame(() => {
+				rafRef.current = undefined
+				setAnnounced(next)
+			})
+		} else {
+			setAnnounced(next)
+		}
 		window.clearTimeout(timer.current)
-		timer.current = window.setTimeout(() => setToast(null), error ? 4500 : 2600)
+		timer.current = window.setTimeout(() => {
+			setToast(null)
+			setAnnounced(null)
+		}, error ? 4500 : 2600)
 	}, [])
 
 	const [pending, setPending] = useState<(ConfirmOptions & {resolve: (v: boolean) => void}) | null>(null)
@@ -613,6 +690,7 @@ export function Providers({children}: {children: ReactNode}) {
 		pending?.resolve(v)
 		setPending(null)
 	}
+	const live = liveRegionText(announced)
 
 	return (
 		<ToastContext.Provider value={show}>
@@ -642,8 +720,14 @@ export function Providers({children}: {children: ReactNode}) {
 						</div>
 					)}
 				</Sheet>
+				<div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+					{live.status}
+				</div>
+				<div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">
+					{live.alert}
+				</div>
 				{toast && (
-					<div key={toast.id} className={`toast${toast.error ? ' error' : ''}`} role="status" aria-live="polite">
+					<div key={toast.id} className={`toast${toast.error ? ' error' : ''}`} aria-hidden="true">
 						<span className="ico">
 							<Icon name={toast.error ? 'alert' : 'check'} size={15} stroke={2.6} />
 						</span>
