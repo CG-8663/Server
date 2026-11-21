@@ -421,6 +421,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		dataDir,
 		accounts,
 		fetchImpl: assistantOptions.fetchImpl,
+		chatgptOptions: assistantOptions.chatgpt ?? {},
 		mcpTargets: () => apps.mcpTargets(),
 		runProcedure: (name, input, auth) => {
 			const p = procedures[name]
@@ -807,7 +808,7 @@ WantedBy=graphical-session.target
 		}
 	}, 20_000).unref?.()
 
-	return {url: `http://${host}:${server.address().port}`, accounts, terminals, close: () => (sampler.stop(), apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), terminals.close(), new Promise((r) => server.close(r)))}
+	return {url: `http://${host}:${server.address().port}`, accounts, terminals, close: () => (sampler.stop(), apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), assistant.chatgpt.close(), terminals.close(), new Promise((r) => server.close(r)))}
 }
 
 // The "always use the secure address" choice made while omarchyd kept its own certificate folder.

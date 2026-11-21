@@ -10,6 +10,7 @@ export const SYSTEM_PROMPT = 'You are the Omarchy Server assistant on this machi
 
 const LIMIT = 'I hit the lookup limit for this turn.'
 const KEY_REJECTED = 'That API key was rejected. Replace it in Settings → Assistant.'
+const CHATGPT_REJECTED = 'ChatGPT turned down the request. Sign in with ChatGPT again in Settings → Assistant.'
 const MAX_CALLS = 16
 const MAX_MESSAGES = 40
 // Fresh requests after the provider reports itself busy mid-stream, before any of the answer arrived.
@@ -24,7 +25,7 @@ function stripSecrets(value) {
 	if (!value || typeof value !== 'object') return value
 	const out = {}
 	for (const [k, v] of Object.entries(value)) {
-		if (k === 'password' || k === 'apiKey' || k === 'credentials' || k === 'defaultPassword') continue
+		if (k === 'password' || k === 'apiKey' || k === 'credentials' || k === 'defaultPassword' || k === 'accessToken' || k === 'refreshToken' || k === 'idToken') continue
 		out[k] = stripSecrets(v)
 	}
 	return out
@@ -399,7 +400,7 @@ function watchAbort(signal, pending) {
 	})
 }
 
-export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now = () => Date.now(), sleep = sleepFor}) {
+export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, chatgpt = null, now = () => Date.now(), sleep = sleepFor}) {
 	const stamp = () => now()
 	// Provider requests wait and try again when the provider is busy; MCP and lookups do not go through this.
 	const providerFetch = retryingFetch(fetchImpl ?? fetch, {sleep})
@@ -612,9 +613,17 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		const from = summaryOf(row)?.upTo ?? 0
 		const cut = pickCut(row.messages, from)
 		if (cut < 0) return row
+		let accessToken
+		if (key.provider === 'chatgpt') {
+			try {
+				accessToken = await chatgpt.accessToken(key.id)
+			} catch {
+				return row
+			}
+		}
 		const openAiStyle = apiOf(key) === 'responses' ? streamResponses : chatOrResponses
-		const base = key.provider === 'anthropic' ? streamAnthropic : openAiStyle
-		const stream = (opts) => base({baseUrl: key.baseUrl, apiKey: key.apiKey, model: key.model, fetchImpl: providerFetch, ...opts})
+		const base = key.provider === 'chatgpt' ? streamResponses : key.provider === 'anthropic' ? streamAnthropic : openAiStyle
+		const stream = (opts) => base({baseUrl: key.baseUrl, apiKey: key.apiKey, ...(accessToken ? {accessToken} : {}), model: key.model, fetchImpl: providerFetch, ...opts})
 		let text = null
 		try {
 			text = await writeSummary({stream, previous: summaryOf(row)?.text, messages: row.messages.slice(from, cut), actions: row.actions, signal})
@@ -717,12 +726,15 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				const thinking = []
 				let providerError = null
 				try {
-					// OpenAI-style endpoints fall back to tools-as-text when a model can't take native tools.
+					// A ChatGPT sign-in uses the person's plan through the Responses API. Other OpenAI-style
+					// endpoints fall back to tools-as-text when a model can't take native tools.
+					const accessToken = key.provider === 'chatgpt' ? await chatgpt.accessToken(key.id) : undefined
 					const openAiStyle = apiOf(key) === 'responses' ? streamResponses : chatOrResponses
-					const stream = key.provider === 'anthropic' ? streamAnthropic : (opts) => withToolFallback(openAiStyle, opts)
+					const stream = key.provider === 'chatgpt' ? streamResponses : key.provider === 'anthropic' ? streamAnthropic : (opts) => withToolFallback(openAiStyle, opts)
 					for await (const ev of stream({
 						baseUrl: key.baseUrl,
 						apiKey: key.apiKey,
+						...(accessToken ? {accessToken} : {}),
 						model: key.model,
 						effort: effortOf(key),
 						messages,
@@ -761,8 +773,8 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				}
 				if (providerError) {
 					await stopped(text)
-					if (providerError.status === 401) await keys.recordCheck?.(key.id, {ok: false, status: 'rejected', message: 'The provider rejected this key'}).catch(() => {})
-					say('error', {message: providerError.status === 401 ? KEY_REJECTED : (providerError.message || 'The assistant did not answer')})
+					if (providerError.status === 401 && key.provider !== 'chatgpt') await keys.recordCheck?.(key.id, {ok: false, status: 'rejected', message: 'The provider rejected this key'}).catch(() => {})
+					say('error', {message: providerError.status === 401 ? (key.provider === 'chatgpt' ? CHATGPT_REJECTED : KEY_REJECTED) : (providerError.message || 'The assistant did not answer')})
 					return finish(row.id)
 				}
 				if (!toolCalls.length) {

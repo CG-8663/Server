@@ -1,3 +1,4 @@
+import {createChatGpt} from './assistant/chatgpt.mjs'
 import {createConversations} from './assistant/conversations.mjs'
 import {createKeyStore, normalizeBaseUrl, presetBaseUrl} from './assistant/keys.mjs'
 import {createLoop, publicAction} from './assistant/loop.mjs'
@@ -31,7 +32,7 @@ function stripSecrets(value) {
 	if (!value || typeof value !== 'object') return value
 	const out = {}
 	for (const [k, v] of Object.entries(value)) {
-		if (k === 'password' || k === 'apiKey' || k === 'credentials' || k === 'defaultPassword') continue
+		if (k === 'password' || k === 'apiKey' || k === 'credentials' || k === 'defaultPassword' || k === 'accessToken' || k === 'refreshToken' || k === 'idToken') continue
 		out[k] = stripSecrets(v)
 	}
 	return out
@@ -59,9 +60,10 @@ function ownerMessage(toolName) {
 	return 'Only the server’s owner can change the desktop’s theme'
 }
 
-export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl, mcpTargets, sleep}) {
+export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl, mcpTargets, sleep, chatgptOptions = {}}) {
 	const keys = createKeyStore({dataDir, now})
 	const conversations = createConversations({dataDir, now, recoverRunning: true})
+	const chatgpt = createChatGpt({dataDir, keys, fetchImpl: fetchImpl ?? fetch, ...(now ? {now} : {}), ...chatgptOptions})
 	const stamp = () => (now ? now() : Date.now())
 	const actor = (auth) => {
 		const u = accounts.getUser(auth?.userId)
@@ -72,7 +74,7 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		if (!auth?.userId) throw new RpcError('UNAUTHORIZED', 'Invalid token')
 		return auth.userId
 	}
-	const {runTurn, runTurnContinue} = createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, now, sleep})
+	const {runTurn, runTurnContinue} = createLoop({keys, conversations, runProcedure, fetchImpl, mcpTargets, chatgpt, now, sleep})
 	const inflight = new Set()
 	const claim = (id) => {
 		if (inflight.has(id)) throw new RpcError('CONFLICT', 'That step was already handled')
@@ -351,6 +353,7 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 	return {
 		keys,
 		conversations,
+		chatgpt,
 		runTurn,
 		runTurnContinue,
 		handleStream,
@@ -359,7 +362,31 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			'assistant.addKey': {kind: 'mutation', run: (input, {auth}) => keys.add(actor(auth), input)},
 			'assistant.updateKey': {kind: 'mutation', run: (input, {auth}) => keys.update(actor(auth), input)},
 			'assistant.verifyKey': {kind: 'mutation', run: verify},
-			'assistant.removeKey': {kind: 'mutation', run: (input, {auth}) => keys.remove(actor(auth), String(input?.id ?? ''))},
+			'assistant.removeKey': {
+				kind: 'mutation',
+				run: async (input, {auth}) => {
+					const who = actor(auth)
+					const id = String(input?.id ?? '')
+					const k = await keys.getSecret(id)
+					// Signing out of ChatGPT also revokes the sign-in at OpenAI. Best effort: the row still goes.
+					if (k?.provider === 'chatgpt' && k.ownerUserId === who.userId) await chatgpt.revoke(id)
+					return keys.remove(who, id)
+				},
+			},
+			// Sign in with ChatGPT: start (the address to open), finish (the pasted address), and status
+			// (when the browser is on this machine, omarchyd catches the callback itself).
+			'assistant.chatgptStart': {kind: 'mutation', run: (input, {auth}) => chatgpt.start(actor(auth).userId, {keyId: input?.keyId})},
+			'assistant.chatgptFinish': {kind: 'mutation', run: (input, {auth}) => chatgpt.finish(actor(auth).userId, input?.url)},
+			'assistant.chatgptStatus': {kind: 'query', run: (_i, {auth}) => chatgpt.status(actor(auth).userId)},
+			'assistant.models': {
+				kind: 'query',
+				run: async (input, {auth}) => {
+					const who = actor(auth)
+					const k = await keys.getSecret(String(input?.id ?? ''))
+					if (!k || k.provider !== 'chatgpt' || k.ownerUserId !== who.userId) throw new RpcError('NOT_FOUND', 'That sign-in isn’t here')
+					return chatgpt.models(k.id)
+				},
+			},
 			'assistant.conversations': {kind: 'query', run: (_i, {auth}) => conversations.list(userIdOf(auth))},
 			'assistant.getConversation': {kind: 'query', run: (input, {auth}) => conversations.get(userIdOf(auth), String(input?.id ?? ''))},
 			'assistant.deleteConversation': {kind: 'mutation', run: (input, {auth}) => conversations.remove(userIdOf(auth), String(input?.id ?? ''))},
