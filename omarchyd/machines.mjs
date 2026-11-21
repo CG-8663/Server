@@ -141,6 +141,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			for (const m of machines) normalize(m)
 			await save().catch(() => {})
 		}
+		await removeUnfinishedBackups()
 		autostart()
 	})()
 	const save = () => {
@@ -311,6 +312,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		m.snapshots ??= []
 		m.mac ??= randomMac()
 		m.usbDevices = Array.isArray(m.usbDevices) ? m.usbDevices : []
+		// Machines saved before 0.4.0 have no layout. Hardware reads m.layout.disks, so give them the cloud wiring.
+		if (!m.layout) m.layout = layoutFor('cloud', join(vmsDir, m.id))
 		if (m.layout) {
 			m.layout.machineType ??= 'q35'
 			let disks = 0
@@ -735,6 +738,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await ready
 		const m = find(input?.id)
 		if (busy.get(m.id)?.state === 'installing') throw new RpcError('CONFLICT', `${m.name} is still being set up`)
+		if (isBusy(m.id)) throw new RpcError('CONFLICT', `${m.name} is busy`)
 		if (m.options?.protection && !input?.force) throw new RpcError('PRECONDITION_FAILED', `${m.name} is protected. Turn off Protection in its options to delete it.`)
 		const live = await readDomainState(m)
 		if (live && live !== 'shut off') {
@@ -754,6 +758,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function updateSettings(input) {
 		await ready
 		const m = find(input?.id)
+		refuseIfBusy(m)
 		if (input.portForwards !== undefined) {
 			if (!Array.isArray(input.portForwards) || input.portForwards.length > 32) throw new RpcError('BAD_REQUEST', 'Invalid port forwards')
 			const seen = new Set()
@@ -808,6 +813,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 
 	const liveState = async (m) => STATE[(await domainStates()).get(domain(m.id))] ?? 'stopped'
+	// The guest still holds its disks whenever the domain exists and is not shut off (running, paused, shutting down).
+	const domainOpen = async (m) => {
+		const raw = (await domainStates()).get(domain(m.id))
+		return raw != null && raw !== 'shut off'
+	}
+	const refuseIfBusy = (m) => {
+		if (isBusy(m.id)) throw new RpcError('CONFLICT', `${m.name} is busy`)
+	}
 	async function requireStopped(m, what) {
 		if (isBusy(m.id)) throw new RpcError('CONFLICT', `${m.name} is busy`)
 		if ((await liveState(m)) !== 'stopped') throw new RpcError('PRECONDITION_FAILED', `Shut down ${m.name} first to ${what}`)
@@ -967,6 +980,15 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		}
 	}
 
+	// qemu-img info says what the copy actually wrote. A failed probe keeps the disk's previous format.
+	async function copiedFormat(file, fallback) {
+		const out = await run('qemu-img', ['info', '--output=json', '-U', file], {timeout: 20_000}).catch(() => null)
+		try {
+			const format = JSON.parse(out)?.format
+			if (typeof format === 'string' && format) return format
+		} catch {}
+		return fallback
+	}
 	async function diskInfo(file) {
 		const out = await run('qemu-img', ['info', '--output=json', '-U', file], {timeout: 20_000}).catch(() => null)
 		try {
@@ -1052,6 +1074,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await ready
 		const m = find(input.id)
 		writable(m)
+		refuseIfBusy(m)
 		const threads = os.cpus().length || 1
 		const totalMb = Math.floor(os.totalmem() / 1024 ** 2)
 		const sockets = input.sockets ?? m.sockets ?? 1
@@ -1087,6 +1110,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function updateOptions(input = {}) {
 		await ready
 		const m = find(input.id)
+		refuseIfBusy(m)
 		const o = {...m.options}
 		let nextName
 		if (input.name !== undefined) {
@@ -1134,6 +1158,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await ready
 		const m = find(input.id)
 		writable(m)
+		refuseIfBusy(m)
 		const ids = new Set([...m.layout.disks.map((d) => d.id), 'net'])
 		const order = Array.isArray(input.order) ? input.order.map(String) : []
 		if (!order.length || order.some((x) => !ids.has(x)) || new Set(order).size !== order.length) throw new RpcError('BAD_REQUEST', 'Choose at least one boot device')
@@ -1162,6 +1187,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return lock(`drives:${idArg}`, async () => {
 			const m = find(idArg)
 			writable(m)
+			refuseIfBusy(m)
 			const sizeGb = Number(input.sizeGb)
 			const bus = input.bus ?? 'virtio'
 			if (!Number.isInteger(sizeGb) || sizeGb < 1 || sizeGb > 4096) throw new RpcError('BAD_REQUEST', 'Disk size must be between 1 and 4096 GB')
@@ -1184,6 +1210,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await ready
 		const m = find(input.id)
 		writable(m)
+		refuseIfBusy(m)
 		const d = findDisk(m, input.diskId)
 		if (input.bus !== undefined && !BUSES.includes(input.bus)) throw new RpcError('BAD_REQUEST', 'Unknown disk bus')
 		if (input.cache !== undefined && !CACHES.includes(input.cache)) throw new RpcError('BAD_REQUEST', 'Unknown cache mode')
@@ -1206,7 +1233,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (!Number.isInteger(sizeGb) || sizeGb > 4096) throw new RpcError('BAD_REQUEST', 'Disk size must be a whole number of GB, up to 4096')
 		if (sizeGb <= current) throw new RpcError('BAD_REQUEST', `Disks can only grow: enter more than ${current} GB`)
 		return task(m, 'resize-disk', `${d.id} to ${sizeGb} GB`, async () => {
-			if ((await liveState(m)) === 'running') await virsh('blockresize', domain(m.id), targets(m.layout).get(d.id), `${sizeGb}G`)
+			if (await domainOpen(m)) await virsh('blockresize', domain(m.id), targets(m.layout).get(d.id), `${sizeGb}G`)
 			else await run('qemu-img', ['resize', d.file, `${sizeGb}G`])
 			d.sizeGb = sizeGb
 			if (d.id === 'disk0') m.diskSizeGb = sizeGb
@@ -1252,6 +1279,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await ready
 		const m = find(input.id)
 		writable(m)
+		refuseIfBusy(m)
 		const d = findDisk(m, input.diskId)
 		if (d.device !== 'cdrom') throw new RpcError('BAD_REQUEST', 'That isn’t a CD/DVD drive')
 		let file = ''
@@ -1288,6 +1316,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await ready
 		const m = find(input.id)
 		writable(m)
+		refuseIfBusy(m)
 		const seedDisk = m.layout.disks.find((d) => d.role === 'seed')
 		// Omarchy installs also have a seed drive (user_configuration.json). Only cloud images set m.cloudInit.
 		if (!m.cloudInit || !seedDisk) throw new RpcError('PRECONDITION_FAILED', `${m.name} doesn’t use cloud-init`)
@@ -1375,10 +1404,16 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				if (!tags.includes(snap.name)) throw new RpcError('PRECONDITION_FAILED', `${snap.name} isn’t in every drive, so nothing was rolled back`)
 			}
 			for (const d of targets) await run('qemu-img', ['snapshot', '-a', snap.name, d.file], {timeout: 10 * 60_000})
+			try {
+				await virsh('managedsave-remove', domain(m.id))
+			} catch (error) {
+				// No saved memory is the usual case. Anything else (the domain is gone, libvirt is down) still fails the rollback.
+				if (!/managed save/i.test(String(error?.message ?? error))) throw error
+			}
 			const c = snap.config
 			Object.assign(m, {sockets: c.sockets, cores: c.cores, memoryMb: c.memoryMb, memoryGb: Math.max(1, Math.round(c.memoryMb / 1024)), cpuType: c.cpuType})
 			Object.assign(m.layout, c.layout)
-			delete m.hibernated
+			m.hibernated = false
 			await markChanged(m)
 			return true
 		})
@@ -1447,7 +1482,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const need = (await Promise.all(disks.map((d) => diskInfo(d.file)))).reduce((a, i) => a + (i.usedGb ?? 1), 0)
 		const fs = await statfs(dir)
 		if ((fs.bavail * fs.bsize) / 1024 ** 3 < need + 1) throw new RpcError('PRECONDITION_FAILED', `Not enough free space for the backup (about ${Math.ceil(need)} GB)`)
-		const running = (await liveState(m)) === 'running'
+		const running = await domainOpen(m)
 		// A folder of its own (never one that's already there, so a failure only removes its own).
 		// Before the machine is marked busy: a failed mkdir must not stick until restart.
 		await mkdir(target, {mode: 0o700})
@@ -1523,9 +1558,31 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const id = String(input.backupId ?? '')
 		if (!BACKUP_ID.test(id)) throw new RpcError('BAD_REQUEST', 'Bad backup')
 		const dir = join(await backupsDir(), id)
-		if (!(await exists(join(dir, 'machine.json')))) throw new RpcError('NOT_FOUND', 'That backup doesn’t exist')
+		const folder = await stat(dir).catch(() => null)
+		// A cut-short backup has a folder and no machine.json. Start already removes those; deleting one that is already gone stays not-found.
+		if (!folder?.isDirectory()) throw new RpcError('NOT_FOUND', 'That backup doesn’t exist')
 		await rm(dir, {recursive: true, force: true})
 		return true
+	}
+	// A backup that died before machine.json was written is only a folder. Drop those, and nothing else under Home.
+	async function removeUnfinishedBackups() {
+		if (!files) return
+		let home
+		try {
+			;({real: home} = await files.resolve('/Home'))
+		} catch {
+			return
+		}
+		const dir = join(home, 'Backups', 'Machines')
+		for (const e of await readdir(dir, {withFileTypes: true}).catch(() => [])) {
+			if (!e.isDirectory()) continue
+			const folder = join(dir, e.name)
+			try {
+				await readFile(join(folder, 'machine.json'))
+			} catch (error) {
+				if (error?.code === 'ENOENT') await rm(folder, {recursive: true, force: true})
+			}
+		}
 	}
 	// A new machine from copied disks and settings (used by restore and clone).
 	async function adopt(source, {name, copyDisk, keepIds}) {
@@ -1544,6 +1601,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			snapshots: [],
 			state: 'installing',
 			portForwards: [],
+			usbDevices: [],
+			usbLive: undefined,
+			lastUsbError: undefined,
 			answerIso: undefined,
 			pending: undefined,
 			hibernated: undefined,
@@ -1551,6 +1611,12 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		machines.push(m)
 		busy.set(id, {state: 'installing', progress: 0})
 		await save()
+		// Hold the live source for the whole copy. A settling entry expires on a short timer, so replace it;
+		// a real busy entry (no settling flag) belongs to another operation and is left alone.
+		const liveSource = machines.find((x) => x === source)
+		const previous = liveSource ? busy.get(liveSource.id) : null
+		const sourceHold = liveSource && (!previous || previous.settling) ? {state: 'stopped'} : null
+		if (sourceHold) busy.set(liveSource.id, sourceHold)
 		const t = beginTask(m, keepIds ? 'restore' : 'clone', source.name)
 		;(async () => {
 			try {
@@ -1562,7 +1628,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					if (d.device === 'disk') {
 						const dst = join(dir, d.id === 'disk0' ? 'disk.qcow2' : `${d.id}.qcow2`)
 						await copyDisk(d, dst)
-						kept.push({...d, file: dst})
+						kept.push({...d, file: dst, format: await copiedFormat(dst, d.format)})
 					} else if (d.role === 'answer') continue
 					else if (d.role === 'seed') {
 						const src = d.file
@@ -1584,6 +1650,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				endTask(m, t, error)
 			} finally {
 				busy.delete(id)
+				if (sourceHold && busy.get(liveSource.id) === sourceHold) busy.delete(liveSource.id)
 				await save().catch(() => {})
 			}
 		})()
