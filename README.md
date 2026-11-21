@@ -33,7 +33,11 @@ Then open `http://<server-ip>:7780` (or `https://`, see [Security](#security)) a
 Run the same command again to update, or use Settings → Software update. Your account, apps, machines
 and files are kept. Logs: `journalctl --user -u omarchyd -u omarchy-server-web -f`
 
-Want ZFS pools too? Add `--zfs` (see [Storage](#storage-and-nas)).
+Want ZFS pools too? A piped install only receives `--zfs` after `--` (see [Storage](#storage-and-nas)):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash -s -- --zfs
+```
 
 To keep Software update and the App Store on local clones you sync yourself (no automatic GitHub
 fetches), set these on the installer and they are written onto `omarchyd.service`:
@@ -142,7 +146,7 @@ pastes. On a phone there's a key row with Esc, Tab, Ctrl, Alt and arrows.
 - Every drive with its health (SMART), and sleep timers for hard drives.
 - **Btrfs pools** (combined, mirrored or RAID 10) on blank drives, import existing Btrfs drives, add
   drives, error checks.
-- **ZFS pools** (combined, mirrored, RAID-Z1, RAID-Z2) and imports, after installing with `--zfs`.
+- **ZFS pools** (combined, mirrored, RAID-Z1, RAID-Z2) and imports, after `curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash -s -- --zfs`.
 - Pools appear in Files at `~/Pools/<name>`, and can be shared over SMB.
 - Drives that hold anything are never erased: pools are only made on blank drives.
 
@@ -161,8 +165,12 @@ watch them (CPU, memory, disks, temperature, updates waiting), open a terminal, 
 desktop, and manage them (verified Omarchy plugins, Omarchy theme, updates, restart). Linux only, on
 any distribution with systemd: Omarchy, Arch, Debian, Ubuntu, Fedora, openSUSE and their relatives.
 
-1. On your server: **Machines → Local swarm → Add a computer**. Choose what it may do (Terminal,
-   Desktop, Manage; watching is always on) and tap **Make the install command**.
+1. On your server: **Machines → Local swarm → Add a computer**. Choose what it may do and tap **Make the install command**. Watching is always on. Five abilities, with these defaults:
+   - **Terminal** — on. A shell on that computer.
+   - **Desktop** — on. See and use its screen.
+   - **Manage** — on. Verified Omarchy plugins and themes, updates, and restart.
+   - **Storage** — off, because it can format disks.
+   - **Backups** — on. It can add backups, never delete them.
 2. On the other computer, open a terminal as the person who uses it (not root), paste the command
    and press Enter. It asks for your password only to install Python, git and screen sharing, and
    to keep the connector running while you're signed out.
