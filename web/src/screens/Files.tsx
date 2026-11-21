@@ -22,6 +22,7 @@ import {
   diskPct,
 } from "../api";
 import { useBootstrap, useDisk, useUser } from "../data";
+import { queryProblem, useBrowserOnline } from "../connection";
 import { Icon, type IconName } from "../icons";
 import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, scrollPhoneToTop, useConfirm, usePortalRoot, useToast } from "../ui";
 import { SearchField } from "./Apps";
@@ -508,6 +509,16 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
                 }) as FileEntry,
             )
           : (listing.data?.files ?? []);
+  const activeQ =
+    q.trim().length >= 2
+      ? search
+      : path === "::recents"
+        ? recents
+        : path === "::favorites"
+          ? favorites
+          : listing;
+  const browserOnline = useBrowserOnline();
+  const fileProblem = path !== null || q ? queryProblem(activeQ, browserOnline) : null;
   const loading =
     q.trim().length >= 2
       ? search.isLoading
@@ -1011,10 +1022,10 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
               Empty Trash
             </button>
           )}
-          {listing.error && !q && (
-            <div className="error">
+          {fileProblem && (
+            <div className="error" role="alert">
               <Icon name="alert" size={18} />
-              {nice((listing.error as Error).message)}
+              {activeQ.error ? nice((activeQ.error as Error).message) : fileProblem}
             </div>
           )}
           {loading ? (
@@ -1038,7 +1049,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
                 </div>
               ))}
             </div>
-          ) : items.length === 0 ? (
+          ) : fileProblem && !activeQ.data ? null : items.length === 0 ? (
             <div className="glass empty">
               <span className="big">
                 <Icon

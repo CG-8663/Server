@@ -4,6 +4,7 @@ import {computerSheetChanged, formatBackupHour, formatBackupStamp, formatBackupW
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
+import {queryProblem, useBrowserOnline} from './connection'
 import {Icon} from './icons'
 import {Field, Group, Row, Segmented, Sheet, SheetHeader, Switch, haptic, useConfirm, useToast} from './ui'
 
@@ -86,6 +87,8 @@ function useSave() {
 
 export function BackupsPage({onBack}: {onBack: () => void}) {
 	const status = useStatus()
+	const browserOnline = useBrowserOnline()
+	const problem = queryProblem(status, browserOnline)
 	const save = useSave()
 	const confirm = useConfirm()
 	const toast = useToast()
@@ -149,10 +152,10 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 					</div>
 				</div>
 			)}
-			{status.error && (
-				<div className="error">
+			{problem && (
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
-					{(status.error as Error).message}
+					{problem}
 				</div>
 			)}
 

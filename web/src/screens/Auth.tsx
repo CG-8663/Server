@@ -1,6 +1,7 @@
 import {useState, type FormEvent} from 'react'
 
 import {ApiError, login, setup, type Bootstrap} from '../api'
+import {connectSubmitMode} from '../connection'
 import {Icon} from '../icons'
 import {Field, VersionTag, haptic} from '../ui'
 
@@ -24,17 +25,34 @@ function ErrorBox({message, k}: {message: string; k: number}) {
 	)
 }
 
-export function Connect({onDone, unreachable}: {onDone: () => void; unreachable?: Bootstrap['server']}) {
+export function Connect({onDone, onRetry, unreachable}: {onDone: () => void; onRetry?: () => Promise<Bootstrap | null>; unreachable?: Bootstrap['server']}) {
 	const [url, setUrl] = useState(unreachable?.url ?? '')
+	const [edited, setEdited] = useState(false)
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState('')
 	const [tries, setTries] = useState(0)
+	const value = edited ? url : (unreachable?.url ?? '')
+	const mode = connectSubmitMode(unreachable, value)
 	const submit = async (e: FormEvent) => {
 		e.preventDefault()
 		setBusy(true)
 		setError('')
 		try {
-			await setup(url)
+			if (mode === 'retry') {
+				if (onRetry) {
+					const next = await onRetry()
+					if (next?.server?.reachable) {
+						haptic(12)
+					} else {
+						setError(next?.server?.error ?? 'Omarchy Server still isn’t answering. Wait a moment and try again.')
+						setTries((t) => t + 1)
+					}
+				} else {
+					onDone()
+				}
+				return
+			}
+			await setup(value.trim())
 			haptic(12)
 			onDone()
 		} catch (err) {
@@ -50,7 +68,9 @@ export function Connect({onDone, unreachable}: {onDone: () => void; unreachable?
 			<h1>{unreachable ? 'Can’t reach your server' : 'Connect your server'}</h1>
 			<p className="lead">
 				{unreachable
-					? `Omarchy Server couldn’t reach ${unreachable.url}. Check that it’s on and on this network, or enter its new address.`
+					? unreachable.url
+						? `Omarchy Server couldn’t reach ${unreachable.url}. Checking automatically — wait a moment or enter a different address.`
+						: 'Omarchy Server isn’t answering yet — it may be starting or restarting. Checking automatically…'
 					: 'Enter the address you use to open Omarchy Server. Nothing on your server is changed.'}
 			</p>
 			<form onSubmit={submit}>
@@ -63,14 +83,17 @@ export function Connect({onDone, unreachable}: {onDone: () => void; unreachable?
 					autoCorrect="off"
 					spellCheck={false}
 					placeholder="192.168.1.50 or omarchy.local"
-					value={url}
-					onChange={(e) => setUrl(e.target.value)}
+					value={value}
+					onChange={(e) => {
+						setEdited(true)
+						setUrl(e.target.value)
+					}}
 					hint="An IP address is the most reliable. omarchy.local works on most home networks."
-					required
+					required={!unreachable}
 				/>
-				<button className="btn primary block" disabled={busy || !url.trim()}>
+				<button className="btn primary block" disabled={busy || (mode === 'setup' && !value.trim())}>
 					{busy ? <span className="spinner" /> : <Icon name="link" size={20} />}
-					{busy ? 'Checking…' : unreachable ? 'Try again' : 'Connect'}
+					{busy ? 'Checking…' : mode === 'retry' ? 'Try again' : 'Connect'}
 				</button>
 			</form>
 		</main>
