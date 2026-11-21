@@ -1,5 +1,6 @@
 // Settings → Backups: this server's apps and settings, encrypted, copied to a NAS on a schedule.
 import {useEffect, useMemo, useState, type CSSProperties, type FormEvent} from 'react'
+import {computerSheetChanged} from './backupHelpers'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
@@ -739,7 +740,7 @@ function ComputerSheet({c, onClose}: {c: Computer; onClose: () => void}) {
 			setBusy(false)
 		}
 	}
-	const changed = picked.join('\n') !== c.folders.join('\n') || JSON.stringify(schedule) !== JSON.stringify(c.schedule)
+	const changed = computerSheetChanged(picked, c.folders, schedule, c.schedule)
 	const toggle = (name: string) => setPicked(picked.includes(name) ? picked.filter((x) => x !== name) : [...picked, name])
 	const shown = [...new Set([...(folders.data?.folders.map((f) => f.name) ?? []), ...c.folders])].sort((a, b) => a.localeCompare(b))
 	return (
