@@ -30,7 +30,7 @@ import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
 import { actionsForItems, batchToast, offersDownload, selectionAfterQuery, type BatchKind } from "./filesRules";
-import { canSubmitNamePrompt, type FavoriteItem, favoritePath, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, UPLOAD_REFRESH_KEYS } from "../filesHelpers";
+import { canSubmitNamePrompt, type FavoriteItem, favoritePath, filterUnsyncedPhotos, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, UPLOAD_REFRESH_KEYS } from "../filesHelpers";
 
 const FileViewer = lazy(() =>
   import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
@@ -873,9 +873,8 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
           const picked = e.target.files ? [...e.target.files] : [];
           e.target.value = "";
           if (!picked.length) return;
-          // Sync: upload only what isn't in Photos yet (same name and size).
-          const have = new Set((listing.data?.files ?? []).map((f) => `${f.name}:${f.size}`));
-          const fresh = picked.filter((f) => !have.has(`${f.name}:${f.size}`));
+          // Sync: upload only what isn't in Photos yet (same name or keep-both copy, and size).
+          const fresh = filterUnsyncedPhotos(picked, listing.data?.files ?? []);
           const skipped = picked.length - fresh.length;
           if (!fresh.length) return toast(`All ${picked.length} already synced`);
           if (skipped) toast(`${fresh.length} new · ${skipped} already synced`);
