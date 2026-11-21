@@ -40,6 +40,7 @@ export type Agent = {
 		version?: string
 		agentSha?: string
 		helperSha?: string
+		macs?: string[]
 		pkg?: string
 		updateCommand?: string
 		omarchy?: boolean
@@ -55,13 +56,16 @@ export type Agent = {
 		mem?: {total: number; used: number}
 		swap?: {total: number; used: number}
 		disks?: {mount: string; total: number; used: number}[]
-		gpus?: {id: string; index: number; name: string; used: number | null}[]
+		gpus?: {id: string; index: number; name: string; used: number | null; vramUsed?: number | null; vramTotal?: number | null; temp?: number | null; power?: number | null}[]
 		batteries?: SwarmBattery[]
+		net?: {rx: number | null; tx: number | null} | null
 		temp?: number | null
 		uptime?: number
 		updates?: number | null
 	} | null
 }
+type SwarmAlert = {id: string; agentId: string; name: string; kind: string; severity: 'info' | 'warning' | 'critical'; message: string}
+type HistoryPoint = {at: number; cpu: number | null; memPct: number | null; diskPct: number | null; gpuPct: number | null; temp: number | null; netRx: number | null; netTx: number | null}
 type Pairing = {token: string; ca: string; expiresAt: number; abilities: Abilities; source: string; port: number; addresses: {address: string; tailscale: boolean}[]; agentId?: string; name?: string}
 
 const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = {
@@ -104,6 +108,8 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 	const selected = list.find((a) => a.id === selectedId) ?? null
 	const online = list.filter((a) => a.online).length
 	const outdated = list.filter((a) => a.online && may(a, 'manage') && a.updateAvailable)
+	const alertsQuery = useQuery({queryKey: ['swarm.alerts'], queryFn: () => query<SwarmAlert[]>('swarm.alerts'), refetchInterval: 10_000, enabled: list.length > 0})
+	const alerts = (alertsQuery.data ?? []).filter((al) => al.severity === 'warning' || al.severity === 'critical')
 	const act = useSwarmAction()
 	if (storage) return <StoragePage onBack={() => setStorage(null)} target={{agentId: storage.id, name: storage.name}} />
 	return (
@@ -150,6 +156,21 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
 					{problem}
+				</div>
+			)}
+			{alerts.length > 0 && (
+				<div className="glass" role="status" style={{padding: '10px 14px', marginBottom: 12, display: 'grid', gap: 6}}>
+					{alerts.slice(0, 4).map((al) => (
+						<button
+							key={al.id}
+							type="button"
+							onClick={() => setSelectedId(al.agentId)}
+							style={{display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 0, padding: 0, color: al.severity === 'critical' ? 'var(--red)' : 'var(--yellow)', font: 'inherit', fontSize: 13, textAlign: 'left', cursor: 'pointer'}}
+						>
+							<Icon name="alert" size={16} />
+							<span>{al.message}</span>
+						</button>
+					))}
 				</div>
 			)}
 			{list.map((a) => (
@@ -276,6 +297,66 @@ function AgentCard({a, onClick}: {a: Agent; onClick: () => void}) {
 	)
 }
 
+function Sparkline({values, max = 100, color, label, suffix = '%'}: {values: Array<number | null>; max?: number; color: string; label: string; suffix?: string}) {
+	const clean = values.map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : null))
+	const present = clean.filter((v): v is number => v !== null)
+	if (present.length < 2) return null
+	const latest = present[present.length - 1]
+	const hi = Math.max(max, ...present, 1)
+	const w = 120
+	const h = 28
+	const pts = clean
+		.map((v, i) => (v === null ? null : `${((i / Math.max(1, clean.length - 1)) * w).toFixed(1)},${(h - (Math.min(hi, Math.max(0, v)) / hi) * (h - 4) - 2).toFixed(1)}`))
+		.filter(Boolean)
+		.join(' ')
+	return (
+		<div style={{display: 'grid', gap: 4}}>
+			<div style={{display: 'flex', justifyContent: 'space-between', fontSize: 12}}>
+				<span className="muted">{label}</span>
+				<b>
+					{Math.round(latest)}
+					{suffix}
+				</b>
+			</div>
+			<svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} aria-label={`${label} history`} style={{display: 'block'}}>
+				<polyline fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" points={pts} />
+			</svg>
+		</div>
+	)
+}
+
+function HistorySparklines({agentId}: {agentId: string}) {
+	const [range, setRange] = useState<'1h' | '24h'>('1h')
+	const hist = useQuery({
+		queryKey: ['swarm.history', agentId, range],
+		queryFn: () => query<{id: string; range: '1h' | '24h'; points: HistoryPoint[]}>('swarm.history', {id: agentId, range}),
+		refetchInterval: 10_000,
+	})
+	const points = hist.data?.points ?? []
+	if (points.length < 2) return null
+	return (
+		<div className="glass" style={{marginTop: 12, padding: '12px 14px', display: 'grid', gap: 10}}>
+			<div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between'}}>
+				<span className="muted" style={{fontSize: 12.5, fontWeight: 600}}>
+					Recent history
+				</span>
+				<span className="chips">
+					{(['1h', '24h'] as const).map((r) => (
+						<button key={r} type="button" className={`chip${range === r ? ' on' : ''}`} onClick={() => setRange(r)}>
+							{r}
+						</button>
+					))}
+				</span>
+			</div>
+			<div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 12}}>
+				<Sparkline label="CPU" values={points.map((p) => p.cpu)} color="var(--accent)" />
+				<Sparkline label="Memory" values={points.map((p) => p.memPct)} color="#38bdf8" />
+				<Sparkline label="Temp" values={points.map((p) => p.temp)} max={100} color="#ef5350" suffix="°C" />
+			</div>
+		</div>
+	)
+}
+
 function Group({title, children}: {title: string; children: ReactNode}) {
 	return (
 		<>
@@ -328,6 +409,19 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 			{a.online && may(a, 'desktop') && desk && !desk.ok && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>{desk.why}</p>}
 
 			{a.online && m && <SwarmGauges metrics={m} />}
+			{a.online && <HistorySparklines agentId={a.id} />}
+			{offline && !!a.info?.macs?.length && (
+				<div style={{marginTop: 12}}>
+					<button
+						className="btn primary"
+						style={{width: '100%'}}
+						disabled={act.isPending}
+						onClick={() => (haptic(8), act.mutate({path: 'swarm.wake', input: {id: a.id}, done: `Sent Wake-on-LAN to ${a.name}`}))}
+					>
+						<Icon name="power" size={18} /> Wake up
+					</button>
+				</div>
+			)}
 			<Group title="Disks">
 				<Row
 					icon="disk"
@@ -338,11 +432,14 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 					disabled={offline}
 				/>
 			</Group>
-			{a.online && m && (extraDisks(m.disks).length > 0 || typeof m.temp === 'number' || m.uptime !== undefined) && (
+			{a.online && m && (extraDisks(m.disks).length > 0 || typeof m.temp === 'number' || m.uptime !== undefined || (m.net && (m.net.rx != null || m.net.tx != null))) && (
 				<Group title="Now">
 					{extraDisks(m.disks).map((d) => (
 						<Row key={d.mount} icon="disk" color="#f0a020" label={d.mount} sub={`${bytes(d.used)} of ${bytes(d.total)}`} trailing={<b>{pct(d)}%</b>} />
 					))}
+					{m.net && (m.net.rx != null || m.net.tx != null) && (
+						<Row icon="network" color="#3b82f6" label="Network" trailing={<b>↓ {bytes(m.net.rx ?? 0)}/s · ↑ {bytes(m.net.tx ?? 0)}/s</b>} />
+					)}
 					{typeof m.temp === 'number' && <Row icon="thermo" color="#ef5350" label="Temperature" trailing={<b>{Math.round(m.temp)}°C</b>} />}
 					{m.uptime !== undefined && <Row icon="clock" color="#8e8e93" label="Up for" trailing={<b>{duration(m.uptime)}</b>} />}
 				</Group>
@@ -378,6 +475,19 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 					)}
 					<Row
 						icon="power"
+						color="#f59e0b"
+						label="Suspend"
+						onClick={
+							manage
+								? async () => {
+										if (await confirm({title: `Suspend ${a.name}?`, body: 'It goes to sleep right away. Wake it with Wake-on-LAN or its power button.', confirm: 'Suspend', icon: 'power'}))
+											action({name: 'suspend'}, `Suspending ${a.name}…`)
+									}
+								: undefined
+						}
+					/>
+					<Row
+						icon="power"
 						color="#ef5350"
 						label="Restart"
 						onClick={
@@ -385,6 +495,19 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 								? async () => {
 										if (await confirm({title: `Restart ${a.name}?`, body: 'Anything open on it closes. It joins again by itself once it’s back up.', confirm: 'Restart', icon: 'power'}))
 											action({name: 'reboot'}, `Restarting ${a.name}…`)
+									}
+								: undefined
+						}
+					/>
+					<Row
+						icon="power"
+						color="#dc2626"
+						label="Shut down"
+						onClick={
+							manage
+								? async () => {
+										if (await confirm({title: `Shut down ${a.name}?`, body: 'Anything open on it closes and the computer powers off.', confirm: 'Shut down', icon: 'power'}))
+											action({name: 'shutdown'}, `Shutting down ${a.name}…`)
 									}
 								: undefined
 						}

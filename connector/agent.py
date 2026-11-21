@@ -275,6 +275,26 @@ def _file_sha256(path):
         return ""
 
 
+def lan_macs(list_dir=os.listdir, read_file=read, root="/sys/class/net"):
+    """Non-virtual network adapter MAC addresses for Wake-on-LAN."""
+    try:
+        names = sorted(list_dir(root))
+    except OSError:
+        return []
+    skip_prefix = ("docker", "podman", "veth", "virbr", "br-", "cni", "tailscale", "wg", "tun", "tap")
+    seen, out = set(), []
+    for name in names:
+        if name == "lo" or name.startswith(skip_prefix):
+            continue
+        mac = read_file(os.path.join(root, name, "address")).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", mac) or mac == "00:00:00:00:00:00":
+            continue
+        if mac not in seen:
+            seen.add(mac)
+            out.append(mac)
+    return out[:8]
+
+
 def info():
     rel = os_release()
     pkg = package_manager()
@@ -289,6 +309,7 @@ def info():
         "version": VERSION,
         "agentSha": _file_sha256(__file__),
         "helperSha": _file_sha256(HELPER),
+        "macs": lan_macs(),
         "pkg": pkg,
         "updateCommand": update_command(pkg, om.get("omarchy")),
         "desktop": desktop_kind(),
@@ -463,7 +484,7 @@ def batteries(list_dir=os.listdir, read_file=read, root="/sys/class/power_supply
 
 def _nvidia_gpus(run):
     try:
-        out = run("nvidia-smi", ["--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits"])
+        out = run("nvidia-smi", ["--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw", "--format=csv,noheader,nounits"])
     except (OSError, subprocess.SubprocessError):
         return []
     gpus = []
@@ -476,7 +497,20 @@ def _nvidia_gpus(run):
         if index is None or not name:
             continue
         used = _num(parts[3])
-        gpus.append({"id": parts[2] or f"nvidia-{int(index)}", "index": int(index), "name": name, "used": None if used is None else int(round(used))})
+        mem_used = _num(parts[4]) if len(parts) > 4 else None
+        mem_total = _num(parts[5]) if len(parts) > 5 else None
+        temp = _num(parts[6]) if len(parts) > 6 else None
+        power = _num(parts[7]) if len(parts) > 7 else None
+        row = {"id": parts[2] or f"nvidia-{int(index)}", "index": int(index), "name": name, "used": None if used is None else int(round(used))}
+        if mem_used is not None:
+            row["vramUsed"] = int(round(mem_used * 1024 * 1024))
+        if mem_total is not None:
+            row["vramTotal"] = int(round(mem_total * 1024 * 1024))
+        if temp is not None:
+            row["temp"] = round(temp, 1)
+        if power is not None:
+            row["power"] = round(power, 1)
+        gpus.append(row)
     return gpus
 
 
@@ -581,7 +615,26 @@ def _drm_gpus(list_dir, read_file, skip_vendors=None, now=time.monotonic):
         name = product or _drm_fallback_name(vendor, card)
         if used is None and vendor != _VENDOR_INTEL:
             continue
-        gpus.append({"id": f"drm-{card}", "index": int(card[4:]), "name": name, "used": None if used is None else int(round(used))})
+        row = {"id": f"drm-{card}", "index": int(card[4:]), "name": name, "used": None if used is None else int(round(used))}
+        if vendor == _VENDOR_AMD:
+            vused = _num(read_file(f"/sys/class/drm/{card}/device/mem_info_vram_used"))
+            vtot = _num(read_file(f"/sys/class/drm/{card}/device/mem_info_vram_total"))
+            if vused is not None:
+                row["vramUsed"] = int(round(vused))
+            if vtot is not None:
+                row["vramTotal"] = int(round(vtot))
+            try:
+                hwmons = sorted(list_dir(f"/sys/class/drm/{card}/device/hwmon"))
+            except OSError:
+                hwmons = []
+            for hm in hwmons:
+                t_raw = _num(read_file(f"/sys/class/drm/{card}/device/hwmon/{hm}/temp1_input"))
+                if t_raw is not None and "temp" not in row:
+                    row["temp"] = round(t_raw / 1000.0, 1)
+                p_raw = _num(read_file(f"/sys/class/drm/{card}/device/hwmon/{hm}/power1_average"))
+                if p_raw is not None and "power" not in row:
+                    row["power"] = round(p_raw / 1e6, 1)
+        gpus.append(row)
     return gpus
 
 
@@ -670,10 +723,48 @@ def _check_updates(pkg):
         _updates["busy"] = False
 
 
+_net_last = None
+
+
+def net_io(read_file=read, now=time.monotonic):
+    """Aggregate bytes/sec across non-virtual interfaces from /proc/net/dev."""
+    global _net_last
+    raw = read_file("/proc/net/dev")
+    if not raw:
+        return None
+    skip_prefix = ("docker", "podman", "veth", "virbr", "br-", "cni")
+    rx_total, tx_total, found = 0, 0, False
+    for line in raw.splitlines()[2:]:
+        if ":" not in line:
+            continue
+        iface, rest = line.split(":", 1)
+        iface = iface.strip()
+        if iface == "lo" or iface.startswith(skip_prefix):
+            continue
+        cols = rest.split()
+        if len(cols) < 9:
+            continue
+        try:
+            rx_total += int(cols[0])
+            tx_total += int(cols[8])
+            found = True
+        except ValueError:
+            continue
+    if not found:
+        return None
+    t = now()
+    prev, _net_last = _net_last, (t, rx_total, tx_total)
+    if not prev or t <= prev[0]:
+        return {"rx": 0, "tx": 0}
+    dt = t - prev[0]
+    return {"rx": max(0, int(round((rx_total - prev[1]) / dt))), "tx": max(0, int(round((tx_total - prev[2]) / dt)))}
+
+
 DEFAULT_INTERVALS = {
     "cpu": 1,
     "memory": 1,
     "gpu": 1,
+    "net": 2,
     "temp": 5,
     "battery": 5,
     "disk": 30,
@@ -693,6 +784,7 @@ def empty_snapshot():
         "disks": [],
         "gpus": [],
         "batteries": [],
+        "net": None,
         "temp": None,
         "uptime": 0,
         "updates": None,
@@ -704,6 +796,7 @@ def default_reads():
         "cpu": cpu_percent,
         "memory": meminfo,
         "gpu": gpus,
+        "net": net_io,
         "temp": temperature,
         "battery": batteries,
         "disk": disks,
@@ -779,6 +872,7 @@ class Sampler:
             else:
                 self._snap["mem"] = v
         self._take("memory", mem, t)
+        self._take("net", lambda v: self._snap.update(net=v), t)
         self._take("temp", lambda v: self._snap.update(temp=v), t)
         self._take("battery", lambda v: self._snap.update(batteries=v), t)
         self._take("uptime", lambda v: self._snap.update(uptime=v), t)
@@ -1164,6 +1258,261 @@ class Shell(Channel):
         except OSError:
             pass
         # The pump thread closes the pty and reaps the shell when it sees this.
+
+
+SHELL_SCROLLBACK_MAX = 256 * 1024
+MAX_SHELL_SESSIONS = 6
+SESSION_NAME = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
+
+
+def _trim_scrollback(buf, limit=SHELL_SCROLLBACK_MAX):
+    """Keep at most `limit` bytes without cutting inside a UTF-8 sequence."""
+    if len(buf) <= limit:
+        return
+    del buf[: len(buf) - limit]
+    i = 0
+    while i < len(buf) and (buf[i] & 0xC0) == 0x80:
+        i += 1
+    if i:
+        del buf[:i]
+
+
+class ShellSession:
+    """A persistent PTY session that survives browser disconnect and replays scrollback on reattach."""
+
+    def __init__(self, name, cols, rows):
+        self.name = name
+        self.alive = True
+        self.cols = min(500, max(10, int(cols or 80)))
+        self.rows = min(300, max(4, int(rows or 24)))
+        self.scrollback = bytearray()
+        self._lock = threading.Lock()
+        self.attached = None
+        me = pwd.getpwuid(os.getuid())
+        shell = me.pw_shell if me.pw_shell and os.path.exists(me.pw_shell) else "/bin/bash"
+        pid, fd = pty.fork()
+        if pid == 0:
+            try:
+                signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+                signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
+                os.chdir(me.pw_dir)
+                env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", HOME=me.pw_dir, SHELL=shell, USER=me.pw_name, LANG=os.environ.get("LANG") or "C.UTF-8")
+                os.execvpe(shell, [shell, "-l"], env)
+            except BaseException:  # noqa: BLE001
+                pass
+            os._exit(127)
+        self.pid, self.fd = pid, fd
+        flags = fcntl.fcntl(self.fd, fcntl.F_GETFL)
+        fcntl.fcntl(self.fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        self._pending = bytearray()
+        self._write_cv = threading.Condition()
+        self.resize(self.cols, self.rows)
+        threading.Thread(target=self._pump, daemon=True).start()
+        threading.Thread(target=self._write_loop, daemon=True).start()
+
+    def resize(self, cols, rows):
+        try:
+            c = min(500, max(10, int(cols or 80)))
+            r = min(300, max(4, int(rows or 24)))
+            self.cols, self.rows = c, r
+            fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", r, c, 0, 0))
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def attach(self, channel, cols, rows, resumed):
+        with self._lock:
+            prev = self.attached
+            self.attached = channel
+            replay = bytes(self.scrollback)
+            cur_cols, cur_rows = self.cols, self.rows
+        if prev is not None and prev is not channel:
+            prev.closed = True
+            prev.conn.send({"op": "closed", "ch": prev.ch, "reason": "Opened elsewhere", "code": 1000})
+        channel.conn.send({"op": "attached", "ch": channel.ch, "session": self.name, "resumed": bool(resumed), "cols": cur_cols, "rows": cur_rows})
+        if replay:
+            channel.out(replay)
+        self.resize(cols, rows)
+
+    def detach(self, channel):
+        with self._lock:
+            if self.attached is channel:
+                self.attached = None
+
+    def write(self, data):
+        if not data or not self.alive:
+            return False
+        overflow = False
+        with self._write_cv:
+            if self.alive:
+                if len(self._pending) + len(data) > SHELL_IN_MAX:
+                    overflow = True
+                else:
+                    self._pending += data
+                    self._write_cv.notify()
+        if overflow:
+            self.kill("The terminal stopped reading")
+            return False
+        return True
+
+    def _pump(self):
+        try:
+            while self.alive:
+                try:
+                    r, _, _ = select.select([self.fd], [], [], 1)
+                    if r:
+                        data = os.read(self.fd, 65536)
+                        if not data:
+                            break
+                        with self._lock:
+                            self.scrollback += data
+                            _trim_scrollback(self.scrollback)
+                            target = self.attached
+                        if target is not None and not target.closed:
+                            target.out(data)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    break
+            self._finish("Shell ended")
+        finally:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self._reap()
+
+    def _write_loop(self):
+        while self.alive:
+            with self._write_cv:
+                if not self._pending and self.alive:
+                    self._write_cv.wait(0.2)
+                if not self.alive or not self._pending:
+                    continue
+                data = bytes(self._pending)
+            try:
+                n = os.write(self.fd, data)
+            except BlockingIOError:
+                try:
+                    select.select([], [self.fd], [], 0.2)
+                except (OSError, ValueError):
+                    self._finish("Shell ended")
+                    return
+                continue
+            except OSError:
+                self._finish("Shell ended")
+                return
+            if n:
+                with self._write_cv:
+                    del self._pending[:n]
+
+    def _finish(self, reason):
+        with self._lock:
+            if not self.alive:
+                return
+            self.alive = False
+            target = self.attached
+            self.attached = None
+        with self._write_cv:
+            self._write_cv.notify_all()
+        with _shell_sessions_lock:
+            if _shell_sessions.get(self.name) is self:
+                _shell_sessions.pop(self.name, None)
+        if target is not None and not target.closed:
+            target.closed = True
+            target.conn.send({"op": "closed", "ch": target.ch, "reason": reason, "code": 1000})
+
+    def _reap(self):
+        for _ in range(30):
+            try:
+                if os.waitpid(self.pid, os.WNOHANG)[0]:
+                    return
+            except OSError:
+                return
+            time.sleep(0.1)
+        try:
+            os.kill(self.pid, signal.SIGKILL)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+    def kill(self, reason="Shell ended"):
+        self._finish(reason)
+        try:
+            os.kill(self.pid, signal.SIGHUP)
+        except OSError:
+            pass
+
+
+class ShellChannel(Channel):
+    """Channel adapter attached to a persistent ShellSession (close detaches without SIGHUP)."""
+
+    def __init__(self, conn, ch, session):
+        super().__init__(conn, ch)
+        self.session = session
+
+    @property
+    def fd(self):
+        return self.session.fd
+
+    @property
+    def pid(self):
+        return self.session.pid
+
+    def resize(self, cols, rows):
+        self.session.resize(cols, rows)
+
+    def write(self, data):
+        if self.closed:
+            return
+        if not self.session.write(data):
+            self.closed = True
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.session.detach(self)
+
+
+_shell_sessions = {}
+_shell_sessions_lock = threading.Lock()
+
+
+def open_shell_session(conn, ch, cols, rows, name="main", fresh=False):
+    sname = name if isinstance(name, str) and SESSION_NAME.match(name) else "main"
+    old = None
+    with _shell_sessions_lock:
+        existing = _shell_sessions.get(sname)
+        if existing is not None and (fresh or not existing.alive):
+            old = _shell_sessions.pop(sname, None)
+            existing = None
+        if existing is None:
+            if len(_shell_sessions) >= MAX_SHELL_SESSIONS:
+                raise RuntimeError(f"At most {MAX_SHELL_SESSIONS} terminal sessions can run at once")
+            session = ShellSession(sname, cols, rows)
+            _shell_sessions[sname] = session
+            resumed = False
+        else:
+            session = existing
+            resumed = True
+    if old is not None:
+        old.kill("Started a new session")
+    channel = ShellChannel(conn, ch, session)
+    session.attach(channel, cols, rows, resumed)
+    return channel
+
+
+def kill_shell_session(name="*"):
+    with _shell_sessions_lock:
+        if name == "*":
+            targets = list(_shell_sessions.values())
+            _shell_sessions.clear()
+        else:
+            s = _shell_sessions.pop(name, None)
+            targets = [s] if s is not None else []
+    for s in targets:
+        s.kill("Shell ended")
+    return len(targets)
 
 
 class Screen(Channel):
@@ -1657,6 +2006,16 @@ def reboot(_args):
     return True
 
 
+def shutdown(_args):
+    run(["systemctl", "poweroff"], timeout=30)
+    return True
+
+
+def suspend(_args):
+    run(["systemctl", "suspend"], timeout=30)
+    return True
+
+
 def _exit_for_restart():
     os._exit(0)
 
@@ -1717,7 +2076,7 @@ def update_self(args, cfg, cafile=None, target_path=None, on_restart=None, fetch
     return {"sha256": actual, "restarting": True}
 
 
-ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "theme-set": theme_set, "reboot": reboot}
+ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "theme-set": theme_set, "reboot": reboot, "shutdown": shutdown, "suspend": suspend}
 
 HELPER = "/usr/local/libexec/omarchy-connector/helper.py"
 
@@ -2317,14 +2676,20 @@ class Connection:
                 self._open_vnc(ch)
                 return
             try:
-                self.channels[ch] = Shell(self, ch, msg.get("cols"), msg.get("rows"))
+                if msg.get("session"):
+                    self.channels[ch] = open_shell_session(self, ch, msg.get("cols"), msg.get("rows"), name=msg.get("session"), fresh=bool(msg.get("fresh")))
+                else:
+                    self.channels[ch] = Shell(self, ch, msg.get("cols"), msg.get("rows"))
             except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
                 self.send({"op": "closed", "ch": ch, "code": 1011, "reason": str(e)[:200]})
+        elif op == "kill":
+            if self.allowed.get("terminal"):
+                kill_shell_session(str(msg.get("session") or "*"))
         elif op == "resize":
             # The terminal's window changed size: the shell takes it (the kernel tells the programs
             # in it with SIGWINCH, so full-screen ones redraw). Older servers never send this.
             ch = self.channels.get(int(msg.get("ch", 0)))
-            if isinstance(ch, Shell):
+            if isinstance(ch, (Shell, ShellChannel)):
                 ch.resize(msg.get("cols"), msg.get("rows"))
         elif op == "ack":
             ch = self.channels.get(int(msg.get("ch", 0)))

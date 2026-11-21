@@ -62,5 +62,93 @@ class SelfUpdateTests(unittest.TestCase):
         self.assertIn("managing", sent[0]["error"].lower())
 
 
+class TelemetryPowerAndSessionsTests(unittest.TestCase):
+    def test_nvidia_gpus_parses_vram_temp_and_power(self):
+        sample = "0, NVIDIA GeForce RTX 4090, GPU-123, 55, 8192, 24576, 67, 210.5\n"
+        rows = agent._nvidia_gpus(lambda _cmd, _args: sample)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["used"], 55)
+        self.assertEqual(rows[0]["vramUsed"], 8192 * 1024 * 1024)
+        self.assertEqual(rows[0]["vramTotal"], 24576 * 1024 * 1024)
+        self.assertEqual(rows[0]["temp"], 67.0)
+        self.assertEqual(rows[0]["power"], 210.5)
+
+    def test_net_io_calculates_rates_and_skips_virtual(self):
+        agent._net_last = None
+        proc1 = (
+            "Inter-|   Receive\n"
+            " face |bytes packets errs drop fifo frame compressed multicast|bytes packets\n"
+            "    lo: 1000 10 0 0 0 0 0 0 1000 10\n"
+            "docker0: 5000 10 0 0 0 0 0 0 5000 10\n"
+            "  eth0: 10000 10 0 0 0 0 0 0 20000 10\n"
+        )
+        proc2 = (
+            "Inter-|   Receive\n"
+            " face |bytes packets errs drop fifo frame compressed multicast|bytes packets\n"
+            "    lo: 9000 10 0 0 0 0 0 0 9000 10\n"
+            "docker0: 99999 10 0 0 0 0 0 0 99999 10\n"
+            "  eth0: 12000 10 0 0 0 0 0 0 26000 10\n"
+        )
+        first = agent.net_io(read_file=lambda _p: proc1, now=lambda: 100.0)
+        self.assertEqual(first, {"rx": 0, "tx": 0})
+        second = agent.net_io(read_file=lambda _p: proc2, now=lambda: 102.0)
+        self.assertEqual(second, {"rx": 1000, "tx": 3000})
+
+    def test_lan_macs_filters_virtual_and_zero(self):
+        files = {
+            "/sys/class/net/lo/address": "00:00:00:00:00:00\n",
+            "/sys/class/net/docker0/address": "02:42:ac:11:00:01\n",
+            "/sys/class/net/enp3s0/address": "AA:BB:CC:DD:EE:FF\n",
+            "/sys/class/net/wlan0/address": "11:22:33:44:55:66\n",
+        }
+        macs = agent.lan_macs(list_dir=lambda _r: ["lo", "docker0", "enp3s0", "wlan0"], read_file=lambda p: files.get(p, ""))
+        self.assertEqual(macs, ["aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"])
+
+    def test_trim_scrollback_preserves_utf8_boundaries(self):
+        # 3-byte UTF-8 character '€' = b'\xe2\x82\xac'
+        buf = bytearray(b"a" * 5 + "€".encode("utf-8") + b"b" * 5)
+        agent._trim_scrollback(buf, limit=7)
+        # Should drop partial leading continuation bytes and decode cleanly as UTF-8.
+        decoded = buf.decode("utf-8")
+        self.assertTrue(decoded.endswith("bbbbb"))
+
+    def test_shell_session_resumes_and_replays_scrollback(self):
+        class FakeWS:
+            def __init__(self):
+                self.bin = bytearray()
+
+            def send_binary(self, payload):
+                self.bin += payload[4:]
+
+        conn = agent.Connection.__new__(agent.Connection)
+        conn.allowed = {"terminal": True}
+        conn.ws = FakeWS()
+        sent = []
+        conn.send = sent.append
+        try:
+            ch1 = agent.open_shell_session(conn, 1, 80, 24, name="test-resume", fresh=True)
+            self.assertTrue(any(m.get("op") == "attached" and m.get("resumed") is False for m in sent))
+            ch1.write(b"echo SWARM_PERSIST_OK\n")
+            deadline = __import__("time").time() + 5
+            while __import__("time").time() < deadline and b"SWARM_PERSIST_OK" not in conn.ws.bin:
+                __import__("time").sleep(0.05)
+            self.assertIn(b"SWARM_PERSIST_OK", conn.ws.bin)
+            # Detach ch1 (does not kill the shell).
+            ch1.close()
+            # Reattach on ch2: should report resumed=True and replay buffered output.
+            conn.ws = FakeWS()
+            sent.clear()
+            ch2 = agent.open_shell_session(conn, 2, 80, 24, name="test-resume", fresh=False)
+            self.assertTrue(any(m.get("op") == "attached" and m.get("resumed") is True for m in sent))
+            self.assertIn(b"SWARM_PERSIST_OK", conn.ws.bin)
+            ch2.close()
+        finally:
+            agent.kill_shell_session("test-resume")
+
+    def test_power_actions_registered(self):
+        self.assertIn("shutdown", agent.ACTIONS)
+        self.assertIn("suspend", agent.ACTIONS)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -121,6 +121,9 @@ export const ALLOWED = {
 	'appStore.refresh': 'mutation',
 	'omarchy.plugins': 'query',
 	'swarm.list': 'query',
+	'swarm.history': 'query',
+	'swarm.alerts': 'query',
+	'swarm.wake': 'mutation',
 	'swarm.pair': 'mutation',
 	'swarm.reauthorize': 'mutation',
 	'swarm.updateConnector': 'mutation',
@@ -1947,7 +1950,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					if (agentId && !/^[0-9a-f]{12}$/.test(agentId)) return refuse('400 Bad Request')
 					if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || cols > 500 || rows < 4 || rows > 300) return refuse('400 Bad Request')
 					target.pathname = '/terminal'
-					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
+					const session = url.searchParams.get('session') ?? ''
+					if (session && !/^[A-Za-z0-9._-]{1,40}$/.test(session)) return refuse('400 Bad Request')
+					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), ...(session ? {session} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
 				}
 				const needsOwner = route === 'terminal' || params.machineId === 'desktop' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
 				if (needsOwner) {

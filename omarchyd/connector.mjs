@@ -13,6 +13,7 @@
 // Wire format on the connector's WebSocket: JSON text messages for control, and binary frames
 // starting with a 4-byte channel number for terminal, desktop, and file bytes.
 import {X509Certificate, createHash, randomBytes, timingSafeEqual} from 'node:crypto'
+import dgram from 'node:dgram'
 import {readFile, stat} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -89,8 +90,21 @@ export function cleanMetrics(m = {}) {
 		? m.disks.slice(0, 12).map((d) => ({mount: clip(d?.mount, 200), total: num(d?.total), used: num(d?.used)})).filter((d) => d.total > 0)
 		: []
 	const gpus = Array.isArray(m.gpus)
-		? m.gpus.slice(0, 8).map((g) => ({id: clip(g?.id, 80), index: num(g?.index) ?? 0, name: clip(g?.name, 80), used: num(g?.used)})).filter((g) => g.id)
+		? m.gpus
+				.slice(0, 8)
+				.map((g) => ({
+					id: clip(g?.id, 80),
+					index: num(g?.index) ?? 0,
+					name: clip(g?.name, 80),
+					used: num(g?.used),
+					...(num(g?.vramUsed) !== null ? {vramUsed: num(g.vramUsed)} : {}),
+					...(num(g?.vramTotal) !== null ? {vramTotal: num(g.vramTotal)} : {}),
+					...(num(g?.temp) !== null ? {temp: num(g.temp)} : {}),
+					...(num(g?.power) !== null ? {power: num(g.power)} : {}),
+				}))
+				.filter((g) => g.id)
 		: []
+	const net = m.net && typeof m.net === 'object' ? {rx: num(m.net.rx), tx: num(m.net.tx)} : null
 	const batteries = Array.isArray(m.batteries)
 		? m.batteries
 				.slice(0, 4)
@@ -117,12 +131,57 @@ export function cleanMetrics(m = {}) {
 		disks,
 		gpus,
 		batteries,
+		net,
 		temp: num(m.temp),
 		uptime: num(m.uptime),
 		updates: num(m.updates),
 	}
 }
 const cleanSha = (v) => (/^[0-9a-f]{64}$/i.test(String(v ?? '')) ? String(v).toLowerCase() : '')
+const MAC_RE = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i
+
+export function buildWolPacket(mac) {
+	if (!MAC_RE.test(String(mac ?? ''))) throw new RpcError('BAD_REQUEST', 'Invalid MAC address')
+	const bytes = Buffer.from(mac.split(':').map((h) => parseInt(h, 16)))
+	const packet = Buffer.alloc(6 + 16 * 6, 0xff)
+	for (let i = 0; i < 16; i++) bytes.copy(packet, 6 + i * 6)
+	return packet
+}
+
+function subnetBroadcasts() {
+	const targets = new Set(['255.255.255.255'])
+	for (const [name, list] of Object.entries(os.networkInterfaces())) {
+		if (/^(docker|podman|veth|virbr|br-|cni|lo)/.test(name)) continue
+		for (const i of list ?? []) {
+			if (i.internal || i.family !== 'IPv4' || !i.netmask) continue
+			const ip = i.address.split('.').map(Number)
+			const mask = i.netmask.split('.').map(Number)
+			if (ip.length === 4 && mask.length === 4) targets.add(ip.map((b, idx) => (b | (~mask[idx] & 0xff)) & 0xff).join('.'))
+		}
+	}
+	return [...targets]
+}
+
+export async function sendWolPacket(mac) {
+	const packet = buildWolPacket(mac)
+	const sock = dgram.createSocket('udp4')
+	try {
+		await new Promise((resolve, reject) => {
+			sock.once('error', reject)
+			sock.bind(0, () => {
+				sock.setBroadcast(true)
+				resolve()
+			})
+		})
+		for (const host of subnetBroadcasts()) {
+			await new Promise((resolve) => sock.send(packet, 9, host, () => resolve()))
+		}
+	} finally {
+		try {
+			sock.close()
+		} catch {}
+	}
+}
 
 function cleanInfo(i = {}) {
 	return {
@@ -135,6 +194,7 @@ function cleanInfo(i = {}) {
 		version: clip(i.version, 16),
 		agentSha: cleanSha(i.agentSha),
 		helperSha: cleanSha(i.helperSha),
+		macs: Array.isArray(i.macs) ? i.macs.filter((m) => MAC_RE.test(String(m ?? ''))).map((m) => String(m).toLowerCase()).slice(0, 8) : [],
 		pkg: clip(i.pkg, 16),
 		updateCommand: clip(i.updateCommand, 160),
 		omarchy: !!i.omarchy,
@@ -157,7 +217,7 @@ function serverAddresses() {
 	return out
 }
 
-export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(new URL('../connector', import.meta.url)), plugins = null, source = async () => 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000}) {
+export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(new URL('../connector', import.meta.url)), plugins = null, source = async () => 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000, sendWol = sendWolPacket}) {
 	const file = join(dataDir, 'swarm.json')
 	let state = {agents: []}
 	// Set when swarm.json exists but cannot be used. Nothing may write it until the owner repairs it.
@@ -218,7 +278,34 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 	const save = () => (damaged ? Promise.reject(new RpcError('PRECONDITION_FAILED', 'swarm.json is damaged and was left unchanged.')) : writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600}))
 	const pairings = new Map() // sha(token) -> {abilities, expires}
 	const live = new Map() // agentId -> {ws, metrics, info, channels: Map, nextCh, calls: Map, nextCall}
+	const history = new Map() // agentId -> {fine: Point[], coarse: Point[]}
 	const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024})
+
+	function recordHistory(agentId, m) {
+		const root = m.disks?.find((d) => d.mount === '/') ?? m.disks?.[0]
+		const pt = {
+			at: m.at ?? now(),
+			cpu: m.cpu,
+			memPct: m.mem?.total > 0 && m.mem?.used != null ? Math.round((1000 * m.mem.used) / m.mem.total) / 10 : null,
+			diskPct: root?.total > 0 && root?.used != null ? Math.round((1000 * root.used) / root.total) / 10 : null,
+			gpuPct: m.gpus?.length ? (m.gpus.reduce((s, g) => s + (g.used ?? 0), 0) / m.gpus.length) : null,
+			temp: m.temp,
+			netRx: m.net?.rx ?? null,
+			netTx: m.net?.tx ?? null,
+		}
+		let ring = history.get(agentId)
+		if (!ring) {
+			ring = {fine: [], coarse: []}
+			history.set(agentId, ring)
+		}
+		ring.fine.push(pt)
+		if (ring.fine.length > 1200) ring.fine.splice(0, ring.fine.length - 1200)
+		const lastCoarse = ring.coarse[ring.coarse.length - 1]
+		if (!lastCoarse || pt.at - lastCoarse.at >= 60_000) {
+			ring.coarse.push(pt)
+			if (ring.coarse.length > 1440) ring.coarse.splice(0, ring.coarse.length - 1440)
+		}
+	}
 
 	const find = (id) => state.agents.find((a) => a.id === id)
 	const view = (a) => {
@@ -313,6 +400,60 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			} catch {}
 		}
 	}
+	async function getHistory(input = {}) {
+		await loaded
+		const a = find(String(input?.id ?? ''))
+		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		const range = input?.range === '24h' ? '24h' : '1h'
+		const ring = history.get(a.id)
+		const cutoff = now() - (range === '24h' ? 24 * 3600_000 : 3600_000)
+		const src = range === '24h' && (ring?.coarse?.length ?? 0) >= 2 ? ring.coarse : (ring?.fine ?? [])
+		return {id: a.id, range, points: src.filter((p) => p.at >= cutoff)}
+	}
+	async function getAlerts() {
+		await loaded
+		await refreshBundledShas()
+		const t = now()
+		const out = []
+		for (const a of state.agents) {
+			const v = view(a)
+			if (!v.online) {
+				if (a.lastSeen && t - a.lastSeen > 120_000) {
+					const mins = Math.max(2, Math.round((t - a.lastSeen) / 60_000))
+					out.push({id: `${a.id}:offline`, agentId: a.id, name: a.name, kind: 'offline', severity: 'warning', message: `${a.name} has been offline for ${mins >= 60 ? `${Math.round(mins / 60)}h` : `${mins}m`}`})
+				}
+				continue
+			}
+			const m = v.metrics
+			if (m) {
+				for (const d of m.disks ?? []) {
+					if (d.total > 0 && d.used != null) {
+						const p = Math.round((100 * d.used) / d.total)
+						if (p >= 90) out.push({id: `${a.id}:disk:${d.mount}`, agentId: a.id, name: a.name, kind: 'disk', severity: p >= 95 ? 'critical' : 'warning', message: `${a.name} disk ${d.mount} is ${p}% full`})
+					}
+				}
+				if (typeof m.temp === 'number' && m.temp >= 85) {
+					out.push({id: `${a.id}:temp`, agentId: a.id, name: a.name, kind: 'temp', severity: m.temp >= 95 ? 'critical' : 'warning', message: `${a.name} is running hot (${Math.round(m.temp)}°C)`})
+				}
+				if (typeof m.updates === 'number' && m.updates > 0) {
+					out.push({id: `${a.id}:updates`, agentId: a.id, name: a.name, kind: 'updates', severity: 'info', message: `${a.name} has ${m.updates} update${m.updates === 1 ? '' : 's'} waiting`})
+				}
+			}
+			if (v.updateAvailable) {
+				out.push({id: `${a.id}:connector`, agentId: a.id, name: a.name, kind: 'connector-update', severity: 'info', message: `Connector update available for ${a.name}`})
+			}
+		}
+		return out
+	}
+	async function wake(input = {}) {
+		await loaded
+		const a = find(String(input?.id ?? ''))
+		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		const mac = String(input?.mac || a.info?.macs?.[0] || '').trim().toLowerCase()
+		if (!mac || !MAC_RE.test(mac)) throw new RpcError('PRECONDITION_FAILED', `No network adapter address has been recorded for ${a.name} yet`)
+		await sendWol(mac)
+		return {ok: true, mac}
+	}
 	async function list() {
 		await loaded
 		await refreshBundledShas()
@@ -369,6 +510,11 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 				const ability = channel.kind === 'pty' ? 'terminal' : channel.kind === 'vnc' ? 'desktop' : channel.kind === 'file' ? 'files' : null
 				if (ability && !may(a, ability)) closeLiveChannel(l, ch, switchedOff(a.name, ability))
 			}
+			if (!may(a, 'terminal') && l.ws.readyState === l.ws.OPEN) {
+				try {
+					l.ws.send(JSON.stringify({op: 'kill', session: '*'}))
+				} catch {}
+			}
 		}
 		return true
 	}
@@ -409,6 +555,8 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		if (name === 'plugin-remove') return call(a.id, 'plugin-remove', {id: clip(input?.pluginId, 80)})
 		if (name === 'theme-set') return call(a.id, 'theme-set', {name: clip(input?.theme, 80)})
 		if (name === 'reboot') return call(a.id, 'reboot', {}, 30_000)
+		if (name === 'shutdown') return call(a.id, 'shutdown', {}, 30_000)
+		if (name === 'suspend') return call(a.id, 'suspend', {}, 30_000)
 		throw new RpcError('BAD_REQUEST', 'Unknown action')
 	}
 
@@ -547,9 +695,15 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 					} else if (msg.op === 'metrics') {
 						l.metrics = cleanMetrics(msg.metrics)
 						a.metrics = l.metrics
+						recordHistory(a.id, l.metrics)
 					} else if (msg.op === 'file' || msg.op === 'ack') {
 						const ch = l.channels.get(Number(msg.ch))
 						if (ch?.kind === 'file') ch.onControl(msg)
+					} else if (msg.op === 'attached') {
+						const ch = l.channels.get(Number(msg.ch))
+						if (ch && ch.kind === 'pty' && ch.ws.readyState === ch.ws.OPEN) {
+							ch.ws.send(JSON.stringify({type: 'session', resumed: !!msg.resumed, cols: num(msg.cols), rows: num(msg.rows)}))
+						}
 					} else if (msg.op === 'closed') {
 						const ch = l.channels.get(Number(msg.ch))
 						if (!ch) return
@@ -608,7 +762,12 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		if (!a || !l || !ability || !may(a, ability)) return closeSocket(browserWs, 1011, why)
 		const ch = ++l.nextCh
 		l.channels.set(ch, {ws: browserWs, kind})
-		l.ws.send(JSON.stringify({op: 'open', ch, kind, cols: opts.cols, rows: opts.rows}))
+		const openMsg = {op: 'open', ch, kind, cols: opts.cols, rows: opts.rows}
+		if (kind === 'pty') {
+			openMsg.session = typeof opts.session === 'string' && /^[A-Za-z0-9._-]{1,40}$/.test(opts.session) ? opts.session : 'main'
+			if (opts.fresh) openMsg.fresh = true
+		}
+		l.ws.send(JSON.stringify(openMsg))
 		const head = Buffer.alloc(4)
 		head.writeUInt32BE(ch)
 		browserWs.on('message', (d, isBinary) => {
@@ -903,6 +1062,9 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		backup,
 		procedures: {
 			'swarm.list': {kind: 'query', run: list},
+			'swarm.history': {kind: 'query', run: getHistory},
+			'swarm.alerts': {kind: 'query', run: getAlerts},
+			'swarm.wake': {kind: 'mutation', run: wake},
 			'swarm.pair': {kind: 'mutation', run: pair},
 			'swarm.reauthorize': {kind: 'mutation', run: reauthorize},
 			'swarm.updateConnector': {kind: 'mutation', run: updateConnector},
