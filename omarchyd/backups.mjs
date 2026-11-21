@@ -168,11 +168,13 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	const configFile = join(dir, 'config.json')
 	const secretFile = join(dir, 'secrets.json')
 	const historyFile = join(dir, 'history.json')
+	const pausedFile = join(dir, 'paused-apps.json')
 	const keyFile = join(dir, 'recovery-key')
 	const binDir = join(dir, 'bin')
 	let config = structuredClone(DEFAULTS)
 	let secrets = {} // {nasPassword}
 	let history = []
+	const pausedApps = new Set()
 	let job = null // {step, progress, startedAt}
 	let engine = null // {path, version}
 	let engineInstall = null
@@ -203,6 +205,15 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		// Runs that were going when the server stopped (the server's own and any computer's at once).
 		// (Not written back here: startup leaves the files as they are, and the next run saves it.)
 		for (const h of history) if (h && typeof h === 'object' && !h.endedAt) Object.assign(h, {endedAt: h.startedAt, ok: false, error: 'Stopped when the server restarted'})
+		const leftover = await readBackupFile(pausedFile, null, Array.isArray)
+		if (leftover) {
+			for (const id of leftover) {
+				if (typeof id === 'string' && APP_ID.test(id)) {
+					await apps?.resumeAfterBackup?.(id).catch((e) => console.error('[omarchyd] backups: resume paused app', id, e.message))
+				}
+			}
+			await removeAtomic(pausedFile)
+		}
 	})()
 
 	// Factory reset bumps this so a password write queued before the reset does not recreate the file.
@@ -235,6 +246,9 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	const saveConfig = () => writePrivate(configFile, () => JSON.stringify(config, null, '\t'))
 	const saveSecrets = () => writePrivate(secretFile, () => JSON.stringify(secrets))
 	const saveHistory = () => writePrivate(historyFile, () => JSON.stringify(history.slice(0, 40), null, '\t'))
+	const savePaused = () => (pausedApps.size ? writePrivate(pausedFile, () => JSON.stringify([...pausedApps])) : removeAtomic(pausedFile))
+	const markPaused = (id) => (pausedApps.add(id), savePaused())
+	const unmarkPaused = (id) => (pausedApps.delete(id), savePaused())
 	const hasKey = () => exists(keyFile)
 
 	// ---- the restic engine ----------------------------------------------------------------------
@@ -530,7 +544,10 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				for (const app of targets) {
 					if (!(await exists(app.dir))) continue
 					const pause = config.pauseApps && app.running
-					if (pause) await apps.pauseForBackup(app.id).catch(() => {})
+					if (pause) {
+						await markPaused(app.id)
+						await apps.pauseForBackup(app.id).catch(() => {})
+					}
 					try {
 						const r = await backupOne([app.dir], [`app:${app.id}`], [], `Saving ${app.name}`, n * span, span)
 						entry.items.push({kind: 'app', id: app.id, name: app.name, ok: true, added: r.added, ...(r.warning ? {warning: r.warning} : {})})
@@ -538,7 +555,10 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 					} catch (e) {
 						entry.items.push({kind: 'app', id: app.id, name: app.name, ok: false, error: e.message})
 					} finally {
-						if (pause) await apps.resumeAfterBackup(app.id).catch((e) => entry.items.push({kind: 'app', id: app.id, name: app.name, ok: false, error: `Didn’t start again: ${e.message}`}))
+						if (pause) {
+							await apps.resumeAfterBackup(app.id).catch((e) => entry.items.push({kind: 'app', id: app.id, name: app.name, ok: false, error: `Didn’t start again: ${e.message}`}))
+							await unmarkPaused(app.id).catch(() => {})
+						}
 					}
 					n++
 				}
@@ -1135,20 +1155,32 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			const restored = join(staging, app.dir)
 			if (!(await exists(restored))) throw new Error('The backup had no files for this app')
 			if (app.running) {
-				await apps.pauseForBackup(app.id)
-				stopped = true
+				await markPaused(app.id)
+				try {
+					await apps.pauseForBackup(app.id)
+					stopped = true
+				} catch (e) {
+					await unmarkPaused(app.id).catch(() => {})
+					throw e
+				}
 			}
 			await rename(app.dir, aside)
 			moved = true
 			await rename(restored, app.dir)
 			moved = false
-			if (stopped) await apps.resumeAfterBackup(app.id)
+			if (stopped) {
+				await apps.resumeAfterBackup(app.id)
+				await unmarkPaused(app.id).catch(() => {})
+			}
 			stopped = false
 			await wipe(aside)
 			return {restored: app.name, from: snap.time}
 		} catch (e) {
 			if (moved) await rename(aside, app.dir).catch(() => {})
-			if (stopped) await apps.resumeAfterBackup(app.id).catch(() => {})
+			if (stopped) {
+				await apps.resumeAfterBackup(app.id).catch(() => {})
+				await unmarkPaused(app.id).catch(() => {})
+			}
 			throw new RpcError('INTERNAL_SERVER_ERROR', `Couldn’t restore ${app.name}: ${e.message}`)
 		} finally {
 			await wipe(staging)

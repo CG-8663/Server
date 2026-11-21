@@ -607,3 +607,93 @@ test('#568 aborted uploads close their file streams without leaking descriptors'
 	assert.equal(res.status, 200)
 	assert.deepEqual(await readFile(join(repoDir, 'computers', 'pc1', 'data', objId.slice(0, 2), objId)), body)
 })
+
+test('#572 apps paused for a backup are recorded on disk and resumed on startup after a restart', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-572-'))
+	const nasRoot = join(root, 'nas')
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	const appDir = join(dataDir, 'apps', 'installed', 'immich')
+	await mkdir(appDir, {recursive: true})
+	await mkdir(home, {recursive: true})
+	await writeFile(join(appDir, 'db.sqlite'), 'data')
+
+	let backupStartedResolve
+	let releaseBackup
+	const backupStarted = new Promise((r) => (backupStartedResolve = r))
+	const backupGate = new Promise((r) => (releaseBackup = r))
+	let stallNext = false
+
+	const fakeNas = makeFakeNas(nasRoot)
+	const restic = makeFakeRestic({
+		async onBackup(args) {
+			if (stallNext && args.includes('app:immich')) {
+				backupStartedResolve()
+				await backupGate
+			}
+			return null
+		},
+	})
+	const events1 = []
+	const apps1 = {
+		backupTargets: async () => [{id: 'immich', name: 'Immich', dir: appDir, running: true}],
+		pauseForBackup: async (id) => events1.push(`pause ${id}`),
+		resumeAfterBackup: async (id) => events1.push(`resume ${id}`),
+	}
+	const run = async (cmd, args, opts) => (cmd === 'smbclient' ? fakeNas(args, opts) : restic.run(args, opts))
+	const b1 = createBackups({dataDir, home, serverDataDir: join(root, 'none'), files: fakeFiles(home), apps: apps1, resticPath: '/bin/restic', unshare: false, timers: false, run})
+	let b2
+	let b3
+	t.after(async () => {
+		releaseBackup?.()
+		b1.close()
+		b2?.close()
+		b3?.close()
+		await rm(root, {recursive: true, force: true})
+	})
+
+	const nas = {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u', password: 'p'}
+	await b1.procedures['backups.configure'].run({nas})
+
+	// Normal backup pauses, tracks on disk while running, resumes, and removes marker when done.
+	await (await b1.runBackup()).done
+	assert.deepEqual(events1, ['pause immich', 'resume immich'])
+	await assert.rejects(stat(join(dataDir, 'backups', 'paused-apps.json')))
+
+	// Stalled backup (simulates omarchyd killed before resumeAfterBackup runs).
+	stallNext = true
+	const run1 = await b1.runBackup()
+	await backupStarted
+	const marker = JSON.parse(await readFile(join(dataDir, 'backups', 'paused-apps.json'), 'utf8'))
+	assert.deepEqual(marker, ['immich'])
+
+	// Simulated restart while immich is still paused: new instance resumes immich on startup and clears marker.
+	const events2 = []
+	const apps2 = {
+		backupTargets: async () => [],
+		pauseForBackup: async (id) => events2.push(`pause ${id}`),
+		resumeAfterBackup: async (id) => events2.push(`resume ${id}`),
+	}
+	b2 = createBackups({dataDir, home, serverDataDir: join(root, 'none'), files: fakeFiles(home), apps: apps2, resticPath: '/bin/restic', unshare: false, timers: false, run})
+	await b2.ready
+	assert.deepEqual(events2, ['resume immich'])
+	await assert.rejects(stat(join(dataDir, 'backups', 'paused-apps.json')))
+
+	// Release first backup's stalled gate before closing, then verify a clean restart doesn't resume again.
+	releaseBackup()
+	await run1.done
+	const events3 = []
+	b3 = createBackups({
+		dataDir,
+		home,
+		serverDataDir: join(root, 'none'),
+		files: fakeFiles(home),
+		apps: {backupTargets: async () => [], resumeAfterBackup: async (id) => events3.push(`resume ${id}`)},
+		resticPath: '/bin/restic',
+		unshare: false,
+		timers: false,
+		run,
+	})
+	await b3.ready
+	assert.deepEqual(events3, [])
+})
