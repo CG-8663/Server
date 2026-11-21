@@ -63,6 +63,9 @@ const SLOW_RPC = new Set([
 	'hardware.raid.replaceDevice',
 	'hardware.raid.transitionToFailsafeRaidz',
 	'hardware.raid.scrub',
+	'clips.paste',
+	'clips.addFile',
+	'clips.fleetList',
 ])
 
 const RESTARTING_MESSAGE = 'Omarchy Server is restarting or not answering. Wait a moment and try again.'
@@ -335,7 +338,7 @@ export type RegistryApp = {
 }
 export type Registry = {meta: {id: string; name: string}; apps: RegistryApp[]}[]
 
-export type PortForward = {id: string; protocol: 'tcp' | 'udp'; hostPort: number; guestPort: number}
+export type PortForward = {id: string; protocol: 'tcp' | 'udp'; hostPort: number; guestPort: number; pending?: boolean}
 
 export type Machine = {
 	id: string

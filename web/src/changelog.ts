@@ -4,6 +4,36 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.55',
+		date: '2026-11-21',
+		title: 'Files, the desktop, and machines stay accurate',
+		fixed: [
+			'A swarm computer whose Storage is switched off says so. A computer that stops answering shows offline. It introduces itself once every five minutes.',
+			'A thumbnail that failed is not kept for an hour. A missing file answers 404. Signing in too many times tells you when you can try again.',
+			'Markdown and Word links stay in the document or open safely. Excel dates, times, and numbers match the workbook. Zip listings keep folders apart when they differ only by case, say when the list is cut off, and read older file names. Slide and PDF arrow keys leave a Rename box alone.',
+			'Removing a local app store brings the usual store back. One bad listing leaves the other apps visible. A failed start, stop, or restart shows the container’s message. A folder path has to stay inside your home, and the review stays open when that path is refused.',
+			'In Files, folders stay before files when you sort by size or date. Favorites show the file’s name and details. Search treats the same name as the same name. An upload refreshes Recents and keeps empty folders. Trash does not follow a link that points outside it.',
+			'Super+Escape closes the system menu, and the launcher keeps the selected row in view. A window moved onto its own workspace leaves the tiles alone. A slow wallpaper does not replace a newer one. Windows stay on screen, a dragged title bar stays above a bottom dock, and the clock updates on the minute. Removing a theme clears its spinner.',
+			'A port forward on a running machine waits for the next start, and a port another machine already uses leaves the form open. Name and start-order edits stay put when a switch is flipped. A task still running at restart is marked failed. Start rewrites the machine definition. Ejecting a disc reports a refusal. A live backup asks for room for two copies. Protection, start at boot, order, and notes do not ask for a restart.',
+		],
+	},
+	{
+		version: '0.9.54',
+		date: '2026-11-21',
+		title: 'Swarm computers, backups, and the desktop stay honest',
+		added: ['The assistant can sign in with ChatGPT.'],
+		fixed: [
+			'A stuck network disk or a terminal that is not reading no longer freezes a swarm computer. A missing tool or a command that runs too long names that command, and removing a pool leaves /etc/fstab with its trailing newline.',
+			'Storage no longer says to reinstall when a computer only reconnected. A computer that left the swarm stays in Backups, so you can restore it here or delete it. Skipped folders and unreadable files show as a warning, and older backups stay in the list.',
+			'A key check that finishes after you edit the key, model, or address is ignored. A provider that cannot be reached names the address, and a tool result that is too long is cut so the next message still works.',
+			'Desktop shortcuts act only while the desktop is in front. A screen that fails to load shows a message and a button. Uploading a photo keeps a theme change made during the upload and clears a solid colour. A hibernated computer can be started from its icon.',
+			'Move from Unraid keeps names it cannot copy on the list, keeps hard links when copying folders, and a stopped move says how many items came over.',
+			'An unplugged USB stick stays tied to its app and is left out until it is plugged back in.',
+			'Replacing or downloading a file no longer removes a parent folder or hides a file that is not a regular file. A wallpaper change that fails says why.',
+			'Machine snapshots and clones stay with the right disk. A machine name the hypervisor cannot hold is refused, and two machines cannot take the same name.',
+		],
+	},
+	{
 		version: '0.9.53',
 		date: '2026-11-20',
 		title: 'Fixes for the server, app windows and swarm computers',

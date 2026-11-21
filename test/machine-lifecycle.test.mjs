@@ -327,10 +327,12 @@ test('#311 a backup that fails before it starts does not leave the machine busy'
 	await mkdir(backups, {recursive: true})
 	await chmod(backups, 0o555)
 	const files = {resolve: async () => ({real: home})}
-	const {root, call} = await open({machines: [baseMachine(id, {disks: [disk('disk0', '/tmp/disk.qcow2')]})], run, files})
+	const {root, dataDir, call} = await open({machines: [baseMachine(id, {disks: [disk('disk0', '/tmp/disk.qcow2')]})], run, files})
 	try {
 		await assert.rejects(call('machines.backup', {id}))
 		await chmod(backups, 0o755)
+		// Start writes the domain before libvirt boots. This machine was never created on disk.
+		await mkdir(join(dataDir, 'machines', 'vms', id), {recursive: true})
 		let startError = null
 		try {
 			await call('machines.start', {id})
@@ -410,7 +412,8 @@ test('#666 a CD/DVD source is optional when the ISO is missing', async () => {
 	})
 	await mkdir(join(dataDir, 'machines', 'vms', id), {recursive: true})
 	try {
-		await call('machines.updateOptions', {id, onBoot: false})
+		// Notes still rewrite the domain. Starting at boot does not.
+		await call('machines.updateOptions', {id, notes: 'cd'})
 		const xml = await readFile(join(dataDir, 'machines', 'vms', id, 'domain.xml'), 'utf8')
 		const cdXml = /<disk type='file' device='cdrom'>[\s\S]*?<\/disk>/.exec(xml)[0]
 		const diskXml = /<disk type='file' device='disk'>[\s\S]*?<\/disk>/.exec(xml)[0]
