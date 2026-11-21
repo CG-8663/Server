@@ -30,7 +30,7 @@ import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
 import { actionsForItems, batchToast, offersDownload, selectionAfterQuery, type BatchKind } from "./filesRules";
-import { canSubmitNamePrompt, type FavoriteItem, favoritePath, filterUnsyncedPhotos, handleFileDragEnter, handleFileDragOver, handleFileDrop, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, UPLOAD_REFRESH_KEYS } from "../filesHelpers";
+import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, type FavoriteItem, favoritePath, filterUnsyncedPhotos, handleFileDragEnter, handleFileDragOver, handleFileDrop, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, UPLOAD_REFRESH_KEYS, type UploadBatch } from "../filesHelpers";
 
 const FileViewer = lazy(() =>
   import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
@@ -279,36 +279,46 @@ function uploadOne(
 function useUploads(onDone: () => void) {
   const [uploads, setUploads] = useState<Upload[]>([]);
   const toast = useToast();
-  const start = async (input: FileList | File[] | UploadItem[], dir: string) => {
-    const items: UploadItem[] = Array.from(input as ArrayLike<File | UploadItem>).map((x) =>
+  const start = async (input: FileList | File[] | UploadItem[] | UploadBatch, dir: string) => {
+    const raw = "dirs" in input ? input.files : input;
+    const extraDirs = "dirs" in input ? input.dirs : [];
+    const items: UploadItem[] = Array.from(raw as ArrayLike<File | UploadItem>).map((x) =>
       x instanceof File
         ? { file: x, rel: (x as File & { webkitRelativePath?: string }).webkitRelativePath || undefined }
         : x,
     );
-    if (!items.length) return;
+    const dirs = collectUploadDirs(items, extraDirs);
+    if (!items.length && !dirs.length) return;
     haptic(8);
     const ids = items.map(() => Math.random());
-    setUploads((u) => [
-      ...u,
-      ...items.map((it, i) => ({
-        id: ids[i],
-        name: it.rel ?? it.file.name,
-        loaded: 0,
-        total: it.file.size,
-        state: "uploading" as const,
-      })),
-    ]);
+    if (items.length) {
+      setUploads((u) => [
+        ...u,
+        ...items.map((it, i) => ({
+          id: ids[i],
+          name: it.rel ?? it.file.name,
+          loaded: 0,
+          total: it.file.size,
+          state: "uploading" as const,
+        })),
+      ]);
+    }
     // Folder uploads: make the folders first (parents before children). One that already
     // exists is fine: files land inside it, and name clashes keep both copies.
-    const dirs = [
-      ...new Set(
-        items.flatMap((it) => {
-          const parts = (it.rel ?? "").split("/").slice(0, -1);
-          return parts.map((_, i) => parts.slice(0, i + 1).join("/"));
-        }),
-      ),
-    ].sort((x, y) => x.split("/").length - y.split("/").length);
-    for (const d of dirs) await mutate("files.createDirectory", { path: `${dir}/${d}` }).catch(() => {});
+    let dirFailed = false;
+    for (const d of dirs) {
+      await mutate("files.createDirectory", { path: `${dir}/${d}` }).catch((e) => {
+        const msg = (e as Error).message;
+        if (msg === "[already-exists]" || msg === "[destination-already-exists]") return;
+        if (!dirFailed) toast(`${d}: ${nice(msg)}`, true);
+        dirFailed = true;
+      });
+    }
+    if (!items.length) {
+      onDone();
+      if (!dirFailed) toast(dirs.length === 1 ? "Folder created" : `${dirs.length} folders created`);
+      return;
+    }
     // Three at a time, so a folder of hundreds of files doesn't swamp the connection.
     let next = 0;
     let failed = 0;
@@ -338,28 +348,12 @@ function useUploads(onDone: () => void) {
 }
 
 // Files and folders dropped from the computer. Folders are walked so their structure is kept.
-async function droppedItems(dt: DataTransfer): Promise<UploadItem[]> {
+async function droppedItems(dt: DataTransfer): Promise<UploadBatch> {
   const entries = [...dt.items]
     .map((i) => (i.kind === "file" ? (i as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntry | null }).webkitGetAsEntry?.() : null))
     .filter(Boolean) as FileSystemEntry[];
-  if (!entries.length) return [...dt.files].map((file) => ({ file }));
-  const out: UploadItem[] = [];
-  const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
-    if (entry.isFile) {
-      const file = await new Promise<File>((res, rej) => (entry as FileSystemFileEntry).file(res, rej));
-      out.push({ file, rel: prefix ? `${prefix}/${file.name}` : undefined });
-    } else if (entry.isDirectory) {
-      const reader = (entry as FileSystemDirectoryEntry).createReader();
-      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
-      for (;;) {
-        const batch = await new Promise<FileSystemEntry[]>((res, rej) => reader.readEntries(res, rej));
-        if (!batch.length) break;
-        for (const child of batch) await walk(child, path);
-      }
-    }
-  };
-  for (const e of entries) await walk(e, "");
-  return out;
+  if (!entries.length) return { files: [...dt.files].map((file) => ({ file })), dirs: [] };
+  return readDroppedEntries(entries);
 }
 
 // ---- screen -----------------------------------------------------------------------------
@@ -481,7 +475,20 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
   const canUpload = !!uploadDir;
   const finePointer = typeof matchMedia !== "undefined" && matchMedia("(pointer: fine)").matches;
   // iPhone/iPad Safari can't pick a whole folder; computers can.
-  const canPickFolder = finePointer && "webkitdirectory" in HTMLInputElement.prototype;
+  const canPickFolder = finePointer && ("showDirectoryPicker" in window || "webkitdirectory" in HTMLInputElement.prototype);
+  const pickFolder = async () => {
+    if (!uploadDir) return;
+    const win = window as Window & { showDirectoryPicker?: () => Promise<DirectoryHandleLike> };
+    if (!win.showDirectoryPicker) return folderInput.current?.click();
+    try {
+      const handle = await pickDirectoryFromWindow(win);
+      if (!handle) return;
+      const batch = await readDirectoryHandle(handle);
+      if (batch.files.length || batch.dirs.length) upload(batch, uploadDir);
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") toast((e as Error).message, true);
+    }
+  };
   const toggle = (f: FileEntry) => {
     haptic(6);
     setSelected((s) => {
@@ -844,8 +851,8 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
     dragDepth.current = 0;
     setDropping(false);
     if (!allowed || !uploadDir) return;
-    const items = await droppedItems(e.dataTransfer).catch(() => [] as UploadItem[]);
-    if (items.length) upload(items, uploadDir);
+    const batch = await droppedItems(e.dataTransfer).catch((): UploadBatch => ({ files: [], dirs: [] }));
+    if (batch.files.length || batch.dirs.length) upload(batch, uploadDir);
   };
 
   return (
@@ -908,7 +915,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
             {path === null ? "Upload to Home" : "Upload"}
           </button>
           {canPickFolder && (
-            <button className="btn" onClick={() => folderInput.current?.click()}>
+            <button className="btn" onClick={pickFolder}>
               <Icon name="folder-share" size={18} />
               Upload folder
             </button>
