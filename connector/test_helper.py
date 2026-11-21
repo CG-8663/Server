@@ -951,6 +951,64 @@ class OldLsblk(unittest.TestCase):
         self.assertTrue(any("MOUNTPOINT," in " ".join(x) or x[-1].endswith("MOUNTPOINT,RM,HOTPLUG") for x in fake.log))
 
 
+class HelperFailures(unittest.TestCase):
+    def test_missing_command_and_timeout_name_the_tool(self):
+        import subprocess
+
+        import helper
+        from helper import HelperError, default_run
+
+        with self.assertRaises(HelperError) as missing:
+            default_run("mkfs.exfat-is-not-installed", ["/dev/null"])
+        self.assertEqual(str(missing.exception), "mkfs.exfat-is-not-installed is not installed")
+
+        real_run = subprocess.run
+
+        def short(argv, **kw):
+            kw["timeout"] = 0.05
+            return real_run(argv, **kw)
+
+        helper.subprocess.run = short
+        try:
+            with self.assertRaises(HelperError) as late:
+                default_run("sleep", ["5"])
+        finally:
+            helper.subprocess.run = real_run
+        self.assertEqual(str(late.exception), "sleep took too long")
+
+    def test_pool_forget_and_zfs_export_keep_fstab_newline(self):
+        import helper
+        from helper import HelperError, handle
+
+        fstab = "UUID=aaaa / ext4 defaults 0 1\nUUID=bbbb-0000-0000-0000-000000000000 /home/u/Pools/data btrfs defaults 0 0 # omarchy-connector pool data\n"
+        files = {"/etc/fstab": fstab}
+        user = {"name": "u", "uid": 1000, "gid": 1000, "home": "/home/u"}
+
+        def run(cmd, args):
+            if cmd == "umount":
+                raise HelperError("umount: not mounted")
+            return ""
+
+        self.assertEqual(handle("pool-forget", ["data"], run=run, user=user, realpath=lambda p: p, files=files), "ok")
+        self.assertEqual(files["/etc/fstab"], "UUID=aaaa / ext4 defaults 0 1\n")
+
+        files["/etc/fstab"] = "UUID=aaaa / ext4 defaults 0 1\n/tank /home/u/Pools/tank none bind 0 0 # omarchy-connector zfs tank\n"
+
+        def zrun(cmd, args):
+            if cmd == "zpool" and args[:1] == ["list"]:
+                return "tank\n"
+            if cmd == "umount":
+                raise HelperError("umount: not mounted")
+            return ""
+
+        self.assertEqual(handle("zfs-export", ["tank"], run=zrun, user=user, files=files), "ok")
+        self.assertEqual(files["/etc/fstab"], "UUID=aaaa / ext4 defaults 0 1\n")
+
+        files["/etc/fstab"] = "UUID=bbbb-0000-0000-0000-000000000000 /home/u/Pools/data btrfs defaults 0 0 # omarchy-connector pool data\n"
+        self.assertEqual(handle("pool-forget", ["data"], run=run, user=user, files=files), "ok")
+        self.assertEqual(files["/etc/fstab"], "")
+
+
 class Hdparm(unittest.TestCase):
     # #119: udev needs the real path.
     def test_path_exists_or_sbin(self):

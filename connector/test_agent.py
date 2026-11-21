@@ -1,11 +1,14 @@
 import io
 import json
 import os
+import queue
 import re
 import signal
 import socket
+import struct
 import sys
 import tempfile
+import termios
 import threading
 import time
 import http.client
@@ -484,6 +487,267 @@ class EnrollErrors(unittest.TestCase):
             with self.assertRaises(SystemExit) as ctx:
                 agent.enroll("https://127.0.0.1:7780", "tok", {})
             self.assertIn("Couldn't reach", str(ctx.exception))
+
+
+class StuckDisk(unittest.TestCase):
+    # A hard NFS mount must not freeze disks() or the other sampler readings.
+    def test_stuck_share_is_skipped_and_other_mounts_remain(self):
+        mounts = "/dev/sda1 / ext4 rw 0 0\nsrv:/export /mnt/nas nfs4 rw 0 0\n//files/share /mnt/share cifs rw 0 0\n"
+        release = threading.Event()
+
+        def statvfs(path):
+            if path == "/mnt/nas":
+                release.wait(15)
+                raise OSError("stale nfs")
+            return mock.Mock(f_blocks=100, f_frsize=4096, f_bavail=40, f_bfree=40)
+
+        holder = {}
+
+        def call():
+            holder["rows"] = agent.disks()
+
+        with mock.patch.object(agent, "read", lambda p, *a: mounts if p == "/proc/mounts" else ""), mock.patch("os.statvfs", statvfs):
+            th = threading.Thread(target=call)
+            th.start()
+            try:
+                th.join(2)
+                self.assertFalse(th.is_alive(), "disks() blocked on the stuck nfs share")
+                found = [d["mount"] for d in holder["rows"]]
+            finally:
+                release.set()
+                th.join(2)
+        self.assertIn("/", found)
+        self.assertIn("/mnt/share", found)
+        self.assertNotIn("/mnt/nas", found)
+
+    def test_cold_get_does_not_run_on_the_caller(self):
+        mounts = "/dev/sda1 / ext4 rw 0 0\nsrv:/export /mnt/nas nfs4 rw 0 0\n//files/share /mnt/share cifs rw 0 0\n"
+        release = threading.Event()
+        counts = {"memory": 0, "uptime": 0}
+
+        def statvfs(path):
+            if path == "/mnt/nas":
+                release.wait(15)
+                raise OSError("stale nfs")
+            return mock.Mock(f_blocks=100, f_frsize=4096, f_bavail=40, f_bfree=40)
+
+        def memory():
+            counts["memory"] += 1
+            return {"total": 10, "used": 4}, {"total": 0, "used": 0}
+
+        def uptime():
+            counts["uptime"] += 1
+            return 42.0
+
+        reads = {"cpu": lambda: 1.0, "memory": memory, "gpu": lambda: [], "temp": lambda: None, "battery": lambda: [], "disk": agent.disks, "uptime": uptime}
+        sampler = agent.Sampler(read=reads, intervals={"cpu": 60, "memory": 0.2, "gpu": 60, "temp": 60, "battery": 60, "disk": 30, "uptime": 0.2})
+        holder = {}
+
+        def call():
+            t0 = time.monotonic()
+            holder["snap"] = sampler.get()
+            holder["dt"] = time.monotonic() - t0
+
+        with mock.patch.object(agent, "read", lambda p, *a: mounts if p == "/proc/mounts" else "1 0"), mock.patch("os.statvfs", statvfs):
+            th = threading.Thread(target=call)
+            th.start()
+            try:
+                th.join(0.5)
+                self.assertFalse(th.is_alive(), "cold Sampler.get() blocked on the caller")
+                self.assertLess(holder["dt"], 0.5)
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    snap = sampler.peek()
+                    if counts["uptime"] >= 1 and counts["memory"] >= 2 and any(d["mount"] == "/" for d in snap["disks"]):
+                        break
+                    time.sleep(0.05)
+                else:
+                    snap = sampler.peek()
+                disks = [d["mount"] for d in snap["disks"]]
+                self.assertGreaterEqual(counts["uptime"], 1, snap)
+                self.assertGreaterEqual(counts["memory"], 2, counts)
+                self.assertIn("/", disks)
+                self.assertIn("/mnt/share", disks)
+                self.assertNotIn("/mnt/nas", disks)
+                self.assertEqual(snap["uptime"], 42.0)
+            finally:
+                release.set()
+                sampler.stop()
+                th.join(2)
+
+
+class _ScriptedWS:
+    def __init__(self):
+        self.frames = queue.Queue()
+        self.sent = []
+
+    def push(self, frame):
+        self.frames.put(frame)
+
+    def recv(self):
+        frame = self.frames.get()
+        if frame is None:
+            raise ConnectionError("stopped")
+        return frame
+
+    def send_text(self, s):
+        self.sent.append(s)
+
+    def send_binary(self, b):
+        self.sent.append(b)
+
+    def close(self):
+        self.push(None)
+
+
+def _results(ws):
+    out = []
+    for item in ws.sent:
+        if isinstance(item, str):
+            try:
+                out.append(json.loads(item))
+            except ValueError:
+                pass
+    return out
+
+
+class TerminalStall(unittest.TestCase):
+    # Input for a terminal that is not reading must not block the receive loop.
+    def test_receive_loop_does_not_wait_on_a_stuck_pty(self):
+        ws = _ScriptedWS()
+        conn = agent.Connection({"server": "https://example.test", "id": "i", "key": "k", "abilities": {"terminal": True, "manage": True}})
+        agent._process_sampler = None
+        def drive():
+            try:
+                conn.run()
+            except ConnectionError:
+                pass
+
+        thread = threading.Thread(target=drive, daemon=True)
+        try:
+            with mock.patch.object(agent, "WS", lambda *a, **k: ws):
+                thread.start()
+                ws.push((1, json.dumps({"op": "open", "ch": 1, "kind": "pty", "cols": 80, "rows": 24}).encode()))
+                deadline = time.time() + 5
+                while time.time() < deadline and 1 not in conn.channels:
+                    time.sleep(0.02)
+                self.assertIn(1, conn.channels, "shell never opened")
+                shell = conn.channels[1]
+                os.write(shell.fd, b"stty raw -echo; exec sleep 30\n")
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    try:
+                        attrs = termios.tcgetattr(shell.fd)
+                        with open("/proc/%s/comm" % shell.pid) as f:
+                            comm = f.read().strip()
+                    except OSError:
+                        attrs, comm = None, ""
+                    if attrs is not None and not (attrs[3] & termios.ICANON) and comm == "sleep":
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("shell never reached raw-mode sleep")
+                t0 = time.monotonic()
+                ws.push((2, struct.pack(">I", 1) + (b"x" * (1 << 20))))
+                ws.push((1, json.dumps({"op": "call", "id": "abc", "name": "not-a-thing"}).encode()))
+                seen = None
+                while time.monotonic() - t0 < 1:
+                    for msg in _results(ws):
+                        if msg.get("op") == "result" and msg.get("id") == "abc":
+                            seen = msg
+                            break
+                    if seen:
+                        break
+                    time.sleep(0.02)
+                self.assertIsNotNone(seen, "receive loop did not handle the next frame within 1 s")
+                self.assertLess(time.monotonic() - t0, 1)
+                self.assertFalse(shell.closed)
+                shell.write(b"y" * (agent.SHELL_IN_MAX + 1))
+                self.assertTrue(shell.closed)
+        finally:
+            shell = conn.channels.get(1)
+            if shell is not None and not shell.closed:
+                shell.close()
+            ws.push(None)
+            thread.join(3)
+            sampler = getattr(conn, "sampler", None)
+            if sampler is not None:
+                sampler.stop()
+            agent._process_sampler = None
+
+    def test_vnc_open_does_not_block_the_receive_loop(self):
+        ws = _ScriptedWS()
+        held = threading.Event()
+        conn = agent.Connection({"server": "https://example.test", "id": "i", "key": "k", "abilities": {"desktop": True, "manage": True}})
+        agent._process_sampler = None
+
+        def slow_vnc():
+            held.wait(5)
+            raise RuntimeError("screen sharing isn’t available")
+
+        def drive():
+            try:
+                conn.run()
+            except ConnectionError:
+                pass
+
+        thread = threading.Thread(target=drive, daemon=True)
+        try:
+            with mock.patch.object(agent, "WS", lambda *a, **k: ws), mock.patch.object(agent, "vnc_start", slow_vnc):
+                thread.start()
+                deadline = time.time() + 5
+                while time.time() < deadline and not any(isinstance(s, str) and '"hello"' in s for s in ws.sent):
+                    time.sleep(0.02)
+                t0 = time.monotonic()
+                ws.push((1, json.dumps({"op": "open", "ch": 3, "kind": "vnc"}).encode()))
+                ws.push((1, json.dumps({"op": "call", "id": "v", "name": "not-a-thing"}).encode()))
+                seen = None
+                while time.monotonic() - t0 < 0.4:
+                    for msg in _results(ws):
+                        if msg.get("op") == "result" and msg.get("id") == "v":
+                            seen = msg
+                            break
+                    if seen:
+                        break
+                    time.sleep(0.02)
+                self.assertIsNotNone(seen, "receive loop waited on vnc_start")
+                self.assertLess(time.monotonic() - t0, 0.4)
+        finally:
+            held.set()
+            ws.push(None)
+            thread.join(3)
+            sampler = getattr(conn, "sampler", None)
+            if sampler is not None:
+                sampler.stop()
+            agent._process_sampler = None
+
+
+class ResticErrors(unittest.TestCase):
+    # Stderr must be drained before a failed restic is reported.
+    def test_fatal_stderr_is_kept_when_the_reader_is_late(self):
+        class HoldThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+                self.daemon = daemon
+                self._ran = False
+
+            def start(self):
+                return None
+
+            def join(self, timeout=None):
+                if not self._ran:
+                    self._ran = True
+                    self._target()
+
+        with tempfile.TemporaryDirectory() as d:
+            script = os.path.join(d, "restic")
+            with open(script, "w") as f:
+                f.write("#!/bin/sh\nprintf '%s\\n' '{\"message_type\":\"summary\",\"data_added\":1}'\nprintf '%s\\n' 'Fatal: unable to open repository: wrong password' >&2\nexit 1\n")
+            os.chmod(script, 0o755)
+            with mock.patch.object(agent, "restic_path", lambda: script), mock.patch.object(agent.threading, "Thread", HoldThread):
+                with self.assertRaises(RuntimeError) as ctx:
+                    agent._run_restic(mock.Mock(), "1", ["backup"], "repo", "secret", "Backing up")
+        self.assertEqual(str(ctx.exception), "Fatal: unable to open repository: wrong password")
 
 
 if __name__ == "__main__":
