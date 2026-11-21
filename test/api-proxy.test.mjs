@@ -1,7 +1,7 @@
 // The published job API refuses anonymous calls, and streams a response without waiting for the end.
 import assert from 'node:assert/strict'
 import {execFileSync, spawn} from 'node:child_process'
-import {mkdtemp, readFile, rm, writeFile, chmod} from 'node:fs/promises'
+import {mkdtemp, mkdir, readFile, rm, writeFile, chmod} from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
@@ -35,7 +35,7 @@ function call(port, headers) {
 	})
 }
 
-test('the job API requires its token, and the web port also accepts the sign-in gateway', async () => {
+test('the job API requires its token, and the web port also accepts the sign-in gateway', async (t) => {
 	const root = await mkdtemp(join(os.tmpdir(), 'omarchy-api-proxy-'))
 	const fake = join(root, 'app')
 	const report = join(root, 'bind')
@@ -46,6 +46,10 @@ test('the job API requires its token, and the web port also accepts the sign-in 
 		execFileSync('gcc', ['-shared', '-fPIC', '-o', shim, shimSrc, '-ldl'], {stdio: 'ignore'})
 	} catch {
 		gcc = false
+	}
+	if (!gcc) {
+		await rm(root, {recursive: true, force: true})
+		t.skip('gcc is required to build the localhost shim')
 	}
 	await writeFile(fake, `#!/usr/bin/env python3
 import os, socket, time
@@ -76,7 +80,7 @@ while True:
 	await chmod(fake, 0o755)
 	const [web, api, child] = [await freePort(), await freePort(), await freePort()]
 	const proc = spawn('python3', [proxy], {
-		env: {...process.env, WEB_PORT: String(web), API_PORT: String(api), CHILD_PORT: String(child), OMARCHY_API_TOKEN: 'job-token', APP_GATEWAY_KEY: 'gate-key', OMARCHY_APP: fake, OMARCHY_BIND_SHIM: gcc ? shim : join(root, 'missing.so'), BIND_REPORT: report, HIT_FILE: hits},
+		env: {...process.env, WEB_PORT: String(web), API_PORT: String(api), CHILD_PORT: String(child), OMARCHY_API_TOKEN: 'job-token', APP_GATEWAY_KEY: 'gate-key', OMARCHY_APP: fake, OMARCHY_BIND_SHIM: shim, BIND_REPORT: report, HIT_FILE: hits},
 		stdio: ['ignore', 'pipe', 'pipe'],
 	})
 	let log = ''
@@ -90,7 +94,7 @@ while True:
 			await new Promise((r) => setTimeout(r, 20))
 		}
 		const bound = (await readFile(report, 'utf8')).trim()
-		if (gcc) assert.equal(bound, '127.0.0.1')
+		assert.equal(bound, '127.0.0.1')
 		const refused = await call(api, {})
 		assert.equal(refused.status, 401)
 		assert.equal(await readFile(hits, 'utf8').catch(() => ''), '')
@@ -125,4 +129,82 @@ while True:
 		await new Promise((resolve) => proc.once('exit', resolve))
 		await rm(root, {recursive: true, force: true})
 	}
+})
+
+// A published binary that cannot load the shim must not open its own port.
+async function expectRefused(prepare, needle) {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchy-api-proxy-refuse-'))
+	const fake = join(root, 'app')
+	const report = join(root, 'bind')
+	const extra = await prepare(root, fake)
+	await chmod(fake, 0o755)
+	const [web, api, child] = [await freePort(), await freePort(), await freePort()]
+	const proc = spawn('/usr/bin/python3', [proxy], {
+		env: {...process.env, WEB_PORT: String(web), API_PORT: String(api), CHILD_PORT: String(child), OMARCHY_API_TOKEN: 'job-token', APP_GATEWAY_KEY: 'gate-key', OMARCHY_APP: fake, BIND_REPORT: report, ...extra},
+		stdio: ['ignore', 'pipe', 'pipe'],
+	})
+	let log = ''
+	proc.stdout.on('data', (chunk) => { log += chunk })
+	proc.stderr.on('data', (chunk) => { log += chunk })
+	try {
+		const code = await new Promise((resolve) => {
+			const timer = setTimeout(() => resolve(null), 5000)
+			proc.once('exit', (status) => {
+				clearTimeout(timer)
+				resolve(status)
+			})
+		})
+		if (code === null) {
+			proc.kill('SIGKILL')
+			await new Promise((resolve) => proc.once('exit', resolve))
+			assert.fail(`proxy kept running: ${log}`)
+		}
+		assert.notEqual(code, 0)
+		assert.match(log, needle)
+		assert.equal(log.includes('job API on'), false)
+		assert.equal(await readFile(report, 'utf8').catch(() => ''), '')
+	} finally {
+		if (proc.exitCode === null) proc.kill('SIGKILL')
+		await rm(root, {recursive: true, force: true})
+	}
+}
+
+const script = `#!/usr/bin/env python3
+import os, socket
+s = socket.socket()
+s.bind(("0.0.0.0", int(os.environ["PORT"])))
+open(os.environ["BIND_REPORT"], "w").write(s.getsockname()[0] + "\\n")
+s.listen(1)
+`
+
+test('a missing localhost shim does not start the app', async () => {
+	await expectRefused(async (root, fake) => {
+		await writeFile(fake, script)
+		return {OMARCHY_BIND_SHIM: join(root, 'missing.so')}
+	}, /localhost shim is missing/)
+})
+
+test('a static program does not start', async () => {
+	await expectRefused(async (root, fake) => {
+		await writeFile(fake, script)
+		const bin = join(root, 'bin')
+		await mkdir(bin)
+		const ldd = join(bin, 'ldd')
+		await writeFile(ldd, '#!/bin/sh\necho "not a dynamic executable" >&2\nexit 1\n')
+		await chmod(ldd, 0o755)
+		const shim = join(root, 'shim.so')
+		await writeFile(shim, '')
+		return {OMARCHY_BIND_SHIM: shim, PATH: `${bin}:${process.env.PATH}`}
+	}, /is static/)
+})
+
+test('a program whose dynamic linker cannot be checked does not start', async () => {
+	await expectRefused(async (root, fake) => {
+		await writeFile(fake, '#!/usr/bin/python3\nimport os, socket\ns = socket.socket()\ns.bind(("0.0.0.0", int(os.environ["PORT"])))\nopen(os.environ["BIND_REPORT"], "w").write("open\\n")\ns.listen(1)\n')
+		const bin = join(root, 'bin')
+		await mkdir(bin)
+		const shim = join(root, 'shim.so')
+		await writeFile(shim, '')
+		return {OMARCHY_BIND_SHIM: shim, PATH: bin}
+	}, /can load the localhost shim/)
 })

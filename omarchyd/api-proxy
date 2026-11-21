@@ -4,10 +4,13 @@
 The app is started on localhost. Two listeners sit in front of it:
 the web port accepts Omarchy Server's sign-in gateway or a bearer token,
 and the API port accepts only the bearer token. That API port is the one
-published on the LAN and on the shared network.
+published on the LAN and on the shared network. A missing localhost shim,
+a static program, or a check that cannot prove the shim will load refuses
+to start, so the app's own port never opens on the shared network.
 """
 import hmac
 import os
+import shutil
 import signal
 import socket
 import socketserver
@@ -191,6 +194,60 @@ class Door(socketserver.BaseRequestHandler):
             return
 
 
+def executed_elf(path):
+    """The program bind() will run in. A script uses its interpreter."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(256)
+    except OSError as error:
+        die(f"Couldn’t read the app ({error})")
+    if head.startswith(b"\x7fELF"):
+        return path
+    if not head.startswith(b"#!"):
+        die("This program cannot load the localhost shim, so it was not started")
+    line = head.split(b"\n", 1)[0][2:].decode("utf-8", "replace").strip()
+    parts = line.split()
+    if not parts:
+        die("This program cannot load the localhost shim, so it was not started")
+    program = parts[0]
+    args = parts[1:]
+    if os.path.basename(program) == "env":
+        while args and args[0].startswith("-"):
+            flag = args.pop(0)
+            if flag in ("-S", "--split-string") and args:
+                args = args[0].split() + args[1:]
+                continue
+            if flag in ("-u", "--unset") and args:
+                args.pop(0)
+        if not args:
+            die("This program cannot load the localhost shim, so it was not started")
+        program = args[0]
+    if "/" not in program:
+        found = shutil.which(program)
+        if not found:
+            die("This program cannot load the localhost shim, so it was not started")
+        return found
+    return program
+
+
+def require_localhost_shim(app):
+    """Other containers can reach a wildcard bind. Start only when the shim will load."""
+    if not os.path.isfile(SHIM):
+        die("The localhost shim is missing, so this app was not started")
+    target = executed_elf(app)
+    probe_env = os.environ.copy()
+    probe_env.pop("LD_PRELOAD", None)
+    try:
+        probe = subprocess.run(["ldd", target], capture_output=True, text=True, env=probe_env)
+    except OSError as error:
+        die(f"Couldn’t check whether this program can load the localhost shim ({error})")
+    report = f"{probe.stdout}{probe.stderr}"
+    if "not a dynamic executable" in report:
+        die("This program is static, so it was not started")
+    if probe.returncode != 0:
+        die("Couldn’t confirm this program can load the localhost shim, so it was not started")
+
+
 def listen(port, mode, upstream):
     class Handler(Door):
         pass
@@ -218,16 +275,8 @@ def main():
     env = os.environ.copy()
     env["PORT"] = str(child_port)
     env.pop("LD_PRELOAD", None)
-    if os.path.exists(SHIM):
-        env["LD_PRELOAD"] = SHIM
-    else:
-        print("omarchy: localhost shim is missing; a program that binds every interface can be reached without the token", file=sys.stderr)
-    try:
-        probe = subprocess.run(["ldd", APP], capture_output=True, text=True)
-        if "not a dynamic executable" in (probe.stdout + probe.stderr):
-            print("omarchy: this program is static, so other containers on the shared network can reach its own port without the token", file=sys.stderr)
-    except OSError:
-        pass
+    require_localhost_shim(APP)
+    env["LD_PRELOAD"] = SHIM
     try:
         child = subprocess.Popen([APP], env=env, cwd=CWD if os.path.isdir(CWD) else None, start_new_session=True)
     except OSError as error:
