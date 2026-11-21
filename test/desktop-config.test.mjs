@@ -150,3 +150,187 @@ test('a signed-out pull does not throttle the next account desktop', async () =>
 	const raw = localStorage.getItem(KEY)
 	assert.equal(raw && JSON.parse(raw).wallpaper, 'dahlia', 'the next account desktop was not loaded')
 })
+
+test('a second tab picks up changes from the first on focus instead of overwriting them', async (t) => {
+	const origAddEventListener = window.addEventListener
+	const origNow = Date.now
+	const origFetch = fetchImpl
+	let tabA
+	let tabB
+	t.after(() => {
+		tabA?.resetDeskConfig()
+		tabB?.resetDeskConfig()
+		window.addEventListener = origAddEventListener
+		Date.now = origNow
+		fetchImpl = origFetch
+		bag.clear()
+	})
+	bag.clear()
+	let now = 10_000
+	Date.now = () => now
+	let serverDesktop = {
+		config: {wallpaper: 'valley', style: 'glass', accent: 'wallpaper', shell: 'gnome', dock: {position: 'left', iconSize: 46, hover: 'lift', magnify: 1.6, bounce: true, floating: false, autohide: false, showRunning: true, items: ['files']}, icons: [], showIcons: true, appsOpenIn: 'auto'},
+		rev: 2,
+	}
+	fetchImpl = async (_url, opts) => {
+		if (opts?.method === 'POST') {
+			const body = JSON.parse(String(opts.body))
+			serverDesktop = {config: body.config, rev: serverDesktop.rev + 1}
+			return {ok: true, json: async () => ({desktop: {rev: serverDesktop.rev}})}
+		}
+		return {ok: true, json: async () => ({desktop: serverDesktop})}
+	}
+	const tabAEvents = new Map()
+	const tabBEvents = new Map()
+	window.addEventListener = (type, fn) => tabBEvents.set(type, fn)
+	tabB = await import('../web/src/desktop/config.ts?tab=b1')
+	tabB.syncDeskConfig()
+	await wait(30)
+	window.addEventListener = (type, fn) => tabAEvents.set(type, fn)
+	tabA = await import('../web/src/desktop/config.ts?tab=a1')
+	tabA.syncDeskConfig()
+	await wait(30)
+
+	tabA.patchDeskConfig({dock: {...tabA.DEFAULT_CONFIG.dock, position: 'bottom'}})
+	await wait(700)
+	assert.equal(serverDesktop.config.dock.position, 'bottom')
+	assert.equal(serverDesktop.rev, 3)
+
+	// Four seconds later, tab B regains focus (no storage event fired) and pulls.
+	now += 4000
+	tabBEvents.get('focus')?.()
+	await wait(30)
+
+	// Tab B toggles icons off: it must build on tab A's bottom dock, not its stale left dock.
+	tabB.patchDeskConfig({showIcons: false})
+	await wait(700)
+	assert.equal(serverDesktop.config.dock.position, 'bottom', 'tab A dock change was overwritten by stale tab B')
+	assert.equal(serverDesktop.config.showIcons, false)
+	assert.equal(serverDesktop.rev, 4)
+})
+
+test('a second tab picks up changes immediately via storage events', async (t) => {
+	const origAddEventListener = window.addEventListener
+	const origNow = Date.now
+	const origFetch = fetchImpl
+	let tabA
+	let tabB
+	t.after(() => {
+		tabA?.resetDeskConfig()
+		tabB?.resetDeskConfig()
+		window.addEventListener = origAddEventListener
+		Date.now = origNow
+		fetchImpl = origFetch
+		bag.clear()
+	})
+	bag.clear()
+	Date.now = () => 20_000
+	let serverDesktop = {
+		config: {wallpaper: 'valley', style: 'glass', accent: 'wallpaper', shell: 'gnome', dock: {position: 'left', iconSize: 46, hover: 'lift', magnify: 1.6, bounce: true, floating: false, autohide: false, showRunning: true, items: ['files']}, icons: [], showIcons: true, appsOpenIn: 'auto'},
+		rev: 2,
+	}
+	fetchImpl = async (_url, opts) => {
+		if (opts?.method === 'POST') {
+			const body = JSON.parse(String(opts.body))
+			serverDesktop = {config: body.config, rev: serverDesktop.rev + 1}
+			return {ok: true, json: async () => ({desktop: {rev: serverDesktop.rev}})}
+		}
+		return {ok: true, json: async () => ({desktop: serverDesktop})}
+	}
+	const tabAEvents = new Map()
+	const tabBEvents = new Map()
+	window.addEventListener = (type, fn) => tabBEvents.set(type, fn)
+	tabB = await import('../web/src/desktop/config.ts?tab=b2')
+	tabB.syncDeskConfig()
+	await wait(30)
+	window.addEventListener = (type, fn) => tabAEvents.set(type, fn)
+	tabA = await import('../web/src/desktop/config.ts?tab=a2')
+	tabA.syncDeskConfig()
+	await wait(30)
+
+	tabA.patchDeskConfig({dock: {...tabA.DEFAULT_CONFIG.dock, position: 'right'}})
+	tabBEvents.get('storage')?.({key: KEY, newValue: localStorage.getItem(KEY), storageArea: localStorage})
+	tabB.patchDeskConfig({showIcons: false})
+	await wait(700)
+	assert.equal(serverDesktop.config.dock.position, 'right', 'tab B missed tab A storage change')
+	assert.equal(serverDesktop.config.showIcons, false)
+})
+
+test('cross-tab sign-out cancels pending edits, invalidates in-flight pulls, and clears pull throttle', async (t) => {
+	const origAddEventListener = window.addEventListener
+	const origNow = Date.now
+	const origFetch = fetchImpl
+	let tabA
+	let tabB
+	t.after(() => {
+		tabA?.resetDeskConfig()
+		tabB?.resetDeskConfig()
+		window.addEventListener = origAddEventListener
+		Date.now = origNow
+		fetchImpl = origFetch
+		bag.clear()
+	})
+	bag.clear()
+	Date.now = () => 30_000
+	let posts = 0
+	fetchImpl = async (_url, opts) => {
+		if (opts?.method === 'POST') {
+			posts++
+			return {ok: true, json: async () => ({desktop: {rev: 9}})}
+		}
+		return {ok: true, json: async () => ({desktop: {config: {wallpaper: 'valley'}, rev: 2}})}
+	}
+	const tabAEvents = new Map()
+	const tabBEvents = new Map()
+	window.addEventListener = (type, fn) => tabBEvents.set(type, fn)
+	tabB = await import('../web/src/desktop/config.ts?tab=b3')
+	tabB.syncDeskConfig()
+	await wait(30)
+	window.addEventListener = (type, fn) => tabAEvents.set(type, fn)
+	tabA = await import('../web/src/desktop/config.ts?tab=a3')
+	tabA.syncDeskConfig()
+	await wait(30)
+
+	// Tab B queues an unsaved edit; Tab A signs out before the 600ms push fires.
+	tabB.patchDeskConfig({wallpaper: 'peak'})
+	tabA.resetDeskConfig()
+	tabBEvents.get('storage')?.({key: KEY, newValue: null, storageArea: localStorage})
+	await wait(700)
+	assert.equal(posts, 0, 'cross-tab sign-out failed to cancel pending push timer')
+	assert.equal(localStorage.getItem(KEY), null)
+
+	// Next, Tab B starts an in-flight pull for Account 1, then Tab A clears storage again.
+	let releaseGet
+	fetchImpl = async (_url, opts) => {
+		if (opts?.method === 'POST') {
+			posts++
+			return {ok: true, json: async () => ({desktop: {rev: 10}})}
+		}
+		await new Promise((r) => (releaseGet = r))
+		return {ok: true, json: async () => ({desktop: {config: {wallpaper: 'valley'}, rev: 3}})}
+	}
+	tabB.syncDeskConfig()
+	await wait(15)
+	tabA.resetDeskConfig()
+	tabBEvents.get('storage')?.({key: null, newValue: null, storageArea: localStorage})
+	releaseGet()
+	await wait(30)
+	assert.equal(localStorage.getItem(KEY), null, 'in-flight pull wrote stale account config after cross-tab sign-out')
+
+	// Restricted storage contexts that throw on storageArea access must not throw in onStorage.
+	assert.doesNotThrow(() => {
+		tabBEvents.get('storage')?.({key: KEY, newValue: null, get storageArea() { throw new Error('SecurityError') }})
+	})
+
+	// Immediately syncing Account 2 in Tab B must not be throttled by Account 1's lastPull.
+	let account2Gets = 0
+	fetchImpl = async () => {
+		account2Gets++
+		return {ok: true, json: async () => ({desktop: {config: {wallpaper: 'dahlia'}, rev: 5}})}
+	}
+	tabB.syncDeskConfig()
+	await wait(30)
+	assert.equal(account2Gets, 1, 'cross-tab sign-out left Tab B behind the 3 second pull throttle')
+	const raw = localStorage.getItem(KEY)
+	assert.equal(raw && JSON.parse(raw).wallpaper, 'dahlia')
+})

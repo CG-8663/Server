@@ -161,6 +161,8 @@ const store = (k: string, v: string | null) => {
 }
 const knownRev = () => Number(stored(REV_KEY)) || 0
 const keepLocal = (c: DeskConfig) => store(KEY, JSON.stringify(c))
+// The revision this tab itself last loaded or saved; shared localStorage rev moves when another tab writes.
+let appliedRev = stored(KEY) !== null ? knownRev() : 0
 // Changes made here that the server doesn't have yet (counted, so a save that was already on its way
 // doesn't clear a change made after it left).
 let edits = stored(DIRTY_KEY) ? 1 : 0
@@ -185,7 +187,10 @@ function push() {
 			if (mine !== epoch || !r.ok) return
 			const saved = (await r.json())?.desktop as {rev?: number} | null
 			if (mine !== epoch) return
-			if (saved?.rev) store(REV_KEY, String(saved.rev))
+			if (saved?.rev) {
+				appliedRev = Number(saved.rev) || appliedRev
+				store(REV_KEY, String(saved.rev))
+			}
 			if (edits === sent) (edits = 0), store(DIRTY_KEY, null)
 		} catch {
 			/* offline: saved next time */
@@ -218,8 +223,9 @@ async function pull() {
 			// This browser has the newest changes: save them for the others.
 			current ??= loadConfig()
 			push()
-		} else if (saved && rev !== knownRev()) {
+		} else if (saved && rev !== appliedRev) {
 			current = clean(saved.config)
+			appliedRev = rev
 			keepLocal(current)
 			store(REV_KEY, String(rev))
 			listeners.forEach((l) => l(current!))
@@ -240,6 +246,39 @@ async function pull() {
 		}
 	}
 }
+function clearTabState() {
+	epoch++
+	window.clearTimeout(pushTimer)
+	pushTimer = undefined
+	current = null
+	appliedRev = 0
+	edits = 0
+	lastPull = 0
+	pullAgain = false
+	listeners.forEach((l) => l(DEFAULT_CONFIG))
+}
+function onStorage(e: StorageEvent) {
+	try {
+		if (e.storageArea && e.storageArea !== localStorage) return
+	} catch {
+		return
+	}
+	if (e.key !== KEY && e.key !== REV_KEY && e.key !== null) return
+	if (e.key === null || (e.key === KEY && e.newValue === null)) {
+		clearTabState()
+		return
+	}
+	if (edits) return
+	const raw = stored(KEY)
+	if (raw === null) return
+	try {
+		current = clean(JSON.parse(raw))
+	} catch {
+		return
+	}
+	appliedRev = knownRev()
+	listeners.forEach((l) => l(current!))
+}
 let started = false
 export function syncDeskConfig() {
 	if (!started) {
@@ -247,22 +286,17 @@ export function syncDeskConfig() {
 		// Saved by an earlier version, which went by each browser's clock: take the server's copy.
 		store(`${KEY}:at`, null)
 		window.addEventListener('focus', () => pull())
+		window.addEventListener('storage', onStorage)
 		document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && pull())
 		window.setInterval(() => document.visibilityState === 'visible' && pull(), 20_000)
 	}
 	pull()
 }
 export function resetDeskConfig() {
-	epoch++
-	window.clearTimeout(pushTimer)
-	pushTimer = undefined
-	current = null
-	edits = 0
-	lastPull = 0
 	store(KEY, null)
 	store(REV_KEY, null)
 	store(DIRTY_KEY, null)
-	listeners.forEach((l) => l(DEFAULT_CONFIG))
+	clearTabState()
 }
 export function patchDeskConfig(patch: Partial<DeskConfig>) {
 	current = clean({...(current ?? loadConfig()), ...patch})

@@ -2,12 +2,13 @@
 // (~/.local/share/Trash) that Omarchy's own file manager uses, so browser and desktop agree.
 // Every path is resolved and checked to stay inside those folders, symlinks included.
 import {createReadStream, createWriteStream} from 'node:fs'
-import {cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises'
+import {cp, link, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises'
 import {basename, dirname, extname, join, resolve as pathResolve, sep} from 'node:path'
 import {pipeline} from 'node:stream/promises'
 import {randomBytes} from 'node:crypto'
 
-import {readJsonState} from './atomic.mjs'
+import {readJsonState, writeAtomic} from './atomic.mjs'
+import {createKeyedLock} from './locks.mjs'
 import {RpcError} from './rpc.mjs'
 
 const MIME = {
@@ -44,6 +45,7 @@ export function createFiles({home, dataDir}) {
 	const trashFiles = join(trashRoot, 'files')
 	const trashInfo = join(trashRoot, 'info')
 	const favoritesFile = join(dataDir, 'favorites.json')
+	const lock = createKeyedLock()
 	let homeReal = null
 	const roots = async () => (homeReal ??= await realpath(home))
 	// Keys and the rest of omarchyd state live under dataDir, often inside Home. Never serve that tree.
@@ -342,12 +344,14 @@ export function createFiles({home, dataDir}) {
 	}
 	async function setFavorite(path, on) {
 		await resolve(path)
-		const {list, damaged} = await readFavoritesState()
-		if (damaged) throw new RpcError('PRECONDITION_FAILED', 'favorites.json is damaged and was left unchanged. Repair or remove it before saving.')
-		const set = new Set(list)
-		on ? set.add(path) : set.delete(path)
-		await writeFile(favoritesFile, JSON.stringify([...set]), {mode: 0o600})
-		return true
+		return lock('favorites', async () => {
+			const {list, damaged} = await readFavoritesState()
+			if (damaged) throw new RpcError('PRECONDITION_FAILED', 'favorites.json is damaged and was left unchanged. Repair or remove it before saving.')
+			const set = new Set(list)
+			on ? set.add(path) : set.delete(path)
+			await writeAtomic(favoritesFile, JSON.stringify([...set]))
+			return true
+		})
 	}
 
 	// ---- HTTP: view, download, upload -------------------------------------------------------
@@ -389,6 +393,44 @@ export function createFiles({home, dataDir}) {
 		res.writeHead(200, {...headers, 'content-length': String(st.size)})
 		return pipeline(createReadStream(real), res).catch(() => res.destroy())
 	}
+	async function linkOrRename(tmp, candidate) {
+		try {
+			await link(tmp, candidate)
+			await rm(tmp, {force: true}).catch(() => {})
+			return true
+		} catch (e) {
+			if (e.code === 'EEXIST') return false
+			if (e.code === 'EPERM' || e.code === 'ENOTSUP' || e.code === 'EOPNOTSUPP') {
+				if (await lstat(candidate).then(() => true, () => false)) return false
+				await rename(tmp, candidate)
+				return true
+			}
+			throw e
+		}
+	}
+	function claimUpload(tmp, real, collision) {
+		const dir = dirname(real)
+		const name = basename(real)
+		return lock(`upload:${dir}`, async () => {
+			if (collision === 'replace') {
+				const cur = await lstat(real).catch(() => null)
+				if (cur?.isDirectory()) throw new RpcError('CONFLICT', '[is-a-directory]')
+				await rename(tmp, real)
+				return real
+			}
+			if (collision === 'error') {
+				if (await linkOrRename(tmp, real)) return real
+				const cur = await lstat(real).catch(() => null)
+				throw new RpcError('CONFLICT', cur?.isDirectory() ? '[is-a-directory]' : '[already-exists]')
+			}
+			const ext = extname(name)
+			const stem = ext ? name.slice(0, -ext.length) : name
+			for (let n = 1; ; n++) {
+				const candidate = join(dir, n === 1 ? name : `${stem} (${n})${ext}`)
+				if (await linkOrRename(tmp, candidate)) return candidate
+			}
+		})
+	}
 	async function upload(req, res, url) {
 		const path = url.searchParams.get('path')
 		const collision = url.searchParams.get('collision') ?? 'keep-both'
@@ -402,14 +444,16 @@ export function createFiles({home, dataDir}) {
 		const exists = await lstat(real).then((s) => s, () => null)
 		if (exists?.isDirectory()) return endJson(res, 409, {error: '[is-a-directory]'})
 		if (exists && collision === 'error') return endJson(res, 409, {error: '[already-exists]'})
-		const target = exists && collision !== 'replace' ? await freeName(dirname(real), basename(real)) : real
-		// Write to a temporary file first, so a broken upload never leaves half a file behind.
-		const tmp = join(dirname(target), `.${basename(target)}.${randomBytes(6).toString('hex')}.uploading`)
+		// Write to a temporary file first, then claim the final name atomically so overlapping
+		// uploads never overwrite each other.
+		const tmp = join(dirname(real), `.${basename(real)}.${randomBytes(6).toString('hex')}.uploading`)
+		let target
 		try {
 			await pipeline(req, createWriteStream(tmp, {flags: 'wx', mode: 0o644}))
-			await rename(tmp, target)
-		} catch {
-			await rm(tmp, {force: true})
+			target = await claimUpload(tmp, real, collision)
+		} catch (e) {
+			await rm(tmp, {force: true}).catch(() => {})
+			if (e instanceof RpcError && e.code === 'CONFLICT') return endJson(res, 409, {error: e.message})
 			return endJson(res, 500, {error: 'Upload failed'})
 		}
 		return endJson(res, 200, {path: await toVirtual(target)})
