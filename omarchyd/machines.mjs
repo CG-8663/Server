@@ -11,6 +11,7 @@
 // against the publisher's checksum file, then copied per machine. cloud-init sets up the account
 // on first boot; only a SHA-512 crypt hash of the password is written, never the password.
 import {writeAtomic} from './atomic.mjs'
+import {createKeyedLock} from './locks.mjs'
 import {execFile} from 'node:child_process'
 import {createHash, randomBytes} from 'node:crypto'
 import {constants, createWriteStream} from 'node:fs'
@@ -91,6 +92,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// replace a damaged machines.json with this in-memory list.
 	let loaded = false
 	const busy = new Map() // id -> {state, progress, settling}
+	const lock = createKeyedLock()
 	const isBusy = (id) => busy.has(id) && !busy.get(id).settling
 	const downloads = new Map() // imageId -> {progress, promise}
 	const failedImages = new Map() // imageId -> message
@@ -1109,23 +1111,26 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 	async function addDisk(input = {}) {
 		await ready
-		const m = find(input.id)
-		writable(m)
-		const sizeGb = Number(input.sizeGb)
-		const bus = input.bus ?? 'virtio'
-		if (!Number.isInteger(sizeGb) || sizeGb < 1 || sizeGb > 4096) throw new RpcError('BAD_REQUEST', 'Disk size must be between 1 and 4096 GB')
-		if (!BUSES.includes(bus)) throw new RpcError('BAD_REQUEST', 'Unknown disk bus')
-		if (input.cache !== undefined && !CACHES.includes(input.cache)) throw new RpcError('BAD_REQUEST', 'Unknown cache mode')
-		if (m.layout.disks.length >= 16) throw new RpcError('BAD_REQUEST', 'A machine can have up to 16 drives here')
-		const fs = await statfs(base)
-		if ((fs.bavail * fs.bsize) / 1024 ** 3 < 1) throw new RpcError('PRECONDITION_FAILED', 'Not enough free space on the server')
-		const id = nextId(m, 'disk')
-		const file = join(vmsDir, m.id, `${id}.qcow2`)
-		return task(m, 'add-disk', `${id} ${sizeGb} GB`, async () => {
-			await run('qemu-img', ['create', '-f', 'qcow2', file, `${sizeGb}G`])
-			m.layout.disks.push({id, file, device: 'disk', bus, format: 'qcow2', sizeGb, ...(input.cache && input.cache !== 'default' ? {cache: input.cache} : {}), ...(input.discard === false ? {discard: false} : {})})
-			await markChanged(m)
-			return {diskId: id}
+		const idArg = find(input.id).id
+		return lock(`drives:${idArg}`, async () => {
+			const m = find(idArg)
+			writable(m)
+			const sizeGb = Number(input.sizeGb)
+			const bus = input.bus ?? 'virtio'
+			if (!Number.isInteger(sizeGb) || sizeGb < 1 || sizeGb > 4096) throw new RpcError('BAD_REQUEST', 'Disk size must be between 1 and 4096 GB')
+			if (!BUSES.includes(bus)) throw new RpcError('BAD_REQUEST', 'Unknown disk bus')
+			if (input.cache !== undefined && !CACHES.includes(input.cache)) throw new RpcError('BAD_REQUEST', 'Unknown cache mode')
+			if (m.layout.disks.length >= 16) throw new RpcError('BAD_REQUEST', 'A machine can have up to 16 drives here')
+			const fs = await statfs(base)
+			if ((fs.bavail * fs.bsize) / 1024 ** 3 < 1) throw new RpcError('PRECONDITION_FAILED', 'Not enough free space on the server')
+			const id = nextId(m, 'disk')
+			const file = join(vmsDir, m.id, `${id}.qcow2`)
+			return task(m, 'add-disk', `${id} ${sizeGb} GB`, async () => {
+				await run('qemu-img', ['create', '-f', 'qcow2', file, `${sizeGb}G`])
+				m.layout.disks.push({id, file, device: 'disk', bus, format: 'qcow2', sizeGb, ...(input.cache && input.cache !== 'default' ? {cache: input.cache} : {}), ...(input.discard === false ? {discard: false} : {})})
+				await markChanged(m)
+				return {diskId: id}
+			})
 		})
 	}
 	async function updateDisk(input = {}) {
@@ -1182,14 +1187,17 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 	async function addCdrom(input = {}) {
 		await ready
-		const m = find(input.id)
-		writable(m)
-		await requireStopped(m, 'add a CD/DVD drive')
-		const id = nextId(m, 'cd')
-		return task(m, 'add-cdrom', id, async () => {
-			m.layout.disks.push({id, file: '', device: 'cdrom', bus: input.bus === 'ide' && m.layout.machineType === 'pc' ? 'ide' : 'sata', format: 'raw'})
-			await markChanged(m)
-			return {diskId: id}
+		const idArg = find(input.id).id
+		return lock(`drives:${idArg}`, async () => {
+			const m = find(idArg)
+			writable(m)
+			await requireStopped(m, 'add a CD/DVD drive')
+			const id = nextId(m, 'cd')
+			return task(m, 'add-cdrom', id, async () => {
+				m.layout.disks.push({id, file: '', device: 'cdrom', bus: input.bus === 'ide' && m.layout.machineType === 'pc' ? 'ide' : 'sata', format: 'raw'})
+				await markChanged(m)
+				return {diskId: id}
+			})
 		})
 	}
 	// Put an ISO in a CD/DVD drive (one of yours from Home, or a downloaded installer), or eject it.
