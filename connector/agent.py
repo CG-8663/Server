@@ -288,10 +288,39 @@ def meminfo():
 
 
 REAL_FS = {"ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "jfs", "reiserfs", "bcachefs", "vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "nfs", "nfs4", "cifs"}
+# A hard-mounted nfs/cifs (or any other wedged mount) can sit inside statvfs forever.
+_STAT_TIMEOUT = 0.75
+_stat_lock = threading.Lock()
+_stat_busy = {}
+
+
+def _begin_stat(mount):
+    """Start one statvfs. None if this mount is already stuck in an earlier call."""
+    with _stat_lock:
+        state = _stat_busy.get(mount)
+        if state is not None and state["thread"].is_alive():
+            return None, None
+        box = {}
+
+        def work():
+            try:
+                box["st"] = os.statvfs(mount)
+            except OSError:
+                box["err"] = True
+            finally:
+                with _stat_lock:
+                    cur = _stat_busy.get(mount)
+                    if cur is not None and cur["thread"] is threading.current_thread():
+                        _stat_busy.pop(mount, None)
+
+        thread = threading.Thread(target=work, daemon=True)
+        _stat_busy[mount] = {"thread": thread, "box": box}
+        thread.start()
+        return thread, box
 
 
 def disks():
-    out, seen = [], set()
+    out, seen, mounts = [], set(), []
     for line in read("/proc/mounts").splitlines():
         p = line.split()
         if len(p) < 3 or p[2] not in REAL_FS:
@@ -304,9 +333,16 @@ def disks():
         if any(mount == p or mount.startswith(p + "/") for p in ("/boot", "/snap", "/var/lib/docker", "/var/lib/containers")):
             continue
         seen.add(key)
-        try:
-            st = os.statvfs(mount)
-        except OSError:
+        mounts.append(mount)
+    jobs = [(mount, *_begin_stat(mount)) for mount in mounts]
+    for _mount, thread, _box in jobs:
+        if thread is not None:
+            thread.join(_STAT_TIMEOUT)
+    for mount, _thread, box in jobs:
+        if not box or box.get("err"):
+            continue
+        st = box.get("st")
+        if not st:
             continue
         total = st.f_blocks * st.f_frsize
         if total:
@@ -776,9 +812,9 @@ class Sampler:
             # apart, so the first percent is noise. Leave cpu empty until the next tick.
             self._prime_cpu()
             self._last["cpu"] = self._now()
-        self._note(not cold)
-        if cold:
-            self.tick(wait_gpu=False)
+        # Don't tick here. metrics() calls get() from the receive loop, and the first
+        # sample used to run on that caller. A stuck mount would freeze the connector.
+        self._note(True)
         return self._snap
 
     def start(self):
@@ -935,6 +971,11 @@ class Channel:
             self.conn.send({"op": "closed", "ch": self.ch, "reason": reason, "code": code})
 
 
+# Past this much unread terminal input the program isn't reading. Close it so the
+# receive loop never blocks inside os.write on a full pty.
+SHELL_IN_MAX = 1 << 20
+
+
 class Shell(Channel):
     def __init__(self, conn, ch, cols, rows):
         super().__init__(conn, ch)
@@ -954,8 +995,13 @@ class Shell(Channel):
                 pass
             os._exit(127)
         self.pid, self.fd = pid, fd
+        flags = fcntl.fcntl(self.fd, fcntl.F_GETFL)
+        fcntl.fcntl(self.fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        self._pending = bytearray()
+        self._write_cv = threading.Condition()
         self.resize(cols, rows)
         threading.Thread(target=self.pump, daemon=True).start()
+        threading.Thread(target=self._write_loop, daemon=True).start()
 
     def resize(self, cols, rows):
         try:
@@ -977,6 +1023,8 @@ class Shell(Channel):
                         if not data:
                             break
                         self.out(data)
+                except BlockingIOError:
+                    continue
                 except OSError:
                     break
             self.ended("Shell ended")
@@ -1003,15 +1051,53 @@ class Shell(Channel):
             pass
 
     def write(self, data):
-        try:
-            os.write(self.fd, data)
-        except OSError:
-            self.ended("Shell ended")
+        # Connection.run calls this on its only receive thread. Queue the bytes and return;
+        # a pty whose program is not reading must not stall that thread.
+        if not data or self.closed:
+            return
+        overflow = False
+        with self._write_cv:
+            if not self.closed:
+                if len(self._pending) + len(data) > SHELL_IN_MAX:
+                    overflow = True
+                else:
+                    self._pending += data
+                    self._write_cv.notify()
+        if overflow:
+            self.ended("The terminal stopped reading")
+
+    def _write_loop(self):
+        while not self.closed:
+            with self._write_cv:
+                if not self._pending and not self.closed:
+                    self._write_cv.wait(0.2)
+                if self.closed or not self._pending:
+                    continue
+                data = bytes(self._pending)
+            try:
+                n = os.write(self.fd, data)
+            except BlockingIOError:
+                try:
+                    select.select([], [self.fd], [], 0.2)
+                except (OSError, ValueError):
+                    self.ended("Shell ended")
+                    return
+                continue
+            except OSError:
+                self.ended("Shell ended")
+                return
+            if n:
+                with self._write_cv:
+                    del self._pending[:n]
 
     def close(self):
         if self.closed:
             return
         self.closed = True
+        cv = getattr(self, "_write_cv", None)
+        if cv is not None:
+            with cv:
+                cv.notify_all()
         try:
             os.kill(self.pid, signal.SIGHUP)
         except OSError:
@@ -1513,7 +1599,8 @@ def _run_restic(conn, call_id, args, repo, password, step):
             for line in p.stderr:
                 errors.append(line.strip())
                 del errors[:-20]
-        threading.Thread(target=drain_err, daemon=True).start()
+        err_thread = threading.Thread(target=drain_err, daemon=True)
+        err_thread.start()
         for line in p.stdout:
             try:
                 m = json.loads(line)
@@ -1526,6 +1613,8 @@ def _run_restic(conn, call_id, args, repo, password, step):
             elif kind == "summary":
                 summary = m
         code = p.wait()
+        # The fatal line is often written as restic exits. Wait until it has been read.
+        err_thread.join()
     finally:
         try:
             os.unlink(pw)
@@ -1613,6 +1702,8 @@ class Connection:
         self.connected_at = None
         self.allowed = cfg.get("abilities", {})
         self.channels = {}
+        self._ch_lock = threading.Lock()
+        self._ch_token = {}
         self.ws = None
         self.pkg = package_manager()
 
@@ -1621,6 +1712,36 @@ class Connection:
             self.ws.send_text(json.dumps(msg))
         except (OSError, AttributeError):
             pass
+
+    def _ch_state(self):
+        # Connection.__new__ tests call handle() without __init__.
+        if not hasattr(self, "_ch_lock"):
+            self._ch_lock = threading.Lock()
+            self._ch_token = {}
+        return self._ch_lock, self._ch_token
+
+    def _open_vnc(self, ch):
+        token = object()
+        lock, tokens = self._ch_state()
+        with lock:
+            tokens[ch] = token
+
+        def start():
+            try:
+                obj = Screen(self, ch)
+            except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
+                self.send({"op": "closed", "ch": ch, "code": 1011, "reason": str(e)[:200]})
+                return
+            with lock:
+                if tokens.get(ch) is not token:
+                    drop = True
+                else:
+                    self.channels[ch] = obj
+                    drop = False
+            if drop:
+                obj.close()
+
+        threading.Thread(target=start, daemon=True).start()
 
     def run(self):
         url = self.cfg["server"].replace("https://", "wss://", 1).rstrip("/") + "/connector/ws"
@@ -1676,8 +1797,12 @@ class Connection:
             ability = "terminal" if kind == "pty" else "desktop" if kind == "vnc" else None
             if not ability or not self.allowed.get(ability):
                 return self.send({"op": "closed", "ch": ch, "code": 1011, "reason": f"This computer doesn’t allow the {ability or 'that'}"})
+            if kind == "vnc":
+                # vnc_start sleeps until the socket exists. That wait used to sit on this thread.
+                self._open_vnc(ch)
+                return
             try:
-                self.channels[ch] = Shell(self, ch, msg.get("cols"), msg.get("rows")) if kind == "pty" else Screen(self, ch)
+                self.channels[ch] = Shell(self, ch, msg.get("cols"), msg.get("rows"))
             except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
                 self.send({"op": "closed", "ch": ch, "code": 1011, "reason": str(e)[:200]})
         elif op == "resize":
@@ -1687,9 +1812,17 @@ class Connection:
             if isinstance(ch, Shell):
                 ch.resize(msg.get("cols"), msg.get("rows"))
         elif op == "close":
-            ch = self.channels.pop(int(msg.get("ch", 0)), None)
-            if ch:
-                ch.close()
+            ch_id = int(msg.get("ch", 0))
+            lock, tokens = self._ch_state()
+            with lock:
+                existing = self.channels.pop(ch_id, None)
+                # An open still running on the VNC thread must not publish into this channel.
+                if existing is None:
+                    tokens[ch_id] = None
+                else:
+                    tokens.pop(ch_id, None)
+            if existing:
+                existing.close()
         elif op == "watch":
             # The server asks while a screen is open. Return the last snapshot now and refresh.
             if getattr(self, "sampler", None) is not None:

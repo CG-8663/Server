@@ -106,7 +106,12 @@ def default_run(cmd, args):
     env["LC_ALL"] = "C"
     # A drive that never answers smartctl must not hold the disk list for the full command limit.
     timeout = 15 if cmd == "smartctl" else 600
-    r = subprocess.run([cmd, *args], capture_output=True, text=True, timeout=timeout, env=env)
+    try:
+        r = subprocess.run([cmd, *args], capture_output=True, text=True, timeout=timeout, env=env)
+    except FileNotFoundError:
+        raise HelperError("%s is not installed" % cmd)
+    except subprocess.TimeoutExpired:
+        raise HelperError("%s took too long" % cmd)
     if r.returncode and not (cmd == "smartctl" and r.stdout):
         msg = (r.stderr or r.stdout or ("%s failed" % cmd)).strip().split("\n")[-1][:300]
         raise HelperError("%s: %s" % (cmd, msg) if msg else "%s failed" % cmd)
@@ -798,7 +803,9 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         except Exception as e:
             if "not mounted" not in str(e):
                 fail("%s is in use. Stop apps and shares using it, then try again." % name)
-        write_text("/etc/fstab", "\n".join(l for l in fstab() if not l.endswith("%s %s" % (FSTAB_MARK, name))))
+        kept = [l for l in fstab() if not l.endswith("%s %s" % (FSTAB_MARK, name))]
+        # fstab() uses splitlines(), which drops the final newline. Put it back.
+        write_text("/etc/fstab", ("\n".join(kept) + "\n") if kept else "")
         try:
             run("systemctl", ["daemon-reload"])
         except Exception:
