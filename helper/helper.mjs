@@ -141,19 +141,23 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 	// zfs_member UUID, and `zpool get guid` is the imported pool's GUID.
 	async function zfsPoolGuids() {
 		const guids = new Set()
+		// A pool zpool list named, but whose guid we could not read, still protects disks by name.
+		// An empty guid set must not make those disks look free to format.
+		const namesWithoutGuid = new Set()
 		for (const name of await zfsPoolNames()) {
 			const guid = (await zpool('get', '-H', '-o', 'value', 'guid', name).catch(() => '')).trim()
 			if (guid && guid !== '-') guids.add(guid)
+			else namesWithoutGuid.add(name)
 		}
-		return guids
+		return {guids, namesWithoutGuid}
 	}
 	async function poolMember(d) {
 		if (mounts(d).some((m) => /\/Pools\//.test(m))) return true
 		const text = await fstab()
 		const uuids = new Set(flat(d).map((x) => x.uuid).filter(Boolean))
 		if (text.some((l) => l.includes(FSTAB_MARK) && [...uuids].some((u) => l.includes(u)))) return true
-		const guids = await zfsPoolGuids()
-		return flat(d).some((x) => x.fstype === 'zfs_member' && x.uuid && guids.has(x.uuid))
+		const {guids, namesWithoutGuid} = await zfsPoolGuids()
+		return flat(d).some((x) => x.fstype === 'zfs_member' && ((x.uuid && guids.has(x.uuid)) || (x.label && namesWithoutGuid.has(x.label))))
 	}
 	// Blank: no partitions, no filesystem or RAID signature, nothing mounted, not the system drive.
 	async function blankDisk(path) {

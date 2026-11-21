@@ -301,8 +301,11 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         uuids = {x.get("uuid") for x in flat(d) if x.get("uuid")}
         if any(FSTAB_MARK in l and any(u in l for u in uuids) for l in fstab()):
             return True
-        guids = zfs_guid_names()
-        return any(x.get("fstype") == "zfs_member" and (x.get("uuid") or "") in guids for x in flat(d))
+        guids, names_without_guid = zfs_pool_ids()
+        return any(
+            x.get("fstype") == "zfs_member" and ((x.get("uuid") or "") in guids or (x.get("label") or "") in names_without_guid)
+            for x in flat(d)
+        )
 
     def fstab_pools():
         out = []
@@ -375,16 +378,22 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
 
     # Imported pools are identified by GUID. Two pools can share a name; lsblk stores the GUID as the
     # zfs_member UUID, and `zpool get guid` is the imported pool's GUID.
-    def zfs_guid_names():
+    def zfs_pool_ids():
         found = {}
+        # A named pool whose guid could not be read still matches disks by name, so a failed
+        # `zpool get` does not make that pool's disks look free to format.
+        names_without_guid = set()
         for name in zfs_pool_names():
             try:
                 guid = run("zpool", ["get", "-H", "-o", "value", "guid", name]).strip()
             except Exception:
+                names_without_guid.add(name)
                 continue
             if guid and guid != "-":
                 found[guid] = name
-        return found
+            else:
+                names_without_guid.add(name)
+        return found, names_without_guid
 
     def by_id(dev):
         directory = "/dev/disk/by-id"
@@ -675,9 +684,11 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             zmember = next((x for x in flat(d) if x.get("fstype") == "zfs_member"), None)
             if zmember and (zmember.get("uuid") or "") in zfs_guids:
                 return zfs_guids[zmember["uuid"]]
+            if zmember and (zmember.get("label") or "") in names_without_guid:
+                return zmember.get("label")
             return None
 
-        zfs_guids = zfs_guid_names()
+        zfs_guids, names_without_guid = zfs_pool_ids()
         sleeps = sleep_map()
         out = []
         for d in block_devices():

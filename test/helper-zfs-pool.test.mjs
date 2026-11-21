@@ -95,4 +95,19 @@ describe('helper zfs pool member', () => {
 		assert.equal(await h.handle('format', ['/dev/sdb', 'blank']), 'ok')
 		assert.ok(log.some((l) => l[0] === 'wipefs' && l[1] === '-a' && l[2] === '/dev/sdb'))
 	})
+
+	test('a failed guid lookup still refuses a disk whose label is an imported pool', async () => {
+		const log = []
+		const run = async (cmd, args = []) => {
+			log.push([cmd, ...args])
+			if (cmd === 'lsblk') return JSON.stringify(lsblk)
+			if (cmd === 'zpool' && args[0] === 'list') return 'tank\n'
+			if (cmd === 'zpool' && args[0] === 'get') throw new Error('zpool get failed')
+			if (cmd === 'wipefs') return JSON.stringify({signatures: []})
+			return ''
+		}
+		const h = createHelper({user, fs: fakeFs(), run})
+		await assert.rejects(h.handle('format', ['/dev/sdb', 'blank']), /\/dev\/sdb is in a pool/)
+		assert.equal(log.some((l) => l[0] === 'wipefs' && l[1] === '-a'), false)
+	})
 })
