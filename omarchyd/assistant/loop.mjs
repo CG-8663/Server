@@ -1,7 +1,9 @@
-import {callMcpTool, forgetMcpTools, listMcpTools} from './mcp.mjs'
+import {createHash} from 'node:crypto'
+
+import {callMcpTool, capToolResult, forgetMcpTools, listMcpTools} from './mcp.mjs'
 import {streamAnthropic} from './anthropic.mjs'
 import {apiOf, effortOf} from './keys.mjs'
-import {chatOrResponses, streamResponses, withToolFallback} from './providers.mjs'
+import {chatOrResponses, describeReachFailure, streamResponses, withToolFallback} from './providers.mjs'
 import {backoffMs, retryableStreamError, retryingFetch, sleepFor} from './retry.mjs'
 import {needsSummary, pickCut, summaryNote, summaryOf, unsummarized, writeSummary} from './summary.mjs'
 import {appearanceCatalog, coerceDeskShell, declaredArgs, filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
@@ -19,6 +21,20 @@ const STREAM_RETRIES = 2
 const SUMMARY_RETRY_AFTER = 10
 
 const textOf = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
+const toolOutcome = (content, state) => ({content: capToolResult(content), state})
+// OpenAI and Anthropic reject a tool list when any name is longer than this.
+const MAX_TOOL_NAME = 64
+
+function providerToolName(full, seen) {
+	if (full.length <= MAX_TOOL_NAME) return seen.has(full) ? null : full
+	const hash = createHash('sha256').update(full).digest('hex').slice(0, 8)
+	for (let n = 0; n < 36; n++) {
+		const suffix = n === 0 ? `_${hash}` : `_${hash.slice(0, 6)}${n.toString(36)}`
+		const short = full.slice(0, MAX_TOOL_NAME - suffix.length) + suffix
+		if (short.length <= MAX_TOOL_NAME && /^[a-zA-Z0-9_-]+$/.test(short) && !seen.has(short)) return short
+	}
+	return null
+}
 
 function stripSecrets(value) {
 	if (Array.isArray(value)) return value.map(stripSecrets)
@@ -483,8 +499,10 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			}
 			for (const tool of listed ?? []) {
 				if (!tool?.name) continue
-				const name = `app__${target.appId}__${tool.name}`
-				if (!/^[a-zA-Z0-9_-]+$/.test(name) || seen.has(name)) continue
+				const full = `app__${target.appId}__${tool.name}`
+				if (!/^[a-zA-Z0-9_-]+$/.test(full)) continue
+				const name = providerToolName(full, seen)
+				if (!name) continue
 				seen.add(name)
 				out.push({
 					name,
@@ -571,35 +589,35 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		}
 		try {
 			const result = await callMcpTool({url: spec.url, name: spec.mcpName, arguments: args, fetchImpl, signal})
-			return {content: textOf(result), state: 'done'}
+			return toolOutcome(textOf(result), 'done')
 		} catch (e) {
 			if (e?.name === 'AbortError' || signal?.aborted) throw e
-			return {content: e?.message || 'tool failed', state: 'error'}
+			return toolOutcome(e?.message || 'tool failed', 'error')
 		}
 	}
 
 	async function runTool(tool, auth, signal) {
 		if (signal?.aborted) throw abortError()
 		const read = lookupTool(tool.name)
-		if (!read) return {content: 'unknown tool', state: 'done'}
+		if (!read) return toolOutcome('unknown tool', 'done')
 		let args
 		try {
 			args = parseArgs(tool.arguments)
 		} catch {
-			return {content: 'invalid arguments', state: 'error'}
+			return toolOutcome('invalid arguments', 'error')
 		}
 		try {
 			if (signal?.aborted) throw abortError()
-			if (read.name === 'appearance_list') return {content: textOf(appearanceCatalog()), state: 'done'}
-			if (!runProcedure) return {content: 'tool failed', state: 'error'}
+			if (read.name === 'appearance_list') return toolOutcome(textOf(appearanceCatalog()), 'done')
+			if (!runProcedure) return toolOutcome('tool failed', 'error')
 			const pending = read.name === 'appStore_search' ? runProcedure('appStore.registry', {}, auth, signal) : runProcedure(read.rpc, args, auth, signal)
 			const raw = await watchAbort(signal, pending)
 			if (signal?.aborted) throw abortError()
 			const result = read.name === 'appStore_search' ? filterAppStore(raw, args) : raw
-			return {content: textOf(redactToolResult(read.name, result)), state: 'done'}
+			return toolOutcome(textOf(redactToolResult(read.name, result)), 'done')
 		} catch (e) {
 			if (signal?.aborted || e?.name === 'AbortError') throw e?.name === 'AbortError' ? e : abortError()
-			return {content: e?.message || 'tool failed', state: 'error'}
+			return toolOutcome(e?.message || 'tool failed', 'error')
 		}
 	}
 
@@ -756,7 +774,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				} catch (e) {
 					await stopped(text)
 					if (signal?.aborted || e?.name === 'AbortError') return finish(row.id)
-					say('error', {message: e?.message || 'The assistant did not answer'})
+					say('error', {message: describeReachFailure(key.baseUrl, e)})
 					return finish(row.id)
 				}
 				if (signal?.aborted) {
@@ -773,7 +791,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				}
 				if (providerError) {
 					await stopped(text)
-					if (providerError.status === 401 && key.provider !== 'chatgpt') await keys.recordCheck?.(key.id, {ok: false, status: 'rejected', message: 'The provider rejected this key'}).catch(() => {})
+					if (providerError.status === 401 && key.provider !== 'chatgpt') await keys.recordCheck?.(key.id, {ok: false, status: 'rejected', message: 'The provider rejected this key'}, {updatedAt: key.updatedAt, apiKey: key.apiKey, model: key.model, baseUrl: key.baseUrl}).catch(() => {})
 					say('error', {message: providerError.status === 401 ? (key.provider === 'chatgpt' ? CHATGPT_REJECTED : KEY_REJECTED) : (providerError.message || 'The assistant did not answer')})
 					return finish(row.id)
 				}

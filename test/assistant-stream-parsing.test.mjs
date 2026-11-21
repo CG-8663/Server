@@ -271,3 +271,61 @@ test('cut-off tool calls fail with an error instead of running with empty argume
 	assert.equal(respIncomplete.some((e) => e.type === 'tool'), false)
 	assert.equal(respIncomplete.at(-1).type, 'error')
 })
+
+test('a closed tool_call that is not valid JSON is an error, and parameters aliases arguments', async () => {
+	const newline = 'Let me look.\n<tool_call>{"name":"apps_list","arguments":{"q":"a\nb"}}</tool_call>'
+	const comma = '<tool_call>{"name":"apps_list","arguments":{"q":"a",}}</tool_call>'
+	const quotes = `<tool_call>{'name':'apps_list','arguments':{'q':'a'}}</tool_call>`
+	for (const xml of [newline, comma, quotes]) {
+		const parsed = takeXmlTools(xml, true)
+		assert.equal(parsed.tools.some((t) => t.type === 'tool'), false, xml)
+		assert.equal(parsed.tools.some((t) => t.type === 'error'), true, xml)
+	}
+	const params = takeXmlTools('<tool_call>{"name":"apps_uninstall","parameters":{"appId":"nextcloud"}}</tool_call>', true)
+	assert.equal(params.tools[0].type, 'tool')
+	assert.equal(params.tools[0].name, 'apps_uninstall')
+	assert.deepEqual(JSON.parse(params.tools[0].arguments), {appId: 'nextcloud'})
+	const argsWin = takeXmlTools('<tool_call>{"name":"apps_list","arguments":{"q":"1"},"parameters":{"q":"2"}}</tool_call>', true)
+	assert.deepEqual(JSON.parse(argsWin.tools[0].arguments), {q: '1'})
+	const none = takeXmlTools('<tool_call>{"name":"apps_list"}</tool_call>', true)
+	assert.equal(none.tools[0].arguments, '{}')
+
+	const chatOut = await collect(streamChat({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools: [],
+		fetchImpl: async () => chatSse([{choices: [{delta: {content: newline}}]}]),
+	}))
+	assert.equal(chatOut.filter((e) => e.type === 'text').map((e) => e.text).join(''), 'Let me look.\n')
+	assert.equal(chatOut.some((e) => e.type === 'tool'), false)
+	assert.equal(chatOut.at(-1).type, 'error')
+	assert.match(chatOut.at(-1).message, /cut off/)
+
+	const respOut = await collect(streamResponses({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools: [],
+		fetchImpl: async () => responsesSse([
+			{type: 'response.output_text.delta', delta: comma},
+			{type: 'response.completed'},
+		]),
+	}))
+	assert.equal(respOut.some((e) => e.type === 'tool'), false)
+	assert.equal(respOut.at(-1).type, 'error')
+	assert.match(respOut.at(-1).message, /cut off/)
+
+	const paramOut = await collect(streamChat({
+		baseUrl: 'http://x/v1',
+		apiKey: 'k',
+		model: 'm',
+		messages: [],
+		tools: [],
+		fetchImpl: async () => chatSse([{choices: [{delta: {content: '<tool_call>{"name":"apps_uninstall","parameters":{"appId":"nextcloud"}}</tool_call>'}}]}]),
+	}))
+	assert.equal(paramOut.some((e) => e.type === 'error'), false)
+	assert.deepEqual(JSON.parse(paramOut.find((e) => e.type === 'tool').arguments), {appId: 'nextcloud'})
+})

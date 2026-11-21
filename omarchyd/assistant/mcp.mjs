@@ -20,6 +20,30 @@ function clip(s) {
 	return t.length > 500 ? t.slice(0, 500) : t
 }
 
+export const TOOL_RESULT_MAX = 20_000
+
+// Stored tool text stays short enough to send again. A second cap leaves an existing note in place.
+export function capToolResult(text) {
+	const s = typeof text === 'string' ? text : JSON.stringify(text ?? null)
+	const mark = s.match(/\[cut: \d+ more characters\]$/)
+	if (mark && s.length - mark[0].length <= TOOL_RESULT_MAX) return s
+	if (s.length <= TOOL_RESULT_MAX) return s
+	const extra = s.length - TOOL_RESULT_MAX
+	return s.slice(0, TOOL_RESULT_MAX) + `[cut: ${extra} more characters]`
+}
+
+function httpError(raw, status) {
+	let json = null
+	try {
+		json = parseMessage(raw)
+	} catch {
+		json = null
+	}
+	const message = json && typeof json === 'object' && json.error && typeof json.error === 'object' ? json.error.message : ''
+	if (message) return clip(message)
+	return clip(raw) || `HTTP ${status}`
+}
+
 function schemaOf(schema) {
 	if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return {type: 'object', properties: {}}
 	if (schema.type) return schema
@@ -87,7 +111,7 @@ async function rpc(url, method, params, fetchImpl, signal, session) {
 	} catch {
 		raw = ''
 	}
-	if (!res.ok) throw new Error(clip(raw) || `HTTP ${res.status}`)
+	if (!res.ok) throw new Error(httpError(raw, res.status))
 	const json = parseMessage(raw)
 	if (!json || typeof json !== 'object' || json.error) throw new Error(clip(json?.error?.message) || 'MCP call failed')
 	if (json.id !== id && String(json.id) !== String(id)) throw new Error('MCP call failed')
@@ -174,5 +198,5 @@ export async function callMcpTool({url, name, arguments: args, fetchImpl = fetch
 	}, fetchImpl, signal, session)
 	const text = contentText(result)
 	if (result?.isError) throw new Error(clip(text) || 'MCP tool failed')
-	return text
+	return capToolResult(text)
 }
