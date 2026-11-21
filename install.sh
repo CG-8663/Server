@@ -76,9 +76,19 @@ require_local_git() {
 		/*) ;;
 		*) die "$name is set to \"$path\" but must be an absolute path. Unset it to $hint, or point it at a local clone." ;;
 	esac
-	if [ ! -e "$path/.git" ]; then
+	# A checkout has .git (file or directory). A bare repo has a HEAD file and no .git.
+	if [ ! -e "$path/.git" ] && [ ! -f "$path/HEAD" ]; then
 		die "$name is set to \"$path\" but that path is not a git repository. Unset it to $hint, or point it at a local clone."
 	fi
+}
+# Local clones are absolute paths. file://, git:// and scp-style user@host:path go to git unchanged.
+# A relative path is still refused.
+require_repo() {
+	case "$1" in
+		/*) require_local_git OMARCHY_SERVER_REPO "$1" ;;
+		*://*|*@*:*) ;;
+		*) require_local_git OMARCHY_SERVER_REPO "$1" ;;
+	esac
 }
 SOURCE="$(trim_env "${OMARCHY_SERVER_SOURCE-}")"
 APP_STORE="$(trim_env "${OMARCHY_SERVER_APP_STORE-}")"
@@ -87,10 +97,7 @@ APP_STORE="$(trim_env "${OMARCHY_SERVER_APP_STORE-}")"
 if [ -z "${OMARCHY_SERVER_REPO-}" ] && [ -n "$SOURCE" ]; then
 	REPO="$SOURCE"
 fi
-case "$REPO" in
-	https://*|http://*|git@*|ssh://*) ;;
-	*) require_local_git OMARCHY_SERVER_REPO "$REPO" ;;
-esac
+require_repo "$REPO"
 
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not with sudo. It asks for sudo only to install packages."
 if ! command -v pacman >/dev/null; then
@@ -208,6 +215,24 @@ if ! { node scripts/deps.mjs && NODE_OPTIONS=--max-old-space-size=1024 npm run b
 fi
 remove_build_swap
 
+# The old installer appended a one-line [archzfs] header and Server lines for archzfs.com.
+# Delete that whole section, up to the next header, so a later Server line cannot fall
+# into the repository above it. Leave a section that is not only those Server lines alone.
+# Copy to .bak first. sudo only when the file is /etc/pacman.conf.
+remove_stale_archzfs() {
+	local conf="$1"
+	[ -f "$conf" ] || return 0
+	awk 'BEGIN { found=0; simple=1; ins=0; arch=0 } /^\[archzfs\]$/ { found=1; ins=1; next } ins && /^\[/ { ins=0; next } ins { if ($0 ~ /^[[:space:]]*$/) next; if ($0 ~ /^Server = /) { if ($0 ~ /archzfs/) arch=1; next } simple=0 } END { exit (found && simple && arch) ? 0 : 1 }' "$conf" || return 0
+	say "Removing the outdated archzfs.com repository from pacman.conf"
+	if [ "$conf" = /etc/pacman.conf ]; then
+		sudo cp -a -- "$conf" "$conf.bak"
+		sudo sed -i -- '/^\[archzfs\]$/,/^\[/{/^\[archzfs\]$/d;/^\[/!d}' "$conf"
+	else
+		cp -a -- "$conf" "$conf.bak"
+		sed -i -- '/^\[archzfs\]$/,/^\[/{/^\[archzfs\]$/d;/^\[/!d}' "$conf"
+	fi
+}
+
 # 2a. ZFS (only with --zfs). Built from the AUR (zfs-utils + zfs-dkms, the current OpenZFS release)
 #     for your exact kernel with DKMS. Every kernel update rebuilds it; on a kernel newer than
 #     OpenZFS supports, that build fails and pools stay offline until OpenZFS catches up.
@@ -215,10 +240,7 @@ if [ "$ZFS" = 1 ]; then
 	command -v yay >/dev/null 2>&1 || die "ZFS is built from the AUR and needs yay (Omarchy includes it). Install yay, then run this again with --zfs."
 
 	# Undo an earlier attempt that used the stale archzfs.com repository (it serves an old ZFS).
-	if grep -q '^\[archzfs\]' /etc/pacman.conf; then
-		say "Removing the outdated archzfs.com repository from pacman.conf"
-		sudo sed -i '/^\[archzfs\]$/,/^Server = .*archzfs.*$/d' /etc/pacman.conf
-	fi
+	remove_stale_archzfs /etc/pacman.conf
 
 	# Bring the system up to date the way it expects: Omarchy refuses a direct `pacman -Syu`.
 	if command -v omarchy >/dev/null 2>&1; then
@@ -313,9 +335,16 @@ Icon=view-refresh
 Terminal=false
 Categories=System;
 EOF
+# Record the offer only after the icon is added. No top bar yet stays quiet and is tried again next time.
+offer_top_bar_widget() {
+	local out
+	if out=$("$HOME/.local/bin/omarchy-server" widget on 2>&1); then
+		[ -z "$out" ] || printf '%s\n' "$out"
+		touch "$BASE/.widget-offered"
+	fi
+}
 if [ ! -e "$BASE/.widget-offered" ]; then
-	"$HOME/.local/bin/omarchy-server" widget on || true
-	touch "$BASE/.widget-offered"
+	offer_top_bar_widget
 fi
 
 # 3. Your account, created here in the terminal so the password never crosses the network.
@@ -448,19 +477,27 @@ if [ "$FROM_APP" = 1 ]; then
 fi
 
 sleep 2
-if systemctl --user is-active --quiet omarchy-server-web.service && systemctl --user is-active --quiet omarchyd.service; then
-	ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -vE '^(172\.(1[6-9]|2[0-9]|3[01])|10\.21)\.' || true)
+# Skip container bridges by name, not by address. The NAT note is only QEMU's 10.0.2.0/24.
+lan_urls() {
+	local port="$1" ip private_only=yes ips
+	ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 ~ /^(docker0|podman.*|cni.*|virbr.*|br-.*)$/ { next } { split($4, a, "/"); if (a[1] != "") print a[1] }' || true)
 	say "Omarchy Server is running."
-	private_only=yes
 	for ip in $ips; do
-		printf '    http://%s:%s\n' "$ip" "$PORT"
-		case "$ip" in 10.*) ;; *) private_only=no ;; esac
+		printf '    http://%s:%s\n' "$ip" "$port"
+		if [[ "$ip" =~ ^10\.0\.2\.([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$ ]]; then
+			:
+		else
+			private_only=no
+		fi
 	done
 	if [ "$private_only" = yes ] && [ -n "$ips" ]; then
 		printf '\n    Note: this machine only has a private address (a VM behind NAT), so other devices reach it\n'
-		printf '    through a port forward on the VM host to port %s. If you already set one up, it still\n' "$PORT"
+		printf '    through a port forward on the VM host to port %s. If you already set one up, it still\n' "$port"
 		printf '    works after updates and restarts: keep using http://<host-ip>:<forwarded port>.\n\n'
 	fi
+}
+if systemctl --user is-active --quiet omarchy-server-web.service && systemctl --user is-active --quiet omarchyd.service; then
+	lan_urls "$PORT"
 	printf '    Logs: journalctl --user -u omarchyd -u omarchy-server-web -f\n'
 else
 	die "A service didn't start. See: journalctl --user -u omarchyd -u omarchy-server-web -n 50"

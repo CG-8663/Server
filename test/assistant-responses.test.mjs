@@ -69,13 +69,15 @@ test('streamResponses posts to /responses and yields text, then a tool call buil
 })
 
 test('streamResponses takes an access token, as a ChatGPT sign-in would pass it', async () => {
+	let seenUrl
 	let auth
 	const fetchImpl = async (url, opts) => {
+		seenUrl = url
 		auth = opts.headers.authorization
-		assert.equal(url, 'https://api.openai.com/v1/responses')
 		return sse([{type: 'response.completed'}])
 	}
 	await collect(streamResponses({accessToken: 'tok', model: 'm', messages: [], tools: [], fetchImpl}))
+	assert.equal(seenUrl, 'https://api.openai.com/v1/responses')
 	assert.equal(auth, 'Bearer tok')
 })
 

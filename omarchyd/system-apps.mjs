@@ -187,8 +187,9 @@ export function createSystemApps({helper, helperFile = HELPER_FILE, run = execRu
 			startWeb(app)
 		},
 		async uninstall(app) {
-			stopWeb(app)
+			// Stop the page only after the package is gone. A failed remove must leave it running.
 			if (app.installedPackage) await helperSays('tailscale-remove')
+			stopWeb(app)
 		},
 		async logs(app) {
 			const service = await run('journalctl', ['-u', 'tailscaled.service', '-n', '300', '--no-pager', '-o', 'short-iso']).catch(() => 'Reading the tailscaled service’s log needs administrator rights here. In a terminal: sudo journalctl -u tailscaled\n')

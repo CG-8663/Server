@@ -656,7 +656,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			// a username and a password. Only the wallpaper (for the backdrop) is shared.
 			out.accounts = session ? mapped : mapped.slice(0, 1).map((a) => ({userId: '', name: '', avatar: null, wallpaper: a.wallpaper}))
 		} catch (error) {
-			out.server = {url: publicUrl, host, reachable: false, error: error.message}
+			out.server = {url: local ? '' : backend.baseUrl, host, local, reachable: false, error: error.message}
 		}
 		res.json(out)
 	})

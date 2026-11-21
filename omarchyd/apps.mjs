@@ -97,11 +97,25 @@ export const PERMISSIONS = {
 // An app's own data is under ~/.local too. createBindSources still claims that one folder.
 const under = (p, base) => Boolean(base) && (p === base || p.startsWith(`${base}/`))
 const CLOCK_FILES = ['/etc/localtime', '/etc/timezone']
+// `home` may itself be a symlink. A path under the link or under its target is still inside home.
+function homeBases(home) {
+	if (typeof home !== 'string' || !home.startsWith('/')) return []
+	const base = resolve(home).replace(/\/+$/, '')
+	const bases = [base]
+	try {
+		const real = realpathSync(base)
+		if (real && real !== base) bases.push(real)
+	} catch {
+		/* home is not there yet */
+	}
+	return bases
+}
 function refusedMount(path, home) {
-	if (path === '/' || path === home || path === '/home' || under(path, '/root') || under(path, '/boot') || under(path, '/proc') || under(path, '/run/user') || under(path, '/var/lib') || under(path, '/usr') || under(path, '/bin') || under(path, '/sbin')) return true
+	const bases = homeBases(home)
+	if (path === '/' || bases.includes(path) || path === '/home' || under(path, '/root') || under(path, '/boot') || under(path, '/proc') || under(path, '/run/user') || under(path, '/var/lib') || under(path, '/usr') || under(path, '/bin') || under(path, '/sbin')) return true
 	if (under(path, '/etc') && !CLOCK_FILES.includes(path)) return true
-	if (home && path.startsWith(`${home}/.`)) return true
-	if (/^\/home\/[^/]+$/.test(path) || (path.startsWith('/home/') && home && !under(path, home))) return true
+	if (bases.some((b) => path.startsWith(`${b}/.`))) return true
+	if (/^\/home\/[^/]+$/.test(path) || (path.startsWith('/home/') && bases.length && !bases.some((b) => under(path, b)))) return true
 	return false
 }
 const SOCKET = /(?:^|\/)(?:docker|podman)\.sock$|\$\{?DOCKER_SOCKET/
@@ -270,14 +284,64 @@ export function appPermissions(text, where = {}) {
 }
 
 // Compose-style ${NAME}, $NAME, ${NAME:-default}, ${NAME-default} and ${NAME:?message}.
+// The default may itself contain ${...}; a scan to the first } would stop too early.
 export function expandVars(text, env) {
-	return String(text).replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?)([-?+])([^}]*))?\}|([A-Za-z_][A-Za-z0-9_]*))/g, (_, name, colon, op, arg, bare) => {
-		const v = env[name ?? bare]
+	const s = String(text)
+	let out = ''
+	for (let i = 0; i < s.length; i++) {
+		if (s[i] !== '$') {
+			out += s[i]
+			continue
+		}
+		const braced = s[i + 1] === '{'
+		const nameAt = braced ? i + 2 : i + 1
+		const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(s.slice(nameAt))
+		if (!name) {
+			out += '$'
+			continue
+		}
+		let j = nameAt + name[0].length
+		let colon = false
+		let op = ''
+		let arg = ''
+		if (braced) {
+			if (s[j] === ':') {
+				colon = true
+				j++
+			}
+			if (s[j] === '-' || s[j] === '+' || s[j] === '?') {
+				op = s[j++]
+				const start = j
+				let depth = 0
+				while (j < s.length) {
+					if (s[j] === '$' && s[j + 1] === '{') {
+						depth++
+						j += 2
+						continue
+					}
+					if (s[j] === '}') {
+						if (depth === 0) break
+						depth--
+					}
+					j++
+				}
+				if (s[j] !== '}') {
+					out += '$'
+					continue
+				}
+				arg = s.slice(start, j)
+			} else if (s[j] !== '}') {
+				out += '$'
+				continue
+			}
+		}
+		const v = env[name[0]]
 		const empty = v === undefined || (colon && v === '')
-		if (op === '-') return empty ? arg : v
-		if (op === '+') return empty ? '' : arg
-		return v ?? ''
-	})
+		const repl = op === '-' ? (empty ? expandVars(arg, env) : v) : op === '+' ? (empty ? '' : expandVars(arg, env)) : (v ?? '')
+		out += repl
+		i = braced ? j : j - 1
+	}
+	return out
 }
 
 // Folders an app lets you place yourself (its listing's `folders:`): kept inside the app, or a folder
@@ -314,8 +378,10 @@ export const folderVar = (id) => `FOLDER_${id.toUpperCase()}`
 export function folderAllowed(path, home) {
 	if (typeof path !== 'string' || !path.startsWith('/') || path.includes('\0')) return false
 	const p = resolve(path)
-	if (p !== path.replace(/\/+$/, '') || !p.startsWith(`${home}/`)) return false
-	if (p.slice(home.length).split('/').some((part) => part.startsWith('.'))) return false
+	if (p !== path.replace(/\/+$/, '')) return false
+	const root = homeBases(home).find((b) => p.startsWith(`${b}/`))
+	if (!root) return false
+	if (p.slice(root.length).split('/').some((part) => part.startsWith('.'))) return false
 	return !refusedMount(p, home)
 }
 
@@ -424,20 +490,73 @@ function orderNeeds(id, byId, seen = new Set(), out = []) {
 	return out
 }
 const varName = (v) => /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(String(v ?? '').trim())?.[1] ?? null
-export function prepareCompose(appId, text, allocatePort, {shared = false, vars = {}, web = null, mcp = null} = {}) {
-	const doc = YAML.parse(text) ?? {}
-	const services = doc.services ?? {}
-	const proxy = services.app_proxy?.environment ?? {}
-	delete services.app_proxy
-	delete doc.version
-	for (const [key, s] of Object.entries(services)) {
-		if (!s || typeof s !== 'object') continue
-		if (Array.isArray(s.depends_on)) s.depends_on = s.depends_on.filter((d) => d !== 'app_proxy')
-		else if (s.depends_on && typeof s.depends_on === 'object') delete s.depends_on.app_proxy
-		// Store apps find their own services as <app>_<service>_1 (e.g. immich_postgres_1).
-		if (!s.container_name && s.network_mode !== 'host') s.container_name = `${appId}_${key}_1`
+// A number round-trip drops digits past 2^53 and leading zeros. Compose reads 0400 as octal.
+class KeptSource {
+	constructor(source) {
+		this.source = source
 	}
-	if (shared) doc.networks = {...(doc.networks ?? {}), default: {name: SHARED_NETWORK, external: true}}
+}
+function emitCompose(doc) {
+	YAML.visit(doc, {
+		Scalar(_key, node) {
+			if (typeof node.source === 'string' && (typeof node.value === 'number' || typeof node.value === 'bigint')) node.value = new KeptSource(node.source)
+		},
+	})
+	const schema = doc.schema.clone()
+	schema.tags.unshift({
+		identify: (value) => value instanceof KeptSource,
+		default: true,
+		tag: 'tag:yaml.org,2002:str',
+		stringify: (node) => node.value.source,
+	})
+	doc.schema = schema
+	return doc.toString({lineWidth: 0})
+}
+const pairKey = (pair) => (YAML.isScalar(pair.key) ? String(pair.key.value) : String(pair.key))
+const asJSON = (item) => (item && typeof item.toJSON === 'function' ? item.toJSON() : item)
+function appendPort(svc, spec) {
+	const ports = svc.get('ports')
+	// Seq.add stores the value as-is. A bare string has no toJSON, so later filters throw.
+	if (YAML.isSeq(ports)) ports.items.push(new YAML.Scalar(spec))
+	else if (ports == null) svc.set('ports', [spec])
+	else if (Array.isArray(ports)) svc.set('ports', [...ports, spec])
+	else svc.set('ports', [...(typeof ports === 'string' ? [...ports] : [ports]), spec])
+}
+function retainPorts(svc, keep) {
+	const ports = svc.get('ports')
+	if (YAML.isSeq(ports)) ports.items = ports.items.filter((item) => keep(asJSON(item)))
+	else if (Array.isArray(ports)) svc.set('ports', ports.filter((item) => keep(asJSON(item))))
+}
+export function prepareCompose(appId, text, allocatePort, {shared = false, vars = {}, web = null, mcp = null} = {}) {
+	const doc = YAML.parseDocument(String(text ?? ''))
+	if (doc.errors.length) throw doc.errors[0]
+	if (!doc.contents) doc.contents = doc.createNode({})
+	if (!YAML.isMap(doc.contents)) throw new Error('Compose file must be a mapping')
+	if (!YAML.isMap(doc.get('services'))) doc.set('services', {})
+	const serviceNodes = doc.get('services')
+	const proxyNode = serviceNodes.get('app_proxy')
+	const envNode = YAML.isMap(proxyNode) ? proxyNode.get('environment') : null
+	const proxy = YAML.isMap(envNode) ? (envNode.toJSON() ?? {}) : {}
+	serviceNodes.delete('app_proxy')
+	doc.delete('version')
+	for (const pair of serviceNodes.items) {
+		const s = pair.value
+		if (!YAML.isMap(s)) continue
+		const dep = s.get('depends_on')
+		if (YAML.isSeq(dep)) dep.items = dep.items.filter((item) => asJSON(item) !== 'app_proxy')
+		else if (YAML.isMap(dep)) dep.delete('app_proxy')
+		// Store apps find their own services as <app>_<service>_1 (e.g. immich_postgres_1).
+		if (!s.get('container_name') && s.get('network_mode') !== 'host') s.set('container_name', `${appId}_${pairKey(pair)}_1`)
+	}
+	if (shared) {
+		const existing = doc.get('networks')
+		// A map parsed from the file has .set. One just assigned is a plain object (Document.get unwraps it).
+		if (YAML.isMap(existing)) existing.set('default', {name: SHARED_NETWORK, external: true})
+		else doc.set('networks', {...(existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {}), default: {name: SHARED_NETWORK, external: true}})
+	}
+	const byName = {}
+	for (const pair of serviceNodes.items) if (YAML.isMap(pair.value)) byName[pairKey(pair)] = pair.value
+	const services = Object.fromEntries(Object.entries(byName).map(([k, n]) => [k, n.toJSON() ?? {}]))
 	// APP_PORT / APP_HOST may name a variable from the app's exports.sh (e.g. $APP_MEMPOOL_PORT).
 	const resolved = (v) => {
 		const n = varName(v)
@@ -462,7 +581,7 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 			const key = services[host] ? host : services[name] ? name : byContainer ? byContainer : byAddress ? byAddress : Object.keys(services).length === 1 ? Object.keys(services)[0] : null
 			if (!key) throw new Error(`Can’t tell which service is the web interface (${host || 'none named'})`)
 			internalPort = allocatePort()
-			services[key].ports = [...(services[key].ports ?? []), `127.0.0.1:${internalPort}:${appPort}`]
+			appendPort(byName[key], `127.0.0.1:${internalPort}:${appPort}`)
 			boundService = key
 		}
 	}
@@ -470,14 +589,14 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 	// port (web: {service, port}). Any host port the file publishes for it (so it also runs on its own
 	// with `docker compose up`) gives way to Omarchy Server's private one behind the sign-in.
 	if (!internalPort && web && services[web.service] && Number.isInteger(web.port)) {
-		const svc = services[web.service]
+		const svc = byName[web.service]
 		webContainerPort = web.port
-		if (svc.network_mode === 'host') {
+		if (services[web.service].network_mode === 'host') {
 			internalPort = null // holds its own port, like Home Assistant
 		} else {
-			svc.ports = (svc.ports ?? []).filter((p) => containerPort(p) !== web.port)
+			retainPorts(svc, (p) => containerPort(p) !== web.port)
 			internalPort = allocatePort()
-			svc.ports.push(`127.0.0.1:${internalPort}:${web.port}`)
+			appendPort(svc, `127.0.0.1:${internalPort}:${web.port}`)
 			boundService = web.service
 		}
 	}
@@ -489,16 +608,15 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 	if (mcpSvc && typeof mcpPort === 'number' && Number.isInteger(mcpPort) && mcpPort >= 1 && mcpPort <= 65535) {
 		if (sameBinding) mcpInternalPort = internalPort
 		else if (mcpSvc.network_mode !== 'host') {
-			mcpSvc.ports = (mcpSvc.ports ?? []).filter((p) => containerPort(p) !== mcpPort)
+			retainPorts(byName[mcp.service], (p) => containerPort(p) !== mcpPort)
 			mcpInternalPort = allocatePort()
-			mcpSvc.ports.push(`127.0.0.1:${mcpInternalPort}:${mcpPort}`)
+			appendPort(byName[mcp.service], `127.0.0.1:${mcpInternalPort}:${mcpPort}`)
 		} else if (boundService === null && internalPort && webContainerPort !== null && mcpPort === webContainerPort) {
 			// The app binds this port on 127.0.0.1 itself. Nothing else can publish it.
 			mcpInternalPort = internalPort
 		}
 	}
-	doc.services = services
-	return {text: YAML.stringify(doc), internalPort, mcpInternalPort}
+	return {text: emitCompose(doc), internalPort, mcpInternalPort}
 }
 
 // Can a browser use this app's web page right now? One answer for every screen:
@@ -1553,10 +1671,21 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		let finalText = prepared.text
 		if ((app.permissions ?? []).includes('containers')) {
 			const sock = engineEnv.DOCKER_HOST.replace(/^unix:\/\//, '')
-			const doc = YAML.parse(finalText)
-			for (const svc of Object.values(doc.services ?? {}))
-				svc.volumes = (svc.volumes ?? []).map((v) => (typeof v === 'string' && SOCKET.test(v.split(':')[0]) ? [sock, ...v.split(':').slice(1)].join(':') : v))
-			finalText = YAML.stringify(doc)
+			const edited = YAML.parseDocument(finalText)
+			if (edited.errors.length) throw edited.errors[0]
+			const services = edited.get('services')
+			if (YAML.isMap(services)) {
+				for (const pair of services.items) {
+					if (!YAML.isMap(pair.value)) continue
+					const volumes = pair.value.get('volumes')
+					if (!YAML.isSeq(volumes)) continue
+					for (const item of volumes.items) {
+						if (!YAML.isScalar(item) || typeof item.value !== 'string' || !SOCKET.test(item.value.split(':')[0])) continue
+						item.value = [sock, ...item.value.split(':').slice(1)].join(':')
+					}
+				}
+			}
+			finalText = emitCompose(edited)
 		}
 		// System ports (below 1024): only for apps you allowed; the helper lowers the limit once.
 		// Expand with the env Compose will bind: the app .env, process env, and composeEnv (exports.sh).
@@ -1765,6 +1894,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		let step = 'getting its files ready'
 		// placeApp records the new loopback port before the new containers are up. Keep the old one if that fails.
 		const previousMcpPort = app.mcpInternalPort
+		const composePath = join(appDir(app.id), 'compose.omarchy.yml')
+		const previousCompose = await readFile(composePath).catch(() => null)
+		const previousExports = app.exports
 		let switched = false
 		try {
 			const internalPort = await placeApp(src, app)
@@ -1781,6 +1913,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			await compose(app, 'up', '-d', '--remove-orphans')
 			markStarted(app.id)
 			app.permissions = [...new Set([...app.permissions, ...wants])]
+			const nextPorts = [...(src.openPorts ?? [])]
+			for (const p of app.openPorts ?? []) if (!nextPorts.includes(p)) await firewall?.close(p)
+			if (nextPorts.length) app.openPorts = nextPorts
+			else delete app.openPorts
 			Object.assign(app, {version: src.version, name: src.name, icon: src.icon, path: src.path, requiresHttps: src.requiresHttps || undefined, internalHttps: src.web?.https || undefined})
 			if (src.mcp) app.mcp = src.mcp
 			else delete app.mcp
@@ -1791,6 +1927,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				if (previousMcpPort) app.mcpInternalPort = previousMcpPort
 				else delete app.mcpInternalPort
 			}
+			// placeApp rewrites the compose file and exports before pull. Put them back if pull or up fails.
+			if (previousCompose) await writeFile(composePath, previousCompose, {mode: 0o600}).catch(() => {})
+			else await rm(composePath, {force: true}).catch(() => {})
+			if (previousExports === undefined) delete app.exports
+			else app.exports = previousExports
 			if (error instanceof RpcError) throw error
 			console.error(`[omarchyd] updating ${app.id}:`, error)
 			const detail = String(error.message ?? error).replace(/\s+/g, ' ').trim().slice(-300)
@@ -1845,9 +1986,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			if (app.port) await firewall?.close(app.port)
 			if (app.viewPort) await firewall?.close(app.viewPort)
 			for (const p of app.openPorts ?? []) await firewall?.close(p)
-			if (app.system) await systemApps?.uninstall(app)
-			// A failed `down` leaves the containers running. Keep the app listed so it can be retried.
+			// A failed `down` (or a system uninstall) leaves the app in place so it can be retried.
 			try {
+				if (app.system) await systemApps?.uninstall(app)
 				if (await exists(join(appDir(app.id), 'compose.omarchy.yml'))) await compose(app, 'down', '--volumes', '--remove-orphans')
 				await stopTorIfIdle(app.id)
 			} catch (error) {

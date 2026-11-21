@@ -1,5 +1,77 @@
 // Talks only to the Omarchy Server server (same origin). Shapes mirror omarchyd.
 
+export const DEFAULT_TIMEOUT_MS = 20_000
+export const SLOW_TIMEOUT_MS = 10 * 60_000
+export type RequestOptions = {timeoutMs?: number; signal?: AbortSignal}
+
+// Long blocking server operations keep a generous timeout; normal RPCs and polling fail in 20 s.
+const SLOW_RPC = new Set([
+	'unraid.connect',
+	'unraid.scan',
+	'backups.configure',
+	'backups.shares',
+	'backups.restoreApp',
+	'backups.connectExisting',
+	'backups.snapshots',
+	'backups.computerSnapshots',
+	'backups.setComputer',
+	'backups.computerFolders',
+	'storage.growSystem',
+	'system.replaceCertificate',
+	'system.desktopSignIn',
+	'system.desktopShare',
+	'omarchy.removeTheme',
+	'storage.createPool',
+	'storage.addToPool',
+	'storage.importPool',
+	'storage.forgetPool',
+	'storage.unmount',
+	'storage.mount',
+	'storage.format',
+	'swarm.storage.unmount',
+	'swarm.storage.mount',
+	'swarm.storage.format',
+	'swarm.storage.createPool',
+	'swarm.storage.addToPool',
+	'swarm.storage.importPool',
+	'swarm.storage.forgetPool',
+	'swarm.storage.scrub',
+	'files.copy',
+	'files.unarchive',
+	'files.move',
+	'files.delete',
+	'files.emptyTrash',
+	'appStore.addRepository',
+	'appStore.refresh',
+	'omarchy.installPlugin',
+	'swarm.action',
+	'system.update',
+	'machines.uninstall',
+	'machines.snapshot',
+	'machines.revertSnapshot',
+	'machines.deleteSnapshot',
+	'machines.resizeDisk',
+	'machines.addDisk',
+	'machines.restart',
+	'machines.backup',
+	'machines.restoreBackup',
+	'machines.clone',
+	'wifi.connect',
+	'hardware.raid.addDevice',
+	'hardware.raid.addMirror',
+	'hardware.raid.addAccelerator',
+	'hardware.raid.replaceDevice',
+	'hardware.raid.transitionToFailsafeRaidz',
+	'hardware.raid.scrub',
+])
+
+const RESTARTING_MESSAGE = 'Omarchy Server is restarting or not answering. Wait a moment and try again.'
+const FRIENDLY_ERROR: Record<string, string> = {
+	UNREACHABLE: RESTARTING_MESSAGE,
+	BAD_RESPONSE: RESTARTING_MESSAGE,
+	NOT_CONFIGURED: RESTARTING_MESSAGE,
+}
+
 export class ApiError extends Error {
 	code: string
 	status: number
@@ -10,11 +82,47 @@ export class ApiError extends Error {
 	}
 }
 
-async function handle<T>(res: Response): Promise<T> {
-	const body = await res.json().catch(() => null)
-	if (!res.ok || body?.error) {
-		const err = body?.error ?? {}
-		const error = new ApiError(err.message ?? `Request failed (${res.status})`, err.code ?? 'ERROR', res.status)
+function makeTimeoutSignal(timeoutMs: number, external?: AbortSignal) {
+	// A ref'd timer, cleared when the request ends. AbortSignal.timeout() does not keep the
+	// event loop alive, so a test (and a quiet tab) never saw the timeout fire.
+	const controller = new AbortController()
+	let expired = false
+	const timer = setTimeout(() => {
+		expired = true
+		controller.abort(typeof DOMException === 'function' ? new DOMException('The operation was aborted due to timeout', 'TimeoutError') : undefined)
+	}, timeoutMs)
+	const onExternalAbort = () => controller.abort()
+	if (external) {
+		if (external.aborted) controller.abort()
+		else external.addEventListener('abort', onExternalAbort, {once: true})
+	}
+	return {
+		signal: controller.signal,
+		cleanup: () => {
+			clearTimeout(timer)
+			external?.removeEventListener('abort', onExternalAbort)
+		},
+		timedOut: () => expired,
+	}
+}
+
+async function handle<T>(res: Response, signal?: AbortSignal): Promise<T> {
+	const body: unknown = await res.json().catch((err) => {
+		if (signal?.aborted) throw err
+		return null
+	})
+	const hasError = body !== null && typeof body === 'object' && !Array.isArray(body) && 'error' in body && Boolean((body as {error?: unknown}).error)
+	if (!res.ok || hasError) {
+		const err = hasError ? (body as {error: {message?: string; code?: string}}).error : {}
+		const code = err.code ?? (!hasError && (res.status === 502 || res.status === 503 || res.status === 504) ? 'UNREACHABLE' : 'ERROR')
+		let message = err.message ?? `Request failed (${res.status})`
+		if (Object.hasOwn(FRIENDLY_ERROR, code)) {
+			if (err.message && err.message !== FRIENDLY_ERROR[code] && typeof console !== 'undefined') {
+				console.warn('[omarchy-server]', code, err.message)
+			}
+			message = FRIENDLY_ERROR[code]
+		}
+		const error = new ApiError(message, code, res.status)
 		// A mistyped password or authenticator code is also 401. Leave the person on the form.
 		const credentialMiss =
 			err.message === 'Incorrect password' ||
@@ -23,28 +131,61 @@ async function handle<T>(res: Response): Promise<T> {
 			err.message === 'Enter the 6-digit code from your authenticator app (2FA)' ||
 			err.message === 'That 2FA code isn’t right. Try the current one.' ||
 			err.message === 'That 2FA code was already used. Wait for the next one.'
-		if (res.status === 401 && err.code === 'UNAUTHORIZED' && !credentialMiss) window.dispatchEvent(new Event('touch:signed-out'))
+		if (res.status === 401 && err.code === 'UNAUTHORIZED' && !credentialMiss && typeof window !== 'undefined') window.dispatchEvent(new Event('touch:signed-out'))
 		throw error
+	}
+	if (!body || typeof body !== 'object' || Array.isArray(body)) {
+		throw new ApiError(`Omarchy Server sent an answer this page can’t read (${res.status})`, 'INVALID_RESPONSE', res.status)
 	}
 	return body as T
 }
 
-const post = <T>(path: string, body?: unknown) =>
-	fetch(path, {
-		method: 'POST',
-		headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
-		body: JSON.stringify(body ?? {}),
-		credentials: 'same-origin',
-	}).then((r) => handle<T>(r))
+async function request<T>(input: string, init: RequestInit, options?: RequestOptions, defaultTimeout = DEFAULT_TIMEOUT_MS): Promise<T> {
+	if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+		throw new ApiError('You’re offline. Check your connection and try again.', 'OFFLINE', 0)
+	}
+	const {signal, cleanup, timedOut} = makeTimeoutSignal(options?.timeoutMs ?? defaultTimeout, options?.signal)
+	try {
+		const res = await fetch(input, {...init, signal})
+		return await handle<T>(res, signal)
+	} catch (error) {
+		if (error instanceof ApiError) throw error
+		if (timedOut() || (error instanceof Error && error.name === 'TimeoutError')) {
+			throw new ApiError('The server took too long to answer. Check your connection and try again.', 'TIMEOUT', 0)
+		}
+		if (options?.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+			throw new ApiError('The request was interrupted before the server answered.', 'ABORTED', 0)
+		}
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			throw new ApiError('You’re offline. Check your connection and try again.', 'OFFLINE', 0)
+		}
+		throw new ApiError('Can’t reach Omarchy Server. Check your connection and try again.', 'NETWORK', 0)
+	} finally {
+		cleanup()
+	}
+}
 
-export async function query<T>(path: string, input?: unknown): Promise<T> {
+export const post = <T>(path: string, body?: unknown, options?: RequestOptions, defaultTimeout = DEFAULT_TIMEOUT_MS) =>
+	request<T>(
+		path,
+		{
+			method: 'POST',
+			headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
+			body: JSON.stringify(body ?? {}),
+			credentials: 'same-origin',
+		},
+		options,
+		defaultTimeout,
+	)
+
+export async function query<T>(path: string, input?: unknown, options?: RequestOptions): Promise<T> {
 	const qs = input === undefined ? '' : `?input=${encodeURIComponent(JSON.stringify(input))}`
-	const body = await fetch(`/api/rpc/${path}${qs}`, {credentials: 'same-origin'}).then((r) => handle<{data: T}>(r))
+	const body = await request<{data: T}>(`/api/rpc/${path}${qs}`, {credentials: 'same-origin'}, options, SLOW_RPC.has(path) ? SLOW_TIMEOUT_MS : DEFAULT_TIMEOUT_MS)
 	return body.data
 }
 
-export async function mutate<T = unknown>(path: string, input?: unknown): Promise<T> {
-	const body = await post<{data: T}>(`/api/rpc/${path}`, {input})
+export async function mutate<T = unknown>(path: string, input?: unknown, options?: RequestOptions): Promise<T> {
+	const body = await post<{data: T}>(`/api/rpc/${path}`, {input}, options, SLOW_RPC.has(path) ? SLOW_TIMEOUT_MS : DEFAULT_TIMEOUT_MS)
 	return body.data
 }
 
@@ -54,6 +195,7 @@ export type Bootstrap = {
 	server: null | {
 		url: string
 		host: string
+		local?: boolean
 		reachable: boolean
 		version?: string
 		name?: string
@@ -69,10 +211,10 @@ export type Bootstrap = {
 	session: null | {accountId: string; mode: 'native' | 'legacy'}
 }
 
-export const getBootstrap = () => fetch('/api/bootstrap', {credentials: 'same-origin'}).then((r) => handle<Bootstrap>(r))
+export const getBootstrap = (options?: RequestOptions) => request<Bootstrap>('/api/bootstrap', {credentials: 'same-origin'}, options, DEFAULT_TIMEOUT_MS)
 export const setup = (url: string) => post<{ok: true; url: string; version: string}>('/api/setup', {url})
-export const login = (body: {username: string; password: string; totpToken?: string}) =>
-	post<{ok: true; accountId: string}>('/api/auth/login', body)
+export const login = (body: {username: string; password: string; totpToken?: string}, options?: RequestOptions) =>
+	post<{ok: true; accountId: string}>('/api/auth/login', body, options)
 export const logout = () => post('/api/auth/logout')
 
 // ---- omarchyd shapes ---------------------------------------------------------

@@ -5,6 +5,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {lazy, memo, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {mutate, query} from '../api'
+import {queryProblem, useBrowserOnline} from '../connection'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
@@ -86,6 +87,8 @@ function useSwarmAction() {
 // The section in Machines (phone) and the Local swarm view in the desktop's Machines window.
 export function LocalSwarm({heading = true}: {heading?: boolean}) {
 	const swarm = useSwarm()
+	const browserOnline = useBrowserOnline()
+	const problem = queryProblem(swarm, browserOnline)
 	const list = swarm.data ?? []
 	const [selectedId, setSelectedId] = useState<string | null>(null)
 	const [adding, setAdding] = useState(false)
@@ -115,16 +118,16 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 					</button>
 				</div>
 			)}
-			{swarm.error && (
-				<div className="error">
+			{problem && (
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
-					{(swarm.error as Error).message}
+					{problem}
 				</div>
 			)}
 			{list.map((a) => (
 				<AgentCard key={a.id} a={a} onClick={() => (haptic(6), setSelectedId(a.id))} />
 			))}
-			{swarm.isSuccess && list.length === 0 && (
+			{!problem && swarm.isSuccess && list.length === 0 && (
 				<div className="glass empty">
 					<span className="big">
 						<Icon name="devices" size={30} />

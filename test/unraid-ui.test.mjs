@@ -108,6 +108,12 @@ test('installed VMs are deselected by default and disabled in Choose', async () 
 	assert.match(src, /v\.installed \? 'Already here'/)
 })
 
+test('the share step does not promise Unraid’s name is reused unchanged', async () => {
+	const src = await readFile(new URL('../web/src/unraid.tsx', import.meta.url), 'utf8')
+	assert.doesNotMatch(src, /with the same name/)
+	assert.doesNotMatch(src, /same names as on Unraid/)
+})
+
 test('unknown container sizes format as size unknown and mark totals as a minimum', async () => {
 	assert.equal(formatBytes(null), 'size unknown')
 	assert.equal(formatBytes(0), '0 B')

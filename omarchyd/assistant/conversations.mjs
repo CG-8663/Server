@@ -15,6 +15,7 @@ const CHAT_ID = /^c_[0-9a-f]{12}$/
 const ACTION_ID = /^a_[0-9a-f]{12}$/
 const missingChat = () => new RpcError('NOT_FOUND', 'That chat isn’t here')
 const missingStep = () => new RpcError('NOT_FOUND', 'That step isn’t here')
+const INTERRUPTED = 'Interrupted by a restart'
 
 // One read-modify-write at a time per chat, so a snapshot from before Approve cannot land after it.
 // Re-entrant so writeRow can take the same lock the caller already holds.
@@ -52,7 +53,7 @@ function canReplace(current, next) {
 	return false
 }
 
-export function createConversations({dataDir, now = () => Date.now()}) {
+export function createConversations({dataDir, now = () => Date.now(), recoverRunning = false}) {
 	const dir = join(dataDir, 'assistant', 'conversations')
 	const loaded = mkdir(dir, {recursive: true, mode: 0o700})
 	// Factory reset bumps this before deleting. A write records the generation when it is queued
@@ -61,25 +62,16 @@ export function createConversations({dataDir, now = () => Date.now()}) {
 	// Paths whose write has been queued but may not be renamed yet, so reset can delete them on that same queue.
 	const writing = new Set()
 	let dirReal = null
+	let recovering = null
 	const root = async () => {
 		await loaded
 		dirReal ??= await realpath(dir)
-		return dirReal
-	}
-	// The path is the real conversations directory plus a safe file name. Symlinks are refused.
-	async function fileFor(id) {
-		if (typeof id !== 'string' || !CHAT_ID.test(id)) throw missingChat()
-		const base = await root()
-		const file = join(base, `${id}.json`)
-		if ((await realpath(join(file, '..'))) !== base) throw missingChat()
-		try {
-			const st = await lstat(file)
-			if (!st.isFile()) throw missingChat()
-		} catch (error) {
-			if (error instanceof RpcError) throw error
-			if (error.code !== 'ENOENT') throw missingChat()
+		// A restart has no step still running in memory. Close those once, before any chat is read.
+		if (recoverRunning) {
+			recovering ??= recoverInterrupted(dirReal)
+			await recovering
 		}
-		return file
+		return dirReal
 	}
 	async function readText(file) {
 		let fh
@@ -92,6 +84,70 @@ export function createConversations({dataDir, now = () => Date.now()}) {
 			return await fh.readFile({encoding: 'utf8'})
 		} finally {
 			await fh.close()
+		}
+	}
+	// The path is the real conversations directory plus a safe file name. Symlinks are refused.
+	// base is already the real directory, so recovery does not call root() again.
+	async function fileAt(base, id) {
+		if (typeof id !== 'string' || !CHAT_ID.test(id)) throw missingChat()
+		const file = join(base, `${id}.json`)
+		if ((await realpath(join(file, '..'))) !== base) throw missingChat()
+		try {
+			const st = await lstat(file)
+			if (!st.isFile()) throw missingChat()
+		} catch (error) {
+			if (error instanceof RpcError) throw error
+			if (error.code !== 'ENOENT') throw missingChat()
+		}
+		return file
+	}
+	async function fileFor(id) {
+		return fileAt(await root(), id)
+	}
+	// After a restart no step is still running in memory; close any left open so the chat can go on.
+	async function recoverInterrupted(base) {
+		const names = await readdir(base).catch(() => [])
+		for (const name of names) {
+			if (!name.endsWith('.json')) continue
+			const id = name.slice(0, -5)
+			if (!CHAT_ID.test(id)) continue
+			await withLock(id, async () => {
+				let file
+				let row
+				try {
+					file = await fileAt(base, id)
+					row = JSON.parse(await readText(file))
+				} catch {
+					return
+				}
+				if (!row || typeof row !== 'object' || Array.isArray(row) || !Array.isArray(row.actions)) return
+				if (!row.actions.some((a) => a && a.status === 'running')) return
+				if (!Array.isArray(row.messages)) row.messages = []
+				const t = now()
+				row.id = id
+				row.actions = row.actions.map((a) => {
+					if (!a || typeof a !== 'object') return a
+					if (a.status !== 'running') return {...a, conversationId: id}
+					if (a.toolCallId && !row.messages.some((m) => m?.role === 'tool' && m.toolCallId === a.toolCallId)) {
+						row.messages.push({
+							role: 'tool',
+							toolCallId: a.toolCallId,
+							name: a.toolName,
+							content: INTERRUPTED,
+							at: t,
+						})
+					}
+					return {...a, status: 'error', error: INTERRUPTED, resolvedAt: t, conversationId: id}
+				})
+				row.updatedAt = t
+				const seen = epoch
+				writing.add(file)
+				try {
+					await writeAtomic(file, () => (seen !== epoch ? null : JSON.stringify(row, null, '\t')), {mode: 0o600})
+				} finally {
+					writing.delete(file)
+				}
+			})
 		}
 	}
 	async function readOwned(userId, id) {

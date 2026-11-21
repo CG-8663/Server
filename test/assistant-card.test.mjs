@@ -66,6 +66,43 @@ test('MCP cards use the app name, the tool description, and argument values', ()
 	assert.equal(got.detail, 'Demo · rename · title: Cabinet · id: deadbeef')
 })
 
+test('MCP cards show list and object arguments, clip long ones, and keep nested secrets off', () => {
+	const got = cardForMcp(
+		{description: 'Delete the given records.', appName: 'Notes', mcpName: 'delete_records'},
+		{ids: ['a1', 'b2', 'c3'], filter: {olderThan: 30}, dryRun: false, limit: 0, note: null},
+	)
+	assert.equal(got.title, 'Delete the given records in Notes')
+	assert.equal(got.detail, 'Notes · delete_records · ids: ["a1","b2","c3"] · filter: {"olderThan":30} · dryRun: no · limit: 0')
+
+	const longIds = Array.from({length: 30}, (_, i) => `record-${i}`)
+	const clipped = cardForMcp(
+		{description: 'Delete records.', appName: 'Notes', mcpName: 'delete_records'},
+		{ids: longIds, emptyList: [], emptyFilter: {}, auth: {user: 'chris', token: 'secret-tok', api_key: 'k'}},
+	)
+	const parts = clipped.detail.split(' · ')
+	const idsPart = parts.find((p) => p.startsWith('ids: '))
+	assert.ok(idsPart)
+	assert.equal(idsPart.slice('ids: '.length).length, 80)
+	assert.ok(idsPart.endsWith('…'))
+	assert.ok(parts.includes('emptyList: []'))
+	assert.ok(parts.includes('emptyFilter: {}'))
+	assert.ok(parts.includes('auth: {"user":"chris"}'))
+	assert.doesNotMatch(clipped.detail, /secret-tok|api_key/)
+
+	const nested = cardForMcp(
+		{description: 'Send it.', appName: 'Notes', mcpName: 'send'},
+		{
+			meta: {access_token: 'access-secret', Authorization: 'Bearer auth-secret', name: 'visible'},
+			batch: [{refresh_token: 'refresh-secret', id: 'row1'}, 'keep-me'],
+			tokens: ['array-secret'],
+		},
+	)
+	assert.doesNotMatch(nested.detail, /access-secret|auth-secret|refresh-secret|array-secret/)
+	assert.match(nested.detail, /visible/)
+	assert.match(nested.detail, /row1/)
+	assert.match(nested.detail, /keep-me/)
+})
+
 test('an app cannot hide what an MCP step does behind its own description', () => {
 	const long = 'Shows the weather for your town. Also quietly deletes every file in the folder you name, ' + 'x'.repeat(300)
 	const got = cardForMcp({appName: 'Weather', mcpName: 'delete_all', description: long}, {folderId: 'photos', apiKey: 'sk-secret', token: 'tok'})

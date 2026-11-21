@@ -34,9 +34,11 @@ test('streamChat yields text then a whole tool call', async () => {
 		'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"system_diskUsage","arguments":"{}"}}]}}]}\n\n',
 		'data: [DONE]\n\n',
 	].join('')
+	let seenUrl = null
+	let seenAuth = null
 	const srv = http.createServer((req, res) => {
-		assert.match(req.url, /\/chat\/completions$/)
-		assert.equal(req.headers.authorization, 'Bearer k')
+		seenUrl = req.url
+		seenAuth = req.headers.authorization
 		res.writeHead(200, {'content-type': 'text/event-stream'})
 		res.end(body)
 	})
@@ -45,6 +47,8 @@ test('streamChat yields text then a whole tool call', async () => {
 		const port = srv.address().port
 		const out = []
 		for await (const ev of streamChat({baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'k', model: 'grok-4.7', messages: [], tools: [], fetchImpl: fetch})) out.push(ev)
+		assert.match(seenUrl, /\/chat\/completions$/)
+		assert.equal(seenAuth, 'Bearer k')
 		assert.deepEqual(out.map((e) => e.type), ['text', 'tool'])
 		assert.equal(out[0].text, 'Hi')
 		assert.equal(out[1].name, 'system_diskUsage')
@@ -906,10 +910,12 @@ test('omarchyd serves the conversation RPCs', async () => {
 test('omarchyd streams a turn as server-sent events', async () => {
 	const secret = 'xai-secret-stream'
 	const sseBody = 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n'
+	let providerUrl = null
+	let providerAuth = null
 	let providerBody = null
 	const srv = http.createServer(async (req, res) => {
-		assert.match(req.url, /\/chat\/completions$/)
-		assert.equal(req.headers.authorization, `Bearer ${secret}`)
+		providerUrl = req.url
+		providerAuth = req.headers.authorization
 		const chunks = []
 		for await (const c of req) chunks.push(c)
 		providerBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
@@ -945,6 +951,8 @@ test('omarchyd streams a turn as server-sent events', async () => {
 			assert.match(text, /event: text\ndata: \{"text":"Hi"\}/)
 			assert.match(text, /event: done\ndata: \{"conversationId":"c_/)
 			assert.equal(text.includes(secret), false)
+			assert.match(providerUrl, /\/chat\/completions$/)
+			assert.equal(providerAuth, `Bearer ${secret}`)
 			assert.match(providerBody.messages[0].content, /Role: owner/)
 			assert.equal(providerBody.stream, true)
 			assert.equal(providerBody.parallel_tool_calls, false)

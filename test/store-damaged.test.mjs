@@ -44,7 +44,7 @@ test('empty config.json starts from {} and keeps the damaged bytes', async () =>
 	const aside = await readOrNull(`${file}.bad`)
 	assert.equal(keptAside('', current, aside), true)
 	if (current) assert.notEqual(current.toString('utf8').trim(), '{}')
-	assert.ok(logs.some((line) => line === 'config.json is empty or invalid and was left unchanged'))
+	assert.ok(logs.some((line) => line === 'config.json is empty or invalid and was moved to config.json.bad'))
 	assert.ok(logs.every((line) => !line.includes(dir) && !line.includes(root)))
 })
 
@@ -115,7 +115,7 @@ test('missing files use the fallback and do not create .bad files', async () => 
 	assert.equal(await readOrNull(join(dir, 'sessions.json.bad')), null)
 })
 
-test('an existing .bad file is kept and the damaged file is not rewritten at startup', async () => {
+test('an existing .bad file is kept and the damaged bytes move to the next free aside', async () => {
 	const dir = join(root, 'bad-exists')
 	await mkdir(dir)
 	const older = '{"kept":true}'
@@ -128,8 +128,10 @@ test('an existing .bad file is kept and the damaged file is not rewritten at sta
 	assert.equal(store.sessionCount(), 0)
 	assert.equal(await readFile(join(dir, 'config.json.bad'), 'utf8'), older)
 	assert.equal(await readFile(join(dir, 'sessions.json.bad'), 'utf8'), 'null')
-	assert.equal(await readFile(join(dir, 'config.json'), 'utf8'), '')
-	assert.equal(await readFile(join(dir, 'sessions.json'), 'utf8'), '"x"')
+	assert.equal(await readFile(join(dir, 'config.json.bad.1'), 'utf8'), '')
+	assert.equal(await readFile(join(dir, 'sessions.json.bad.1'), 'utf8'), '"x"')
+	assert.equal(await readOrNull(join(dir, 'config.json')), null)
+	assert.equal(await readOrNull(join(dir, 'sessions.json')), null)
 })
 
 test('a directory where config.json should be still rejects createStore', async () => {

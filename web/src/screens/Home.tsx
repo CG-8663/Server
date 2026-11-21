@@ -1,6 +1,7 @@
 import {useMemo} from 'react'
 
 import {diskPct, type UserApp} from '../api'
+import {queryProblem, useBrowserOnline} from '../connection'
 import {useApps, useBattery, useCpu, useDisk, useGpus, useMemory, useRecent, useTemp, useUpdates, useUptime, useUser} from '../data'
 import {batteryGaugeItem} from '../battery'
 import {gpuGaugeItems} from '../gauges'
@@ -61,6 +62,8 @@ export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app:
 	const {look} = useAssistantLook()
 	const user = useUser()
 	const apps = useApps()
+	const browserOnline = useBrowserOnline()
+	const problem = queryProblem(apps, browserOnline)
 	const updates = useUpdates()
 	const recent = useRecent()
 	const temp = useTemp()
@@ -75,11 +78,13 @@ export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app:
 
 	const summary = apps.isLoading
 		? 'Checking on your apps…'
-		: problems.length
-			? `${problems.length} app${problems.length > 1 ? 's need' : ' needs'} attention`
-			: list.length
-				? 'Everything is running smoothly.'
-				: 'Your server is ready for its first app.'
+		: problem && !apps.data
+			? 'Can’t reach your server right now.'
+			: problems.length
+				? `${problems.length} app${problems.length > 1 ? 's need' : ' needs'} attention`
+				: list.length
+					? 'Everything is running smoothly.'
+					: 'Your server is ready for its first app.'
 
 	const open = (app: UserApp) => {
 		haptic(6)
@@ -209,17 +214,26 @@ export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app:
 								)
 							})}
 						</div>
-						{list.length === 0 && (
-							<div className="glass empty">
-								<span className="big">
-									<Icon name="store" size={30} />
-								</span>
-								<b>No apps yet</b>
-								<span>Install your first app from the App Store.</span>
-								<button className="btn primary small" onClick={() => go('store')}>
-									Browse apps
-								</button>
+						{problem && !apps.data ? (
+							<div className="error" role="alert" style={{marginTop: 14}}>
+								<Icon name="alert" size={18} />
+								{problem}
 							</div>
+						) : (
+							!problem &&
+							apps.isSuccess &&
+							list.length === 0 && (
+								<div className="glass empty">
+									<span className="big">
+										<Icon name="store" size={30} />
+									</span>
+									<b>No apps yet</b>
+									<span>Install your first app from the App Store.</span>
+									<button className="btn primary small" onClick={() => go('store')}>
+										Browse apps
+									</button>
+								</div>
+							)
 						)}
 					</>
 				)}

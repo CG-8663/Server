@@ -16,12 +16,13 @@ import {spawn} from 'node:child_process'
 import {createHash, randomBytes} from 'node:crypto'
 import {access, chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile} from 'node:fs/promises'
 import os from 'node:os'
-import {dirname, join, relative, sep} from 'node:path'
+import {basename, dirname, join, relative, sep} from 'node:path'
 
 import {Transform} from 'node:stream'
 import {pipeline} from 'node:stream/promises'
 
 import {removeAtomic, writeAtomic} from './atomic.mjs'
+import {fetchErrorMessage, httpDownloadErrorMessage} from './fetch-error.mjs'
 import {RpcError} from './rpc.mjs'
 
 export const RESTIC_VERSION = '0.18.1'
@@ -191,25 +192,43 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	let startedAt = 0
 
 	const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
-	// A missing file stays the default. Empty, invalid, or wrong-shaped JSON is left on disk
-	// (secrets.json is the NAS password) and the log names the file only.
+	// Only a missing file is "not set up". Any other read, parse, or shape error is damaged:
+	// the bytes stay, and a later save must not replace them with defaults.
+	const damagedFiles = new Set()
+	const noteDamaged = (file) => {
+		if (file === configFile || file === secretFile || file === historyFile) damagedFiles.add(file)
+		console.error('[omarchyd] backups: damaged file', file)
+	}
 	const readBackupFile = async (file, fallback, accept) => {
-		const text = await readFile(file, 'utf8').catch(() => null)
-		if (text === null) return fallback
+		let text
+		try {
+			text = await readFile(file, 'utf8')
+		} catch (error) {
+			if (error?.code === 'ENOENT') return fallback
+			noteDamaged(file)
+			return fallback
+		}
 		try {
 			const value = JSON.parse(text)
 			if (accept(value)) return value
 		} catch {
 			/* not JSON */
 		}
-		console.error('[omarchyd] backups: damaged file', file)
+		noteDamaged(file)
 		return fallback
+	}
+	const refuseDamaged = (file) => {
+		if (damagedFiles.has(file)) throw new RpcError('PRECONDITION_FAILED', `${basename(file)} is damaged and was left unchanged.`)
 	}
 
 	const ready = (async () => {
 		startedAt = now()
 		await mkdir(dir, {recursive: true, mode: 0o700})
 		await chmod(dir, 0o700).catch(() => {})
+		// A restart during smbclient leaves the password file behind. Drop those before anything else reads the folder.
+		for (const name of await readdir(dir).catch(() => [])) {
+			if (name.startsWith('smb-auth-')) await removeAtomic(join(dir, name))
+		}
 		config = {...structuredClone(DEFAULTS), ...(await readBackupFile(configFile, {}, plainObject))}
 		secrets = await readBackupFile(secretFile, {}, plainObject)
 		history = await readBackupFile(historyFile, [], Array.isArray)
@@ -248,14 +267,16 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		return epoch
 	}
 	const privateText = (file, seen, text) => {
-		if (seen !== epoch && isPasswordFile(file)) return null
+		// secrets.json is the NAS password. config.json names the account it belongs to.
+		// A write queued before factory reset must not put either back.
+		if (seen !== epoch && (isPasswordFile(file) || file === configFile || file === secretFile)) return null
 		return typeof text === 'function' ? text() : text
 	}
 	const writePrivate = (file, text) => writeAtomic(file, ((seen) => () => privateText(file, seen, text))(remember(file)), {mode: 0o600}).finally(() => {
 		if (isPasswordFile(file)) untrackPassword(file)
 	})
-	const saveConfig = () => writePrivate(configFile, () => JSON.stringify(config, null, '\t'))
-	const saveSecrets = () => writePrivate(secretFile, () => JSON.stringify(secrets))
+	const saveConfig = () => (refuseDamaged(configFile), writePrivate(configFile, () => JSON.stringify(config, null, '\t')))
+	const saveSecrets = () => (refuseDamaged(secretFile), writePrivate(secretFile, () => JSON.stringify(secrets)))
 	const trimHistory = (list, perSource = 20) => {
 		const counts = new Map()
 		const out = []
@@ -270,6 +291,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		return out
 	}
 	const saveHistory = () => {
+		refuseDamaged(historyFile)
 		history = trimHistory(history, 20)
 		return writePrivate(historyFile, () => JSON.stringify(history, null, '\t'))
 	}
@@ -302,9 +324,16 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			const have = await versionOf(bin)
 			if (have) return (engine = {path: bin, version: have.text})
 			await mkdir(binDir, {recursive: true, mode: 0o700})
-			const res = await fetchImpl(resticUrl(arch), {redirect: 'follow'})
-			if (!res.ok) throw new RpcError('PRECONDITION_FAILED', `Couldn’t download the backup engine (restic): ${res.status}`)
-			const packed = Buffer.from(await res.arrayBuffer())
+			let res
+			let packed
+			try {
+				res = await fetchImpl(resticUrl(arch), {redirect: 'follow', signal: AbortSignal.timeout(120_000)})
+				if (!res.ok) throw new RpcError('PRECONDITION_FAILED', httpDownloadErrorMessage('the backup program (restic)', res.status))
+				packed = Buffer.from(await res.arrayBuffer())
+			} catch (error) {
+				if (error instanceof RpcError) throw error
+				throw new RpcError('PRECONDITION_FAILED', fetchErrorMessage('the backup program (restic)', error))
+			}
 			const sum = createHash('sha256').update(packed).digest('hex')
 			if (sum !== RESTIC_SHA256[arch]) throw new RpcError('PRECONDITION_FAILED', 'The downloaded backup engine didn’t match its published checksum, so it wasn’t used.')
 			const tmp = `${bin}-${process.pid}`
@@ -1058,6 +1087,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			last: history.find((h) => h && !h.computer && h.endedAt) ?? null,
 			history: history.slice(0, 20),
 			engine: engine ? {version: engine.version} : null,
+			damaged: [...damagedFiles].map((file) => basename(file)),
 		}
 	}
 
@@ -1137,28 +1167,46 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	// to and the backup store is ready, so a failed setup leaves things as they were.
 	async function configure(input = {}) {
 		await ready
+		// A damaged file must not be replaced, and setup must not mint a key or store a password first.
+		refuseDamaged(configFile)
+		refuseDamaged(secretFile)
+		refuseDamaged(historyFile)
+		// nasPassword is kept in a local until the slow NAS checks finish. Factory reset bumps epoch
+		// while that is in flight; storing afterwards would write the abandoned password back.
+		const started = epoch
+		const resetSince = () => started !== epoch
 		if (job) throw new RpcError('CONFLICT', 'Wait for the running backup to finish')
 		const before = structuredClone(config)
 		const out = {}
 		let nasPassword = secrets.nasPassword
 		if (before.nas && (await hasKey()) && (input.repo === undefined || String(input.repo) === before.repo)) await ensureRepo({allowInit: false})
+		if (resetSince()) throw new RpcError('PRECONDITION_FAILED', 'Backups were reset')
 		if (input.nas) {
 			const nas = cleanNas(input.nas)
 			const password = input.nas.password ? String(input.nas.password) : config.nas?.host === nas.host && config.nas?.username === nas.username ? secrets.nasPassword : ''
 			if (!password) throw new RpcError('BAD_REQUEST', 'Enter the NAS account’s password')
 			await testNas(nas, password)
 			await checkNasFolder(nas, password)
+			if (resetSince()) throw new RpcError('PRECONDITION_FAILED', 'Backups were reset')
 			nasPassword = password
 			config.nas = nas
 		}
 		const opts = cleanOptions(input)
 		let newKey = false
+		let stage = 'folder'
 		try {
 			if (opts.repo && opts.repo !== config.repo && (await hasKey()) && (await exists(join(await serverRepo(), 'config')))) throw new RpcError('CONFLICT', 'The backup folder can’t move once backups exist')
 			Object.assign(config, opts)
 			if (!config.nas) throw new RpcError('BAD_REQUEST', 'Connect a NAS first')
+			stage = 'engine'
 			await ensureEngine()
+			if (resetSince()) throw new RpcError('PRECONDITION_FAILED', 'Backups were reset')
+			stage = 'folder'
 			if (!(await hasKey())) {
+				const real = await repoReal({create: false}).catch(() => null)
+				const storeThere = real && ((await exists(join(real, 'server', 'config'))) || ((await exists(join(real, 'config'))) && (await exists(join(real, 'keys')))))
+				if (storeThere) throw new RpcError('PRECONDITION_FAILED', `${config.repo} already has a backup, but the recovery key is missing. Use “Restore from an existing backup” with the old key.`)
+				if (resetSince()) throw new RpcError('PRECONDITION_FAILED', 'Backups were reset')
 				const key = recoveryKey()
 				await writePrivate(keyFile, `${key}\n`)
 				newKey = true
@@ -1167,11 +1215,13 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			}
 			await ensureRepo()
 		} catch (e) {
-			config = before
+			if (!resetSince()) config = before
 			if (newKey) await rm(keyFile, {force: true})
 			if (e instanceof RpcError) throw e
+			if (stage === 'engine') throw new RpcError('PRECONDITION_FAILED', `Couldn’t set up the backup program (restic): ${e.message}`)
 			throw new RpcError('INTERNAL_SERVER_ERROR', `Couldn’t set up the backup folder (${config.repo}): ${e.message}`)
 		}
+		if (resetSince()) throw new RpcError('PRECONDITION_FAILED', 'Backups were reset')
 		if (nasPassword !== secrets.nasPassword) {
 			secrets.nasPassword = nasPassword
 			await saveSecrets()
@@ -1279,33 +1329,53 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	// A new (or rebuilt) server: copy an existing backup down from the NAS and open it with its recovery key.
 	async function connectExisting(input = {}) {
 		await ready
+		refuseDamaged(configFile)
+		refuseDamaged(secretFile)
+		refuseDamaged(historyFile)
+		const started = epoch
+		const resetSince = () => started !== epoch
 		if (job) throw new RpcError('CONFLICT', 'Wait for the running backup to finish')
 		if (await hasKey()) throw new RpcError('CONFLICT', 'Backups are already set up on this server')
 		const nas = cleanNas(input.nas ?? {})
 		const password = String(input.nas?.password ?? '')
 		const key = String(input.recoveryKey ?? '').trim().toLowerCase()
 		if (!/^[a-z0-9]{4}(?:-[a-z0-9]{4}){7}$/.test(key)) throw new RpcError('BAD_REQUEST', 'Enter the recovery key, like abcd-efgh-…')
+		const before = structuredClone(config)
 		const opts = cleanOptions(input)
 		Object.assign(config, opts)
-		const real = await repoReal()
-		await mkdir(real, {recursive: true, mode: 0o700})
-		if ((await readdir(real)).length) throw new RpcError('PRECONDITION_FAILED', `${config.repo} isn’t empty. Choose an empty folder.`)
+		let real
+		try {
+			real = await repoReal()
+			await mkdir(real, {recursive: true, mode: 0o700})
+			if ((await readdir(real)).length) throw new RpcError('PRECONDITION_FAILED', `${config.repo} isn’t empty. Choose an empty folder.`)
+		} catch (e) {
+			config = before
+			throw e
+		}
 		job = {step: 'Copying the backup from the NAS', progress: 0, startedAt: now()}
 		try {
 			const remote = await remoteFiles(nas, password)
 			const legacy = !remote.has('server/config') && remote.has('config')
 			if (!remote.has('server/config') && !legacy) throw new RpcError('NOT_FOUND', 'There’s no Omarchy Server backup in that folder')
+			await ensureEngine()
 			const r = await smb(nas, password, {lines: [...intoFolder(nas.folder), 'recurse ON', 'prompt OFF', `lcd ${q(real)}`, 'mget *']})
 			if (r.errors.length) throw new RpcError('PRECONDITION_FAILED', smbMessage(r.errors))
+			if (resetSince()) throw new RpcError('PRECONDITION_FAILED', 'Backups were reset')
 			if (legacy) await migrateLegacyRepo(real)
+			if (resetSince()) throw new RpcError('PRECONDITION_FAILED', 'Backups were reset')
 			await writePrivate(keyFile, `${key}\n`)
 			try {
-				await ensureEngine()
 				await restic(['cat', 'config'], {timeout: 60_000})
-			} catch {
+			} catch (e) {
 				await rm(keyFile, {force: true})
-				throw new RpcError('FORBIDDEN', 'That recovery key doesn’t open this backup')
+				const out = `${e?.stderr ?? ''}\n${e?.message ?? ''}`
+				if (/wrong password|no key found/i.test(out)) {
+					throw new RpcError('FORBIDDEN', 'That recovery key doesn’t open this backup')
+				}
+				if (e instanceof RpcError) throw e
+				throw new RpcError('PRECONDITION_FAILED', `Couldn’t open the backup: ${e?.message || 'restic failed'}`)
 			}
+			if (resetSince()) throw new RpcError('PRECONDITION_FAILED', 'Backups were reset')
 			config.nas = nas
 			config.keySaved = true
 			config.scheduleSince = now()
@@ -1314,6 +1384,8 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			await saveConfig()
 			return status()
 		} catch (e) {
+			if (!resetSince()) config = before
+			await rm(keyFile, {force: true}).catch(() => {})
 			await rm(real, {recursive: true, force: true}).catch(() => {})
 			throw e
 		} finally {
@@ -1333,9 +1405,14 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		epoch++
 		config = structuredClone(DEFAULTS)
 		secrets = {}
+		history = []
+		damagedFiles.delete(configFile)
+		damagedFiles.delete(secretFile)
+		damagedFiles.delete(historyFile)
 		const pending = [...passwordWrites.keys()]
 		await removeAtomic(configFile)
 		await removeAtomic(secretFile)
+		await removeAtomic(historyFile)
 		await removeAtomic(keyFile)
 		for (const file of pending) await removeAtomic(file)
 		for (const name of await readdir(join(dir, 'computers')).catch(() => [])) {

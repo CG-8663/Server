@@ -6,6 +6,7 @@ import {join} from 'node:path'
 import {test} from 'node:test'
 
 import {RESTIC_SHA256, createBackups, nextRun, parseSmbListing, recoveryKey} from '../omarchyd/backups.mjs'
+import {RpcError} from '../omarchyd/rpc.mjs'
 
 const fakeFiles = (home) => ({
 	async resolve(v) {
@@ -312,5 +313,117 @@ test('setup makes the backup folder, and a setup that fails leaves nothing half-
 	} finally {
 		b.close()
 		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('connectExisting distinguishes missing internet and restic errors from a wrong recovery key', async () => {
+	const smbListing = ['\\Omarchy Server\\server', '  config                              A      155  Thu Nov 19 14:48:56 2026', ''].join('\n')
+	const nas = {host: 'nas.local', username: 'u', password: 'p', share: 'backups'}
+	const recoveryKeyInput = 'abcd-efgh-ijkl-mnop-qrst-uvwx-yz23-4567'
+
+	// 1. Offline while downloading restic: must report internet/restic error, never blame the recovery key.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'bk-conn-offline-'))
+		const b = createBackups({
+			dataDir: dir,
+			files: fakeFiles(dir),
+			apps: {backupTargets: async () => []},
+			timers: false,
+			run: async (cmd, args) => {
+				if (args[0] === 'version') throw Object.assign(new Error('nope'), {code: 'ENOENT'})
+				if (cmd === 'smbclient') return {stdout: smbListing, stderr: ''}
+				return {stdout: '', stderr: ''}
+			},
+			fetchImpl: async () => {
+				throw Object.assign(new TypeError('fetch failed'), {cause: {code: 'ENOTFOUND'}})
+			},
+		})
+		try {
+			await assert.rejects(
+				() => b.procedures['backups.connectExisting'].run({nas, recoveryKey: recoveryKeyInput}),
+				(err) => {
+					assert.ok(err instanceof RpcError)
+					assert.equal(err.code, 'PRECONDITION_FAILED')
+					assert.match(err.message, /restic/)
+					assert.match(err.message, /internet/)
+					assert.equal(err.message.includes('recovery key'), false)
+					return true
+				},
+			)
+		} finally {
+			b.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+
+	// 2. Wrong password reported by restic: blames recovery key with FORBIDDEN and cleans up keyFile.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'bk-conn-badkey-'))
+		const b = createBackups({
+			dataDir: dir,
+			files: fakeFiles(dir),
+			apps: {backupTargets: async () => []},
+			resticPath: '/bin/restic',
+			timers: false,
+			run: async (cmd, args) => {
+				if (cmd === 'smbclient') return {stdout: smbListing, stderr: ''}
+				if (args[0] === 'version') return {stdout: 'restic 0.18.1 compiled with go1.25.1 on linux/amd64\n', stderr: ''}
+				if (args[0] === 'cat') {
+					throw Object.assign(new Error('/bin/restic: Fatal: wrong password or no key found'), {
+						stderr: 'Fatal: wrong password or no key found\n',
+					})
+				}
+				return {stdout: '', stderr: ''}
+			},
+		})
+		try {
+			await assert.rejects(
+				() => b.procedures['backups.connectExisting'].run({nas, recoveryKey: recoveryKeyInput}),
+				(err) => err instanceof RpcError && err.code === 'FORBIDDEN' && /recovery key doesn’t open/.test(err.message),
+			)
+			await assert.rejects(stat(join(dir, 'backups', 'recovery-key')))
+		} finally {
+			b.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+
+	// 3. Non-password restic failure: reports restic error, not wrong recovery key.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'bk-conn-damaged-'))
+		const b = createBackups({
+			dataDir: dir,
+			files: fakeFiles(dir),
+			apps: {backupTargets: async () => []},
+			resticPath: '/bin/restic',
+			timers: false,
+			run: async (cmd, args) => {
+				if (cmd === 'smbclient') return {stdout: smbListing, stderr: ''}
+				if (args[0] === 'version') return {stdout: 'restic 0.18.1 compiled with go1.25.1 on linux/amd64\n', stderr: ''}
+				if (args[0] === 'cat') {
+					throw Object.assign(new Error('/bin/restic: Fatal: unable to open config file: damaged'), {
+						stderr: 'Fatal: unable to open config file: damaged\n',
+					})
+				}
+				return {stdout: '', stderr: ''}
+			},
+		})
+		try {
+			await assert.rejects(
+				() => b.procedures['backups.connectExisting'].run({nas, recoveryKey: recoveryKeyInput}),
+				(err) => {
+					assert.ok(err instanceof RpcError)
+					assert.equal(err.code, 'PRECONDITION_FAILED')
+					assert.match(err.message, /Couldn’t open the backup/)
+					assert.match(err.message, /damaged/)
+					assert.equal(err.message.includes('recovery key'), false)
+					return true
+				},
+			)
+			await assert.rejects(stat(join(dir, 'backups', 'recovery-key')))
+		} finally {
+			b.close()
+			await rm(dir, {recursive: true, force: true})
+		}
 	}
 })

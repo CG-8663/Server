@@ -22,6 +22,7 @@ import {Readable} from 'node:stream'
 import {pipeline} from 'node:stream/promises'
 import {fileURLToPath} from 'node:url'
 
+import {fetchErrorMessage, httpDownloadErrorMessage, isNetworkError} from './fetch-error.mjs'
 import {PUBLIC_KEY, cloudMetaData, cloudUserData, hostnameFor, isWindowsClientLabel, isWindowsLabel, omarchyConfiguration, omarchyCredentials, windowsAnswerFile} from './machine-media.mjs'
 import {RpcError} from './rpc.mjs'
 import {hostdevXml, parseUsbLive} from './usb.mjs'
@@ -48,6 +49,18 @@ function execP(cmd, args, {input, cwd, timeout = 120_000} = {}) {
 }
 
 const xml = (s) => String(s).replace(/[<>&'"]/g, (c) => ({'<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;'})[c])
+// XML 1.0 Char. Tab, LF, and CR are allowed; other controls make libvirt reject the domain.
+function xmlChars(s) {
+	for (const ch of String(s)) {
+		const c = ch.codePointAt(0)
+		if (c === 0x9 || c === 0xa || c === 0xd) continue
+		if (c >= 0x20 && c <= 0xd7ff) continue
+		if (c >= 0xe000 && c <= 0xfffd) continue
+		if (c >= 0x10000 && c <= 0x10ffff) continue
+		return false
+	}
+	return true
+}
 const hostArch = () => (os.arch() === 'arm64' ? 'arm64' : 'amd64')
 
 // Find the expected hash for `file` in a checksum file. Handles GNU (`hash  file`, `hash *file`)
@@ -79,7 +92,7 @@ function validCatalog(data) {
 	return ok.length ? ok : null
 }
 
-export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000}) {
+export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000}) {
 	const base = join(dataDir, 'machines')
 	const imagesDir = join(base, 'images')
 	const vmsDir = join(base, 'vms')
@@ -163,7 +176,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function osImages() {
 		const out = []
 		for (const img of await images()) {
-			if (img.arch !== hostArch()) continue // only what this server can run
+			if (img.arch !== arch) continue // only what this server can run
 			const dl = downloads.get(img.id)
 			const state = dl ? 'downloading' : (await exists(imagePath(img))) ? 'downloaded' : failedImages.has(img.id) ? 'failed' : 'available'
 			out.push({
@@ -196,13 +209,23 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			let expected = img.sha256?.toLowerCase() ?? null
 			const algorithm = expected ? 'sha256' : img.checksums.algorithm
 			if (!expected) {
-				const sums = await fetchImpl(img.checksums.url, {signal: AbortSignal.timeout(30_000)})
-				if (!sums.ok) throw new Error(`Couldn’t get the checksum list for ${img.name} (HTTP ${sums.status})`)
+				let sums
+				try {
+					sums = await fetchImpl(img.checksums.url, {signal: AbortSignal.timeout(30_000)})
+				} catch (error) {
+					throw new Error(fetchErrorMessage(img.name, error))
+				}
+				if (!sums.ok) throw new Error(httpDownloadErrorMessage(img.name, sums.status))
 				expected = findChecksum(await sums.text(), basename(new URL(img.url).pathname), algorithm)
 				if (!expected) throw new Error(`${img.name}’s checksum list doesn’t include this image`)
 			}
-			const res = await fetchImpl(img.url)
-			if (!res.ok || !res.body) throw new Error(`Couldn’t download ${img.name} (HTTP ${res.status})`)
+			let res
+			try {
+				res = await fetchImpl(img.url)
+			} catch (error) {
+				throw new Error(fetchErrorMessage(img.name, error))
+			}
+			if (!res.ok || !res.body) throw new Error(httpDownloadErrorMessage(img.name, res.status))
 			const total = Number(res.headers.get('content-length')) || (Number(img.sizeMb) || 0) * 1024 * 1024
 			const hash = createHash(algorithm)
 			let got = 0
@@ -222,6 +245,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				await rename(part, target)
 			} catch (error) {
 				await rm(part, {force: true})
+				if (isNetworkError(error)) throw new Error(fetchErrorMessage(img.name, error))
 				throw error
 			}
 			return target
@@ -240,7 +264,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const libvirtAvailable = (await has('virsh', ['--version'])) && (await has('qemu-img', ['--version']))
 		const kvmAvailable = await access(kvmDevice, constants.R_OK | constants.W_OK).then(() => true, () => false)
 		return {
-			hostArchitecture: hostArch(),
+			hostArchitecture: arch,
 			libvirtAvailable,
 			kvmAvailable,
 			...(libvirtAvailable && !kvmAvailable ? {performanceWarning: 'Hardware virtualization (KVM) isn’t available, so machines run much slower. Turn on VT-x/AMD-V in the BIOS, or nested virtualization if this is itself a VM.'} : {}),
@@ -338,7 +362,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				const cdrom = d.device === 'cdrom'
 				const cache = d.cache && d.cache !== 'default' ? ` cache='${d.cache}'` : ''
 				const discard = !cdrom && d.discard !== false ? " discard='unmap'" : ''
-				const source = d.file ? `<source file='${xml(d.file)}'/>` : ''
+				const source = d.file ? `<source ${cdrom ? "startupPolicy='optional' " : ''}file='${xml(d.file)}'/>` : ''
 				return `<disk type='file' device='${d.device}'><driver name='qemu' type='${d.format}'${cache}${discard}/>${source}<target dev='${names.get(d.id)}' bus='${d.bus}'/>${order(d.id)}${cdrom ? '<readonly/>' : ''}</disk>`
 			})
 			.join('\n    ')
@@ -515,6 +539,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const kind = local ? (local.requiresCredentials ? 'windows' : 'manual') : img.kind === 'iso' ? 'omarchy' : 'cloud'
 			const name = String(input.name ?? '').trim()
 			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 			if (machines.some((m) => m.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
 			const threads = os.cpus().length || 1
 			const totalGb = Math.floor(os.totalmem() / 1024 ** 3)
@@ -531,7 +556,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			if (needsAccount) {
 				const userOk = kind === 'windows' ? /^[A-Za-z0-9][A-Za-z0-9_.-]{0,19}$/.test(username) && !/^(administrator|guest)$/i.test(username) : /^[a-z_][a-z0-9_-]{0,31}$/.test(username) && username !== 'root'
 				if (!userOk) throw new RpcError('BAD_REQUEST', kind === 'windows' ? 'Use a username of letters, numbers, - and _ (up to 20)' : 'Use a lower-case username: letters, numbers, - and _ (not root)')
-				if (password.length < 1 || password.length > 256 || /[\r\n]/.test(password)) throw new RpcError('BAD_REQUEST', 'Enter a password for the machine')
+				if (password.length < 1 || password.length > 256 || /[\x00-\x1f\x7f]/.test(password)) throw new RpcError('BAD_REQUEST', 'Enter a password for the machine')
 			}
 			const fs = await statfs(base)
 			const freeGb = (fs.bavail * fs.bsize) / 1024 ** 3
@@ -545,7 +570,12 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' ? 'windows' : 'iso', dir, img)})
 			if (kind === 'cloud') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
 			machines.push(m)
-			await save()
+			try {
+				await save()
+			} catch (error) {
+				machines = machines.filter((x) => x.id !== m.id)
+				throw error
+			}
 			busy.set(id, {state: 'installing', progress: 0})
 			const step = (progress) => busy.set(id, {state: 'installing', progress})
 			const host = hostnameFor(name, id)
@@ -1010,7 +1040,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				bootMenu: !!m.options?.bootMenu,
 				notes: m.options?.notes ?? '',
 			},
-			cloudInit: m.layout?.disks?.some((d) => d.role === 'seed') ? {username: m.cloudInit?.username ?? '', hostname: m.cloudInit?.hostname ?? hostnameFor(m.name, m.id), sshKeys: m.cloudInit?.sshKeys ?? []} : null,
+			cloudInit: m.cloudInit ? {username: m.cloudInit.username ?? '', hostname: m.cloudInit.hostname ?? hostnameFor(m.name, m.id), sshKeys: m.cloudInit.sshKeys ?? []} : null,
 			portForwards: m.portForwards ?? [],
 			snapshots: m.snapshots ?? [],
 			tasks: (m.tasks ?? []).slice(0, 50),
@@ -1058,11 +1088,13 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await ready
 		const m = find(input.id)
 		const o = {...m.options}
+		let nextName
 		if (input.name !== undefined) {
 			const name = String(input.name).trim()
 			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 			if (machines.some((x) => x.id !== m.id && x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
-			m.name = name
+			nextName = name
 		}
 		for (const k of ['onBoot', 'protection', 'tablet', 'acpi', 'kvm', 'agent', 'bootMenu']) if (input[k] !== undefined) o[k] = !!input[k]
 		if (input.startupOrder !== undefined) {
@@ -1076,13 +1108,24 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			o.startupDelay = n
 		}
 		if (input.notes !== undefined) {
-			if (String(input.notes).length > 8000) throw new RpcError('BAD_REQUEST', 'Notes are limited to 8,000 characters')
-			o.notes = String(input.notes)
+			const notes = String(input.notes)
+			if (notes.length > 8000) throw new RpcError('BAD_REQUEST', 'Notes are limited to 8,000 characters')
+			if (!xmlChars(notes)) throw new RpcError('BAD_REQUEST', 'Those notes can’t be used')
+			o.notes = notes
 		}
 		return task(m, 'options', null, async () => {
+			const prevName = m.name
+			const prevOptions = m.options
+			if (nextName !== undefined) m.name = nextName
 			m.options = o
-			if (m.state === 'error') await save()
-			else await markChanged(m)
+			try {
+				if (m.state === 'error') await save()
+				else await markChanged(m)
+			} catch (error) {
+				m.name = prevName
+				m.options = prevOptions
+				throw error
+			}
 			return true
 		})
 	}
@@ -1246,7 +1289,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const m = find(input.id)
 		writable(m)
 		const seedDisk = m.layout.disks.find((d) => d.role === 'seed')
-		if (!seedDisk) throw new RpcError('PRECONDITION_FAILED', `${m.name} doesn’t use cloud-init`)
+		// Omarchy installs also have a seed drive (user_configuration.json). Only cloud images set m.cloudInit.
+		if (!m.cloudInit || !seedDisk) throw new RpcError('PRECONDITION_FAILED', `${m.name} doesn’t use cloud-init`)
 		const username = String(input.username ?? m.cloudInit?.username ?? '').trim()
 		if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(username) || username === 'root') throw new RpcError('BAD_REQUEST', 'Use a lower-case username: letters, numbers, - and _ (not root)')
 		const hostname = String(input.hostname ?? m.cloudInit?.hostname ?? hostnameFor(m.name, m.id)).trim().toLowerCase()
@@ -1256,7 +1300,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const bad = sshKeys.find((k) => !PUBLIC_KEY.test(k))
 		if (bad) throw new RpcError('BAD_REQUEST', /PRIVATE KEY/.test(bad) ? 'That’s a private key. Paste the public key (the .pub file) instead.' : 'Each line must be an SSH public key, like “ssh-ed25519 AAAA… you@laptop”')
 		const password = input.password ? String(input.password) : ''
-		if (password && (password.length > 256 || /[\r\n]/.test(password))) throw new RpcError('BAD_REQUEST', 'That password can’t be used')
+		if (password && (password.length > 256 || /[\x00-\x1f\x7f]/.test(password))) throw new RpcError('BAD_REQUEST', 'That password can’t be used')
 		const img = (await images().catch(() => [])).find((i) => i.id === m.osId)
 		return task(m, 'cloud-init', null, async () => {
 			const hash = password ? await hashPassword(password) : null
@@ -1297,7 +1341,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				for (const d of done) await run('qemu-img', ['snapshot', '-d', name, d.file]).catch(() => {})
 				throw error
 			}
-			const config = {sockets: m.sockets, cores: m.cores, memoryMb: m.memoryMb, cpuType: m.cpuType, layout: {firmware: m.layout.firmware, machineType: m.layout.machineType, video: m.layout.video, nic: m.layout.nic}, disks: qcowDisks(m).map((d) => d.id)}
+			const config = {sockets: m.sockets, cores: m.cores, memoryMb: m.memoryMb, cpuType: m.cpuType, layout: {firmware: m.layout.firmware, machineType: m.layout.machineType, video: m.layout.video, nic: m.layout.nic}, disks: qcowDisks(m).map((d) => d.id), files: qcowDisks(m).map((d) => d.file)}
 			m.snapshots = [...(m.snapshots ?? []), {name, description, createdAt: Date.now(), config}]
 			await save()
 			return true
@@ -1311,7 +1355,26 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (!snap) throw new RpcError('NOT_FOUND', 'That snapshot doesn’t exist')
 		await requireStopped(m, 'go back to a snapshot')
 		return task(m, 'rollback', snap.name, async () => {
-			for (const d of qcowDisks(m)) if (snap.config.disks.includes(d.id)) await run('qemu-img', ['snapshot', '-a', snap.name, d.file], {timeout: 10 * 60_000})
+			const qcow = qcowDisks(m)
+			// Match by image path when the snapshot recorded one. diskN is reused after a drive is removed.
+			const targets = Array.isArray(snap.config.files) && snap.config.files.length
+				? snap.config.files.map((file) => {
+						const d = qcow.find((x) => x.file === file)
+						if (!d) throw new RpcError('PRECONDITION_FAILED', `${snap.name} isn’t in every drive, so nothing was rolled back`)
+						return d
+					})
+				: qcow.filter((d) => (snap.config.disks ?? []).includes(d.id))
+			for (const d of targets) {
+				const listed = await run('qemu-img', ['snapshot', '-l', d.file], {timeout: 10 * 60_000})
+				// qemu-img prints "Snapshot list:" even when there are none. A stub that does not simulate -l is not a list.
+				if (!/Snapshot list/i.test(listed ?? '')) continue
+				const tags = String(listed)
+					.split('\n')
+					.map((line) => /^\s*\d+\s+(\S+)/.exec(line)?.[1])
+					.filter(Boolean)
+				if (!tags.includes(snap.name)) throw new RpcError('PRECONDITION_FAILED', `${snap.name} isn’t in every drive, so nothing was rolled back`)
+			}
+			for (const d of targets) await run('qemu-img', ['snapshot', '-a', snap.name, d.file], {timeout: 10 * 60_000})
 			const c = snap.config
 			Object.assign(m, {sockets: c.sockets, cores: c.cores, memoryMb: c.memoryMb, memoryGb: Math.max(1, Math.round(c.memoryMb / 1024)), cpuType: c.cpuType})
 			Object.assign(m.layout, c.layout)
@@ -1327,7 +1390,15 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (!snap) throw new RpcError('NOT_FOUND', 'That snapshot doesn’t exist')
 		await requireStopped(m, 'delete a snapshot')
 		return task(m, 'delete-snapshot', snap.name, async () => {
-			for (const d of qcowDisks(m)) if (snap.config.disks.includes(d.id)) await run('qemu-img', ['snapshot', '-d', snap.name, d.file], {timeout: 10 * 60_000}).catch(() => {})
+			const qcow = qcowDisks(m)
+			const targets = Array.isArray(snap.config.files) && snap.config.files.length ? qcow.filter((d) => snap.config.files.includes(d.file)) : qcow.filter((d) => (snap.config.disks ?? []).includes(d.id))
+			for (const d of targets) {
+				try {
+					await run('qemu-img', ['snapshot', '-d', snap.name, d.file], {timeout: 10 * 60_000})
+				} catch (error) {
+					if (!/snapshot\b.*\bnot found/i.test(String(error?.message ?? error))) throw error
+				}
+			}
 			m.snapshots = m.snapshots.filter((x) => x !== snap)
 			await save()
 			return true
@@ -1377,9 +1448,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const fs = await statfs(dir)
 		if ((fs.bavail * fs.bsize) / 1024 ** 3 < need + 1) throw new RpcError('PRECONDITION_FAILED', `Not enough free space for the backup (about ${Math.ceil(need)} GB)`)
 		const running = (await liveState(m)) === 'running'
-		busy.set(m.id, {state: running ? 'running' : 'stopped', progress: 0})
 		// A folder of its own (never one that's already there, so a failure only removes its own).
+		// Before the machine is marked busy: a failed mkdir must not stick until restart.
 		await mkdir(target, {mode: 0o700})
+		busy.set(m.id, {state: running ? 'running' : 'stopped', progress: 0})
 		// Runs in the background (large disks take a while); progress shows on the machine, the
 		// result in its task history, and the backup is listed once complete.
 		task(m, 'backup', id, async () => {
@@ -1395,16 +1467,36 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					await writeFile(join(tmp, 'backup.xml'), bxml)
 					await virsh('backup-begin', domain(m.id), '--backupxml', join(tmp, 'backup.xml'))
 					const end = Date.now() + 6 * 60 * 60_000
+					const abortJob = () => virsh('domjobabort', domain(m.id)).catch(() => {})
 					for (;;) {
-						const info = await virsh('domjobinfo', domain(m.id)).catch(() => '')
+						let info
+						try {
+							info = await virsh('domjobinfo', domain(m.id))
+						} catch (error) {
+							await abortJob()
+							throw error
+						}
 						const pct = /Data processed:\s+([\d.]+)\s*(\w+)[\s\S]*Data total:\s+([\d.]+)\s*(\w+)/.exec(info)
 						if (pct) busy.set(m.id, {state: 'running', progress: Math.min(90, Math.round((Number(pct[1]) / Math.max(1, Number(pct[3]))) * 90))})
+						// A failed query is not "job finished". Only a real reply that the job is idle ends the wait.
 						if (!/Job type:\s+(Unbounded|Bounded)/.test(info)) break
-						if (Date.now() > end) throw new Error('The backup took too long and was stopped')
+						if (Date.now() > end) {
+							await abortJob()
+							throw new Error('The backup took too long and was stopped')
+						}
 						await new Promise((r) => setTimeout(r, 1000))
 					}
-					const done = await virsh('domjobinfo', domain(m.id), '--completed').catch(() => '')
-					if (/Job type:\s+Failed/.test(done)) throw new Error('QEMU couldn’t finish the backup')
+					let done
+					try {
+						done = await virsh('domjobinfo', domain(m.id), '--completed')
+					} catch (error) {
+						await abortJob()
+						throw error
+					}
+					if (!/Job type:\s+Completed/.test(done)) {
+						await abortJob()
+						throw new Error('QEMU couldn’t finish the backup')
+					}
 					for (const d of disks) await run('qemu-img', ['convert', '-c', '-O', 'qcow2', join(tmp, `${d.id}.qcow2`), join(target, `${d.id}.qcow2`)], {timeout: 6 * 60 * 60_000})
 					await rm(tmp, {recursive: true, force: true})
 				} else {

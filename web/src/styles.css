@@ -3485,11 +3485,32 @@ html.desk-mode body {
 	font-variant-numeric: tabular-nums;
 	font-weight: 500;
 }
+.top-stat.stale {
+	opacity: 0.45;
+}
 .top-sys .dot {
 	width: 7px;
 	height: 7px;
 	border-radius: 50%;
-	background: var(--green);
+}
+.top-offline {
+	color: #ff8f8f;
+	font-size: 12px;
+	font-weight: 600;
+}
+.desk-offline-banner {
+	position: fixed;
+	top: calc(var(--top-h) + 8px);
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 99999;
+	margin: 0;
+	padding: 8px 14px;
+	font-size: 13px;
+	align-items: center;
+	backdrop-filter: blur(20px);
+	-webkit-backdrop-filter: blur(20px);
+	box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
 }
 .menu-scrim {
 	position: fixed;
@@ -3638,7 +3659,23 @@ html.desk-mode body {
 	width: 9px;
 	height: 9px;
 	border-radius: 50%;
-	background: var(--green);
+}
+.sys-offline {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 6px 6px 4px;
+	padding: 8px 10px;
+	border-radius: 10px;
+	background: color-mix(in srgb, var(--red) 20%, transparent);
+	border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
+	color: #ffb4b4;
+	font-size: 12.5px;
+	line-height: 1.35;
+}
+.sys-offline svg {
+	color: var(--red);
+	flex: none;
 }
 .sys-head > span {
 	display: flex;
@@ -4905,6 +4942,14 @@ html.desk-mode body {
 .style-daylight .top-title,
 .style-daylight .top-stat {
 	color: rgba(0, 0, 0, 0.62);
+}
+.style-daylight .top-offline {
+	color: #d70015;
+}
+.style-daylight .sys-offline {
+	color: #9e1c20;
+	background: rgba(215, 0, 21, 0.1);
+	border-color: rgba(215, 0, 21, 0.25);
 }
 .style-daylight .note-dot {
 	background: #1c1c1e;

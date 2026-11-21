@@ -62,7 +62,7 @@ function ownerMessage(toolName) {
 
 export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl, mcpTargets, sleep, chatgptOptions = {}}) {
 	const keys = createKeyStore({dataDir, now})
-	const conversations = createConversations({dataDir, now})
+	const conversations = createConversations({dataDir, now, recoverRunning: true})
 	const chatgpt = createChatGpt({dataDir, keys, fetchImpl: fetchImpl ?? fetch, ...(now ? {now} : {}), ...chatgptOptions})
 	const stamp = () => (now ? now() : Date.now())
 	const actor = (auth) => {

@@ -40,6 +40,73 @@ class Plugins(unittest.TestCase):
                 self.assertEqual(agent.omarchy_facts()["plugins"], ["a", "b", "real"])
 
 
+class CloseStopsPump(unittest.TestCase):
+    # A server {op:close} sets closed, so Shell.pump and Screen.pump stop forwarding.
+    def test_close_op_stops_screen_pump(self):
+        left, right = socket.socketpair()
+        sent = []
+        conn = mock.Mock()
+        conn.ws.send_binary = sent.append
+        conn.send = sent.append
+        screen = agent.Screen.__new__(agent.Screen)
+        agent.Channel.__init__(screen, conn, 4)
+        screen.sock = left
+        thread = threading.Thread(target=screen.pump, daemon=True)
+        thread.start()
+        try:
+            right.sendall(b"one")
+            for _ in range(50):
+                if any(isinstance(item, (bytes, bytearray)) and b"one" in item for item in sent):
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("pump did not forward the first frame")
+            connection = agent.Connection.__new__(agent.Connection)
+            connection.channels = {4: screen}
+            connection.handle({"op": "close", "ch": 4})
+            self.assertTrue(screen.closed)
+            self.assertNotIn(4, connection.channels)
+            thread.join(timeout=1)
+            self.assertFalse(thread.is_alive())
+            sent.clear()
+            try:
+                right.sendall(b"two")
+            except OSError:
+                pass
+            time.sleep(0.1)
+            self.assertFalse(any(isinstance(item, (bytes, bytearray)) and b"two" in item for item in sent))
+        finally:
+            right.close()
+            try:
+                left.close()
+            except OSError:
+                pass
+
+    def test_close_op_stops_shell_pump(self):
+        conn = mock.Mock()
+        conn.send = lambda msg: None
+        conn.ws.send_binary = lambda data: None
+        shell = agent.Shell(conn, 9, 80, 24)
+        pid = shell.pid
+        try:
+            connection = agent.Connection.__new__(agent.Connection)
+            connection.channels = {9: shell}
+            connection.handle({"op": "close", "ch": 9})
+            self.assertTrue(shell.closed)
+            self.assertNotIn(9, connection.channels)
+            for _ in range(60):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+        finally:
+            if not shell.closed:
+                shell.close()
+
+
 class ShellReap(unittest.TestCase):
     # #180: a closed terminal is reaped, not left as a zombie.
     def test_closed_shell_is_reaped(self):
@@ -164,6 +231,23 @@ class BackupFolders(unittest.TestCase):
             with mock.patch.dict(os.environ, {"HOME": home}):
                 names = [f["name"] for f in agent.backup_folders({})["folders"]]
                 self.assertEqual(names, ["Documents"])
+
+    # #548: the name backup_folders lists is the name home_folder resolves.
+    def test_trailing_space_in_name_is_kept(self):
+        spaced = "Photos "
+        with tempfile.TemporaryDirectory() as home:
+            os.mkdir(os.path.join(home, "Photos"))
+            os.mkdir(os.path.join(home, spaced))
+            os.mkdir(os.path.join(home, "Documents"))
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                names = [f["name"] for f in agent.backup_folders({})["folders"]]
+                self.assertIn(spaced, names)
+                self.assertEqual(agent.home_folder(spaced), os.path.realpath(os.path.join(home, spaced)))
+                self.assertEqual(agent.home_folder("Documents"), os.path.realpath(os.path.join(home, "Documents")))
+                self.assertEqual(agent.home_folder("Documents/"), os.path.realpath(os.path.join(home, "Documents")))
+                for bad in ("   ", " \t ", "Photos\n", "/Photos", "/"):
+                    with self.assertRaises(RuntimeError, msg=repr(bad)):
+                        agent.home_folder(bad)
 
 
 class Restore(unittest.TestCase):

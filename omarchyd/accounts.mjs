@@ -2,10 +2,11 @@
 // The owner account is created on the server itself (`omarchyd create-owner`), never over the web.
 import {createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual} from 'node:crypto'
 import {readFileSync} from 'node:fs'
-import {chmod, mkdir, readFile, rename, stat, writeFile} from 'node:fs/promises'
+import {chmod, mkdir, readFile, stat} from 'node:fs/promises'
 import {join} from 'node:path'
 import {promisify} from 'node:util'
 
+import {writeAtomic} from './atomic.mjs'
 import {RpcError} from './rpc.mjs'
 
 const scrypt = promisify(scryptCb)
@@ -135,9 +136,7 @@ export async function openAccounts(dataDir, {create = true} = {}) {
 	// pass a copy and assign `state` only after this resolves.
 	const save = (snapshot = state) => {
 		const next = saving.then(async () => {
-			const tmp = `${file}.tmp`
-			await writeFile(tmp, JSON.stringify(snapshot, null, '\t'), {mode: 0o600})
-			await rename(tmp, file)
+			await writeAtomic(file, JSON.stringify(snapshot, null, '\t'))
 			await chmod(file, 0o600).catch(() => {})
 		})
 		saving = next.catch(() => {})

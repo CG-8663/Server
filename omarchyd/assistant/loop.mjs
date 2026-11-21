@@ -234,10 +234,43 @@ export function cardFor(name, args, names = {}) {
 	return {title: 'Approve this step', detail: ''}
 }
 
+// Exact names, plurals, and the nested forms (access_token, Authorization). A secret key drops the
+// whole value, including an array of secrets. Array indexes are not keys, so objects inside arrays
+// are walked too.
+const MCP_SECRET = /^(?:password|passphrase|secret|tokens?|api[-_]?keys?|credentials?|authorizations?|(?:access|refresh)[-_]?tokens?)$/i
+
+function redactArgs(value) {
+	if (Array.isArray(value)) {
+		const out = []
+		for (const item of value) {
+			const next = redactArgs(item)
+			if (next !== undefined) out.push(next)
+		}
+		return out
+	}
+	if (value && typeof value === 'object') {
+		const out = {}
+		for (const [k, v] of Object.entries(value)) {
+			if (MCP_SECRET.test(k)) continue
+			const next = redactArgs(v)
+			if (next !== undefined) out[k] = next
+		}
+		return out
+	}
+	return value
+}
+
 function humanArgValue(value) {
 	if (typeof value === 'string') return value.trim()
 	if (typeof value === 'number' && Number.isFinite(value)) return String(value)
 	if (typeof value === 'boolean') return value ? 'yes' : 'no'
+	if (value && typeof value === 'object') {
+		try {
+			return JSON.stringify(redactArgs(value)) ?? ''
+		} catch {
+			return ''
+		}
+	}
 	return ''
 }
 
@@ -245,7 +278,6 @@ function humanArgValue(value) {
 // So the headline uses the app's description only as a short first sentence, and the card always names the
 // app and the real tool and shows every argument (ids included: they often say what gets changed or
 // deleted). Only secrets are left off.
-const MCP_SECRET = /^(password|passphrase|secret|token|apiKey|api_key|credentials?)$/i
 export function cardForMcp(spec, args) {
 	const shown = plainInput(args)
 	const bits = []
@@ -314,8 +346,29 @@ function providerHistory(messages, actions) {
 			out.push(found ? toOpenAI(found) : {role: 'tool', tool_call_id: t.id, content: placeholder(actionByCall.get(t.id))})
 		}
 	}
-	const history = out.slice(-MAX_MESSAGES)
-	while (history[0]?.role === 'tool') history.shift()
+	// Start on the person's message a 40-message cut would split, then drop the oldest
+	// assistant-and-tool groups until the slice fits. A long tool chain must not go out in full.
+	let start = Math.max(0, out.length - MAX_MESSAGES)
+	while (start > 0 && out[start]?.role !== 'user') start--
+	const history = out.slice(start)
+	while (history.length > MAX_MESSAGES) {
+		const at = history.findIndex((m) => m.role === 'assistant')
+		if (at < 0) break
+		let end = at + 1
+		while (end < history.length && history[end]?.role === 'tool') end++
+		history.splice(at, end - at)
+	}
+	while (history.length && history[0]?.role !== 'user') history.shift()
+	if (history.length > MAX_MESSAGES) {
+		let cut = history.length - MAX_MESSAGES
+		while (cut < history.length && history[cut]?.role !== 'user') cut++
+		if (cut < history.length) return history.slice(cut)
+	}
+	if (!history.length) {
+		const tail = out.slice(Math.max(0, out.length - MAX_MESSAGES))
+		while (tail[0]?.role === 'tool') tail.shift()
+		return tail
+	}
 	return history
 }
 
@@ -596,7 +649,17 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			if (conversationId) row = await conversations.get(userId, conversationId)
 			let key
 			try {
-				key = await keys.resolveForUser(userId, keyId || row?.keyId || undefined)
+				if (keyId) {
+					key = await keys.resolveForUser(userId, keyId)
+				} else if (row?.keyId) {
+					// If the chat's remembered key was deleted or unshared, switch to another key they can use.
+					key = await keys.resolveForUser(userId, row.keyId).catch((e) => {
+						if (e?.code !== 'NOT_FOUND') throw e
+						return keys.resolveForUser(userId)
+					})
+				} else {
+					key = await keys.resolveForUser(userId)
+				}
 			} catch (e) {
 				say('error', {message: e?.message || 'Add an API key in Settings → Assistant, or ask the owner to share one'})
 				return finish(row?.id)
