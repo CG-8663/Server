@@ -2,16 +2,18 @@
 // atomically with mode 0600 because sessions hold Omarchy Server device credentials.
 
 import {createHash, randomBytes} from 'node:crypto'
-import {chmod, mkdir, readFile, rename, stat, writeFile} from 'node:fs/promises'
+import {chmod, mkdir, readFile, rename, stat} from 'node:fs/promises'
 import {basename, join} from 'node:path'
+
+import {writeAtomic} from '../omarchyd/atomic.mjs'
 
 function plainObject(value) {
 	return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
 // A missing file is the fallback. A parse or shape problem is also the fallback, but the
-// damaged bytes stay on disk: renamed to *.bad once, or left in place when *.bad already
-// exists. Any other read error still rejects startup. The log is the file name only.
+// damaged bytes stay on disk under the first free aside name (*.bad, then *.bad.1, …).
+// Any other read error still rejects startup. The log is the file name only.
 async function readJson(file, fallback) {
 	let text
 	try {
@@ -33,21 +35,28 @@ async function readJson(file, fallback) {
 	return fallback
 }
 
-async function keepDamaged(file) {
-	const aside = `${file}.bad`
-	try {
-		await stat(aside)
-		return
-	} catch (error) {
-		if (error.code !== 'ENOENT') throw error
+async function asideName(file) {
+	const first = `${file}.bad`
+	for (let i = 0; i <= 1000; i++) {
+		const candidate = i === 0 ? first : `${first}.${i}`
+		try {
+			await stat(candidate)
+		} catch (error) {
+			if (error.code !== 'ENOENT') throw error
+			return candidate
+		}
 	}
+	throw new Error(`${basename(file)} damaged-file aside names are exhausted`)
+}
+
+async function keepDamaged(file) {
+	const aside = await asideName(file)
 	await rename(file, aside)
+	console.error(basename(aside))
 }
 
 async function writeJson(file, value) {
-	const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
-	await writeFile(tmp, JSON.stringify(value, null, 2), {mode: 0o600})
-	await rename(tmp, file)
+	await writeAtomic(file, JSON.stringify(value, null, 2))
 	await chmod(file, 0o600).catch(() => {})
 }
 
@@ -63,7 +72,15 @@ export async function createStore(dataDir) {
 	// Keyed by sha256(cookie value) so the file alone can't be replayed as a cookie.
 	let sessions = await readJson(sessionsFile, {})
 	let writing = Promise.resolve()
-	const persistSessions = () => (writing = writing.then(() => writeJson(sessionsFile, sessions)).catch(() => {}))
+	const persistSessions = () => {
+		const run = writing.then(() => writeJson(sessionsFile, sessions))
+		// Queue past a failure so the next save still runs, but this caller gets the rejection.
+		writing = run.catch((error) => {
+			const message = String(error?.message ?? error).split(dataDir).join('')
+			console.error(`sessions.json: ${message}`)
+		})
+		return run
+	}
 	let configWriting = Promise.resolve()
 
 	return {
