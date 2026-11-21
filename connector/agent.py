@@ -189,9 +189,9 @@ def _xor(data, mask):
 # Facts about this computer.
 def read(path, default=""):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             return f.read()
-    except OSError:
+    except (OSError, ValueError):
         return default
 
 
@@ -294,12 +294,16 @@ def disks():
     out, seen = [], set()
     for line in read("/proc/mounts").splitlines():
         p = line.split()
-        if len(p) < 3 or p[2] not in REAL_FS or p[0] in seen:
+        if len(p) < 3 or p[2] not in REAL_FS:
+            continue
+        # A ZFS dataset's device is its own name, but every dataset in a pool is one disk.
+        key = p[0].split("/")[0] if p[2] == "zfs" else p[0]
+        if key in seen:
             continue
         mount = p[1].replace("\\040", " ")
         if any(mount == p or mount.startswith(p + "/") for p in ("/boot", "/snap", "/var/lib/docker", "/var/lib/containers")):
             continue
-        seen.add(p[0])
+        seen.add(key)
         try:
             st = os.statvfs(mount)
         except OSError:
@@ -939,7 +943,10 @@ class Shell(Channel):
         pid, fd = pty.fork()
         if pid == 0:
             # The child must never fall back into the connector's own code.
+            # Python ignores SIGPIPE and SIGXFSZ, and exec keeps an ignored signal.
             try:
+                signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+                signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
                 os.chdir(me.pw_dir)
                 env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", HOME=me.pw_dir, SHELL=shell, USER=me.pw_name, LANG=os.environ.get("LANG") or "C.UTF-8")
                 os.execvpe(shell, [shell, "-l"], env)
@@ -1358,6 +1365,7 @@ def start_relay(cfg):
                     headers[h] = self.headers[h]
             length = int(self.headers.get("Content-Length") or 0)
             conn = http.client.HTTPSConnection(u.hostname, u.port or 443, context=ctx, timeout=600)
+            headers_sent = False
             try:
                 conn.putrequest(self.command, "/connector/backup/" + rest, skip_accept_encoding=True)
                 for k, v in headers.items():
@@ -1370,6 +1378,11 @@ def start_relay(cfg):
                         break
                     conn.send(chunk)
                     left -= len(chunk)
+                # The server was told the full Content-Length. Closing here is the failure
+                # it can see; waiting in getresponse() holds the upload open for the timeout.
+                if left > 0:
+                    conn.close()
+                    return
                 r = conn.getresponse()
                 self.send_response(r.status)
                 body_len = r.getheader("Content-Length")
@@ -1380,21 +1393,41 @@ def start_relay(cfg):
                     data = r.read()
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
+                    headers_sent = True
                     self.wfile.write(data)
                     return
                 self.end_headers()
-                while True:
-                    chunk = r.read(1 << 20)
+                headers_sent = True
+                sent = 0
+                need = int(body_len)
+                while sent < need:
+                    chunk = r.read(min(1 << 20, need - sent))
                     if not chunk:
-                        break
+                        # HEAD has no body even when Content-Length names the entity.
+                        if self.command == "HEAD":
+                            break
+                        self.close_connection = True
+                        try:
+                            self.connection.close()
+                        except OSError:
+                            pass
+                        return
                     self.wfile.write(chunk)
+                    sent += len(chunk)
             except OSError:
-                try:
-                    self.send_response(502)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                except OSError:
-                    pass
+                if headers_sent:
+                    self.close_connection = True
+                    try:
+                        self.connection.close()
+                    except OSError:
+                        pass
+                else:
+                    try:
+                        self.send_response(502)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                    except OSError:
+                        pass
             finally:
                 conn.close()
 

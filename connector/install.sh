@@ -77,7 +77,7 @@ if [ "$UNINSTALL" = 1 ]; then
 	systemctl --user disable --now omarchy-connector.service 2>/dev/null || true
 	rm -f "$UNIT"
 	systemctl --user daemon-reload 2>/dev/null || true
-	rm -rf "$DIR" "$CONF"
+	rm -rf "$DIR" "$CONF" "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-connector"
 	if ! sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules; then
 		warn "The helper, its sudoers rule and the sleep udev rule could not be removed. Run this yourself:"
 		printf '  sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules\n' >&2
