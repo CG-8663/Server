@@ -5,6 +5,7 @@ import {useEffect, useRef, useState, type CSSProperties, type ReactNode} from 'r
 import {useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
+import {applyPrefsUpdate, prefsAfterPhotoUpload} from '../photoPrefs'
 import {Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {PRESETS, STYLES, solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
 import {CAPTURE_KEY, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
@@ -234,7 +235,7 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 			const body = await res.json().catch(() => null)
 			if (!res.ok) throw new Error(body?.error?.message ?? 'Upload failed')
 			// Only the photo is stored; the phone keeps its own theme unless you choose "Your photo" there.
-			setPrefs({...prefs, customBrandHsl: hsl, backgroundVersion: body.prefs.backgroundVersion})
+			applyPrefsUpdate(setPrefs, (latest) => prefsAfterPhotoUpload(latest, {hsl, backgroundVersion: body.prefs.backgroundVersion ?? null}, {setThemeCustom: false}))
 			setCfg((c) => ({...c, preset: null, wallpaper: 'photo'}))
 			toast('Background set')
 		} catch (e) {

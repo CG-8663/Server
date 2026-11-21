@@ -12,6 +12,7 @@ import http from 'node:http'
 import {randomBytes, randomUUID} from 'node:crypto'
 import {existsSync} from 'node:fs'
 import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises'
+import {networkInterfaces} from 'node:os'
 import {join} from 'node:path'
 import express from 'express'
 import WebSocket, {WebSocketServer} from 'ws'
@@ -371,6 +372,22 @@ export function normalizeBackendUrl(input) {
 	return `${url.protocol}//${url.host}`
 }
 
+// Banner addresses for one bind. 0.0.0.0 and :: keep the LAN list; a loopback host is
+// localhost only; any other address is printed by itself.
+export function startupUrls(host, port, interfaces = networkInterfaces()) {
+	const pair = (address) => [`http://${address}:${port}`, `https://${address}:${port}`]
+	if (host === '127.0.0.1' || host === '::1' || host === 'localhost') return pair('localhost')
+	if (host !== '0.0.0.0' && host !== '::') {
+		const shown = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+		return pair(shown)
+	}
+	const lan = Object.values(interfaces ?? {})
+		.flat()
+		.filter((i) => i && i.family === 'IPv4' && !i.internal)
+		.flatMap((i) => pair(i.address))
+	return lan.length ? lan : [`http://localhost:${port}`]
+}
+
 export function normalizeAppHosts(input) {
 	const p = String(input ?? '').trim().toLowerCase()
 	if (!p || p === 'off') return null
@@ -482,6 +499,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	api.use((req, res, next) => {
 		res.set('Cache-Control', 'no-store')
 		req.sid = parseCookies(req.headers.cookie)[COOKIE]
+		if (req.sid) rememberSid(req.sid)
 		// CSRF: state-changing calls must come from our own page.
 		if (req.method !== 'GET' && req.method !== 'HEAD') {
 			const origin = req.headers.origin
@@ -842,6 +860,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		attempts.delete(ip)
 		const sid = newSessionId()
 		await store.putSession(sid, {...session, createdAt: now, lastSeenAt: now, userAgent: String(userAgent ?? '').slice(0, 200)})
+		rememberSid(sid)
 		setCookie(res, sid, SESSION_MAX_AGE_S)
 		shareAppSession(req, res, session)
 		res.json({ok: true, accountId: session.accountId, mode: session.mode})
@@ -857,6 +876,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		if (session) {
 			// Revoke the Omarchy Server session too, so it disappears from Settings › Devices.
 			await authedCall(req, 'user.logout', 'mutation').catch(() => {})
+			forgetUrlToken(req.sid)
 			await store.deleteSession(req.sid)
 		}
 		setCookie(res, '', 0)
@@ -1078,7 +1098,18 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	// omarchyd serves file bytes over plain HTTP, authorised by the browser cookie plus
 	// a session-wide URL token. We fetch both server-side and stream the bytes through.
 	const urlTokens = new Map() // sid -> {token, at}
+	// Cookie ids are not stored on the session (the file is keyed by their hash). Remember the
+	// ones this process has seen so a removed session can drop its URL token.
+	const sidByKey = new Map()
+	const rememberSid = (sid) => {
+		if (typeof sid === 'string' && sid) sidByKey.set(hashId(sid), sid)
+	}
+	const forgetUrlToken = (sid) => {
+		if (typeof sid === 'string' && sid) urlTokens.delete(sid)
+		if (typeof sid === 'string' && sid) sidByKey.delete(hashId(sid))
+	}
 	async function fileUrlToken(sid) {
+		rememberSid(sid)
 		const cached = urlTokens.get(sid)
 		if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.token
 		const auth = await browserAuth(sid)
@@ -1104,10 +1135,20 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			for (const p of [req.query.path].flat()) if (typeof p === 'string') url.searchParams.append('path', p)
 			url.searchParams.set('token', token)
 			const upstream = await fetchImpl(url, {
-				headers: {cookie: auth.cookie, ...(req.headers.range ? {range: req.headers.range} : {}), ...(kind === 'view' && typeof req.headers.accept === 'string' ? {accept: req.headers.accept.slice(0, 300)} : {})},
+				headers: {
+					cookie: auth.cookie,
+					...(req.headers.range ? {range: req.headers.range} : {}),
+					...(typeof req.headers['if-range'] === 'string' ? {'if-range': req.headers['if-range']} : {}),
+					...(kind === 'view' && typeof req.headers.accept === 'string' ? {accept: req.headers.accept.slice(0, 300)} : {}),
+				},
 				signal: AbortSignal.timeout(6 * 60 * 60 * 1000),
 			})
-			if (upstream.status === 401) urlTokens.delete(req.sid)
+			if (upstream.status === 401) {
+				forgetUrlToken(req.sid)
+				await upstream.body?.cancel?.().catch(() => {})
+				await store.updateSession(req.sid, {console: null})
+				return res.status(409).json({error: {code: 'CONSOLE_SESSION_REQUIRED', message: 'Sign out and back in to use this'}})
+			}
 			res.status(upstream.status)
 			for (const h of PASS_HEADERS) {
 				const v = upstream.headers.get(h)
@@ -1117,6 +1158,12 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			res.setHeader('X-Content-Type-Options', 'nosniff')
 			// Previews render inline but sandboxed, so a file can't script this app.
 			if (kind === 'view') res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'")
+			// HEAD must not wait for the bytes. omarchyd only serves these routes as GET, so the
+			// upstream method stays GET and the body is cancelled.
+			if (req.method === 'HEAD') {
+				await upstream.body?.cancel?.().catch(() => {})
+				return res.end()
+			}
 			if (!upstream.body) return res.end()
 			const {Readable} = await import('node:stream')
 			const body = Readable.fromWeb(upstream.body)
@@ -1161,9 +1208,13 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			} catch {
 				body = {}
 			}
+			if (upstream.status === 401) {
+				await store.updateSession(req.sid, {console: null})
+				return res.status(409).json({error: {code: 'CONSOLE_SESSION_REQUIRED', message: 'Sign out and back in to use this'}})
+			}
 			if (!upstream.ok) {
 				const message = upstream.status === 507 ? 'Not enough free space on your server' : upstream.status === 409 ? 'A file with that name already exists' : (body.error ?? `Upload failed (HTTP ${upstream.status})`)
-				return res.status(upstream.status === 401 ? 409 : upstream.status).json({error: {code: 'UPLOAD_FAILED', message}})
+				return res.status(upstream.status).json({error: {code: 'UPLOAD_FAILED', message}})
 			}
 			res.json({ok: true, path: body.path ?? path})
 		} catch (error) {
@@ -1275,22 +1326,46 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		return h
 	}
 	// "Only Touch may embed me": drop X-Frame-Options and any frame-ancestors, add ours.
+	// A comma joins two policies. Quotes can contain commas, so split policies first, then directives.
+	const splitPolicies = (value) => {
+		const out = []
+		let cur = ''
+		let quote = ''
+		for (const ch of String(value)) {
+			if (quote) {
+				if (ch === quote) quote = ''
+				cur += ch
+				continue
+			}
+			if (ch === '"' || ch === "'") {
+				quote = ch
+				cur += ch
+				continue
+			}
+			if (ch === ',') {
+				out.push(cur)
+				cur = ''
+				continue
+			}
+			cur += ch
+		}
+		out.push(cur)
+		return out
+	}
 	const frameHeaders = (headers, ancestors) => {
 		delete headers['x-frame-options']
 		const allow = `frame-ancestors 'self' ${[...ancestors].join(' ')}`.trim()
-		const csp = []
-			.concat(headers['content-security-policy'] ?? [])
-			.map((v) =>
-				v
+		const policies = []
+		for (const value of [].concat(headers['content-security-policy'] ?? [])) {
+			for (const policy of splitPolicies(value)) {
+				const kept = policy
 					.split(';')
 					.map((d) => d.trim())
 					.filter((d) => d && !/^frame-ancestors\b/i.test(d))
-					.join('; '),
-			)
-			.filter(Boolean)
-		if (csp.length) csp[0] = `${csp[0]}; ${allow}`
-		else csp.push(allow)
-		headers['content-security-policy'] = csp
+				if (kept.length) policies.push(`${kept.join('; ')}; ${allow}`)
+			}
+		}
+		headers['content-security-policy'] = policies.length === 0 ? allow : policies.length === 1 ? policies[0] : policies
 	}
 	// The address a browser sees for this request (Cloudflare tunnels arrive as https).
 	const publicOrigin = (req) => (/^[a-z0-9.\-:[\]]{1,260}$/i.test(req.headers.host ?? '') ? `${req.protocol}://${req.headers.host}` : null)
@@ -1339,7 +1414,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					return res.end('This link has expired. Open the app again from Omarchy Server.')
 				}
 				const id = randomBytes(32).toString('base64url')
-				appSessions.set(id, {sid: t.sid, appId: app.id, exp: Date.now() + 12 * 60 * 60 * 1000})
+				const nowMs = Date.now()
+				for (const [key, entry] of appSessions) if (entry.exp <= nowMs) appSessions.delete(key)
+				appSessions.set(id, {sid: t.sid, appId: app.id, exp: nowMs + 12 * 60 * 60 * 1000})
 				const r = url.searchParams.get('r') ?? '/'
 				const secure = req.headers['x-forwarded-proto'] === 'https' && isLoopback(String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, ''))
 				res.writeHead(302, {
@@ -1755,7 +1832,15 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 							const safe = typeof code === 'number' && (code === 1000 || (code >= 3000 && code <= 4999)) ? code : 1000
 							for (const ws of [client, upstream]) if (ws.readyState === WebSocket.OPEN) ws.close(safe, reason)
 						}
-						upstream.on('message', (data, isBinary) => client.readyState === WebSocket.OPEN && client.send(data, {binary: isBinary}))
+						upstream.on('message', (data, isBinary) => {
+							if (client.readyState !== WebSocket.OPEN) return
+							// Same 1 MiB cap as the connector viewer. The connector passthrough above does not use it.
+							if (client.bufferedAmount > 1024 * 1024) {
+								closeBoth(1011, 'The viewer fell behind')
+								return
+							}
+							client.send(data, {binary: isBinary})
+						})
 						client.on('message', (data, isBinary) => upstream.readyState === WebSocket.OPEN && upstream.send(data, {binary: isBinary}))
 						upstream.on('close', (code, reason) => closeBoth(code, reason))
 						client.on('close', () => closeBoth(1000))
@@ -1780,6 +1865,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			const fresh = await backend?.mutation('user.refreshNativeAccess', {deviceToken: session.deviceToken}).catch(() => null)
 			if (fresh?.accessToken) await backend.mutation('user.logout', undefined, {token: fresh.accessToken}).catch(() => {})
 		}
+		forgetUrlToken(sidByKey.get(key))
 		await store.deleteSessionByKey(key)
 	}
 	// Signing a device out ends every app pass this person holds (passes have one generation per
@@ -1812,6 +1898,12 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			.catch(() => {})
 			.finally(() => renewingPass.delete(sid))
 	}
+	async function endOtherStoredSessions(req, res) {
+		const {myKey, list} = mine(req)
+		for (const {key, session} of list) if (key !== myKey) await endStoredSession(key, session)
+		await renewAppPass(req, res)
+		return true
+	}
 	const mine = (req) => {
 		const me = store.getSession(req.sid)
 		if (!me) throw new BackendError('Signed out', {code: 'UNAUTHORIZED', status: 401})
@@ -1840,15 +1932,19 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			await renewAppPass(req, res)
 			return true
 		},
-		'user.revokeOtherSessions': async (req, res) => {
-			const {myKey, list} = mine(req)
-			for (const {key, session} of list) if (key !== myKey) await endStoredSession(key, session)
-			await renewAppPass(req, res)
-			return true
+		'user.changePassword': async (req, res, input) => {
+			await authedCall(req, 'user.changePassword', 'mutation', input)
+			return endOtherStoredSessions(req, res)
 		},
+		'user.revokeOtherSessions': async (req, res) => endOtherStoredSessions(req, res),
 		// The reset itself happens in omarchyd; every sign-in here ends with it.
+		// Appearance saved on this server (prefs, desktops, uploaded backgrounds) goes with it.
 		'system.factoryReset': async (req, res, input) => {
 			await authedCall(req, 'system.factoryReset', 'mutation', input)
+			await store.setConfig((current) => ({...current, prefs: undefined, desktops: undefined}))
+			await rm(join(store.dataDir, 'backgrounds'), {recursive: true, force: true})
+			urlTokens.clear()
+			sidByKey.clear()
 			await store.clearSessions()
 			setCookie(res, '', 0)
 			res.append('Set-Cookie', 'OMARCHY_APP_SESSION=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0')

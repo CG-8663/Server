@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
 import {createHash, randomBytes} from 'node:crypto'
-import {copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises'
+import {copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
@@ -95,6 +95,8 @@ describe('omarchyd machines', () => {
 					return ''
 				case 'managedsave':
 					doms.set(a[1], 'shut off')
+					return ''
+				case 'managedsave-remove':
 					return ''
 				case 'blockresize':
 				case 'change-media':
@@ -948,6 +950,450 @@ test('Start finishes when define fails after the disk is no longer a partial dis
 		assert.equal(defined.length, 1)
 		assert.ok(defined[0].includes(disk0))
 		assert.equal(defined[0].includes('disk.qcow2.part'), false)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+const busyConflict = (name) => (err) => err instanceof RpcError && err.code === 'CONFLICT' && err.message === `${name} is busy`
+
+test('revert drops a hibernated machine’s saved memory', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-revert-'))
+	const dataDir = join(root, 'data')
+	const id = 'a1b2c3d4'
+	const vm = join(dataDir, 'machines', 'vms', id)
+	const disk0 = join(vm, 'disk.qcow2')
+	const calls = []
+	try {
+		await mkdir(vm, {recursive: true})
+		await writeFile(disk0, 'disk')
+		await writeFile(join(root, 'kvm'), '')
+		await writeFile(
+			join(dataDir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [{
+					id,
+					name: 'Sleeper',
+					osId: 'testos-amd64',
+					cores: 1,
+					memoryGb: 1,
+					memoryMb: 1024,
+					diskSizeGb: 10,
+					portForwards: [],
+					createdAt: 1,
+					mac: '52:54:00:11:22:33',
+					boot: ['disk0'],
+					hibernated: true,
+					snapshots: [{name: 'before', description: '', createdAt: 1, config: {sockets: 1, cores: 1, memoryMb: 1024, cpuType: 'host', layout: {firmware: 'bios', machineType: 'q35', video: 'vga', nic: 'virtio'}, disks: ['disk0'], files: [disk0]}}],
+					layout: {firmware: 'bios', machineType: 'q35', nic: 'virtio', video: 'vga', disks: [{id: 'disk0', file: disk0, device: 'disk', bus: 'virtio', format: 'qcow2', sizeGb: 10}]},
+				}],
+			}),
+		)
+		const run = async (cmd, args) => {
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (cmd === 'virsh' || cmd === 'qemu-img') calls.push([cmd, ...a].join(' '))
+			if (cmd === 'virsh' && a[0] === 'list') return ` Id   Name   State\n------------------\n -    omarchy-${id}   shut off\n`
+			if (cmd === 'virsh' && a[0] === 'managedsave-remove') throw new Error('error: Requested operation is not valid: domain does not have a managed save image')
+			if (cmd === 'virsh' && a[0] === 'define') return ''
+			if (cmd === 'qemu-img' && args[0] === 'snapshot' && args[1] === '-l') return `Snapshot list:\nID        TAG               VM SIZE                DATE     VM CLOCK\n1         before                  0  2024-01-01 00:00:00   00:00:00.000\n`
+			return ''
+		}
+		const machines = createMachines({dataDir, run, kvmDevice: join(root, 'kvm')})
+		await machines.ready
+		await machines.procedures['machines.revertSnapshot'].run({id, name: 'before'})
+		assert.ok(calls.includes(`virsh managedsave-remove omarchy-${id}`))
+		const saved = JSON.parse(await readFile(join(dataDir, 'machines', 'machines.json'), 'utf8')).machines.find((m) => m.id === id)
+		assert.equal(saved.hibernated ?? false, false)
+		const listed = (await machines.procedures['machines.list'].run()).find((m) => m.id === id)
+		assert.notEqual(listed.state, 'hibernated')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('clone keeps the source busy until the copy finishes', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-busy-'))
+	const dataDir = join(root, 'data')
+	const id = 'a1b2c3d4'
+	const vm = join(dataDir, 'machines', 'vms', id)
+	const disk0 = join(vm, 'disk.qcow2')
+	let release
+	let copying = false
+	const gate = new Promise((r) => {
+		release = r
+	})
+	try {
+		await mkdir(vm, {recursive: true})
+		await writeFile(disk0, 'disk')
+		await writeFile(join(root, 'kvm'), '')
+		await writeFile(
+			join(dataDir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [{
+					id,
+					name: 'Source',
+					osId: 'testos-amd64',
+					cores: 1,
+					memoryGb: 1,
+					memoryMb: 1024,
+					diskSizeGb: 10,
+					portForwards: [{id: 'pf1', protocol: 'tcp', hostPort: 2200, guestPort: 22}],
+					createdAt: 1,
+					mac: '52:54:00:11:22:33',
+					boot: ['disk0'],
+					options: {onBoot: false},
+					usbDevices: [{id: 'stick-1', vendorId: '10c4', productId: 'ea60', serial: 'ABC'}],
+					usbLive: ['stick-1'],
+					lastUsbError: 'stuck',
+					layout: {firmware: 'bios', machineType: 'q35', nic: 'virtio', video: 'vga', disks: [{id: 'disk0', file: disk0, device: 'disk', bus: 'virtio', format: 'qcow2', sizeGb: 10}]},
+				}],
+			}),
+		)
+		const run = async (cmd, args) => {
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (cmd === 'qemu-img' && args[0] === 'convert') {
+				copying = true
+				await gate
+				await copyFile(args.at(-2), args.at(-1))
+				return ''
+			}
+			if (cmd === 'qemu-img' && args[0] === 'info') return JSON.stringify({format: 'qcow2', 'virtual-size': 10 * 1024 ** 3, 'actual-size': 4096})
+			if (cmd === 'virsh' && a[0] === 'list') return ` Id   Name   State\n------------------\n -    omarchy-${id}   shut off\n`
+			if (cmd === 'virsh' && a[0] === 'define') return ''
+			if (cmd === 'virsh' && a[0] === 'start') return ''
+			return ''
+		}
+		const machines = createMachines({dataDir, run, kvmDevice: join(root, 'kvm')})
+		await machines.ready
+		await machines.procedures['machines.updateOptions'].run({id, onBoot: true})
+		const pending = machines.procedures['machines.clone'].run({id, name: 'Source copy'})
+		const end = Date.now() + 5000
+		while (!copying) {
+			if (Date.now() > end) throw new Error('clone did not start copying')
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		await assert.rejects(() => machines.procedures['machines.start'].run({id}), busyConflict('Source'))
+		await assert.rejects(() => machines.procedures['machines.uninstall'].run({id}), busyConflict('Source'))
+		release()
+		const {id: copyId} = await pending
+		const deadline = Date.now() + 5000
+		for (;;) {
+			const copy = (await machines.procedures['machines.list'].run()).find((m) => m.id === copyId)
+			if (copy?.state === 'stopped') break
+			if (Date.now() > deadline) throw new Error(`clone did not finish (state ${copy?.state})`)
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		assert.equal(await machines.procedures['machines.start'].run({id}), true)
+		const saved = JSON.parse(await readFile(join(dataDir, 'machines', 'machines.json'), 'utf8'))
+		const source = saved.machines.find((m) => m.id === id)
+		const copy = saved.machines.find((m) => m.id === copyId)
+		assert.deepEqual(source.usbDevices.map((d) => d.id), ['stick-1'])
+		assert.deepEqual(source.usbLive, ['stick-1'])
+		assert.equal(source.lastUsbError, 'stuck')
+		assert.deepEqual(copy.usbDevices, [])
+		assert.equal(copy.usbLive, undefined)
+		assert.equal(copy.lastUsbError, undefined)
+		assert.equal(copy.options.onBoot, true)
+		assert.deepEqual(copy.portForwards, [])
+	} finally {
+		release()
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('paused and stopping machines resize and back up on the live path', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-pause-'))
+	const dataDir = join(root, 'data')
+	const home = join(root, 'home')
+	const id = 'a1b2c3d4'
+	const vm = join(dataDir, 'machines', 'vms', id)
+	const disk0 = join(vm, 'disk.qcow2')
+	const calls = []
+	let domainState = 'paused'
+	try {
+		await mkdir(vm, {recursive: true})
+		await mkdir(home, {recursive: true})
+		await writeFile(disk0, 'disk')
+		await writeFile(join(root, 'kvm'), '')
+		await writeFile(
+			join(dataDir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [{
+					id,
+					name: 'Paused',
+					osId: 'testos-amd64',
+					cores: 1,
+					memoryGb: 1,
+					memoryMb: 1024,
+					diskSizeGb: 10,
+					portForwards: [],
+					createdAt: 1,
+					mac: '52:54:00:11:22:33',
+					boot: ['disk0'],
+					layout: {firmware: 'bios', machineType: 'q35', nic: 'virtio', video: 'vga', disks: [{id: 'disk0', file: disk0, device: 'disk', bus: 'virtio', format: 'qcow2', sizeGb: 10}]},
+				}],
+			}),
+		)
+		const run = async (cmd, args) => {
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (cmd === 'virsh' || cmd === 'qemu-img') calls.push([cmd, ...a].join(' '))
+			if (cmd === 'virsh' && a[0] === 'list') {
+				if (!domainState) return ' Id   Name   State\n------------------\n'
+				return ` Id   Name   State\n------------------\n -    omarchy-${id}   ${domainState}\n`
+			}
+			if (cmd === 'virsh' && a[0] === 'backup-begin') {
+				const bx = await readFile(a[3], 'utf8')
+				for (const [, f] of bx.matchAll(/<target file='([^']+)'/g)) await writeFile(f, 'live-copy')
+				return 'Backup started\n'
+			}
+			if (cmd === 'virsh' && a[0] === 'domjobinfo') return a.includes('--completed') ? 'Job type:         Completed\n' : 'Job type:         None\n'
+			if (cmd === 'qemu-img' && args[0] === 'convert') {
+				await copyFile(args.at(-2), args.at(-1))
+				return ''
+			}
+			if (cmd === 'qemu-img' && args[0] === 'info') return JSON.stringify({format: 'qcow2', 'virtual-size': 10 * 1024 ** 3, 'actual-size': 4096})
+			return ''
+		}
+		const files = {resolve: async () => ({real: home})}
+		const machines = createMachines({dataDir, run, kvmDevice: join(root, 'kvm'), files})
+		await machines.ready
+		await machines.procedures['machines.resizeDisk'].run({id, diskId: 'disk0', sizeGb: 12})
+		assert.ok(calls.includes(`virsh blockresize omarchy-${id} vda 12G`))
+		assert.equal(calls.some((c) => c.startsWith('qemu-img resize ')), false)
+		calls.length = 0
+		domainState = 'in shutdown'
+		await machines.procedures['machines.resizeDisk'].run({id, diskId: 'disk0', sizeGb: 13})
+		assert.ok(calls.includes(`virsh blockresize omarchy-${id} vda 13G`))
+		calls.length = 0
+		domainState = 'shut off'
+		await machines.procedures['machines.resizeDisk'].run({id, diskId: 'disk0', sizeGb: 14})
+		assert.ok(calls.some((c) => c.startsWith('qemu-img resize ')))
+		assert.equal(calls.some((c) => c.includes('blockresize')), false)
+		calls.length = 0
+		domainState = null
+		await machines.procedures['machines.resizeDisk'].run({id, diskId: 'disk0', sizeGb: 15})
+		assert.ok(calls.some((c) => c.startsWith('qemu-img resize ')))
+		assert.equal(calls.some((c) => c.includes('blockresize')), false)
+		calls.length = 0
+		domainState = 'paused'
+		const {backupId} = await machines.procedures['machines.backup'].run({id})
+		const deadline = Date.now() + 5000
+		for (;;) {
+			const listed = await machines.procedures['machines.backups'].run({id})
+			if (listed.some((b) => b.id === backupId)) break
+			if (Date.now() > deadline) throw new Error('paused backup did not finish')
+			await new Promise((r) => setTimeout(r, 20))
+		}
+		assert.ok(calls.some((c) => c.startsWith(`virsh backup-begin omarchy-${id} `)))
+		assert.equal(calls.some((c) => /must be running/.test(c)), false)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('hardware and drive changes are refused while a backup is busy', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-set-'))
+	const dataDir = join(root, 'data')
+	const home = join(root, 'home')
+	const id = 'a1b2c3d4'
+	const vm = join(dataDir, 'machines', 'vms', id)
+	const disk0 = join(vm, 'disk.qcow2')
+	let release
+	let copying = false
+	const gate = new Promise((r) => {
+		release = r
+	})
+	try {
+		await mkdir(vm, {recursive: true})
+		await mkdir(home, {recursive: true})
+		await writeFile(disk0, 'disk')
+		await writeFile(join(root, 'kvm'), '')
+		await writeFile(
+			join(dataDir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [{
+					id,
+					name: 'Box',
+					osId: 'testos-amd64',
+					cores: 1,
+					memoryGb: 1,
+					memoryMb: 1024,
+					diskSizeGb: 10,
+					portForwards: [],
+					createdAt: 1,
+					mac: '52:54:00:11:22:33',
+					boot: ['disk0'],
+					layout: {firmware: 'bios', machineType: 'q35', nic: 'virtio', video: 'vga', disks: [{id: 'disk0', file: disk0, device: 'disk', bus: 'virtio', format: 'qcow2', sizeGb: 10}]},
+				}],
+			}),
+		)
+		const run = async (cmd, args) => {
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (cmd === 'qemu-img' && args[0] === 'convert') {
+				copying = true
+				await gate
+				await copyFile(args.at(-2), args.at(-1))
+				return ''
+			}
+			if (cmd === 'qemu-img' && args[0] === 'info') return JSON.stringify({format: 'qcow2', 'virtual-size': 10 * 1024 ** 3, 'actual-size': 4096})
+			if (cmd === 'virsh' && a[0] === 'list') return ' Id   Name   State\n------------------\n'
+			if (cmd === 'virsh' && a[0] === 'define') return ''
+			return ''
+		}
+		const files = {resolve: async () => ({real: home})}
+		const machines = createMachines({dataDir, run, kvmDevice: join(root, 'kvm'), files})
+		await machines.ready
+		const pending = machines.procedures['machines.backup'].run({id})
+		const end = Date.now() + 5000
+		while (!copying) {
+			if (Date.now() > end) throw new Error('backup did not start copying')
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		const before = await readFile(join(dataDir, 'machines', 'machines.json'), 'utf8')
+		await assert.rejects(() => machines.procedures['machines.updateHardware'].run({id, nic: 'e1000'}), busyConflict('Box'))
+		await assert.rejects(() => machines.procedures['machines.updateDisk'].run({id, diskId: 'disk0', bus: 'sata'}), busyConflict('Box'))
+		assert.equal(await readFile(join(dataDir, 'machines', 'machines.json'), 'utf8'), before)
+		release()
+		await pending
+	} finally {
+		release()
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('a machine saved before drive layouts lists the cloud drives', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-layout-'))
+	const dataDir = join(root, 'data')
+	const oldId = 'aaaaaaaa'
+	const keptId = 'bbbbbbbb'
+	const oldVm = join(dataDir, 'machines', 'vms', oldId)
+	const keptVm = join(dataDir, 'machines', 'vms', keptId)
+	try {
+		await mkdir(oldVm, {recursive: true})
+		await mkdir(keptVm, {recursive: true})
+		await writeFile(join(oldVm, 'disk.qcow2'), 'old-disk')
+		await writeFile(join(oldVm, 'seed.iso'), 'old-seed')
+		await writeFile(join(keptVm, 'disk.qcow2'), 'kept-disk')
+		await writeFile(join(root, 'kvm'), '')
+		await writeFile(
+			join(dataDir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [
+					{id: oldId, name: 'Old', osId: 'testos-amd64', cores: 1, memoryGb: 1, diskSizeGb: 10, portForwards: [], createdAt: 1, mac: '52:54:00:00:00:01'},
+					{id: keptId, name: 'Kept', osId: 'testos-amd64', cores: 1, memoryGb: 1, memoryMb: 1024, diskSizeGb: 8, portForwards: [], createdAt: 1, mac: '52:54:00:00:00:02', boot: ['disk0'], layout: {firmware: 'efi', machineType: 'q35', nic: 'e1000e', video: 'vga', disks: [{id: 'disk0', file: join(keptVm, 'disk.qcow2'), device: 'disk', bus: 'sata', format: 'qcow2', sizeGb: 8}]}},
+				],
+			}),
+		)
+		const run = async (cmd, args) => {
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (cmd === 'virsh' && a[0] === 'list') return ' Id   Name   State\n------------------\n'
+			if (cmd === 'virsh' && a[0] === 'define') return ''
+			if (cmd === 'qemu-img' && args[0] === 'info') return JSON.stringify({format: 'qcow2', 'virtual-size': 10 * 1024 ** 3, 'actual-size': 4096})
+			return ''
+		}
+		const machines = createMachines({dataDir, run, kvmDevice: join(root, 'kvm')})
+		await machines.ready
+		const old = await machines.procedures['machines.details'].run({id: oldId})
+		assert.deepEqual(
+			old.hardware.disks.map((d) => [d.id, d.device, d.bus, d.format, d.role]),
+			[['disk0', 'disk', 'virtio', 'qcow2', null], ['seed', 'cdrom', 'sata', 'raw', 'seed']],
+		)
+		assert.deepEqual([old.hardware.firmware, old.hardware.nic, old.hardware.video, old.hardware.machineType], ['bios', 'virtio', 'vga', 'q35'])
+		await machines.procedures['machines.updateHardware'].run({id: oldId, nic: 'e1000'})
+		const kept = await machines.procedures['machines.details'].run({id: keptId})
+		assert.deepEqual(kept.hardware.disks.map((d) => [d.id, d.device, d.bus]), [['disk0', 'disk', 'sata']])
+		assert.equal(kept.hardware.nic, 'e1000e')
+		assert.equal(kept.hardware.firmware, 'efi')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('backup folders without machine.json are removed on start and by delete', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-bak-'))
+	const dataDir = join(root, 'data')
+	const home = join(root, 'home')
+	const backups = join(home, 'Backups', 'Machines')
+	const orphan = join(backups, 'cut-short')
+	const good = join(backups, 'kept-backup')
+	const photos = join(home, 'Photos')
+	const meta = JSON.stringify({format: 1, machine: {name: 'Kept'}})
+	try {
+		await mkdir(orphan, {recursive: true})
+		await mkdir(good, {recursive: true})
+		await mkdir(photos, {recursive: true})
+		await writeFile(join(orphan, 'disk0.qcow2'), 'partial')
+		await writeFile(join(good, 'machine.json'), meta)
+		await writeFile(join(good, 'disk0.qcow2'), 'full')
+		await writeFile(join(backups, 'notes.txt'), 'keep')
+		await writeFile(join(photos, 'pic.txt'), 'keep')
+		await writeFile(join(root, 'kvm'), '')
+		const files = {resolve: async (virtual) => (virtual === '/Home' ? {real: home} : Promise.reject(new Error('no')))}
+		const machines = createMachines({dataDir, run: async () => '', kvmDevice: join(root, 'kvm'), files})
+		await machines.ready
+		await assert.rejects(() => stat(orphan))
+		assert.equal(await readFile(join(good, 'machine.json'), 'utf8'), meta)
+		assert.equal(await readFile(join(backups, 'notes.txt'), 'utf8'), 'keep')
+		assert.equal(await readFile(join(photos, 'pic.txt'), 'utf8'), 'keep')
+		await assert.rejects(() => machines.procedures['machines.deleteBackup'].run({backupId: 'cut-short'}), (err) => err instanceof RpcError && err.code === 'NOT_FOUND')
+		const late = join(backups, 'late-cut')
+		await mkdir(late, {recursive: true})
+		await writeFile(join(late, 'disk0.qcow2'), 'partial')
+		assert.equal(await machines.procedures['machines.deleteBackup'].run({backupId: 'late-cut'}), true)
+		await assert.rejects(() => stat(late))
+		assert.equal(await readFile(join(good, 'machine.json'), 'utf8'), meta)
+		await assert.rejects(() => machines.procedures['machines.deleteBackup'].run({backupId: 'not-there'}), (err) => err instanceof RpcError && err.code === 'NOT_FOUND')
+		const names = await readdir(home)
+		assert.ok(names.includes('Photos'))
+		assert.ok(names.includes('Backups'))
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('an imported raw disk is defined as qcow2 only when the copy is qcow2', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-imp-'))
+	const dataDir = join(root, 'data')
+	const raw0 = join(root, 'vdisk1.img')
+	const raw1 = join(root, 'vdisk2.img')
+	const defined = []
+	try {
+		await writeFile(raw0, 'raw-one')
+		await writeFile(raw1, 'raw-two')
+		await writeFile(join(root, 'kvm'), '')
+		const run = async (cmd, args) => {
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (cmd === 'qemu-img' && args[0] === 'convert') {
+				await writeFile(args.at(-1), 'copied')
+				return ''
+			}
+			if (cmd === 'qemu-img' && args[0] === 'info') {
+				const format = String(args.at(-1)).endsWith('disk1.qcow2') ? 'raw' : 'qcow2'
+				return JSON.stringify({format, 'virtual-size': 1024 ** 3, 'actual-size': 4096})
+			}
+			if (cmd === 'virsh' && a[0] === 'define') {
+				defined.push(await readFile(a[1], 'utf8'))
+				return ''
+			}
+			if (cmd === 'virsh' && a[0] === 'list') return ' Id   Name   State\n------------------\n'
+			return ''
+		}
+		const machines = createMachines({dataDir, run, kvmDevice: join(root, 'kvm')})
+		await machines.ready
+		const {id} = await machines.importVm({name: 'Win11', firmware: 'bios', disks: [{file: raw0, bus: 'virtio', format: 'raw'}, {file: raw1, bus: 'sata', format: 'raw'}]})
+		const end = Date.now() + 5000
+		for (;;) {
+			const state = machines.importState(id)
+			if (state.done) {
+				assert.equal(state.error, null)
+				break
+			}
+			if (Date.now() > end) throw new Error('import did not finish')
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		const xml = defined.at(-1)
+		assert.match(xml, /type='qcow2'[^>]*\/><source file='[^']*disk\.qcow2'/)
+		assert.match(xml, /type='raw'[^>]*\/><source file='[^']*disk1\.qcow2'/)
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}

@@ -10,6 +10,7 @@ import {osLook} from '../osLook'
 import {LocalSwarm, useSwarm} from '../swarm/Swarm'
 import {bytes, duration, haptic, useConfirm} from '../ui'
 import {mib, useAllTasks, useBackups, useMachineAction, useMachineDetails, useNode, when} from './api'
+import {backupListView} from './backupList'
 import {PortForwarding} from './PortForwarding'
 import {DevicesPanel} from '../usb'
 import {
@@ -143,6 +144,7 @@ function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreat
 	const node = useNode()
 	const machines = useMachines()
 	const backups = useBackups(null)
+	const backupRows = backupListView(backups)
 	const desk = useDesktop()
 	const action = useMachineAction()
 	const confirm = useConfirm()
@@ -238,7 +240,14 @@ function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreat
 						<span>Size</span>
 						<span />
 					</div>
-					{backups.data?.length === 0 && <div className="mx-tr empty">No backups yet. Back up a machine from its Backup panel.</div>}
+					{backupRows.loading && <div className="mx-tr empty">Loading…</div>}
+					{backupRows.error && (
+						<div className="error" role="alert">
+							<Icon name="alert" size={18} />
+							{backupRows.error}
+						</div>
+					)}
+					{backupRows.showEmpty && <div className="mx-tr empty">No backups yet. Back up a machine from its Backup panel.</div>}
 					{(backups.data ?? []).map((b) => (
 						<div className="mx-tr" role="row" key={b.id}>
 							<span>{when(b.createdAt)}</span>

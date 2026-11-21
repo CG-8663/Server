@@ -170,3 +170,177 @@ test('a key the provider rejects mid-chat is marked in Settings', async () => {
 test('the web server lets assistant.verifyKey through', () => {
 	assert.equal(ALLOWED['assistant.verifyKey'], 'mutation')
 })
+
+test('verifyKey does not call a 200 connected unless the body is a model list', async () => {
+	const base = {provider: 'openai-compatible', baseUrl: 'http://box/v1', apiKey: 'k'}
+	const rejected = await verifyKey({...base, fetchImpl: async () => json(200, {error: {message: 'Invalid API key'}})})
+	assert.equal(rejected.ok, false)
+	assert.equal(rejected.status, 'error')
+	assert.match(rejected.message, /Invalid API key/)
+	for (const body of [{detail: 'Not Found'}, null, 'hi', {data: {a: 1}}]) {
+		const result = await verifyKey({...base, fetchImpl: async () => json(200, body)})
+		assert.equal(result.ok, false, JSON.stringify(body))
+		assert.match(result.message, /not with a model list/)
+	}
+	const listed = await verifyKey({...base, model: 'llama3', fetchImpl: async () => json(200, {data: [{id: 'llama3'}]})})
+	assert.equal(listed.ok, true)
+	assert.equal(listed.modelFound, true)
+	const empty = await verifyKey({...base, fetchImpl: async () => json(200, {data: []})})
+	assert.equal(empty.ok, true)
+	assert.equal(empty.status, 'ok')
+})
+
+test('verifyKey treats a bare model name as that name with the latest tag', async () => {
+	const fetchImpl = async () => json(200, {object: 'list', data: [{id: 'llama3:latest', object: 'model', owned_by: 'library'}]})
+	const base = {provider: 'openai-compatible', baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'k', fetchImpl}
+	const bare = await verifyKey({...base, model: 'llama3'})
+	assert.equal(bare.ok, true)
+	assert.equal(bare.modelFound, true)
+	assert.match(bare.message, /Connected/)
+	const exact = await verifyKey({...base, model: 'llama3:latest'})
+	assert.equal(exact.ok, true)
+	assert.equal(exact.modelFound, true)
+	const tagged = await verifyKey({...base, model: 'llama3:8b'})
+	assert.equal(tagged.ok, false)
+	assert.equal(tagged.status, 'no-model')
+	assert.equal(tagged.modelFound, false)
+	const prefix = await verifyKey({...base, model: 'llama'})
+	assert.equal(prefix.modelFound, false)
+	assert.equal(prefix.ok, false)
+})
+
+test('recordCheck keeps a result only when the key, model and address that were checked are still current', async () => {
+	const dataDir = await tmp()
+	try {
+		const keys = createKeyStore({dataDir, now: () => 5})
+		const k = await keys.add(OWNER, {provider: 'openai-compatible', apiKey: 'sk-OLD-typo-key', model: 'llama3', baseUrl: 'http://127.0.0.1:11434/v1'})
+		const stale = {apiKey: 'sk-OLD-typo-key', model: 'llama3', baseUrl: 'http://127.0.0.1:11434/v1', updatedAt: k.updatedAt}
+		await keys.update(OWNER, {id: k.id, apiKey: 'sk-NEW-correct-key'})
+		assert.equal(await keys.recordCheck(k.id, {ok: false, status: 'rejected', message: 'The endpoint rejected this API key'}, stale), null)
+		assert.equal((await keys.listPublic('owner'))[0].check, null)
+		const current = await keys.getSecret(k.id)
+		const fresh = {apiKey: current.apiKey, model: current.model, baseUrl: current.baseUrl, updatedAt: current.updatedAt}
+		assert.equal((await keys.recordCheck(k.id, {ok: true, status: 'ok', message: 'Connected'}, fresh)).ok, true)
+		assert.equal(await keys.recordCheck(k.id, {ok: false, status: 'rejected', message: 'The endpoint rejected this API key'}, stale), null)
+		assert.equal((await keys.listPublic('owner'))[0].check.ok, true)
+		assert.equal((await keys.listPublic('owner'))[0].check.message, 'Connected')
+		await keys.update(OWNER, {id: k.id, model: 'llama3.1'})
+		const moved = await keys.getSecret(k.id)
+		assert.equal(await keys.recordCheck(k.id, {ok: true, status: 'ok', message: 'Connected'}, {apiKey: moved.apiKey, model: 'llama3', baseUrl: moved.baseUrl}), null)
+		assert.equal((await keys.listPublic('owner'))[0].check, null)
+		await keys.recordCheck(k.id, {ok: true, status: 'ok', message: 'Connected'}, {apiKey: moved.apiKey, model: moved.model, baseUrl: moved.baseUrl})
+		await keys.update(OWNER, {id: k.id, baseUrl: 'http://127.0.0.1:11435/v1'})
+		const shifted = await keys.getSecret(k.id)
+		assert.equal(await keys.recordCheck(k.id, {ok: false, status: 'rejected', message: 'old address'}, {apiKey: shifted.apiKey, model: shifted.model, baseUrl: 'http://127.0.0.1:11434/v1'}), null)
+		assert.equal((await keys.listPublic('owner'))[0].check, null)
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
+test('a key check that finishes after the key was edited is not recorded on the edited key', async () => {
+	const dataDir = await tmp()
+	let now = 10
+	let release = () => {}
+	const gate = new Promise((resolve) => {
+		release = resolve
+	})
+	let started = () => {}
+	const startedP = new Promise((resolve) => {
+		started = resolve
+	})
+	const fetchImpl = async (_url, opts) => {
+		const auth = opts?.headers?.authorization ?? ''
+		if (auth.includes('OLD')) {
+			started()
+			await gate
+			return json(401, {})
+		}
+		return json(200, {data: [{id: 'gpt-5.5'}]})
+	}
+	try {
+		const asst = createAssistant({dataDir, accounts: fakeAccounts(), now: () => now, fetchImpl})
+		const k = await asst.keys.add(OWNER, {provider: 'openai', apiKey: 'sk-OLD-typo-key', model: 'gpt-5.5'})
+		const slow = asst.procedures['assistant.verifyKey'].run({id: k.id}, {auth: {userId: 'owner'}})
+		await startedP
+		now = 20
+		await asst.procedures['assistant.updateKey'].run({id: k.id, apiKey: 'sk-NEW-correct-key'}, {auth: {userId: 'owner'}})
+		const fresh = await asst.procedures['assistant.verifyKey'].run({id: k.id}, {auth: {userId: 'owner'}})
+		assert.equal(fresh.ok, true)
+		release()
+		const late = await slow
+		assert.equal(late.ok, false)
+		const [listed] = await asst.keys.listPublic('owner')
+		assert.equal(listed.check.ok, true)
+		assert.match(listed.check.message, /Connected/)
+		assert.equal(listed.check.status, 'ok')
+	} finally {
+		release()
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
+test('a key check that finishes after an edit does not restore a cleared result', async () => {
+	const dataDir = await tmp()
+	let release = () => {}
+	const gate = new Promise((resolve) => {
+		release = resolve
+	})
+	let started = () => {}
+	const startedP = new Promise((resolve) => {
+		started = resolve
+	})
+	const fetchImpl = async (_url, opts) => {
+		if ((opts?.headers?.authorization ?? '').includes('OLD')) {
+			started()
+			await gate
+			return json(401, {})
+		}
+		return json(200, {data: [{id: 'gpt-5.5'}]})
+	}
+	try {
+		const asst = createAssistant({dataDir, accounts: fakeAccounts(), now: () => 4, fetchImpl})
+		const k = await asst.keys.add(OWNER, {provider: 'openai', apiKey: 'sk-OLD-typo-key', model: 'gpt-5.5'})
+		const slow = asst.procedures['assistant.verifyKey'].run({id: k.id}, {auth: {userId: 'owner'}})
+		await startedP
+		await asst.procedures['assistant.updateKey'].run({id: k.id, apiKey: 'sk-NEW-correct-key'}, {auth: {userId: 'owner'}})
+		release()
+		await slow
+		assert.equal((await asst.keys.listPublic('owner'))[0].check, null)
+	} finally {
+		release()
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
+test('a chat rejection that finishes after the key was edited is not recorded on the edited key', async () => {
+	const dataDir = await tmp()
+	let release = () => {}
+	const gate = new Promise((resolve) => {
+		release = resolve
+	})
+	let started = () => {}
+	const startedP = new Promise((resolve) => {
+		started = resolve
+	})
+	const fetchImpl = async () => {
+		started()
+		await gate
+		return json(401, {error: {message: 'nope'}})
+	}
+	try {
+		const asst = createAssistant({dataDir, accounts: fakeAccounts(), now: () => 8, runProcedure: async () => null, fetchImpl})
+		const k = await asst.keys.add(OWNER, {provider: 'openai', apiKey: 'sk-OLD-typo-key', model: 'gpt-5.5'})
+		const events = []
+		const turn = asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: (e) => events.push(e)})
+		await startedP
+		await asst.procedures['assistant.updateKey'].run({id: k.id, apiKey: 'sk-NEW-correct-key'}, {auth: {userId: 'owner'}})
+		release()
+		await turn
+		assert.equal(events[0].event, 'error')
+		assert.equal((await asst.keys.listPublic('owner'))[0].check, null)
+	} finally {
+		release()
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
