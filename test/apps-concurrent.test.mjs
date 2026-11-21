@@ -59,7 +59,7 @@ async function createStoreRepo(dir, appsList) {
 	return `file://${dir}`
 }
 
-async function setupApps(t, {defaultStores = true, gitDelayMs = 0, pullGate = null} = {}) {
+async function setupApps(t, {defaultStores = true, gitDelayMs = 0} = {}) {
 	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-apps-conc-'))
 	const dataDir = join(root, 'data')
 	const home = join(root, 'home')
@@ -73,6 +73,7 @@ async function setupApps(t, {defaultStores = true, gitDelayMs = 0, pullGate = nu
 	const prevDockerHost = process.env.DOCKER_HOST
 	process.env.DOCKER_HOST = `unix://${sock}`
 
+	let pullGate = null
 	const up = new Set()
 	const networks = new Set()
 	const run = async (cmd, args, opts = {}) => {
@@ -93,7 +94,7 @@ async function setupApps(t, {defaultStores = true, gitDelayMs = 0, pullGate = nu
 			const project = args[1]
 			const verb = args[4]
 			if (verb === 'pull') {
-				if (pullGate) await pullGate.wait()
+				if (pullGate) await pullGate()
 				else await wait(40)
 				return ''
 			}
@@ -120,7 +121,7 @@ async function setupApps(t, {defaultStores = true, gitDelayMs = 0, pullGate = nu
 		else process.env.DOCKER_HOST = prevDockerHost
 		await rm(root, {recursive: true, force: true})
 	})
-	return {root, dataDir, storeDir, storeUrl, apps, port}
+	return {root, dataDir, storeDir, storeUrl, apps, port, setPullGate: (fn) => (pullGate = fn)}
 }
 
 async function waitInstalled(apps, id) {
@@ -153,4 +154,62 @@ test('concurrent installs of the same app allow one and refuse the duplicate', a
 	assert.notEqual(listed[0].state, 'error')
 	const saved = JSON.parse(await readFile(join(dataDir, 'apps', 'apps.json'), 'utf8'))
 	assert.equal(saved.apps.filter((a) => a.id === 'demo-app').length, 1)
+})
+
+test('concurrent updates refuse the second request without clearing the busy marker', async (t) => {
+	const {storeDir, apps, port, setPullGate} = await setupApps(t)
+	await apps.procedures['appStore.registry'].run()
+	await apps.procedures['apps.install'].run({appId: 'demo-app'})
+	await waitInstalled(apps, 'demo-app')
+
+	await writeFile(
+		join(storeDir, 'demo-app', 'omarchy-app.yml'),
+		`manifestVersion: 1\nid: demo-app\nname: Demo App\ntagline: Says hello\nversion: "1.1"\nport: ${port}\nicon: https://example.com/i.svg\ndefaultPassword: ""\n`,
+	)
+	gitSync(storeDir, 'add', '.')
+	gitSync(storeDir, 'commit', '-qm', 'v1.1')
+	await apps.procedures['appStore.refresh'].run()
+
+	let pulls = 0
+	let pullStartedResolve
+	const pullStarted = new Promise((r) => (pullStartedResolve = r))
+	let pullRelease
+	const pullWait = new Promise((r) => (pullRelease = r))
+	setPullGate(async () => {
+		if (++pulls === 1) {
+			pullStartedResolve()
+			await pullWait
+		}
+	})
+
+	const p1 = apps.procedures['apps.update'].run({appId: 'demo-app'})
+	const p2 = apps.procedures['apps.update'].run({appId: 'demo-app'})
+	try {
+		await assert.rejects(p2, (e) => e instanceof RpcError && e.code === 'CONFLICT' && e.message === 'Demo App is busy')
+
+		await pullStarted
+		await assert.rejects(
+			apps.procedures['apps.stop'].run({appId: 'demo-app'}),
+			(e) => e instanceof RpcError && e.code === 'CONFLICT' && e.message === 'Demo App is busy',
+		)
+
+		pullRelease()
+		setPullGate(null)
+		assert.equal(await p1, true)
+	} finally {
+		pullRelease?.()
+		setPullGate(null)
+		await Promise.allSettled([p1, p2])
+	}
+	const listed = (await apps.procedures['apps.list'].run()).find((a) => a.id === 'demo-app')
+	assert.equal(listed.version, '1.1')
+	assert.equal(await apps.procedures['apps.stop'].run({appId: 'demo-app'}), true)
+
+	// An update that exits early (app removed from store) must release busy cleanly.
+	await rm(join(storeDir, 'demo-app'), {recursive: true, force: true})
+	gitSync(storeDir, 'add', '-A')
+	gitSync(storeDir, 'commit', '-qm', 'remove demo-app')
+	await apps.procedures['appStore.refresh'].run()
+	await assert.rejects(apps.procedures['apps.update'].run({appId: 'demo-app'}), (e) => e instanceof RpcError && e.code === 'NOT_FOUND')
+	assert.equal(await apps.procedures['apps.start'].run({appId: 'demo-app'}), true)
 })

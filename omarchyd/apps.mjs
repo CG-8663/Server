@@ -1741,18 +1741,26 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const app = findInstalled(String(input?.appId ?? ''))
 		if (app.system) throw new RpcError('PRECONDITION_FAILED', `${app.name} is updated with the rest of the system (Omarchy’s updates).`)
 		if (busy.has(app.id)) throw new RpcError('CONFLICT', `${app.name} is busy`)
-		const src = await findInRegistry(app.id)
-		if (!src) throw new RpcError('NOT_FOUND', 'That app is no longer in your stores')
-		// An update never adds access you didn't allow. (Apps installed before permissions existed keep what they run with.)
-		const wantsPerms = await permissionsOf({...src, folderIds: app.folderIds, folders: app.folders && !Array.isArray(app.folders) ? app.folders : undefined})
-		const refused = wantsPerms.find((p) => p.id === 'refused')
-		if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
-		const wants = wantsPerms.map((p) => p.id)
-		app.permissions ??= wants
-		const extra = wants.filter((p) => !app.permissions.includes(p) && !(Array.isArray(input?.grant) && input.grant.includes(p)))
-		if (extra.length) throw new RpcError('PRECONDITION_FAILED', `This update asks for more access (${extra.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}). Uninstall and install it again to allow that.`)
-		// Folders a newer listing lets you place start inside the app; the ones you placed stay put.
-		if (src.folders?.length) app.folderIds = [...new Set([...(app.folderIds ?? []), ...src.folders.map((f) => f.id)])]
+		busy.set(app.id, {state: 'updating', progress: 0})
+		let src
+		let wants
+		try {
+			src = await findInRegistry(app.id)
+			if (!src) throw new RpcError('NOT_FOUND', 'That app is no longer in your stores')
+			// An update never adds access you didn't allow. (Apps installed before permissions existed keep what they run with.)
+			const wantsPerms = await permissionsOf({...src, folderIds: app.folderIds, folders: app.folders && !Array.isArray(app.folders) ? app.folders : undefined})
+			const refused = wantsPerms.find((p) => p.id === 'refused')
+			if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
+			wants = wantsPerms.map((p) => p.id)
+			app.permissions ??= wants
+			const extra = wants.filter((p) => !app.permissions.includes(p) && !(Array.isArray(input?.grant) && input.grant.includes(p)))
+			if (extra.length) throw new RpcError('PRECONDITION_FAILED', `This update asks for more access (${extra.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}). Uninstall and install it again to allow that.`)
+			// Folders a newer listing lets you place start inside the app; the ones you placed stay put.
+			if (src.folders?.length) app.folderIds = [...new Set([...(app.folderIds ?? []), ...src.folders.map((f) => f.id)])]
+		} catch (error) {
+			busy.delete(app.id)
+			throw error
+		}
 		busy.set(app.id, {state: 'updating', progress: 10})
 		let step = 'getting its files ready'
 		// placeApp records the new loopback port before the new containers are up. Keep the old one if that fails.
