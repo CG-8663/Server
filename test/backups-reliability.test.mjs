@@ -90,9 +90,14 @@ function makeFakeNas(nasRoot, {shareName = 'backups', onCommand} = {}) {
 				cwd = target
 			} else if (cmd === 'put') {
 				const [localPath, remotePath] = rest
+				const buf = await readFile(localPath).catch(() => null)
+				if (!buf) {
+					stderr += 'NT_STATUS_NO_SUCH_FILE\n'
+					continue
+				}
 				const dest = join(cwd, ...remotePath.split(/[\\/]/).filter(Boolean))
 				await mkdir(dirname(dest), {recursive: true})
-				await writeFile(dest, await readFile(localPath))
+				await writeFile(dest, buf)
 				stdout += `putting file ${localPath} as ${remotePath}\n`
 			} else if (cmd === 'get') {
 				const [remotePath, localPath] = rest
@@ -1101,4 +1106,76 @@ test('#649 0.9.46 root-layout backup stores are migrated into server/ for snapsh
 	const snaps2 = await b2.procedures['backups.snapshots'].run()
 	assert.equal(snaps2.length, 1)
 	assert.equal(snaps2[0].id, snapId)
+})
+
+test('#340 mirror ignores in-flight .tmp files from concurrent computer uploads', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-340-'))
+	const nasRoot = join(root, 'nas')
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	await mkdir(home, {recursive: true})
+	await mkdir(dataDir, {recursive: true})
+	await writeFile(join(dataDir, 'settings.json'), '{"x":1}\n')
+
+	let renamed = true
+	let tmpPath = ''
+	let finalPath = ''
+	const fakeNas = makeFakeNas(nasRoot, {
+		async onCommand(raw) {
+			if (renamed || !raw.startsWith('put ')) return
+			renamed = true
+			await rename(tmpPath, finalPath)
+		},
+	})
+	const restic = makeFakeRestic()
+	let dropNextPut = false
+	const b = createBackups({
+		dataDir,
+		home,
+		serverDataDir: join(root, 'none'),
+		files: fakeFiles(home),
+		apps: {backupTargets: async () => []},
+		resticPath: '/bin/restic',
+		unshare: false,
+		timers: false,
+		run: async (cmd, args, opts) => {
+			if (cmd === 'smbclient') {
+				if (dropNextPut && String(opts?.input ?? '').includes('put ')) {
+					dropNextPut = false
+					return {stdout: '', stderr: ''}
+				}
+				return fakeNas(args, opts)
+			}
+			return restic.run(args, opts)
+		},
+	})
+	t.after(async () => {
+		b.close()
+		await rm(root, {recursive: true, force: true})
+	})
+
+	await b.procedures['backups.configure'].run({nas: {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u', password: 'p'}})
+	await (await b.runBackup()).done
+
+	// Simulate an in-flight computer upload (.tmp file) that finishes and renames when the first put runs.
+	const objId = 'ab' + 'c'.repeat(62)
+	const compDir = join(home, 'Backups', 'Omarchy Server', 'computers', 'pc2')
+	const compDataDir = join(compDir, 'data', 'ab')
+	await mkdir(compDataDir, {recursive: true})
+	await writeFile(join(compDir, 'config'), 'pc2-config')
+	tmpPath = join(compDataDir, `${objId}.1234abcd.tmp`)
+	finalPath = join(compDataDir, objId)
+	await writeFile(tmpPath, 'partial-object-bytes')
+	renamed = false
+
+	const res = await b.mirror()
+	assert.ok(res)
+	const nasFiles = await listNasFiles(nasRoot)
+	assert.ok(![...nasFiles.keys()].some((k) => k.endsWith('.tmp')))
+
+	// A genuine missing committed file must still fail verification.
+	await b.mirror()
+	await writeFile(join(compDataDir, 'ab' + 'd'.repeat(62)), 'committed-pack')
+	dropNextPut = true
+	await assert.rejects(b.mirror(), /1 file didn’t reach the NAS/)
 })

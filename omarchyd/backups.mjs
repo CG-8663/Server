@@ -426,7 +426,10 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			for (const e of await readdir(d, {withFileTypes: true}).catch(() => [])) {
 				const p = join(d, e.name)
 				if (e.isDirectory()) await walk(p)
-				else if (e.isFile()) out.set(relative(root, p).split(sep).join('/'), (await stat(p)).size)
+				else if (e.isFile() && !e.name.endsWith('.tmp')) {
+					const st = await stat(p).catch(() => null)
+					if (st) out.set(relative(root, p).split(sep).join('/'), st.size)
+				}
 			}
 		}
 		await walk(root)
@@ -483,8 +486,9 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			if (bad.length) throw new RpcError('PRECONDITION_FAILED', smbMessage(bad))
 		}
 		// Check: everything the store has is on the NAS, at the same size.
+		const current = root ? await localFiles(root) : new Map()
 		const after = await remoteFiles(nas, secrets.nasPassword)
-		const missing = [...local].filter(([p, size]) => after.get(p) !== size)
+		const missing = [...local].filter(([p, size]) => current.get(p) === size && after.get(p) !== size)
 		if (missing.length) throw new RpcError('PRECONDITION_FAILED', `${missing.length} file${missing.length === 1 ? '' : 's'} didn’t reach the NAS`)
 		return {uploaded: send.length, uploadedBytes: send.reduce((t, [, s]) => t + s, 0), removed: drop.length}
 	}
