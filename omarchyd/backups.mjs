@@ -666,8 +666,16 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	let mirrorChain = Promise.resolve()
 	// One NAS copy at a time; a run that finishes while another copy is going waits for it.
 	const mirrorOnce = (onProgress) => (mirrorChain = mirrorChain.catch(() => {}).then(() => mirror(onProgress)))
-	const DEFAULT_COMPUTER = {enabled: false, folders: [], schedule: {frequency: 'daily', hour: 1, weekday: 0}, lastSuccessAt: 0, lastAttemptAt: 0}
+	const DEFAULT_COMPUTER = {enabled: false, folders: [], schedule: {frequency: 'daily', hour: 1, weekday: 0}, lastSuccessAt: 0, lastAttemptAt: 0, failures: 0, failedSlot: 0}
 	const computerConfig = (id) => ({...structuredClone(DEFAULT_COMPUTER), ...(config.computers?.[id] ?? {})})
+	const COMPUTER_RETRY_DELAYS = [0, 30 * 60_000, 2 * 60 * 60_000]
+	function computerDue(c, slot, at) {
+		if (!slot || c.lastSuccessAt >= slot) return false
+		const fails = c.failedSlot === slot ? c.failures || 0 : 0
+		if (fails >= COMPUTER_RETRY_DELAYS.length) return false
+		if (fails === 0) return c.lastAttemptAt === 0 || at - c.lastAttemptAt >= 30 * 60_000
+		return at - c.lastAttemptAt >= COMPUTER_RETRY_DELAYS[fails]
+	}
 
 	function cleanFolders(list) {
 		if (!Array.isArray(list) || list.length > 32) throw new RpcError('BAD_REQUEST', 'Choose up to 32 folders')
@@ -728,6 +736,11 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		}
 		if (c.enabled && !c.folders.length) throw new RpcError('BAD_REQUEST', 'Choose at least one folder to back up')
 		if (c.enabled) await ensureComputerRepo(a.id)
+		if (input.folders !== undefined || input.schedule || input.enabled === true) {
+			c.lastAttemptAt = 0
+			c.failures = 0
+			c.failedSlot = 0
+		}
 		config.computers = {...(config.computers ?? {}), [a.id]: c}
 		await saveConfig()
 		return (await computers()).find((x) => x.id === a.id)
@@ -775,15 +788,33 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				entry.error = entry.ok ? null : `Saved on this server, but not copied to the NAS: ${entry.nas.error}`
 				const cc = computerConfig(a.id)
 				cc.lastSuccessAt = entry.startedAt
+				cc.failures = 0
+				cc.failedSlot = 0
 				config.computers = {...(config.computers ?? {}), [a.id]: cc}
 				await saveConfig()
 			} catch (e) {
 				entry.ok = false
 				entry.error = e.message
+				if (reason === 'scheduled') {
+					const cc = computerConfig(a.id)
+					const slot = latestSlot(cc.schedule, entry.startedAt) ?? 0
+					cc.failures = cc.failedSlot === slot ? (cc.failures || 0) + 1 : 1
+					cc.failedSlot = slot
+					config.computers = {...(config.computers ?? {}), [a.id]: cc}
+					await saveConfig().catch(() => {})
+				}
 			} finally {
 				clearInterval(poll)
 				entry.endedAt = now()
 				computerJobs.delete(a.id)
+				if (!entry.ok && entry.error) {
+					const prev = history.find((h) => h !== entry && h.computer === a.id && h.endedAt)
+					if (prev && !prev.ok && prev.error === entry.error && prev.reason === entry.reason) {
+						entry.attempts = (prev.attempts ?? 1) + 1
+						const idx = history.indexOf(prev)
+						if (idx >= 0) history.splice(idx, 1)
+					}
+				}
 				await saveHistory().catch(() => {})
 			}
 		})()
@@ -942,12 +973,14 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		// Computers: due if a scheduled time has passed since its last good backup (so one that was
 		// off or asleep catches up when it's back), and it hasn't been tried in the last half hour.
 		if (swarm && config.nas && (await hasKey())) {
+			const started = []
 			for (const a of await swarm.agents().catch(() => [])) {
 				const c = computerConfig(a.id)
 				if (!c.enabled || !a.on || !a.online || computerJobs.has(a.id)) continue
 				const slot = latestSlot(c.schedule, now())
-				if (slot && c.lastSuccessAt < slot && now() - c.lastAttemptAt > 30 * 60_000) runComputer(a.id, 'scheduled').catch(() => {})
+				if (computerDue(c, slot, now())) started.push(runComputer(a.id, 'scheduled').catch(() => {}))
 			}
+			await Promise.all(started)
 		}
 		if (!config.nas || job || !(await hasKey())) return
 		const slot = latestSlot(config.schedule, now())

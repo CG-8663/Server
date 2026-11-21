@@ -824,3 +824,151 @@ test('#578 missed scheduled server backup catches up when omarchyd comes back up
 	assert.equal(st.history.length, 1)
 	assert.equal(st.history[0].reason, 'scheduled')
 })
+
+test('#606 failing scheduled computer backups back off, collapse errors, and reset when folders change', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-606-'))
+	const nasRoot = join(root, 'nas')
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	await mkdir(home, {recursive: true})
+	await mkdir(dataDir, {recursive: true})
+	await writeFile(join(dataDir, 'settings.json'), '{"x":1}\n')
+
+	const origSetInterval = globalThis.setInterval
+	const ticks = []
+	globalThis.setInterval = (fn, ms, ...rest) => {
+		if (ms === 60_000) {
+			ticks.push(fn)
+			return {unref() {}}
+		}
+		return origSetInterval(fn, ms, ...rest)
+	}
+
+	let fakeNow = new Date(2026, 10, 17, 1, 0, 0, 0).getTime()
+	let failBackup = true
+	let callCount = 0
+	const swarm = {
+		async agents() {
+			return [{id: 'pc1', name: 'Laptop', online: true, allowed: true, on: true}]
+		},
+		async call(_id, action) {
+			if (action === 'backup-run') {
+				callCount++
+				if (failBackup) throw new Error('None of the chosen folders are on this computer')
+				return {added: 512, files: 2}
+			}
+			return {}
+		},
+		progress() {
+			return null
+		},
+	}
+
+	const fakeNas = makeFakeNas(nasRoot)
+	const restic = makeFakeRestic()
+	const b = createBackups({
+		dataDir,
+		home,
+		serverDataDir: join(root, 'none'),
+		files: fakeFiles(home),
+		apps: {backupTargets: async () => []},
+		swarm,
+		resticPath: '/bin/restic',
+		unshare: false,
+		now: () => fakeNow,
+		timers: true,
+		run: async (cmd, args, opts) => (cmd === 'smbclient' ? fakeNas(args, opts) : restic.run(args, opts)),
+	})
+	t.after(async () => {
+		globalThis.setInterval = origSetInterval
+		b.close()
+		await rm(root, {recursive: true, force: true})
+	})
+
+	await b.ready
+	await new Promise((r) => setImmediate(r))
+	assert.equal(ticks.length, 1)
+
+	const waitComputerDone = async () => {
+		for (let i = 0; i < 100; i++) {
+			const comps = await b.procedures['backups.computers'].run()
+			if (!comps.find((c) => c.id === 'pc1')?.running) return
+			await new Promise((r) => setTimeout(r, 5))
+		}
+		throw new Error('computer backup did not finish')
+	}
+
+	// Server configured with schedule off; run one good server backup first.
+	await b.procedures['backups.configure'].run({
+		nas: {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u', password: 'p'},
+		schedule: {frequency: 'off', hour: 3, weekday: 0},
+	})
+	await (await b.runBackup()).done
+	await b.procedures['backups.setComputer'].run({
+		id: 'pc1',
+		folders: ['Missing'],
+		schedule: {frequency: 'daily', hour: 1, weekday: 0},
+		enabled: true,
+	})
+
+	// Simulate ticking every minute until just before the next day's 01:00 slot (01:00 -> 00:50 next day).
+	for (let m = 0; m < 23 * 60 + 50; m++) {
+		await ticks[0]()
+		await waitComputerDone()
+		fakeNow += 60_000
+	}
+
+	assert.equal(callCount, 3)
+	let st = await b.procedures['backups.status'].run()
+	assert.equal(st.history.length, 2) // 1 collapsed pc1 failure + 1 server backup
+	assert.equal(st.history[0].computer, 'pc1')
+	assert.equal(st.history[0].ok, false)
+	assert.equal(st.history[0].attempts, 3)
+	assert.equal(st.history[1].computer, undefined)
+	assert.equal(st.history[1].ok, true)
+
+	// Next day's 01:00 slot retries once again.
+	fakeNow = new Date(2026, 10, 18, 1, 1, 0, 0).getTime()
+	await ticks[0]()
+	await waitComputerDone()
+	assert.equal(callCount, 4)
+
+	// Updating folders resets the backoff so the next tick tries immediately and succeeds.
+	failBackup = false
+	await b.procedures['backups.setComputer'].run({id: 'pc1', folders: ['Documents']})
+	fakeNow += 60_000
+	await ticks[0]()
+	await waitComputerDone()
+	assert.equal(callCount, 5)
+	st = await b.procedures['backups.status'].run()
+	assert.equal(st.history[0].ok, true)
+
+	// Interrupted backup or manual failure (failures === 0 with lastAttemptAt >= slot) still retries after 30 minutes.
+	const prevCalls = callCount
+	fakeNow = new Date(2026, 10, 19, 1, 5, 0, 0).getTime()
+	await b.procedures['backups.setComputer'].run({id: 'pc1', folders: ['Bad']})
+	failBackup = true
+	await b.procedures['backups.runComputer'].run({id: 'pc1'})
+	await waitComputerDone()
+	assert.equal(callCount, prevCalls + 1)
+	// Before 30m: does not retry yet; after 30m: retries even with failures === 0 and lastAttemptAt >= slot.
+	fakeNow += 10 * 60_000
+	await ticks[0]()
+	await waitComputerDone()
+	assert.equal(callCount, prevCalls + 1)
+	fakeNow += 25 * 60_000
+	await ticks[0]()
+	await waitComputerDone()
+	assert.equal(callCount, prevCalls + 2)
+
+	// Changing folders after a manual failure (failures === 0) clears lastAttemptAt so the next tick retries at once.
+	await b.procedures['backups.setComputer'].run({id: 'pc1', folders: ['Bad2']})
+	await b.procedures['backups.runComputer'].run({id: 'pc1'})
+	await waitComputerDone()
+	failBackup = false
+	await b.procedures['backups.setComputer'].run({id: 'pc1', folders: ['Documents']})
+	fakeNow += 60_000
+	await ticks[0]()
+	await waitComputerDone()
+	assert.equal(callCount, prevCalls + 4)
+})
