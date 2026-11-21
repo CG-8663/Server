@@ -29,7 +29,7 @@ import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
 import { actionsForItems, batchToast, offersDownload, selectionAfterQuery, type BatchKind } from "./filesRules";
-import { canSubmitNamePrompt, type FavoriteItem, favoritePath } from "../filesHelpers";
+import { canSubmitNamePrompt, type FavoriteItem, favoritePath, shouldActivateRowOnKey } from "../filesHelpers";
 
 const FileViewer = lazy(() =>
   import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
@@ -769,7 +769,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
         role="button"
         tabIndex={0}
         onClick={() => activate(f)}
-        onKeyDown={(e) => e.key === "Enter" && activate(f)}
+        onKeyDown={(e) => shouldActivateRowOnKey(e) && activate(f)}
         {...press}
       >
         {selecting && (
