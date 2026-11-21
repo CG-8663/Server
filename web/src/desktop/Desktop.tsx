@@ -34,6 +34,7 @@ import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as inser
 import {Onboarding} from './hyprland/Onboarding'
 import {loadWallpaper} from './wallpaperLoader'
 import {clampWindowRect} from './windowGeometry'
+import {startMinuteClock} from './clock'
 
 const HINT_KEY = 'omarchy-server:desk-hint-closed'
 
@@ -1714,8 +1715,18 @@ function DesktopIcons(p: {
 function useClock() {
 	const [now, setNow] = useState(() => new Date())
 	useEffect(() => {
-		const t = window.setInterval(() => setNow(new Date()), 15_000)
-		return () => window.clearInterval(t)
+		let stop = startMinuteClock(setNow)
+		const onVisible = () => {
+			if (document.visibilityState !== 'visible') return
+			setNow(new Date())
+			stop()
+			stop = startMinuteClock(setNow)
+		}
+		document.addEventListener('visibilitychange', onVisible)
+		return () => {
+			stop()
+			document.removeEventListener('visibilitychange', onVisible)
+		}
 	}, [])
 	return now
 }
