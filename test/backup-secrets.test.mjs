@@ -93,6 +93,7 @@ test('#774 damaged config.json is not overwritten and save is refused', async ()
 			setupErr = e
 		}
 		assert.equal(await readFile(configFile, 'utf8'), '{', 'setup save overwrote damaged config.json')
+		assert.equal(await exists(join(backups, 'recovery-key')), false, 'a recovery key was written over a damaged config')
 		assert.ok(setupErr instanceof RpcError)
 		assert.equal(setupErr.code, 'PRECONDITION_FAILED')
 		assert.match(setupErr.message, /config\.json/)
@@ -117,6 +118,7 @@ test('#774 damaged secrets.json is not overwritten and save is refused', async (
 			err = e
 		}
 		assert.equal(await readFile(secretFile, 'utf8'), '{', 'damaged secrets.json was overwritten')
+		assert.equal(await exists(join(backups, 'recovery-key')), false, 'a recovery key was written over damaged secrets')
 		assert.ok(err instanceof RpcError)
 		assert.equal(err.code, 'PRECONDITION_FAILED')
 		assert.match(err.message, /secrets\.json/)

@@ -1167,6 +1167,10 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	// to and the backup store is ready, so a failed setup leaves things as they were.
 	async function configure(input = {}) {
 		await ready
+		// A damaged file must not be replaced, and setup must not mint a key or store a password first.
+		refuseDamaged(configFile)
+		refuseDamaged(secretFile)
+		refuseDamaged(historyFile)
 		// nasPassword is kept in a local until the slow NAS checks finish. Factory reset bumps epoch
 		// while that is in flight; storing afterwards would write the abandoned password back.
 		const started = epoch
@@ -1325,6 +1329,9 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	// A new (or rebuilt) server: copy an existing backup down from the NAS and open it with its recovery key.
 	async function connectExisting(input = {}) {
 		await ready
+		refuseDamaged(configFile)
+		refuseDamaged(secretFile)
+		refuseDamaged(historyFile)
 		const started = epoch
 		const resetSince = () => started !== epoch
 		if (job) throw new RpcError('CONFLICT', 'Wait for the running backup to finish')
