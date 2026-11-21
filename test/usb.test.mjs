@@ -4,6 +4,7 @@ import {rmSync, writeFileSync} from 'node:fs'
 import {access, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {dirname, join} from 'node:path'
+import {fileURLToPath} from 'node:url'
 import {after, before, describe, test} from 'node:test'
 
 import {createHelper} from '../helper/helper.mjs'
@@ -679,7 +680,10 @@ const PRESENT_STICK = '/dev/serial/by-id/usb-Present_stick'
 const MISSING_STICK = '/dev/serial/by-id/usb-Missing_stick'
 
 function runUsbScenario(name) {
-	const child = join('/tmp/omarchy-w10-apps', `.usb-scenario-${name}.mjs`)
+	const appsModule = fileURLToPath(new URL('../omarchyd/apps.mjs', import.meta.url))
+	// The scenario file has to sit inside this checkout. Node looks upward for yaml, and CI
+	// does not have a copy of the repo at a fixed /tmp path.
+	const child = join(dirname(fileURLToPath(new URL('.', import.meta.url))), `.usb-scenario-${name}-${process.pid}.mjs`)
 	writeFileSync(child, `import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises'
@@ -687,7 +691,7 @@ import net from 'node:net'
 import os from 'node:os'
 import {join} from 'node:path'
 import YAML from 'yaml'
-import {createApps} from '/tmp/omarchy-w10-apps/omarchyd/apps.mjs'
+import {createApps} from ${JSON.stringify(appsModule)}
 const PRESENT_STICK = ${JSON.stringify(PRESENT_STICK)}
 const MISSING_STICK = ${JSON.stringify(MISSING_STICK)}
 async function freeListenPort() {
