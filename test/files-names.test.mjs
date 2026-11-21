@@ -121,6 +121,27 @@ describe('files: special files and names', () => {
 		)
 	})
 
+	test('directories under Home offer share to the owner; files and Trash do not', async () => {
+		await mkdir(join(home, 'Documents', 'Nested'), {recursive: true})
+		await writeFile(join(home, 'Documents', 'plain.txt'), 'plain')
+		const homeList = await call('files.list', {path: '/Home'})
+		assert.equal(homeList.operations.includes('share'), false)
+		const docs = homeList.files.find((f) => f.name === 'Documents')
+		assert.equal(docs?.type, 'directory')
+		assert.equal(docs.operations.includes('share'), true)
+		const docList = await call('files.list', {path: '/Home/Documents'})
+		assert.equal(docList.operations.includes('share'), true)
+		const nested = docList.files.find((f) => f.name === 'Nested')
+		const plain = docList.files.find((f) => f.name === 'plain.txt')
+		assert.equal(nested.operations.includes('share'), true)
+		assert.equal(plain.operations.includes('share'), false)
+		await call('files.trash', {path: '/Home/Documents/Nested'})
+		const trash = await call('files.list', {path: '/Trash'})
+		assert.equal(trash.operations.includes('share'), false)
+		assert.equal(trash.files.every((f) => !f.operations.includes('share')), true)
+		await call('files.restore', {path: '/Trash/Nested'})
+	})
+
 	test('#814 a stale If-Range ignores Range and returns the whole file', async () => {
 		const file = join(home, 'range.txt')
 		const old = new Date('2020-01-01T00:00:00Z')

@@ -1,6 +1,6 @@
 // Replace must not delete a parent, and share follow must see the normalized path.
 import assert from 'node:assert/strict'
-import {lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile} from 'node:fs/promises'
+import {lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {describe, test} from 'node:test'
@@ -45,6 +45,28 @@ describe('files: replace onto a parent', () => {
 			}
 			assert.equal(await readFile(join(home, 'docs', 'file', 'note.txt'), 'utf8'), 'keep')
 			assert.equal((await lstat(join(home, 'box', 'note.txt'))).isSymbolicLink(), true)
+		} finally {
+			await rm(root, {recursive: true, force: true})
+		}
+	})
+
+	test('copy or move into a symlink that points inside the source is rejected', async () => {
+		const {root, home, call} = await scratch()
+		try {
+			await mkdir(join(home, 'proj', 'inner'), {recursive: true})
+			await writeFile(join(home, 'proj', 'a.txt'), 'keep')
+			await symlink(join(home, 'proj', 'inner'), join(home, 'into'))
+			for (const name of ['files.copy', 'files.move']) {
+				await assert.rejects(
+					call(name, {path: '/Home/proj', toDirectory: '/Home/into'}),
+					(e) => e instanceof RpcError && e.code === 'BAD_REQUEST' && e.message === '[subdir-of-self]',
+					name,
+				)
+			}
+			assert.equal(await readFile(join(home, 'proj', 'a.txt'), 'utf8'), 'keep')
+			assert.deepEqual(await readdir(join(home, 'proj', 'inner')), [])
+			assert.equal((await lstat(join(home, 'into'))).isSymbolicLink(), true)
+			assert.equal(await realpath(join(home, 'into')), await realpath(join(home, 'proj', 'inner')))
 		} finally {
 			await rm(root, {recursive: true, force: true})
 		}

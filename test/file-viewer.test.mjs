@@ -8,12 +8,15 @@ import {Marked} from 'marked'
 import {
 	ZIP_ENTRY_LIMIT,
 	classifyLinkHref,
+	decodeTextFile,
+	encodeTextFile,
 	handleDocumentLinkClick,
 	headingSlug,
 	renderMarkdownHtml,
 	shouldIgnoreViewerKey,
 	zipTruncatedNote,
 } from '../web/src/screens/viewer/helpers.ts'
+import {parseDelimited, toDelimited} from '../web/src/screens/viewer/office.ts'
 
 test('headingSlug generates GitHub-style slugs and deduplicates repeats', () => {
 	const seen = new Map()
@@ -144,6 +147,47 @@ test('handleDocumentLinkClick handles anchors, external links, mailto, and relat
 	const a5 = handleDocumentLinkClick(noHrefClick.event, openExternal)
 	assert.equal(a5, null)
 	assert.equal(noHrefClick.isPrevented(), false)
+})
+
+test('text decode is editable only for valid UTF-8 and a save keeps the BOM and line ending', () => {
+	const utf8 = decodeTextFile(new TextEncoder().encode('hello\nworld\n'))
+	assert.equal(utf8.editable, true)
+	assert.equal(utf8.bom, false)
+	assert.equal(utf8.eol, '\n')
+	assert.equal(utf8.text, 'hello\nworld\n')
+	const savedLf = encodeTextFile('hello\nworld\n', {bom: false, eol: '\n'})
+	assert.equal(Buffer.from(savedLf).toString('utf8'), 'hello\nworld\n')
+	assert.equal(Buffer.from(savedLf).includes(0x0d), false)
+
+	const latin1 = decodeTextFile(Uint8Array.from([0x63, 0x61, 0x66, 0xe9]))
+	assert.equal(latin1.editable, false)
+	assert.ok(latin1.text.includes('\uFFFD'))
+
+	const bom = Uint8Array.from([0xef, 0xbb, 0xbf, ...new TextEncoder().encode('hi\r\n')])
+	const decoded = decodeTextFile(bom)
+	assert.equal(decoded.editable, true)
+	assert.equal(decoded.bom, true)
+	assert.equal(decoded.eol, '\r\n')
+	assert.equal(decoded.text, 'hi\r\n')
+	assert.notEqual(decoded.text.charCodeAt(0), 0xfeff)
+	const saved = encodeTextFile(decoded.text.replace(/\r\n/g, '\n'), {bom: true, eol: decoded.eol})
+	assert.deepEqual([...saved], [0xef, 0xbb, 0xbf, 0x68, 0x69, 0x0d, 0x0a])
+})
+
+test('delimited round-trip keeps CRLF and leaves LF files as LF', () => {
+	assert.equal(toDelimited(parseDelimited('a,b\r\n1,2\r\n', ','), ','), 'a,b\r\n1,2\r\n')
+	assert.equal(toDelimited(parseDelimited('a,b\n1,2\n', ','), ','), 'a,b\n1,2\n')
+	const quoted = parseDelimited('a,"b\r\nc",d\r\n', ',')
+	assert.equal(quoted[0][1], 'b\r\nc')
+	assert.equal(toDelimited(quoted, ','), 'a,"b\r\nc",d\r\n')
+})
+
+test('FileViewer decodes text with the fatal UTF-8 helper and restores BOM and line endings on save', async () => {
+	const src = await readFile(new URL('../web/src/screens/viewer/FileViewer.tsx', import.meta.url), 'utf8')
+	assert.match(src, /decodeTextFile\(/)
+	assert.match(src, /encodeTextFile\(/)
+	assert.match(src, /draft\.replace\(\/\\n\/g, eol\)|encodeTextFile\(draft/)
+	assert.match(src, /textEditable !== false/)
 })
 
 test('FileViewer TextView uses renderMarkdownHtml and handleDocumentLinkClick', async () => {

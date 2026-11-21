@@ -136,6 +136,41 @@ describe('files: Trash', () => {
 		assert.equal(await readFile(join(home, 'Documents', 'notes.txt'), 'utf8'), 'hello')
 	})
 
+	test('desktop trashinfo percent-encoding restores the original name inside its folder', async () => {
+		const scratch = await realpath(await mkdtemp(join(os.tmpdir(), 'omarchy-trash-decode-')))
+		const h = join(scratch, 'home')
+		const outsideDir = join(scratch, 'outside')
+		await mkdir(join(h, 'Documents'), {recursive: true})
+		await mkdir(outsideDir, {recursive: true})
+		await mkdir(join(scratch, 'data'))
+		const f = createFiles({home: h, dataDir: join(scratch, 'data')})
+		const run = (name, input) => f.procedures[name].run(input)
+		// Freedesktop Path keeps "/" and percent-encodes the rest. decodeURI leaves & , + = # ; : @ encoded.
+		const encodePath = (abs) => encodeURIComponent(abs).replace(/%2F/gi, '/')
+		const name = 'Q&A, + = # ; : @.pdf'
+		try {
+			const trashFiles = join(h, '.local/share/Trash/files')
+			const trashInfo = join(h, '.local/share/Trash/info')
+			await mkdir(trashFiles, {recursive: true})
+			await mkdir(trashInfo, {recursive: true})
+			await writeFile(join(trashFiles, name), 'body')
+			await writeFile(join(trashInfo, `${name}.trashinfo`), `[Trash Info]\nPath=${encodePath(join(h, 'Documents', name))}\nDeletionDate=2026-11-14T10:00:00\n`)
+			assert.equal(await run('files.restore', {path: `/Trash/${name}`}), `/Home/Documents/${name}`)
+			assert.equal(await readFile(join(h, 'Documents', name), 'utf8'), 'body')
+
+			await writeFile(join(trashFiles, 'evil.txt'), 'nope')
+			// %2e%2e is ".." after decodeURIComponent. Documents/../../outside must not be trusted.
+			const climbed = `${encodePath(join(h, 'Documents'))}/%2e%2e/%2e%2e/outside/evil.txt`
+			await writeFile(join(trashInfo, 'evil.txt.trashinfo'), `[Trash Info]\nPath=${climbed}\nDeletionDate=2026-11-14T10:00:00\n`)
+			const restored = await run('files.restore', {path: '/Trash/evil.txt'})
+			assert.equal(restored.startsWith('/Home/'), true)
+			assert.equal(restored.includes('..'), false)
+			assert.deepEqual(await readdir(outsideDir), [], 'decoded .. did not leave Home')
+		} finally {
+			await rm(scratch, {recursive: true, force: true})
+		}
+	})
+
 	test('a .trashinfo pointing outside Home restores into Home instead', async () => {
 		const trash = join(home, '.local/share/Trash')
 		await mkdir(join(trash, 'files'), {recursive: true})
