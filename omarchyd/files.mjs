@@ -543,7 +543,22 @@ export function createFiles({home, dataDir, io} = {}) {
 			'files.list': {kind: 'query', run: guard((i) => list(i))},
 			'files.search': {kind: 'query', run: guard((i) => search(i ?? {}))},
 			'files.recents': {kind: 'query', run: guard(() => recents())},
-			'files.favorites': {kind: 'query', run: guard(() => favorites())},
+			'files.favorites': {
+				kind: 'query',
+				run: guard(async () => {
+					const paths = await favorites()
+					return (
+						await mapPool(paths, STAT_CONCURRENCY, async (p) => {
+							try {
+								const {real} = await resolve(p)
+								return await entry(p, real)
+							} catch {
+								return null
+							}
+						})
+					).filter(Boolean)
+				}),
+			},
 			'files.addFavorite': {kind: 'mutation', run: guard(({path}) => setFavorite(path, true))},
 			'files.removeFavorite': {kind: 'mutation', run: guard(({path}) => setFavorite(path, false))},
 			'files.createDirectory': {kind: 'mutation', run: guard((i) => createDirectory(i))},

@@ -56,3 +56,26 @@ describe('files screen: #441 new folder NamePrompt submit state', () => {
 		assert.doesNotMatch(src, /disabled=\{!valid \|\| busy \|\| name === initial\}/)
 	})
 })
+describe('files screen: #113 favorites preserve FileEntry metadata', () => {
+	test('favoritePath extracts path from both FileEntry objects and strings', () => {
+		assert.equal(helpers.favoritePath('/Home/Docs'), '/Home/Docs')
+		assert.equal(
+			helpers.favoritePath({
+				name: 'a.pdf',
+				path: '/Home/a.pdf',
+				type: 'application/pdf',
+				size: 123,
+				modified: 1000,
+				operations: ['favorite'],
+			}),
+			'/Home/a.pdf',
+		)
+	})
+
+	test('Files.tsx queries FavoriteItem[] and keeps FileEntry objects in ::favorites', async () => {
+		const src = await filesSource()
+		assert.match(src, /query<FavoriteItem\[\]>\("files\.favorites"\)/)
+		assert.match(src, /favSet = useMemo\(\(\) => new Set\(\(favorites\.data \?\? \[\]\)\.map\(favoritePath\)\), \[favorites\.data\]\)/)
+		assert.match(src, /typeof p === "string" \? \{/)
+	})
+})
