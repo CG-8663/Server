@@ -274,7 +274,8 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		env.HOME ??= home
 		return env
 	}
-	async function repoReal() {
+	async function repoReal({create = true} = {}) {
+		if (!create) return (await files.resolve(config.repo, {mustExist: false})).real
 		const {real} = await files.resolve(config.repo, {mustExist: false}).catch(async (e) => {
 			// Its parent folder isn't there yet: make each level, checking every one stays inside Home.
 			const parts = config.repo.split('/').filter(Boolean)
@@ -409,10 +410,13 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	}
 	async function mirror(onProgress = () => {}) {
 		const nas = config.nas
-		const root = await repoReal()
-		const local = await localFiles(root)
+		const root = await repoReal({create: false}).catch(() => null)
+		const local = root ? await localFiles(root) : new Map()
 		for (const k of [...local.keys()]) if (!ORDER.includes(part(k))) local.delete(k)
 		const remote = await remoteFiles(nas, secrets.nasPassword)
+		if (hasRemoteStore(remote) && !local.has('server/config')) {
+			throw new RpcError('PRECONDITION_FAILED', 'The local backup store is missing, so the NAS copy wasn’t touched.')
+		}
 		if (hasRemoteStore(remote) && !(await nasMatchesLocal(nas, secrets.nasPassword, remote, root))) {
 			throw new RpcError('PRECONDITION_FAILED', 'That NAS folder holds a different backup. Choose another folder or use “Restore from an existing backup”.')
 		}
@@ -498,7 +502,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		job = {step: 'Getting ready', progress: 0, startedAt: entry.startedAt}
 		const done = (async () => {
 			try {
-				await ensureRepo()
+				await ensureRepo({allowInit: false})
 				const targets = config.include.apps ? await apps.backupTargets() : []
 				const steps = targets.length + (config.include.settings ? 1 : 0) + (config.include.machineBackups ? 1 : 0)
 				const span = 0.7 / Math.max(1, steps)
@@ -565,7 +569,12 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		return {id: entry.id, done}
 	}
 
-	async function ensureRepo() {
+	async function ensureRepo({allowInit = true} = {}) {
+		if (!allowInit) {
+			const real = await repoReal({create: false}).catch(() => null)
+			if (!real || !(await exists(join(real, 'server', 'config')))) throw new RpcError('PRECONDITION_FAILED', 'The backup folder is empty or missing. Is the drive connected?')
+			return
+		}
 		const real = await repoReal()
 		const repo = join(real, 'server')
 		if (await exists(join(repo, 'config'))) return
@@ -576,7 +585,11 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	}
 	// A computer's own store: its own password (which it's sent for each backup, never kept), plus
 	// the recovery key as a second key, so the one recovery key opens everything.
-	async function ensureComputerRepo(id) {
+	async function ensureComputerRepo(id, {allowInit = true} = {}) {
+		if (!allowInit) {
+			const real = await repoReal({create: false}).catch(() => null)
+			if (!real || !(await exists(join(real, 'server', 'config'))) || !(await exists(join(real, 'computers', id, 'config')))) throw new RpcError('PRECONDITION_FAILED', 'The backup folder is empty or missing. Is the drive connected?')
+		}
 		const repo = await computerRepo(id)
 		if ((await exists(join(repo, 'config'))) && (await exists(computerKey(id)))) return repo
 		await mkdir(join(dir, 'computers'), {recursive: true, mode: 0o700})
@@ -700,7 +713,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		poll.unref?.()
 		const done = (async () => {
 			try {
-				const repo = await ensureComputerRepo(a.id)
+				const repo = await ensureComputerRepo(a.id, {allowInit: false})
 				const password = (await readFile(computerKey(a.id), 'utf8')).trim()
 				computerJobs.set(a.id, {...computerJobs.get(a.id), step: 'Backing up'})
 				const r = await swarm.call(a.id, 'backup-run', {password, folders: c.folders}, 12 * 60 * 60_000)
@@ -975,8 +988,8 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		const remote = await remoteFiles(nas, password)
 		if (!hasRemoteStore(remote)) return
 		if (await hasKey()) {
-			const resolved = await files.resolve(config.repo, {mustExist: false}).catch(() => null)
-			if (await nasMatchesLocal(nas, password, remote, resolved?.real)) return
+			const root = await repoReal({create: false}).catch(() => null)
+			if (await nasMatchesLocal(nas, password, remote, root)) return
 		}
 		throw new RpcError('PRECONDITION_FAILED', 'That folder already has backups. Use “Restore from an existing backup”, or choose another folder.')
 	}
@@ -1006,6 +1019,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		const before = structuredClone(config)
 		const out = {}
 		let nasPassword = secrets.nasPassword
+		if (before.nas && (await hasKey()) && (input.repo === undefined || String(input.repo) === before.repo)) await ensureRepo({allowInit: false})
 		if (input.nas) {
 			const nas = cleanNas(input.nas)
 			const password = input.nas.password ? String(input.nas.password) : config.nas?.host === nas.host && config.nas?.username === nas.username ? secrets.nasPassword : ''

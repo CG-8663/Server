@@ -265,3 +265,69 @@ test('#603 setting up or mirroring on a NAS folder that already holds backups is
 	assert.deepEqual([...afterMirrorFiles.keys()].sort(), [...beforeFiles.keys()].sort())
 	assert.deepEqual(afterMirrorFiles.get('server/config'), beforeFiles.get('server/config'))
 })
+
+test('#598 refuses to recreate a missing or empty backup store or wipe the NAS copy', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-598-'))
+	const nasRoot = join(root, 'nas')
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	await mkdir(home, {recursive: true})
+	await mkdir(dataDir, {recursive: true})
+	await writeFile(join(dataDir, 'settings.json'), '{"x":1}\n')
+
+	const fakeNas = makeFakeNas(nasRoot)
+	const restic = makeFakeRestic()
+	const b = createBackups({
+		dataDir,
+		home,
+		serverDataDir: join(root, 'none'),
+		files: fakeFiles(home),
+		apps: {backupTargets: async () => []},
+		resticPath: '/bin/restic',
+		unshare: false,
+		timers: false,
+		run: async (cmd, args, opts) => (cmd === 'smbclient' ? fakeNas(args, opts) : restic.run(args, opts)),
+	})
+	t.after(async () => {
+		b.close()
+		await rm(root, {recursive: true, force: true})
+	})
+
+	const nas = {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u', password: 'p'}
+	await b.procedures['backups.configure'].run({nas})
+	await (await b.runBackup()).done
+	const beforeFiles = await listNasFiles(nasRoot)
+	assert.ok(beforeFiles.has('server/config'))
+	assert.equal(restic.calls.filter((c) => c.args[0] === 'init').length, 1)
+
+	// Case A: empty mount point (backup folder replaced with empty directory).
+	const repoDir = join(home, 'Backups', 'Omarchy Server')
+	await rm(repoDir, {recursive: true, force: true})
+	await mkdir(repoDir, {recursive: true})
+
+	await (await b.runBackup()).done
+	let st = await b.procedures['backups.status'].run()
+	assert.equal(st.history[0].ok, false)
+	assert.match(st.history[0].error, /empty or missing/i)
+	assert.equal(st.history[0].nas, null)
+	assert.equal(restic.calls.filter((c) => c.args[0] === 'init').length, 1)
+	assert.deepEqual([...(await listNasFiles(nasRoot)).keys()].sort(), [...beforeFiles.keys()].sort())
+
+	// mirror() alone must not wipe the NAS when the local store is missing.
+	await assert.rejects(b.mirror(), /missing/i)
+	assert.deepEqual([...(await listNasFiles(nasRoot)).keys()].sort(), [...beforeFiles.keys()].sort())
+
+	// configure({schedule}) while drive is empty/missing must not run restic init.
+	await assert.rejects(b.procedures['backups.configure'].run({schedule: {frequency: 'weekly', hour: 4, weekday: 1}}), /empty or missing/i)
+	assert.equal(restic.calls.filter((c) => c.args[0] === 'init').length, 1)
+
+	// Case B: backup folder deleted completely.
+	await rm(repoDir, {recursive: true, force: true})
+	await (await b.runBackup()).done
+	st = await b.procedures['backups.status'].run()
+	assert.equal(st.history[0].ok, false)
+	assert.match(st.history[0].error, /empty or missing/i)
+	assert.equal(st.history[0].nas, null)
+	assert.equal(restic.calls.filter((c) => c.args[0] === 'init').length, 1)
+	assert.deepEqual([...(await listNasFiles(nasRoot)).keys()].sort(), [...beforeFiles.keys()].sort())
+})
