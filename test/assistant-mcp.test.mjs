@@ -305,7 +305,7 @@ async function withAssistant(opts = {}) {
 	}
 }
 
-function startMcp({tools, fail = false, onCall, frame = 'json'} = {}) {
+function startMcp({tools, fail = false, onCall, frame = 'json', callText, callError} = {}) {
 	const seen = []
 	const srv = http.createServer(async (req, res) => {
 		const chunks = []
@@ -341,8 +341,14 @@ function startMcp({tools, fail = false, onCall, frame = 'json'} = {}) {
 		if (msg.method === 'tools/list') return send({tools})
 		if (msg.method === 'tools/call') {
 			if (onCall) await onCall(msg)
+			if (callError) {
+				res.writeHead(callError.status ?? 400, {'content-type': 'application/json'})
+				res.end(typeof callError.body === 'string' ? callError.body : JSON.stringify(callError.body))
+				return
+			}
 			const name = msg.params?.name
-			return send({content: [{type: 'text', text: name === 'status' ? 'ok-status' : 'renamed'}], isError: false})
+			const text = callText ?? (name === 'status' ? 'ok-status' : 'renamed')
+			return send({content: [{type: 'text', text}], isError: false})
 		}
 		res.writeHead(400, {'content-type': 'application/json'})
 		res.end(JSON.stringify({jsonrpc: '2.0', id: msg.id ?? null, error: {code: -32601, message: 'Method not found'}}))
@@ -680,6 +686,208 @@ test('an sse transport that answers the POST with an event still lists tools', a
 		assert.equal(listed[0].readOnly, true)
 		assert.ok(mcp.seen.every((m) => m.reqMethod === 'POST'))
 	} finally {
+		await mcp.close()
+	}
+})
+
+test('an app tool whose provider name would exceed 64 characters is shortened and still runs', async () => {
+	const appId = 'weather-station'
+	const toolName = 'get_current_weather_forecast_for_a_location_in_the_next_seven_days'
+	const raw = `app__${appId}__${toolName}`
+	const prefix = `app__${appId}__`
+	const fit = 'p'.repeat(64 - prefix.length)
+	const over = 'q'.repeat(64 - prefix.length + 1)
+	assert.ok(raw.length > 64)
+	assert.equal((prefix + fit).length, 64)
+	assert.ok((prefix + over).length > 64)
+	const mcp = startMcp({
+		tools: [
+			{name: toolName, description: 'Forecast', inputSchema: {type: 'object', properties: {}}, readOnlyHint: true},
+			{name: 'ping', description: 'Ping', inputSchema: {type: 'object', properties: {}}, readOnlyHint: true},
+			{name: fit, description: 'Fits', inputSchema: {type: 'object', properties: {}}, readOnlyHint: true},
+			{name: over, description: 'Over', inputSchema: {type: 'object', properties: {}}, readOnlyHint: true},
+		],
+		callText: 'sunny',
+	})
+	const addr = await mcp.listen()
+	let names = []
+	const {seen, fetchImpl} = scripted([
+		(body) => {
+			names = body.tools.map((t) => t.function.name)
+			const short = names.find((n) => n.startsWith(prefix) && n.includes('get_current'))
+			return toolSse('call_w', short || raw, '{}')
+		},
+		textSse('Sunny.'),
+	])
+	const box = await withAssistant({
+		fetchImpl,
+		mcpTargets: async () => [{appId, name: 'Weather', url: addr.url, transport: 'http', running: true}],
+	})
+	const events = []
+	try {
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'forecast', emit: (e) => events.push(e)})
+		assert.equal(names.some((n) => n.length > 64), false)
+		assert.equal(names.includes(raw), false)
+		assert.ok(names.includes(`${prefix}ping`))
+		assert.ok(names.includes(prefix + fit))
+		assert.equal(names.includes(prefix + over), false)
+		const short = names.find((n) => n.startsWith(prefix) && n.includes('get_current'))
+		assert.ok(short)
+		assert.ok(short.length <= 64)
+		const overName = names.find((n) => n.startsWith(prefix) && n.includes('qqq'))
+		assert.ok(overName)
+		assert.ok(overName.length <= 64)
+		assert.equal(events.find((e) => e.event === 'tool')?.data.name, short)
+		assert.equal(events.find((e) => e.event === 'tool')?.data.state, 'done')
+		const call = mcp.seen.filter((m) => m.method === 'tools/call')
+		assert.equal(call.length, 1)
+		assert.equal(call[0].params.name, toolName)
+		const posted = seen[1].body.messages.find((m) => m.role === 'tool')
+		assert.match(posted.content, /sunny/)
+	} finally {
+		await box.close()
+		await mcp.close()
+	}
+})
+
+test('a large app tool result is stored cut at 20000 characters', async () => {
+	const big = 'z'.repeat(25000)
+	const mcp = startMcp({
+		tools: [{name: 'dump', description: 'Dump', inputSchema: {type: 'object', properties: {}}, readOnlyHint: true}],
+		callText: big,
+	})
+	const addr = await mcp.listen()
+	let posted = ''
+	const {seen, fetchImpl} = scripted([
+		toolSse('call_d', 'app__notes__dump', '{}'),
+		(body) => {
+			posted = body.messages.find((m) => m.role === 'tool')?.content ?? ''
+			return textSse('ok')
+		},
+	])
+	const box = await withAssistant({
+		fetchImpl,
+		mcpTargets: async () => [{appId: 'notes', name: 'Notes', url: addr.url, transport: 'http', running: true}],
+	})
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'dump it', emit: () => {}})
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		const cut = `${'z'.repeat(20000)}[cut: 5000 more characters]`
+		assert.equal(saved.messages.find((m) => m.toolCallId === 'call_d').content, cut)
+		assert.equal(posted, cut)
+		assert.equal(seen.length, 2)
+	} finally {
+		await box.close()
+		await mcp.close()
+	}
+})
+
+test('an approved app tool result is stored cut at 20000 characters', async () => {
+	const big = 'w'.repeat(20001)
+	const mcp = startMcp({
+		tools: [{name: 'dump', description: 'Dump notes', inputSchema: {type: 'object', properties: {}}, readOnlyHint: false}],
+		callText: big,
+	})
+	const addr = await mcp.listen()
+	const {fetchImpl} = scripted([toolSse('call_d', 'app__notes__dump', '{}')])
+	const box = await withAssistant({
+		fetchImpl,
+		mcpTargets: async () => [{appId: 'notes', name: 'Notes', url: addr.url, transport: 'http', running: true}],
+	})
+	const events = []
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'dump it', emit: (e) => events.push(e)})
+		const action = events.find((e) => e.event === 'action')?.data
+		assert.equal(action?.kind, 'mcp')
+		await box.asst.procedures['assistant.approve'].run({actionId: action.id}, {auth: {userId: 'owner'}})
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		assert.equal(saved.messages.find((m) => m.toolCallId === 'call_d').content, `${'w'.repeat(20000)}[cut: 1 more characters]`)
+	} finally {
+		await box.close()
+		await mcp.close()
+	}
+})
+
+test('callMcpTool uses a JSON-RPC error message when the HTTP status is not ok', async () => {
+	const envelope = {jsonrpc: '2.0', id: 1, error: {code: -32602, message: 'Unknown tool: nope'}}
+	const fetchImpl = async (_url, opts) => {
+		const msg = JSON.parse(opts.body)
+		const reply = (payload, status = 200) => ({
+			ok: status >= 200 && status < 300,
+			status,
+			headers: {get() { return null }},
+			text: async () => (typeof payload === 'string' ? payload : JSON.stringify(payload)),
+		})
+		if (msg.method === 'initialize') {
+			return reply({jsonrpc: '2.0', id: msg.id, result: {protocolVersion: '2024-11-05', capabilities: {}, serverInfo: {name: 'f', version: '1'}}})
+		}
+		if (msg.method === 'notifications/initialized') return reply('', 202)
+		if (msg.method === 'tools/call') return reply({...envelope, id: msg.id}, 400)
+		return reply({jsonrpc: '2.0', id: msg.id, error: {message: 'Method not found'}}, 400)
+	}
+	await assert.rejects(() => callMcpTool({url: 'http://127.0.0.1:9/mcp', name: 'nope', arguments: {}, fetchImpl}), (e) => e.message === 'Unknown tool: nope')
+	const html = 'x'.repeat(800)
+	const fetchHtml = async (_url, opts) => {
+		const msg = JSON.parse(opts.body)
+		const reply = (payload, status = 200) => ({
+			ok: status >= 200 && status < 300,
+			status,
+			headers: {get() { return null }},
+			text: async () => (typeof payload === 'string' ? payload : JSON.stringify(payload)),
+		})
+		if (msg.method === 'initialize') {
+			return reply({jsonrpc: '2.0', id: msg.id, result: {protocolVersion: '2024-11-05', capabilities: {}, serverInfo: {name: 'f', version: '1'}}})
+		}
+		if (msg.method === 'notifications/initialized') return reply('', 202)
+		if (msg.method === 'tools/call') return reply(`<html>${html}</html>`, 500)
+		return reply('no', 500)
+	}
+	await assert.rejects(() => callMcpTool({url: 'http://127.0.0.1:9/mcp', name: 'nope', arguments: {}, fetchImpl: fetchHtml}), (e) => e.message.length === 500 && e.message.startsWith('<html>'))
+	const fetchEmpty = async (_url, opts) => {
+		const msg = JSON.parse(opts.body)
+		const reply = (payload, status = 200) => ({
+			ok: status >= 200 && status < 300,
+			status,
+			headers: {get() { return null }},
+			text: async () => (typeof payload === 'string' ? payload : JSON.stringify(payload)),
+		})
+		if (msg.method === 'initialize') {
+			return reply({jsonrpc: '2.0', id: msg.id, result: {protocolVersion: '2024-11-05', capabilities: {}, serverInfo: {name: 'f', version: '1'}}})
+		}
+		if (msg.method === 'notifications/initialized') return reply('', 202)
+		if (msg.method === 'tools/call') return {ok: false, status: 502, headers: {get() { return null }}, text: async () => ''}
+		return reply('no', 502)
+	}
+	await assert.rejects(() => callMcpTool({url: 'http://127.0.0.1:9/mcp', name: 'nope', arguments: {}, fetchImpl: fetchEmpty}), (e) => e.message === 'HTTP 502')
+})
+
+test('a non-OK app tool error is the JSON-RPC message in the chat, not the envelope', async () => {
+	const mcp = startMcp({
+		tools: [{name: 'dump', description: 'Dump', inputSchema: {type: 'object', properties: {}}, readOnlyHint: true}],
+		callError: {status: 400, body: {jsonrpc: '2.0', id: 12, error: {code: -32602, message: 'Unknown tool: nope'}}},
+	})
+	const addr = await mcp.listen()
+	let posted = ''
+	const {seen, fetchImpl} = scripted([
+		toolSse('call_d', 'app__notes__dump', '{}'),
+		(body) => {
+			posted = body.messages.find((m) => m.role === 'tool')?.content ?? ''
+			return textSse('ok')
+		},
+	])
+	const box = await withAssistant({
+		fetchImpl,
+		mcpTargets: async () => [{appId: 'notes', name: 'Notes', url: addr.url, transport: 'http', running: true}],
+	})
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'dump it', emit: () => {}})
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		assert.equal(saved.messages.find((m) => m.toolCallId === 'call_d').content, 'Unknown tool: nope')
+		assert.equal(posted, 'Unknown tool: nope')
+		assert.equal(String(posted).includes('jsonrpc'), false)
+		assert.equal(seen.length, 2)
+	} finally {
+		await box.close()
 		await mcp.close()
 	}
 })

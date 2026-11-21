@@ -52,6 +52,16 @@ const publicOf = (k, userId) => ({
 const personal = (k) => k.provider === 'chatgpt'
 const signedIn = (k) => k.provider !== 'chatgpt' || !!k.chatgpt?.refreshToken
 const canUse = (k, userId) => k.ownerUserId === userId || (!personal(k) && (k.sharedWith.includes(userId) || k.systemDefault))
+// A check that started before an edit must not be written onto the key, model, or address now saved.
+const sameCheckedKey = (k, snapshot) => {
+	if (snapshot == null) return true
+	if (typeof snapshot === 'number') return snapshot === k.updatedAt
+	if (typeof snapshot !== 'object') return true
+	const fields = ['apiKey', 'model', 'baseUrl'].filter((field) => snapshot[field] !== undefined)
+	if (fields.length) return fields.every((field) => snapshot[field] === k[field])
+	if (snapshot.updatedAt !== undefined) return snapshot.updatedAt === k.updatedAt
+	return true
+}
 
 const validKeysState = (value) => plainObject(value) && Array.isArray(value.keys)
 
@@ -206,11 +216,11 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			await save()
 			return true
 		},
-		async recordCheck(id, check) {
+		async recordCheck(id, check, snapshot) {
 			await loaded
 			assertWritable()
 			const k = find(id)
-			if (!k) return null
+			if (!k || !sameCheckedKey(k, snapshot)) return null
 			k.check = {...publicCheck(check), at: now()}
 			await save()
 			return publicCheck(k.check)
