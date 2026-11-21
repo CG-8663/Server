@@ -92,7 +92,7 @@ test('factory reset drops keys, chats, swarm computers, backup secrets and share
 		assert.equal(await exists(join(data, 'backups/smb-auth-test')), false, 'the NAS auth file is gone')
 		assert.equal(await readFile(join(data, 'backups/computers/notes.txt'), 'utf8'), 'keep-me\n', 'a normal file beside the computer key stays')
 		assert.equal(await readFile(join(data, 'backups/keep.txt'), 'utf8'), 'not a secret\n', 'a normal file beside the NAS auth file stays')
-		assert.equal(await readFile(join(data, 'backups/history.json'), 'utf8'), '[{"id":"keep-history"}]', 'backup history stays')
+		assert.equal(await exists(join(data, 'backups/history.json')), false, 'backup history is gone')
 		assert.equal(await exists(join(data, 'share-password')), false, 'the share password is gone')
 		assert.equal(await exists(join(data, 'shares.json')), false, 'the share list is gone')
 	} finally {
