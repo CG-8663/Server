@@ -13,9 +13,10 @@
 // Wire format on the connector's WebSocket: JSON text messages for control, and binary frames
 // starting with a 4-byte channel number for terminal, desktop, and file bytes.
 import {X509Certificate, createHash, randomBytes, timingSafeEqual} from 'node:crypto'
-import {readFile} from 'node:fs/promises'
+import {readFile, stat} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
+import {fileURLToPath} from 'node:url'
 import {WebSocketServer} from 'ws'
 
 import {writeAtomic} from './atomic.mjs'
@@ -121,6 +122,8 @@ export function cleanMetrics(m = {}) {
 		updates: num(m.updates),
 	}
 }
+const cleanSha = (v) => (/^[0-9a-f]{64}$/i.test(String(v ?? '')) ? String(v).toLowerCase() : '')
+
 function cleanInfo(i = {}) {
 	return {
 		hostname: clip(i.hostname, 64),
@@ -130,6 +133,8 @@ function cleanInfo(i = {}) {
 		arch: clip(i.arch, 16),
 		user: clip(i.user, 32),
 		version: clip(i.version, 16),
+		agentSha: cleanSha(i.agentSha),
+		helperSha: cleanSha(i.helperSha),
 		pkg: clip(i.pkg, 16),
 		updateCommand: clip(i.updateCommand, 160),
 		omarchy: !!i.omarchy,
@@ -152,11 +157,38 @@ function serverAddresses() {
 	return out
 }
 
-export function createConnector({dataDir, tlsDir, plugins = null, source = async () => 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000}) {
+export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(new URL('../connector', import.meta.url)), plugins = null, source = async () => 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000}) {
 	const file = join(dataDir, 'swarm.json')
 	let state = {agents: []}
 	// Set when swarm.json exists but cannot be used. Nothing may write it until the owner repairs it.
 	let damaged = false
+	const bundledCache = new Map()
+	let bundledShas = {agentSha: '', helperSha: ''}
+	async function readBundledFile(name) {
+		const path = join(connectorDir, name)
+		try {
+			const st = await stat(path)
+			const prev = bundledCache.get(name)
+			if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) return prev
+			const bytes = await readFile(path)
+			const entry = {bytes, sha256: createHash('sha256').update(bytes).digest('hex'), mtimeMs: st.mtimeMs, size: st.size}
+			bundledCache.set(name, entry)
+			return entry
+		} catch {
+			return null
+		}
+	}
+	async function refreshBundledShas() {
+		const [agent, helper] = await Promise.all([readBundledFile('agent.py'), readBundledFile('helper.py')])
+		bundledShas = {agentSha: agent?.sha256 ?? '', helperSha: helper?.sha256 ?? ''}
+		return bundledShas
+	}
+	async function readAgentScript() {
+		const entry = await readBundledFile('agent.py')
+		if (!entry) throw new RpcError('PRECONDITION_FAILED', 'The bundled connector script wasn’t found on this server')
+		bundledShas.agentSha = entry.sha256
+		return {bytes: entry.bytes, sha256: entry.sha256}
+	}
 	const agentOk = (a) => !!a && typeof a === 'object' && !Array.isArray(a) && typeof a.id === 'string' && !!a.allowed && typeof a.allowed === 'object' && !Array.isArray(a.allowed) && !!a.on && typeof a.on === 'object' && !Array.isArray(a.on)
 	// A missing file is no computers yet. A parse error used to reject this promise with nobody
 	// waiting, which ended the process. The file stays so its key hashes can be repaired.
@@ -191,6 +223,8 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 	const find = (id) => state.agents.find((a) => a.id === id)
 	const view = (a) => {
 		const l = live.get(a.id)
+		const agentSha = a.info?.agentSha || ''
+		const helperSha = a.info?.helperSha || ''
 		return {
 			id: a.id,
 			name: a.name,
@@ -202,6 +236,8 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			on: a.on,
 			info: a.info ?? null,
 			metrics: l?.metrics ?? a.metrics ?? null,
+			updateAvailable: Boolean(a.info && bundledShas.agentSha && agentSha !== bundledShas.agentSha),
+			helperUpdateAvailable: Boolean(a.info && a.allowed?.storage && bundledShas.helperSha && helperSha && helperSha !== bundledShas.helperSha),
 		}
 	}
 
@@ -220,6 +256,48 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		pairings.set(sha(token), {abilities, expires: now() + PAIR_TTL})
 		return {token, ca: await caFingerprint(), expiresAt: now() + PAIR_TTL, abilities, source: await source(), port: webPort, addresses: serverAddresses()}
 	}
+	// Re-authorize an existing computer in place so its name, id, metrics and backups stay intact.
+	async function reauthorize(input = {}) {
+		await loaded
+		const a = find(String(input?.id ?? ''))
+		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		const abilities = Object.fromEntries(ABILITIES.map((k) => [k, input?.[k] === true]))
+		const token = randomBytes(24).toString('base64url')
+		for (const [k, p] of pairings) if (p.expires < now()) pairings.delete(k)
+		pairings.set(sha(token), {abilities, expires: now() + PAIR_TTL, agentId: a.id})
+		return {token, ca: await caFingerprint(), expiresAt: now() + PAIR_TTL, abilities, source: await source(), port: webPort, addresses: serverAddresses(), agentId: a.id, name: a.name}
+	}
+	async function updateConnector(input = {}) {
+		await loaded
+		const a = find(String(input?.id ?? ''))
+		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		if (!may(a, 'manage')) throw new RpcError('FORBIDDEN', `Managing ${a.name} isn’t switched on`)
+		if (!live.has(a.id)) throw new RpcError('PRECONDITION_FAILED', `${a.name} is offline right now`)
+		const {sha256} = await readAgentScript()
+		await call(a.id, 'update-self', {sha256}, 60_000)
+		return {ok: true, sha256}
+	}
+	async function updateAllConnectors() {
+		await loaded
+		await refreshBundledShas()
+		const updated = []
+		const skipped = []
+		const failed = []
+		for (const a of state.agents) {
+			const v = view(a)
+			if (!v.online || !may(a, 'manage') || !v.updateAvailable) {
+				skipped.push(a.id)
+				continue
+			}
+			try {
+				await updateConnector({id: a.id})
+				updated.push(a.id)
+			} catch (e) {
+				failed.push({id: a.id, name: a.name, error: String(e?.message ?? 'Update failed')})
+			}
+		}
+		return {updated, skipped, failed}
+	}
 	// Fleet gauges sample only while this server is reading them. A list (the swarm
 	// screen, or the assistant) asks each computer to sample; the connector stops
 	// on its own about 15s after the last ask.
@@ -237,6 +315,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 	}
 	async function list() {
 		await loaded
+		await refreshBundledShas()
 		watchLive()
 		return state.agents.map(view)
 	}
@@ -352,6 +431,27 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		// The connector's own limits (what its installer was told) and the pairing's, together.
 		const local = body?.abilities ?? {}
 		const allowed = Object.fromEntries(ABILITIES.map((k) => [k, p.abilities[k] === true && local[k] === true]))
+		if (p.agentId) {
+			const existing = find(p.agentId)
+			if (!existing) return {status: 404, body: {error: 'That computer is no longer in your swarm.'}}
+			const key = randomBytes(32).toString('base64url')
+			existing.keyHash = sha(key)
+			existing.allowed = allowed
+			existing.on = {...allowed}
+			existing.info = info
+			await save()
+			const old = live.get(existing.id)
+			if (old) {
+				old.progress = null
+				for (const ch of old.channels.values()) closeSocket(ch.ws, 1000, 'Permissions updated')
+				for (const c of old.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'Permissions updated')))
+				old.channels.clear()
+				old.calls.clear()
+				live.delete(existing.id)
+				old.ws.terminate()
+			}
+			return {status: 200, body: {id: existing.id, key, name: existing.name, abilities: allowed, reauthorized: true}}
+		}
 		const id = randomBytes(6).toString('hex')
 		const key = randomBytes(32).toString('base64url')
 		let name = info.hostname || 'computer'
@@ -804,6 +904,9 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		procedures: {
 			'swarm.list': {kind: 'query', run: list},
 			'swarm.pair': {kind: 'mutation', run: pair},
+			'swarm.reauthorize': {kind: 'mutation', run: reauthorize},
+			'swarm.updateConnector': {kind: 'mutation', run: updateConnector},
+			'swarm.updateAllConnectors': {kind: 'mutation', run: updateAllConnectors},
 			'swarm.remove': {kind: 'mutation', run: remove},
 			'swarm.rename': {kind: 'mutation', run: rename},
 			'swarm.setAbilities': {kind: 'mutation', run: setAbilities},
@@ -987,6 +1090,11 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			},
 		},
 		enroll,
+		authenticateAgent: async (req) => {
+			await loaded
+			return authAgent(req)
+		},
+		readAgentScript,
 		upgradeAgent,
 		openChannel,
 		isAgentMachine: (machineId) => /^agent-[0-9a-f]{12}$/.test(machineId),

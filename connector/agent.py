@@ -21,6 +21,7 @@ server can't widen):
 
 Standard library only, so it runs on any distribution with Python 3.8+.
 """
+import ast
 import base64
 import bz2
 import http.client
@@ -88,6 +89,20 @@ def reconnect_action(exc):
     return "forget" if isinstance(exc, Rejected) else "retry"
 
 
+def _ssl_context(cafile=None):
+    ctx = ssl.create_default_context(cafile=cafile or CA_FILE)
+    # Trust only this server's own certificate authority (pinned when installing). Its
+    # certificate names the server's addresses, which can change, so the name isn't checked:
+    # the private authority is what proves it's your server. Python 3.13+ enables
+    # VERIFY_X509_STRICT by default, which rejects private CAs without an Authority Key
+    # Identifier extension; full cryptographic verification against the pinned CA stays on.
+    ctx.check_hostname = False
+    strict = getattr(ssl, "VERIFY_X509_STRICT", 0)
+    if strict and isinstance(getattr(ctx, "verify_flags", None), int):
+        ctx.verify_flags &= ~strict
+    return ctx
+
+
 # ---------------------------------------------------------------------------------------------
 # A small WebSocket client (RFC 6455), enough for this: text and binary frames, ping/pong, close.
 class WS:
@@ -96,11 +111,7 @@ class WS:
         if u.scheme != "wss":
             raise ValueError("The server address must start with https://")
         host, port = u.hostname, u.port or 443
-        ctx = ssl.create_default_context(cafile=cafile)
-        # Trust only this server's own certificate authority (pinned when installing). Its
-        # certificate names the server's addresses, which can change, so the name isn't checked:
-        # the private authority is what proves it's your server.
-        ctx.check_hostname = False
+        ctx = _ssl_context(cafile)
         raw = socket.create_connection((host, port), timeout=20)
         self.sock = ctx.wrap_socket(raw, server_hostname=host)
         key = base64.b64encode(os.urandom(16)).decode()
@@ -250,6 +261,20 @@ def omarchy_facts():
     return {"omarchy": True, "plugins": plugins, "themes": themes, "theme": theme}
 
 
+def _file_sha256(path):
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return ""
+
+
 def info():
     rel = os_release()
     pkg = package_manager()
@@ -262,6 +287,8 @@ def info():
         "arch": os.uname().machine,
         "user": pwd.getpwuid(os.getuid()).pw_name,
         "version": VERSION,
+        "agentSha": _file_sha256(__file__),
+        "helperSha": _file_sha256(HELPER),
         "pkg": pkg,
         "updateCommand": update_command(pkg, om.get("omarchy")),
         "desktop": desktop_kind(),
@@ -1630,6 +1657,66 @@ def reboot(_args):
     return True
 
 
+def _exit_for_restart():
+    os._exit(0)
+
+
+def update_self(args, cfg, cafile=None, target_path=None, on_restart=None, fetch=None):
+    expected = str((args or {}).get("sha256", "")).strip().lower()
+    if not re.match(r"^[0-9a-f]{64}$", expected):
+        raise RuntimeError("Bad connector checksum")
+    if fetch is not None:
+        body = fetch()
+    else:
+        server = str((cfg or {}).get("server", "")).rstrip("/")
+        u = urllib.parse.urlsplit(server)
+        if u.scheme != "https" or not u.hostname:
+            raise RuntimeError("Invalid server address")
+        ctx = _ssl_context(cafile)
+        req = urllib.request.Request(
+            server + "/connector/agent.py",
+            headers={"Authorization": f"Bearer {cfg['id']}:{cfg['key']}", "User-Agent": f"omarchy-connector/{VERSION}"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=60) as r:
+                body = r.read(2 * 1024 * 1024 + 1)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"Couldn’t download connector update (HTTP {e.code})")
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(f"Couldn’t download connector update: {e}")
+    if not body or len(body) > 2 * 1024 * 1024:
+        raise RuntimeError("The connector download was empty or too large")
+    actual = hashlib.sha256(body).hexdigest()
+    if actual != expected:
+        raise RuntimeError("The connector download didn’t match the expected checksum")
+    try:
+        ast.parse(body.decode("utf-8"))
+    except (UnicodeDecodeError, SyntaxError):
+        raise RuntimeError("The connector download wasn’t valid Python")
+    target = os.path.realpath(target_path or __file__)
+    parent = os.path.dirname(target)
+    tmp = os.path.join(parent, f".agent.py.{os.getpid()}.{os.urandom(4).hex()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700)
+        with os.fdopen(fd, "wb") as f:
+            f.write(body)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise RuntimeError(f"Couldn’t replace connector script: {e}")
+    restart_fn = on_restart or _exit_for_restart
+    t = threading.Timer(0.3, restart_fn)
+    t.daemon = True
+    t.start()
+    return {"sha256": actual, "restarting": True}
+
+
 ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "theme-set": theme_set, "reboot": reboot}
 
 HELPER = "/usr/local/libexec/omarchy-connector/helper.py"
@@ -1831,8 +1918,7 @@ class _Relay(http.server.ThreadingHTTPServer):
 
 def start_relay(cfg):
     u = urllib.parse.urlsplit(cfg["server"])
-    ctx = ssl.create_default_context(cafile=CA_FILE)
-    ctx.check_hostname = False  # pinned to the server's own authority, as for the WebSocket
+    ctx = _ssl_context(CA_FILE)
     secret = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
     auth = f"Bearer {cfg['id']}:{cfg['key']}"
 
@@ -2293,10 +2379,13 @@ class Connection:
             else:
                 if not self.allowed.get("manage"):
                     raise RuntimeError("This computer doesn’t allow managing")
-                fn = ACTIONS.get(name)
-                if not fn:
-                    raise RuntimeError("Unknown action")
-                data = fn(msg.get("args") or {})
+                if name == "update-self":
+                    data = update_self(msg.get("args") or {}, self.cfg)
+                else:
+                    fn = ACTIONS.get(name)
+                    if not fn:
+                        raise RuntimeError("Unknown action")
+                    data = fn(msg.get("args") or {})
             self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})
             if name in ("plugin-install", "plugin-remove", "theme-set"):
                 self.send({"op": "hello", "info": info(), "abilities": self.allowed})
@@ -2335,12 +2424,11 @@ def enroll(server, token, abilities):
         raise SystemExit("The server address must start with https://")
     body = json.dumps({"token": token, "info": info(), "abilities": abilities}).encode()
     try:
-        ctx = ssl.create_default_context(cafile=CA_FILE)
+        ctx = _ssl_context(CA_FILE)
     except FileNotFoundError:
         raise SystemExit(f"Server certificate not found ({CA_FILE}). Run the install command from Machines → Local swarm → Add a computer.")
     except OSError as e:
         raise SystemExit(f"Couldn't read server certificate ({CA_FILE}): {e}")
-    ctx.check_hostname = False
     req = urllib.request.Request(server.rstrip("/") + "/connector/enroll", data=body, headers={"content-type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=30) as r:

@@ -183,7 +183,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'omarchy.plugins': {kind: 'query', run: (input) => themeCall(() => omarchyPlugins.list(input ?? {}))},
 		// Local swarm (connector.mjs): owner only.
 		...Object.fromEntries(
-			['swarm.list', 'swarm.pair', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'swarm.storage.setSleep'].map((name) => [
+			['swarm.list', 'swarm.pair', 'swarm.reauthorize', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'swarm.storage.setSleep'].map((name) => [
 				name,
 				{kind: ['swarm.list', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable'].includes(name) ? 'query' : 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'manage the local swarm'), connector.procedures[name].run(input))},
 			]),
@@ -446,7 +446,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const omarchyTheme = createOmarchyTheme({home, ...themeOptions})
 	const omarchyPlugins = createOmarchyPlugins({home, theme: omarchyTheme, ...pluginOptions})
 	// Local swarm: other Linux computers joined through the connector (see connector.mjs).
-	const connector = createConnector({dataDir, tlsDir, plugins: omarchyPlugins, source: () => updater.source(), webPort})
+	const connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, source: () => updater.source(), webPort})
 	clips = createClips({
 		dataDir,
 		files,
@@ -698,6 +698,14 @@ WantedBy=graphical-session.target
 				const agentId = connector.backup.authenticate(req)
 				if (!agentId) return sendJson(res, 401, {error: 'unauthorized'})
 				return await backups.handleUpload(req, res, agentId, url.pathname.slice('/connector/backup/'.length))
+			}
+			// A connector updating itself from this server (authenticated with its own key).
+			if (url.pathname === '/connector/agent.py' && req.method === 'GET') {
+				const agent = await connector.authenticateAgent(req)
+				if (!agent) return sendJson(res, 401, {error: 'unauthorized'})
+				const {bytes, sha256} = await connector.readAgentScript()
+				res.writeHead(200, {'content-type': 'text/x-python; charset=utf-8', 'content-length': bytes.length, 'x-connector-sha256': sha256, 'cache-control': 'no-store'})
+				return res.end(bytes)
 			}
 			// A connector trading its one-time pairing code for its own id and key.
 			if (url.pathname === '/connector/enroll' && req.method === 'POST') {

@@ -28,6 +28,8 @@ export type Agent = {
 	enrolledAt: number
 	allowed: Abilities
 	on: Abilities
+	updateAvailable?: boolean
+	helperUpdateAvailable?: boolean
 	info: {
 		hostname?: string
 		os?: string
@@ -36,6 +38,8 @@ export type Agent = {
 		arch?: string
 		user?: string
 		version?: string
+		agentSha?: string
+		helperSha?: string
 		pkg?: string
 		updateCommand?: string
 		omarchy?: boolean
@@ -58,7 +62,7 @@ export type Agent = {
 		updates?: number | null
 	} | null
 }
-type Pairing = {token: string; ca: string; expiresAt: number; abilities: Abilities; source: string; port: number; addresses: {address: string; tailscale: boolean}[]}
+type Pairing = {token: string; ca: string; expiresAt: number; abilities: Abilities; source: string; port: number; addresses: {address: string; tailscale: boolean}[]; agentId?: string; name?: string}
 
 const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = {
 	terminal: {label: 'Terminal', icon: 'terminal', what: 'A shell on it, as the person who installed the connector'},
@@ -99,15 +103,28 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 	const [storage, setStorage] = useState<Agent | null>(null)
 	const selected = list.find((a) => a.id === selectedId) ?? null
 	const online = list.filter((a) => a.online).length
+	const outdated = list.filter((a) => a.online && may(a, 'manage') && a.updateAvailable)
+	const act = useSwarmAction()
 	if (storage) return <StoragePage onBack={() => setStorage(null)} target={{agentId: storage.id, name: storage.name}} />
 	return (
 		<section className="swarm">
 			{heading && (
 				<div className="section-head">
 					<h2>Local swarm</h2>
-					<button className="btn small" onClick={() => (haptic(6), setAdding(true))}>
-						<Icon name="plus" size={16} stroke={2.4} /> Add a computer
-					</button>
+					<div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
+						{outdated.length > 0 && (
+							<button
+								className="btn small"
+								disabled={act.isPending}
+								onClick={() => (haptic(6), act.mutate({path: 'swarm.updateAllConnectors', input: {}, done: `Updating ${outdated.length} connector${outdated.length === 1 ? '' : 's'}…`}))}
+							>
+								<Icon name="update" size={15} /> Update connectors ({outdated.length})
+							</button>
+						)}
+						<button className="btn small" onClick={() => (haptic(6), setAdding(true))}>
+							<Icon name="plus" size={16} stroke={2.4} /> Add a computer
+						</button>
+					</div>
 				</div>
 			)}
 			{!heading && (
@@ -115,6 +132,15 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 					<span className="muted" style={{flex: 1}}>
 						{list.length ? `${online} of ${list.length} online` : 'Other Linux computers joined to this server'}
 					</span>
+					{outdated.length > 0 && (
+						<button
+							className="btn small"
+							disabled={act.isPending}
+							onClick={() => act.mutate({path: 'swarm.updateAllConnectors', input: {}, done: `Updating ${outdated.length} connector${outdated.length === 1 ? '' : 's'}…`})}
+						>
+							<Icon name="update" size={15} /> Update connectors ({outdated.length})
+						</button>
+					)}
 					<button className="btn small primary" onClick={() => setAdding(true)}>
 						<Icon name="plus" size={15} /> Add a computer
 					</button>
@@ -269,6 +295,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 	const confirm = useConfirm()
 	const [name, setName] = useState(a.name)
 	const [plugins, setPlugins] = useState(false)
+	const [reauth, setReauth] = useState(false)
 	const m = a.metrics
 	const desk = a.info?.desktop
 	const offline = !a.online
@@ -323,6 +350,16 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 
 			{may(a, 'manage') && (
 				<Group title="Manage">
+					{a.updateAvailable && (
+						<Row
+							icon="update"
+							color="var(--accent)"
+							label="Update connector"
+							sub={a.helperUpdateAvailable ? 'Updates the connector and reconnects. Run Change permissions later to update the storage helper too.' : 'Updates the connector on this computer and reconnects automatically'}
+							onClick={manage && !act.isPending ? () => act.mutate({path: 'swarm.updateConnector', input: {id: a.id}, done: `Updating connector on ${a.name}…`}) : undefined}
+							disabled={offline || act.isPending}
+						/>
+					)}
 					{a.info?.updateCommand && (
 						<Row
 							icon="update"
@@ -362,10 +399,11 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 						key={k}
 						icon={ABILITY[k].icon}
 						label={ABILITY[k].label}
-						sub={a.allowed[k] ? ABILITY[k].what : 'Not allowed when it joined. To allow it, remove this computer and add it again with it switched on.'}
+						sub={a.allowed[k] ? ABILITY[k].what : 'Not allowed when it joined. Use Change permissions below to allow it without removing this computer.'}
 						trailing={<Switch on={may(a, k)} disabled={!a.allowed[k] || act.isPending} label={ABILITY[k].label} onChange={(v) => act.mutate({path: 'swarm.setAbilities', input: {id: a.id, [k]: v}})} />}
 					/>
 				))}
+				<Row icon="key" color="var(--accent)" label="Change permissions" sub="Update what this server may do here without losing its name or backups" onClick={() => setReauth(true)} />
 			</Group>
 
 			<Group title="About">
@@ -408,6 +446,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 				<Icon name="trash" size={18} /> Remove from swarm
 			</button>
 			{plugins && <AgentPlugins a={a} onClose={() => setPlugins(false)} />}
+			{reauth && <ReauthorizeComputer a={a} onClose={() => setReauth(false)} />}
 		</Sheet>
 	)
 }
@@ -639,6 +678,122 @@ function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: ()
 						</p>
 					</details>
 				</>
+			)}
+		</Sheet>
+	)
+}
+
+function ReauthorizeComputer({a, onClose}: {a: Agent; onClose: () => void}) {
+	const [allow, setAllow] = useState<Abilities>({...a.allowed})
+	const [before] = useState(() => JSON.stringify(a.allowed))
+	const [pairing, setPairing] = useState<Pairing | null>(null)
+	const [host, setHost] = useState('')
+	const [copied, setCopied] = useState(false)
+	const [now, setNow] = useState(Date.now())
+	const toast = useToast()
+	const swarm = useSwarm()
+	const liveAgent = swarm.data?.find((x) => x.id === a.id) ?? a
+	const reauth = useMutation({
+		mutationFn: () => mutate<Pairing>('swarm.reauthorize', {id: a.id, ...allow}),
+		onSuccess: (p) => {
+			setPairing(p)
+			const here = location.hostname
+			const local = here === 'localhost' || here === '127.0.0.1' || here === '::1'
+			setHost(local ? (p.addresses[0]?.address ?? here) : here)
+		},
+		onError: (e) => toast((e as Error).message, true),
+	})
+	useEffect(() => {
+		if (!pairing) return
+		const t = setInterval(() => setNow(Date.now()), 1000)
+		return () => clearInterval(t)
+	}, [pairing])
+	const left = pairing ? Math.max(0, Math.round((pairing.expiresAt - now) / 1000)) : 0
+	const list = (Object.keys(allow) as Ability[]).filter((k) => allow[k]).join(',')
+	const command = useMemo(() => {
+		if (!pairing) return ''
+		const server = `https://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${pairing.port}`
+		const src = pairing.source.replace(/\/+$/, '')
+		return `curl -fsSL ${src}/main/connector/install.sh | bash -s -- --server ${server} --ca ${pairing.ca} --token ${pairing.token}${list ? ` --allow ${list}` : ''} --source ${src}`
+	}, [pairing, host, list])
+	const hosts = pairing ? [...new Set([location.hostname, ...pairing.addresses.map((x) => x.address)].filter((h) => h && h !== 'localhost' && h !== '127.0.0.1'))] : []
+	const updated = Boolean(pairing && JSON.stringify(liveAgent.allowed) !== before)
+	const copy = async (text: string) => {
+		try {
+			await navigator.clipboard.writeText(text)
+			setCopied(true)
+			haptic(8)
+			setTimeout(() => setCopied(false), 2000)
+		} catch {
+			toast('Couldn’t copy. Select the text and copy it yourself.', true)
+		}
+	}
+	return (
+		<Sheet open onClose={onClose} label={`Change permissions for ${a.name}`} tall>
+			<SheetHeader icon={<Icon name="key" size={30} />} title={`Change permissions`} subtitle={`For ${a.name} · keeps its name and backups`} onClose={onClose} />
+			{!pairing ? (
+				<>
+					<p className="muted" style={{fontSize: 14, margin: '0 4px 12px'}}>
+						Choose the abilities this server may use on {a.name}. Running the command on that computer updates its permissions in place and rotates its key.
+					</p>
+					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+						{(Object.keys(ABILITY) as Ability[]).map((k) => (
+							<Row key={k} icon={ABILITY[k].icon} label={ABILITY[k].label} sub={ABILITY[k].what} trailing={<Switch on={allow[k]} label={ABILITY[k].label} onChange={(v) => setAllow({...allow, [k]: v})} />} />
+						))}
+					</div>
+					<button className="btn primary" style={{width: '100%', marginTop: 18}} disabled={reauth.isPending} onClick={() => reauth.mutate()}>
+						{reauth.isPending ? <span className="spinner" /> : <Icon name="key" size={18} />} Make the update command
+					</button>
+				</>
+			) : updated ? (
+				<div className="glass empty">
+					<span className="big" style={{color: 'var(--ok, #2fbf71)'}}>
+						<Icon name="check" size={30} />
+					</span>
+					<b>Permissions updated</b>
+					<span>{a.name} kept its name and backups.</span>
+					<button className="btn primary small" onClick={onClose}>
+						Done
+					</button>
+				</div>
+			) : (
+				<ol className="swarm-steps">
+					<li>
+						<b>On {a.name}, open a terminal</b>
+						<span>Run this as {a.info?.user || 'the user who installed the connector'}. Its connector updates its permissions and reconnects.</span>
+					</li>
+					{hosts.length > 1 && (
+						<li>
+							<b>Pick the address it reaches this server on</b>
+							<span className="chips" style={{marginTop: 8}}>
+								{hosts.map((h) => (
+									<button key={h} className={`chip${h === host ? ' on' : ''}`} aria-pressed={h === host} onClick={() => setHost(h)}>
+										{h}
+										{pairing.addresses.find((x) => x.address === h)?.tailscale ? ' · Tailscale' : ''}
+									</button>
+								))}
+							</span>
+						</li>
+					)}
+					<li>
+						<b>Paste this and press Enter</b>
+						<code className="swarm-cmd mono">{left ? command : 'This command has expired.'}</code>
+						{left ? (
+							<span style={{display: 'flex', alignItems: 'center', gap: 10, marginTop: 8}}>
+								<button className="btn small primary" onClick={() => copy(command)}>
+									<Icon name={copied ? 'check' : 'copy'} size={15} /> {copied ? 'Copied' : 'Copy'}
+								</button>
+								<span className="muted" style={{fontSize: 12.5}}>
+									Works once, for {Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}
+								</span>
+							</span>
+						) : (
+							<button className="btn small" style={{marginTop: 8}} onClick={() => (setPairing(null), reauth.mutate())}>
+								Make a new one
+							</button>
+						)}
+					</li>
+				</ol>
 			)}
 		</Sheet>
 	)
