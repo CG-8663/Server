@@ -11,6 +11,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {Icon} from '../icons'
+import {storageDrivesView, storageStatusMessage} from '../storageList'
 import {canFormat, canMount, canUnmount, formatConfirmToken, formatPhraseMatches, type FormatKind} from '../storageTools'
 import {Card, Field, KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
 
@@ -144,6 +145,8 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 	const ready = status.data?.helperAvailable
 	const browserOnline = useBrowserOnline()
 	const poolsProblem = queryProblem(poolsQ, browserOnline)
+	const drivesView = storageDrivesView({isLoading: disksQ.isLoading, error: disksQ.error, data: disksQ.data})
+	const statusMessage = storageStatusMessage(status)
 
 	const refresh = () => {
 		for (const k of [rpc('disks'), rpc('pools'), rpc('importable'), 'system.diskUsage']) qc.invalidateQueries({queryKey: [k]})
@@ -194,6 +197,13 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 				</button>
 			</div>
 
+			{statusMessage && (
+				<div className="error" role="alert" style={{marginBottom: 14}}>
+					<Icon name="alert" size={18} />
+					{statusMessage}
+				</div>
+			)}
+
 			{ready === false && (
 				<Card style={{marginBottom: 18}}>
 					<b>Storage tools aren’t set up</b>
@@ -217,7 +227,9 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 						? swarm
 							? 'Pools are mounted at ~/Pools on this computer.'
 							: 'Pools are in Files under Home → Pools. Share any folder in them from Files.'
-						: blank.length
+						: drivesView.error
+							? undefined
+							: blank.length
 							? swarm
 								? 'A pool turns one or more blank drives into space for your files, mirrored if you like. It is mounted at ~/Pools on this computer.'
 								: 'A pool turns one or more blank drives into space for your files, mirrored if you like. It shows up in Files under Home → Pools.'
@@ -320,8 +332,17 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 				</Section>
 			)}
 
-			<Section title="Drives" footer={drives.some((d) => d.role === 'data' && !d.btrfs) ? 'A drive that has data can’t be used for a pool until you format it (choose blank).' : undefined}>
-				{disksQ.isLoading ? <div className="row static muted">Loading…</div> : drives.map((d) => <DriveRow key={d.path} d={d} onClick={() => setDrive(d)} />)}
+			<Section title="Drives" footer={drivesView.error ? undefined : drives.some((d) => d.role === 'data' && !d.btrfs) ? 'A drive that has data can’t be used for a pool until you format it (choose blank).' : undefined}>
+				{drivesView.loading ? (
+					<div className="row static muted">Loading…</div>
+				) : drivesView.error ? (
+					<div className="error" role="alert">
+						<Icon name="alert" size={18} />
+						{drivesView.error}
+					</div>
+				) : (
+					drives.map((d) => <DriveRow key={d.path} d={d} onClick={() => setDrive(d)} />)
+				)}
 			</Section>
 
 			<DriveSheet d={drive} onClose={() => setDrive(null)} onChanged={refresh} rpc={rpc} args={args} />

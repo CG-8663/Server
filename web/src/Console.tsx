@@ -14,6 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
+import {consoleShouldTakeFocus} from './consoleFocus'
 import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, mouseButtonFromEvent, pasteKeySequence, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
@@ -142,6 +143,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		let retry: number | undefined
 		let rfb: InstanceType<RFBClass> | undefined
 		let socket: WebSocket | undefined
+		let connects = 0
 
 		const connect = async () => {
 			if (disposed || !canvasHost.current) return
@@ -183,13 +185,16 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				if (window.isSecureContext && document.hasFocus()) navigator.clipboard?.writeText(text).catch(() => {})
 			})
 			r.addEventListener('connect', () => {
+				connects += 1
+				const connectCount = connects
 				setState('connected')
 				haptic(8)
 				if (deskUi) {
 					window.setTimeout(() => {
 						if (disposed || rfbRef.current !== r) return
 						setCanResize(readConsoleMetrics(r as any).canResize)
-						r.focus()
+						const host = rootRef.current?.closest('.win') ?? rootRef.current
+						if (consoleShouldTakeFocus({firstConnect: connectCount === 1, activeElement: document.activeElement, windowEl: host})) r.focus()
 					}, 600)
 				}
 				try {

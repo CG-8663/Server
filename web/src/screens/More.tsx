@@ -9,6 +9,7 @@ import {useApps, useBattery, useBootstrap, useCpu, useDisk, useGpus, useMemory, 
 import {shortGpuName} from '../gauges'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
+import {applyPrefsUpdate, prefsAfterPhotoUpload, prefsChoosingYourPhoto} from '../photoPrefs'
 import {ACCENTS, AppIcon, Card, CardHead, KV, Row, Segmented, SolidColors, StatCard, THEMES, VersionTag, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, preparePhoto, useConfirm, useHistory, useOmarchyThemes, useToast, type Prefs} from '../ui'
 
 const BAR = ['var(--blue)', 'var(--mauve)', 'var(--teal)', 'var(--peach)', 'var(--pink)', 'var(--green)']
@@ -222,7 +223,7 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 			const res = await fetch('/api/background', {method: 'POST', credentials: 'same-origin', headers: {'content-type': 'image/jpeg', 'x-omarchy-server': '1'}, body: blob})
 			const body = await res.json().catch(() => null)
 			if (!res.ok) throw new Error(body?.error?.message ?? 'Upload failed')
-			setPrefs({...prefs, theme: 'custom', customBrandHsl: hsl, backgroundVersion: body.prefs.backgroundVersion})
+			applyPrefsUpdate(setPrefs, (latest) => prefsAfterPhotoUpload(latest, {hsl, backgroundVersion: body.prefs.backgroundVersion ?? null}, {setThemeCustom: true}))
 			toast('Background saved')
 		} catch (e) {
 			toast((e as Error).message, true)
@@ -260,6 +261,10 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 							onClick={() => {
 								haptic(6)
 								if (isPhoto && !photo) return fileRef.current?.click()
+								if (isPhoto) {
+									applyPrefsUpdate(setPrefs, (latest) => prefsChoosingYourPhoto(latest))
+									return
+								}
 								setPrefs({...prefs, theme: t.id})
 							}}
 						>

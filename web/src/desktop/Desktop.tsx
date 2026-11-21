@@ -17,8 +17,13 @@ import {osLook} from '../osLook'
 import {closeAssistantView, keepAssistantWindow, openAssistantView, resetAssistantTurn} from '../assistantTurn'
 import {AssistantCharacterWidget} from '../character/widgets'
 import {hasOpenDialog, pickFocusTarget, useDialogFocus, useInert, useMenuFocus} from '../focus'
+import {ScreenErrorBoundary} from '../screenBoundary'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, resetDeskConfig, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
+import {desktopIconKeysApply, iconSelectionClearsOnFocus} from './iconKeys'
+import {desktopMachineStatus, machineOpenAction} from './machineOpen'
+import {ignoreRepeatedDesktopShortcut} from './shortcutRepeat'
+import {nextStarting, type StartingWatch} from './startingWatch'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
 import {Cheatsheet} from './hyprland/Cheatsheet'
 import {injectConsoleKey, keysymFromEvent, lastMinimizedOn, releaseConsoleSuper, topVisibleWindow} from './hyprland/consoleBridge'
@@ -174,7 +179,7 @@ export function useItems() {
 					key,
 					label: m?.name ?? 'Machine',
 					icon: (s) => <MachineIcon m={m} size={s} />,
-					status: !m ? undefined : m.state === 'running' ? 'running' : m.state === 'stopped' || m.state === 'error' ? 'stopped' : 'busy',
+					status: desktopMachineStatus(m?.state),
 					missing: machines.isSuccess && !m,
 				}
 			}
@@ -292,7 +297,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const [shareFor, setShareFor] = useState<{path: string; name: string} | null>(null)
 	const [preview, setPreview] = useState<Rect | null>(null)
 	const [dragging, setDragging] = useState(false)
-	const [starting, setStarting] = useState<string[]>([])
+	const [starting, setStarting] = useState<StartingWatch[]>([])
 	const hypr = cfg.shell === 'hyprland'
 	const [hyprWs, setHyprWs] = useState(() => loadLayout().workspace)
 	const [trees, setTrees] = useState<Record<number, Node | null>>(() => loadLayout().trees)
@@ -545,12 +550,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	// Starting a stopped machine from its icon: start it, then open the console once it's running.
 	useEffect(() => {
 		if (!starting.length) return
-		const ready = starting.filter((id) => machineList.find((m) => m.id === id)?.state === 'running')
-		if (ready.length) {
-			setStarting((s) => s.filter((id) => !ready.includes(id)))
-			ready.forEach((id) => open('console', {machineId: id}))
-		}
-	}, [machineList, starting, open])
+		const query = qc.getQueryState<Machine[]>(['machines.list'])
+		const {keep, open: ready} = nextStarting(starting, query?.data, query?.dataUpdatedAt ?? 0)
+		if (keep.length !== starting.length) setStarting(keep)
+		ready.forEach((id) => open('console', {machineId: id}))
+	}, [machineList, starting, open, qc])
 	useEffect(() => {
 		if (!starting.length) return
 		const t = window.setInterval(() => qc.invalidateQueries({queryKey: ['machines.list']}), 3000)
@@ -604,12 +608,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					const id = key.slice(8)
 					const m = machineList.find((x) => x.id === id)
 					if (!m) return void toast('That machine no longer exists', true)
-					if (m.state === 'running') return openConsole(id)
-					if (m.state === 'stopped' || m.state === 'error' || m.state === 'suspended') {
+					const action = machineOpenAction(m.state)
+					if (action === 'open') return openConsole(id)
+					if (action === 'start') {
 						mutate('machines.start', {id})
 							.then(() => {
+								const listUpdatedAt = qc.getQueryState<Machine[]>(['machines.list'])?.dataUpdatedAt ?? 0
 								toast(`Starting ${m.name}. Its console opens when it’s ready.`)
-								setStarting((s) => [...new Set([...s, id])])
+								setStarting((s) => (s.some((w) => w.id === id) ? s : [...s, {id, listUpdatedAt}]))
 							})
 							.catch((e) => toast((e as Error).message, true))
 						return
@@ -627,7 +633,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			pin: (key) => setCfg((c) => (c.dock.items.includes(key) ? c : {...c, dock: {...c.dock, items: [...c.dock.items, key]}})),
 			unpin: (key) => setCfg((c) => ({...c, dock: {...c.dock, items: c.dock.items.filter((k) => k !== key)}})),
 		}
-	}, [open, close, appList, machineList, setCfg, toast, boot.server])
+	}, [open, close, appList, machineList, setCfg, toast, boot.server, qc])
 	// "Open Terminal" buttons elsewhere (e.g. a one-time fix for network shares): a new terminal window.
 	useEffect(() => {
 		const onOpen = (e: Event) => api.openTerminal(undefined, (e as CustomEvent<string>).detail)
@@ -721,7 +727,9 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		let superAlone = false
 		const down = (e: KeyboardEvent) => {
 			superAlone = e.key === 'Meta' || e.key === 'OS'
-			if (e.ctrlKey && e.altKey && e.key.toLowerCase() === 't' && owner) {
+			const terminalChord = e.ctrlKey && e.altKey && e.key.toLowerCase() === 't' && owner
+			if (terminalChord) {
+				if (ignoreRepeatedDesktopShortcut({repeat: e.repeat, terminalChord: true, action: null, forwardsToConsole: false})) return
 				e.preventDefault()
 				api.openTerminal()
 				if (cfg.shell === 'hyprland') return
@@ -735,6 +743,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			const top = topVisibleWindow(winsRef.current, hyprWsRef.current, true)
 			const consoleFocused = top?.kind === 'console'
 			const act = actionOf(e, {consoleFocused: !!consoleFocused})
+			const forwardsToConsole = !!(consoleFocused && top && isSuper(e) && !act && keysymFromEvent(e))
+			if (ignoreRepeatedDesktopShortcut({repeat: e.repeat, terminalChord: false, action: act, forwardsToConsole})) return
 			if (act?.type === 'grab-toggle') {
 				e.preventDefault()
 				e.stopPropagation()
@@ -1167,9 +1177,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 
 				{menu && <ContextMenu key={`${menu.x}:${menu.y}:${menu.title ?? ''}`} menu={menu} onClose={() => setMenu(null)} />}
 				{shareFor && (
-					<Suspense fallback={<WinFallback />}>
-						<ShareSheet path={shareFor.path} name={shareFor.name} host={boot.server?.host ?? ''} username={user.data?.sambaUsername} onClose={() => setShareFor(null)} />
-					</Suspense>
+					<ScreenErrorBoundary>
+						<Suspense fallback={<WinFallback />}>
+							<ShareSheet path={shareFor.path} name={shareFor.name} host={boot.server?.host ?? ''} username={user.data?.sambaUsername} onClose={() => setShareFor(null)} />
+						</Suspense>
+					</ScreenErrorBoundary>
 				)}
 				{hypr && launcher && (
 					<Launcher
@@ -1529,9 +1541,15 @@ function DesktopIcons(p: {
 
 	// Keyboard on the desktop itself (nothing else focused): open, remove, select all.
 	useEffect(() => {
+		const onFocus = (e: FocusEvent) => {
+			if (iconSelectionClearsOnFocus(e.target as HTMLElement | null)) setSel(new Set())
+		}
+		document.addEventListener('focusin', onFocus)
+		return () => document.removeEventListener('focusin', onFocus)
+	}, [])
+	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
-			const ae = document.activeElement
-			if (ae && ae !== document.body && !ae.closest('.desk-surface')) return
+			if (!desktopIconKeysApply(document.activeElement as HTMLElement | null)) return
 			if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
 				e.preventDefault()
 				setSel(new Set(icons.map((i) => i.key)))
@@ -2688,7 +2706,11 @@ const WindowContent = memo(
 					return null
 			}
 		})()
-		const content = <Suspense fallback={<WinFallback />}>{body}</Suspense>
+		const content = (
+			<ScreenErrorBoundary>
+				<Suspense fallback={<WinFallback />}>{body}</Suspense>
+			</ScreenErrorBoundary>
+		)
 		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'machines' || win.kind === 'assistant') return content
 		return (
 			<div className="win-scroll">
