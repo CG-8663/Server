@@ -499,6 +499,36 @@ describe('security.json on startup', () => {
 		}
 	})
 
+	test('a failed lockAfterRemote write leaves the previous lock and the file', async () => {
+		const {d, file, data} = await startWithSecurity('lock-write-fail', '{"lockAfterRemote":false}')
+		try {
+			const call = await authed(d)
+			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, false)
+			const before = await readFile(file)
+			await chmod(data, 0o500)
+			await assert.rejects(call('system.setSecurity', {lockAfterRemote: true}))
+			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, false)
+			assert.deepEqual(await readFile(file), before)
+		} finally {
+			await chmod(data, 0o700)
+			await d?.close()
+		}
+	})
+
+	test('a failed write cannot turn the lock off while the file is missing', async () => {
+		const {d, file} = await startWithSecurity('lock-write-dir')
+		try {
+			const call = await authed(d)
+			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, true)
+			await mkdir(file)
+			await assert.rejects(call('system.setSecurity', {lockAfterRemote: false}))
+			assert.equal((await call('system.security', null, 'query')).lockAfterRemote, true)
+			assert.equal((await stat(file)).isDirectory(), true)
+		} finally {
+			await d?.close()
+		}
+	})
+
 	test('a security.json that cannot be read still stops startup and is left alone', async () => {
 		const data = join(root, 'dir-sec')
 		const accounts = await openAccounts(data)

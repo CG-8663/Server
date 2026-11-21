@@ -250,6 +250,119 @@ test('factory reset drops a key and a chat whose writes are still in flight', as
 	}
 })
 
+const capture = () => {
+	const notes = []
+	const origErr = console.error
+	const origLog = console.log
+	const line = (parts) => parts.map((part) => (part instanceof Error ? part.message : String(part))).join(' ')
+	console.error = (...parts) => notes.push(line(parts))
+	console.log = (...parts) => notes.push(line(parts))
+	return {
+		notes,
+		restore() {
+			console.error = origErr
+			console.log = origLog
+		},
+	}
+}
+
+async function resetServer(rootName, {app} = {}) {
+	const root = await mkdtemp(join(os.tmpdir(), rootName))
+	const home = join(root, 'home')
+	const data = join(root, 'data')
+	await mkdir(join(home, 'Documents'), {recursive: true})
+	const accounts = await openAccounts(data)
+	await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+	const run = async (cmd) => {
+		if (app && cmd === 'docker-compose') throw new Error('compose down refused')
+		return ''
+	}
+	if (app) {
+		await mkdir(join(data, 'apps/installed', app.id), {recursive: true})
+		await writeFile(join(data, 'apps/installed', app.id, 'compose.omarchy.yml'), 'services: {}\n')
+		await writeFile(join(data, 'apps/apps.json'), JSON.stringify({
+			stores: [],
+			apps: [app],
+			recent: [],
+			defaultsAdded: true,
+			umbrelStoreRemoved: true,
+			permissionsVersion: 2,
+		}))
+	}
+	const d = await startOmarchyd({
+		port: 0, dataDir: data, home,
+		updaterOptions: {autoCheck: false},
+		appOptions: {systemApps: null, run, defaultStores: []},
+		machineOptions: {run: async () => ''},
+		backupOptions: {timers: false, unshare: false},
+	})
+	const call = async (kind, path, input, headers = {}) => {
+		const url = new URL(`${d.url}/trpc/${path}`)
+		const init = {method: kind === 'mutation' ? 'POST' : 'GET', headers: {...headers}}
+		if (kind === 'mutation') {
+			init.headers['content-type'] = 'application/json'
+			init.body = JSON.stringify(input ?? null)
+		}
+		const r = await fetch(url, init)
+		return {status: r.status, body: await r.json()}
+	}
+	const login = await call('mutation', 'user.loginNative', {userId: 'owner', password: 'correct horse', client: {id: 't'}})
+	const owner = {authorization: `Bearer ${login.body.result.data.accessToken}`}
+	return {root, data, d, call, owner}
+}
+
+test('factory reset still clears accounts when every app uninstalls', async () => {
+	const {root, data, d, call, owner} = await resetServer('omarchyd-reset-clear-')
+	const logs = capture()
+	try {
+		const reset = await call('mutation', 'system.factoryReset', {password: 'correct horse'}, owner)
+		assert.equal(reset.body.result.data, true)
+		let users = [{userId: 'owner'}]
+		const until = Date.now() + 3000
+		while (Date.now() < until) {
+			users = JSON.parse(await readFile(join(data, 'accounts.json'), 'utf8')).users
+			if (users.length === 0 && logs.notes.some((l) => l.includes('factory reset done'))) break
+			await sleep(50)
+		}
+		assert.equal(users.length, 0, 'accounts are cleared when uninstallAll returns 0')
+		assert.equal(logs.notes.some((l) => l.includes('factory reset done')), true)
+	} finally {
+		logs.restore()
+		await d.close()
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('factory reset does not wipe accounts when an app stays installed', async () => {
+	const app = {id: 'stuck', name: 'Stuck', state: 'error'}
+	const {root, data, d, call, owner} = await resetServer('omarchyd-reset-stuck-', {app})
+	const logs = capture()
+	try {
+		const reset = await call('mutation', 'system.factoryReset', {password: 'correct horse'}, owner)
+		assert.equal(reset.body.result.data, true)
+		const until = Date.now() + 3000
+		while (Date.now() < until) {
+			if (logs.notes.some((l) => /app remains|apps remain/.test(l))) break
+			const users = JSON.parse(await readFile(join(data, 'accounts.json'), 'utf8')).users
+			if (users.length === 0) break
+			await sleep(50)
+		}
+		await sleep(400)
+		const users = JSON.parse(await readFile(join(data, 'accounts.json'), 'utf8')).users
+		assert.equal(users.length, 1, 'accounts stay when an app remains')
+		assert.equal(users[0].name, 'Chris')
+		const saved = JSON.parse(await readFile(join(data, 'apps/apps.json'), 'utf8'))
+		assert.equal(saved.apps.length, 1)
+		assert.equal(saved.apps[0].id, 'stuck')
+		assert.match(logs.notes.join('\n'), /1 app remains/)
+		assert.equal(logs.notes.some((l) => l.includes('factory reset done')), false)
+	} finally {
+		logs.restore()
+		await d.close()
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
 // Factory reset does not exit. The same key store and conversation store must accept the next owner's writes.
 test('the next owner can save a key and a chat after factory reset', async () => {
 	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-reset-again-'))
