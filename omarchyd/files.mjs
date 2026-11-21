@@ -249,9 +249,10 @@ export function createFiles({home, dataDir, io} = {}) {
 		if (real === base) throw new RpcError('BAD_REQUEST', '[cannot-rename]')
 		const target = join(dirname(real), newName)
 		if (await lstat(target).then(() => true, () => false)) throw new RpcError('CONFLICT', '[already-exists]')
+		const fromVirtual = await toVirtual(real)
 		await rename(real, target)
 		const next = await toVirtual(target)
-		await follow(path, next)
+		await follow(fromVirtual, next)
 		return next
 	}
 	async function moveOrCopy({path, toDirectory, collision = 'keep-both'}, copy) {
@@ -260,16 +261,24 @@ export function createFiles({home, dataDir, io} = {}) {
 		const {real: dest} = await resolve(toDirectory)
 		if (dest === real || dest.startsWith(real + sep)) throw new RpcError('BAD_REQUEST', '[subdir-of-self]')
 		let target = join(dest, basename(real))
+		const sourceReal = await realpath(real)
 		// Only replace of this same file returns early. A directory symlink to the parent still
 		// names that file once both paths are real; a hard link in another folder does not.
+		let targetReal = null
 		if (collision === 'replace') {
-			const targetReal = await realpath(target).catch(() => null)
-			if (targetReal !== null && targetReal === (await realpath(real))) return toVirtual(real)
+			targetReal = await realpath(target).catch(() => null)
+			if (targetReal !== null && targetReal === sourceReal) return toVirtual(real)
 		}
 		if (await lstat(target).then(() => true, () => false)) {
 			if (collision === 'error') throw new RpcError('CONFLICT', '[already-exists]')
-			if (collision === 'replace') await rm(target, {recursive: true, force: true})
-			else target = await freeName(dest, basename(real))
+			if (collision === 'replace') {
+				// The replacement target can be this item's parent (the source sits inside it, or
+				// they are the same path). rm would delete that parent. Refuse instead.
+				if (targetReal !== null && (sourceReal === targetReal || sourceReal.startsWith(targetReal + sep))) {
+					throw new RpcError('BAD_REQUEST', '[subdir-of-self]')
+				}
+				await rm(target, {recursive: true, force: true})
+			} else target = await freeName(dest, basename(real))
 		}
 		if (copy) await cp(real, target, {recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true})
 		else
@@ -279,7 +288,7 @@ export function createFiles({home, dataDir, io} = {}) {
 				await rm(real, {recursive: true, force: true})
 			})
 		const next = await toVirtual(target)
-		if (!copy) await follow(path, next)
+		if (!copy) await follow(await toVirtual(real), next)
 		return next
 	}
 
@@ -298,7 +307,7 @@ export function createFiles({home, dataDir, io} = {}) {
 			await rm(real, {recursive: true, force: true})
 		})
 		const next = await toVirtual(target)
-		await follow(path, null)
+		await follow(await toVirtual(real), null)
 		return next
 	}
 	async function restore({path}) {
