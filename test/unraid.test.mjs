@@ -1347,3 +1347,136 @@ test('connect, look around, and bring shares, containers and a VM over', {skip: 
 		await rm(dir, {recursive: true, force: true})
 	}
 })
+
+test('scan returns unsupported share and VM names instead of dropping them', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-names-'))
+	const sshCmds = []
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		sshCmds.push(remote)
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-virsh\n', stderr: ''}
+		if (remote.includes('/mnt/user/*')) {
+			return {
+				stdout: ['Media\t10', 'Música\t20', 'Фото\t30', 'Family Photos\t40', 'TV, Movies\t50', 'appdata\t60', "Bob's Files\t70", '\t80'].join('\n') + '\n',
+				stderr: '',
+			}
+		}
+		if (remote.startsWith('virsh list')) return {stdout: "Win11\nWindows 11 & Office\nCafé-PC\nTom's PC\n\n", stderr: ''}
+		if (remote.startsWith('virsh dumpxml')) return {stdout: `<domain type='kvm'><name>Win11</name><memory unit='KiB'>1048576</memory><vcpu>1</vcpu><devices><disk type='file' device='disk'><driver name='qemu' type='raw'/><source file='/mnt/user/domains/Win11/vdisk1.img'/><target dev='vda' bus='virtio'/></disk></devices></domain>`, stderr: ''}
+		if (remote.startsWith('virsh domstate')) return {stdout: 'shut off\n', stderr: ''}
+		if (remote.startsWith('stat -c %s')) return {stdout: '1024\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const u = createUnraid({dataDir: dir, files: {}, apps: {installed: () => false}, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		const s = await u.procedures['unraid.scan'].run()
+		assert.deepEqual(
+			s.shares.map((x) => [x.name, x.kind]),
+			[
+				['Media', 'share'],
+				['Family Photos', 'share'],
+				['appdata', 'appdata'],
+			],
+		)
+		assert.deepEqual(s.skippedShares, ['Música', 'Фото', 'TV, Movies', "Bob's Files"])
+		assert.deepEqual(
+			s.vms.map((v) => v.name),
+			['Win11'],
+		)
+		assert.deepEqual(s.skippedVms, ['Windows 11 & Office', 'Café-PC', "Tom's PC"])
+		const probed = sshCmds.filter((c) => c.startsWith('virsh dumpxml') || c.startsWith('virsh domstate')).join('\n')
+		assert.doesNotMatch(probed, /Office|Café|Tom/)
+		await assert.rejects(u.procedures['unraid.start'].run({shares: ['Música']}), /Choose something/)
+		await assert.rejects(u.procedures['unraid.start'].run({vms: ["Tom's PC"]}), /Choose something/)
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('directory rsync for shares and appdata preserves hard links', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-hardlink-'))
+	await mkdir(join(dir, 'tree', 'Home'), {recursive: true})
+	const rsyncCalls = []
+	const container = {
+		Name: '/file-app',
+		State: {Running: false},
+		Config: {Image: 'app:1', Env: [], Labels: {}},
+		HostConfig: {PortBindings: {'8080/tcp': [{HostPort: '8080'}]}},
+		Mounts: [
+			{Type: 'bind', Source: '/mnt/user/appdata/app/config.ini', Destination: '/config.ini', RW: true},
+			{Type: 'bind', Source: '/mnt/user/appdata/app/db', Destination: '/db', RW: true},
+		],
+	}
+	const vmXml = `<domain type='kvm'><name>Win11</name><memory unit='KiB'>1048576</memory><vcpu>1</vcpu><devices><disk type='file' device='disk'><driver name='qemu' type='raw'/><source file='/mnt/user/domains/Win11/vdisk1.img'/><target dev='vda' bus='virtio'/></disk></devices></domain>`
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync') {
+			rsyncCalls.push(argv)
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\nhas-virsh\n', stderr: ''}
+		if (remote.includes('/mnt/user/*')) return {stdout: 'Media\t100\nappdata\t200\ndomains\t300\n', stderr: ''}
+		if (remote.startsWith('docker ps')) return {stdout: 'file-app\n', stderr: ''}
+		if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([container]), stderr: ''}
+		if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/app/config.ini\t128\tf\n/mnt/user/appdata/app/db\t4096\td\n', stderr: ''}
+		if (remote.startsWith('virsh list')) return {stdout: 'Win11\n', stderr: ''}
+		if (remote.startsWith('virsh dumpxml')) return {stdout: vmXml, stderr: ''}
+		if (remote.startsWith('virsh domstate')) return {stdout: 'shut off\n', stderr: ''}
+		if (remote.startsWith('stat -c %s')) return {stdout: '1048576\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	const apps = {
+		importedStoreDir: join(dir, 'store'),
+		appDirFor: (id) => join(dir, 'apps', id),
+		installed: () => false,
+		installImported: async () => {},
+		importState: () => ({done: true, error: null}),
+	}
+	const machines = {importVm: async () => ({id: 'vm-1'}), importState: () => ({done: true, error: null, name: 'Win11'})}
+	const u = createUnraid({dataDir: dir, files, apps, machines, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		const started = await u.procedures['unraid.start'].run({shares: ['Media'], containers: ['unraid-file-app'], vms: ['Win11'], shareOnNetwork: false})
+		let st
+		for (let i = 0; i < 200; i++) {
+			st = await u.procedures['unraid.status'].run()
+			const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+			if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		assert.deepEqual(
+			st.job.items.map((item) => item.status),
+			['done', 'done', 'done'],
+		)
+		const shareCalls = rsyncCalls.filter((a) => a.some((x) => String(x).includes('/mnt/user/Media')))
+		const appdataDirCalls = rsyncCalls.filter((a) => a.some((x) => String(x).includes('/mnt/user/appdata/app/db')))
+		const fileCalls = rsyncCalls.filter((a) => a.some((x) => String(x).includes('config.ini')))
+		const diskCalls = rsyncCalls.filter((a) => a.some((x) => String(x).includes('vdisk1.img')))
+		assert.equal(shareCalls.length, 1)
+		assert.equal(appdataDirCalls.length, 1)
+		assert.equal(fileCalls.length, 1)
+		assert.equal(diskCalls.length, 1)
+		for (const argv of [...shareCalls, ...appdataDirCalls]) {
+			assert.ok(argv.includes('-H'), `directory rsync should keep hard links: ${argv.join(' ')}`)
+			assert.ok(argv.includes('-rlt'))
+			assert.ok(argv.includes('--no-inc-recursive'))
+		}
+		for (const argv of fileCalls) {
+			assert.equal(argv.includes('-H'), false)
+			assert.ok(argv.includes('-lt'))
+		}
+		for (const argv of diskCalls) {
+			assert.equal(argv.includes('-H'), false)
+			assert.ok(argv.includes('--sparse'))
+		}
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
