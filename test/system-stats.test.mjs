@@ -225,6 +225,110 @@ test('an in-flight reader after stop does not reject', async () => {
 	assert.equal(s.snapshot().cpu.totalUsed, 1)
 })
 
+test('a slow disk read is not started again while it is still running', async () => {
+	let disk = 0
+	let release
+	const pending = new Promise((r) => (release = r))
+	const s = createSampler({
+		now: () => 0,
+		read: {
+			cpu: async () => cpu(1),
+			disk: () => {
+				disk++
+				return pending
+			},
+		},
+	})
+	const ticks = [s.tick(), s.tick(), s.tick()]
+	assert.equal(disk, 1)
+	release({size: 1, totalUsed: 0, available: 1, system: 0, files: 0, apps: [], machines: [], measuring: false, drive: null})
+	await Promise.all(ticks)
+})
+
+test('a failing reading waits for its own interval', async () => {
+	let n = 0
+	let t = 0
+	const s = createSampler({
+		now: () => t,
+		intervals: {...DEFAULT_INTERVALS, temp: 5000},
+		read: {
+			temp: async () => {
+				n++
+				throw new Error('sensor')
+			},
+		},
+	})
+	await s.tick()
+	t = 1000
+	await s.tick()
+	assert.equal(n, 1)
+	t = 5000
+	await s.tick()
+	assert.equal(n, 2)
+})
+
+test('stepping the clock backward does not freeze the next samples', async () => {
+	let clock = 1_800_000_000_000
+	let n = 0
+	const s = createSampler({
+		now: () => clock,
+		read: {cpu: async () => cpu(++n)},
+	})
+	await s.get()
+	clock -= 3_600_000
+	for (let i = 0; i < 5; i++) {
+		clock += 1000
+		await s.tick()
+	}
+	assert.equal(n, 6)
+})
+
+test('a wall-clock step does not move the schedule', async () => {
+	let wall = 1_000_000
+	let m = 0
+	let n = 0
+	const s = createSampler({
+		now: () => wall,
+		mono: () => m,
+		intervals: {...DEFAULT_INTERVALS, cpu: 1000},
+		read: {cpu: async () => cpu(++n)},
+	})
+	await s.get()
+	const stamped = s.snapshot().sampledAt.cpu
+	wall -= 3_600_000
+	await s.tick()
+	assert.equal(n, 1)
+	assert.equal(s.snapshot().sampledAt.cpu, stamped)
+	m = 1000
+	wall += 1000
+	await s.tick()
+	assert.equal(n, 2)
+	assert.equal(s.snapshot().sampledAt.cpu, wall)
+})
+
+test('a slow gpu read is not started again while it is still running', async () => {
+	let n = 0
+	let t = 0
+	let release
+	const pending = new Promise((r) => (release = r))
+	const s = createSampler({
+		now: () => t,
+		intervals: {...DEFAULT_INTERVALS, gpu: 1000},
+		read: {
+			gpu: () => {
+				n++
+				return pending
+			},
+		},
+	})
+	const first = s.tick({waitGpu: false})
+	t = 1000
+	await s.tick({waitGpu: false})
+	assert.equal(n, 1)
+	release(gpu(1))
+	await first
+})
+
 test('a failing gpu sample after get() is not an unhandled rejection', async () => {
 	let rejectGpu
 	const gpuP = new Promise((_, rej) => (rejectGpu = rej))

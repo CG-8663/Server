@@ -2,11 +2,13 @@
 // (~/.local/share/Trash) that Omarchy's own file manager uses, so browser and desktop agree.
 // Every path is resolved and checked to stay inside those folders, symlinks included.
 import {createReadStream, createWriteStream} from 'node:fs'
-import {cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises'
+import {cp, link, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises'
 import {basename, dirname, extname, join, resolve as pathResolve, sep} from 'node:path'
 import {pipeline} from 'node:stream/promises'
 import {randomBytes} from 'node:crypto'
 
+import {readJsonState, writeAtomic} from './atomic.mjs'
+import {createKeyedLock} from './locks.mjs'
 import {RpcError} from './rpc.mjs'
 
 const MIME = {
@@ -43,6 +45,7 @@ export function createFiles({home, dataDir}) {
 	const trashFiles = join(trashRoot, 'files')
 	const trashInfo = join(trashRoot, 'info')
 	const favoritesFile = join(dataDir, 'favorites.json')
+	const lock = createKeyedLock()
 	let homeReal = null
 	const roots = async () => (homeReal ??= await realpath(home))
 	// Keys and the rest of omarchyd state live under dataDir, often inside Home. Never serve that tree.
@@ -171,6 +174,9 @@ export function createFiles({home, dataDir}) {
 		}
 	}
 	const validName = (n) => typeof n === 'string' && n.length > 0 && n.length <= 255 && !n.includes('/') && !n.includes('\0') && n !== '.' && n !== '..'
+	// Storage registers this so a renamed, moved, or trashed folder takes its network share with it.
+	// Copy leaves the share on the original. `to` is null when the folder was trashed.
+	let follow = async () => {}
 
 	async function createDirectory({path}) {
 		if (!validName(basename(path))) throw new RpcError('BAD_REQUEST', '[invalid-name]')
@@ -183,17 +189,27 @@ export function createFiles({home, dataDir}) {
 	}
 	async function renameItem({path, newName}) {
 		if (!validName(newName)) throw new RpcError('BAD_REQUEST', '[invalid-name]')
-		const {real} = await resolve(path)
+		const {real, base} = await resolve(path)
+		if (real === base) throw new RpcError('BAD_REQUEST', '[cannot-rename]')
 		const target = join(dirname(real), newName)
 		if (await lstat(target).then(() => true, () => false)) throw new RpcError('CONFLICT', '[already-exists]')
 		await rename(real, target)
-		return toVirtual(target)
+		const next = await toVirtual(target)
+		await follow(path, next)
+		return next
 	}
 	async function moveOrCopy({path, toDirectory, collision = 'keep-both'}, copy) {
-		const {real} = await resolve(path)
+		const {real, base} = await resolve(path)
+		if (real === base) throw new RpcError('BAD_REQUEST', '[cannot-move]')
 		const {real: dest} = await resolve(toDirectory)
 		if (dest === real || dest.startsWith(real + sep)) throw new RpcError('BAD_REQUEST', '[subdir-of-self]')
 		let target = join(dest, basename(real))
+		// Only replace of this same file returns early. A directory symlink to the parent still
+		// names that file once both paths are real; a hard link in another folder does not.
+		if (collision === 'replace') {
+			const targetReal = await realpath(target).catch(() => null)
+			if (targetReal !== null && targetReal === (await realpath(real))) return toVirtual(real)
+		}
 		if (await lstat(target).then(() => true, () => false)) {
 			if (collision === 'error') throw new RpcError('CONFLICT', '[already-exists]')
 			if (collision === 'replace') await rm(target, {recursive: true, force: true})
@@ -206,7 +222,9 @@ export function createFiles({home, dataDir}) {
 				await cp(real, target, {recursive: true, verbatimSymlinks: true})
 				await rm(real, {recursive: true, force: true})
 			})
-		return toVirtual(target)
+		const next = await toVirtual(target)
+		if (!copy) await follow(path, next)
+		return next
 	}
 
 	// Trash the freedesktop way: the item in Trash/files, a .trashinfo with where it came from.
@@ -223,13 +241,18 @@ export function createFiles({home, dataDir}) {
 			await cp(real, target, {recursive: true, verbatimSymlinks: true})
 			await rm(real, {recursive: true, force: true})
 		})
-		return toVirtual(target)
+		const next = await toVirtual(target)
+		await follow(path, null)
+		return next
 	}
 	async function restore({path}) {
 		const {real, top} = await resolve(path)
 		if (top !== 'Trash') throw new RpcError('BAD_REQUEST', '[not-in-trash]')
+		// Only a direct child of Trash/files has its own .trashinfo. A nested file can share a
+		// basename with another trashed item, and must not read or remove that item's info.
+		const ownInfo = dirname(real) === trashFiles
 		const infoFile = join(trashInfo, `${basename(real)}.trashinfo`)
-		const original = /^Path=(.*)$/m.exec(await readFile(infoFile, 'utf8').catch(() => ''))?.[1]
+		const original = ownInfo ? /^Path=(.*)$/m.exec(await readFile(infoFile, 'utf8').catch(() => ''))?.[1] : undefined
 		const h = await roots()
 		// The .trashinfo can be written by anything that can write to the Trash, so where it says the
 		// item came from is only trusted inside Home: normalised (no "../" tricks) and, once its folder
@@ -249,14 +272,14 @@ export function createFiles({home, dataDir}) {
 		await mkdir(dirname(dest), {recursive: true})
 		if (await lstat(dest).then(() => true, () => false)) dest = await freeName(dirname(dest), basename(dest))
 		await rename(real, dest)
-		await rm(infoFile, {force: true})
+		if (ownInfo) await rm(infoFile, {force: true})
 		return toVirtual(dest)
 	}
 	async function deleteItem({path}) {
 		const {real, top} = await resolve(path)
 		if (top !== 'Trash' || path === '/Trash') throw new RpcError('BAD_REQUEST', '[only-from-trash]')
 		await rm(real, {recursive: true, force: true})
-		await rm(join(trashInfo, `${basename(real)}.trashinfo`), {force: true})
+		if (dirname(real) === trashFiles) await rm(join(trashInfo, `${basename(real)}.trashinfo`), {force: true})
 		return true
 	}
 	async function emptyTrash() {
@@ -302,18 +325,33 @@ export function createFiles({home, dataDir}) {
 		return Promise.all(found.slice(0, 30).map(async ({r, s}) => entry(await toVirtual(r), r, s)))
 	}
 
-	const readFavorites = async () => JSON.parse(await readFile(favoritesFile, 'utf8').catch(() => '[]'))
+	const validFavorites = (value) => Array.isArray(value) && value.every((p) => typeof p === 'string')
+	let favoritesDamagedLogged = false
+	async function readFavoritesState() {
+		const res = await readJsonState(favoritesFile, favoritesDamagedLogged ? {validate: validFavorites, log: null} : {validate: validFavorites})
+		if (res.damaged) {
+			favoritesDamagedLogged = true
+			return {list: [], damaged: true}
+		}
+		favoritesDamagedLogged = false
+		return {list: res.status === 'ok' ? res.value : [], damaged: false}
+	}
 	async function favorites() {
 		const keep = []
-		for (const p of await readFavorites()) if (await resolve(p).then(() => true, () => false)) keep.push(p)
+		const {list} = await readFavoritesState()
+		for (const p of list) if (await resolve(p).then(() => true, () => false)) keep.push(p)
 		return keep
 	}
 	async function setFavorite(path, on) {
 		await resolve(path)
-		const set = new Set(await readFavorites())
-		on ? set.add(path) : set.delete(path)
-		await writeFile(favoritesFile, JSON.stringify([...set]), {mode: 0o600})
-		return true
+		return lock('favorites', async () => {
+			const {list, damaged} = await readFavoritesState()
+			if (damaged) throw new RpcError('PRECONDITION_FAILED', 'favorites.json is damaged and was left unchanged. Repair or remove it before saving.')
+			const set = new Set(list)
+			on ? set.add(path) : set.delete(path)
+			await writeAtomic(favoritesFile, JSON.stringify([...set]))
+			return true
+		})
 	}
 
 	// ---- HTTP: view, download, upload -------------------------------------------------------
@@ -355,6 +393,44 @@ export function createFiles({home, dataDir}) {
 		res.writeHead(200, {...headers, 'content-length': String(st.size)})
 		return pipeline(createReadStream(real), res).catch(() => res.destroy())
 	}
+	async function linkOrRename(tmp, candidate) {
+		try {
+			await link(tmp, candidate)
+			await rm(tmp, {force: true}).catch(() => {})
+			return true
+		} catch (e) {
+			if (e.code === 'EEXIST') return false
+			if (e.code === 'EPERM' || e.code === 'ENOTSUP' || e.code === 'EOPNOTSUPP') {
+				if (await lstat(candidate).then(() => true, () => false)) return false
+				await rename(tmp, candidate)
+				return true
+			}
+			throw e
+		}
+	}
+	function claimUpload(tmp, real, collision) {
+		const dir = dirname(real)
+		const name = basename(real)
+		return lock(`upload:${dir}`, async () => {
+			if (collision === 'replace') {
+				const cur = await lstat(real).catch(() => null)
+				if (cur?.isDirectory()) throw new RpcError('CONFLICT', '[is-a-directory]')
+				await rename(tmp, real)
+				return real
+			}
+			if (collision === 'error') {
+				if (await linkOrRename(tmp, real)) return real
+				const cur = await lstat(real).catch(() => null)
+				throw new RpcError('CONFLICT', cur?.isDirectory() ? '[is-a-directory]' : '[already-exists]')
+			}
+			const ext = extname(name)
+			const stem = ext ? name.slice(0, -ext.length) : name
+			for (let n = 1; ; n++) {
+				const candidate = join(dir, n === 1 ? name : `${stem} (${n})${ext}`)
+				if (await linkOrRename(tmp, candidate)) return candidate
+			}
+		})
+	}
 	async function upload(req, res, url) {
 		const path = url.searchParams.get('path')
 		const collision = url.searchParams.get('collision') ?? 'keep-both'
@@ -368,14 +444,16 @@ export function createFiles({home, dataDir}) {
 		const exists = await lstat(real).then((s) => s, () => null)
 		if (exists?.isDirectory()) return endJson(res, 409, {error: '[is-a-directory]'})
 		if (exists && collision === 'error') return endJson(res, 409, {error: '[already-exists]'})
-		const target = exists && collision !== 'replace' ? await freeName(dirname(real), basename(real)) : real
-		// Write to a temporary file first, so a broken upload never leaves half a file behind.
-		const tmp = join(dirname(target), `.${basename(target)}.${randomBytes(6).toString('hex')}.uploading`)
+		// Write to a temporary file first, then claim the final name atomically so overlapping
+		// uploads never overwrite each other.
+		const tmp = join(dirname(real), `.${basename(real)}.${randomBytes(6).toString('hex')}.uploading`)
+		let target
 		try {
 			await pipeline(req, createWriteStream(tmp, {flags: 'wx', mode: 0o644}))
-			await rename(tmp, target)
-		} catch {
-			await rm(tmp, {force: true})
+			target = await claimUpload(tmp, real, collision)
+		} catch (e) {
+			await rm(tmp, {force: true}).catch(() => {})
+			if (e instanceof RpcError && e.code === 'CONFLICT') return endJson(res, 409, {error: e.message})
 			return endJson(res, 500, {error: 'Upload failed'})
 		}
 		return endJson(res, 200, {path: await toVirtual(target)})
@@ -403,6 +481,9 @@ export function createFiles({home, dataDir}) {
 		serveFile,
 		upload,
 		resolve,
+		followShares(fn) {
+			if (typeof fn === 'function') follow = fn
+		},
 	}
 }
 

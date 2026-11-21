@@ -11,14 +11,16 @@ import {Icon} from '../icons'
 import {AppIcon, Sheet, SheetHeader} from '../ui'
 import {useDesktop} from '../desktop/Desktop'
 import {setAssistantActivity, useAssistantAnimationState} from '../assistantActivity'
-import {liveBubbleMark} from '../assistantLive'
+import {appendLiveText, canDecideAssistantAction, canSendAssistantMessage, canStartAssistantFollow, finishLiveItems, insertLiveAction, isApprovalRequestError, liveBubbleMark, resolveFailedDecision, startLiveTurn} from '../assistantLive'
 import {
 	abortAssistantTurn,
+	assistantEpoch,
 	assistantTurn,
 	beginAssistantTurn,
 	closeAssistantView,
 	finishAssistantTurn,
 	openAssistantView,
+	registerAssistantAbort,
 	setTurnActivity,
 	setTurnConversationId,
 	setTurnError,
@@ -155,13 +157,16 @@ function WallpaperPicker({
 
 function ActionCard({
 	action,
+	busy = false,
 	onDecide,
 }: {
 	action: AssistantAction
+	busy?: boolean
 	onDecide: (actionId: string, path: 'assistant.approve' | 'assistant.reject', extra?: {id?: string; password?: string}) => void
 }) {
 	const running = action.status === 'running'
 	const pending = action.status === 'pending' || running
+	const canDecide = canDecideAssistantAction({status: action.status, streaming: busy})
 	const status = statusText(action)
 	const wallpaper = action.toolName === 'omarchy_setBackground'
 	const [chosen, setChosen] = useState(action.picker?.selected ?? '')
@@ -181,10 +186,10 @@ function ActionCard({
 			) : null}
 			{pending ? (
 				<div className="assistant-actions">
-					<button type="button" className="btn primary" disabled={running || (wallpaper && !chosen) || (vm && !password)} onClick={() => onDecide(action.id, 'assistant.approve', wallpaper ? {id: chosen} : vm ? {password} : undefined)}>
+					<button type="button" className="btn primary" disabled={!canDecide || (wallpaper && !chosen) || (vm && !password)} onClick={() => onDecide(action.id, 'assistant.approve', wallpaper ? {id: chosen} : vm ? {password} : undefined)}>
 						Approve
 					</button>
-					<button type="button" className="btn" disabled={running} onClick={() => onDecide(action.id, 'assistant.reject')}>
+					<button type="button" className="btn" disabled={!canDecide} onClick={() => onDecide(action.id, 'assistant.reject')}>
 						Reject
 					</button>
 				</div>
@@ -253,7 +258,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		setAssistantActivity({phase, pending: cards.filter((c) => c.action.status === 'pending').length, composing, ...(successAt ? {successAt} : {})})
 	}, [items, activity, turnError, composing, streaming])
 	useEffect(() => {
-		openAssistantView()
+		if (active) openAssistantView()
 		return () => closeAssistantView()
 	}, [])
 	const faceState = useAssistantAnimationState({reactions: look.reactions})
@@ -339,17 +344,24 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		el.style.height = `${Math.min(el.scrollHeight, 140)}px`
 	}
 
-	const runStream = async (body: AssistantStreamBody, ac: AbortController, aid: string) => {
+	const runStream = async (body: AssistantStreamBody, ac: AbortController, aid: string, since: number) => {
 		let aborted = false
 		let failed = false
 		let sawAction = false
+		let turn = startLiveTurn(aid)
+		const stale = () => assistantEpoch() !== since
 		try {
 			await streamAssistant(body, (e) => {
-				if (ac.signal.aborted) return
+				if (ac.signal.aborted || stale()) return
 				if (e.event === 'text') {
 					setTurnActivity(null)
-					setTurnItems((bs) => bs?.map((b) => (b.kind === 'text' && b.id === aid ? {...b, content: b.content + e.data.text} : b)) ?? bs)
+					setTurnItems((bs) => {
+						const step = appendLiveText(bs, turn, e.data.text)
+						turn = step.turn
+						return step.items
+					})
 				} else if (e.event === 'tool') {
+					turn = {...turn, afterTool: true}
 					const name = prettyTool(e.data.name)
 					setTurnActivity(e.data.state === 'error' ? `Couldn’t check ${name}` : `Checked ${name}`)
 				} else if (e.event === 'action') {
@@ -357,21 +369,9 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 					const action = cardAction(e.data)
 					if (!action.id) return
 					setTurnActivity(null)
-					setTurnItems((bs) => {
-						if (!bs) return bs
-						const card: AssistantItem = {id: `card-${action.id}`, kind: 'card', action}
-						const idx = bs.findIndex((b) => b.kind === 'card' && b.action.id === action.id)
-						if (idx >= 0) return bs.map((b, i) => (i === idx ? card : b))
-						const live = bs.findIndex((b) => b.kind === 'text' && b.id === aid && !b.content)
-						if (live >= 0) {
-							const next = bs.slice()
-							next.splice(live, 0, card)
-							return next
-						}
-						return [...bs, card]
-					})
+					setTurnItems((bs) => insertLiveAction(bs, turn.liveId, action))
 				} else if (e.event === 'done') {
-					setTurnConversationId(e.data.conversationId)
+					setTurnConversationId(e.data.conversationId, since)
 				} else if (e.event === 'error') {
 					failed = true
 					setTurnError(e.data.message)
@@ -379,20 +379,16 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 			}, ac.signal)
 		} catch (err) {
 			aborted = ac.signal.aborted || (err instanceof Error && err.name === 'AbortError')
+			if (stale()) return
 			if (!aborted) {
 				failed = true
 				setTurnError(err instanceof Error ? err.message : 'The assistant did not answer')
 			}
 		} finally {
-			setTurnItems((bs) => {
-				if (!bs) return bs
-				return bs.flatMap((b) => {
-					if (b.kind !== 'text' || b.id !== aid) return [b]
-					if (!b.content && (aborted || failed || sawAction)) return []
-					return [{...b, streaming: false}]
-				})
-			})
-			finishAssistantTurn(ac)
+			if (stale()) return
+			setTurnItems((bs) => finishLiveItems(bs, turn.liveId, aborted || failed || sawAction))
+			finishAssistantTurn(ac, since)
+			if (canStartAssistantFollow({pumping: pumping.current, decidingCount: deciding.current.size, followQueued: followQueued.current, streaming: assistantTurn().streaming})) void pumpFollow()
 		}
 	}
 
@@ -400,6 +396,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		haptic(6)
 		abortAssistantTurn()
 		sendGen++
+		followQueued.current = false
 		setTurnConversationId(undefined)
 		setTurnItems([])
 		setTurnError(null)
@@ -408,23 +405,25 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 	}
 
 	const send = async () => {
+		if (!canSendAssistantMessage({draft, itemsLoaded: items !== null, streaming: assistantTurn().streaming, decidingCount: deciding.current.size})) return
 		const text = draft.trim()
-		if (!text || items === null || deciding.current.size > 0) return
 		const token = ++sendGen
+		const since = assistantEpoch()
 		const hadTurn = assistantTurn().streaming
 		let conversationId = assistantTurn().conversationId
 		// The id arrives on `done`. A second send before that stays on the thread just created.
 		if (hadTurn && !conversationId) {
 			const list = await query<AssistantConversationSummary[]>('assistant.conversations').catch(() => null)
+			if (assistantEpoch() !== since || sendGen !== token || deciding.current.size > 0) return
 			const found = list?.[0]?.id
 			if (found) {
 				conversationId = found
-				setTurnConversationId(found)
+				setTurnConversationId(found, since)
 			}
 		}
-		if (sendGen !== token || deciding.current.size > 0) return
+		if (assistantEpoch() !== since || sendGen !== token || deciding.current.size > 0) return
 		const ac = new AbortController()
-		beginAssistantTurn(ac)
+		beginAssistantTurn(ac, since)
 		const id = ++liveSeq
 		const aid = `live-${id}`
 		setDraft('')
@@ -433,16 +432,17 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		setTurnActivity(null)
 		stick.current = true
 		setTurnItems((bs) => [...(bs ?? []), {id: `user-${id}`, kind: 'text', role: 'user', content: text}, {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
-		await runStream(conversationId ? {conversationId, message: text} : {message: text}, ac, aid)
+		await runStream(conversationId ? {conversationId, message: text} : {message: text}, ac, aid, since)
 	}
 
 	const pumpFollow = async () => {
-		if (pumping.current || deciding.current.size > 0 || !followQueued.current) return
+		if (!canStartAssistantFollow({pumping: pumping.current, decidingCount: deciding.current.size, followQueued: followQueued.current, streaming: assistantTurn().streaming})) return
+		const since = assistantEpoch()
 		pumping.current = true
 		followQueued.current = false
 		const conversationId = assistantTurn().conversationId
 		const ac = new AbortController()
-		beginAssistantTurn(ac)
+		beginAssistantTurn(ac, since)
 		const id = ++liveSeq
 		const aid = `live-${id}`
 		stick.current = true
@@ -450,16 +450,18 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		setTurnActivity(null)
 		if (conversationId) setTurnItems((bs) => [...(bs ?? []), {id: aid, kind: 'text', role: 'assistant', content: '', streaming: true}])
 		try {
-			if (conversationId) await runStream({conversationId, continue: true}, ac, aid)
-			else finishAssistantTurn(ac)
+			if (conversationId) await runStream({conversationId, continue: true}, ac, aid, since)
+			else finishAssistantTurn(ac, since)
 		} finally {
 			pumping.current = false
-			if (followQueued.current && deciding.current.size === 0) void pumpFollow()
+			if (assistantEpoch() !== since) return
+			if (canStartAssistantFollow({pumping: pumping.current, decidingCount: deciding.current.size, followQueued: followQueued.current, streaming: assistantTurn().streaming})) void pumpFollow()
 		}
 	}
 
 	const decide = async (actionId: string, path: 'assistant.approve' | 'assistant.reject', extra?: {id?: string; password?: string} & ReviewInstallInput) => {
 		if (deciding.current.has(actionId)) return
+		const since = assistantEpoch()
 		const conversationId = assistantTurn().conversationId
 		if (!conversationId) {
 			setTurnError('That chat isn’t here')
@@ -468,12 +470,11 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 		const cur = assistantTurn().items?.find((b) => b.kind === 'card' && b.action.id === actionId)
 		if (!cur || cur.kind !== 'card' || cur.action.status !== 'pending') return
 		const own = new AbortController()
+		const dropAbort = registerAssistantAbort(own)
 		decisionAbort.current.set(actionId, own)
 		deciding.current.add(actionId)
 		noteDeciding()
-		// Drop a send that is still resolving the thread id. The follow-up does not use this token.
-		sendGen++
-		abortAssistantTurn()
+		// Never abort a running reply here: the server finishes it anyway and holds the chat lock.
 		haptic(6)
 		setTurnError(null)
 		setTurnActivity(null)
@@ -490,7 +491,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 				...(extra?.folders ? {folders: extra.folders} : {}),
 				...(extra?.folderAccess ? {folderAccess: extra.folderAccess} : {}),
 			})
-			if (own.signal.aborted) return
+			if (assistantEpoch() !== since || own.signal.aborted) return
 			setTurnItems((bs) =>
 				bs?.map((b) => {
 					if (b.kind !== 'card' || b.action.id !== actionId) return b
@@ -520,17 +521,29 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 				if (theme) reloadTheme = theme
 			}
 		} catch (err) {
-			if (own.signal.aborted) return
-			if (err instanceof ApiError) {
-				setTurnItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: cardAction({...b.action, id: actionId, status: 'error', error: err.message})} : b)) ?? bs)
-			} else {
-				setTurnItems((bs) => bs?.map((b) => (b.kind === 'card' && b.action.id === actionId && b.action.status === 'running' ? {...b, action: {...b.action, status: 'pending'}} : b)) ?? bs)
-				setTurnError(err instanceof Error ? err.message : 'That step didn’t finish')
+			if (assistantEpoch() !== since || own.signal.aborted) return
+			const info = err instanceof ApiError
+				? {isApiError: true, code: err.code, status: err.status, message: err.message}
+				: {isApiError: false, message: err instanceof Error ? err.message : 'That step didn’t finish'}
+			let serverAction: AssistantAction | null = null
+			if ((isApprovalRequestError(info) || info.code === 'CONFLICT') && info.code !== 'UNAUTHORIZED') {
+				const conv = await query<AssistantConversation>('assistant.getConversation', {id: conversationId}).catch(() => null)
+				if (assistantEpoch() !== since || own.signal.aborted) return
+				const found = conv?.actions?.find((a) => a.id === actionId)
+				if (found) serverAction = cardAction(found)
 			}
+			const resolved = resolveFailedDecision({...cur.action, status: 'running'}, info, serverAction)
+			setTurnItems((bs) =>
+				bs?.map((b) => (b.kind === 'card' && b.action.id === actionId ? {...b, action: cardAction({...b.action, ...resolved.action, id: actionId})} : b)) ?? bs,
+			)
+			if (resolved.banner) setTurnError(resolved.banner)
+			if (resolved.follow) follow = true
 		} finally {
+			dropAbort()
 			deciding.current.delete(actionId)
 			decisionAbort.current.delete(actionId)
 			noteDeciding()
+			if (assistantEpoch() !== since) return
 			if (follow) followQueued.current = true
 			if (followQueued.current && deciding.current.size === 0) {
 				if (reloadAfterRestart) {
@@ -538,6 +551,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 					setTurnActivity('Waiting for the server to come back…')
 					void (async () => {
 						await waitForServer()
+						if (assistantEpoch() !== since) return
 						location.reload()
 					})()
 				} else if (reloadTheme != null) {
@@ -546,7 +560,9 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 						try {
 							await pumpFollow()
 						} finally {
+							if (assistantEpoch() !== since) return
 							await waitForDesktopTheme(reloadTheme)
+							if (assistantEpoch() !== since) return
 							location.reload()
 						}
 					})()
@@ -645,7 +661,8 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 							<div className="assistant-thread-end">
 								{items.map((b) =>
 									b.kind === 'card' ? (
-										<ActionCard key={b.id} action={b.action} onDecide={(id, path, extra) => {
+										<ActionCard key={b.id} action={b.action} busy={streaming} onDecide={(id, path, extra) => {
+											if (assistantTurn().streaming) return
 											const cur = assistantTurn().items?.find((item) => item.kind === 'card' && item.action.id === id)
 											if (path === 'assistant.approve' && !extra && cur?.kind === 'card' && cur.action.toolName === 'apps_install' && cur.action.appId) {
 												void maybeReview(cur.action)
@@ -706,7 +723,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 								}
 							}}
 						/>
-						<button type="submit" className="btn primary small" disabled={decidingCount > 0 || !draft.trim()}>
+						<button type="submit" className="btn primary small" disabled={!canSendAssistantMessage({draft, itemsLoaded: items !== null, streaming, decidingCount})}>
 							Send
 						</button>
 					</form>

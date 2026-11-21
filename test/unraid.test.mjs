@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import {mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
+import {chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
-import {test} from 'node:test'
+import {mock, test} from 'node:test'
 import YAML from 'yaml'
 
+import {createMachines} from '../omarchyd/machines.mjs'
 import {containerPlan, createUnraid, rsyncProgress, slug, sq, unraidPath, vmPlan, webuiPort} from '../omarchyd/unraid.mjs'
 
 const plex = {
@@ -102,6 +103,253 @@ test('what can’t come across is left out and said', () => {
 	for (const what of [/privileged/, /NET_ADMIN/, /below 1024 \(53\)/, /\/boot\/config/]) assert.ok(p.notes.some((n) => what.test(n)), String(what))
 })
 
+test('an HTTPS WebUI label sets web.https on the imported app', () => {
+	assert.deepEqual(webuiPort('https://[IP]:[PORT:8443]/'), {port: 8443, path: '', https: true})
+	assert.deepEqual(webuiPort('HTTPS://[IP]:[PORT:8443]/admin'), {port: 8443, path: '/admin', https: true})
+	assert.deepEqual(webuiPort('http://[IP]:[PORT:8096]/web'), {port: 8096, path: '/web'})
+	const p = containerPlan({
+		Name: '/vaultwarden',
+		State: {Running: true},
+		Config: {Image: 'vaultwarden/server:latest', Labels: {'net.unraid.docker.webui': 'https://[IP]:[PORT:8443]/'}},
+		HostConfig: {PortBindings: {'8443/tcp': [{HostPort: '8443'}]}},
+	})
+	const app = YAML.parse(p.files['omarchy-app.yml'])
+	assert.deepEqual(app.web, {service: 'vaultwarden', port: 8443, https: true})
+})
+
+test('dollar signs in container commands and mount paths are escaped for Compose', async () => {
+	const container = {
+		Name: '/Dollar-App',
+		State: {Running: false},
+		Config: {Image: 'app:1', Env: [], Cmd: ['sh', '-c', 'echo $HOME && exec app --token=ab$cd'], User: 'user$1'},
+		HostConfig: {PortBindings: {'8080/tcp': [{HostPort: '8080'}]}},
+		Mounts: [
+			{Type: 'bind', Source: '/mnt/user/appdata/my$app', Destination: '/config/$dir', RW: true},
+			{Type: 'bind', Source: '/mnt/user/Media/sub$1', Destination: '/media/$out', RW: true},
+			{Type: 'bind', Source: '/etc/localtime', Destination: '/etc/$tz', RW: false},
+			{Type: 'bind', Source: '/var/run/docker.sock', Destination: '/var/run/$sock', RW: true},
+		],
+	}
+	const p = containerPlan(container)
+	const svc = YAML.parse(p.files['docker-compose.yml']).services['dollar-app']
+	assert.deepEqual(svc.command, ['sh', '-c', 'echo $$HOME && exec app --token=ab$$cd'])
+	assert.equal(svc.user, 'user$$1')
+	assert.deepEqual(svc.volumes, [
+		'${APP_DATA_DIR:-.}/data/my$$app:/config/$$dir',
+		'${APP_DATA_DIR:-.}/data/shares/media/sub$$1:/media/$$out',
+		'/etc/localtime:/etc/$$tz:ro',
+		'/var/run/docker.sock:/var/run/$$sock',
+	])
+	assert.deepEqual(p.copies, [{from: '/mnt/user/appdata/my$app', to: 'my$app'}])
+
+	const withShare = containerPlan(container, {shareDest: () => '/home/u/Pools/Data$1/Media'})
+	const withShareSvc = YAML.parse(withShare.files['docker-compose.yml']).services['dollar-app']
+	assert.ok(withShareSvc.volumes.includes('/home/u/Pools/Data$$1/Media/sub$$1:/media/$$out'))
+
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-dollar-'))
+	await mkdir(join(dir, 'tree', 'Home', 'My$Pool', 'Unraid'), {recursive: true})
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+		if (remote.includes('/mnt/user')) return {stdout: 'Media\t100\n', stderr: ''}
+		if (remote.startsWith('docker ps')) return {stdout: 'Dollar-App\n', stderr: ''}
+		if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([container]), stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	const apps = {
+		importedStoreDir: join(dir, 'store'),
+		appDirFor: (id) => join(dir, 'apps', id),
+		installed: () => false,
+		installImported: async () => {},
+		importState: () => ({done: true, error: null}),
+	}
+	const u = createUnraid({dataDir: dir, files, apps, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		const started = await u.procedures['unraid.start'].run({shares: ['Media'], containers: ['unraid-dollar-app'], destination: '/Home/My$Pool/Unraid'})
+		let st
+		for (let i = 0; i < 200; i++) {
+			st = await u.procedures['unraid.status'].run()
+			const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+			if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		assert.ok(st?.job?.endedAt)
+		assert.deepEqual(st.job.items.map((x) => [x.key, x.status]), [['Media', 'done'], ['unraid-dollar-app', 'done']])
+		const written = YAML.parse(await readFile(join(dir, 'store', 'unraid-dollar-app', 'docker-compose.yml'), 'utf8'))
+		assert.ok(written.services['dollar-app'].volumes.includes(`${join(dir, 'tree/Home/My$$Pool/Unraid/Media/sub$$1')}:/media/$$out`))
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('single-file appdata mounts are copied without a trailing slash', async () => {
+	const container = {
+		Name: '/file-app',
+		State: {Running: true},
+		Config: {Image: 'app:1', Env: [], Labels: {}},
+		HostConfig: {PortBindings: {'8080/tcp': [{HostPort: '8080'}]}},
+		Mounts: [
+			{Type: 'bind', Source: '/mnt/user/appdata/app/config.ini', Destination: '/config.ini', RW: true},
+			{Type: 'bind', Source: '/mnt/user/appdata/app/db', Destination: '/db', RW: true},
+		],
+	}
+	const p = containerPlan(container, {appdataFiles: new Set(['/mnt/user/appdata/app/config.ini'])})
+	assert.deepEqual(p.copies, [
+		{from: '/mnt/user/appdata/app/config.ini', to: 'app/config.ini', file: true},
+		{from: '/mnt/user/appdata/app/db', to: 'app/db'},
+	])
+	assert.ok(YAML.parse(p.files['docker-compose.yml']).services['file-app'].volumes.includes('${APP_DATA_DIR:-.}/data/app/config.ini:/config.ini'))
+
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-file-'))
+	const rsyncCalls = []
+	const sshCmds = []
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync') {
+			rsyncCalls.push(argv)
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		sshCmds.push(remote)
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+		if (remote.includes('/mnt/user/*')) return {stdout: 'appdata\t4224\n', stderr: ''}
+		if (remote.startsWith('docker ps')) return {stdout: 'file-app\n', stderr: ''}
+		if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([container]), stderr: ''}
+		if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/app/config.ini\t128\tf\n/mnt/user/appdata/app/db\t4096\td\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const apps = {
+		importedStoreDir: join(dir, 'store'),
+		appDirFor: (id) => join(dir, 'apps', id),
+		installed: () => false,
+		installImported: async () => {},
+		importState: () => ({done: true, error: null}),
+	}
+	const u = createUnraid({dataDir: dir, files: {}, apps, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		const scan = await u.procedures['unraid.scan'].run()
+		assert.equal(scan.containers[0].size, 4224)
+		assert.ok(sshCmds.some((c) => c.includes('[ -f "$p" ]')))
+		const started = await u.procedures['unraid.start'].run({containers: ['unraid-file-app']})
+		let st
+		for (let i = 0; i < 200; i++) {
+			st = await u.procedures['unraid.status'].run()
+			const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+			if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		assert.equal(st.job.items[0].status, 'done')
+		const fileCalls = rsyncCalls.filter((a) => a.some((x) => x.includes('config.ini')))
+		const dirCalls = rsyncCalls.filter((a) => a.some((x) => x.includes('/app/db')))
+		assert.equal(fileCalls.length, 2)
+		assert.equal(dirCalls.length, 2)
+		const expectedFileDest = join(dir, 'apps/unraid-file-app/data/app/config.ini')
+		for (const argv of fileCalls) {
+			assert.ok(argv.includes('-lt'))
+			assert.ok(!argv.includes('-rlt'))
+			assert.equal(argv[argv.length - 2], 'tower.local:/mnt/user/appdata/app/config.ini')
+			assert.equal(argv[argv.length - 1], expectedFileDest)
+		}
+		for (const argv of dirCalls) {
+			assert.ok(argv.includes('-rlt'))
+			assert.equal(argv[argv.length - 2], 'tower.local:/mnt/user/appdata/app/db/')
+			assert.equal(argv[argv.length - 1], `${join(dir, 'apps/unraid-file-app/data/app/db')}/`)
+		}
+		assert.equal((await stat(join(dir, 'apps/unraid-file-app/data/app'))).isDirectory(), true)
+		await assert.rejects(stat(expectedFileDest), {code: 'ENOENT'})
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('rsync exit code 24 (vanished files) finishes the pass while exit 23 fails it', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-rsync24-'))
+	await mkdir(join(dir, 'tree', 'Home'), {recursive: true})
+	const plexContainer = {...plex, Name: '/plex24', Id: 'p24'}
+	const fail23Container = {...plex, Name: '/plex23', Id: 'p23'}
+	let containerPass = 0
+	const installed = []
+	const warned = []
+	const origWarn = console.warn
+	console.warn = (...a) => warned.push(a.map(String).join(' '))
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync') {
+			const src = argv[argv.length - 2]
+			if (src.includes('/mnt/user/Media')) throw Object.assign(new Error('rsync: some files vanished before they could be transferred (code 24)'), {code: 24})
+			if (src.includes('/mnt/user/appdata/plex')) {
+				containerPass++
+				if (containerPass === 1) throw Object.assign(new Error('rsync: some files vanished before they could be transferred (code 24)'), {code: 24})
+				if (containerPass === 3) throw Object.assign(new Error('rsync: rsync error: some files/attrs were not transferred (code 23)'), {code: 23})
+			}
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+		if (remote.includes('/mnt/user/*')) return {stdout: 'Media\t100\n', stderr: ''}
+		if (remote.startsWith('docker ps')) return {stdout: 'plex24\nplex23\n', stderr: ''}
+		if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([plexContainer, fail23Container]), stderr: ''}
+		if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/plex\t100\td\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	const apps = {
+		importedStoreDir: join(dir, 'store'),
+		appDirFor: (id) => join(dir, 'apps', id),
+		installed: () => false,
+		installImported: async (id) => installed.push(id),
+		importState: () => ({done: true, error: null}),
+	}
+	const u = createUnraid({dataDir: dir, files, apps, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		const started = await u.procedures['unraid.start'].run({shares: ['Media'], containers: ['unraid-plex24', 'unraid-plex23']})
+		let st
+		for (let i = 0; i < 200; i++) {
+			st = await u.procedures['unraid.status'].run()
+			const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+			if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		const byKey = Object.fromEntries(st.job.items.map((x) => [x.key, x]))
+		assert.equal(byKey.Media.status, 'done')
+		assert.equal(byKey['unraid-plex24'].status, 'done')
+		assert.equal(byKey['unraid-plex23'].status, 'failed')
+		assert.match(byKey['unraid-plex23'].error, /didn’t finish/)
+		assert.deepEqual(installed, ['unraid-plex24'])
+		assert.ok(containerPass >= 3)
+		assert.ok(warned.some((w) => w.includes('24')))
+	} finally {
+		console.warn = origWarn
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('imported container version ignores registry ports and image digests', () => {
+	const digest = 'a'.repeat(64)
+	const cases = [
+		['nginx:1.25', '1.25'],
+		['registry.local:5000/team/app:1.2', '1.2'],
+		['registry.local:5000/team/app', 'latest'],
+		[`nginx@sha256:${digest}`, 'latest'],
+		[`registry.local:5000/team/app:1.2@sha256:${digest}`, '1.2'],
+		['nginx', 'latest'],
+	]
+	for (const [Image, expected] of cases) {
+		const p = containerPlan({Name: '/app', Config: {Image}})
+		assert.equal(YAML.parse(p.files['omarchy-app.yml']).version, expected, Image)
+	}
+})
+
 test('a VM on Unraid: its settings and disks', () => {
 	const xml = `<domain type='kvm'><name>Win11</name><memory unit='KiB'>8388608</memory><vcpu placement='static'>4</vcpu>
 <os><loader readonly='yes' type='pflash'>/usr/share/qemu/ovmf-x64/OVMF_CODE-pure-efi.fd</loader><type arch='x86_64' machine='pc-q35-7.2'>hvm</type></os>
@@ -121,6 +369,25 @@ test('a VM on Unraid: its settings and disks', () => {
 	assert.ok(v.notes.some((n) => /graphics card/.test(n)))
 	assert.equal(vmPlan('<domain><name>x</name><os><type machine="pc-i440fx-7.1">hvm</type></os></domain>').machineType, 'pc')
 	assert.deepEqual(vmPlan('<domain><name>x</name></domain>').problems, ['It has no disk image to copy'])
+})
+
+test('a VM dump unescapes XML entities in its name and disk paths', () => {
+	const xml = `<domain type='kvm'><name>Games &amp; Media</name><memory unit='KiB'>4194304</memory><vcpu>2</vcpu>
+<devices>
+<disk type='file' device='disk'><driver name='qemu' type='raw'/><source file='/mnt/user/Games &amp; Stuff/Bob&apos;s PC/vdisk1.img'/><target dev='hdc' bus='virtio'/></disk>
+<disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='/mnt/user/Data &#x26; Logs/&#39;keep&amp;apos;&#39;/vdisk2.qcow2'/><target dev='hdd' bus='sata'/></disk>
+<disk type='file' device='disk'><driver name='qemu' type='raw'/><source file="/mnt/user/Bob's PC/vdisk3.img"/><target dev='hde' bus='sata'/></disk>
+</devices></domain>`
+	const v = vmPlan(xml, 'shut off')
+	assert.equal(v.name, 'Games & Media')
+	assert.deepEqual(
+		v.disks.map((d) => d.file),
+		[
+			"/mnt/user/Games & Stuff/Bob's PC/vdisk1.img",
+			"/mnt/user/Data & Logs/'keep&apos;'/vdisk2.qcow2",
+			"/mnt/user/Bob's PC/vdisk3.img",
+		],
+	)
 })
 
 test('rsync progress', () => {
@@ -147,6 +414,696 @@ test('bad details never reach ssh', async () => {
 	} finally {
 		u.close()
 		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('forgetHost removes non-default port entries and host-key errors match the button label', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-forget-'))
+	const keygenCalls = []
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'ssh-keygen') {
+			keygenCalls.push(argv)
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh') throw new Error('ssh: Host key verification failed.')
+		return {stdout: '', stderr: ''}
+	}
+	const u = createUnraid({dataDir: dir, files: {}, apps: {}, machines: {}, storage: null, run})
+	try {
+		const knownHosts = join(dir, 'unraid', 'known_hosts')
+		await assert.rejects(u.procedures['unraid.connect'].run({host: 'tower.local', password: 'x'}), /Forget this server’s key/)
+		await assert.rejects(u.procedures['unraid.forgetHost'].run({host: 'tower.local', port: 70000}), /Bad host/)
+		await assert.rejects(u.procedures['unraid.forgetHost'].run({host: 'bad; host'}), /Bad host/)
+		assert.equal(keygenCalls.length, 0)
+
+		await u.procedures['unraid.forgetHost'].run({host: 'tower.local'})
+		await u.procedures['unraid.forgetHost'].run({host: 'tower.local:2222'})
+		await u.procedures['unraid.forgetHost'].run({host: 'tower.local', port: 2222})
+		await u.procedures['unraid.forgetHost'].run({host: 'https://tower.local:2222/Main'})
+		assert.deepEqual(keygenCalls, [
+			['-R', 'tower.local', '-f', knownHosts],
+			['-R', '[tower.local]:2222', '-f', knownHosts],
+			['-R', '[tower.local]:2222', '-f', knownHosts],
+			['-R', '[tower.local]:2222', '-f', knownHosts],
+		])
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('the idle timer forgets the Unraid password after an import ends', async () => {
+	// The idle clock is a real timer, not the injected `now`, so only mock timers can move it.
+	mock.timers.enable({apis: ['setTimeout', 'setInterval', 'Date']})
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-idle-'))
+	const dirB = await mkdtemp(join(os.tmpdir(), 'unraid-idle-b-'))
+	let releaseRsync
+	const rsyncHeld = new Promise((resolve) => {
+		releaseRsync = resolve
+	})
+	let rsyncStarted = false
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync') {
+			rsyncStarted = true
+			await rsyncHeld
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\n', stderr: ''}
+		if (remote.includes('/mnt/user')) return {stdout: 'Media\t100\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	// realOf creates each folder from /Home/<name> down, so /Home itself has to exist already.
+	await mkdir(join(dir, 'tree', 'Home'), {recursive: true})
+	const u = createUnraid({dataDir: dir, files, apps: {}, machines: {}, storage: null, run})
+	let uB
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		await u.procedures['unraid.start'].run({shares: ['Media']})
+		for (let i = 0; i < 50 && !rsyncStarted; i++) await new Promise((r) => setImmediate(r))
+		assert.equal(rsyncStarted, true, 'the 3 hour tick has to land while rsync is still pending')
+		mock.timers.tick(3 * 60 * 60 * 1000)
+		const mid = await u.procedures['unraid.status'].run()
+		assert.equal(mid.job.endedAt, null)
+		assert.equal(mid.connected.host, 'tower.local')
+		releaseRsync()
+		let done
+		for (let i = 0; i < 50; i++) {
+			await new Promise((r) => setImmediate(r))
+			done = await u.procedures['unraid.status'].run()
+			if (done.job?.endedAt) break
+		}
+		assert.ok(done.job?.endedAt, 'the import should have finished')
+		// The window starts again when the import ends. Long after that, the password is gone.
+		mock.timers.tick(48 * 60 * 60 * 1000)
+		assert.equal((await u.procedures['unraid.status'].run()).connected, null)
+
+		// No import: three idle hours still forgets the password.
+		uB = createUnraid({dataDir: dirB, files, apps: {}, machines: {}, storage: null, run})
+		await uB.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await uB.procedures['unraid.scan'].run()
+		mock.timers.tick(3 * 60 * 60 * 1000)
+		assert.equal((await uB.procedures['unraid.status'].run()).connected, null)
+	} finally {
+		u.close()
+		uB?.close()
+		mock.timers.reset()
+		await rm(dir, {recursive: true, force: true})
+		await rm(dirB, {recursive: true, force: true})
+	}
+})
+
+test('a damaged unraid job.json is not a running import and is left unchanged', async () => {
+	// Empty, truncated, a BOM, and JSON that is not a plain object. null and [] parse, but they are not a job.
+	const bodies = ['', '{', '\uFEFF{"endedAt":null}', 'null', '[]', '"stuck"']
+	for (const body of bodies) {
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-job-'))
+		const jobDir = join(dir, 'unraid')
+		const file = join(jobDir, 'job.json')
+		await mkdir(jobDir, {recursive: true})
+		await writeFile(file, body)
+		const rejections = []
+		const onRejection = (reason) => rejections.push(reason)
+		const logged = []
+		const origError = console.error
+		console.error = (...args) => logged.push(args.map(String).join(' '))
+		process.on('unhandledRejection', onRejection)
+		let u
+		try {
+			u = createUnraid({dataDir: dir, files: {}, apps: {}, machines: {}, storage: null, run: async () => ({stdout: '', stderr: ''})})
+			await new Promise((r) => setTimeout(r, 50))
+			assert.deepEqual(
+				rejections.map((e) => e?.message ?? String(e)),
+				[],
+				`job.json ${JSON.stringify(body)} rejected startup`,
+			)
+			await u.ready
+			assert.equal(await readFile(file, 'utf8'), body, 'startup must not rewrite a damaged job.json')
+			const st = await u.procedures['unraid.status'].run()
+			assert.equal(st.job, null)
+			await assert.rejects(u.procedures['unraid.connect'].run({host: 'tower.local', password: 'x'}), (err) => {
+				assert.doesNotMatch(err.message, /import is running/)
+				return true
+			})
+			const damage = logged.filter((line) => line.includes('job.json'))
+			assert.equal(damage.length, 1)
+			assert.equal(damage[0].includes(dir), false, 'the log must not include the path')
+			if (body) assert.equal(damage[0].includes(body), false, 'the log must not include the file contents')
+		} finally {
+			console.error = origError
+			process.off('unhandledRejection', onRejection)
+			u?.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+})
+
+test('a job that was still running is marked stopped in memory without rewriting job.json', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-job-ok-'))
+	const file = join(dir, 'unraid', 'job.json')
+	const body = '{\n\t"id": "ab12",\n\t"endedAt": null,\n\t"items": []\n}\n'
+	await mkdir(join(dir, 'unraid'), {recursive: true})
+	await writeFile(file, body)
+	const u = createUnraid({dataDir: dir, files: {}, apps: {}, machines: {}, storage: null, run: async () => ({stdout: '', stderr: ''})})
+	try {
+		await u.ready
+		await new Promise((r) => setTimeout(r, 20))
+		const st = await u.procedures['unraid.status'].run()
+		assert.equal(st.job.id, 'ab12')
+		assert.ok(st.job.endedAt)
+		assert.match(st.job.stopped, /server restarted/)
+		assert.equal(await readFile(file, 'utf8'), body)
+		await assert.rejects(u.procedures['unraid.connect'].run({host: 'tower.local', password: 'x'}), (err) => {
+			assert.doesNotMatch(err.message, /import is running/)
+			return true
+		})
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('a restart interrupts running and waiting items in memory and gives accurate instructions', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-job-items-'))
+	const file = join(dir, 'unraid', 'job.json')
+	const body = JSON.stringify(
+		{
+			id: 'cd34',
+			host: 'tower.local',
+			endedAt: null,
+			items: [
+				{kind: 'share', key: 'Docs', name: 'Docs', status: 'done', path: '/Home/Unraid/Docs'},
+				{kind: 'share', key: 'Media', name: 'Media', status: 'running', step: 'Copying', progress: 0.4},
+				{kind: 'container', key: 'unraid-plex', name: 'plex', status: 'waiting'},
+			],
+		},
+		null,
+		'\t',
+	)
+	await mkdir(join(dir, 'unraid'), {recursive: true})
+	await writeFile(file, body)
+	const u = createUnraid({dataDir: dir, files: {}, apps: {}, machines: {}, storage: null, run: async () => ({stdout: '', stderr: ''})})
+	try {
+		await u.ready
+		const st = await u.procedures['unraid.status'].run()
+		assert.equal(await readFile(file, 'utf8'), body)
+		assert.ok(st.job.endedAt)
+		assert.match(st.job.stopped, /Done/)
+		assert.match(st.job.stopped, /connect again/)
+		assert.doesNotMatch(st.job.stopped, /Continue/)
+		assert.equal(st.job.items[0].status, 'done')
+		assert.equal(st.job.items[1].status, 'failed')
+		assert.equal(st.job.items[1].error, 'Stopped when the server restarted')
+		assert.equal(st.job.items[1].step, undefined)
+		assert.equal(st.job.items[2].status, 'skipped')
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('a paused Unraid container is restarted if docker stop fails and is reported if the server restarts', async () => {
+	// 1. docker stop times out, docker start still runs and succeeds.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-pause-1-'))
+		const remoteCalls = []
+		const plexRunning = {...plex, Name: '/plex', State: {Running: true}}
+		const run = async (cmd, argv = []) => {
+			if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+			const remote = String(argv[argv.length - 1] ?? '')
+			remoteCalls.push(remote)
+			if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+			if (remote.includes('/mnt/user/*')) return {stdout: 'appdata\t100\n', stderr: ''}
+			if (remote.startsWith('docker ps')) return {stdout: 'plex\n', stderr: ''}
+			if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([plexRunning]), stderr: ''}
+			if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/plex\t100\td\n', stderr: ''}
+			if (remote.startsWith('docker stop')) throw new Error('ssh: Connection timed out')
+			return {stdout: '', stderr: ''}
+		}
+		const apps = {
+			importedStoreDir: join(dir, 'store'),
+			appDirFor: (id) => join(dir, 'apps', id),
+			installed: () => false,
+			installImported: async () => {},
+			importState: () => ({done: true, error: null}),
+		}
+		const u = createUnraid({dataDir: dir, files: {}, apps, machines: {}, storage: null, run})
+		try {
+			await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			await u.procedures['unraid.scan'].run()
+			const started = await u.procedures['unraid.start'].run({containers: ['unraid-plex']})
+			let st
+			let saved = ''
+			for (let i = 0; i < 200; i++) {
+				st = await u.procedures['unraid.status'].run()
+				saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(st.job.items[0].status, 'failed')
+			assert.ok(remoteCalls.includes("docker stop 'plex'"))
+			assert.ok(remoteCalls.includes("docker start 'plex'"))
+			assert.equal(JSON.parse(saved).paused, undefined)
+		} finally {
+			u.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+
+	// 2. docker stop fails and docker start also fails: item note warns it may still be stopped.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-pause-2-'))
+		const remoteCalls = []
+		const plexRunning = {...plex, Name: '/plex', State: {Running: true}}
+		const run = async (cmd, argv = []) => {
+			if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+			const remote = String(argv[argv.length - 1] ?? '')
+			remoteCalls.push(remote)
+			if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+			if (remote.includes('/mnt/user/*')) return {stdout: 'appdata\t100\n', stderr: ''}
+			if (remote.startsWith('docker ps')) return {stdout: 'plex\n', stderr: ''}
+			if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([plexRunning]), stderr: ''}
+			if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/plex\t100\td\n', stderr: ''}
+			if (remote.startsWith('docker stop')) throw new Error('ssh: Connection timed out')
+			if (remote.startsWith('docker start')) throw new Error('ssh: Connection timed out')
+			return {stdout: '', stderr: ''}
+		}
+		const apps = {
+			importedStoreDir: join(dir, 'store'),
+			appDirFor: (id) => join(dir, 'apps', id),
+			installed: () => false,
+			installImported: async () => {},
+			importState: () => ({done: true, error: null}),
+		}
+		const u = createUnraid({dataDir: dir, files: {}, apps, machines: {}, storage: null, run})
+		try {
+			await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			await u.procedures['unraid.scan'].run()
+			const started = await u.procedures['unraid.start'].run({containers: ['unraid-plex']})
+			let st
+			for (let i = 0; i < 200; i++) {
+				st = await u.procedures['unraid.status'].run()
+				const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(st.job.items[0].status, 'failed')
+			assert.ok(remoteCalls.includes("docker start 'plex'"))
+			assert.match(st.job.items[0].note, /may still be stopped on Unraid.*plex/i)
+		} finally {
+			u.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+
+	// 3. Server restarts while docker stop is in flight: job.json names paused container and restart message surfaces it.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-pause-3-'))
+		let releaseStop
+		let stopReached = false
+		const stopHeld = new Promise((resolve, reject) => {
+			releaseStop = () => reject(new Error('stopped for cleanup'))
+		})
+		const plexRunning = {...plex, Name: '/plex', State: {Running: true}}
+		const run = async (cmd, argv = []) => {
+			if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+			const remote = String(argv[argv.length - 1] ?? '')
+			if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+			if (remote.includes('/mnt/user/*')) return {stdout: 'appdata\t100\n', stderr: ''}
+			if (remote.startsWith('docker ps')) return {stdout: 'plex\n', stderr: ''}
+			if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify([plexRunning]), stderr: ''}
+			if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/plex\t100\td\n', stderr: ''}
+			if (remote.startsWith('docker stop')) {
+				stopReached = true
+				return stopHeld
+			}
+			return {stdout: '', stderr: ''}
+		}
+		const apps = {
+			importedStoreDir: join(dir, 'store'),
+			appDirFor: (id) => join(dir, 'apps', id),
+			installed: () => false,
+			installImported: async () => {},
+			importState: () => ({done: true, error: null}),
+		}
+		const u1 = createUnraid({dataDir: dir, files: {}, apps, machines: {}, storage: null, run})
+		let u2
+		try {
+			await u1.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			await u1.procedures['unraid.scan'].run()
+			const started = await u1.procedures['unraid.start'].run({containers: ['unraid-plex']})
+			let saved = ''
+			for (let i = 0; i < 200; i++) {
+				saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (stopReached && saved.includes('"paused": "plex"')) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(stopReached, true)
+			assert.equal(JSON.parse(saved).paused, 'plex')
+
+			u2 = createUnraid({dataDir: dir, files: {}, apps, machines: {}, storage: null, run: async () => ({stdout: '', stderr: ''})})
+			await u2.ready
+			const st2 = await u2.procedures['unraid.status'].run()
+			assert.match(st2.job.stopped, /plex/)
+			assert.match(st2.job.stopped, /Start plex on Unraid/)
+			assert.equal(st2.job.items[0].status, 'failed')
+			assert.match(st2.job.items[0].error, /Start plex on Unraid/)
+
+			releaseStop()
+			for (let i = 0; i < 200; i++) {
+				const cur = await u1.procedures['unraid.status'].run()
+				const disk = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (cur.job?.endedAt && disk.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(disk)) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+		} finally {
+			releaseStop?.()
+			u2?.close()
+			u1.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+})
+
+test('imported VMs are marked installed, blocked from duplicate import, and report renames', async () => {
+	const vmXml = `<domain type='kvm'><name>Win11</name><memory unit='KiB'>4194304</memory><vcpu>2</vcpu>
+<devices><disk type='file' device='disk'><driver name='qemu' type='raw'/><source file='/mnt/user/domains/Win11/vdisk1.img'/><target dev='hdc' bus='virtio'/></disk></devices></domain>`
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-virsh\n', stderr: ''}
+		if (remote.includes('/mnt/user/*')) return {stdout: 'domains\t100\n', stderr: ''}
+		if (remote.startsWith('virsh list')) return {stdout: 'Win11\n', stderr: ''}
+		if (remote.startsWith('virsh dumpxml')) return {stdout: vmXml, stderr: ''}
+		if (remote.startsWith('virsh domstate')) return {stdout: 'shut off\n', stderr: ''}
+		if (remote.startsWith('stat -c %s')) return {stdout: '1048576\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+
+	// 1. Counting stub: second scan marks installed, second start fails with Already here, removed VM becomes importable again, and rename is noted.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-vm-dup-'))
+		let importCalls = 0
+		let stateResult = {done: true, error: null, name: 'Win11 (2)'}
+		const machines = {
+			importVm: async () => {
+				importCalls++
+				return {id: 'vm-abc'}
+			},
+			importState: () => stateResult,
+		}
+		const u = createUnraid({dataDir: dir, files: {}, apps: {}, machines, storage: null, run})
+		try {
+			await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			const s1 = await u.procedures['unraid.scan'].run()
+			assert.equal(s1.vms[0].installed, false)
+
+			const start1 = await u.procedures['unraid.start'].run({vms: ['Win11']})
+			let st1
+			for (let i = 0; i < 200; i++) {
+				st1 = await u.procedures['unraid.status'].run()
+				const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (st1.job?.endedAt && saved.includes(`"id": "${start1.id}"`) && /"endedAt": \d/.test(saved)) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(st1.job.items[0].status, 'done')
+			assert.equal(st1.job.items[0].machineId, 'vm-abc')
+			assert.equal(st1.job.items[0].machineName, 'Win11 (2)')
+			assert.match(st1.job.items[0].note, /Win11 \(2\)/)
+
+			const s2 = await u.procedures['unraid.scan'].run()
+			assert.equal(s2.vms[0].installed, true)
+
+			const start2 = await u.procedures['unraid.start'].run({vms: ['Win11']})
+			let st2
+			for (let i = 0; i < 200; i++) {
+				st2 = await u.procedures['unraid.status'].run()
+				const saved = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				if (st2.job?.endedAt && saved.includes(`"id": "${start2.id}"`) && /"endedAt": \d/.test(saved)) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(st2.job.items[0].status, 'failed')
+			assert.equal(st2.job.items[0].error, 'It’s already here')
+			assert.equal(importCalls, 1)
+
+			// Once removed from machines, it is no longer marked installed.
+			stateResult = {done: true, error: 'It was removed'}
+			const s3 = await u.procedures['unraid.scan'].run()
+			assert.equal(s3.vms[0].installed, false)
+		} finally {
+			u.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+
+	// 2. Real createMachines persists importedFrom across a fresh createUnraid even after job.json is removed and when renamed.
+	{
+		const dir = await mkdtemp(join(os.tmpdir(), 'unraid-vm-real-'))
+		await mkdir(join(dir, 'machines'), {recursive: true})
+		await writeFile(
+			join(dir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [
+					{
+						id: 'aaaa1111',
+						name: 'Win11',
+						osId: 'ubuntu-2404',
+						cores: 2,
+						memoryMb: 2048,
+						diskSizeGb: 16,
+						layout: {firmware: 'efi', machineType: 'q35', nic: 'virtio', video: 'vga', disks: [{id: 'disk0', file: '/tmp/x.qcow2', device: 'disk', bus: 'virtio'}]},
+					},
+				],
+			}),
+		)
+		const m1 = createMachines({dataDir: dir, kvmDevice: '/nonexistent', run: async () => ''})
+		await m1.ready
+		const u1 = createUnraid({dataDir: dir, files: {}, apps: {}, machines: m1, storage: null, run})
+		let u2
+		try {
+			await u1.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			const s1 = await u1.procedures['unraid.scan'].run()
+			assert.equal(s1.vms[0].installed, false)
+			const started = await u1.procedures['unraid.start'].run({vms: ['Win11']})
+			let st
+			for (let i = 0; i < 600; i++) {
+				st = await u1.procedures['unraid.status'].run()
+				const savedJob = await readFile(join(dir, 'unraid', 'job.json'), 'utf8').catch(() => '')
+				const savedMachines = await readFile(join(dir, 'machines', 'machines.json'), 'utf8').catch(() => '')
+				if (st.job?.endedAt && savedJob.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(savedJob) && savedMachines.includes('Win11 (2)')) break
+				await new Promise((r) => setTimeout(r, 10))
+			}
+			assert.equal(st.job.items[0].status, 'done')
+			assert.equal(st.job.items[0].machineName, 'Win11 (2)')
+			assert.match(st.job.items[0].note, /Win11 \(2\)/)
+
+			await rm(join(dir, 'unraid', 'job.json'), {force: true})
+			const m2 = createMachines({dataDir: dir, kvmDevice: '/nonexistent', run: async () => ''})
+			await m2.ready
+			assert.equal(m2.importedVm('Win11'), true)
+			u2 = createUnraid({dataDir: dir, files: {}, apps: {}, machines: m2, storage: null, run})
+			await u2.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+			const s2 = await u2.procedures['unraid.scan'].run()
+			assert.equal(s2.vms[0].installed, true)
+		} finally {
+			u2?.close()
+			u1.close()
+			await rm(dir, {recursive: true, force: true})
+		}
+	}
+})
+
+test('unmeasured container appdata sizes are reported as null instead of 0', async () => {
+	const containers = [
+		{
+			Name: '/timed-out',
+			State: {Running: true},
+			Config: {Image: 'app:1', Env: [], Labels: {}},
+			HostConfig: {},
+			Mounts: [{Type: 'bind', Source: '/mnt/user/appdata/huge', Destination: '/config', RW: true}],
+		},
+		{
+			Name: '/partial',
+			State: {Running: true},
+			Config: {Image: 'app:1', Env: [], Labels: {}},
+			HostConfig: {},
+			Mounts: [
+				{Type: 'bind', Source: '/mnt/user/appdata/ok', Destination: '/ok', RW: true},
+				{Type: 'bind', Source: '/mnt/user/appdata/huge', Destination: '/huge', RW: true},
+			],
+		},
+		{
+			Name: '/empty-dir',
+			State: {Running: false},
+			Config: {Image: 'app:1', Env: [], Labels: {}},
+			HostConfig: {},
+			Mounts: [{Type: 'bind', Source: '/mnt/user/appdata/zero', Destination: '/zero', RW: true}],
+		},
+		{
+			Name: '/no-appdata',
+			State: {Running: false},
+			Config: {Image: 'app:1', Env: [], Labels: {}},
+			HostConfig: {},
+			Mounts: [],
+		},
+	]
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-du-null-'))
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\nhas-docker\n', stderr: ''}
+		if (remote.includes('/mnt/user/*')) return {stdout: 'appdata\t\n', stderr: ''}
+		if (remote.startsWith('docker ps')) return {stdout: 'timed-out\npartial\nempty-dir\nno-appdata\n', stderr: ''}
+		if (remote.startsWith('docker inspect')) return {stdout: JSON.stringify(containers), stderr: ''}
+		if (remote.includes('du -sb')) return {stdout: '/mnt/user/appdata/huge\t\td\n/mnt/user/appdata/ok\t4096\td\n/mnt/user/appdata/zero\t0\td\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const u = createUnraid({dataDir: dir, files: {}, apps: {installed: () => false}, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		const scan = await u.procedures['unraid.scan'].run()
+		const byId = Object.fromEntries(scan.containers.map((c) => [c.id, c]))
+		assert.equal(byId['unraid-timed-out'].size, null)
+		assert.equal(byId['unraid-partial'].size, null)
+		assert.equal(byId['unraid-empty-dir'].size, 0)
+		assert.equal(byId['unraid-no-appdata'].size, 0)
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('a failed job save does not leave the import running', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-job-ro-'))
+	const jobDir = join(dir, 'unraid')
+	const file = join(jobDir, 'job.json')
+	const previous = '{\n\t"id": "old",\n\t"endedAt": 1,\n\t"items": []\n}\n'
+	await mkdir(join(dir, 'tree', 'Home'), {recursive: true})
+	await mkdir(jobDir, {recursive: true})
+	await writeFile(file, previous)
+	let rsyncs = 0
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync') {
+			rsyncs++
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\n', stderr: ''}
+		if (remote.includes('/mnt/user')) return {stdout: 'Media\t100\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	const u = createUnraid({dataDir: dir, files, apps: {}, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		// The file itself has to refuse writes. A read-only directory still lets writeFile replace a file it can open.
+		await chmod(file, 0o400)
+		await chmod(jobDir, 0o500)
+		await assert.rejects(u.procedures['unraid.start'].run({shares: ['Media']}), (err) => {
+			assert.equal(err.code, 'EACCES')
+			assert.doesNotMatch(err.message, /import is already running/)
+			return true
+		})
+		assert.equal(rsyncs, 0, 'the copy must not start when the job file cannot be saved')
+		assert.equal(await readFile(file, 'utf8'), previous)
+		const stuck = await u.procedures['unraid.status'].run()
+		assert.equal(stuck.job?.id, 'old')
+		assert.ok(stuck.job?.endedAt)
+		await chmod(jobDir, 0o700)
+		await chmod(file, 0o600)
+		const started = await u.procedures['unraid.start'].run({shares: ['Media']})
+		assert.equal(typeof started.id, 'string')
+		assert.notEqual(started.id, 'old')
+		let done
+		let saved = ''
+		for (let i = 0; i < 50; i++) {
+			await new Promise((r) => setImmediate(r))
+			done = await u.procedures['unraid.status'].run()
+			saved = await readFile(file, 'utf8').catch(() => '')
+			// endedAt is visible in memory before the last save finishes. That save creates a
+			// temporary file beside job.json, and removing the directory in the meantime throws
+			// ENOTEMPTY. Wait until the saved job is the one that just finished.
+			if (done.job?.endedAt && done.job.id === started.id && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+		}
+		assert.equal(done.job?.id, started.id)
+		assert.ok(done.job?.endedAt)
+		assert.match(saved, new RegExp(`"id": "${started.id}"`))
+		assert.match(saved, /"endedAt": \d/)
+		assert.equal(rsyncs, 1)
+		assert.equal((await stat(file)).mode & 0o777, 0o600)
+	} finally {
+		await chmod(jobDir, 0o700).catch(() => {})
+		await chmod(file, 0o600).catch(() => {})
+		u.close()
+		for (let i = 0; i < 20; i++) {
+			try {
+				await rm(dir, {recursive: true, force: true})
+				break
+			} catch (error) {
+				if (error?.code !== 'ENOTEMPTY' || i === 19) throw error
+				await new Promise((r) => setTimeout(r, 15))
+			}
+		}
+	}
+})
+
+test('two starts at the same moment let one import run and refuse the other', async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-double-start-'))
+	await mkdir(join(dir, 'tree', 'Home'), {recursive: true})
+	let rsyncs = 0
+	const run = async (cmd, argv = []) => {
+		if (cmd === 'rsync') {
+			rsyncs++
+			await new Promise((r) => setTimeout(r, 100))
+			return {stdout: '', stderr: ''}
+		}
+		if (cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\n', stderr: ''}
+		if (remote.includes('/mnt/user')) return {stdout: 'Media\t100\n', stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	const u = createUnraid({dataDir: dir, files, apps: {}, machines: {}, storage: null, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		const settled = await Promise.allSettled([
+			u.procedures['unraid.start'].run({shares: ['Media']}),
+			u.procedures['unraid.start'].run({shares: ['Media']}),
+		])
+		const fulfilled = settled.filter((r) => r.status === 'fulfilled')
+		const rejected = settled.filter((r) => r.status === 'rejected')
+		assert.equal(fulfilled.length, 1)
+		assert.equal(rejected.length, 1)
+		assert.equal(rejected[0].reason?.code, 'CONFLICT')
+		assert.equal(rejected[0].reason?.message, 'An import is already running')
+		const id = fulfilled[0].value.id
+		let st
+		for (let i = 0; i < 50; i++) {
+			st = await u.procedures['unraid.status'].run()
+			if (st.job?.endedAt && st.job.id === id) break
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		assert.equal(st.job?.id, id)
+		assert.ok(st.job?.endedAt)
+		assert.equal(rsyncs, 1)
+	} finally {
+		u.close()
+		for (let i = 0; i < 20; i++) {
+			try {
+				await rm(dir, {recursive: true, force: true})
+				break
+			} catch (error) {
+				if (error?.code !== 'ENOTEMPTY' || i === 19) throw error
+				await new Promise((r) => setTimeout(r, 15))
+			}
+		}
 	}
 })
 

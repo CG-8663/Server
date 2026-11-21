@@ -48,6 +48,17 @@ function closeSocket(ws, code, reason) {
 		ws.close(code)
 	}
 }
+// Same sentence a refused new connection gets, so an open session ends with that reason too.
+function switchedOff(name, ability) {
+	return `${ability === 'terminal' ? 'The terminal' : 'The desktop'} isn’t switched on for ${name}`
+}
+function closeLiveChannel(l, ch, reason) {
+	const channel = l.channels.get(ch)
+	if (!channel) return
+	l.channels.delete(ch)
+	closeSocket(channel.ws, 1011, reason)
+	if (l.ws.readyState === l.ws.OPEN) l.ws.send(JSON.stringify({op: 'close', ch}))
+}
 const num = (v) => (v == null || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null)
 
 // Only the facts the page shows, checked and trimmed (a connector is another computer: don't
@@ -126,14 +137,35 @@ function serverAddresses() {
 export function createConnector({dataDir, tlsDir, plugins = null, source = async () => 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server', webPort = 7780, now = () => Date.now()}) {
 	const file = join(dataDir, 'swarm.json')
 	let state = {agents: []}
-	const loaded = readFile(file, 'utf8').then(
-		(t) => {
-			const s = JSON.parse(t)
-			if (Array.isArray(s?.agents)) state = s
-		},
-		() => {},
-	)
-	const save = () => writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600})
+	// Set when swarm.json exists but cannot be used. Nothing may write it until the owner repairs it.
+	let damaged = false
+	const agentOk = (a) => !!a && typeof a === 'object' && !Array.isArray(a) && typeof a.id === 'string' && !!a.allowed && typeof a.allowed === 'object' && !Array.isArray(a.allowed) && !!a.on && typeof a.on === 'object' && !Array.isArray(a.on)
+	// A missing file is no computers yet. A parse error used to reject this promise with nobody
+	// waiting, which ended the process. The file stays so its key hashes can be repaired.
+	const loaded = (async () => {
+		let text
+		try {
+			text = await readFile(file, 'utf8')
+		} catch (error) {
+			if (error.code === 'ENOENT') return
+			damaged = true
+			console.error('[omarchyd] couldn’t load swarm.json; leaving it unchanged')
+			return
+		}
+		let data
+		try {
+			data = JSON.parse(text)
+		} catch {
+			data = undefined
+		}
+		const ok = !!data && typeof data === 'object' && !Array.isArray(data) && Array.isArray(data.agents) && data.agents.every(agentOk)
+		if (ok) state = data
+		else {
+			damaged = true
+			console.error('[omarchyd] couldn’t load swarm.json; leaving it unchanged')
+		}
+	})()
+	const save = () => (damaged ? Promise.reject(new RpcError('PRECONDITION_FAILED', 'swarm.json is damaged and was left unchanged.')) : writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600}))
 	const pairings = new Map() // sha(token) -> {abilities, expires}
 	const live = new Map() // agentId -> {ws, metrics, info, channels: Map, nextCh, calls: Map, nextCall}
 	const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024})
@@ -227,6 +259,14 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			a.on[k] = input[k] === true && a.allowed[k]
 		}
 		await save()
+		// A switch only saved before, so a terminal or desktop already open kept forwarding.
+		const l = live.get(a.id)
+		if (l) {
+			for (const [ch, channel] of [...l.channels]) {
+				const ability = channel.kind === 'pty' ? 'terminal' : channel.kind === 'vnc' ? 'desktop' : null
+				if (ability && !may(a, ability)) closeLiveChannel(l, ch, switchedOff(a.name, ability))
+			}
+		}
 		return true
 	}
 	const may = (a, ability) => a.allowed[ability] && a.on[ability]
@@ -273,6 +313,9 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 	const enrollTries = []
 	async function enroll(body) {
 		await loaded
+		// An error string, the shape the installer already prints, instead of a thrown object.
+		// The pairing code is not used, and this does not count toward the rate limit.
+		if (damaged) return {status: 503, body: {error: 'swarm.json is damaged and was left unchanged.'}}
 		// A handful of tries a minute is plenty for people; it stops guessing.
 		const t = now()
 		while (enrollTries.length && enrollTries[0] < t - 60_000) enrollTries.shift()
@@ -303,14 +346,28 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 
 	async function upgradeAgent(req, socket, head) {
 		await loaded
+		// 401 is the connector's signal that this computer was removed, and it then deletes its key.
+		// A file that cannot be read is not that: answer 503 so the computer keeps its key and retries.
+		if (damaged) {
+			socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n')
+			return socket.destroy()
+		}
 		const a = authAgent(req)
 		if (!a) {
 			socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
 			return socket.destroy()
 		}
 		wss.handleUpgrade(req, socket, head, (ws) => {
-			// One connection per computer: a new one replaces the old.
-			live.get(a.id)?.ws.terminate()
+			// One connection per computer: a new one replaces the old. Its viewers and waiting calls
+			// end now (its own close handler sees it's no longer the live one and skips this).
+			const old = live.get(a.id)
+			if (old) {
+				for (const ch of old.channels.values()) closeSocket(ch.ws, 1000, 'The computer reconnected')
+				for (const c of old.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'The computer reconnected')))
+				old.channels.clear()
+				old.calls.clear()
+				old.ws.terminate()
+			}
 			const l = {ws, metrics: a.metrics ?? null, channels: new Map(), nextCh: 0, calls: new Map(), nextCall: 0}
 			live.set(a.id, l)
 			const alive = setInterval(() => ws.readyState === ws.OPEN && ws.ping(), 25_000)
@@ -319,7 +376,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 					const buf = Buffer.from(data)
 					if (buf.length < 4) return
 					const ch = l.channels.get(buf.readUInt32BE(0))
-					if (ch?.ws.readyState === ch?.ws.OPEN) ch.ws.send(buf.subarray(4), {binary: true})
+					if (ch && ch.ws.readyState === ch.ws.OPEN) ch.ws.send(buf.subarray(4), {binary: true})
 					return
 				}
 				let msg
@@ -356,7 +413,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 				clearInterval(alive)
 				if (live.get(a.id)?.ws !== ws) return
 				live.delete(a.id)
-				for (const ch of l.channels.values()) ch.ws.close(1000, 'The computer went offline')
+				for (const ch of l.channels.values()) closeSocket(ch.ws, 1000, 'The computer went offline')
 				for (const c of l.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'The computer went offline')))
 				a.lastSeen = now()
 				await save().catch(() => {})
@@ -371,9 +428,9 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		const a = find(agentId)
 		const l = live.get(agentId)
 		const ability = kind === 'pty' ? 'terminal' : 'desktop'
-		if (!a || !l || !may(a, ability)) return closeSocket(browserWs, 1011, !a ? 'Unknown computer' : !l ? 'That computer is offline' : `${ability === 'terminal' ? 'The terminal' : 'The desktop'} isn’t switched on for ${a.name}`)
+		if (!a || !l || !may(a, ability)) return closeSocket(browserWs, 1011, !a ? 'Unknown computer' : !l ? 'That computer is offline' : switchedOff(a.name, ability))
 		const ch = ++l.nextCh
-		l.channels.set(ch, {ws: browserWs})
+		l.channels.set(ch, {ws: browserWs, kind})
 		l.ws.send(JSON.stringify({op: 'open', ch, kind, cols: opts.cols, rows: opts.rows}))
 		const head = Buffer.alloc(4)
 		head.writeUInt32BE(ch)

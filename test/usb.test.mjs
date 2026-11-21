@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {dirname, join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
@@ -112,6 +112,135 @@ describe('listHostUsb', () => {
 		await rm(join(root, 'sys/bus/usb/devices/1-2'), {recursive: true, force: true})
 		const again = (await list()).find((d) => d.serial === '0001')
 		assert.equal(again.id, first.id)
+	})
+
+	test('a shorter serial does not take a longer serial by-id link', async () => {
+		const linkA1 = 'usb-FTDI_FT232R_USB_UART_A1-if00-port0'
+		const linkA10 = 'usb-FTDI_FT232R_USB_UART_A10-if00-port0'
+		const pathOf = (link) => `/dev/serial/by-id/${link}`
+		const dirs = []
+		async function host(sticks, sysfsNames) {
+			const dir = await mkdtemp(join(os.tmpdir(), 'usb-serial-token-'))
+			dirs.push(dir)
+			const files = {
+				'dev/ttyUSB0': '',
+				'dev/ttyUSB1': '',
+				[`dev/serial/by-id/${linkA1}`]: {link: join(dir, 'dev/ttyUSB0')},
+				[`dev/serial/by-id/${linkA10}`]: {link: join(dir, 'dev/ttyUSB1')},
+			}
+			for (const [bus, serial] of sticks) {
+				files[`sys/bus/usb/devices/${bus}/idVendor`] = '0403\n'
+				files[`sys/bus/usb/devices/${bus}/idProduct`] = '6001\n'
+				files[`sys/bus/usb/devices/${bus}/serial`] = `${serial}\n`
+				files[`sys/bus/usb/devices/${bus}/manufacturer`] = 'FTDI\n'
+				files[`sys/bus/usb/devices/${bus}/product`] = 'FT232R USB UART\n'
+				files[`sys/bus/usb/devices/${bus}/bDeviceClass`] = '00\n'
+			}
+			await writeTree(dir, files)
+			const sysfs = join(dir, 'sys/bus/usb/devices')
+			const serialById = join(dir, 'dev/serial/by-id')
+			return listHostUsb({
+				sysfs,
+				serialById,
+				// A1- sorts before A10, so stub by-id to hand back the longer link first.
+				readdir: async (p) => {
+					if (p === sysfs) return sysfsNames
+					if (p === serialById) return [linkA10, linkA1]
+					return fsReaddir(p)
+				},
+			})
+		}
+		try {
+			const a1First = await host(
+				[
+					['1-1', 'A1'],
+					['1-2', 'A10'],
+				],
+				['1-1', '1-2'],
+			)
+			assert.deepEqual(
+				a1First.map((d) => [d.serial, d.path]),
+				[
+					['A1', pathOf(linkA1)],
+					['A10', pathOf(linkA10)],
+				],
+			)
+			const a10First = await host(
+				[
+					['1-1', 'A10'],
+					['1-2', 'A1'],
+				],
+				['1-1', '1-2'],
+			)
+			assert.deepEqual(
+				a10First.map((d) => [d.serial, d.path]),
+				[
+					['A10', pathOf(linkA10)],
+					['A1', pathOf(linkA1)],
+				],
+			)
+		} finally {
+			await Promise.all(dirs.map((d) => rm(d, {recursive: true, force: true})))
+		}
+	})
+
+	test('same serial prefers the by-id link that matches manufacturer and product', async () => {
+		const link = 'usb-FTDI_FT232R_USB_UART_0001-if00-port0'
+		const path = `/dev/serial/by-id/${link}`
+		const dirs = []
+		async function host(sysfsNames) {
+			const dir = await mkdtemp(join(os.tmpdir(), 'usb-same-serial-'))
+			dirs.push(dir)
+			const files = {
+				'dev/ttyUSB0': '',
+				[`dev/serial/by-id/${link}`]: {link: join(dir, 'dev/ttyUSB0')},
+				'sys/bus/usb/devices/1-1/idVendor': '046d\n',
+				'sys/bus/usb/devices/1-1/idProduct': '0825\n',
+				'sys/bus/usb/devices/1-1/serial': '0001\n',
+				'sys/bus/usb/devices/1-1/manufacturer': 'Logitech\n',
+				'sys/bus/usb/devices/1-1/product': 'Webcam C270\n',
+				'sys/bus/usb/devices/1-1/bDeviceClass': '0e\n',
+				'sys/bus/usb/devices/1-1:1.0/bInterfaceClass': '0e\n',
+				'sys/bus/usb/devices/1-2/idVendor': '0403\n',
+				'sys/bus/usb/devices/1-2/idProduct': '6001\n',
+				'sys/bus/usb/devices/1-2/serial': '0001\n',
+				'sys/bus/usb/devices/1-2/manufacturer': 'FTDI\n',
+				'sys/bus/usb/devices/1-2/product': 'FT232R USB UART\n',
+				'sys/bus/usb/devices/1-2/bDeviceClass': '00\n',
+				'sys/bus/usb/devices/1-2:1.0/bInterfaceClass': 'ff\n',
+			}
+			await writeTree(dir, files)
+			const sysfs = join(dir, 'sys/bus/usb/devices')
+			const serialById = join(dir, 'dev/serial/by-id')
+			return listHostUsb({
+				sysfs,
+				serialById,
+				readdir: async (p) => {
+					if (p === sysfs) return sysfsNames
+					if (p === serialById) return [link]
+					return fsReaddir(p)
+				},
+			})
+		}
+		try {
+			for (const order of [
+				['1-1', '1-2', '1-1:1.0', '1-2:1.0'],
+				['1-2', '1-1', '1-2:1.0', '1-1:1.0'],
+			]) {
+				const devices = await host(order)
+				const webcam = devices.find((d) => d.vendorId === '046d')
+				const ftdi = devices.find((d) => d.vendorId === '0403')
+				assert.equal(ftdi?.productId, '6001')
+				assert.equal(ftdi.path, path)
+				assert.equal(ftdi.id, link)
+				assert.equal(webcam?.name, 'Webcam C270')
+				assert.equal(webcam.path, null)
+				assert.equal(webcam.node, null)
+				assert.notEqual(webcam.id, link)
+			}
+		} finally {
+			await Promise.all(dirs.map((d) => rm(d, {recursive: true, force: true})))
+		}
 	})
 })
 

@@ -14,6 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
+import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, mouseButtonFromEvent, pasteKeySequence, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -35,24 +36,18 @@ const readScale = (): Scale => {
 }
 // Which key on this computer acts as the machine's Super key. Many computers keep the Windows/⌘/
 // Super key for themselves (an Omarchy or Windows desktop never hands Super+Enter to a browser),
-// so a key the browser does receive can stand in for it.
-type SuperKey = 'meta' | 'altright' | 'ctrlright'
+// so Right Alt or Right Ctrl can be chosen in the Keys menu as a stand-in, keeping AltGr working by default.
 const SUPER_CODES: Record<SuperKey, string[]> = {meta: ['MetaLeft', 'MetaRight', 'OSLeft', 'OSRight'], altright: ['AltRight'], ctrlright: ['ControlRight']}
 const SUPER_LABEL: Record<SuperKey, string> = {meta: 'Windows / ⌘ key', altright: 'Right Alt', ctrlright: 'Right Ctrl'}
 function readSuperKey(): SuperKey {
 	try {
-		const v = localStorage.getItem('omarchy-server:console-super')
-		if (v === 'altright' || v === 'ctrlright' || v === 'meta') return v
+		return resolveSuperKey(localStorage.getItem('omarchy-server:console-super'))
 	} catch {
-		/* not saved */
+		return 'meta'
 	}
-	// A Linux desktop (Omarchy, GNOME…) keeps Super for itself, so Right Alt stands in there unless
-	// you choose otherwise. The Super key itself still works whenever the browser receives it.
-	return typeof navigator !== 'undefined' && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) ? 'altright' : 'meta'
 }
 const F = (n: number) => 0xffbd + n // F1 = 0xffbe
 const KEY = {Escape: 0xff1b, Tab: 0xff09, Enter: 0xff0d, Backspace: 0xff08, Up: 0xff52, Down: 0xff54, Left: 0xff51, Right: 0xff53, Ctrl: 0xffe3, Alt: 0xffe9, Super: 0xffeb, Shift: 0xffe1}
-const BTN = {left: 1, middle: 2, right: 4, wheelUp: 8, wheelDown: 16, wheelLeft: 32, wheelRight: 64}
 const MIN_ZOOM = 1
 const MAX_ZOOM = 5
 const LONG_PRESS_MS = 450
@@ -77,7 +72,6 @@ function sendChar(r: KeySender, ch: string, shiftHeld = false) {
 type State = 'connecting' | 'connected' | 'lost' | 'superseded' | 'error'
 type Mode = 'touch' | 'mouse'
 type View = {z: number; x: number; y: number}
-type Pt = {x: number; y: number}
 
 const HINT: Record<Mode, string> = {
 	touch: 'Touch: tap to click · hold to right-click · pinch to zoom',
@@ -98,6 +92,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	const screenRef = useRef<HTMLDivElement>(null) // the visible viewport
 	const stageRef = useRef<HTMLDivElement>(null) // zoomed/panned layer holding noVNC
 	const canvasHost = useRef<HTMLDivElement>(null)
+	const touchRef = useRef<HTMLDivElement>(null)
 	const cursorRef = useRef<HTMLDivElement>(null)
 	const input = useRef<HTMLTextAreaElement>(null)
 	const rfbRef = useRef<InstanceType<RFBClass>>()
@@ -192,7 +187,8 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				haptic(8)
 				if (deskUi) {
 					window.setTimeout(() => {
-						setCanResize(!!(r as any)._supportsSetDesktopSize)
+						if (disposed || rfbRef.current !== r) return
+						setCanResize(readConsoleMetrics(r as any).canResize)
 						r.focus()
 					}, 600)
 				}
@@ -211,10 +207,16 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				}, 300)
 			})
 			r.addEventListener('disconnect', (e) => {
-				if (disposed) return
-				if (closeCode === SUPERSEDED) return setState('superseded')
+				const action = consoleDisconnectAction({
+					disposed: disposed || rfbRef.current !== r,
+					superseded: closeCode === SUPERSEDED,
+					clean: (e as CustomEvent<{clean: boolean}>).detail?.clean,
+				})
+				if (action === 'ignore') return
+				if (action === 'superseded') return setState('superseded')
 				setState('lost')
-				if (!(e as CustomEvent<{clean: boolean}>).detail.clean) retry = window.setTimeout(connect, 1500)
+				window.clearTimeout(retry)
+				retry = window.setTimeout(connect, 1500)
 			})
 		}
 		connect()
@@ -253,12 +255,13 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		}
 		if (sc === 'remote' && !canResize) toast('This machine can’t change its resolution from here; showing it fitted instead.')
 	}
-	// Resolution readout (noVNC has no public resize event).
+	// Resolution readout and late resize-capability detection (noVNC has no public resize event).
 	useEffect(() => {
 		if (!deskUi) return
 		const t = window.setInterval(() => {
-			const fb = fbSize()
-			setRes((cur) => (fb && (cur?.w !== fb.w || cur?.h !== fb.h) ? fb : cur))
+			const next = readConsoleMetrics(rfbRef.current as any)
+			setRes((cur) => (next.res && (cur?.w !== next.res.w || cur?.h !== next.res.h) ? next.res : cur))
+			setCanResize((cur) => (cur === next.canResize ? cur : next.canResize))
 		}, 1000)
 		return () => window.clearInterval(t)
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -354,33 +357,47 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	useEffect(() => {
 		const root = rootRef.current
 		if (!root || !deskUi) return
-		let pending: {meta: boolean; timer: number} | null = null
-		const sendV = (meta: boolean) => {
+		const heldCtrl = new Set<string>()
+		const heldShift = new Set<string>()
+		let pending: {meta: boolean; shift: boolean; timer: number} | null = null
+		let sendTimer = 0
+		const sendV = (meta: boolean, shift: boolean) => {
 			const r = rfbRef.current
 			if (!r) return
-			if (meta) {
-				sendSuper(false)
-				r.sendKey(KEY.Ctrl, 'ControlLeft', true)
-			}
-			r.sendKey(0x76, 'KeyV', true)
-			r.sendKey(0x76, 'KeyV', false)
-			if (meta) r.sendKey(KEY.Ctrl, 'ControlLeft', false)
+			const seq = pasteKeySequence({meta, shift, ctrlHeld: heldCtrl.size > 0, shiftHeld: heldShift.size > 0})
+			if (seq.releaseSuper) sendSuper(false)
+			for (const k of seq.keys) r.sendKey(k.keysym, k.code, k.down)
 		}
 		const finish = (text?: string) => {
 			if (!pending) return
-			const {meta, timer} = pending
+			const {meta, shift, timer} = pending
 			window.clearTimeout(timer)
 			pending = null
 			if (text) pushClipboard(text)
 			// A moment for the machine to take the new clipboard before the keystroke.
-			window.setTimeout(() => sendV(meta), text ? 60 : 0)
+			window.clearTimeout(sendTimer)
+			sendTimer = window.setTimeout(() => sendV(meta, shift), text ? 60 : 0)
 		}
 		const onKey = (e: KeyboardEvent) => {
-			if (e.code !== 'KeyV' || !(e.ctrlKey || e.metaKey) || e.altKey || !canvasHost.current?.contains(e.target as Node)) return
+			if (!canvasHost.current?.contains(e.target as Node)) return
+			if (e.type === 'keydown') {
+				if (e.code === 'ControlLeft' || e.code === 'ControlRight') heldCtrl.add(e.code)
+				if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') heldShift.add(e.code)
+			}
+			if (e.code !== 'KeyV' || !(e.ctrlKey || e.metaKey) || e.altKey) return
 			// noVNC mustn't send the V yet; the browser's default action stays, so it fires "paste".
 			e.stopImmediatePropagation()
 			if (e.type !== 'keydown' || e.repeat) return
-			pending = {meta: e.metaKey && !e.ctrlKey, timer: window.setTimeout(() => finish(), 400)}
+			if (pending) window.clearTimeout(pending.timer)
+			pending = {meta: e.metaKey && !e.ctrlKey, shift: e.shiftKey, timer: window.setTimeout(() => finish(), 400)}
+		}
+		const onWinKeyUp = (e: KeyboardEvent) => {
+			heldCtrl.delete(e.code)
+			heldShift.delete(e.code)
+		}
+		const clearHeld = () => {
+			heldCtrl.clear()
+			heldShift.clear()
 		}
 		const onPaste = (e: ClipboardEvent) => {
 			if (!pending) return
@@ -395,13 +412,19 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		root.addEventListener('pointerdown', onPointer, true)
 		root.addEventListener('pointerenter', syncClipboard)
 		document.addEventListener('paste', onPaste, true)
+		window.addEventListener('keyup', onWinKeyUp, true)
+		window.addEventListener('blur', clearHeld)
 		window.addEventListener('focus', syncClipboard)
 		return () => {
+			if (pending) window.clearTimeout(pending.timer)
+			window.clearTimeout(sendTimer)
 			root.removeEventListener('keydown', onKey, true)
 			root.removeEventListener('keyup', onKey, true)
 			root.removeEventListener('pointerdown', onPointer, true)
 			root.removeEventListener('pointerenter', syncClipboard)
 			document.removeEventListener('paste', onPaste, true)
+			window.removeEventListener('keyup', onWinKeyUp, true)
+			window.removeEventListener('blur', clearHeld)
 			window.removeEventListener('focus', syncClipboard)
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -463,7 +486,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			if (!blob) return
 			const a = document.createElement('a')
 			a.href = URL.createObjectURL(blob)
-			a.download = `${machine.name.replace(/[^\w.-]+/g, '-')}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`
+			a.download = screenshotFilename(machine.name)
 			a.click()
 			window.setTimeout(() => URL.revokeObjectURL(a.href), 2000)
 			toast('Screenshot saved')
@@ -497,15 +520,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	const canvasRect = () => canvasHost.current?.querySelector('canvas')?.getBoundingClientRect() ?? null
 	// Screen (client) point -> framebuffer pixel. Works at any zoom because the
 	// canvas's on-screen box already includes our transform.
-	const toFb = (p: Pt): Pt | null => {
-		const fb = fbSize()
-		const r = canvasRect()
-		if (!fb || !r || !r.width) return null
-		return {
-			x: Math.round(Math.min(fb.w - 1, Math.max(0, ((p.x - r.left) / r.width) * fb.w))),
-			y: Math.round(Math.min(fb.h - 1, Math.max(0, ((p.y - r.top) / r.height) * fb.h))),
-		}
-	}
+	const toFb = (p: Pt, clamp = true): Pt | null => pointToFb(p, canvasRect(), fbSize(), {clamp})
 	// Whether a point on screen is on the remote picture (not the bars around it).
 	const onPicture = (p: Pt) => {
 		const r = canvasRect()
@@ -748,23 +763,25 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		if (keyboardOpen && e.pointerType !== 'mouse') e.preventDefault()
 		if (state !== 'connected') return
 		const st = g.current
-		;(e.target as Element).setPointerCapture?.(e.pointerId)
 		const p = {x: e.clientX, y: e.clientY}
 
 		// A real mouse (desktop) maps straight through.
 		if (e.pointerType === 'mouse') {
-			st.kind = 'mouse'
+			const button = mouseButtonFromEvent(e.button)
+			if (button === null) return
 			// On a desktop, clicking the screen gives the VM your physical keyboard
 			// (noVNC's own handler: every key and shortcut, modifiers included).
 			if (embedded) window.setTimeout(() => rfbRef.current?.focus(), 0)
-			const fb = toFb(p)
+			const fb = toFb(p, false)
 			if (!fb) return
+			st.kind = 'mouse'
+			;(e.target as Element).setPointerCapture?.(e.pointerId)
 			cursor.current = fb
-			const button = e.button === 2 ? BTN.right : e.button === 1 ? BTN.middle : BTN.left
 			press(fb, button)
 			return
 		}
 
+		;(e.target as Element).setPointerCapture?.(e.pointerId)
 		st.pointers.set(e.pointerId, p)
 		if (st.pointers.size === 1) {
 			st.kind = 'one'
@@ -776,15 +793,16 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			st.dragging = false
 			st.panning = false
 			window.clearTimeout(st.longTimer)
-			if (mode === 'touch') {
+			if (mode === 'touch' && onPicture(p)) {
 				st.longTimer = window.setTimeout(() => {
 					if (st.kind !== 'one' || st.moved) return
+					const fb = toFb(st.start, false)
+					if (!fb) return
 					st.held = true
 					haptic(15)
-					const fb = toFb(st.start)
-					if (fb) ripple(fb, true)
+					ripple(fb, true)
 				}, LONG_PRESS_MS)
-			} else if (performance.now() - st.lastTapTime < 320) {
+			} else if (mode === 'mouse' && performance.now() - st.lastTapTime < 320) {
 				// Mouse mode: double-tap and hold = press the left button for dragging.
 				st.dragging = true
 				press(cursor.current, BTN.left)
@@ -908,12 +926,17 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		}
 	}
 
-	const onPointerUp = (e: React.PointerEvent) => {
+	const endPointer = (e: React.PointerEvent, cancelled: boolean) => {
 		const st = g.current
 		const p = {x: e.clientX, y: e.clientY}
 		if (e.pointerType === 'mouse') {
+			if (cancelled) {
+				if (mask.current) send(toFb(p) ?? cursor.current, 0)
+				return
+			}
+			const button = mouseButtonFromEvent(e.button)
+			if (button === null || !(mask.current & button)) return
 			const fb = toFb(p) ?? cursor.current
-			const button = e.button === 2 ? BTN.right : e.button === 1 ? BTN.middle : BTN.left
 			release(fb, button)
 			return
 		}
@@ -921,53 +944,59 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		const wasCount = st.pointers.size
 		st.pointers.delete(e.pointerId)
 		const quick = performance.now() - st.startTime < 280
+		if (cancelled && st.kind === 'two') st.moved = true
+		if (st.kind === 'one' && wasCount === 1) window.clearTimeout(st.longTimer)
 
-		if (st.kind === 'one' && wasCount === 1) {
-			window.clearTimeout(st.longTimer)
-			if (mode === 'touch') {
-				const fb = toFb(st.start)
-				if (st.dragging) release(toFb(p) ?? cursor.current, BTN.left)
-				else if (!st.moved && fb) {
-					if (st.held) click(fb, BTN.right)
-					else click(fb, BTN.left)
-					haptic(5)
-				}
-			} else {
-				if (st.dragging) release(cursor.current, BTN.left)
-				else if (!st.moved && quick) {
-					click(cursor.current, BTN.left)
-					haptic(5)
-					st.lastTapTime = performance.now()
-				}
+		const outcome = touchReleaseAction({
+			cancelled,
+			mode,
+			kind: st.kind,
+			wasCount,
+			remaining: st.pointers.size,
+			moved: st.moved,
+			held: st.held,
+			dragging: st.dragging,
+			quick,
+			maxPointers: st.two.maxPointers,
+		})
+		if (outcome.action === 'release-drag') {
+			release(mode === 'touch' ? (toFb(p) ?? cursor.current) : cursor.current, BTN.left)
+		} else if (outcome.action === 'click') {
+			const at = outcome.target === 'cursor' ? cursor.current : outcome.target === 'start' ? toFb(st.start, false) : toFb(st.two.mid, false)
+			if (at) {
+				click(at, outcome.button)
+				haptic(outcome.haptic)
+				if (outcome.updateLastTap) st.lastTapTime = performance.now()
 			}
+		}
+		if (st.kind === 'two' && st.pointers.size === 0 && view.current.z < 1.05) {
+			// Snap back if the pinch left us just above 100%.
+			applyView({...view.current, z: 1}, true)
+		}
+		if (st.pointers.size === 0) {
+			st.dragging = false
+			st.held = false
+			st.panning = false
 			st.kind = 'none'
-		} else if (st.kind === 'two') {
-			if (st.pointers.size === 0) {
-				// Two-finger tap = right-click (three-finger tap = middle).
-				if (!st.moved && quick) {
-					const at = mode === 'mouse' ? cursor.current : (toFb(st.two.mid) ?? cursor.current)
-					click(at, st.two.maxPointers >= 3 ? BTN.middle : BTN.right)
-					haptic(10)
-				}
-				st.kind = 'none'
-				// Snap back if the pinch left us just above 100%.
-				if (view.current.z < 1.05) applyView({...view.current, z: 1}, true)
-			}
 		}
-		if (st.pointers.size === 0) st.kind = 'none'
 	}
 
-	const onWheel = (e: React.WheelEvent) => {
-		if (state !== 'connected') return
-		const p = {x: e.clientX, y: e.clientY}
-		if (e.ctrlKey) {
-			// trackpad pinch / ctrl+wheel on desktop zooms the view
-			zoomAt(view.current.z * Math.exp(-e.deltaY / 200), p)
-			return
-		}
-		const fb = toFb(p)
-		if (fb) wheel(fb, e.deltaY > 0 ? BTN.wheelDown : BTN.wheelUp)
+	const onWheelRef = useRef<(e: WheelEvent) => void>(() => {})
+	onWheelRef.current = (e: WheelEvent) => {
+		handleConsoleWheel(e, {
+			connected: state === 'connected',
+			onZoom: (dy, p) => zoomAt(view.current.z * Math.exp(-dy / 200), p),
+			onScroll: (buttons, p) => {
+				const fb = toFb(p)
+				if (fb) for (const b of buttons) wheel(fb, b)
+			},
+		})
 	}
+	useEffect(() => {
+		const el = touchRef.current
+		if (!el || deskUi) return
+		return bindConsoleWheel(el, (e) => onWheelRef.current(e))
+	}, [deskUi])
 
 	// ---- keyboard ----------------------------------------------------------------
 	const tapKey = (keysym: number) => {
@@ -1220,12 +1249,12 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				</div>
 				{/* Every touch lands here, above noVNC's canvas, so our gestures decide what the VM gets. */}
 				{!deskUi && <div
+					ref={touchRef}
 					className="console-touch"
 					onPointerDown={onPointerDown}
 					onPointerMove={onPointerMove}
-					onPointerUp={onPointerUp}
-					onPointerCancel={onPointerUp}
-					onWheel={onWheel}
+					onPointerUp={(e) => endPointer(e, false)}
+					onPointerCancel={(e) => endPointer(e, true)}
 					onContextMenu={(e) => e.preventDefault()}
 				/>}
 				<div ref={cursorRef} className={`console-cursor${mode === 'mouse' && !deskUi ? '' : ' hidden'}`} aria-hidden="true">

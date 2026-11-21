@@ -88,6 +88,19 @@ test('MCP cards show list and object arguments, clip long ones, and keep nested 
 	assert.ok(parts.includes('emptyFilter: {}'))
 	assert.ok(parts.includes('auth: {"user":"chris"}'))
 	assert.doesNotMatch(clipped.detail, /secret-tok|api_key/)
+
+	const nested = cardForMcp(
+		{description: 'Send it.', appName: 'Notes', mcpName: 'send'},
+		{
+			meta: {access_token: 'access-secret', Authorization: 'Bearer auth-secret', name: 'visible'},
+			batch: [{refresh_token: 'refresh-secret', id: 'row1'}, 'keep-me'],
+			tokens: ['array-secret'],
+		},
+	)
+	assert.doesNotMatch(nested.detail, /access-secret|auth-secret|refresh-secret|array-secret/)
+	assert.match(nested.detail, /visible/)
+	assert.match(nested.detail, /row1/)
+	assert.match(nested.detail, /keep-me/)
 })
 
 test('an app cannot hide what an MCP step does behind its own description', () => {

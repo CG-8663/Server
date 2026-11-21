@@ -23,7 +23,7 @@ import {
 } from "../api";
 import { useBootstrap, useDisk, useUser } from "../data";
 import { Icon, type IconName } from "../icons";
-import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, useConfirm, usePortalRoot, useToast } from "../ui";
+import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, scrollPhoneToTop, useConfirm, usePortalRoot, useToast } from "../ui";
 import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
@@ -435,7 +435,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
     haptic(5);
     setQ("");
     setPath(p);
-    window.scrollTo({ top: 0 });
+    scrollPhoneToTop();
   };
   const up = () => {
     if (!path) return;
@@ -967,7 +967,9 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
                     <span className="main">
                       <b>{s.name}</b>
                       <span className="mono">
-                        smb://{boot.server?.host}/{s.sharename}
+                        {s.available === false
+                          ? "Unavailable · this folder is gone"
+                          : `smb://${boot.server?.host}/${s.sharename}`}
                       </span>
                     </span>
                     <Icon name="chevron" size={18} className="chev" />
@@ -1973,7 +1975,13 @@ export function ShareSheet({
           </span>
         }
         title={share?.name ?? name}
-        subtitle={share ? "Shared on your home LAN" : "Share this folder with computers on your home LAN"}
+        subtitle={
+          share
+            ? share.available === false
+              ? "This folder is no longer there"
+              : "Shared on your home LAN"
+            : "Share this folder with computers on your home LAN"
+        }
         onClose={onClose}
       />
       {samba && !samba.ok && (

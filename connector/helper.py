@@ -21,14 +21,35 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
-DEV = re.compile(r"^/dev/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|hd[a-z])$")
+DEV = re.compile(r"^/dev/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|mmcblk\d{1,2}|hd[a-z])$")
 BY_ID = re.compile(r"^/dev/disk/by-id/[A-Za-z0-9._:+-]+$")
 NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+ZFS_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}\Z")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-SYSTEM_MOUNTS = frozenset(["/", "/boot", "/efi", "/boot/efi", "/home", "/var", "/usr", "[SWAP]"])
+SYSTEM_MOUNTS = frozenset(["/", "/home", "[SWAP]"])
+SYSTEM_MOUNT_PREFIXES = ("/boot", "/efi", "/var", "/usr", "/opt", "/srv", "/nix")
 SKIP_FS = frozenset(["crypto_LUKS", "swap", "LVM2_member", "linux_raid_member", "zfs_member"])
 FAT_FS = frozenset(["vfat", "exfat", "ntfs", "msdos", "fuseblk"])
+
+
+def clean_mount(m):
+    if isinstance(m, str) and len(m) > 1:
+        return m.rstrip("/") or "/"
+    return m
+
+
+def is_system_mount(m, home=None):
+    p = clean_mount(m)
+    if not p:
+        return False
+    if p in SYSTEM_MOUNTS:
+        return True
+    owner_home = clean_mount(home)
+    if owner_home and p == owner_home:
+        return True
+    return any(p == pre or p.startswith(pre + "/") for pre in SYSTEM_MOUNT_PREFIXES)
 
 
 def safe_mount_name(s):
@@ -43,11 +64,36 @@ FSTAB_MARK = "# omarchy-connector pool"
 ZFS_MARK = "# omarchy-connector zfs"
 POOL_OPTIONS = "defaults,noatime,nosuid,nodev,compress=zstd:3,nofail,x-systemd.device-timeout=10s"
 UDEV_SLEEP = "/etc/udev/rules.d/69-omarchy-connector-sleep.rules"
+SMART_CACHE = "/run/omarchy-connector/smart-cache.json"
+SMART_CACHE_TTL = 600
 SLEEP_MINUTES = {0: 0, 10: 120, 20: 240, 30: 241, 60: 242, 120: 244, 240: 248}
+HELPER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+# zpool status prints large counters as 12K or 1.50M. The suffix is a power of 1000.
+_ZFS_MULT = {"": 1, "K": 10**3, "M": 10**6, "G": 10**9, "T": 10**12, "P": 10**15}
+
+
+def zfs_counter(raw):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([KMGTP])?", raw or "", re.I)
+    if not m:
+        return 0
+    unit = (m.group(2) or "").upper()
+    return int(round(float(m.group(1)) * _ZFS_MULT[unit]))
+
+
+def count_or_none(value):
+    return int(value) if isinstance(value, str) and value.isdigit() else None
 
 
 class HelperError(Exception):
     pass
+
+
+def hdparm_path():
+    # udev runs RUN+= with a fixed path: Debian and Ubuntu install hdparm in /usr/sbin, Arch in /usr/bin.
+    for p in ("/usr/sbin/hdparm", "/usr/bin/hdparm", "/sbin/hdparm"):
+        if os.path.exists(p):
+            return os.path.realpath(p)
+    return shutil.which("hdparm", path=HELPER_PATH) or "/usr/sbin/hdparm"
 
 
 def fail(message):
@@ -56,18 +102,49 @@ def fail(message):
 
 def default_run(cmd, args):
     env = dict(os.environ)
-    env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+    env["PATH"] = HELPER_PATH
     env["LC_ALL"] = "C"
-    r = subprocess.run([cmd, *args], capture_output=True, text=True, timeout=600, env=env)
+    # A drive that never answers smartctl must not hold the disk list for the full command limit.
+    timeout = 15 if cmd == "smartctl" else 600
+    r = subprocess.run([cmd, *args], capture_output=True, text=True, timeout=timeout, env=env)
     if r.returncode and not (cmd == "smartctl" and r.stdout):
         msg = (r.stderr or r.stdout or ("%s failed" % cmd)).strip().split("\n")[-1][:300]
         raise HelperError("%s: %s" % (cmd, msg) if msg else "%s failed" % cmd)
     return r.stdout
 
 
-def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, files=None, chown=None):
+def parse_smart(j):
+    if not isinstance(j, dict):
+        return False, None
+    power_mode = str(j.get("power_mode") or "")
+    messages = (j.get("smartctl") or {}).get("messages") or []
+    standby = bool(re.match(r"^(standby|sleep)$", power_mode, re.I)) or any(
+        re.search(r"\b(standby|sleep)\b", str((m or {}).get("string") or ""), re.I) for m in messages
+    )
+    attrs = {a.get("id"): (a.get("raw") or {}).get("value") for a in ((j.get("ata_smart_attributes") or {}).get("table") or [])}
+    nvme_log = j.get("nvme_smart_health_information_log")
+    has_data = any(
+        x is not None for x in (j.get("smart_status"), j.get("temperature"), j.get("power_on_time"), nvme_log)
+    ) or bool(attrs)
+    if (standby and not has_data) or (not has_data and (j.get("smartctl") or {}).get("exit_status") == 2):
+        return True, None
+    if not has_data:
+        return False, None
+    nvme = nvme_log or {}
+    return False, {
+        "passed": (j.get("smart_status") or {}).get("passed"),
+        "temperature": (j.get("temperature") or {}).get("current") if j.get("temperature") else nvme.get("temperature"),
+        "powerOnHours": (j.get("power_on_time") or {}).get("hours") if j.get("power_on_time") else nvme.get("power_on_hours"),
+        "lifetimeUsed": nvme.get("percentage_used"),
+        "reallocated": attrs.get(5),
+        "pending": attrs.get(197),
+    }
+
+
+def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, files=None, chown=None, now=None):
     run = run or default_run
     realpath = realpath or os.path.realpath
+    now = now or time.time
     if not user or not user.get("name") or not isinstance(user.get("uid"), int) or user.get("uid") == 0 or not str(user.get("home") or "").startswith("/"):
         fail("Run this through sudo as the person who installed the connector")
     if not re.match(r"^[a-z_][a-z0-9_-]{0,31}$", user["name"]):
@@ -99,7 +176,23 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         os.replace(tmp, path)
 
     def block_devices():
-        j = json.loads(run("lsblk", ["-J", "-b", "-o", "NAME,PATH,TYPE,SIZE,ROTA,TRAN,MODEL,SERIAL,FSTYPE,LABEL,UUID,MOUNTPOINTS,RM,HOTPLUG"]))
+        cols = "NAME,PATH,TYPE,SIZE,ROTA,TRAN,MODEL,SERIAL,FSTYPE,LABEL,UUID,%s,RM,HOTPLUG"
+        try:
+            j = json.loads(run("lsblk", ["-J", "-b", "-o", cols % "MOUNTPOINTS"]))
+        except HelperError as e:
+            # util-linux before 2.37 (Ubuntu 20.04, Debian 11, EL8) has only MOUNTPOINT.
+            if "MOUNTPOINTS" not in str(e):
+                raise
+            j = json.loads(run("lsblk", ["-J", "-b", "-o", cols % "MOUNTPOINT"]))
+
+            def plural(d):
+                if "mountpoints" not in d:
+                    d["mountpoints"] = [d.get("mountpoint")] if d.get("mountpoint") else []
+                for c in d.get("children") or []:
+                    plural(c)
+
+            for d in j.get("blockdevices") or []:
+                plural(d)
         return j.get("blockdevices") or []
 
     def flat(d):
@@ -149,7 +242,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
 
     def blank_disk(path):
         d = disk(path)
-        if any(m in SYSTEM_MOUNTS for m in mounts(d)):
+        if any(is_system_mount(m, user["home"]) for m in mounts(d)):
             fail("%s holds the system" % path)
         if mounts(d):
             fail("%s is in use" % path)
@@ -184,17 +277,35 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         chown_path(pools_dir)
         add_fstab(name, uuid)
         try:
-            run("systemctl", ["daemon-reload"])
+            try:
+                run("systemctl", ["daemon-reload"])
+            except Exception:
+                pass
+            run("mount", [mount_of(name)])
         except Exception:
-            pass
-        run("mount", [mount_of(name)])
+            try:
+                kept = [l for l in fstab() if not l.endswith("%s %s" % (FSTAB_MARK, name))]
+                write_text("/etc/fstab", ("\n".join(kept) + "\n") if kept else "")
+            except Exception:
+                pass
+            try:
+                run("systemctl", ["daemon-reload"])
+            except Exception:
+                pass
+            raise
         chown_path(mount_of(name))
 
     def pool_member(d):
         if any("/Pools/" in m for m in mounts(d)):
             return True
         uuids = {x.get("uuid") for x in flat(d) if x.get("uuid")}
-        return any(FSTAB_MARK in l and any(u in l for u in uuids) for l in fstab())
+        if any(FSTAB_MARK in l and any(u in l for u in uuids) for l in fstab()):
+            return True
+        guids, names_without_guid = zfs_pool_ids()
+        return any(
+            x.get("fstype") == "zfs_member" and ((x.get("uuid") or "") in guids or (x.get("label") or "") in names_without_guid)
+            for x in flat(d)
+        )
 
     def fstab_pools():
         out = []
@@ -265,6 +376,25 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         except Exception:
             return []
 
+    # Imported pools are identified by GUID. Two pools can share a name; lsblk stores the GUID as the
+    # zfs_member UUID, and `zpool get guid` is the imported pool's GUID.
+    def zfs_pool_ids():
+        found = {}
+        # A named pool whose guid could not be read still matches disks by name, so a failed
+        # `zpool get` does not make that pool's disks look free to format.
+        names_without_guid = set()
+        for name in zfs_pool_names():
+            try:
+                guid = run("zpool", ["get", "-H", "-o", "value", "guid", name]).strip()
+            except Exception:
+                names_without_guid.add(name)
+                continue
+            if guid and guid != "-":
+                found[guid] = name
+            else:
+                names_without_guid.add(name)
+        return found, names_without_guid
+
     def by_id(dev):
         directory = "/dev/disk/by-id"
         try:
@@ -298,7 +428,14 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             cfg = re.split(r"^errors:", parts[1], flags=re.M)[0]
         layout = set()
         devices = []
+        section = "data"
         for line in cfg.split("\n"):
+            sec = re.match(r"^\s+(logs|cache|spares|special|dedup)\s*\Z", line)
+            if sec:
+                section = sec.group(1)
+                continue
+            if section != "data":
+                continue
             m = re.match(r"^\s+(\S+)\s+(ONLINE|DEGRADED|FAULTED|OFFLINE|UNAVAIL|REMOVED)\s+(\d+\S*)\s+(\d+\S*)\s+(\d+\S*)", line)
             if not m:
                 continue
@@ -308,7 +445,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 devices.append({
                     "path": m.group(1),
                     "state": m.group(2),
-                    "errors": sum(int(re.match(r"\d+", x).group(0)) if re.match(r"\d+", x) else 0 for x in (m.group(3), m.group(4), m.group(5))),
+                    "errors": sum(zfs_counter(x) for x in (m.group(3), m.group(4), m.group(5))),
                 })
         return {
             "state": state_m.group(1) if state_m else "UNKNOWN",
@@ -319,7 +456,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         }
 
     def zfs_pool_mount(name):
-        if not re.match(r"^[a-z][a-z0-9_.-]{0,31}$", name or "", re.I):
+        if not ZFS_NAME.match(name or ""):
             fail("Bad pool name")
         if name not in zfs_pool_names():
             fail("No ZFS pool called %s" % name)
@@ -352,6 +489,19 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 mountpoint = run("zfs", ["get", "-H", "-o", "value", "mountpoint", name]).strip()
             except Exception:
                 mountpoint = ""
+            try:
+                space_lines = run("zfs", ["list", "-H", "-p", "-o", "used,avail", name]).strip().splitlines()
+                sp = space_lines[0].split("\t") if space_lines else []
+            except Exception:
+                sp = []
+            if len(sp) >= 2 and sp[0].isdigit() and sp[1].isdigit():
+                used_bytes = int(sp[0])
+                free_bytes = int(sp[1])
+                size_bytes = used_bytes + free_bytes
+            else:
+                size_bytes = count_or_none(size)
+                used_bytes = count_or_none(alloc)
+                free_bytes = count_or_none(free)
             bind = next((l for l in tab if l.endswith("%s %s" % (ZFS_MARK, name))), None)
             if bind:
                 folder = bind.split()[1]
@@ -359,7 +509,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 folder = mountpoint
             else:
                 folder = None
-            out.append({"name": name, "size": int(size), "used": int(alloc), "free": int(free), "health": health, "mountpoint": mountpoint, "folder": folder, **st})
+            out.append({"name": name, "size": size_bytes, "used": used_bytes, "free": free_bytes, "health": health, "mountpoint": mountpoint, "folder": folder, **st})
         return out
 
     def zfs_importable_data():
@@ -389,19 +539,20 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         return "ok"
     if verb == "smart":
         d = resolve_disk(args[0] if args else "")
-        return run("smartctl", ["-j", "-a", d["path"]])
+        return run("smartctl", ["-n", "standby", "-j", "-a", d["path"]])
     if verb == "umount":
         d = resolve_disk(args[0] if args else "")
-        if any(m in SYSTEM_MOUNTS for m in mounts(d)):
+        if any(is_system_mount(m, user["home"]) for m in mounts(d)):
             fail("%s holds the system" % d["path"])
         if pool_member(d):
             fail("%s is in a pool" % d["path"])
-        for m in mounts(d):
+        # A mount inside another mount on this drive is busy until the child is gone.
+        for m in sorted(mounts(d), key=len, reverse=True):
             run("umount", [m])
         return "ok"
     if verb == "mount":
         d = resolve_disk(args[0] if args else "")
-        if any(m in SYSTEM_MOUNTS for m in mounts(d)):
+        if any(is_system_mount(m, user["home"]) for m in mounts(d)):
             fail("%s holds the system" % d["path"])
         if pool_member(d):
             fail("%s is in a pool" % d["path"])
@@ -411,7 +562,18 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         targets = [x for x in nodes if x.get("fstype") and x["fstype"] not in SKIP_FS]
         if not targets:
             fail("Nothing to mount")
+        # Names already mounted under /run/media/$USER, so a second stick with the same label
+        # is placed beside the first instead of on top of it.
+        media = "/run/media/%s" % user["name"]
+        prefix = media + "/"
         used = set()
+        for dev in block_devices():
+            for m in mounts(dev):
+                if not m.startswith(prefix):
+                    continue
+                name = m[len(prefix):].split("/")[0]
+                if name:
+                    used.add(name)
         for t in targets:
             name = safe_mount_name(t.get("label")) or safe_mount_name(t.get("uuid")) or safe_mount_name(t.get("name")) or "disk"
             base = name
@@ -440,7 +602,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         if fs_kind not in ("blank", "ext4", "exfat"):
             fail("Choose blank, ext4 or exfat")
         d = resolve_disk(args[0] if args else "")
-        if any(m in SYSTEM_MOUNTS for m in mounts(d)):
+        if any(is_system_mount(m, user["home"]) for m in mounts(d)):
             fail("%s holds the system" % d["path"])
         if pool_member(d):
             fail("%s is in a pool" % d["path"])
@@ -450,6 +612,12 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         # even with nothing mounted: those are in use.
         if any(x is not d and x.get("type") != "part" for x in flat(d)):
             fail("%s is in use by encryption, LVM or RAID. Stop that first." % d["path"])
+        if fs_kind in ("ext4", "exfat"):
+            prog = "mkfs.ext4" if fs_kind == "ext4" else "mkfs.exfat"
+            if not shutil.which(prog, path=HELPER_PATH):
+                if fs_kind == "exfat":
+                    fail("exFAT tools aren't installed on this computer (exfatprogs): mkfs.exfat")
+                fail("mkfs.ext4 isn't installed on this computer")
         run("wipefs", ["-a", d["path"]])
         if fs_kind == "ext4":
             run("mkfs.ext4", ["-F", d["path"]])
@@ -457,7 +625,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             run("mkfs.exfat", [d["path"]])
         return "ok"
     if verb == "disks":
-        skip = re.compile(r"^(zram|loop|sr|ram)")
+        skip = re.compile(r"^(zram|loop|sr|ram)|^mmcblk\d+boot|rpmb$")
 
         def disk_id(path):
             try:
@@ -475,21 +643,35 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                     continue
             return path
 
-        def health(path):
+        use_cache = files is not None or fstab_text is None
+        smart_cache = {}
+        if use_cache:
             try:
-                j = json.loads(run("smartctl", ["-j", "-a", path]))
-                attrs = {a.get("id"): (a.get("raw") or {}).get("value") for a in ((j.get("ata_smart_attributes") or {}).get("table") or [])}
-                nvme_log = j.get("nvme_smart_health_information_log") or {}
-                return {
-                    "passed": (j.get("smart_status") or {}).get("passed"),
-                    "temperature": (j.get("temperature") or {}).get("current") if j.get("temperature") else nvme_log.get("temperature"),
-                    "powerOnHours": (j.get("power_on_time") or {}).get("hours") if j.get("power_on_time") else nvme_log.get("power_on_hours"),
-                    "lifetimeUsed": nvme_log.get("percentage_used"),
-                    "reallocated": attrs.get(5),
-                    "pending": attrs.get(197),
-                }
-            except Exception:
-                return None
+                loaded = json.loads(read_text(SMART_CACHE))
+                if isinstance(loaded, dict):
+                    smart_cache = loaded
+            except (OSError, ValueError, TypeError):
+                pass
+        ts = now()
+        cache_dirty = False
+
+        def health(path, serial):
+            nonlocal cache_dirty
+            cache_key = "%s|%s" % (path, serial or "")
+            hit = smart_cache.get(cache_key)
+            if isinstance(hit, dict) and isinstance(hit.get("at"), (int, float)) and ts - hit["at"] < SMART_CACHE_TTL:
+                return hit.get("value")
+            prev = hit.get("value") if isinstance(hit, dict) else None
+            val = None
+            try:
+                standby, parsed = parse_smart(json.loads(run("smartctl", ["-n", "standby", "-j", "-a", path])))
+                val = prev if standby else parsed
+            except Exception as e:
+                if re.search(r"\b(standby|sleep)\b", str(e), re.I) and prev is not None:
+                    val = prev
+            smart_cache[cache_key] = {"at": ts, "value": val}
+            cache_dirty = True
+            return val
 
         def pool_name(d):
             for m in mounts(d):
@@ -500,22 +682,25 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 if FSTAB_MARK in l and any(u in l for u in uuids):
                     return (l[l.index(FSTAB_MARK) + len(FSTAB_MARK) :].strip() or None)
             zmember = next((x for x in flat(d) if x.get("fstype") == "zfs_member"), None)
-            if zmember and zmember.get("label"):
-                return zmember["label"]
+            if zmember and (zmember.get("uuid") or "") in zfs_guids:
+                return zfs_guids[zmember["uuid"]]
+            if zmember and (zmember.get("label") or "") in names_without_guid:
+                return zmember.get("label")
             return None
 
+        zfs_guids, names_without_guid = zfs_pool_ids()
         sleeps = sleep_map()
         out = []
         for d in block_devices():
             name = d.get("name") or ""
-            if d.get("type") != "disk" or skip.match(name) or not int(d.get("size") or 0):
+            if d.get("type") != "disk" or skip.search(name) or not int(d.get("size") or 0):
                 continue
             allp = flat(d)
             mnt = [m for x in allp for m in (x.get("mountpoints") or []) if m]
             btrfs = next((x for x in allp if x.get("fstype") == "btrfs"), None)
             zmember = next((x for x in allp if x.get("fstype") == "zfs_member"), None)
             pool = pool_name(d)
-            system = any(m in SYSTEM_MOUNTS for m in mnt)
+            system = any(is_system_mount(m, user["home"]) for m in mnt)
             blank = not d.get("fstype") and not (d.get("children") or []) and not mnt
             nvme = d.get("tran") == "nvme" or name.startswith("nvme")
             rota = d.get("rota") in (True, 1, "1")
@@ -538,8 +723,19 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
                 "btrfs": {"uuid": btrfs.get("uuid"), "label": btrfs.get("label"), "mounted": any(btrfs.get("mountpoints") or [])} if btrfs and role != "pool" else None,
                 "zfs": {"pool": zmember.get("label")} if zmember and role != "pool" else None,
                 "sleepMinutes": sleeps.get(d.get("serial")) if d.get("serial") else None,
-                "health": health(path),
+                "health": health(path, d.get("serial")),
             })
+        if cache_dirty and use_cache:
+            smart_cache = {
+                k: v for k, v in smart_cache.items()
+                if isinstance(v, dict) and isinstance(v.get("at"), (int, float)) and ts - v["at"] < 3600
+            }
+            try:
+                if files is None:
+                    os.makedirs(os.path.dirname(SMART_CACHE), mode=0o700, exist_ok=True)
+                write_text(SMART_CACHE, json.dumps(smart_cache))
+            except OSError:
+                pass
         return json.dumps(out)
     if verb == "pool-create":
         name = args[0] if args else ""
@@ -615,7 +811,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         return json.dumps(pool_status_data(args[0] if args else ""))
     if verb == "sleep":
         d = disk(args[0] if args else "")
-        if any(m in SYSTEM_MOUNTS for m in mounts(d)):
+        if any(is_system_mount(m, user["home"]) for m in mounts(d)):
             fail("%s holds the system" % d["path"])
         try:
             m = int(args[1]) if len(args) > 1 else -1
@@ -635,8 +831,11 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             text = ""
         needle = 'ENV{ID_SERIAL_SHORT}=="%s"' % serial
         lines = [l for l in text.split("\n") if l and not l.startswith("#") and needle not in l]
+        # Rules written before hdparm_path() still name /usr/bin/hdparm. Repair every line we keep.
+        hd = hdparm_path()
+        lines = [re.sub(r'RUN\+="\S*hdparm ', lambda _match: 'RUN+="%s ' % hd, l) for l in lines]
         if m:
-            lines.append('ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", %s, RUN+="/usr/bin/hdparm -S %s /dev/%%k"' % (needle, SLEEP_MINUTES[m]))
+            lines.append('ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", %s, RUN+="%s -S %s /dev/%%k"' % (needle, hdparm_path(), SLEEP_MINUTES[m]))
         write_text(UDEV_SLEEP, "# Drive sleep, set by Omarchy Server\n%s\n" % "\n".join(lines) if lines else "")
         return "ok"
     if verb == "zfs-available":
@@ -676,7 +875,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
     if verb == "zfs-import":
         name = args[0] if args else ""
         force = args[1] if len(args) > 1 else None
-        if not re.match(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$", name or ""):
+        if not ZFS_NAME.match(name or ""):
             fail("Bad pool name")
         if force not in (None, "force"):
             fail("Bad option")
@@ -715,7 +914,7 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
             lines = [l for l in fstab() if not l.endswith("%s %s" % (ZFS_MARK, name))]
             while lines and lines[-1] == "":
                 lines.pop()
-            lines.append("%s %s none bind,nosuid,nodev,nofail,x-systemd.requires=zfs-mount.service 0 0 %s %s" % (top, mount_of(pretty), ZFS_MARK, name))
+            lines.append("%s %s none rbind,nosuid,nodev,nofail,x-systemd.requires=zfs-mount.service 0 0 %s %s" % (top, mount_of(pretty), ZFS_MARK, name))
             lines.append("")
             write_text("/etc/fstab", "\n".join(lines))
             try:
@@ -731,20 +930,26 @@ def handle(verb, args, run=None, user=None, realpath=None, fstab_text=None, file
         name = args[0] if args else ""
         zfs_pool_mount(name)
         bind = next((l for l in fstab() if l.endswith("%s %s" % (ZFS_MARK, name))), None)
-        if bind:
-            try:
-                run("umount", [bind.split()[1]])
-            except Exception:
-                pass
-            write_text("/etc/fstab", "\n".join(l for l in fstab() if l != bind))
-            try:
-                run("systemctl", ["daemon-reload"])
-            except Exception:
-                pass
+        bind_parts = bind.split() if bind else []
+        bind_target = bind_parts[1] if len(bind_parts) >= 2 else None
+        # Export first: a busy pool fails here and the bind mount and fstab line stay.
         try:
             run("zpool", ["export", name])
         except Exception:
             fail("%s is in use. Stop apps and shares using it, then try again." % name)
+        if bind_target:
+            try:
+                run("umount", ["-R", bind_target])
+            except Exception as e:
+                if "not mounted" not in str(e).lower():
+                    fail("%s is in use. Stop apps and shares using it, then try again." % name)
+        if bind:
+            kept = [l for l in fstab() if l != bind]
+            write_text("/etc/fstab", ("\n".join(kept) + "\n") if kept else "")
+            try:
+                run("systemctl", ["daemon-reload"])
+            except Exception:
+                pass
         return "ok"
     if verb == "pools":
         devs = [d for d in block_devices() if d.get("type") == "disk"]

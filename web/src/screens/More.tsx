@@ -2,6 +2,8 @@ import {useRef, useState, type CSSProperties} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {diskPct, logout, mutate, query, type BatteryInfo, type DiskUsage, type GpuInfo, type UsageItem, type Wallpaper} from '../api'
+import {resetAssistantTurn} from '../assistantTurn'
+import {resetDeskConfig} from '../desktop/config'
 import {batteryPackSub} from '../battery'
 import {useApps, useBattery, useBootstrap, useCpu, useDisk, useGpus, useMemory, useTemp, useUptime, useUser} from '../data'
 import {shortGpuName} from '../gauges'
@@ -375,6 +377,8 @@ export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; 
 		if (!ok) return
 		await logout().catch(() => {})
 		qc.clear()
+		resetDeskConfig()
+		resetAssistantTurn()
 		onSignedOut()
 	}
 

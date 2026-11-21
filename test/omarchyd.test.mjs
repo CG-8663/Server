@@ -1,9 +1,11 @@
 // omarchyd: accounts, file safety and the freedesktop trash, against a throwaway home folder.
 import assert from 'node:assert/strict'
+import {execFileSync} from 'node:child_process'
 import {mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
+import {fileURLToPath} from 'node:url'
 
 import {openAccounts, secretFromUri, totpCode} from '../omarchyd/accounts.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
@@ -43,10 +45,20 @@ describe('omarchyd', () => {
 		const r = await call('query', 'system.version')
 		assert.equal(r.status, 200)
 		const v = r.body.result.data
-		assert.equal(v.version, '0.9.52')
+		assert.equal(v.version, '0.9.53')
 		assert.equal(typeof v.startedAt, 'number')
 		assert.ok(v.startedAt <= Date.now() && Date.now() - v.startedAt < 60_000)
-		assert.match(String(v.revision ?? ''), /^[0-9a-f]{7,40}$/)
+		let expectedRevision
+		try {
+			const sha = execFileSync('git', ['-C', fileURLToPath(new URL('..', import.meta.url)), 'rev-parse', '--short', 'HEAD'], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}).trim()
+			if (/^[0-9a-f]{7,40}$/i.test(sha)) expectedRevision = sha
+		} catch {}
+		if (expectedRevision) {
+			assert.match(String(v.revision ?? ''), /^[0-9a-f]{7,40}$/)
+			assert.equal(v.revision, expectedRevision)
+		} else {
+			assert.equal(v.revision, undefined)
+		}
 	})
 	test('accounts: wrong password refused, right one signs in', async () => {
 		const bad = await call('mutation', 'user.loginNative', {userId: 'owner', password: 'nope', client: {id: 't'}})

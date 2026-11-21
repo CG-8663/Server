@@ -12,17 +12,50 @@
 # Remove it again:  curl -fsSL <source>/main/connector/install.sh | bash -s -- --uninstall
 set -euo pipefail
 
+usage() {
+	cat <<'EOF'
+Omarchy Server connector installer
+
+  connector/install.sh --server <https://...> --ca <fingerprint> --token <code> [--allow <list>] [--source <url>]
+  connector/install.sh --uninstall
+  connector/install.sh -h|--help
+
+Options:
+  --server <url>        Server URL (https://...)
+  --ca <fingerprint>    64-char hex SHA-256 fingerprint of the server CA
+  --token <code>        One-time pairing token from Machines -> Local swarm
+  --allow <abilities>   Comma-separated abilities (terminal,desktop,manage,storage,backup)
+  --source <url>        Base URL to download connector files from
+  --uninstall           Remove the connector from this computer
+  -h, --help            Show this help
+EOF
+}
+
+need_value() {
+	if [ "$2" -lt 2 ]; then
+		printf 'Missing value for %s\n\n' "$1" >&2
+		usage >&2
+		exit 2
+	fi
+}
+
 SOURCE="https://raw.githubusercontent.com/TouchWorkStation/omarchy-server"
 SERVER="" CA="" TOKEN="" ALLOW="" UNINSTALL=0
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--server) SERVER="${2:-}"; shift 2 ;;
-		--ca) CA="${2:-}"; shift 2 ;;
-		--token) TOKEN="${2:-}"; shift 2 ;;
-		--allow) ALLOW="${2:-}"; shift 2 ;;
-		--source) SOURCE="${2:-}"; shift 2 ;;
+		--server) need_value "$1" "$#"; SERVER="$2"; shift 2 ;;
+		--server=*) SERVER="${1#--server=}"; shift ;;
+		--ca) need_value "$1" "$#"; CA="$2"; shift 2 ;;
+		--ca=*) CA="${1#--ca=}"; shift ;;
+		--token) need_value "$1" "$#"; TOKEN="$2"; shift 2 ;;
+		--token=*) TOKEN="${1#--token=}"; shift ;;
+		--allow) need_value "$1" "$#"; ALLOW="$2"; shift 2 ;;
+		--allow=*) ALLOW="${1#--allow=}"; shift ;;
+		--source) need_value "$1" "$#"; SOURCE="$2"; shift 2 ;;
+		--source=*) SOURCE="${1#--source=}"; shift ;;
 		--uninstall) UNINSTALL=1; shift ;;
-		*) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
+		-h | --help) usage; exit 0 ;;
+		*) printf 'Unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
 	esac
 done
 
@@ -44,8 +77,14 @@ if [ "$UNINSTALL" = 1 ]; then
 	systemctl --user disable --now omarchy-connector.service 2>/dev/null || true
 	rm -f "$UNIT"
 	systemctl --user daemon-reload 2>/dev/null || true
-	rm -rf "$DIR" "$CONF"
-	sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector 2>/dev/null || true
+	rm -rf "$DIR" "$CONF" "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-connector"
+	if ! sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules; then
+		warn "The helper, its sudoers rule and the sleep udev rule could not be removed. Run this yourself:"
+		printf '  sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules\n' >&2
+		printf '  sudo udevadm control --reload\n' >&2
+		exit 1
+	fi
+	sudo udevadm control --reload >/dev/null 2>&1 || true
 	say "Done. Remove this computer in Machines → Local swarm too, if it's still listed."
 	exit 0
 fi
@@ -66,12 +105,14 @@ if has desktop; then
 	command -v x11vnc >/dev/null || pkgs+=(x11vnc)
 	command -v wayvnc >/dev/null || pkgs+=(wayvnc)
 fi
+# Disk tools live in /usr/sbin on Debian, which isn't on a normal user's PATH; the helper looks there too.
+sbin() { PATH="$PATH:/usr/local/sbin:/usr/sbin:/sbin" command -v "$1" >/dev/null; }
 if has storage; then
-	command -v smartctl >/dev/null || pkgs+=(smartmontools)
-	command -v mkfs.ext4 >/dev/null || pkgs+=(e2fsprogs)
-	command -v mkfs.exfat >/dev/null || pkgs+=(exfatprogs)
-	command -v mkfs.btrfs >/dev/null || pkgs+=(btrfs-progs)
-	command -v hdparm >/dev/null || pkgs+=(hdparm)
+	sbin smartctl || pkgs+=(smartmontools)
+	sbin mkfs.ext4 || pkgs+=(e2fsprogs)
+	sbin mkfs.exfat || pkgs+=(exfatprogs)
+	sbin mkfs.btrfs || pkgs+=(btrfs-progs)
+	sbin hdparm || pkgs+=(hdparm)
 fi
 if [ ${#pkgs[@]} -gt 0 ]; then
 	say "Installing ${pkgs[*]} (sudo needed)"

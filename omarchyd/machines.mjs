@@ -11,6 +11,7 @@
 // against the publisher's checksum file, then copied per machine. cloud-init sets up the account
 // on first boot; only a SHA-512 crypt hash of the password is written, never the password.
 import {writeAtomic} from './atomic.mjs'
+import {createKeyedLock} from './locks.mjs'
 import {execFile} from 'node:child_process'
 import {createHash, randomBytes} from 'node:crypto'
 import {constants, createWriteStream} from 'node:fs'
@@ -78,7 +79,7 @@ function validCatalog(data) {
 	return ok.length ? ok : null
 }
 
-export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, statsIntervalMs = 1_000, seriesIntervalMs = 10_000}) {
+export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000}) {
 	const base = join(dataDir, 'machines')
 	const imagesDir = join(base, 'images')
 	const vmsDir = join(base, 'vms')
@@ -87,7 +88,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const domain = (id) => `omarchy-${id}`
 
 	let machines = [] // persisted metadata, never secrets
+	// False until a missing file (new install) or a readable registry is loaded. save() must not
+	// replace a damaged machines.json with this in-memory list.
+	let loaded = false
 	const busy = new Map() // id -> {state, progress, settling}
+	const lock = createKeyedLock()
 	const isBusy = (id) => busy.has(id) && !busy.get(id).settling
 	const downloads = new Map() // imageId -> {progress, promise}
 	const failedImages = new Map() // imageId -> message
@@ -98,7 +103,6 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await mkdir(vmsDir, {recursive: true, mode: 0o700})
 		// Only a missing file is a new install. A damaged or unreadable machines.json must stay
 		// byte-for-byte: saving [] here would wipe the registry.
-		let loaded = false
 		try {
 			const text = await readFile(stateFile, 'utf8')
 			let data
@@ -124,10 +128,12 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			for (const m of machines) normalize(m)
 			await save().catch(() => {})
 		}
-		startSampler()
 		autostart()
 	})()
-	const save = () => writeAtomic(stateFile, () => JSON.stringify({machines}, null, 2))
+	const save = () => {
+		if (!loaded) throw new RpcError('PRECONDITION_FAILED', 'machines.json is damaged and was left unchanged')
+		return writeAtomic(stateFile, () => JSON.stringify({machines}, null, 2))
+	}
 	const find = (id) => {
 		const m = typeof id === 'string' && ID.test(id) ? machines.find((x) => x.id === id) : null
 		if (!m) throw new RpcError('NOT_FOUND', 'That machine doesn’t exist')
@@ -460,6 +466,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// ---- procedures -----------------------------------------------------------------------------
 	async function list() {
 		await ready
+		touchWatch()
 		const states = await domainStates()
 		return machines.map((m) => {
 			const b = busy.get(m.id)
@@ -488,108 +495,117 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 
 	async function create(input = {}) {
 		await ready
-		const caps = await capabilities()
-		if (!caps.libvirtAvailable) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the Omarchy Server installer again to add them.')
-		if (caps.hostArchitecture !== 'amd64') throw new RpcError('PRECONDITION_FAILED', 'Machines currently need an x86-64 server')
-		const osId = String(input.osId ?? '')
-		// What to install from: a catalog image, or one of your own ISOs.
-		let img = null
-		let local = null
-		if (osId.startsWith('local:')) {
-			local = (await localIsos()).find((i) => i.id === osId)
-			if (!local) throw new RpcError('NOT_FOUND', 'That ISO isn’t in your Home folder any more')
-			local.real = (await files.resolve(osId.slice('local:'.length))).real
-		} else {
-			img = (await images()).find((i) => i.id === osId)
-			if (!img || img.arch !== caps.hostArchitecture) throw new RpcError('BAD_REQUEST', 'That operating system isn’t available here')
-		}
-		const kind = local ? (local.requiresCredentials ? 'windows' : 'manual') : img.kind === 'iso' ? 'omarchy' : 'cloud'
-		const name = String(input.name ?? '').trim()
-		if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
-		if (machines.some((m) => m.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
-		const threads = os.cpus().length || 1
-		const totalGb = Math.floor(os.totalmem() / 1024 ** 3)
-		const cores = Number(input.cores)
-		const memoryGb = Number(input.memoryGb)
-		const diskSizeGb = Number(input.diskSizeGb)
-		const minDisk = kind === 'windows' ? 64 : kind === 'omarchy' ? 20 : 4
-		if (!Number.isInteger(cores) || cores < 1 || cores > threads) throw new RpcError('BAD_REQUEST', `Cores must be between 1 and ${threads}`)
-		if (!Number.isInteger(memoryGb) || memoryGb < 1 || memoryGb > Math.max(1, totalGb - 1)) throw new RpcError('BAD_REQUEST', 'Not enough memory on the server for that')
-		if (!Number.isInteger(diskSizeGb) || diskSizeGb < minDisk || diskSizeGb > 4096) throw new RpcError('BAD_REQUEST', `Disk size must be between ${minDisk} and 4096 GB`)
-		const needsAccount = kind !== 'manual'
-		const username = String(input.username ?? '').trim()
-		const password = String(input.password ?? '')
-		if (needsAccount) {
-			const userOk = kind === 'windows' ? /^[A-Za-z0-9][A-Za-z0-9_.-]{0,19}$/.test(username) && !/^(administrator|guest)$/i.test(username) : /^[a-z_][a-z0-9_-]{0,31}$/.test(username) && username !== 'root'
-			if (!userOk) throw new RpcError('BAD_REQUEST', kind === 'windows' ? 'Use a username of letters, numbers, - and _ (up to 20)' : 'Use a lower-case username: letters, numbers, - and _ (not root)')
-			if (password.length < 1 || password.length > 256 || /[\r\n]/.test(password)) throw new RpcError('BAD_REQUEST', 'Enter a password for the machine')
-		}
-		const fs = await statfs(base)
-		const freeGb = (fs.bavail * fs.bsize) / 1024 ** 3
-		const needGb = img ? ((Number(img.sizeMb) || 1024) * 3) / 1024 + 2 : 4
-		if (freeGb < needGb) throw new RpcError('PRECONDITION_FAILED', `Not enough free space: about ${Math.ceil(needGb)} GB is needed to set it up`)
-
-		let id
-		do id = randomBytes(4).toString('hex')
-		while (machines.some((m) => m.id === id))
-		const dir = join(vmsDir, id)
-		const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' ? 'windows' : 'iso', dir, img)})
-		if (kind === 'cloud') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
-		machines.push(m)
-		await save()
-		busy.set(id, {state: 'installing', progress: 0})
-		const step = (progress) => busy.set(id, {state: 'installing', progress})
-		const host = hostnameFor(name, id)
-		const t = beginTask(m, 'create')
-
-		;(async () => {
-			try {
-				await mkdir(dir, {recursive: true, mode: 0o700})
-				// Account first, so the password isn't held while downloading. Only hashes (or, for
-				// Windows, its own answer-file encoding) are written.
-				if (kind === 'cloud') await seed(m, img, {username, password})
-				else if (kind === 'omarchy') {
-					const hash = await hashPassword(password)
-					const seedIso = await mediaIso(m, 'seed', 'cidata', {
-						'user_configuration.json': JSON.stringify(omarchyConfiguration({host, diskSizeGb})),
-						'user_credentials.json': JSON.stringify(omarchyCredentials({username, hash})),
-					})
-					m.layout.disks.push({id: 'seed', role: 'seed', file: seedIso, device: 'cdrom', bus: 'sata', format: 'raw'})
-				} else if (kind === 'windows') {
-					const answer = await mediaIso(m, 'answer', 'OMARCHY_ANSWER', {'autounattend.xml': windowsAnswerFile({computerName: host.toUpperCase(), username, password})})
-					m.layout.disks.push({id: 'answer', role: 'answer', file: answer, device: 'cdrom', bus: 'sata', format: 'raw'})
-					m.answerIso = answer
-				}
-				step(5)
-				if (kind === 'cloud') {
-					const src = await ensureImage(img, (p) => step(5 + Math.floor(p * 0.75)))
-					step(82)
-					await run('qemu-img', ['convert', '-O', 'qcow2', src, join(dir, 'disk.qcow2')], {timeout: 30 * 60_000})
-					await run('qemu-img', ['resize', join(dir, 'disk.qcow2'), `${diskSizeGb}G`])
-				} else {
-					// Installer ISOs: a blank disk, booted from the installer until something is on it.
-					const iso = kind === 'omarchy' ? await ensureImage(img, (p) => step(5 + Math.floor(p * 0.8))) : local.real
-					step(88)
-					await run('qemu-img', ['create', '-f', 'qcow2', join(dir, 'disk.qcow2'), `${diskSizeGb}G`])
-					m.layout.disks.splice(1, 0, {id: 'cd0', file: iso, device: 'cdrom', bus: 'sata', format: 'raw'})
-					m.boot = ['disk0', 'cd0']
-				}
-				step(92)
-				await define(m)
-				step(97)
-				await virsh('start', domain(id))
-				delete m.state
-				delete m.errorMessage
-				endTask(m, t)
-			} catch (error) {
-				Object.assign(m, {state: 'error', errorMessage: error.message})
-				endTask(m, t, error)
-			} finally {
-				busy.delete(id)
-				await save().catch(() => {})
+		const nameKey = String(input.name ?? '').trim().toLowerCase()
+		const runCreate = async () => {
+			const caps = await capabilities()
+			if (!caps.libvirtAvailable) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the Omarchy Server installer again to add them.')
+			if (caps.hostArchitecture !== 'amd64') throw new RpcError('PRECONDITION_FAILED', 'Machines currently need an x86-64 server')
+			const osId = String(input.osId ?? '')
+			// What to install from: a catalog image, or one of your own ISOs.
+			let img = null
+			let local = null
+			if (osId.startsWith('local:')) {
+				local = (await localIsos()).find((i) => i.id === osId)
+				if (!local) throw new RpcError('NOT_FOUND', 'That ISO isn’t in your Home folder any more')
+				local.real = (await files.resolve(osId.slice('local:'.length))).real
+			} else {
+				img = (await images()).find((i) => i.id === osId)
+				if (!img || img.arch !== caps.hostArchitecture) throw new RpcError('BAD_REQUEST', 'That operating system isn’t available here')
 			}
-		})()
-		return {id}
+			const kind = local ? (local.requiresCredentials ? 'windows' : 'manual') : img.kind === 'iso' ? 'omarchy' : 'cloud'
+			const name = String(input.name ?? '').trim()
+			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (machines.some((m) => m.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
+			const threads = os.cpus().length || 1
+			const totalGb = Math.floor(os.totalmem() / 1024 ** 3)
+			const cores = Number(input.cores)
+			const memoryGb = Number(input.memoryGb)
+			const diskSizeGb = Number(input.diskSizeGb)
+			const minDisk = kind === 'windows' ? 64 : kind === 'omarchy' ? 20 : 4
+			if (!Number.isInteger(cores) || cores < 1 || cores > threads) throw new RpcError('BAD_REQUEST', `Cores must be between 1 and ${threads}`)
+			if (!Number.isInteger(memoryGb) || memoryGb < 1 || memoryGb > Math.max(1, totalGb - 1)) throw new RpcError('BAD_REQUEST', 'Not enough memory on the server for that')
+			if (!Number.isInteger(diskSizeGb) || diskSizeGb < minDisk || diskSizeGb > 4096) throw new RpcError('BAD_REQUEST', `Disk size must be between ${minDisk} and 4096 GB`)
+			const needsAccount = kind !== 'manual'
+			const username = String(input.username ?? '').trim()
+			const password = String(input.password ?? '')
+			if (needsAccount) {
+				const userOk = kind === 'windows' ? /^[A-Za-z0-9][A-Za-z0-9_.-]{0,19}$/.test(username) && !/^(administrator|guest)$/i.test(username) : /^[a-z_][a-z0-9_-]{0,31}$/.test(username) && username !== 'root'
+				if (!userOk) throw new RpcError('BAD_REQUEST', kind === 'windows' ? 'Use a username of letters, numbers, - and _ (up to 20)' : 'Use a lower-case username: letters, numbers, - and _ (not root)')
+				if (password.length < 1 || password.length > 256 || /[\r\n]/.test(password)) throw new RpcError('BAD_REQUEST', 'Enter a password for the machine')
+			}
+			const fs = await statfs(base)
+			const freeGb = (fs.bavail * fs.bsize) / 1024 ** 3
+			const needGb = img ? ((Number(img.sizeMb) || 1024) * 3) / 1024 + 2 : 4
+			if (freeGb < needGb) throw new RpcError('PRECONDITION_FAILED', `Not enough free space: about ${Math.ceil(needGb)} GB is needed to set it up`)
+
+			let id
+			do id = randomBytes(4).toString('hex')
+			while (machines.some((m) => m.id === id))
+			const dir = join(vmsDir, id)
+			const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' ? 'windows' : 'iso', dir, img)})
+			if (kind === 'cloud') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
+			machines.push(m)
+			await save()
+			busy.set(id, {state: 'installing', progress: 0})
+			const step = (progress) => busy.set(id, {state: 'installing', progress})
+			const host = hostnameFor(name, id)
+			const t = beginTask(m, 'create')
+
+			;(async () => {
+				try {
+					await mkdir(dir, {recursive: true, mode: 0o700})
+					// Account first, so the password isn't held while downloading. Only hashes (or, for
+					// Windows, its own answer-file encoding) are written.
+					if (kind === 'cloud') await seed(m, img, {username, password})
+					else if (kind === 'omarchy') {
+						const hash = await hashPassword(password)
+						const seedIso = await mediaIso(m, 'seed', 'cidata', {
+							'user_configuration.json': JSON.stringify(omarchyConfiguration({host, diskSizeGb})),
+							'user_credentials.json': JSON.stringify(omarchyCredentials({username, hash})),
+						})
+						m.layout.disks.push({id: 'seed', role: 'seed', file: seedIso, device: 'cdrom', bus: 'sata', format: 'raw'})
+					} else if (kind === 'windows') {
+						const answer = await mediaIso(m, 'answer', 'OMARCHY_ANSWER', {'autounattend.xml': windowsAnswerFile({computerName: host.toUpperCase(), username, password})})
+						m.layout.disks.push({id: 'answer', role: 'answer', file: answer, device: 'cdrom', bus: 'sata', format: 'raw'})
+						m.answerIso = answer
+					}
+					step(5)
+					// Write beside the final name. A crash while qemu-img is writing must not leave a bootable disk.qcow2.
+					const part = join(dir, 'disk.qcow2.part')
+					const disk = join(dir, 'disk.qcow2')
+					if (kind === 'cloud') {
+						const src = await ensureImage(img, (p) => step(5 + Math.floor(p * 0.75)))
+						step(82)
+						await run('qemu-img', ['convert', '-O', 'qcow2', src, part], {timeout: 30 * 60_000})
+						await run('qemu-img', ['resize', part, `${diskSizeGb}G`])
+						await rename(part, disk)
+					} else {
+						// Installer ISOs: a blank disk, booted from the installer until something is on it.
+						const iso = kind === 'omarchy' ? await ensureImage(img, (p) => step(5 + Math.floor(p * 0.8))) : local.real
+						step(88)
+						await run('qemu-img', ['create', '-f', 'qcow2', part, `${diskSizeGb}G`])
+						await rename(part, disk)
+						m.layout.disks.splice(1, 0, {id: 'cd0', file: iso, device: 'cdrom', bus: 'sata', format: 'raw'})
+						m.boot = ['disk0', 'cd0']
+					}
+					step(92)
+					await define(m)
+					step(97)
+					await virsh('start', domain(id))
+					delete m.state
+					delete m.errorMessage
+					endTask(m, t)
+				} catch (error) {
+					Object.assign(m, {state: 'error', errorMessage: error.message})
+					endTask(m, t, error)
+				} finally {
+					busy.delete(id)
+					await save().catch(() => {})
+				}
+			})()
+			return {id}
+		}
+		return nameKey ? lock(`create:${nameKey}`, runCreate) : runCreate()
 	}
 
 	// Windows' answer file is only needed while Setup runs (Setup restarts the machine itself, which
@@ -609,8 +625,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const m = find(input?.id)
 		if (isBusy(m.id)) throw new RpcError('CONFLICT', `${m.name} is busy`)
 		if (m.state === 'error') {
-			// If setup got as far as the disk, Start finishes it: define the machine again and boot.
-			if (pending !== 'starting' || !(await exists(join(vmsDir, m.id, 'disk.qcow2')))) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish setting up. Delete it and create it again.`)
+			// If setup got as far as this machine's own disk, Start finishes it: define again and boot.
+			// A failed copy still names the source machine's files, and those must not be booted.
+			const own = `${join(vmsDir, m.id)}/`
+			const ownDisks = (m.layout?.disks ?? []).every((d) => d.device !== 'disk' || !d.file || d.file.startsWith(own))
+			if (pending !== 'starting' || !ownDisks || !(await exists(join(vmsDir, m.id, 'disk.qcow2')))) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish setting up. Delete it and create it again.`)
 			await define(m)
 			delete m.state
 			delete m.errorMessage
@@ -779,57 +798,81 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const series = new Map() // id -> [{t, cpu, memMb, netIn, netOut, diskRead, diskWrite}]
 	const lastPoint = new Map()
 	const lastRaw = new Map() // id -> {t, cpuNs, rx, tx, rd, wr}
+	// libvirt states that still have counters. "shut off" and friends do not.
+	const COUNTED = new Set(['running', 'paused', 'blocked', 'pmsuspended'])
+	let inFlight = false
 	async function sample() {
-		const running = machines.filter((m) => !isBusy(m.id))
-		if (!running.length) return
-		let text = ''
+		if (inFlight) return
+		if (!machines.some((m) => !isBusy(m.id))) return
+		inFlight = true
 		try {
-			text = await virsh('domstats', '--list-running', '--cpu-total', '--balloon', '--interface', '--block')
-		} catch {
-			return
-		}
-		const now = Date.now()
-		for (const block of text.split(/\n(?=Domain: )/)) {
-			const name = /Domain: '([^']+)'/.exec(block)?.[1]
-			const m = machines.find((x) => domain(x.id) === name)
-			if (!m) continue
-			const kv = {}
-			for (const line of block.split('\n')) {
-				const mm = /^\s*([\w.]+)=(\d+)/.exec(line)
-				if (mm) kv[mm[1]] = Number(mm[2])
+			const states = await domainStates()
+			const live = machines.some((m) => !isBusy(m.id) && COUNTED.has(states.get(domain(m.id))))
+			if (!live) return
+			// Counters are read when virsh starts. The rate is divided by the time since the
+			// previous start, not by how long virsh took to return.
+			const now = Date.now()
+			let text = ''
+			try {
+				text = await virsh('domstats', '--list-running', '--cpu-total', '--balloon', '--interface', '--block')
+			} catch {
+				return
 			}
-			const sum = (re) => Object.entries(kv).reduce((a, [k, v]) => (re.test(k) ? a + v : a), 0)
-			const raw = {t: now, cpuNs: kv['cpu.time'] ?? 0, rx: sum(/^net\.\d+\.rx\.bytes$/), tx: sum(/^net\.\d+\.tx\.bytes$/), rd: sum(/^block\.\d+\.rd\.bytes$/), wr: sum(/^block\.\d+\.wr\.bytes$/)}
-			const prev = lastRaw.get(m.id)
-			lastRaw.set(m.id, raw)
-			if (!prev || raw.cpuNs < prev.cpuNs) continue
-			const secs = (raw.t - prev.t) / 1000
-			const vcpus = (m.sockets ?? 1) * m.cores
-			const point = {
-				t: now,
-				cpu: Math.min(100, Math.round(((raw.cpuNs - prev.cpuNs) / (secs * 1e9 * vcpus)) * 1000) / 10),
-				// What the machine actually holds in the server's memory.
-				memMb: Math.round((kv['balloon.rss'] ?? 0) / 1024),
-				netIn: Math.round((raw.rx - prev.rx) / secs),
-				netOut: Math.round((raw.tx - prev.tx) / secs),
-				diskRead: Math.round((raw.rd - prev.rd) / secs),
-				diskWrite: Math.round((raw.wr - prev.wr) / secs),
+			for (const block of text.split(/\n(?=Domain: )/)) {
+				const name = /Domain: '([^']+)'/.exec(block)?.[1]
+				const m = machines.find((x) => domain(x.id) === name)
+				if (!m) continue
+				const kv = {}
+				for (const line of block.split('\n')) {
+					const mm = /^\s*([\w.]+)=(\d+)/.exec(line)
+					if (mm) kv[mm[1]] = Number(mm[2])
+				}
+				const sum = (re) => Object.entries(kv).reduce((a, [k, v]) => (re.test(k) ? a + v : a), 0)
+				const raw = {t: now, cpuNs: kv['cpu.time'] ?? 0, rx: sum(/^net\.\d+\.rx\.bytes$/), tx: sum(/^net\.\d+\.tx\.bytes$/), rd: sum(/^block\.\d+\.rd\.bytes$/), wr: sum(/^block\.\d+\.wr\.bytes$/)}
+				const prev = lastRaw.get(m.id)
+				lastRaw.set(m.id, raw)
+				if (!prev || raw.cpuNs < prev.cpuNs) continue
+				const secs = (raw.t - prev.t) / 1000
+				const vcpus = (m.sockets ?? 1) * m.cores
+				const point = {
+					t: now,
+					cpu: Math.min(100, Math.round(((raw.cpuNs - prev.cpuNs) / (secs * 1e9 * vcpus)) * 1000) / 10),
+					// What the machine actually holds in the server's memory.
+					memMb: Math.round((kv['balloon.rss'] ?? 0) / 1024),
+					netIn: Math.round((raw.rx - prev.rx) / secs),
+					netOut: Math.round((raw.tx - prev.tx) / secs),
+					diskRead: Math.round((raw.rd - prev.rd) / secs),
+					diskWrite: Math.round((raw.wr - prev.wr) / secs),
+				}
+				lastPoint.set(m.id, point)
+				const list = series.get(m.id) ?? []
+				const kept = list.at(-1)
+				if (!kept || now - kept.t >= seriesIntervalMs) {
+					list.push(point)
+					if (list.length > 360) list.splice(0, list.length - 360)
+					series.set(m.id, list)
+				}
 			}
-			lastPoint.set(m.id, point)
-			const list = series.get(m.id) ?? []
-			const kept = list.at(-1)
-			if (!kept || now - kept.t >= seriesIntervalMs) {
-				list.push(point)
-				if (list.length > 360) list.splice(0, list.length - 360)
-				series.set(m.id, list)
-			}
+		} finally {
+			inFlight = false
 		}
 	}
 	let sampler = null
-	function startSampler() {
+	let watchedAt = 0
+	// The interval runs only while someone has listed machines, opened their stats, or
+	// looked at system usage. It stops about 15s after the last of those.
+	function touchWatch() {
+		watchedAt = Date.now()
 		if (sampler) return
 		void sample().catch(() => {})
-		sampler = setInterval(() => sample().catch(() => {}), statsIntervalMs)
+		sampler = setInterval(() => {
+			if (Date.now() - watchedAt >= watchIdleMs) {
+				clearInterval(sampler)
+				sampler = null
+				return
+			}
+			void sample().catch(() => {})
+		}, statsIntervalMs)
 		sampler.unref?.()
 	}
 	function packStats(m) {
@@ -838,6 +881,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 	async function statsFor(input) {
 		await ready
+		touchWatch()
 		if (!input?.id) return Object.fromEntries(machines.map((m) => [m.id, packStats(m)]))
 		return packStats(find(input.id))
 	}
@@ -1071,23 +1115,26 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 	async function addDisk(input = {}) {
 		await ready
-		const m = find(input.id)
-		writable(m)
-		const sizeGb = Number(input.sizeGb)
-		const bus = input.bus ?? 'virtio'
-		if (!Number.isInteger(sizeGb) || sizeGb < 1 || sizeGb > 4096) throw new RpcError('BAD_REQUEST', 'Disk size must be between 1 and 4096 GB')
-		if (!BUSES.includes(bus)) throw new RpcError('BAD_REQUEST', 'Unknown disk bus')
-		if (input.cache !== undefined && !CACHES.includes(input.cache)) throw new RpcError('BAD_REQUEST', 'Unknown cache mode')
-		if (m.layout.disks.length >= 16) throw new RpcError('BAD_REQUEST', 'A machine can have up to 16 drives here')
-		const fs = await statfs(base)
-		if ((fs.bavail * fs.bsize) / 1024 ** 3 < 1) throw new RpcError('PRECONDITION_FAILED', 'Not enough free space on the server')
-		const id = nextId(m, 'disk')
-		const file = join(vmsDir, m.id, `${id}.qcow2`)
-		return task(m, 'add-disk', `${id} ${sizeGb} GB`, async () => {
-			await run('qemu-img', ['create', '-f', 'qcow2', file, `${sizeGb}G`])
-			m.layout.disks.push({id, file, device: 'disk', bus, format: 'qcow2', sizeGb, ...(input.cache && input.cache !== 'default' ? {cache: input.cache} : {}), ...(input.discard === false ? {discard: false} : {})})
-			await markChanged(m)
-			return {diskId: id}
+		const idArg = find(input.id).id
+		return lock(`drives:${idArg}`, async () => {
+			const m = find(idArg)
+			writable(m)
+			const sizeGb = Number(input.sizeGb)
+			const bus = input.bus ?? 'virtio'
+			if (!Number.isInteger(sizeGb) || sizeGb < 1 || sizeGb > 4096) throw new RpcError('BAD_REQUEST', 'Disk size must be between 1 and 4096 GB')
+			if (!BUSES.includes(bus)) throw new RpcError('BAD_REQUEST', 'Unknown disk bus')
+			if (input.cache !== undefined && !CACHES.includes(input.cache)) throw new RpcError('BAD_REQUEST', 'Unknown cache mode')
+			if (m.layout.disks.length >= 16) throw new RpcError('BAD_REQUEST', 'A machine can have up to 16 drives here')
+			const fs = await statfs(base)
+			if ((fs.bavail * fs.bsize) / 1024 ** 3 < 1) throw new RpcError('PRECONDITION_FAILED', 'Not enough free space on the server')
+			const id = nextId(m, 'disk')
+			const file = join(vmsDir, m.id, `${id}.qcow2`)
+			return task(m, 'add-disk', `${id} ${sizeGb} GB`, async () => {
+				await run('qemu-img', ['create', '-f', 'qcow2', file, `${sizeGb}G`])
+				m.layout.disks.push({id, file, device: 'disk', bus, format: 'qcow2', sizeGb, ...(input.cache && input.cache !== 'default' ? {cache: input.cache} : {}), ...(input.discard === false ? {discard: false} : {})})
+				await markChanged(m)
+				return {diskId: id}
+			})
 		})
 	}
 	async function updateDisk(input = {}) {
@@ -1144,14 +1191,17 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 	async function addCdrom(input = {}) {
 		await ready
-		const m = find(input.id)
-		writable(m)
-		await requireStopped(m, 'add a CD/DVD drive')
-		const id = nextId(m, 'cd')
-		return task(m, 'add-cdrom', id, async () => {
-			m.layout.disks.push({id, file: '', device: 'cdrom', bus: input.bus === 'ide' && m.layout.machineType === 'pc' ? 'ide' : 'sata', format: 'raw'})
-			await markChanged(m)
-			return {diskId: id}
+		const idArg = find(input.id).id
+		return lock(`drives:${idArg}`, async () => {
+			const m = find(idArg)
+			writable(m)
+			await requireStopped(m, 'add a CD/DVD drive')
+			const id = nextId(m, 'cd')
+			return task(m, 'add-cdrom', id, async () => {
+				m.layout.disks.push({id, file: '', device: 'cdrom', bus: input.bus === 'ide' && m.layout.machineType === 'pc' ? 'ide' : 'sata', format: 'raw'})
+				await markChanged(m)
+				return {diskId: id}
+			})
 		})
 	}
 	// Put an ISO in a CD/DVD drive (one of yours from Home, or a downloaded installer), or eject it.
@@ -1467,12 +1517,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// already copied to this server (raw or qcow2), each converted into the machine's own qcow2.
 	async function importVm(spec = {}) {
 		await ready
-		const name = uniqueName(String(spec.name ?? 'Imported').trim().slice(0, 64) || 'Imported')
+		const requested = String(spec.name ?? 'Imported').trim().slice(0, 64) || 'Imported'
+		const name = uniqueName(requested)
 		const disks = (spec.disks ?? []).map((d, i) => ({id: i === 0 ? 'disk0' : `disk${i}`, file: String(d.file), device: 'disk', bus: ['virtio', 'sata', 'scsi'].includes(d.bus) ? (d.bus === 'scsi' ? 'sata' : d.bus) : 'sata', format: d.format === 'qcow2' ? 'qcow2' : 'raw'}))
 		if (!disks.length) throw new RpcError('BAD_REQUEST', 'That VM has no disks to bring over')
 		const memoryMb = Math.max(256, Math.min(Number(spec.memoryMb) || 2048, 1024 * 1024))
 		const source = {
 			name,
+			importedFrom: requested,
 			osId: 'imported',
 			cores: Math.max(1, Math.min(Number(spec.cores) || 2, os.cpus().length || 2)),
 			memoryMb,
@@ -1531,7 +1583,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 
 	// What each running machine uses right now (for the system usage breakdown): the latest sample.
 	function usage() {
-		startSampler()
+		touchWatch()
 		const out = []
 		for (const m of machines) {
 			const last = lastPoint.get(m.id) ?? (series.get(m.id) ?? []).at(-1)
@@ -1614,6 +1666,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		usage,
 		uninstallAll,
 		importVm,
+		importedVm(name) {
+			const want = String(name ?? '').trim().toLowerCase()
+			if (!want) return false
+			return machines.some((m) => m.osId === 'imported' && m.state !== 'error' && (String(m.importedFrom ?? m.name).toLowerCase() === want || m.name.toLowerCase() === want))
+		},
 		// For the importer: whether an imported machine has finished copying, and how it went.
 		importState(id) {
 			const m = machines.find((x) => x.id === id)
