@@ -135,11 +135,21 @@ export function hostdevXml({vendorId, productId, serial}) {
 }
 
 export function parseUsbLive(xmlText, devices = []) {
+	const entries = []
+	for (const match of String(xmlText ?? '').matchAll(/<hostdev\b([^>]*)>([\s\S]*?)<\/hostdev>/gi)) {
+		if (!/\btype\s*=\s*['"]usb['"]/i.test(match[1])) continue
+		const body = match[2]
+		const vendor = /<vendor\b[^>]*\bid\s*=\s*['"]0x([0-9a-fA-F]+)['"]/i.exec(body)?.[1]?.toLowerCase()
+		const product = /<product\b[^>]*\bid\s*=\s*['"]0x([0-9a-fA-F]+)['"]/i.exec(body)?.[1]?.toLowerCase()
+		const serial = /<serial>([^<]*)<\/serial>/i.exec(body)?.[1]?.trim() || null
+		if (vendor && product) entries.push({vendor, product, serial})
+	}
 	const live = []
 	for (const d of devices) {
-		const vendor = new RegExp(`<vendor id='0x${d.vendorId}'\\s*/>`)
-		const product = new RegExp(`<product id='0x${d.productId}'\\s*/>`)
-		if (vendor.test(xmlText) && product.test(xmlText)) live.push(d.id)
+		const vendor = String(d.vendorId ?? '').toLowerCase()
+		const product = String(d.productId ?? '').toLowerCase()
+		const serial = d.serial ? String(d.serial).trim() : ''
+		if (entries.some((e) => e.vendor === vendor && e.product === product && (!serial || e.serial === serial))) live.push(d.id)
 	}
 	return live
 }

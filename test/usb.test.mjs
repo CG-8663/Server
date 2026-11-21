@@ -13,7 +13,7 @@ import {RpcError} from '../omarchyd/rpc.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 import YAML from 'yaml'
 
-import {createUsb, hostdevXml, listHostUsb, usbComposeOverlay} from '../omarchyd/usb.mjs'
+import {createUsb, hostdevXml, listHostUsb, parseUsbLive, usbComposeOverlay} from '../omarchyd/usb.mjs'
 
 function fakeFs(initial = {}) {
 	const files = new Map(Object.entries(initial))
@@ -508,6 +508,21 @@ test('usbComposeOverlay injects path:path on every service', () => {
 test('usbComposeOverlay ignores a path that is not a serial node', () => {
 	const text = usbComposeOverlay(['web'], [{path: '/etc/passwd'}])
 	assert.equal(!text.trim() || !YAML.parse(text).services?.web?.devices?.length, true)
+})
+
+test('parseUsbLive matches vendor and product only inside one hostdev', () => {
+	const stick = {id: 'stick-1', vendorId: '10c4', productId: 'ea60', serial: 'ABC123'}
+	const split = `<domain><devices>
+		<hostdev mode='subsystem' type='usb' managed='yes'><source><vendor id='0x10c4'/><product id='0xea60'/></source></hostdev>
+		<hostdev mode='subsystem' type='usb' managed='yes'><source><vendor id='0x1234'/><product id='0x5678'/><serial>ABC123</serial></source></hostdev>
+	</devices></domain>`
+	assert.deepEqual(parseUsbLive(split, [stick]), [])
+	const together = `<domain><devices>
+		<hostdev mode='subsystem' type='usb' managed='yes'><source><vendor id='0x10c4'/><product id='0xea60'/><serial>ABC123</serial></source></hostdev>
+	</devices></domain>`
+	assert.deepEqual(parseUsbLive(together, [stick]), ['stick-1'])
+	const noSerial = {id: 'stick-2', vendorId: '10c4', productId: 'ea60'}
+	assert.deepEqual(parseUsbLive(split, [noSerial]), ['stick-2'])
 })
 
 describe('app USB compose', () => {

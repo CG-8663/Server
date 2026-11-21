@@ -5,7 +5,7 @@
 import {plainObject, writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {randomBytes} from 'node:crypto'
-import {access, readFile, rm, statfs, writeFile} from 'node:fs/promises'
+import {access, readFile, readdir, realpath, rm, statfs, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 
@@ -69,7 +69,7 @@ function parseSmart(j) {
 	}
 }
 
-export function createStorage({dataDir, home = os.homedir(), files, run = execP, fstabPath = '/etc/fstab', user = os.userInfo().username, helperFile = HELPER, smbConf = '/etc/samba/smb.conf', now = Date.now}) {
+export function createStorage({dataDir, home = os.homedir(), files, run = execP, fstabPath = '/etc/fstab', user = os.userInfo().username, helperFile = HELPER, smbConf = '/etc/samba/smb.conf', now = Date.now, byIdDir = '/dev/disk/by-id', byIdFs = {readdir, realpath}}) {
 	const sharesFile = join(dataDir, 'shares.json')
 	const sleepFile = join(dataDir, 'drive-sleep.json')
 	const passwordFile = join(dataDir, 'share-password')
@@ -137,6 +137,17 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 		return value
 	}
 
+	// Same choice as helper byId(): a stable /dev/disk/by-id name, not the letter lsblk reports today.
+	async function byId(dev) {
+		const names = await byIdFs.readdir(byIdDir).catch(() => [])
+		const target = await byIdFs.realpath(dev).catch(() => null)
+		if (!target) return dev
+		const matches = []
+		for (const n of names) if (!/-part\d+$/.test(n) && (await byIdFs.realpath(join(byIdDir, n)).catch(() => null)) === target) matches.push(n)
+		const best = matches.find((n) => /^(nvme|ata|scsi|usb)-/.test(n)) ?? matches.find((n) => !n.startsWith('wwn-')) ?? matches[0]
+		return best ? join('/dev/disk/by-id', best) : dev
+	}
+
 	async function disks() {
 		const [devs, pools, sleep, helperOk, zp] = await Promise.all([blockDevices(), fstabPools(), readSleepMap().catch(() => ({})), status().then((s) => s.helperAvailable), zfsPools()])
 		const poolByUuid = new Map(pools.map((p) => [p.uuid, p.name]))
@@ -161,7 +172,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 				const mountList = mounts.filter(Boolean)
 				return {
 					path: d.path,
-					id: d.path,
+					id: await byId(d.path),
 					name: d.name,
 					model: (d.model ?? '').trim() || null,
 					serial: d.serial ?? null,

@@ -65,7 +65,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		else if (e.code !== 'ENOENT') throw e
 	}
 	if (badSecurity) console.error('[omarchyd] security.json is empty or invalid and was left unchanged')
-	const security = {lockAfterRemote: true, ...saved}
+	let security = {lockAfterRemote: true, ...saved}
 	const files = createFiles({home, dataDir})
 	const defaultStores = storeDir ? [{url: fileUrl(storeDir)}] : undefined
 	const catalogUrl = storeDir ? fileUrl(join(storeDir, 'machines', 'catalog.json')) : undefined
@@ -260,8 +260,13 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 				// Answer first; the reset carries on by itself. The next owner must not inherit
 				// assistant keys and chats, swarm computers, backup secrets or network shares.
 				setTimeout(async () => {
-					await apps.uninstallAll().catch((e) => console.error('[omarchyd] reset apps', e.message))
-					await machines.uninstallAll().catch((e) => console.error('[omarchyd] reset machines', e.message))
+					const appsLeft = await apps.uninstallAll().catch((e) => console.error('[omarchyd] reset apps', e.message))
+					const machinesLeft = await machines.uninstallAll().catch((e) => console.error('[omarchyd] reset machines', e.message))
+					// undefined is not a count: machines.uninstallAll returns undefined today.
+					const appsRemain = typeof appsLeft === 'number' && appsLeft !== 0
+					const machinesRemain = typeof machinesLeft === 'number' && machinesLeft !== 0
+					if (appsRemain) console.error(`[omarchyd] ${appsLeft} ${appsLeft === 1 ? 'app remains' : 'apps remain'}`)
+					if (machinesRemain) console.error(`[omarchyd] ${machinesLeft} ${machinesLeft === 1 ? 'machine remains' : 'machines remain'}`)
 					await assistant.keys.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
 					await assistant.conversations.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
 					const agents = await connector.procedures['swarm.list'].run().catch((e) => {
@@ -271,6 +276,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 					for (const agent of agents) await connector.procedures['swarm.remove'].run({id: agent.id}).catch((e) => console.error('[omarchyd] reset swarm', e.message))
 					await backups.clearSettings().catch((e) => console.error('[omarchyd] reset backups', e.message))
 					await storage.clearShares().catch((e) => console.error('[omarchyd] reset shares', e.message))
+					if (appsRemain || machinesRemain) return
 					await accounts.reset()
 					console.log('[omarchyd] factory reset done')
 				}, 500)
@@ -333,8 +339,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 					await secure.refresh?.()
 				}
 				if (typeof input?.lockAfterRemote === 'boolean') {
-					security.lockAfterRemote = input.lockAfterRemote
-					await writeAtomic(securityFile, JSON.stringify(security), {mode: 0o600})
+					const next = {...security, lockAfterRemote: input.lockAfterRemote}
+					await writeAtomic(securityFile, JSON.stringify(next), {mode: 0o600})
+					security = next
 				}
 				return true
 			},
