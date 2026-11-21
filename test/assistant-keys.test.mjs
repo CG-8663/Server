@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises'
+import {chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {test} from 'node:test'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
 import {createKeyStore} from '../omarchyd/assistant/keys.mjs'
+import {RpcError} from '../omarchyd/rpc.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 const tmp = async () => mkdtemp(join(os.tmpdir(), 'ask-'))
@@ -163,5 +164,168 @@ test('assistant key RPCs: member cannot set default; secret stays off the wire',
 		}
 	} finally {
 		await rm(root, {recursive: true, force: true})
+	}
+})
+
+async function captureErrors(fn) {
+	const lines = []
+	const orig = console.error
+	console.error = (...args) => lines.push(args.map(String).join(' '))
+	try {
+		return await fn(lines)
+	} finally {
+		console.error = orig
+	}
+}
+
+function assertSafeKeysError(err, dataDir, file) {
+	assert.ok(err instanceof RpcError, `expected RpcError, got ${err?.constructor?.name}`)
+	assert.equal(err.code, 'PRECONDITION_FAILED')
+	assert.match(err.message, /keys\.json/)
+	assert.equal(err.message.includes(dataDir), false)
+	assert.equal(err.message.includes(file), false)
+	assert.equal(err.message.includes('xai-super-secret-9999'), false)
+}
+
+test('damaged or non-object keys.json logs basename once, starts empty, and refuses saves', async () => {
+	const cases = [
+		['empty', ''],
+		['truncated', '{"keys":[{"id":"k1","apiKey":"xai-super-secret-9999"'],
+		['bom', '\uFEFF{"keys":[]}'],
+		['null', 'null'],
+		['string', '"x"'],
+		['number', '5'],
+		['array', '[]'],
+		['missing keys', '{}'],
+		['keys null', '{"keys":null}'],
+		['keys string', '{"keys":"bad"}'],
+	]
+	for (const [name, contents] of cases) {
+		const dataDir = await tmp()
+		const dir = join(dataDir, 'assistant')
+		const file = join(dir, 'keys.json')
+		try {
+			await mkdir(dir, {recursive: true})
+			await writeFile(file, contents)
+			const before = await readFile(file)
+			await captureErrors(async (lines) => {
+				const keys = createKeyStore({dataDir})
+				assert.deepEqual(await keys.listPublic('owner'), [], name)
+				assert.equal(await keys.getSecret('k1'), null, name)
+				await assert.rejects(
+					() => keys.resolveForUser('owner'),
+					(err) => err instanceof RpcError && err.code === 'PRECONDITION_FAILED' && /Add an API key/.test(err.message),
+					name,
+				)
+				for (const attempt of [
+					() => keys.add({userId: 'owner', role: 'owner'}, {name: 'New', provider: 'spacexai', apiKey: 'sk-new-1234', model: 'grok-4.7'}),
+					() => keys.update({userId: 'owner', role: 'owner'}, {id: 'k1', name: 'Renamed'}),
+					() => keys.remove({userId: 'owner', role: 'owner'}, 'k1'),
+					() => keys.recordCheck('k1', {ok: true, status: 'ok', message: 'ok'}),
+				]) {
+					await assert.rejects(attempt, (err) => {
+						assertSafeKeysError(err, dataDir, file)
+						return true
+					}, name)
+				}
+				assert.deepEqual(await readFile(file), before, name)
+				const notes = lines.filter((l) => l.includes('keys.json'))
+				assert.equal(notes.length, 1, `${name}: logged once (${JSON.stringify(lines)})`)
+				assert.equal(notes[0].includes(dataDir), false, `${name}: no dataDir`)
+				assert.equal(notes[0].includes(file), false, `${name}: no file path`)
+				if (contents.length > 0) assert.equal(notes[0].includes(contents), false, `${name}: no contents`)
+				assert.equal(notes[0].includes('xai-super-secret-9999'), false, `${name}: no secret`)
+			})
+		} finally {
+			await rm(dataDir, {recursive: true, force: true})
+		}
+	}
+})
+
+test('EISDIR or EACCES on keys.json logs basename once and refuses saves without touching disk', async (t) => {
+	const root = await tmp()
+	try {
+		const dirData = join(root, 'dir')
+		const dirFile = join(dirData, 'assistant', 'keys.json')
+		await mkdir(dirFile, {recursive: true})
+		await captureErrors(async (lines) => {
+			const keys = createKeyStore({dataDir: dirData})
+			assert.deepEqual(await keys.listPublic('owner'), [])
+			assert.equal(lines.length, 1)
+			assert.match(lines[0], /keys\.json/)
+			assert.equal(lines[0].includes(dirData), false)
+			await assert.rejects(
+				() => keys.add({userId: 'owner', role: 'owner'}, {name: 'x', provider: 'spacexai', apiKey: 'sk-1234', model: 'grok-4.7'}),
+				(err) => {
+					assertSafeKeysError(err, dirData, dirFile)
+					return true
+				},
+			)
+			assert.equal((await stat(dirFile)).isDirectory(), true)
+		})
+
+		if (process.getuid?.() === 0) return t.skip('root ignores file mode')
+		const accData = join(root, 'eacces')
+		const accFile = join(accData, 'assistant', 'keys.json')
+		await mkdir(join(accData, 'assistant'), {recursive: true})
+		await writeFile(accFile, '{"keys":[]}', {mode: 0o600})
+		await chmod(accFile, 0o000)
+		try {
+			await captureErrors(async (lines) => {
+				const keys = createKeyStore({dataDir: accData})
+				assert.deepEqual(await keys.listPublic('owner'), [])
+				assert.equal(lines.length, 1)
+				assert.match(lines[0], /keys\.json/)
+				assert.equal(lines[0].includes(accData), false)
+				await assert.rejects(
+					() => keys.add({userId: 'owner', role: 'owner'}, {name: 'x', provider: 'spacexai', apiKey: 'sk-1234', model: 'grok-4.7'}),
+					(err) => {
+						assertSafeKeysError(err, accData, accFile)
+						return true
+					},
+				)
+			})
+		} finally {
+			await chmod(accFile, 0o600)
+		}
+		assert.equal(await readFile(accFile, 'utf8'), '{"keys":[]}')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('valid keys.json drops non-object rows and normalizes sharedWith to an array', async () => {
+	const dataDir = await tmp()
+	const file = join(dataDir, 'assistant', 'keys.json')
+	try {
+		await mkdir(join(dataDir, 'assistant'), {recursive: true})
+		await writeFile(
+			file,
+			JSON.stringify({
+				keys: [
+					null,
+					'bad',
+					42,
+					[],
+					{id: 'k1', ownerUserId: 'owner', name: 'Good', provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5', apiKey: 'sk-good', last4: 'good', systemDefault: false, createdAt: 1, updatedAt: 1},
+					{id: 'k2', ownerUserId: 'owner', name: 'NullShared', provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5', apiKey: 'sk-two', last4: 'two', sharedWith: null, systemDefault: false, createdAt: 2, updatedAt: 2},
+				],
+			}),
+		)
+		await captureErrors(async (lines) => {
+			const keys = createKeyStore({dataDir})
+			const ownerList = await keys.listPublic('owner')
+			assert.deepEqual(ownerList.map((k) => k.id), ['k1', 'k2'])
+			assert.deepEqual(ownerList.map((k) => k.sharedWith), [[], []])
+			assert.deepEqual(await keys.listPublic('sam'), [])
+			assert.equal((await keys.resolveForUser('owner')).id, 'k2')
+			assert.equal((await keys.resolveForUser('owner', 'k1')).id, 'k1')
+			assert.deepEqual(lines, [])
+			const added = await keys.add({userId: 'owner', role: 'owner'}, {name: 'Three', provider: 'spacexai', apiKey: 'sk-three', model: 'grok-4.7'})
+			const saved = JSON.parse(await readFile(file, 'utf8'))
+			assert.deepEqual(saved.keys.map((k) => k.id), ['k1', 'k2', added.id])
+		})
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
 	}
 })

@@ -270,21 +270,23 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 															? `Last checked ${new Date(p.scrub.started).toLocaleDateString()}, no errors`
 															: 'Never checked for errors'}
 										</p>
-										<div style={{display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap'}}>
-											<button className="btn small" disabled={busy || p.scrub?.state === 'running'} onClick={() => scrub(p)}>
-												<Icon name="shield" size={16} /> Check for errors
-											</button>
-											{p.kind === 'btrfs' && (
-												<button className="btn small" disabled={busy || !blank.length} onClick={() => setAdding(p)}>
-													<Icon name="plus" size={16} /> Add a drive
-												</button>
-											)}
-											<button className="btn small" disabled={busy} onClick={() => forget(p)}>
-												Remove
-											</button>
-										</div>
 									</>
 								)}
+								<div style={{display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap'}}>
+									{p.mounted && (
+										<button className="btn small" disabled={busy || p.scrub?.state === 'running'} onClick={() => scrub(p)}>
+											<Icon name="shield" size={16} /> Check for errors
+										</button>
+									)}
+									{p.mounted && p.kind === 'btrfs' && (
+										<button className="btn small" disabled={busy || !blank.length} onClick={() => setAdding(p)}>
+											<Icon name="plus" size={16} /> Add a drive
+										</button>
+									)}
+									<button className="btn small" disabled={busy} onClick={() => forget(p)}>
+										Remove
+									</button>
+								</div>
 							</div>
 						)
 					})

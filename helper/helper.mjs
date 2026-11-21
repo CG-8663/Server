@@ -38,14 +38,27 @@
 //                                     tailscaled service) and make the owner its operator
 //   tailscale-remove                  sign this server out of Tailscale, stop it and remove the package
 import {execFile} from 'node:child_process'
-import {chown, mkdir, readdir, readFile, realpath, rename, writeFile} from 'node:fs/promises'
+import {realpathSync} from 'node:fs'
+import {access as fileAccess, chown, constants as fsConstants, mkdir, readdir, readFile, realpath, rename, writeFile} from 'node:fs/promises'
 import {join, sep} from 'node:path'
+import {fileURLToPath} from 'node:url'
 
-const DEV = /^\/dev\/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|hd[a-z])$/
+const DEV = /^\/dev\/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|mmcblk\d{1,2}|hd[a-z])$/
 const BY_ID = /^\/dev\/disk\/by-id\/[A-Za-z0-9._:+-]+$/
 const NAME = /^[a-z][a-z0-9-]{0,31}$/
+const ZFS_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const SYSTEM_MOUNTS = new Set(['/', '/boot', '/efi', '/boot/efi', '/home', '/var', '/usr', '[SWAP]'])
+const SYSTEM_MOUNTS = new Set(['/', '/home', '[SWAP]'])
+const SYSTEM_MOUNT_PREFIXES = ['/boot', '/efi', '/var', '/usr', '/opt', '/srv', '/nix']
+const cleanMount = (m) => (typeof m === 'string' && m.length > 1 ? m.replace(/\/+$/, '') || '/' : m)
+function isSystemMount(m, home) {
+	const p = cleanMount(m)
+	if (!p) return false
+	if (SYSTEM_MOUNTS.has(p)) return true
+	const ownerHome = cleanMount(home)
+	if (ownerHome && p === ownerHome) return true
+	return SYSTEM_MOUNT_PREFIXES.some((pre) => p === pre || p.startsWith(`${pre}/`))
+}
 const SKIP_FS = new Set(['crypto_LUKS', 'swap', 'LVM2_member', 'linux_raid_member', 'zfs_member'])
 const FAT_FS = new Set(['vfat', 'exfat', 'ntfs', 'msdos', 'fuseblk'])
 function safeMountName(s) {
@@ -71,6 +84,7 @@ const USB_SERIAL = /^[A-Za-z0-9._-]{1,128}$/
 const SDDM_ONCE = '/etc/sddm.conf.d/zz-omarchy-server-sign-in.conf'
 const SESSIONS = ['/usr/share/wayland-sessions/omarchy.desktop', '/usr/share/wayland-sessions/hyprland-uwsm.desktop', '/usr/share/wayland-sessions/hyprland.desktop']
 const SLEEP_MINUTES = {0: 0, 10: 120, 20: 240, 30: 241, 60: 242, 120: 244, 240: 248}
+const HELPER_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin'
 
 export class HelperError extends Error {}
 const fail = (message) => {
@@ -79,7 +93,7 @@ const fail = (message) => {
 
 export function defaultRun(cmd, args, {input} = {}) {
 	return new Promise((resolve, reject) => {
-		const child = execFile(cmd, args, {timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024, env: {PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin', LC_ALL: 'C'}}, (error, stdout, stderr) => {
+		const child = execFile(cmd, args, {timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024, env: {PATH: HELPER_PATH, LC_ALL: 'C'}}, (error, stdout, stderr) => {
 			if (error && !(cmd === 'smartctl' && stdout)) return reject(new HelperError(`${cmd}: ${(stderr || error.message).toString().trim().split('\n').slice(-2).join(' ')}`))
 			resolve(stdout.toString())
 		})
@@ -88,7 +102,7 @@ export function defaultRun(cmd, args, {input} = {}) {
 }
 
 // Everything the helper touches comes through ctx, so tests can run it without root.
-export function createHelper({run = defaultRun, user, fs = {readFile, writeFile, mkdir, chown, realpath, rename, readdir}}) {
+export function createHelper({run = defaultRun, user, fs = {readFile, writeFile, mkdir, chown, realpath, rename, readdir, access: fileAccess}}) {
 	if (!user?.name || !/^[a-z_][a-z0-9_-]{0,31}$/.test(user.name) || !Number.isInteger(user.uid) || user.uid === 0 || !user.home?.startsWith('/')) fail('Run this through sudo as the Omarchy Server owner')
 	const poolsDir = join(user.home, 'Pools')
 	const mountOf = (name) => join(poolsDir, name)
@@ -110,18 +124,45 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		if (BY_ID.test(p) && !/-part\d+$/.test(p)) p = await fs.realpath(p).catch(() => fail(`No drive at ${path}`))
 		return disk(p)
 	}
+	async function commandOnPath(name) {
+		// Tests replace fs and do not carry the machine's programs. The real helper's fs does.
+		if (typeof fs.access !== 'function') return true
+		for (const dir of HELPER_PATH.split(':')) {
+			try {
+				await fs.access(join(dir, name), fsConstants.X_OK)
+				return true
+			} catch {
+				// Another directory on the helper PATH may still have it.
+			}
+		}
+		return false
+	}
+	// Imported pools are identified by GUID. Two pools can share a name; lsblk stores the GUID as the
+	// zfs_member UUID, and `zpool get guid` is the imported pool's GUID.
+	async function zfsPoolGuids() {
+		const guids = new Set()
+		// A pool zpool list named, but whose guid we could not read, still protects disks by name.
+		// An empty guid set must not make those disks look free to format.
+		const namesWithoutGuid = new Set()
+		for (const name of await zfsPoolNames()) {
+			const guid = (await zpool('get', '-H', '-o', 'value', 'guid', name).catch(() => '')).trim()
+			if (guid && guid !== '-') guids.add(guid)
+			else namesWithoutGuid.add(name)
+		}
+		return {guids, namesWithoutGuid}
+	}
 	async function poolMember(d) {
 		if (mounts(d).some((m) => /\/Pools\//.test(m))) return true
 		const text = await fstab()
 		const uuids = new Set(flat(d).map((x) => x.uuid).filter(Boolean))
 		if (text.some((l) => l.includes(FSTAB_MARK) && [...uuids].some((u) => l.includes(u)))) return true
-		const names = new Set(await zfsPoolNames())
-		return flat(d).some((x) => x.fstype === 'zfs_member' && names.has(x.label))
+		const {guids, namesWithoutGuid} = await zfsPoolGuids()
+		return flat(d).some((x) => x.fstype === 'zfs_member' && ((x.uuid && guids.has(x.uuid)) || (x.label && namesWithoutGuid.has(x.label))))
 	}
 	// Blank: no partitions, no filesystem or RAID signature, nothing mounted, not the system drive.
 	async function blankDisk(path) {
 		const d = await disk(path)
-		if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${path} holds the system`)
+		if (mounts(d).some((m) => isSystemMount(m, user.home))) fail(`${path} holds the system`)
 		if (mounts(d).length) fail(`${path} is in use`)
 		if ((d.children ?? []).length || d.fstype) fail(`${path} isn’t blank. Format this drive first (choose blank).`)
 		const sig = (await run('wipefs', ['--no-act', '--json', path]).catch(() => '')).trim()
@@ -152,8 +193,14 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		await fs.mkdir(mountOf(name), {recursive: true})
 		await fs.chown(poolsDir, user.uid, user.gid)
 		await addFstab(name, uuid)
-		await run('systemctl', ['daemon-reload'])
-		await run('mount', [mountOf(name)])
+		try {
+			await run('systemctl', ['daemon-reload'])
+			await run('mount', [mountOf(name)])
+		} catch (error) {
+			await writeAtomic('/etc/fstab', (await fstab()).filter((l) => !l.endsWith(`${FSTAB_MARK} ${name}`)).join('\n')).catch(() => {})
+			await run('systemctl', ['daemon-reload']).catch(() => {})
+			throw error
+		}
 		await fs.chown(mountOf(name), user.uid, user.gid)
 	}
 
@@ -212,16 +259,31 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		const cfg = text.split(/^\s*config:\s*$/m)[1]?.split(/^errors:/m)[0] ?? ''
 		const layout = new Set()
 		const devices = []
+		let section = 'data'
 		for (const line of cfg.split('\n')) {
+			const sec = /^\s+(logs|cache|spares|special|dedup)\s*$/.exec(line)
+			if (sec) {
+				section = sec[1]
+				continue
+			}
+			if (section !== 'data') continue
 			const m = /^\s+(\S+)\s+(ONLINE|DEGRADED|FAULTED|OFFLINE|UNAVAIL|REMOVED)\s+(\d+\S*)\s+(\d+\S*)\s+(\d+\S*)/.exec(line)
 			if (!m) continue
 			if (/^(mirror|raidz[123]?|draid)/.test(m[1])) layout.add(m[1].replace(/-\d+$/, ''))
-			else if (m[1].startsWith('/')) devices.push({path: m[1], state: m[2], errors: [m[3], m[4], m[5]].map((x) => Number.parseInt(x, 10) || 0).reduce((a, b) => a + b, 0)})
+			else if (m[1].startsWith('/')) devices.push({path: m[1], state: m[2], errors: [m[3], m[4], m[5]].map(zfsCounter).reduce((a, b) => a + b, 0)})
 		}
-		return {state, scan, errors, layout: layout.size ? [...layout].join('+') : 'stripe', devices}
+		return {state, scan, errors, layout: layout.size ? [...layout].sort().join('+') : 'stripe', devices}
+	}
+	// zpool status prints large counters as 12K or 1.50M. The suffix is a power of 1000.
+	function zfsCounter(raw) {
+		const m = /^(\d+(?:\.\d+)?)([KMGTP])?$/i.exec(raw)
+		if (!m) return 0
+		const unit = (m[2] ?? '').toUpperCase()
+		const mult = {K: 1e3, M: 1e6, G: 1e9, T: 1e12, P: 1e15}[unit] ?? 1
+		return Math.round(Number(m[1]) * mult)
 	}
 	async function zfsPoolMount(name) {
-		if (!/^[a-z][a-z0-9_.-]{0,31}$/i.test(name ?? '')) fail('Bad pool name')
+		if (!ZFS_NAME.test(name ?? '')) fail('Bad pool name')
 		if (!(await zfsPoolNames()).includes(name)) fail(`No ZFS pool called ${name}`)
 		return name
 	}
@@ -305,7 +367,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 
 		smart: async ([dev]) => {
 			await disk(dev)
-			return run('smartctl', ['-j', '-a', dev])
+			return run('smartctl', ['-n', 'standby', '-j', '-a', dev])
 		},
 
 		sleep: async ([dev, minutes]) => {
@@ -348,14 +410,15 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 
 		umount: async ([path]) => {
 			const d = await resolveDisk(path)
-			if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${d.path} holds the system`)
+			if (mounts(d).some((m) => isSystemMount(m, user.home))) fail(`${d.path} holds the system`)
 			if (await poolMember(d)) fail(`${d.path} is in a pool`)
-			for (const m of mounts(d)) await run('umount', [m])
+			// A mount inside another mount on this drive is busy until the child is gone.
+			for (const m of mounts(d).slice().sort((a, b) => b.length - a.length)) await run('umount', [m])
 			return 'ok'
 		},
 		mount: async ([path]) => {
 			const d = await resolveDisk(path)
-			if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${d.path} holds the system`)
+			if (mounts(d).some((m) => isSystemMount(m, user.home))) fail(`${d.path} holds the system`)
 			if (await poolMember(d)) fail(`${d.path} is in a pool`)
 			if (mounts(d).length) fail(`${d.path} is already mounted`)
 			const nodes = (d.children ?? []).length ? flat(d).filter((x) => x !== d) : [d]
@@ -393,12 +456,16 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		format: async ([path, fsKind]) => {
 			if (!['blank', 'ext4', 'exfat'].includes(fsKind)) fail('Choose blank, ext4 or exfat')
 			const d = await resolveDisk(path)
-			if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${d.path} holds the system`)
+			if (mounts(d).some((m) => isSystemMount(m, user.home))) fail(`${d.path} holds the system`)
 			if (await poolMember(d)) fail(`${d.path} is in a pool`)
 			if (mounts(d).length) fail(`${d.path} is in use. Unmount it first.`)
 			// Unlocked encryption, LVM or a running RAID array on it (lsblk shows them as its children),
 			// even with nothing mounted: those are in use.
 			if (flat(d).some((x) => x !== d && x.type !== 'part')) fail(`${d.path} is in use by encryption, LVM or RAID. Stop that first.`)
+			if (fsKind === 'ext4' || fsKind === 'exfat') {
+				const prog = fsKind === 'ext4' ? 'mkfs.ext4' : 'mkfs.exfat'
+				if (!(await commandOnPath(prog))) fail(fsKind === 'exfat' ? `exFAT tools aren't installed on this computer (exfatprogs): mkfs.exfat` : `mkfs.ext4 isn't installed on this computer`)
+			}
 			await run('wipefs', ['-a', d.path])
 			if (fsKind === 'ext4') await run('mkfs.ext4', ['-F', d.path])
 			if (fsKind === 'exfat') await run('mkfs.exfat', [d.path])
@@ -602,9 +669,14 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 				if (!name) continue
 				const st = parseStatus(await zpool('status', '-P', name).catch(() => ''))
 				const mountpoint = (await zfs('get', '-H', '-o', 'value', 'mountpoint', name).catch(() => '')).trim()
+				const space = (await zfs('list', '-H', '-p', '-o', 'used,avail', name).catch(() => '')).trim().split('\n')[0]?.split('\t') ?? []
+				const usable = space.length >= 2 && /^\d+$/.test(space[0]) && /^\d+$/.test(space[1])
+				const usedBytes = usable ? Number(space[0]) : Number(alloc) || 0
+				const freeBytes = usable ? Number(space[1]) : Number(free) || 0
+				const sizeBytes = usable ? usedBytes + freeBytes : Number(size) || 0
 				const bind = tab.find((l) => l.endsWith(`${ZFS_MARK} ${name}`))
 				const folder = bind ? bind.split(/\s+/)[1] : mountpoint.startsWith(`${poolsDir}/`) ? mountpoint : null
-				out.push({name, size: Number(size), used: Number(alloc), free: Number(free), health, mountpoint, folder, ...st})
+				out.push({name, size: sizeBytes, used: usedBytes, free: freeBytes, health, mountpoint, folder, ...st})
 			}
 			return JSON.stringify(out)
 		},
@@ -648,7 +720,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		},
 
 		'zfs-import': async ([name, force]) => {
-			if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name ?? '')) fail('Bad pool name')
+			if (!ZFS_NAME.test(name ?? '')) fail('Bad pool name')
 			if (force !== undefined && force !== 'force') fail('Bad option')
 			if ((await zfsPoolNames()).includes(name)) fail(`${name} is already imported`)
 			// Import without mounting, check where its datasets would land, then mount.
@@ -690,12 +762,16 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		'zfs-export': async ([name]) => {
 			await zfsPoolMount(name)
 			const bind = (await fstab()).find((l) => l.endsWith(`${ZFS_MARK} ${name}`))
+			// Export first: a busy pool fails here and the bind mount and fstab line stay.
+			await zpool('export', name).catch(() => fail(`${name} is in use. Stop apps and shares using it, then try again.`))
 			if (bind) {
-				await run('umount', [bind.split(/\s+/)[1]]).catch(() => {})
+				const mnt = bind.split(/\s+/)[1]
+				await run('umount', [mnt]).catch((e) => {
+					if (!/not mounted/.test(e.message)) throw new HelperError(`${name} is in use. Stop apps and shares using it, then try again.`)
+				})
 				await writeAtomic('/etc/fstab', (await fstab()).filter((l) => l !== bind).join('\n'))
 				await run('systemctl', ['daemon-reload'])
 			}
-			await zpool('export', name).catch(() => fail(`${name} is in use. Stop apps and shares using it, then try again.`))
 			return 'ok'
 		},
 
@@ -814,4 +890,12 @@ async function main() {
 		process.exit(error instanceof HelperError ? 2 : 1)
 	}
 }
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) main()
+function ranAsMain() {
+	if (typeof import.meta.main === 'boolean') return import.meta.main
+	try {
+		return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+	} catch {
+		return false
+	}
+}
+if (ranAsMain()) main()

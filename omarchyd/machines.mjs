@@ -1505,12 +1505,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// already copied to this server (raw or qcow2), each converted into the machine's own qcow2.
 	async function importVm(spec = {}) {
 		await ready
-		const name = uniqueName(String(spec.name ?? 'Imported').trim().slice(0, 64) || 'Imported')
+		const requested = String(spec.name ?? 'Imported').trim().slice(0, 64) || 'Imported'
+		const name = uniqueName(requested)
 		const disks = (spec.disks ?? []).map((d, i) => ({id: i === 0 ? 'disk0' : `disk${i}`, file: String(d.file), device: 'disk', bus: ['virtio', 'sata', 'scsi'].includes(d.bus) ? (d.bus === 'scsi' ? 'sata' : d.bus) : 'sata', format: d.format === 'qcow2' ? 'qcow2' : 'raw'}))
 		if (!disks.length) throw new RpcError('BAD_REQUEST', 'That VM has no disks to bring over')
 		const memoryMb = Math.max(256, Math.min(Number(spec.memoryMb) || 2048, 1024 * 1024))
 		const source = {
 			name,
+			importedFrom: requested,
 			osId: 'imported',
 			cores: Math.max(1, Math.min(Number(spec.cores) || 2, os.cpus().length || 2)),
 			memoryMb,
@@ -1652,6 +1654,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		usage,
 		uninstallAll,
 		importVm,
+		importedVm(name) {
+			const want = String(name ?? '').trim().toLowerCase()
+			if (!want) return false
+			return machines.some((m) => m.osId === 'imported' && m.state !== 'error' && (String(m.importedFrom ?? m.name).toLowerCase() === want || m.name.toLowerCase() === want))
+		},
 		// For the importer: whether an imported machine has finished copying, and how it went.
 		importState(id) {
 			const m = machines.find((x) => x.id === id)

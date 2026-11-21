@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import {mkdtemp} from 'node:fs/promises'
+import {mkdtemp, rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {test} from 'node:test'
@@ -46,5 +46,6 @@ test('the backup proxy does not forward a collapsed path onto other omarchyd rou
 		app.closeRelays()
 		await new Promise((r) => server.close(r))
 		await fake.close()
+		await rm(dir, {recursive: true, force: true})
 	}
 })

@@ -18,7 +18,7 @@ async function stub(bin, name, body) {
 	await chmod(path, 0o755)
 }
 
-async function runHeadless(hasOwnerExit) {
+async function runHeadless(hasOwnerExit, extraEnv = {}) {
 	const dir = await mkdtemp(join(os.tmpdir(), 'install-tty-'))
 	const bin = join(dir, 'bin')
 	const home = join(dir, 'home')
@@ -73,6 +73,7 @@ exit 0`,
 			OMARCHY_SERVER_REPO: '',
 			OMARCHY_SERVER_FROM_APP: '',
 			OMARCHY_PATH: '',
+			...extraEnv,
 		},
 		stdio: ['ignore', 'pipe', 'pipe'],
 		timeout: 30_000,
@@ -91,6 +92,28 @@ test('no terminal and no owner: say to run the installer again, do not open /dev
 		assert.notEqual(out.status, 0)
 		assert.equal(out.signal, null)
 	} finally {
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('#421: a local source path with a space is one quoted Environment assignment', {skip}, async () => {
+	const dir = await mkdtemp(join(os.tmpdir(), 'install-space-'))
+	const source = join(dir, 'My Projects', 'omarchy-server')
+	const store = join(dir, 'My Projects', 'app store')
+	await mkdir(join(source, '.git'), {recursive: true})
+	await mkdir(join(store, '.git'), {recursive: true})
+	const {dir: homeDir, out, units} = await runHeadless(0, {
+		OMARCHY_SERVER_SOURCE: source,
+		OMARCHY_SERVER_APP_STORE: store,
+	})
+	try {
+		assert.equal(out.status, 0, out.stderr + out.stdout)
+		const unit = await readFile(join(units, 'omarchyd.service'), 'utf8')
+		assert.ok(unit.includes(`Environment="OMARCHY_SERVER_SOURCE=${source}"`), unit)
+		assert.ok(unit.includes(`Environment="OMARCHY_SERVER_APP_STORE=${store}"`), unit)
+		assert.equal(unit.split('\n').some((line) => line.startsWith('Environment=') && !line.startsWith('Environment="')), false, unit)
+	} finally {
+		await rm(homeDir, {recursive: true, force: true})
 		await rm(dir, {recursive: true, force: true})
 	}
 })

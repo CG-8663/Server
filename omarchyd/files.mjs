@@ -7,6 +7,7 @@ import {basename, dirname, extname, join, resolve as pathResolve, sep} from 'nod
 import {pipeline} from 'node:stream/promises'
 import {randomBytes} from 'node:crypto'
 
+import {readJsonState} from './atomic.mjs'
 import {RpcError} from './rpc.mjs'
 
 const MIME = {
@@ -322,15 +323,28 @@ export function createFiles({home, dataDir}) {
 		return Promise.all(found.slice(0, 30).map(async ({r, s}) => entry(await toVirtual(r), r, s)))
 	}
 
-	const readFavorites = async () => JSON.parse(await readFile(favoritesFile, 'utf8').catch(() => '[]'))
+	const validFavorites = (value) => Array.isArray(value) && value.every((p) => typeof p === 'string')
+	let favoritesDamagedLogged = false
+	async function readFavoritesState() {
+		const res = await readJsonState(favoritesFile, favoritesDamagedLogged ? {validate: validFavorites, log: null} : {validate: validFavorites})
+		if (res.damaged) {
+			favoritesDamagedLogged = true
+			return {list: [], damaged: true}
+		}
+		favoritesDamagedLogged = false
+		return {list: res.status === 'ok' ? res.value : [], damaged: false}
+	}
 	async function favorites() {
 		const keep = []
-		for (const p of await readFavorites()) if (await resolve(p).then(() => true, () => false)) keep.push(p)
+		const {list} = await readFavoritesState()
+		for (const p of list) if (await resolve(p).then(() => true, () => false)) keep.push(p)
 		return keep
 	}
 	async function setFavorite(path, on) {
 		await resolve(path)
-		const set = new Set(await readFavorites())
+		const {list, damaged} = await readFavoritesState()
+		if (damaged) throw new RpcError('PRECONDITION_FAILED', 'favorites.json is damaged and was left unchanged. Repair or remove it before saving.')
+		const set = new Set(list)
 		on ? set.add(path) : set.delete(path)
 		await writeFile(favoritesFile, JSON.stringify([...set]), {mode: 0o600})
 		return true
