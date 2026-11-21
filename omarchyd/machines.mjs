@@ -539,6 +539,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const kind = local ? (local.requiresCredentials ? 'windows' : 'manual') : img.kind === 'iso' ? 'omarchy' : 'cloud'
 			const name = String(input.name ?? '').trim()
 			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 			if (machines.some((m) => m.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
 			const threads = os.cpus().length || 1
 			const totalGb = Math.floor(os.totalmem() / 1024 ** 3)

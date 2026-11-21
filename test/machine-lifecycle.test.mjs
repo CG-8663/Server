@@ -144,6 +144,29 @@ test('#455 create rejects a password with NUL', async () => {
 	}
 })
 
+test('#306 create rejects a name that XML cannot hold', async () => {
+	const run = async (cmd, args = []) => {
+		const a = args[0] === '-c' ? args.slice(2) : args
+		if (cmd === 'virsh' && a[0] === '--version') return '10.0.0\n'
+		if (cmd === 'qemu-img' && a[0] === '--version') return 'qemu-img version 9.0\n'
+		return ''
+	}
+	const {root, call} = await open({run})
+	try {
+		let error = null
+		try {
+			await call('machines.create', {name: 'Bad\x1bName', osId: 'testos-amd64', cores: 1, memoryGb: 1, diskSizeGb: 10, username: 'chris', password: 'secret-pass'})
+		} catch (e) {
+			error = e
+		}
+		assert.match(error?.message ?? '', /That name can’t be used/)
+		const listed = await call('machines.list')
+		assert.equal(listed.some((m) => String(m.name).includes('\x1b')), false)
+	} finally {
+		await rm(root, {recursive: true, force: true}).catch(() => {})
+	}
+})
+
 test('#317 an installer seed drive is not cloud-init', async () => {
 	const calls = []
 	const installer = 'abcd1234'
