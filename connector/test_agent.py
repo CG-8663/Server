@@ -1,9 +1,11 @@
+import io
 import json
 import os
 import sys
 import tempfile
 import time
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -84,6 +86,59 @@ class Restore(unittest.TestCase):
                     agent.backup_restore(None, 1, {"password": "p", "snapshot": "abcdef12"}, {})
             restored = os.path.join(home, "Restored")
             self.assertEqual(os.listdir(restored) if os.path.isdir(restored) else [], [])
+
+
+class CLI(unittest.TestCase):
+    # #612: argument handling and --help
+    def test_help_prints_usage_even_when_configured(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "config.json")
+            with open(cfg, "w") as f:
+                json.dump({"server": "https://127.0.0.1:7780", "id": "1", "key": "k"}, f)
+            for args in (["--help"], ["-h"], ["help"], ["help", "enroll"], ["enroll", "--help"], ["info", "--help"]):
+                out = io.StringIO()
+                with mock.patch.object(agent, "CONFIG", cfg), mock.patch.object(agent, "Connection", side_effect=AssertionError("must not connect")), mock.patch("sys.stdout", out):
+                    agent.main(args)
+                self.assertIn("enroll", out.getvalue())
+
+    def test_bad_arguments_exit_2_with_usage(self):
+        for args in (["--version"], ["--bogus"], ["status"], ["enroll"], ["enroll", "https://s"], ["enroll", "https://s", "tok", "a", "extra"], ["enroll", "--opt", "tok"], ["info", "extra"]):
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err), self.assertRaises(SystemExit) as ctx:
+                agent.main(args)
+            self.assertEqual(ctx.exception.code, 2, args)
+            self.assertIn("Use:", err.getvalue())
+
+    def test_enroll_accepts_empty_abilities_arg(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_dir = os.path.join(d, "cfg")
+            cfg = os.path.join(cfg_dir, "config.json")
+            out = io.StringIO()
+            with mock.patch.object(agent, "CONFIG_DIR", cfg_dir), mock.patch.object(agent, "CONFIG", cfg), mock.patch.object(agent, "enroll", return_value={"id": "i1", "key": "k1", "name": "box"}) as m_enroll, mock.patch("sys.stdout", out):
+                agent.main(["enroll", "https://127.0.0.1:7780", "tok", ""])
+            m_enroll.assert_called_once()
+            self.assertEqual(out.getvalue().strip(), "box")
+
+
+class EnrollErrors(unittest.TestCase):
+    # #612: friendly SystemExit on bad scheme, missing CA, or unreachable server
+    def test_bad_scheme(self):
+        with self.assertRaises(SystemExit) as ctx:
+            agent.enroll("http://127.0.0.1:7780", "tok", {})
+        self.assertIn("https://", str(ctx.exception))
+
+    def test_missing_ca_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            ca = os.path.join(d, "missing-ca.crt")
+            with mock.patch.object(agent, "CA_FILE", ca), self.assertRaises(SystemExit) as ctx:
+                agent.enroll("https://127.0.0.1:7780", "tok", {})
+            self.assertIn("Server certificate not found", str(ctx.exception))
+
+    def test_url_error(self):
+        with mock.patch("ssl.create_default_context"), mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("connection refused")):
+            with self.assertRaises(SystemExit) as ctx:
+                agent.enroll("https://127.0.0.1:7780", "tok", {})
+            self.assertIn("Couldn't reach", str(ctx.exception))
 
 
 if __name__ == "__main__":

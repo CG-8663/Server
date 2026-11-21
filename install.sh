@@ -17,11 +17,32 @@ set -euo pipefail
 main() {
 if (: </dev/tty) 2>/dev/null; then exec </dev/tty; else exec </dev/null; fi
 
+usage() {
+	cat <<'EOF'
+Omarchy Server installer
+
+  install.sh [--zfs] [-h|--help]
+
+Options:
+  --zfs       Build and install OpenZFS from the AUR (zfs-utils, zfs-dkms)
+  -h, --help  Show this help
+
+Environment:
+  OMARCHY_SERVER_PORT       Web app port (default 7780)
+  OMARCHY_SERVER_REPO       Git repository URL or local clone path
+  OMARCHY_SERVER_BRANCH     Branch to install (default main)
+  OMARCHY_SERVER_SOURCE     Local omarchy-server git clone (absolute path)
+  OMARCHY_SERVER_APP_STORE  Local app-store git clone (absolute path)
+  OMARCHY_SERVER_FROM_APP   Set to 1 when started from the in-app updater
+EOF
+}
+
 ZFS=0
 for arg in "$@"; do
 	case "$arg" in
 		--zfs) ZFS=1 ;;
-		*) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
+		-h | --help) usage; exit 0 ;;
+		*) printf 'Unknown option: %s\n\n' "$arg" >&2; usage >&2; exit 2 ;;
 	esac
 done
 
