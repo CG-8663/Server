@@ -27,6 +27,8 @@ import {parseResize} from './terminal.mjs'
 // storage: see its drives, format extra disks, and manage pools on that computer (connector/helper.py).
 const ABILITIES = ['terminal', 'desktop', 'manage', 'storage', 'backup']
 const PAIR_TTL = 15 * 60_000
+// A viewer that stops reading must not queue connector frames in memory without a bound.
+const VIEWER_BUFFER_LIMIT = 1024 * 1024
 const sha = (s) => createHash('sha256').update(String(s)).digest('hex')
 const sameHash = (a, b) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))
 const clip = (v, n = 120) => String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, n)
@@ -372,41 +374,54 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			live.set(a.id, l)
 			const alive = setInterval(() => ws.readyState === ws.OPEN && ws.ping(), 25_000)
 			ws.on('message', async (data, isBinary) => {
-				if (isBinary) {
-					const buf = Buffer.from(data)
-					if (buf.length < 4) return
-					const ch = l.channels.get(buf.readUInt32BE(0))
-					if (ch && ch.ws.readyState === ch.ws.OPEN) ch.ws.send(buf.subarray(4), {binary: true})
-					return
-				}
-				let msg
 				try {
-					msg = JSON.parse(String(data))
+					if (isBinary) {
+						const buf = Buffer.from(data)
+						if (buf.length < 4) return
+						const id = buf.readUInt32BE(0)
+						const ch = l.channels.get(id)
+						if (ch && ch.ws.readyState === ch.ws.OPEN) {
+							if (ch.ws.bufferedAmount > VIEWER_BUFFER_LIMIT) closeLiveChannel(l, id, 'The viewer fell behind')
+							else ch.ws.send(buf.subarray(4), {binary: true})
+						}
+						return
+					}
+					let msg
+					try {
+						msg = JSON.parse(String(data))
+					} catch {
+						return
+					}
+					if (msg.op === 'hello') {
+						a.info = cleanInfo(msg.info)
+						// The connector's own limits win if they're narrower than what was stored.
+						for (const k of ABILITIES) if (msg.abilities?.[k] !== true) a.allowed[k] = a.on[k] = false
+						a.lastSeen = now()
+						// A full disk must not reject this listener: that rejection is unhandled and exits the process.
+						try {
+							await save()
+						} catch {
+							console.error('[omarchyd] couldn’t save swarm.json')
+						}
+					} else if (msg.op === 'metrics') {
+						l.metrics = cleanMetrics(msg.metrics)
+						a.metrics = l.metrics
+					} else if (msg.op === 'closed') {
+						const ch = l.channels.get(Number(msg.ch))
+						if (ch) (l.channels.delete(Number(msg.ch)), closeSocket(ch.ws, msg.code === 1011 ? 1011 : 1000, msg.reason))
+					} else if (msg.op === 'progress') {
+						// A long call (a backup) saying how far it's got.
+						l.progress = {call: Number(msg.id), percent: Math.max(0, Math.min(1, num(msg.percent) ?? 0)), step: clip(msg.step, 80), at: now()}
+					} else if (msg.op === 'result') {
+						const c = l.calls.get(Number(msg.id))
+						if (!c) return
+						l.calls.delete(Number(msg.id))
+						clearTimeout(c.timer)
+						if (msg.ok) c.resolve(msg.data ?? true)
+						else c.reject(new RpcError('BAD_GATEWAY', clip(msg.error, 400) || 'That didn’t work'))
+					}
 				} catch {
-					return
-				}
-				if (msg.op === 'hello') {
-					a.info = cleanInfo(msg.info)
-					// The connector's own limits win if they're narrower than what was stored.
-					for (const k of ABILITIES) if (msg.abilities?.[k] !== true) a.allowed[k] = a.on[k] = false
-					a.lastSeen = now()
-					await save()
-				} else if (msg.op === 'metrics') {
-					l.metrics = cleanMetrics(msg.metrics)
-					a.metrics = l.metrics
-				} else if (msg.op === 'closed') {
-					const ch = l.channels.get(Number(msg.ch))
-					if (ch) (l.channels.delete(Number(msg.ch)), closeSocket(ch.ws, msg.code === 1011 ? 1011 : 1000, msg.reason))
-				} else if (msg.op === 'progress') {
-					// A long call (a backup) saying how far it's got.
-					l.progress = {call: Number(msg.id), percent: Math.max(0, Math.min(1, num(msg.percent) ?? 0)), step: clip(msg.step, 80), at: now()}
-				} else if (msg.op === 'result') {
-					const c = l.calls.get(Number(msg.id))
-					if (!c) return
-					l.calls.delete(Number(msg.id))
-					clearTimeout(c.timer)
-					if (msg.ok) c.resolve(msg.data ?? true)
-					else c.reject(new RpcError('BAD_GATEWAY', clip(msg.error, 400) || 'That didn’t work'))
+					console.error('[omarchyd] couldn’t handle a connector message')
 				}
 			})
 			const gone = async () => {
