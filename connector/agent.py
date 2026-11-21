@@ -335,9 +335,14 @@ def disks():
         seen.add(key)
         mounts.append(mount)
     jobs = [(mount, *_begin_stat(mount)) for mount in mounts]
+    # One budget for every mount. A stuck share must not add another wait for each one.
+    deadline = time.monotonic() + _STAT_TIMEOUT
     for _mount, thread, _box in jobs:
-        if thread is not None:
-            thread.join(_STAT_TIMEOUT)
+        if thread is None:
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            thread.join(remaining)
     for mount, _thread, box in jobs:
         if not box or box.get("err"):
             continue
@@ -683,6 +688,7 @@ class Sampler:
         self._thread = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        self._tick_lock = threading.Lock()
         self._last_read = 0
         self._primed = False
         self._gpu_running = False
@@ -709,7 +715,27 @@ class Sampler:
     def tick(self, wait_gpu=True):
         if self._stopped:
             return self._snap
+        # A sample is already running on the timer. Don't publish an empty disk list over it.
+        if not self._tick_lock.acquire(blocking=False):
+            return self._snap
+        try:
+            return self._tick(wait_gpu)
+        finally:
+            self._tick_lock.release()
+
+    def _tick(self, wait_gpu=True):
         t = self._now()
+        # Read disks before publishing memory. A list that sees memory also sees this sample's disks.
+        take_disk = self._due("disk") and "disk" in self._read
+        disk_rows = None
+        if take_disk:
+            self._last["disk"] = t
+            try:
+                disk_rows = self._read["disk"]()
+            except Exception:
+                disk_rows = None
+        if take_disk and disk_rows is not None:
+            self._snap["disks"] = disk_rows
         self._take("cpu", lambda v: self._snap.update(cpu=v, cores=os.cpu_count(), load=list(os.getloadavg())), t)
         def mem(v):
             if isinstance(v, tuple):
@@ -719,7 +745,6 @@ class Sampler:
         self._take("memory", mem, t)
         self._take("temp", lambda v: self._snap.update(temp=v), t)
         self._take("battery", lambda v: self._snap.update(batteries=v), t)
-        self._take("disk", lambda v: self._snap.update(disks=v), t)
         self._take("uptime", lambda v: self._snap.update(uptime=v), t)
         if self._due("gpu") and "gpu" in self._read and not self._gpu_running:
             self._last["gpu"] = t

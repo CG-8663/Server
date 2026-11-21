@@ -365,11 +365,39 @@ class Sampler(unittest.TestCase):
             return [{"id": "g0", "index": 0, "name": "GPU", "used": 9}]
 
         s = agent.create_sampler(now=lambda: 0, read={"cpu": lambda: 7.0, "memory": lambda: ({"total": 1, "used": 1}, {"total": 0, "used": 0}), "gpu": gpu})
+        t0 = time.monotonic()
         got = s.get()
+        # get() returns before the GPU read. The first sample runs on the timer, not this thread.
+        self.assertLess(time.monotonic() - t0, 0.3)
         self.assertIsNone(got["cpu"])
         self.assertEqual(got["gpus"], [])
+        deadline = time.monotonic() + 1
+        while not started["gpu"] and time.monotonic() < deadline:
+            time.sleep(0.01)
         self.assertTrue(started["gpu"])
         release.set()
+        s.stop()
+
+    def test_memory_is_published_with_the_disk_sample(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def disk():
+            started.set()
+            release.wait(2)
+            return [{"mount": "/", "total": 10, "used": 1}]
+
+        s = agent.create_sampler(now=lambda: 0, read={"cpu": lambda: 1.0, "memory": lambda: ({"total": 5, "used": 1}, {"total": 0, "used": 0}), "disk": disk, "gpu": lambda: []})
+        thread = threading.Thread(target=s.tick)
+        thread.start()
+        self.assertTrue(started.wait(1))
+        self.assertEqual(s.peek()["mem"], {})
+        release.set()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(s.peek()["mem"]["total"], 5)
+        self.assertEqual(s.peek()["disks"][0]["mount"], "/")
+        s.stop()
 
     def test_metrics_uses_the_last_snapshot(self):
         n = {"cpu": 0}
@@ -402,7 +430,8 @@ class Sampler(unittest.TestCase):
         self.assertEqual(counts["cpu"], 1)
         self.assertIsNone(first["cpu"])
         self.assertTrue(s.active())
-        self.assertEqual(len(spawned), 1)
+        # The timer, and one sample that is not run on the caller.
+        self.assertEqual(len(spawned), 2)
         t["n"] = 1
         self.assertTrue(s.service())
         self.assertEqual(counts["cpu"], 2)
@@ -414,7 +443,7 @@ class Sampler(unittest.TestCase):
         again = s.get()
         self.assertEqual(again["cpu"], 3.0)
         self.assertEqual(counts["cpu"], 2)
-        self.assertEqual(len(spawned), 3)
+        self.assertEqual(len(spawned), 4)
         spawned[-1]()
         self.assertEqual(counts["cpu"], 3)
         s.stop()
