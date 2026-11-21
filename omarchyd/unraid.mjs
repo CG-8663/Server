@@ -79,7 +79,44 @@ const escapeCompose = (s) => String(s).replace(/\$/g, '$$$$')
 
 // One container (docker inspect) → an app listing (omarchy-app.yml + docker-compose.yml), what to copy
 // for it, and anything that doesn't come across.
-export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = () => null, takenIds = new Set(), appdataFiles = new Set()} = {}) {
+function asList(v) {
+	if (Array.isArray(v)) return v.map((x) => String(x))
+	if (typeof v === 'string' && v) return [v]
+	return []
+}
+function peerLabel(ref, peers) {
+	const id = String(ref)
+	if (!(peers instanceof Map)) return id
+	return peers.get(id) || peers.get(id.slice(0, 12)) || id
+}
+function byteSize(n) {
+	const gb = n / (1024 * 1024 * 1024)
+	if (gb >= 1 && Number.isInteger(gb)) return `${gb} GB`
+	const mb = n / (1024 * 1024)
+	return Number.isInteger(mb) ? `${mb} MB` : `${Math.round(mb * 10) / 10} MB`
+}
+// Settings Compose here does not carry. One short note each, and only when the value is not Docker’s own default.
+function noteDroppedContainerSettings(hc, notes) {
+	const requests = Array.isArray(hc.DeviceRequests) ? hc.DeviceRequests : []
+	if (requests.length) {
+		const gpu = requests.some((d) => /nvidia/i.test(String(d?.Driver ?? '')) || (Array.isArray(d?.Capabilities) ? d.Capabilities.flat(2) : []).some((cap) => String(cap).toLowerCase() === 'gpu'))
+		notes.push(gpu ? 'The graphics card it asked Docker for isn’t brought over.' : 'Devices it asked Docker for aren’t brought over.')
+	}
+	const runtime = String(hc.Runtime ?? '')
+	if (runtime && !/^runc$/i.test(runtime) && runtime !== 'io.containerd.runc.v2') notes.push(/nvidia/i.test(runtime) ? 'It used NVIDIA’s runtime. That isn’t brought over.' : `It used the ${runtime} runtime. That isn’t brought over.`)
+	const sysctls = hc.Sysctls && typeof hc.Sysctls === 'object' ? Object.keys(hc.Sysctls) : []
+	if (sysctls.length) notes.push(`Kernel settings it had (${sysctls.join(', ')}) aren’t brought over.`)
+	if (typeof hc.ShmSize === 'number' && hc.ShmSize > 0 && hc.ShmSize !== 64 * 1024 * 1024) notes.push(`Its shared memory (${byteSize(hc.ShmSize)}) isn’t brought over.`)
+	if (Array.isArray(hc.Dns) && hc.Dns.length) notes.push(`DNS servers it used (${hc.Dns.join(', ')}) aren’t brought over.`)
+	if (Array.isArray(hc.ExtraHosts) && hc.ExtraHosts.length) notes.push(`Extra host names it had (${hc.ExtraHosts.join(', ')}) aren’t brought over.`)
+	if (typeof hc.Memory === 'number' && hc.Memory > 0) notes.push(`Its memory limit (${byteSize(hc.Memory)}) isn’t brought over.`)
+	if (typeof hc.CpusetCpus === 'string' && hc.CpusetCpus) notes.push(`It was pinned to CPUs (${hc.CpusetCpus}). That isn’t brought over.`)
+	if (Array.isArray(hc.SecurityOpt) && hc.SecurityOpt.length) notes.push(`Security options it had (${hc.SecurityOpt.join(', ')}) aren’t brought over.`)
+	const tmpfs = hc.Tmpfs && typeof hc.Tmpfs === 'object' ? Object.keys(hc.Tmpfs) : []
+	if (tmpfs.length) notes.push(`Temporary folders it had in memory (${tmpfs.join(', ')}) aren’t brought over.`)
+}
+
+export function containerPlan(c, {imageEnv = [], imageCmd = null, imageEntrypoint, shareDest = () => null, takenIds = new Set(), appdataFiles = new Set(), peers = null} = {}) {
 	const name = String(c?.Name ?? '').replace(/^\//, '')
 	let id = `unraid-${slug(name)}`
 	for (let n = 2; takenIds.has(id); n++) id = `unraid-${slug(name).slice(0, 44)}-${n}`
@@ -104,6 +141,7 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 	if (hc.Privileged) notes.push('It ran with full access to the Unraid server (privileged). It’s brought over without that.')
 	if ((hc.Devices ?? []).length) notes.push(`Hardware it used (${hc.Devices.map((d) => d.PathOnHost).join(', ')}) isn’t brought over.`)
 	if ((hc.CapAdd ?? []).length) notes.push(`Extra permissions it had (${hc.CapAdd.join(', ')}) aren’t brought over.`)
+	noteDroppedContainerSettings(hc, notes)
 
 	// Ports: what Unraid published, or (own IP / host network) the ports the image exposes.
 	const ports = []
@@ -113,6 +151,8 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 		for (const b of list ?? []) if (b?.HostPort) ports.push({host: Number(b.HostPort), container: Number(cport), proto})
 	}
 	const mode = String(hc.NetworkMode ?? 'bridge')
+	const containerNet = /^container:(.+)$/.exec(mode)
+	if (containerNet) notes.push(`Traffic through another container (${peerLabel(containerNet[1], peers)}) isn’t brought over.`)
 	if (!ports.length && mode !== 'none') {
 		for (const key of Object.keys(c?.Config?.ExposedPorts ?? {})) {
 			const [cport, proto = 'tcp'] = key.split('/')
@@ -179,6 +219,10 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, shareDest = ()
 	else if (user) svc.user = escapeCompose(user)
 	const cmd = c?.Config?.Cmd
 	if (Array.isArray(cmd) && cmd.length && JSON.stringify(cmd) !== JSON.stringify(imageCmd)) svc.command = cmd.map(escapeCompose)
+	const entry = asList(c?.Config?.Entrypoint)
+	if (entry.length && (imageEntrypoint === undefined || JSON.stringify(asList(imageEntrypoint)) !== JSON.stringify(entry))) {
+		notes.push(`It starts with its own command (${entry.join(' ').slice(0, 80)}). That isn’t brought over.`)
+	}
 	if (volumes.length) svc.volumes = volumes
 	const portLines = []
 	if (webBinding || (publicPort && webPort)) portLines.push(`${publicPort}:${webPort}`)
@@ -222,7 +266,7 @@ function unescapeXml(s) {
 }
 
 // virsh dumpxml → what's needed to make a machine here.
-export function vmPlan(xml, state = '') {
+export function vmPlan(xml, state = '', cpuCount = os.cpus().length) {
 	const text = String(xml)
 	const nameMatch = /<name>([^<]+)<\/name>/.exec(text)
 	const name = nameMatch ? unescapeXml(nameMatch[1]) : 'VM'
@@ -247,6 +291,12 @@ export function vmPlan(xml, state = '') {
 		disks.push({file, bus, format: format === 'qcow2' ? 'qcow2' : 'raw'})
 	}
 	if (/<hostdev\b/.test(text)) notes.push('Hardware passed through to it (a graphics card or USB device) isn’t brought over.')
+	if (/<tpm\b/i.test(text)) notes.push('Its TPM isn’t brought over.')
+	if (/<nvram\b/i.test(text)) notes.push('Its saved firmware settings (NVRAM) aren’t brought over.')
+	if (/<cputune\b/i.test(text) || /<vcpupin\b/i.test(text)) notes.push('CPU pinning it had isn’t brought over.')
+	// importVm caps cores at the server’s CPU count. Say so here; the machine import itself is unchanged.
+	const cpuLimit = cpuCount > 0 ? cpuCount : os.cpus().length || 1
+	if (cores > cpuLimit) notes.push(`It has ${cores} CPU cores. This server has ${cpuLimit}, so it comes over with ${cpuLimit}.`)
 	const nicModel = /<interface[\s\S]*?<model\s+type=['"]([\w-]+)['"]/.exec(text)?.[1] ?? 'virtio'
 	return {
 		name,
@@ -463,9 +513,20 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 					}
 				}
 				const taken = new Set()
+				const peers = new Map()
+				for (const other of inspect) {
+					const id = String(other.Id ?? '')
+					const nm = String(other.Name ?? '').replace(/^\//, '')
+					if (!nm) continue
+					peers.set(nm, nm)
+					if (id) {
+						peers.set(id, nm)
+						if (id.length >= 12) peers.set(id.slice(0, 12), nm)
+					}
+				}
 				containers = inspect.map((c) => {
 					const img = byImage.get(c.Image)
-					const plan = containerPlan(c, {imageEnv: img?.Config?.Env ?? [], imageCmd: img?.Config?.Cmd ?? null, takenIds: taken, appdataFiles})
+					const plan = containerPlan(c, {imageEnv: img?.Config?.Env ?? [], imageCmd: img?.Config?.Cmd ?? null, ...(img ? {imageEntrypoint: img.Config?.Entrypoint ?? null} : {}), takenIds: taken, appdataFiles, peers})
 					taken.add(plan.id)
 					const size = plan.copies.some((cp) => appdataSizes.get(cp.from) == null)
 						? null
@@ -602,7 +663,12 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 		item.path = virtual
 		if (job.shareOnNetwork && storage) {
 			item.step = 'Sharing on the network'
-			await storage.procedures['files.addShare'].run({path: virtual}).catch((e) => (item.note = `Copied, but not shared on the network: ${e.message}`))
+			try {
+				const chosen = await storage.procedures['files.addShare'].run({path: virtual})
+				if (typeof chosen === 'string' && chosen !== item.key) item.note = `Shared on the network as “${chosen}”.`
+			} catch (e) {
+				item.note = `Copied, but not shared on the network: ${e.message}`
+			}
 		}
 	}
 
