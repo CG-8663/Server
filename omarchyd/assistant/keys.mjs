@@ -40,6 +40,7 @@ const publicOf = (k, userId) => ({
 	effort: effortOf(k),
 	check: publicCheck(k.check),
 	last4: k.last4,
+	...(k.provider === 'chatgpt' ? {account: k.chatgpt?.email ?? null, signedIn: !!k.chatgpt?.refreshToken} : {}),
 	ownerUserId: k.ownerUserId,
 	sharedWith: k.sharedWith,
 	systemDefault: !!k.systemDefault,
@@ -47,7 +48,10 @@ const publicOf = (k, userId) => ({
 	createdAt: k.createdAt,
 	updatedAt: k.updatedAt,
 })
-const canUse = (k, userId) => k.ownerUserId === userId || k.sharedWith.includes(userId) || k.systemDefault
+// A ChatGPT sign-in belongs to the person who signed in: never shared, never the system default.
+const personal = (k) => k.provider === 'chatgpt'
+const signedIn = (k) => k.provider !== 'chatgpt' || !!k.chatgpt?.refreshToken
+const canUse = (k, userId) => k.ownerUserId === userId || (!personal(k) && (k.sharedWith.includes(userId) || k.systemDefault))
 
 const validKeysState = (value) => plainObject(value) && Array.isArray(value.keys)
 
@@ -119,6 +123,14 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			assertWritable()
 			const k = find(String(input?.id ?? ''))
 			if (!k) throw new RpcError('NOT_FOUND', 'That key isn’t here')
+			if (personal(k) && input?.systemDefault === true) {
+				if (k.ownerUserId !== actor.userId) throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
+				throw new RpcError('BAD_REQUEST', 'A ChatGPT sign-in can’t be the system default')
+			}
+			if (personal(k) && Array.isArray(input?.sharedWith) && input.sharedWith.some((id) => String(id) && String(id) !== k.ownerUserId)) {
+				if (k.ownerUserId !== actor.userId) throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
+				throw new RpcError('BAD_REQUEST', 'A ChatGPT sign-in can’t be shared')
+			}
 			if (input?.systemDefault === true) {
 				if (actor.role === 'member') throw new RpcError('FORBIDDEN', 'Only the server’s owner can set the default key')
 				if (k.ownerUserId !== actor.userId) throw new RpcError('FORBIDDEN', 'You can only make a key you own the default')
@@ -138,9 +150,15 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 					k.model = input.model.trim().slice(0, 80)
 					delete k.check
 				}
-				if (APIS.includes(input?.api)) k.api = input.api
 				if (input?.effort === '' || EFFORTS.includes(input?.effort)) k.effort = input.effort
-				if (typeof input?.apiKey === 'string') {
+				// ChatGPT has no API key and no address. Sharing and the system default stay off.
+				if (personal(k)) {
+					k.api = 'responses'
+					k.baseUrl = OPENAI
+					k.sharedWith = []
+					k.systemDefault = false
+				} else if (APIS.includes(input?.api)) k.api = input.api
+				if (!personal(k) && typeof input?.apiKey === 'string') {
 					const next = input.apiKey.trim()
 					if (next.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
 					if (k.provider !== 'openai-compatible' && next.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')
@@ -150,12 +168,12 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 						delete k.check
 					}
 				}
-				if (k.provider === 'openai-compatible' && typeof input?.baseUrl === 'string') {
+				if (!personal(k) && k.provider === 'openai-compatible' && typeof input?.baseUrl === 'string') {
 					if (actor.role !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can change a custom endpoint')
 					k.baseUrl = normalizeBaseUrl(input.baseUrl)
 					delete k.check
 				}
-				if (Array.isArray(input?.sharedWith)) k.sharedWith = [...new Set(input.sharedWith.map((id) => String(id)).filter((id) => id && id !== k.ownerUserId))].slice(0, 32)
+				if (!personal(k) && Array.isArray(input?.sharedWith)) k.sharedWith = [...new Set(input.sharedWith.map((id) => String(id)).filter((id) => id && id !== k.ownerUserId))].slice(0, 32)
 			}
 			k.updatedAt = now()
 			await save()
@@ -180,6 +198,52 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			await save()
 			return publicCheck(k.check)
 		},
+		// Sign in with ChatGPT: one row per person and ChatGPT account (signing in again updates it).
+		async saveChatGpt(userId, {sub, email, clientId, accessToken, refreshToken, idToken, expiresAt, scope, model}) {
+			await loaded
+			assertWritable()
+			if (!sub || !clientId || !accessToken || !refreshToken) throw new RpcError('BAD_GATEWAY', 'ChatGPT didn’t finish the sign-in')
+			const t = now()
+			let k = state.keys.find((x) => x.provider === 'chatgpt' && x.ownerUserId === userId && x.chatgpt?.sub === sub)
+			const picked = String(model ?? '').trim().slice(0, 80)
+			if (!k) {
+				k = {
+					id: ID(),
+					ownerUserId: userId,
+					name: 'ChatGPT',
+					provider: 'chatgpt',
+					baseUrl: OPENAI,
+					api: 'responses',
+					effort: '',
+					model: picked,
+					apiKey: '',
+					last4: '',
+					sharedWith: [],
+					systemDefault: false,
+					createdAt: t,
+				}
+				state.keys.push(k)
+			}
+			if (picked && !k.model) k.model = picked
+			k.api = 'responses'
+			k.baseUrl = OPENAI
+			k.sharedWith = []
+			k.systemDefault = false
+			k.chatgpt = {sub, email: email ?? null, clientId, accessToken, refreshToken, idToken, expiresAt, scope}
+			delete k.check
+			k.updatedAt = t
+			await save()
+			return publicOf(k, userId)
+		},
+		async updateChatGptTokens(id, tokens) {
+			await loaded
+			assertWritable()
+			const k = find(id)
+			if (!k || k.provider !== 'chatgpt') return null
+			k.chatgpt = {...k.chatgpt, ...tokens}
+			await save()
+			return k
+		},
 		async getSecret(id) {
 			await loaded
 			return find(id) ?? null
@@ -200,7 +264,8 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 				if (!k || !canUse(k, userId)) throw new RpcError('NOT_FOUND', 'That key isn’t available')
 				return k
 			}
-			const own = state.keys.filter((k) => k.ownerUserId === userId)
+			// A signed-out ChatGPT row is not a usable key. An explicit id still resolves, so that chat can say so.
+			const own = state.keys.filter((k) => k.ownerUserId === userId && signedIn(k))
 			if (own.length) return own.sort((a, b) => b.updatedAt - a.updatedAt)[0]
 			const shared = state.keys.filter((k) => k.sharedWith.includes(userId))
 			if (shared.length) return shared[0]

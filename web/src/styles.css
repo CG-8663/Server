@@ -8553,6 +8553,18 @@ html:not(.desk-mode) body:has(.ac-widget) .shell { padding-bottom: calc(var(--do
 	padding-left: 4px;
 }
 
+/* ---- Sign in with ChatGPT ---------------------------------------------------- */
+.chatgpt-signin {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+.chatgpt-steps {
+	margin: 0;
+	padding-left: 1.3em;
+	line-height: 1.5;
+}
+
 /* ---- Settings › Backups ---- */
 .field select,
 select.field {

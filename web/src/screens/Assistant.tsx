@@ -632,8 +632,8 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 						<span className="big">
 							<Icon name="sparkle" size={30} />
 						</span>
-						<b>Add a provider and API key to talk to the assistant.</b>
-						{member && <span>Ask the owner to share a key, or add your own.</span>}
+						<b>Sign in with ChatGPT, or add an API key, to talk to the assistant.</b>
+						{member && <span>Sign in with your own ChatGPT, add your own key, or ask the owner to share one.</span>}
 						<button type="button" className="btn primary small" onClick={() => (haptic(6), onSettings())}>
 							Settings → Assistant
 						</button>

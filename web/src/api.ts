@@ -256,7 +256,7 @@ export type ActiveSession = {
 	client: {type: 'native'; id?: string; platform?: string; deviceClass?: string; appVersion?: string} | {type: 'browser'; userAgent?: string}
 }
 
-export type AssistantProvider = 'spacexai' | 'openai' | 'anthropic' | 'openai-compatible'
+export type AssistantProvider = 'spacexai' | 'openai' | 'anthropic' | 'openai-compatible' | 'chatgpt'
 // Which endpoint the assistant streams from: /chat/completions or /responses.
 export type AssistantApi = 'chat' | 'responses'
 // How hard a reasoning model thinks; '' leaves the model's default.
@@ -279,6 +279,9 @@ export type AssistantKey = {
 	sharedWith: string[]
 	systemDefault: boolean
 	mine: boolean
+	// Sign in with ChatGPT: the account, and whether the sign-in still has a refresh token.
+	account?: string | null
+	signedIn?: boolean
 }
 
 // Public card. The chat shows these fields only — never rpc input, passwords, apiKey, or credentials.
