@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.55',
+		date: '2026-11-21',
+		title: 'Files, the desktop, and machines stay accurate',
+		fixed: [
+			'A swarm computer whose Storage is switched off says so. A computer that stops answering shows offline. It introduces itself once every five minutes.',
+			'A thumbnail that failed is not kept for an hour. A missing file answers 404. Signing in too many times tells you when you can try again.',
+			'Markdown and Word links stay in the document or open safely. Excel dates, times, and numbers match the workbook. Zip listings keep folders apart when they differ only by case, say when the list is cut off, and read older file names. Slide and PDF arrow keys leave a Rename box alone.',
+			'Removing a local app store brings the usual store back. One bad listing leaves the other apps visible. A failed start, stop, or restart shows the container’s message. A folder path has to stay inside your home, and the review stays open when that path is refused.',
+			'In Files, folders stay before files when you sort by size or date. Favorites show the file’s name and details. Search treats the same name as the same name. An upload refreshes Recents and keeps empty folders. Trash does not follow a link that points outside it.',
+			'Super+Escape closes the system menu, and the launcher keeps the selected row in view. A window moved onto its own workspace leaves the tiles alone. A slow wallpaper does not replace a newer one. Windows stay on screen, a dragged title bar stays above a bottom dock, and the clock updates on the minute. Removing a theme clears its spinner.',
+			'A port forward on a running machine waits for the next start, and a port another machine already uses leaves the form open. Name and start-order edits stay put when a switch is flipped. A task still running at restart is marked failed. Start rewrites the machine definition. Ejecting a disc reports a refusal. A live backup asks for room for two copies. Protection, start at boot, order, and notes do not ask for a restart.',
+		],
+	},
+	{
 		version: '0.9.54',
 		date: '2026-11-21',
 		title: 'Swarm computers, backups, and the desktop stay honest',
