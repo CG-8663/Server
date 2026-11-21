@@ -10,7 +10,7 @@ type Nas = {host: string; port?: number; share: string; folder: string; username
 type Schedule = {frequency: 'off' | 'daily' | 'weekly'; hour: number; weekday: number}
 type Keep = {daily: number; weekly: number; monthly: number}
 type Include = {apps: boolean; settings: boolean; machineBackups: boolean}
-type RunItem = {kind: string; id?: string; name: string; ok: boolean; error?: string; added?: number}
+type RunItem = {kind: string; id?: string; name: string; ok: boolean; error?: string; warning?: string; added?: number}
 type Run = {id: string; computer?: string; name?: string; reason: string; startedAt: number; endedAt: number | null; ok: boolean; error: string | null; items: RunItem[]; added: number; nas: {ok: boolean; error?: string; uploaded?: number; uploadedBytes?: number} | null}
 export type BackupStatus = {
 	configured: boolean
@@ -448,7 +448,7 @@ function HistoryRow({r}: {r: Run}) {
 						<span className="main">
 							<span>
 								{i.name}
-								{i.ok ? ` · ${bytes(i.added ?? 0)} new` : ` · ${i.error}`}
+								{i.ok ? ` · ${bytes(i.added ?? 0)} new${i.warning ? ` · ${i.warning}` : ''}` : ` · ${i.error}`}
 							</span>
 						</span>
 					</div>

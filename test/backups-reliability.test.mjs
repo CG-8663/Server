@@ -41,10 +41,10 @@ async function listSmbDir(baseDir, smbPrefix, recurse) {
 	for (const e of entries) {
 		if (e.isDirectory()) {
 			dirs.push(e.name)
-			lines.push(`  ${e.name.padEnd(36)}D        0  Thu Nov 19 14:48:56 2026`)
+			lines.push(`  ${e.name.padEnd(36)} D        0  Thu Nov 19 14:48:56 2026`)
 		} else if (e.isFile()) {
 			const st = await stat(join(baseDir, e.name))
-			lines.push(`  ${e.name.padEnd(36)}A ${String(st.size).padStart(8)}  Thu Nov 19 14:48:56 2026`)
+			lines.push(`  ${e.name.padEnd(36)} A ${String(st.size).padStart(8)}  Thu Nov 19 14:48:56 2026`)
 		}
 	}
 	if (recurse) {
@@ -330,4 +330,86 @@ test('#598 refuses to recreate a missing or empty backup store or wipe the NAS c
 	assert.equal(st.history[0].nas, null)
 	assert.equal(restic.calls.filter((c) => c.args[0] === 'init').length, 1)
 	assert.deepEqual([...(await listNasFiles(nasRoot)).keys()].sort(), [...beforeFiles.keys()].sort())
+})
+
+test('#599 restic exit 3 is recorded as a warning and settings/VM failures still prune and copy to the NAS', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-599-'))
+	const nasRoot = join(root, 'nas')
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	const appDir = join(dataDir, 'apps', 'installed', 'notes')
+	await mkdir(appDir, {recursive: true})
+	await mkdir(home, {recursive: true})
+	await writeFile(join(appDir, 'note.txt'), 'hi\n')
+	await writeFile(join(dataDir, 'settings.json'), '{"x":1}\n')
+
+	let settingsMode = 'exit3'
+	const fakeNas = makeFakeNas(nasRoot)
+	const restic = makeFakeRestic({
+		async onBackup(args, opts) {
+			if (!args.includes('settings')) return null
+			if (settingsMode === 'exit1') {
+				throw Object.assign(new Error('/bin/restic: Fatal: repository damaged'), {code: 1, stdout: '', stderr: 'Fatal: repository damaged\n'})
+			}
+			const line = JSON.stringify({message_type: 'summary', data_added: 1024, total_files_processed: 2})
+			opts.onLine?.(line)
+			const pack = randomBytes(32).toString('hex')
+			const snap = randomBytes(32).toString('hex')
+			const repo = opts.env.RESTIC_REPOSITORY
+			await mkdir(join(repo, 'data', pack.slice(0, 2)), {recursive: true})
+			await writeFile(join(repo, 'data', pack.slice(0, 2), pack), 'pack')
+			await writeFile(join(repo, 'snapshots', snap), JSON.stringify({id: snap, short_id: snap.slice(0, 8), time: new Date().toISOString(), tags: ['settings'], paths: [dataDir]}))
+			throw Object.assign(new Error('/bin/restic: Warning: at least one source file could not be read'), {
+				code: 3,
+				stdout: `${line}\n`,
+				stderr: 'Warning: at least one source file could not be read\n',
+			})
+		},
+	})
+	const b = createBackups({
+		dataDir,
+		home,
+		serverDataDir: join(root, 'none'),
+		files: fakeFiles(home),
+		apps: {backupTargets: async () => [{id: 'notes', name: 'Notes', dir: appDir, running: false}]},
+		resticPath: '/bin/restic',
+		unshare: false,
+		timers: false,
+		run: async (cmd, args, opts) => (cmd === 'smbclient' ? fakeNas(args, opts) : restic.run(args, opts)),
+	})
+	t.after(async () => {
+		b.close()
+		await rm(root, {recursive: true, force: true})
+	})
+
+	const nas = {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u', password: 'p'}
+	await b.procedures['backups.configure'].run({nas})
+	await (await b.runBackup()).done
+
+	let st = await b.procedures['backups.status'].run()
+	const run1 = st.history[0]
+	assert.equal(run1.ok, true, run1.error)
+	assert.equal(run1.error, null)
+	const settingsItem = run1.items.find((i) => i.kind === 'settings')
+	assert.ok(settingsItem)
+	assert.equal(settingsItem.ok, true)
+	assert.equal(settingsItem.added, 1024)
+	assert.equal(settingsItem.warning, 'Saved, but some files couldn’t be read')
+	assert.equal(run1.nas?.ok, true)
+	assert.ok(restic.calls.some((c) => c.args[0] === 'forget' && c.args.includes('--prune')))
+	assert.ok(restic.calls.some((c) => c.args[0] === 'check'))
+	assert.ok((await listNasFiles(nasRoot)).size >= 5)
+
+	// Real settings failure (exit 1) marks the settings item failed, but still prunes and mirrors apps to the NAS.
+	settingsMode = 'exit1'
+	restic.calls.length = 0
+	await (await b.runBackup()).done
+	st = await b.procedures['backups.status'].run()
+	const run2 = st.history[0]
+	assert.equal(run2.ok, false)
+	assert.match(run2.error, /Server settings/)
+	assert.equal(run2.items.find((i) => i.kind === 'app')?.ok, true)
+	assert.equal(run2.items.find((i) => i.kind === 'settings')?.ok, false)
+	assert.equal(run2.nas?.ok, true)
+	assert.ok(restic.calls.some((c) => c.args[0] === 'forget' && c.args.includes('--prune')))
 })

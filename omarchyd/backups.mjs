@@ -478,7 +478,15 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	async function backupOne(paths, tags, extra, step, base, span) {
 		job = {...job, step, progress: base}
 		const args = ['backup', '--json', '--host', 'omarchy-server', ...tags.flatMap((t) => ['--tag', t]), ...extra, ...paths]
-		const {stdout} = await restic(args, {inside: tags.some((t) => t.startsWith('app:')), onLine: progressLine(base, span, step)})
+		let stdout = ''
+		let warning
+		try {
+			stdout = (await restic(args, {inside: tags.some((t) => t.startsWith('app:')), onLine: progressLine(base, span, step)})).stdout
+		} catch (e) {
+			if (e?.code !== 3) throw e
+			stdout = e.stdout ?? ''
+			warning = 'Saved, but some files couldn’t be read'
+		}
 		const summary = stdout
 			.split('\n')
 			.map((l) => {
@@ -489,7 +497,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				}
 			})
 			.find((m) => m?.message_type === 'summary')
-		return {added: summary?.data_added ?? 0, files: summary?.total_files_processed ?? 0}
+		return {added: summary?.data_added ?? 0, files: summary?.total_files_processed ?? 0, ...(warning ? {warning} : {})}
 	}
 
 	async function runBackup(reason = 'manual') {
@@ -513,7 +521,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 					if (pause) await apps.pauseForBackup(app.id).catch(() => {})
 					try {
 						const r = await backupOne([app.dir], [`app:${app.id}`], [], `Saving ${app.name}`, n * span, span)
-						entry.items.push({kind: 'app', id: app.id, name: app.name, ok: true, added: r.added})
+						entry.items.push({kind: 'app', id: app.id, name: app.name, ok: true, added: r.added, ...(r.warning ? {warning: r.warning} : {})})
 						entry.added += r.added
 					} catch (e) {
 						entry.items.push({kind: 'app', id: app.id, name: app.name, ok: false, error: e.message})
@@ -523,18 +531,26 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 					n++
 				}
 				if (config.include.settings) {
-					const paths = [dataDir, ...((await exists(serverDataDir)) ? [serverDataDir] : [])]
-					const r = await backupOne(paths, ['settings'], settingsExcludes().flatMap((x) => ['--exclude', x]), 'Saving server settings', n * span, span)
-					entry.items.push({kind: 'settings', name: 'Server settings', ok: true, added: r.added})
-					entry.added += r.added
+					try {
+						const paths = [dataDir, ...((await exists(serverDataDir)) ? [serverDataDir] : [])]
+						const r = await backupOne(paths, ['settings'], settingsExcludes().flatMap((x) => ['--exclude', x]), 'Saving server settings', n * span, span)
+						entry.items.push({kind: 'settings', name: 'Server settings', ok: true, added: r.added, ...(r.warning ? {warning: r.warning} : {})})
+						entry.added += r.added
+					} catch (e) {
+						entry.items.push({kind: 'settings', name: 'Server settings', ok: false, error: e.message})
+					}
 					n++
 				}
 				if (config.include.machineBackups) {
-					const {real} = await files.resolve('/Home/Backups/Machines', {mustExist: false})
-					if (await exists(real)) {
-						const r = await backupOne([real], ['machines'], [], 'Saving VM backups', n * span, span)
-						entry.items.push({kind: 'machines', name: 'VM backups', ok: true, added: r.added})
-						entry.added += r.added
+					try {
+						const {real} = await files.resolve('/Home/Backups/Machines', {mustExist: false})
+						if (await exists(real)) {
+							const r = await backupOne([real], ['machines'], [], 'Saving VM backups', n * span, span)
+							entry.items.push({kind: 'machines', name: 'VM backups', ok: true, added: r.added, ...(r.warning ? {warning: r.warning} : {})})
+							entry.added += r.added
+						}
+					} catch (e) {
+						entry.items.push({kind: 'machines', name: 'VM backups', ok: false, error: e.message})
 					}
 					n++
 				}
