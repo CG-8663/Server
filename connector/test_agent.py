@@ -285,6 +285,16 @@ class CLI(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 2, args)
             self.assertIn("Use:", err.getvalue())
 
+    def test_enroll_accepts_a_token_that_starts_with_a_dash(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_dir = os.path.join(d, "cfg")
+            cfg = os.path.join(cfg_dir, "config.json")
+            out = io.StringIO()
+            with mock.patch.object(agent, "CONFIG_DIR", cfg_dir), mock.patch.object(agent, "CONFIG", cfg), mock.patch.object(agent, "enroll", return_value={"id": "i1", "key": "k1", "name": "box"}) as m_enroll, mock.patch("sys.stdout", out):
+                agent.main(["enroll", "https://127.0.0.1:7780", "-abc_def", "terminal"])
+            self.assertEqual(m_enroll.call_args.args[1], "-abc_def")
+            self.assertEqual(out.getvalue().strip(), "box")
+
     def test_enroll_accepts_empty_abilities_arg(self):
         with tempfile.TemporaryDirectory() as d:
             cfg_dir = os.path.join(d, "cfg")

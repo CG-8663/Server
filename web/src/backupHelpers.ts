@@ -75,3 +75,35 @@ export function formatBackupStamp(t: number, timeZone?: string): string {
 export function serverLastRun<T extends {endedAt: number | null; computer?: string}>(s: {last?: T | null; history: readonly T[]}): T | null {
 	return s.last !== undefined ? s.last : (s.history.find((r) => r.endedAt && !r.computer) ?? null)
 }
+
+export type BackupGap = {skipped?: readonly string[]; unreadable?: boolean; files?: number}
+
+export function backupGapText(info: BackupGap | null | undefined): string {
+	if (!info) return ''
+	const skipped = (info.skipped ?? []).filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim())
+	const parts: string[] = []
+	if (skipped.length === 1) parts.push(`${skipped[0]} wasn’t found on this computer`)
+	else if (skipped.length > 1) parts.push(`${skipped.join(', ')} weren’t found on this computer`)
+	if (info.unreadable) {
+		const n = Number(info.files)
+		parts.push(Number.isFinite(n) && n > 0 ? `${n} file${n === 1 ? '' : 's'} couldn’t be read` : 'Some files couldn’t be read')
+	}
+	return parts.join(' · ')
+}
+
+export function historyRowTone(r: {endedAt: number | null; ok: boolean; items?: readonly BackupGap[]}): 'running' | 'ok' | 'warn' | 'bad' {
+	if (!r.endedAt) return 'running'
+	if (!r.ok) return 'bad'
+	if ((r.items ?? []).some((item) => backupGapText(item))) return 'warn'
+	return 'ok'
+}
+
+export function folderListError(error: unknown): string | null {
+	if (!error || typeof error !== 'object' || !('message' in error)) return null
+	const message = (error as {message?: unknown}).message
+	return typeof message === 'string' && message ? message : null
+}
+
+export function computerSnapshotRows<T>(rows: readonly T[] | null | undefined): readonly T[] {
+	return rows ? [...rows] : []
+}

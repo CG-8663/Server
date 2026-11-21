@@ -185,6 +185,15 @@ function makeFakeRestic({onCall, onBackup} = {}) {
 	return {calls, run: runner}
 }
 
+// The computer's restic writes the snapshot into its store during backup-run. These fakes answer the
+// call without that upload, so a test that restores afterwards puts the file there itself.
+async function plantSnapshot(repo) {
+	const id = randomBytes(32).toString('hex')
+	await mkdir(join(repo, 'snapshots'), {recursive: true})
+	await writeFile(join(repo, 'snapshots', id), JSON.stringify({id, short_id: id.slice(0, 8), time: new Date().toISOString(), paths: ['/home/user/Documents'], summary: {total_bytes_processed: 100}}))
+	return id
+}
+
 async function listNasFiles(nasRoot, shareName = 'backups', folder = 'Omarchy Server') {
 	const root = join(nasRoot, shareName, ...folder.split('/'))
 	const out = new Map()
@@ -1202,7 +1211,8 @@ test('#600 history trims per source and status.last keeps the server’s last ru
 		nas: {ok: true},
 	})
 
-	// 25 runs for pcA, 1 older run for pcB, 1 older run for this server (beyond top 20 and top 40 total!).
+	// 25 runs for pcA, 16 for pcB’s sibling, 1 older run for pcB, and 1 older server run.
+	// Status returns every saved run. The per-source trim happens when a run is saved, not when status is read.
 	const seeded = []
 	for (let i = 0; i < 25; i++) seeded.push(mkEntry(`a-${i}`, 'pcA', i + 1))
 	for (let i = 0; i < 16; i++) seeded.push(mkEntry(`c-${i}`, 'pcC', 30 + i))
@@ -1237,8 +1247,8 @@ test('#600 history trims per source and status.last keeps the server’s last ru
 	})
 
 	const st1 = await b1.procedures['backups.status'].run()
-	assert.equal(st1.history.length, 20)
-	assert.equal(st1.history.some((r) => r.id === 'srv-1'), false)
+	assert.equal(st1.history.length, seeded.length)
+	assert.equal(st1.history.some((r) => r.id === 'srv-1'), true)
 	assert.equal(st1.last?.id, 'srv-1')
 
 	// Configure and run a computer backup on pcA so saveHistory() runs, then reload a fresh instance.
@@ -1255,4 +1265,282 @@ test('#600 history trims per source and status.last keeps the server’s last ru
 	assert.equal(saved.filter((r) => r.computer === 'pcA').length, 20)
 	assert.ok(saved.some((r) => r.id === 'b-1'))
 	assert.ok(saved.some((r) => r.id === 'srv-1'))
+})
+
+test('status returns every saved run instead of cutting history at 20', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-hist-'))
+	const dataDir = join(root, 'data')
+	await mkdir(join(dataDir, 'backups'), {recursive: true})
+	const seeded = Array.from({length: 25}, (_, i) => ({
+		id: `run-${i}`,
+		reason: 'manual',
+		startedAt: 1_000 - i,
+		endedAt: 1_000 - i,
+		ok: true,
+		error: null,
+		items: [],
+		added: 1,
+		nas: {ok: true},
+	}))
+	await writeFile(join(dataDir, 'backups', 'history.json'), JSON.stringify(seeded))
+	const b = createBackups({dataDir, home: join(root, 'home'), serverDataDir: join(root, 'none'), files: fakeFiles(join(root, 'home')), apps: {backupTargets: async () => []}, resticPath: '/bin/restic', unshare: false, timers: false, run: async () => ({stdout: '', stderr: ''})})
+	t.after(async () => {
+		b.close()
+		await rm(root, {recursive: true, force: true})
+	})
+	const st = await b.procedures['backups.status'].run()
+	assert.equal(st.history.length, 25)
+	assert.equal(st.history.some((r) => r.id === 'run-24'), true)
+})
+
+async function until(fn, ms = 4000) {
+	const end = Date.now() + ms
+	let last
+	while (Date.now() < end) {
+		last = await fn()
+		if (last) return last
+		await new Promise((r) => setTimeout(r, 30))
+	}
+	return last
+}
+
+test('the next backup or restore ignores a finished call’s progress', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-prog-'))
+	const nasRoot = join(root, 'nas')
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	await mkdir(home, {recursive: true})
+	await mkdir(dataDir, {recursive: true})
+	let progress = {call: 1, percent: 0.99, step: 'Backing up', at: Date.now()}
+	let releaseBackup
+	let releaseRestore
+	const swarm = {
+		async agents() {
+			return [{id: 'pc1', name: 'Study PC', online: true, allowed: true, on: true}]
+		},
+		call(_id, name) {
+			if (name === 'backup-restore') return new Promise((r) => (releaseRestore = r))
+			if (name === 'backup-run') return new Promise((r) => (releaseBackup = r))
+			return {}
+		},
+		progress() {
+			return progress
+		},
+	}
+	const fakeNas = makeFakeNas(nasRoot)
+	const restic = makeFakeRestic()
+	const b = createBackups({
+		dataDir,
+		home,
+		serverDataDir: join(root, 'none'),
+		files: fakeFiles(home),
+		apps: {backupTargets: async () => []},
+		swarm,
+		resticPath: '/bin/restic',
+		unshare: false,
+		timers: false,
+		run: async (cmd, args, opts) => (cmd === 'smbclient' ? fakeNas(args, opts) : restic.run(args, opts)),
+	})
+	t.after(async () => {
+		releaseBackup?.({added: 1, files: 1})
+		releaseRestore?.({folder: 'Restored'})
+		b.close()
+		await rm(root, {recursive: true, force: true})
+	})
+	const running = async () => (await b.procedures['backups.computers'].run()).find((c) => c.id === 'pc1')?.running
+	await b.procedures['backups.configure'].run({nas: {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u', password: 'p'}})
+	await b.procedures['backups.setComputer'].run({id: 'pc1', folders: ['Documents'], enabled: true})
+	const job = await b.runComputer('pc1', 'manual')
+	assert.ok(await until(running))
+	const started = Date.now()
+	let jumped = null
+	while (Date.now() - started < 1600) {
+		const row = await running()
+		if (row && row.progress > 0.2) {
+			jumped = row.progress
+			break
+		}
+		await new Promise((r) => setTimeout(r, 40))
+	}
+	assert.equal(jumped, null, `stale backup progress was applied: ${jumped}`)
+	progress = {call: 2, percent: 0.5, step: 'Copying', at: Date.now()}
+	const moved = await until(async () => {
+		const row = await running()
+		return row && Math.abs(row.progress - 0.425) < 0.001 ? row : null
+	})
+	assert.ok(moved, 'the backup did not show the new call’s progress')
+	assert.equal(moved.step, 'Copying')
+	releaseBackup({added: 4, files: 1})
+	await job.done
+	progress = {call: 2, percent: 0.99, step: 'Backing up', at: Date.now()}
+	await plantSnapshot(join(home, 'Backups', 'Omarchy Server', 'computers', 'pc1'))
+	const snaps = await b.procedures['backups.computerSnapshots'].run({id: 'pc1'})
+	assert.ok(snaps[0]?.id)
+	const restoring = b.procedures['backups.restoreComputer'].run({id: 'pc1', snapshotId: snaps[0].id})
+	assert.ok(await until(running))
+	const restoreStart = Date.now()
+	let restoreJump = null
+	while (Date.now() - restoreStart < 1600) {
+		const row = await running()
+		if (row && row.progress > 0.2) {
+			restoreJump = row.progress
+			break
+		}
+		await new Promise((r) => setTimeout(r, 40))
+	}
+	assert.equal(restoreJump, null, `stale restore progress was applied: ${restoreJump}`)
+	progress = {call: 3, percent: 0.4, step: 'Restoring', at: Date.now()}
+	const restored = await until(async () => {
+		const row = await running()
+		return row && Math.abs(row.progress - 0.4) < 0.001 ? row : null
+	})
+	assert.ok(restored, 'the restore did not show the new call’s progress')
+	releaseRestore({folder: 'Restored/Docs'})
+	await restoring
+})
+
+test('a computer backup stores unreadable files and skipped folders on the run', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-skip-'))
+	const nasRoot = join(root, 'nas')
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	await mkdir(home, {recursive: true})
+	await mkdir(dataDir, {recursive: true})
+	const swarm = {
+		async agents() {
+			return [{id: 'pc1', name: 'Study PC', online: true, allowed: true, on: true}]
+		},
+		async call() {
+			return {added: 2048, files: 9, skipped: ['Photos'], unreadable: true}
+		},
+		progress() {
+			return null
+		},
+	}
+	const fakeNas = makeFakeNas(nasRoot)
+	const restic = makeFakeRestic()
+	const b = createBackups({
+		dataDir,
+		home,
+		serverDataDir: join(root, 'none'),
+		files: fakeFiles(home),
+		apps: {backupTargets: async () => []},
+		swarm,
+		resticPath: '/bin/restic',
+		unshare: false,
+		timers: false,
+		run: async (cmd, args, opts) => (cmd === 'smbclient' ? fakeNas(args, opts) : restic.run(args, opts)),
+	})
+	t.after(async () => {
+		b.close()
+		await rm(root, {recursive: true, force: true})
+	})
+	await b.procedures['backups.configure'].run({nas: {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u', password: 'p'}})
+	await b.procedures['backups.setComputer'].run({id: 'pc1', folders: ['Documents', 'Photos'], enabled: true})
+	await (await b.runComputer('pc1', 'manual')).done
+	const st = await b.procedures['backups.status'].run()
+	const item = st.history[0].items.find((i) => i.kind === 'computer')
+	assert.equal(st.history[0].ok, true)
+	assert.equal(st.history[0].error, null)
+	assert.equal(item.unreadable, true)
+	assert.deepEqual(item.skipped, ['Photos'])
+	assert.equal(item.files, 9)
+	const [c] = await b.procedures['backups.computers'].run()
+	assert.equal(c.last.ok, true)
+	assert.equal(c.last.unreadable, true)
+	assert.deepEqual(c.last.skipped, ['Photos'])
+	assert.equal(c.last.files, 9)
+})
+
+test('a removed computer’s backups stay listed and can be restored or deleted without the key', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-removed-'))
+	const nasRoot = join(root, 'nas')
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	await mkdir(home, {recursive: true})
+	await mkdir(dataDir, {recursive: true})
+	let present = true
+	const swarm = {
+		async agents() {
+			const others = [{id: 'pc2', name: 'Other', online: false, allowed: true, on: true}]
+			return present ? [{id: 'pc1', name: 'Study PC', online: true, allowed: true, on: true}, ...others] : others
+		},
+		async call() {
+			return {added: 100, files: 2}
+		},
+		progress() {
+			return null
+		},
+	}
+	const fakeNas = makeFakeNas(nasRoot)
+	const restic = makeFakeRestic()
+	const calls = []
+	const b = createBackups({
+		dataDir,
+		home,
+		serverDataDir: join(root, 'none'),
+		files: fakeFiles(home),
+		apps: {backupTargets: async () => []},
+		swarm,
+		resticPath: '/bin/restic',
+		unshare: false,
+		timers: false,
+		run: async (cmd, args, opts) => {
+			calls.push(cmd)
+			return cmd === 'smbclient' ? fakeNas(args, opts) : restic.run(args, opts)
+		},
+	})
+	t.after(async () => {
+		b.close()
+		await rm(root, {recursive: true, force: true})
+	})
+	const nas = {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u', password: 'p'}
+	await b.procedures['backups.configure'].run({nas})
+	await b.procedures['backups.setComputer'].run({id: 'pc1', folders: ['Documents'], enabled: true})
+	await (await b.runComputer('pc1', 'manual')).done
+	const store = join(home, 'Backups', 'Omarchy Server', 'computers', 'pc1')
+	await plantSnapshot(store)
+	const keyPath = join(dataDir, 'backups', 'computers', 'pc1.key')
+	const key = (await readFile(keyPath, 'utf8')).trim()
+	assert.ok(key.length > 8)
+	await mkdir(join(home, 'Backups', 'Omarchy Server', 'computers', 'not-a-store'), {recursive: true})
+	await assert.rejects(b.procedures['backups.setComputer'].run({id: 'pc1', remove: true}), /still in your swarm/)
+	const before = await stat(join(store, 'config'))
+	assert.ok(before.isFile())
+	present = false
+	const listed = await b.procedures['backups.computers'].run()
+	assert.equal(JSON.stringify(listed).includes(key), false)
+	const removed = listed.find((c) => c.id === 'pc1')
+	const other = listed.find((c) => c.id === 'pc2')
+	assert.ok(other)
+	assert.equal(removed?.removed, true)
+	assert.equal(removed?.name, 'Study PC')
+	assert.equal(other.removed, undefined)
+	assert.equal(listed.some((c) => c.id === 'not-a-store'), false)
+	const snaps = await b.procedures['backups.computerSnapshots'].run({id: 'pc1'})
+	assert.equal(JSON.stringify(snaps).includes(key), false)
+	assert.ok(snaps.length >= 1)
+	await assert.rejects(b.procedures['backups.computerSnapshots'].run({id: 'missing'}), /isn’t in your swarm/)
+	const smbBefore = calls.filter((c) => c === 'smbclient').length
+	const started = await b.procedures['backups.restoreComputer'].run({id: 'pc1', snapshotId: snaps[0].id})
+	assert.equal(JSON.stringify(started).includes(key), false)
+	const done = await until(async () => {
+		const row = (await b.procedures['backups.computers'].run()).find((c) => c.id === 'pc1')
+		return row?.lastRestore?.ok ? row : null
+	})
+	assert.ok(done, 'restore did not finish')
+	assert.equal(JSON.stringify(done.lastRestore).includes(key), false)
+	assert.match(done.lastRestore.folder, /Restored/)
+	assert.ok(restic.calls.some((c) => c.args[0] === 'restore'))
+	const deleted = await b.procedures['backups.setComputer'].run({id: 'pc1', remove: true})
+	assert.equal(JSON.stringify(deleted).includes(key), false)
+	assert.equal(calls.filter((c) => c === 'smbclient').length, smbBefore)
+	const after = await b.procedures['backups.computers'].run()
+	assert.equal(after.some((c) => c.id === 'pc1'), false)
+	assert.equal(after.some((c) => c.id === 'pc2'), true)
+	await assert.rejects(stat(keyPath))
+	await assert.rejects(stat(store))
+	const cfg = JSON.parse(await readFile(join(dataDir, 'backups', 'config.json'), 'utf8'))
+	assert.equal(cfg.computers.pc1, undefined)
+	assert.equal(cfg.computers.pc2, undefined)
 })

@@ -62,6 +62,15 @@ function closeLiveChannel(l, ch, reason) {
 	if (l.ws.readyState === l.ws.OPEN) l.ws.send(JSON.stringify({op: 'close', ch}))
 }
 const num = (v) => (v == null || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null)
+// A dropped connection, a slow answer, or a reconnect is not a reason to reinstall.
+// Only a connector that doesn't know the call, or a helper that isn't there, is.
+function storageReadError(e, name) {
+	const message = String(e?.message ?? '')
+	const stale = /unknown action|storage helper|helper failed|helper\.py/i.test(message)
+	const pass = /offline|reconnected|didn[\u2019']t answer in time/i.test(message)
+	if (stale && !pass) return new RpcError('PRECONDITION_FAILED', `Run the connector install again on ${name}.`)
+	return new RpcError('PRECONDITION_FAILED', message)
+}
 
 // Only the facts the page shows, checked and trimmed (a connector is another computer: don't
 // trust its numbers to be well-formed).
@@ -257,11 +266,15 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		await loaded
 		const a = find(String(input?.id ?? ''))
 		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		// Check the whole request before changing anything, so a later refusal cannot leave
+		// earlier abilities off in memory while the file and the open session still say on.
+		const next = {...a.on}
 		for (const k of ABILITIES) {
 			if (input?.[k] === undefined) continue
 			if (input[k] === true && !a.allowed[k]) throw new RpcError('FORBIDDEN', `${a.name} wasn’t allowed ${k} when it joined. Pair it again with ${k} switched on to allow it.`)
-			a.on[k] = input[k] === true && a.allowed[k]
+			next[k] = input[k] === true && a.allowed[k]
 		}
+		a.on = next
 		await save()
 		// A switch only saved before, so a terminal or desktop already open kept forwarding.
 		const l = live.get(a.id)
@@ -366,6 +379,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			// end now (its own close handler sees it's no longer the live one and skips this).
 			const old = live.get(a.id)
 			if (old) {
+				old.progress = null
 				for (const ch of old.channels.values()) closeSocket(ch.ws, 1000, 'The computer reconnected')
 				for (const c of old.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'The computer reconnected')))
 				old.channels.clear()
@@ -412,13 +426,18 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 						const ch = l.channels.get(Number(msg.ch))
 						if (ch) (l.channels.delete(Number(msg.ch)), closeSocket(ch.ws, msg.code === 1011 ? 1011 : 1000, msg.reason))
 					} else if (msg.op === 'progress') {
-						// A long call (a backup) saying how far it's got.
-						l.progress = {call: Number(msg.id), percent: Math.max(0, Math.min(1, num(msg.percent) ?? 0)), step: clip(msg.step, 80), at: now()}
+						// A long call (a backup) saying how far it's got. A report for a call that
+						// already finished must not become the next call's progress.
+						const callId = Number(msg.id)
+						if (!l.calls.has(callId)) return
+						l.progress = {call: callId, percent: Math.max(0, Math.min(1, num(msg.percent) ?? 0)), step: clip(msg.step, 80), at: now()}
 					} else if (msg.op === 'result') {
-						const c = l.calls.get(Number(msg.id))
+						const callId = Number(msg.id)
+						const c = l.calls.get(callId)
 						if (!c) return
-						l.calls.delete(Number(msg.id))
+						l.calls.delete(callId)
 						clearTimeout(c.timer)
+						if (l.progress?.call === callId) l.progress = null
 						if (msg.ok) c.resolve(msg.data ?? true)
 						else c.reject(new RpcError('BAD_GATEWAY', clip(msg.error, 400) || 'That didn’t work'))
 					}
@@ -429,6 +448,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			const gone = async () => {
 				clearInterval(alive)
 				if (live.get(a.id)?.ws !== ws) return
+				l.progress = null
 				live.delete(a.id)
 				for (const ch of l.channels.values()) closeSocket(ch.ws, 1000, 'The computer went offline')
 				for (const c of l.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'The computer went offline')))
@@ -513,7 +533,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 						return {helperAvailable: !!s?.helperAvailable, zfsAvailable: !!s?.zfsAvailable, storageAllowed: true}
 					} catch (e) {
 						if (/allow Storage|doesn’t allow/i.test(e.message)) return {helperAvailable: false, zfsAvailable: false, storageAllowed: false}
-						throw new RpcError('PRECONDITION_FAILED', `Run the connector install again on ${a.name}.`)
+						throw storageReadError(e, a.name)
 					}
 				},
 			},
@@ -524,7 +544,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 					try {
 						return await call(a.id, 'storage-disks', {})
 					} catch (e) {
-						throw new RpcError('PRECONDITION_FAILED', /offline/i.test(e.message) ? e.message : `Run the connector install again on ${a.name}.`)
+						throw storageReadError(e, a.name)
 					}
 				},
 			},
@@ -573,7 +593,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 					try {
 						return await call(a.id, 'storage-pools', {})
 					} catch (e) {
-						throw new RpcError('PRECONDITION_FAILED', /offline/i.test(e.message) ? e.message : `Run the connector install again on ${a.name}.`)
+						throw storageReadError(e, a.name)
 					}
 				},
 			},
@@ -584,7 +604,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 					try {
 						return await call(a.id, 'storage-importable', {})
 					} catch (e) {
-						throw new RpcError('PRECONDITION_FAILED', /offline/i.test(e.message) ? e.message : `Run the connector install again on ${a.name}.`)
+						throw storageReadError(e, a.name)
 					}
 				},
 			},
