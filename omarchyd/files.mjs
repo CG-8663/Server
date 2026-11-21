@@ -7,6 +7,7 @@ import {basename, dirname, extname, join, resolve as pathResolve, sep} from 'nod
 import {pipeline} from 'node:stream/promises'
 import {randomBytes} from 'node:crypto'
 
+import {writeAtomic} from './atomic.mjs'
 import {createKeyedLock} from './locks.mjs'
 import {RpcError} from './rpc.mjs'
 
@@ -332,10 +333,12 @@ export function createFiles({home, dataDir}) {
 	}
 	async function setFavorite(path, on) {
 		await resolve(path)
-		const set = new Set(await readFavorites())
-		on ? set.add(path) : set.delete(path)
-		await writeFile(favoritesFile, JSON.stringify([...set]), {mode: 0o600})
-		return true
+		return lock('favorites', async () => {
+			const set = new Set(await readFavorites())
+			on ? set.add(path) : set.delete(path)
+			await writeAtomic(favoritesFile, JSON.stringify([...set]))
+			return true
+		})
 	}
 
 	// ---- HTTP: view, download, upload -------------------------------------------------------

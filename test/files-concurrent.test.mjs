@@ -1,6 +1,6 @@
 // Concurrent file operations must keep both uploads and all favorites intact.
 import assert from 'node:assert/strict'
-import {mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -103,4 +103,30 @@ test('concurrent keep-both uploads next to an existing file and unrelated names 
 		['COPY1', 'COPY2'],
 	)
 	assert.equal(await readFile(join(home, 'other.txt'), 'utf8'), 'OTHER')
+})
+
+test('concurrent favorite updates keep every change without leaving temp files', async (t) => {
+	const {home, dataDir, files} = await setupFiles(t)
+	await Promise.all(Array.from({length: 10}, (_, i) => mkdir(join(home, `f${i}`))))
+	await Promise.all(
+		Array.from({length: 8}, (_, i) => files.procedures['files.addFavorite'].run({path: `/Home/f${i}`})),
+	)
+	assert.deepEqual(
+		(await files.procedures['files.favorites'].run()).sort(),
+		['/Home/f0', '/Home/f1', '/Home/f2', '/Home/f3', '/Home/f4', '/Home/f5', '/Home/f6', '/Home/f7'],
+	)
+	await Promise.all([
+		files.procedures['files.removeFavorite'].run({path: '/Home/f0'}),
+		files.procedures['files.addFavorite'].run({path: '/Home/f8'}),
+		files.procedures['files.removeFavorite'].run({path: '/Home/f2'}),
+		files.procedures['files.removeFavorite'].run({path: '/Home/f4'}),
+		files.procedures['files.addFavorite'].run({path: '/Home/f9'}),
+		files.procedures['files.removeFavorite'].run({path: '/Home/f6'}),
+	])
+	assert.deepEqual(
+		(await files.procedures['files.favorites'].run()).sort(),
+		['/Home/f1', '/Home/f3', '/Home/f5', '/Home/f7', '/Home/f8', '/Home/f9'],
+	)
+	assert.deepEqual(await readdir(dataDir), ['favorites.json'])
+	assert.equal((await stat(join(dataDir, 'favorites.json'))).mode & 0o777, 0o600)
 })
