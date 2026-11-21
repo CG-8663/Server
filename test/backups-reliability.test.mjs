@@ -972,3 +972,36 @@ test('#606 failing scheduled computer backups back off, collapse errors, and res
 	await waitComputerDone()
 	assert.equal(callCount, prevCalls + 4)
 })
+
+test('#641 backups.discover decodes escaped UTF-8 bytes in avahi-browse service names', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-641-'))
+	const avahiOut = [
+		'=;eth0;IPv4;Time\\032Capsule;_smb._tcp;local;timecapsule.local;192.168.1.5;445;',
+		'=;eth0;IPv4;K\\195\\188che\\032NAS;_smb._tcp;local;kuechenas.local;192.168.1.6;445;',
+		'=;eth0;IPv4;Fred\\226\\128\\153s\\032NAS;_smb._tcp;local;fred.local;192.168.1.7;445;',
+		'=;eth0;IPv4;Caf\\195\\169\\032\\240\\159\\143\\160;_smb._tcp;local;cafe.local;192.168.1.8;445;',
+		'=;eth0;IPv4;A\\092032B;_smb._tcp;local;backslash.local;192.168.1.9;445;',
+	].join('\n')
+	const b = createBackups({
+		dataDir: join(root, 'data'),
+		home: root,
+		files: fakeFiles(root),
+		apps: {backupTargets: async () => []},
+		timers: false,
+		run: async (cmd) => (cmd === 'avahi-browse' ? {stdout: avahiOut, stderr: ''} : {stdout: '', stderr: ''}),
+	})
+	t.after(async () => {
+		b.close()
+		await rm(root, {recursive: true, force: true})
+	})
+
+	const list = await b.procedures['backups.discover'].run()
+	const expected = [
+		{host: 'backslash.local', name: 'A\\032B', address: '192.168.1.9'},
+		{host: 'cafe.local', name: 'Café 🏠', address: '192.168.1.8'},
+		{host: 'fred.local', name: 'Fred’s NAS', address: '192.168.1.7'},
+		{host: 'kuechenas.local', name: 'Küche NAS', address: '192.168.1.6'},
+		{host: 'timecapsule.local', name: 'Time Capsule', address: '192.168.1.5'},
+	].sort((x, y) => x.name.localeCompare(y.name))
+	assert.deepEqual(list, expected)
+})

@@ -94,6 +94,15 @@ export const nextRun = (schedule, from = Date.now()) => slotAt(schedule, from, t
 // The latest time the schedule said "back up" (at or before now).
 export const latestSlot = (schedule, at = Date.now()) => slotAt(schedule, at, false)
 
+// avahi-browse -p escapes non-ASCII and special bytes as three-digit decimal \DDD sequences.
+export function unescapeAvahi(text) {
+	return String(text ?? '').replace(/(?:\\(?:25[0-5]|2[0-4]\d|[01]\d\d))+/g, (seq) => {
+		const bytes = []
+		for (let i = 0; i < seq.length; i += 4) bytes.push(Number(seq.slice(i + 1, i + 4)))
+		return Buffer.from(bytes).toString('utf8')
+	})
+}
+
 // smbclient's recursive `ls`: entries, with "\dir\sub" headers (share-absolute) before each folder.
 export function parseSmbListing(text, base = '') {
 	const files = new Map()
@@ -1025,7 +1034,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				const f = line.split(';')
 				if (f[0] !== '=' || f[2] !== 'IPv4') continue
 				const host = f[6]?.replace(/\.$/, '')
-				if (host && HOST.test(host) && !seen.has(host)) seen.set(host, {host, name: f[3].replace(/\\032/g, ' '), address: f[7]})
+				if (host && HOST.test(host) && !seen.has(host)) seen.set(host, {host, name: unescapeAvahi(f[3]), address: f[7]})
 			}
 			return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
 		} catch {
