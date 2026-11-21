@@ -139,13 +139,21 @@ const ago = (t: number) => {
         : "numeric",
   });
 };
-const nice = (msg: string) =>
-  ({
-    "[destination-already-exists]": "Something with that name is already there",
-    "[does-not-exist]": "That item no longer exists",
-    "[subdir-of-self]": "A folder can’t go inside itself",
-    "[operation-not-allowed]": "That isn’t allowed here",
-  })[msg] ?? msg.replace(/^\[|\]$/g, "").replace(/-/g, " ");
+const nice = (msg: string) => {
+  const notDir = /^\[not-a-directory:(.*)\]$/.exec(msg);
+  if (notDir) return `${notDir[1]} is a file, not a folder`;
+  return (
+    {
+      "[destination-already-exists]": "Something with that name is already there",
+      "[does-not-exist]": "That item no longer exists",
+      "[subdir-of-self]": "A folder can’t go inside itself",
+      "[operation-not-allowed]": "That isn’t allowed here",
+      "[permission]": "You don’t have permission to change that folder",
+      "[read-only]": "That folder is read-only",
+      "[no-space]": "There isn’t enough free space",
+    }[msg] ?? msg.replace(/^\[|\]$/g, "").replace(/-/g, " ")
+  );
+};
 
 const PLACE_NAMES: Record<string, string> = {
   "/Home": "Home",

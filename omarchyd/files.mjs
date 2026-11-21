@@ -5,7 +5,7 @@ import {createReadStream, createWriteStream} from 'node:fs'
 import {cp, link, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises'
 import {basename, dirname, extname, join, resolve as pathResolve, sep} from 'node:path'
 import {pipeline} from 'node:stream/promises'
-import {randomBytes} from 'node:crypto'
+import {createHash, randomBytes} from 'node:crypto'
 
 import {readJsonState, writeAtomic} from './atomic.mjs'
 import {createKeyedLock} from './locks.mjs'
@@ -26,6 +26,56 @@ const typeFor = (name) => MIME[extname(name).slice(1).toLowerCase()] ?? 'applica
 const INLINE = /^(image\/(jpeg|png|gif|webp|avif|bmp)|video\/(mp4|webm|quicktime)|audio\/|application\/pdf|text\/plain)/
 const STAT_CONCURRENCY = 16
 
+function shownName(name) {
+	return Buffer.isBuffer(name) ? name.toString('utf8') : String(name)
+}
+// Join without decoding the child name as UTF-8, so a Latin-1 byte still stats.
+function childPath(dir, name) {
+	const dirBuf = Buffer.isBuffer(dir) ? dir : Buffer.from(dir)
+	const nameBuf = Buffer.isBuffer(name) ? name : Buffer.from(name)
+	const sepBuf = Buffer.from(sep)
+	if (dirBuf.length >= sepBuf.length && dirBuf.subarray(-sepBuf.length).equals(sepBuf)) return Buffer.concat([dirBuf, nameBuf])
+	return Buffer.concat([dirBuf, sepBuf, nameBuf])
+}
+function trashInfoName(fileName) {
+	const suffix = '.trashinfo'
+	const plain = `${fileName}${suffix}`
+	if (Buffer.byteLength(plain) <= 255) return plain
+	return `${createHash('sha256').update(fileName).digest('hex')}${suffix}`
+}
+function fileTag(st) {
+	return `"${st.size}-${st.mtime.getTime()}"`
+}
+function ifRangeMatches(header, st) {
+	if (header == null || header === '') return true
+	const value = (Array.isArray(header) ? header[0] : String(header)).trim()
+	if (value === fileTag(st)) return true
+	const parsed = Date.parse(value)
+	if (Number.isNaN(parsed)) return false
+	return new Date(parsed).toUTCString() === st.mtime.toUTCString()
+}
+function mapFsError(error, path) {
+	if (error instanceof RpcError) throw error
+	const code = error?.code
+	if (code === 'EACCES') throw new RpcError('FORBIDDEN', '[permission]')
+	if (code === 'EROFS') throw new RpcError('FORBIDDEN', '[read-only]')
+	if (code === 'ENOTDIR') {
+		const name = typeof path === 'string' ? basename(dirname(path)) : ''
+		throw new RpcError('BAD_REQUEST', `[not-a-directory:${name || 'That'}]`)
+	}
+	if (code === 'ENOSPC') throw new RpcError('BAD_REQUEST', '[no-space]')
+	throw error
+}
+function guard(run) {
+	return async (input, ctx) => {
+		try {
+			return await run(input, ctx)
+		} catch (error) {
+			mapFsError(error, input?.path)
+		}
+	}
+}
+
 async function mapPool(items, n, fn) {
 	const out = new Array(items.length)
 	let i = 0
@@ -40,7 +90,8 @@ async function mapPool(items, n, fn) {
 	return out
 }
 
-export function createFiles({home, dataDir}) {
+export function createFiles({home, dataDir, io} = {}) {
+	const mkdirOp = typeof io?.mkdir === 'function' ? io.mkdir : mkdir
 	const trashRoot = join(home, '.local/share/Trash')
 	const trashFiles = join(trashRoot, 'files')
 	const trashInfo = join(trashRoot, 'info')
@@ -92,44 +143,48 @@ export function createFiles({home, dataDir}) {
 	// Trash lives inside Home, so it's checked first.
 	const toVirtual = async (real) => {
 		const h = await roots()
+		const text = Buffer.isBuffer(real) ? real.toString('utf8') : real
 		const t = join(h, '.local/share/Trash/files')
-		if (real === t || real.startsWith(t + sep)) return `/Trash${real.slice(t.length)}`
-		if (real === trashFiles || real.startsWith(trashFiles + sep)) return `/Trash${real.slice(trashFiles.length)}`
-		if (real === h || real.startsWith(h + sep)) return `/Home${real.slice(h.length)}`
+		if (text === t || text.startsWith(t + sep)) return `/Trash${text.slice(t.length)}`
+		if (text === trashFiles || text.startsWith(trashFiles + sep)) return `/Trash${text.slice(trashFiles.length)}`
+		if (text === h || text.startsWith(h + sep)) return `/Home${text.slice(h.length)}`
 		return null
 	}
 
 	async function entry(virtual, real, st) {
 		st ??= await stat(real)
 		const dir = st.isDirectory()
+		const file = st.isFile()
 		const inTrash = virtual.startsWith('/Trash/')
 		const name = virtual === '/Home' ? 'Home' : virtual === '/Trash' ? 'Trash' : basename(virtual)
 		const type = dir ? 'directory' : typeFor(name)
 		const top = virtual === '/Home' || virtual === '/Trash'
+		const ops = top ? (virtual === '/Home' ? ['writable'] : []) : inTrash ? ['restore', 'delete'] : ['copy', 'move', 'rename', 'trash', 'favorite', 'writable']
 		return {
 			name,
 			path: virtual,
 			type,
 			...(dir ? {} : {size: st.size}),
 			modified: st.mtimeMs,
-			operations: top ? (virtual === '/Home' ? ['writable'] : []) : inTrash ? ['restore', 'delete'] : ['copy', 'move', 'rename', 'trash', 'favorite', 'writable'],
+			operations: file && !top && !inTrash ? [...ops, 'download', 'view'] : ops,
 		}
 	}
 	const visible = (name) => !name.startsWith('.')
 
 	async function list({path, sortBy = 'name', sortOrder = 'ascending', limit} = {}) {
 		const {real} = await resolve(path)
-		if (path === '/Trash') await mkdir(trashFiles, {recursive: true})
+		if (path === '/Trash') await mkdirOp(trashFiles, {recursive: true})
 		const st = await stat(real)
 		if (!st.isDirectory()) throw new RpcError('BAD_REQUEST', '[not-a-directory]')
-		const dirents = (await readdir(real, {withFileTypes: true})).filter((d) => visible(d.name))
+		const dirents = (await readdir(real, {withFileTypes: true, encoding: 'buffer'})).filter((d) => visible(shownName(d.name)))
 		const totalFiles = dirents.length
 		const cap = Number.isInteger(limit) && limit > 0 ? limit : null
 		const dirFirst = (a, b) => Number(!!b.dir) - Number(!!a.dir)
 		const textCmp = (a, b, key) => String(a[key]).localeCompare(String(b[key]), undefined, {numeric: true, sensitivity: 'base'})
 		const key = sortBy === 'modified' ? 'modified' : sortBy === 'size' ? 'size' : sortBy === 'type' ? 'type' : 'name'
-		const toEntry = async (name) => {
-			const r = join(real, name)
+		const toEntry = async (d) => {
+			const name = shownName(d.name)
+			const r = childPath(real, d.name)
 			const s = await stat(r).catch(() => null) // broken symlinks are skipped
 			return s ? await entry(`${path}/${name}`, r, s) : null
 		}
@@ -138,7 +193,7 @@ export function createFiles({home, dataDir}) {
 		let countable
 		if (key === 'modified' || key === 'size') {
 			// mtime/size sort needs every entry's stat; we still honour limit after sorting.
-			const rows = (await mapPool(dirents, STAT_CONCURRENCY, (d) => toEntry(d.name))).filter(Boolean)
+			const rows = (await mapPool(dirents, STAT_CONCURRENCY, (d) => toEntry(d))).filter(Boolean)
 			rows.sort((a, b) => dirFirst({dir: a.type === 'directory'}, {dir: b.type === 'directory'}) || (a[key] ?? 0) - (b[key] ?? 0))
 			if (sortOrder === 'descending') rows.reverse()
 			countable = rows.length
@@ -146,16 +201,17 @@ export function createFiles({home, dataDir}) {
 		} else {
 			// Name/type: sort from dirents (cheap), slice, then stat only the page.
 			// A link to a folder sorts with the folders (as it did when every entry was stat'ed).
-			const isDir = async (d) => d.isDirectory() || (d.isSymbolicLink() && (await stat(join(real, d.name)).then((s) => s.isDirectory(), () => false)))
+			const isDir = async (d) => d.isDirectory() || (d.isSymbolicLink() && (await stat(childPath(real, d.name)).then((s) => s.isDirectory(), () => false)))
 			const rows = await mapPool(dirents, STAT_CONCURRENCY, async (d) => {
 				const dir = await isDir(d)
-				return {name: d.name, dir, type: dir ? 'directory' : typeFor(d.name)}
+				const name = shownName(d.name)
+				return {name, dir, type: dir ? 'directory' : typeFor(name), d}
 			})
 			rows.sort((a, b) => dirFirst(a, b) || textCmp(a, b, key === 'type' ? 'type' : 'name'))
 			if (sortOrder === 'descending') rows.reverse()
 			countable = rows.length
 			const page = cap ? rows.slice(0, cap) : rows
-			files = (await mapPool(page, STAT_CONCURRENCY, (row) => toEntry(row.name))).filter(Boolean)
+			files = (await mapPool(page, STAT_CONCURRENCY, (row) => toEntry(row.d))).filter(Boolean)
 		}
 		return {...(await entry(path, real, st)), files, hasMore: cap != null && countable > cap, totalFiles}
 	}
@@ -173,7 +229,7 @@ export function createFiles({home, dataDir}) {
 			}
 		}
 	}
-	const validName = (n) => typeof n === 'string' && n.length > 0 && n.length <= 255 && !n.includes('/') && !n.includes('\0') && n !== '.' && n !== '..'
+	const validName = (n) => typeof n === 'string' && n.length > 0 && Buffer.byteLength(n) <= 255 && !n.includes('/') && !n.includes('\0') && n !== '.' && n !== '..'
 	// Storage registers this so a renamed, moved, or trashed folder takes its network share with it.
 	// Copy leaves the share on the original. `to` is null when the folder was trashed.
 	let follow = async () => {}
@@ -181,7 +237,7 @@ export function createFiles({home, dataDir}) {
 	async function createDirectory({path}) {
 		if (!validName(basename(path))) throw new RpcError('BAD_REQUEST', '[invalid-name]')
 		const {real} = await resolve(path, {mustExist: false})
-		await mkdir(real).catch((e) => {
+		await mkdirOp(real).catch((e) => {
 			if (e.code === 'EEXIST') throw new RpcError('CONFLICT', '[already-exists]')
 			throw e
 		})
@@ -231,11 +287,11 @@ export function createFiles({home, dataDir}) {
 	async function trash({path}) {
 		const {real, top} = await resolve(path)
 		if (top !== 'Home' || path === '/Home') throw new RpcError('BAD_REQUEST', '[cannot-trash]')
-		await mkdir(trashFiles, {recursive: true})
-		await mkdir(trashInfo, {recursive: true})
+		await mkdirOp(trashFiles, {recursive: true})
+		await mkdirOp(trashInfo, {recursive: true})
 		const target = await freeName(trashFiles, basename(real))
 		const info = `[Trash Info]\nPath=${encodeURI(real)}\nDeletionDate=${new Date().toISOString().slice(0, 19)}\n`
-		await writeFile(join(trashInfo, `${basename(target)}.trashinfo`), info)
+		await writeFile(join(trashInfo, trashInfoName(basename(target))), info)
 		await rename(real, target).catch(async (e) => {
 			if (e.code !== 'EXDEV') throw e
 			await cp(real, target, {recursive: true, verbatimSymlinks: true})
@@ -251,7 +307,7 @@ export function createFiles({home, dataDir}) {
 		// Only a direct child of Trash/files has its own .trashinfo. A nested file can share a
 		// basename with another trashed item, and must not read or remove that item's info.
 		const ownInfo = dirname(real) === trashFiles
-		const infoFile = join(trashInfo, `${basename(real)}.trashinfo`)
+		const infoFile = join(trashInfo, trashInfoName(basename(real)))
 		const original = ownInfo ? /^Path=(.*)$/m.exec(await readFile(infoFile, 'utf8').catch(() => ''))?.[1] : undefined
 		const h = await roots()
 		// The .trashinfo can be written by anything that can write to the Trash, so where it says the
@@ -269,7 +325,7 @@ export function createFiles({home, dataDir}) {
 		let near = dirname(dest)
 		while (near !== h && !(await lstat(near).then(() => true, () => false))) near = dirname(near)
 		if (!inside(await realpath(near).catch(() => ''))) dest = join(h, basename(real))
-		await mkdir(dirname(dest), {recursive: true})
+		await mkdirOp(dirname(dest), {recursive: true})
 		if (await lstat(dest).then(() => true, () => false)) dest = await freeName(dirname(dest), basename(dest))
 		await rename(real, dest)
 		if (ownInfo) await rm(infoFile, {force: true})
@@ -279,7 +335,7 @@ export function createFiles({home, dataDir}) {
 		const {real, top} = await resolve(path)
 		if (top !== 'Trash' || path === '/Trash') throw new RpcError('BAD_REQUEST', '[only-from-trash]')
 		await rm(real, {recursive: true, force: true})
-		if (dirname(real) === trashFiles) await rm(join(trashInfo, `${basename(real)}.trashinfo`), {force: true})
+		if (dirname(real) === trashFiles) await rm(join(trashInfo, trashInfoName(basename(real))), {force: true})
 		return true
 	}
 	async function emptyTrash() {
@@ -295,11 +351,12 @@ export function createFiles({home, dataDir}) {
 		let seen = 0
 		while (queue.length && seen < limit) {
 			const dir = queue.shift()
-			const items = await readdir(dir, {withFileTypes: true}).catch(() => [])
+			const items = await readdir(dir, {withFileTypes: true, encoding: 'buffer'}).catch(() => [])
 			for (const d of items) {
-				if (!visible(d.name) || d.name === 'node_modules') continue
+				const name = shownName(d.name)
+				if (!visible(name) || name === 'node_modules') continue
 				seen++
-				const r = join(dir, d.name)
+				const r = childPath(dir, d.name)
 				if (d.isDirectory()) queue.push(r)
 				if (d.isDirectory() || d.isFile()) await visit(r, d)
 			}
@@ -310,9 +367,21 @@ export function createFiles({home, dataDir}) {
 		if (!q) return []
 		const out = []
 		await walk(async (r, d) => {
-			if (out.length < 50 && d.name.toLowerCase().includes(q)) out.push(r)
+			if (out.length < 50 && shownName(d.name).toLowerCase().includes(q)) out.push(r)
 		})
-		return Promise.all(out.map(async (r) => entry(await toVirtual(r), r)))
+		const rows = await Promise.all(
+			out.map(async (r) => {
+				try {
+					const virtual = await toVirtual(r)
+					if (!virtual) return null
+					return await entry(virtual, r)
+				} catch (error) {
+					if (error instanceof RpcError) throw error
+					return null
+				}
+			}),
+		)
+		return rows.filter(Boolean)
 	}
 	async function recents() {
 		const found = []
@@ -367,18 +436,20 @@ export function createFiles({home, dataDir}) {
 		const st = await stat(real).catch(() => null)
 		if (!st) return endPlain(res, 404, 'Not found')
 		if (st.isDirectory()) return endPlain(res, 501, 'Downloading a folder isn’t supported yet')
+		if (!st.isFile()) return endPlain(res, 400, 'That isn’t a regular file')
 		const name = basename(real)
 		const type = typeFor(name)
 		const inline = kind === 'view' && INLINE.test(type)
 		const headers = {
 			'content-type': kind === 'view' && !INLINE.test(type) && !type.startsWith('image/svg') ? 'application/octet-stream' : type,
 			'accept-ranges': 'bytes',
+			etag: fileTag(st),
 			'last-modified': st.mtime.toUTCString(),
 			'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name)}`,
 			'x-content-type-options': 'nosniff',
 		}
 		const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '')
-		if (range && (range[1] || range[2])) {
+		if (range && (range[1] || range[2]) && ifRangeMatches(req.headers['if-range'], st)) {
 			let start = range[1] ? Number(range[1]) : st.size - Number(range[2])
 			let end = range[1] && range[2] ? Number(range[2]) : st.size - 1
 			start = Math.max(0, start)
@@ -446,7 +517,7 @@ export function createFiles({home, dataDir}) {
 		if (exists && collision === 'error') return endJson(res, 409, {error: '[already-exists]'})
 		// Write to a temporary file first, then claim the final name atomically so overlapping
 		// uploads never overwrite each other.
-		const tmp = join(dirname(real), `.${basename(real)}.${randomBytes(6).toString('hex')}.uploading`)
+		const tmp = join(dirname(real), `.upload.${randomBytes(6).toString('hex')}`)
 		let target
 		try {
 			await pipeline(req, createWriteStream(tmp, {flags: 'wx', mode: 0o644}))
@@ -461,22 +532,22 @@ export function createFiles({home, dataDir}) {
 
 	return {
 		procedures: {
-			'files.list': {kind: 'query', run: (i) => list(i)},
-			'files.search': {kind: 'query', run: (i) => search(i ?? {})},
-			'files.recents': {kind: 'query', run: () => recents()},
-			'files.favorites': {kind: 'query', run: () => favorites()},
-			'files.addFavorite': {kind: 'mutation', run: ({path}) => setFavorite(path, true)},
-			'files.removeFavorite': {kind: 'mutation', run: ({path}) => setFavorite(path, false)},
-			'files.createDirectory': {kind: 'mutation', run: (i) => createDirectory(i)},
-			'files.rename': {kind: 'mutation', run: (i) => renameItem(i)},
-			'files.copy': {kind: 'mutation', run: (i) => moveOrCopy(i, true)},
-			'files.move': {kind: 'mutation', run: (i) => moveOrCopy(i, false)},
-			'files.trash': {kind: 'mutation', run: (i) => trash(i)},
-			'files.restore': {kind: 'mutation', run: (i) => restore(i)},
-			'files.delete': {kind: 'mutation', run: (i) => deleteItem(i)},
-			'files.emptyTrash': {kind: 'mutation', run: () => emptyTrash()},
-			'files.operationProgress': {kind: 'query', run: () => []},
-			'files.externalDevices': {kind: 'query', run: () => []},
+			'files.list': {kind: 'query', run: guard((i) => list(i))},
+			'files.search': {kind: 'query', run: guard((i) => search(i ?? {}))},
+			'files.recents': {kind: 'query', run: guard(() => recents())},
+			'files.favorites': {kind: 'query', run: guard(() => favorites())},
+			'files.addFavorite': {kind: 'mutation', run: guard(({path}) => setFavorite(path, true))},
+			'files.removeFavorite': {kind: 'mutation', run: guard(({path}) => setFavorite(path, false))},
+			'files.createDirectory': {kind: 'mutation', run: guard((i) => createDirectory(i))},
+			'files.rename': {kind: 'mutation', run: guard((i) => renameItem(i))},
+			'files.copy': {kind: 'mutation', run: guard((i) => moveOrCopy(i, true))},
+			'files.move': {kind: 'mutation', run: guard((i) => moveOrCopy(i, false))},
+			'files.trash': {kind: 'mutation', run: guard((i) => trash(i))},
+			'files.restore': {kind: 'mutation', run: guard((i) => restore(i))},
+			'files.delete': {kind: 'mutation', run: guard((i) => deleteItem(i))},
+			'files.emptyTrash': {kind: 'mutation', run: guard(() => emptyTrash())},
+			'files.operationProgress': {kind: 'query', run: guard(() => [])},
+			'files.externalDevices': {kind: 'query', run: guard(() => [])},
 		},
 		serveFile,
 		upload,
