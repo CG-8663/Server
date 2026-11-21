@@ -8,17 +8,12 @@ import {Terminal as XTerm} from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 
 import {Icon} from './icons'
+import {SEQ, applyTerminalModifiers} from './terminalKeys'
 import {AppIcon, haptic, useConfirm, usePortalRoot, useScreenLock, useToast} from './ui'
 
 // closed: the shell ended. lost: the connection dropped (the shell is still running on the server).
 type State = 'connecting' | 'connected' | 'closed' | 'lost' | 'error'
 const BASE_FONT = 13
-const SEQ = {esc: '\x1b', tab: '\t', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C', left: '\x1b[D', home: '\x1b[H', end: '\x1b[F', ctrlC: '\x03'}
-// Arrow, Home and End keys as a real keyboard sends them: full-screen programs (less, vim, htop)
-// switch the terminal to "application" cursor keys (ESC O A rather than ESC [ A), and some only
-// understand that form.
-const CURSOR: Record<string, string> = {[SEQ.up]: 'A', [SEQ.down]: 'B', [SEQ.right]: 'C', [SEQ.left]: 'D', [SEQ.home]: 'H', [SEQ.end]: 'F'}
-const cursorKey = (term: XTerm | undefined, seq: string) => (term?.modes.applicationCursorKeysMode && CURSOR[seq] ? `\x1bO${CURSOR[seq]}` : seq)
 
 // Keep a fixed-position screen inside the area the phone keyboard leaves visible.
 export function useVisualViewport(ref: React.RefObject<HTMLElement>, enabled = true) {
@@ -228,18 +223,12 @@ export function TerminalScreen({
 				show(size.current.cols, size.current.rows)
 				sendSize(true)
 			}
-			let out = data
 			const m = mods.current
-			if (m.ctrl && data.length === 1) {
-				const c = data.toUpperCase().charCodeAt(0)
-				if (c >= 64 && c <= 95) out = String.fromCharCode(c - 64)
-				setCtrl(false)
-			}
-			if (m.alt && data.length === 1) {
-				out = `\x1b${out}`
-				setAlt(false)
-			}
-			send(out)
+			const res = applyTerminalModifiers(data, m, {appCursor: term.modes.applicationCursorKeysMode, applyAppCursor: false})
+			mods.current = {ctrl: res.ctrl, alt: res.alt}
+			if (res.ctrl !== m.ctrl) setCtrl(res.ctrl)
+			if (res.alt !== m.alt) setAlt(res.alt)
+			send(res.data)
 		})
 		const ta = term.textarea
 		ta?.setAttribute('autocapitalize', 'off')
@@ -348,7 +337,7 @@ export function TerminalScreen({
 				const rowH = cell().h * ((term.options.fontSize ?? BASE_FONT) / BASE_FONT)
 				let out = ''
 				while (Math.abs(touch.carry) >= rowH) {
-					out += cursorKey(term, touch.carry > 0 ? SEQ.down : SEQ.up)
+					out += applyTerminalModifiers(touch.carry > 0 ? SEQ.down : SEQ.up, {ctrl: false, alt: false}, {appCursor: term.modes.applicationCursorKeysMode, applyAppCursor: true}).data
 					touch.carry -= Math.sign(touch.carry) * rowH
 				}
 				if (out) send(out)
@@ -426,9 +415,13 @@ export function TerminalScreen({
 	const sendSeq = (seq: string) => {
 		haptic(5)
 		const ws = wsRef.current
-		const s = cursorKey(termRef.current, seq)
-		if (ws?.readyState === WebSocket.OPEN) ws.send(alt && s.length === 1 ? `\x1b${s}` : s)
-		if (alt) setAlt(false)
+		if (ws?.readyState !== WebSocket.OPEN) return
+		const m = mods.current
+		const res = applyTerminalModifiers(seq, m, {appCursor: termRef.current?.modes.applicationCursorKeysMode, applyAppCursor: true})
+		mods.current = {ctrl: res.ctrl, alt: res.alt}
+		if (res.ctrl !== m.ctrl) setCtrl(res.ctrl)
+		if (res.alt !== m.alt) setAlt(res.alt)
+		ws.send(res.data)
 	}
 	const toggleKeyboard = () => {
 		haptic(8)
