@@ -26,7 +26,7 @@ before(async () => {
 	// Stand-in for wayvnc on 127.0.0.1.
 	vnc = net.createServer((sock) => sock.end('RFB 003.008\n'))
 	await new Promise((r) => vnc.listen(0, '127.0.0.1', r))
-	d = await startOmarchyd({port: 0, dataDir: data, home: root, desktopVncPort: vnc.address().port})
+	d = await startOmarchyd({port: 0, dataDir: data, home: root, desktopVncPort: vnc.address().port, desktopVncSocket: join(root, 'no-such.sock')})
 	const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
 	auth = {authorization: `Bearer ${login.result.data.accessToken}`, 'content-type': 'application/json'}
 	const memberLogin = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'sam', password: 'correct horse', client: {id: 'm'}})})).json()
