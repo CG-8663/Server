@@ -32,6 +32,7 @@ import {isSuper, resolveHyprKey, type Action} from './hyprland/keymap'
 import {Launcher} from './hyprland/Launcher'
 import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, moveWorkspace, reconcile, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
+import {loadWallpaper} from './wallpaperLoader'
 
 const HINT_KEY = 'omarchy-server:desk-hint-closed'
 
@@ -1218,16 +1219,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 
 function Wall({url}: {url: string}) {
 	const [layers, setLayers] = useState<string[]>([])
-	useEffect(() => {
-		const show = (u: string, fallback?: string) => {
-			const img = new Image()
-			img.onload = () => setLayers((l) => [...l.filter((x) => x !== u).slice(-1), u])
-			// No Omarchy background here (or it went away): a built-in one instead.
-			img.onerror = () => fallback && show(fallback)
-			img.src = u
-		}
-		show(url, url.startsWith('/api/omarchy/') ? wallpaperSrc('valley') : undefined)
-	}, [url])
+	useEffect(
+		() =>
+			loadWallpaper(url, {
+				fallback: url.startsWith('/api/omarchy/') ? wallpaperSrc('valley') : undefined,
+				onLoad: (u) => setLayers((l) => [...l.filter((x) => x !== u).slice(-1), u]),
+			}),
+		[url],
+	)
 	return (
 		<div className="desk-wall" aria-hidden="true">
 			{layers.map((u, i) => (
