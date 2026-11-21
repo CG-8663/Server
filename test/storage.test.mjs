@@ -1328,4 +1328,33 @@ describe('omarchyd storage', () => {
 		for (const mp of sysPaths) assert.equal(byMount[mp], 'system', mp)
 		for (const mp of dataPaths) assert.equal(byMount[mp], 'data', mp)
 	})
+
+	test('a zfs_member is in the imported pool only when its guid matches', async () => {
+		const real = '1111111111111111111'
+		const foreign = '2222222222222222222'
+		const tree = {
+			blockdevices: [
+				{name: 'sda', path: '/dev/sda', type: 'disk', size: 1e12, children: [{name: 'sda1', path: '/dev/sda1', type: 'part', fstype: 'zfs_member', label: 'tank', uuid: real, mountpoints: [null]}]},
+				{name: 'sdb', path: '/dev/sdb', type: 'disk', size: 1e12, children: [{name: 'sdb1', path: '/dev/sdb1', type: 'part', fstype: 'zfs_member', label: 'tank', uuid: foreign, mountpoints: [null]}]},
+			],
+		}
+		const run = async (cmd, args) => {
+			if (cmd === 'lsblk') return JSON.stringify(tree)
+			if (cmd === 'sudo' && args[2] === 'ping') return 'ok\n'
+			if (cmd === 'sudo' && args[2] === 'zfs-available') return 'yes\n'
+			if (cmd === 'sudo' && args[2] === 'zfs-pools') return `${JSON.stringify([{name: 'tank', size: 10, used: 1, free: 9, health: 'ONLINE', mountpoint: '/tank', folder: null, state: 'ONLINE', scan: '', errors: 'No known data errors', layout: 'stripe', devices: []}])}\n`
+			if (cmd === 'sudo' && args[2] === 'smart') return `${JSON.stringify({smart_status: {passed: true}})}\n`
+			if (cmd === 'zpool' && args[0] === 'get') return `${real}\n`
+			return ''
+		}
+		const data = join(root, 'zfs-guid-data')
+		await mkdir(data)
+		const s = createStorage({dataDir: data, home: '/home/chris', files: {resolve: async () => ({real: '', top: 'Home'})}, run, fstabPath: fstab})
+		const by = Object.fromEntries((await s.procedures['storage.disks'].run()).map((d) => [d.name, d]))
+		assert.equal(by.sda.role, 'pool')
+		assert.equal(by.sda.pool, 'tank')
+		assert.equal(by.sdb.role, 'data')
+		assert.equal(by.sdb.pool, null)
+		assert.deepEqual(by.sdb.zfs, {pool: 'tank'})
+	})
 })

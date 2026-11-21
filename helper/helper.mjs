@@ -38,8 +38,10 @@
 //                                     tailscaled service) and make the owner its operator
 //   tailscale-remove                  sign this server out of Tailscale, stop it and remove the package
 import {execFile} from 'node:child_process'
-import {chown, mkdir, readdir, readFile, realpath, rename, writeFile} from 'node:fs/promises'
+import {realpathSync} from 'node:fs'
+import {access as fileAccess, chown, constants as fsConstants, mkdir, readdir, readFile, realpath, rename, writeFile} from 'node:fs/promises'
 import {join, sep} from 'node:path'
+import {fileURLToPath} from 'node:url'
 
 const DEV = /^\/dev\/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|mmcblk\d{1,2}|hd[a-z])$/
 const BY_ID = /^\/dev\/disk\/by-id\/[A-Za-z0-9._:+-]+$/
@@ -82,6 +84,7 @@ const USB_SERIAL = /^[A-Za-z0-9._-]{1,128}$/
 const SDDM_ONCE = '/etc/sddm.conf.d/zz-omarchy-server-sign-in.conf'
 const SESSIONS = ['/usr/share/wayland-sessions/omarchy.desktop', '/usr/share/wayland-sessions/hyprland-uwsm.desktop', '/usr/share/wayland-sessions/hyprland.desktop']
 const SLEEP_MINUTES = {0: 0, 10: 120, 20: 240, 30: 241, 60: 242, 120: 244, 240: 248}
+const HELPER_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin'
 
 export class HelperError extends Error {}
 const fail = (message) => {
@@ -90,7 +93,7 @@ const fail = (message) => {
 
 export function defaultRun(cmd, args, {input} = {}) {
 	return new Promise((resolve, reject) => {
-		const child = execFile(cmd, args, {timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024, env: {PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin', LC_ALL: 'C'}}, (error, stdout, stderr) => {
+		const child = execFile(cmd, args, {timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024, env: {PATH: HELPER_PATH, LC_ALL: 'C'}}, (error, stdout, stderr) => {
 			if (error && !(cmd === 'smartctl' && stdout)) return reject(new HelperError(`${cmd}: ${(stderr || error.message).toString().trim().split('\n').slice(-2).join(' ')}`))
 			resolve(stdout.toString())
 		})
@@ -99,7 +102,7 @@ export function defaultRun(cmd, args, {input} = {}) {
 }
 
 // Everything the helper touches comes through ctx, so tests can run it without root.
-export function createHelper({run = defaultRun, user, fs = {readFile, writeFile, mkdir, chown, realpath, rename, readdir}}) {
+export function createHelper({run = defaultRun, user, fs = {readFile, writeFile, mkdir, chown, realpath, rename, readdir, access: fileAccess}}) {
 	if (!user?.name || !/^[a-z_][a-z0-9_-]{0,31}$/.test(user.name) || !Number.isInteger(user.uid) || user.uid === 0 || !user.home?.startsWith('/')) fail('Run this through sudo as the Omarchy Server owner')
 	const poolsDir = join(user.home, 'Pools')
 	const mountOf = (name) => join(poolsDir, name)
@@ -121,13 +124,36 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		if (BY_ID.test(p) && !/-part\d+$/.test(p)) p = await fs.realpath(p).catch(() => fail(`No drive at ${path}`))
 		return disk(p)
 	}
+	async function commandOnPath(name) {
+		// Tests replace fs and do not carry the machine's programs. The real helper's fs does.
+		if (typeof fs.access !== 'function') return true
+		for (const dir of HELPER_PATH.split(':')) {
+			try {
+				await fs.access(join(dir, name), fsConstants.X_OK)
+				return true
+			} catch {
+				// Another directory on the helper PATH may still have it.
+			}
+		}
+		return false
+	}
+	// Imported pools are identified by GUID. Two pools can share a name; lsblk stores the GUID as the
+	// zfs_member UUID, and `zpool get guid` is the imported pool's GUID.
+	async function zfsPoolGuids() {
+		const guids = new Set()
+		for (const name of await zfsPoolNames()) {
+			const guid = (await zpool('get', '-H', '-o', 'value', 'guid', name).catch(() => '')).trim()
+			if (guid && guid !== '-') guids.add(guid)
+		}
+		return guids
+	}
 	async function poolMember(d) {
 		if (mounts(d).some((m) => /\/Pools\//.test(m))) return true
 		const text = await fstab()
 		const uuids = new Set(flat(d).map((x) => x.uuid).filter(Boolean))
 		if (text.some((l) => l.includes(FSTAB_MARK) && [...uuids].some((u) => l.includes(u)))) return true
-		const names = new Set(await zfsPoolNames())
-		return flat(d).some((x) => x.fstype === 'zfs_member' && names.has(x.label))
+		const guids = await zfsPoolGuids()
+		return flat(d).some((x) => x.fstype === 'zfs_member' && x.uuid && guids.has(x.uuid))
 	}
 	// Blank: no partitions, no filesystem or RAID signature, nothing mounted, not the system drive.
 	async function blankDisk(path) {
@@ -240,9 +266,17 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			const m = /^\s+(\S+)\s+(ONLINE|DEGRADED|FAULTED|OFFLINE|UNAVAIL|REMOVED)\s+(\d+\S*)\s+(\d+\S*)\s+(\d+\S*)/.exec(line)
 			if (!m) continue
 			if (/^(mirror|raidz[123]?|draid)/.test(m[1])) layout.add(m[1].replace(/-\d+$/, ''))
-			else if (m[1].startsWith('/')) devices.push({path: m[1], state: m[2], errors: [m[3], m[4], m[5]].map((x) => Number.parseInt(x, 10) || 0).reduce((a, b) => a + b, 0)})
+			else if (m[1].startsWith('/')) devices.push({path: m[1], state: m[2], errors: [m[3], m[4], m[5]].map(zfsCounter).reduce((a, b) => a + b, 0)})
 		}
 		return {state, scan, errors, layout: layout.size ? [...layout].sort().join('+') : 'stripe', devices}
+	}
+	// zpool status prints large counters as 12K or 1.50M. The suffix is a power of 1000.
+	function zfsCounter(raw) {
+		const m = /^(\d+(?:\.\d+)?)([KMGTP])?$/i.exec(raw)
+		if (!m) return 0
+		const unit = (m[2] ?? '').toUpperCase()
+		const mult = {K: 1e3, M: 1e6, G: 1e9, T: 1e12, P: 1e15}[unit] ?? 1
+		return Math.round(Number(m[1]) * mult)
 	}
 	async function zfsPoolMount(name) {
 		if (!ZFS_NAME.test(name ?? '')) fail('Bad pool name')
@@ -374,7 +408,8 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			const d = await resolveDisk(path)
 			if (mounts(d).some((m) => isSystemMount(m, user.home))) fail(`${d.path} holds the system`)
 			if (await poolMember(d)) fail(`${d.path} is in a pool`)
-			for (const m of mounts(d)) await run('umount', [m])
+			// A mount inside another mount on this drive is busy until the child is gone.
+			for (const m of mounts(d).slice().sort((a, b) => b.length - a.length)) await run('umount', [m])
 			return 'ok'
 		},
 		mount: async ([path]) => {
@@ -423,6 +458,10 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			// Unlocked encryption, LVM or a running RAID array on it (lsblk shows them as its children),
 			// even with nothing mounted: those are in use.
 			if (flat(d).some((x) => x !== d && x.type !== 'part')) fail(`${d.path} is in use by encryption, LVM or RAID. Stop that first.`)
+			if (fsKind === 'ext4' || fsKind === 'exfat') {
+				const prog = fsKind === 'ext4' ? 'mkfs.ext4' : 'mkfs.exfat'
+				if (!(await commandOnPath(prog))) fail(fsKind === 'exfat' ? `exFAT tools aren't installed on this computer (exfatprogs): mkfs.exfat` : `mkfs.ext4 isn't installed on this computer`)
+			}
 			await run('wipefs', ['-a', d.path])
 			if (fsKind === 'ext4') await run('mkfs.ext4', ['-F', d.path])
 			if (fsKind === 'exfat') await run('mkfs.exfat', [d.path])
@@ -719,12 +758,16 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		'zfs-export': async ([name]) => {
 			await zfsPoolMount(name)
 			const bind = (await fstab()).find((l) => l.endsWith(`${ZFS_MARK} ${name}`))
+			// Export first: a busy pool fails here and the bind mount and fstab line stay.
+			await zpool('export', name).catch(() => fail(`${name} is in use. Stop apps and shares using it, then try again.`))
 			if (bind) {
-				await run('umount', [bind.split(/\s+/)[1]]).catch(() => {})
+				const mnt = bind.split(/\s+/)[1]
+				await run('umount', [mnt]).catch((e) => {
+					if (!/not mounted/.test(e.message)) throw new HelperError(`${name} is in use. Stop apps and shares using it, then try again.`)
+				})
 				await writeAtomic('/etc/fstab', (await fstab()).filter((l) => l !== bind).join('\n'))
 				await run('systemctl', ['daemon-reload'])
 			}
-			await zpool('export', name).catch(() => fail(`${name} is in use. Stop apps and shares using it, then try again.`))
 			return 'ok'
 		},
 
@@ -843,4 +886,12 @@ async function main() {
 		process.exit(error instanceof HelperError ? 2 : 1)
 	}
 }
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) main()
+function ranAsMain() {
+	if (typeof import.meta.main === 'boolean') return import.meta.main
+	try {
+		return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+	} catch {
+		return false
+	}
+}
+if (ranAsMain()) main()
