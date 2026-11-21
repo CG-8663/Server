@@ -126,3 +126,102 @@ test('a failed addDisk does not consume the drive id for the next request', asyn
 	const details = await machines.procedures['machines.details'].run({id})
 	assert.deepEqual(details.hardware.disks.map((d) => d.id), ['disk0', 'disk1'])
 })
+
+async function setupCreateMachines(t) {
+	const origArch = os.arch
+	os.arch = () => 'x64'
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-m-create-'))
+	t.after(async () => {
+		os.arch = origArch
+		await rm(root, {recursive: true, force: true})
+	})
+	const dataDir = join(root, 'data')
+	const catalog = join(root, 'catalog.json')
+	await writeFile(
+		catalog,
+		JSON.stringify({
+			version: 1,
+			images: [{id: 'testos-amd64', name: 'TestOS', version: '1', arch: 'amd64', kind: 'cloud', url: 'https://example.test/test.qcow2', sha256: 'a'.repeat(64), sizeMb: 1, adminGroup: 'sudo'}],
+		}),
+	)
+	const kvmDevice = join(root, 'kvm')
+	await writeFile(kvmDevice, '')
+	const run = async (cmd, args) => {
+		if (cmd === 'openssl') return '$6$salt$fakehash\n'
+		if (cmd === 'xorriso') {
+			await writeFile(args[args.indexOf('-output') + 1], 'iso')
+			return ''
+		}
+		if (cmd === 'qemu-img' && args[0] === 'convert') {
+			await writeFile(args.at(-1), 'disk')
+			return ''
+		}
+		if (cmd === 'virsh') {
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (a[0] === '--version') {
+				await wait(25)
+				return '10.0.0\n'
+			}
+			if (a[0] === 'list') return ' Id   Name   State\n------------------\n'
+			return ''
+		}
+		return ''
+	}
+	const machines = createMachines({
+		dataDir,
+		catalogUrl: `file://${catalog}`,
+		fetchImpl: async () => {
+			throw new Error('catalog image should already be on disk')
+		},
+		run,
+		kvmDevice,
+		watchIdleMs: 50,
+		statsIntervalMs: 50,
+	})
+	await machines.ready
+	await mkdir(join(dataDir, 'machines', 'images'), {recursive: true})
+	await writeFile(join(dataDir, 'machines', 'images', 'testos-amd64.qcow2'), 'cloud-image-bytes')
+	return machines
+}
+
+async function waitDone(machines, id) {
+	const end = Date.now() + 5000
+	while (!machines.importState(id).done) {
+		if (Date.now() > end) throw new Error(`timed out waiting for ${id}`)
+		await wait(15)
+	}
+}
+
+test('concurrent creates with the same name allow one and refuse the duplicate', async (t) => {
+	const machines = await setupCreateMachines(t)
+	const spec = {osId: 'testos-amd64', cores: 1, memoryGb: 1, diskSizeGb: 10, username: 'chris', password: 'hunter2'}
+	const results = await Promise.allSettled([
+		machines.procedures['machines.create'].run({...spec, name: 'Dup'}),
+		machines.procedures['machines.create'].run({...spec, name: 'dup'}),
+	])
+	const fulfilled = results.filter((r) => r.status === 'fulfilled')
+	const rejected = results.filter((r) => r.status === 'rejected')
+	for (const r of fulfilled) await waitDone(machines, r.value.id)
+	assert.equal(fulfilled.length, 1)
+	assert.equal(rejected.length, 1)
+	assert.ok(rejected[0].reason instanceof RpcError)
+	assert.equal(rejected[0].reason.code, 'CONFLICT')
+	assert.match(rejected[0].reason.message, /already exists/)
+	const list = await machines.procedures['machines.list'].run()
+	assert.equal(list.length, 1)
+})
+
+test('concurrent creates with different names both succeed with unique ids and vmids', async (t) => {
+	const machines = await setupCreateMachines(t)
+	const spec = {osId: 'testos-amd64', cores: 1, memoryGb: 1, diskSizeGb: 10, username: 'chris', password: 'hunter2'}
+	const [a, b] = await Promise.all([
+		machines.procedures['machines.create'].run({...spec, name: 'Alpha'}),
+		machines.procedures['machines.create'].run({...spec, name: 'Beta'}),
+	])
+	await Promise.all([waitDone(machines, a.id), waitDone(machines, b.id)])
+	assert.notEqual(a.id, b.id)
+	const list = await machines.procedures['machines.list'].run()
+	assert.equal(list.length, 2)
+	assert.equal(new Set(list.map((m) => m.vmid)).size, 2)
+	assert.deepEqual(list.map((m) => m.name).sort(), ['Alpha', 'Beta'])
+})

@@ -495,113 +495,117 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 
 	async function create(input = {}) {
 		await ready
-		const caps = await capabilities()
-		if (!caps.libvirtAvailable) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the Omarchy Server installer again to add them.')
-		if (caps.hostArchitecture !== 'amd64') throw new RpcError('PRECONDITION_FAILED', 'Machines currently need an x86-64 server')
-		const osId = String(input.osId ?? '')
-		// What to install from: a catalog image, or one of your own ISOs.
-		let img = null
-		let local = null
-		if (osId.startsWith('local:')) {
-			local = (await localIsos()).find((i) => i.id === osId)
-			if (!local) throw new RpcError('NOT_FOUND', 'That ISO isn’t in your Home folder any more')
-			local.real = (await files.resolve(osId.slice('local:'.length))).real
-		} else {
-			img = (await images()).find((i) => i.id === osId)
-			if (!img || img.arch !== caps.hostArchitecture) throw new RpcError('BAD_REQUEST', 'That operating system isn’t available here')
-		}
-		const kind = local ? (local.requiresCredentials ? 'windows' : 'manual') : img.kind === 'iso' ? 'omarchy' : 'cloud'
-		const name = String(input.name ?? '').trim()
-		if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
-		if (machines.some((m) => m.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
-		const threads = os.cpus().length || 1
-		const totalGb = Math.floor(os.totalmem() / 1024 ** 3)
-		const cores = Number(input.cores)
-		const memoryGb = Number(input.memoryGb)
-		const diskSizeGb = Number(input.diskSizeGb)
-		const minDisk = kind === 'windows' ? 64 : kind === 'omarchy' ? 20 : 4
-		if (!Number.isInteger(cores) || cores < 1 || cores > threads) throw new RpcError('BAD_REQUEST', `Cores must be between 1 and ${threads}`)
-		if (!Number.isInteger(memoryGb) || memoryGb < 1 || memoryGb > Math.max(1, totalGb - 1)) throw new RpcError('BAD_REQUEST', 'Not enough memory on the server for that')
-		if (!Number.isInteger(diskSizeGb) || diskSizeGb < minDisk || diskSizeGb > 4096) throw new RpcError('BAD_REQUEST', `Disk size must be between ${minDisk} and 4096 GB`)
-		const needsAccount = kind !== 'manual'
-		const username = String(input.username ?? '').trim()
-		const password = String(input.password ?? '')
-		if (needsAccount) {
-			const userOk = kind === 'windows' ? /^[A-Za-z0-9][A-Za-z0-9_.-]{0,19}$/.test(username) && !/^(administrator|guest)$/i.test(username) : /^[a-z_][a-z0-9_-]{0,31}$/.test(username) && username !== 'root'
-			if (!userOk) throw new RpcError('BAD_REQUEST', kind === 'windows' ? 'Use a username of letters, numbers, - and _ (up to 20)' : 'Use a lower-case username: letters, numbers, - and _ (not root)')
-			if (password.length < 1 || password.length > 256 || /[\r\n]/.test(password)) throw new RpcError('BAD_REQUEST', 'Enter a password for the machine')
-		}
-		const fs = await statfs(base)
-		const freeGb = (fs.bavail * fs.bsize) / 1024 ** 3
-		const needGb = img ? ((Number(img.sizeMb) || 1024) * 3) / 1024 + 2 : 4
-		if (freeGb < needGb) throw new RpcError('PRECONDITION_FAILED', `Not enough free space: about ${Math.ceil(needGb)} GB is needed to set it up`)
-
-		let id
-		do id = randomBytes(4).toString('hex')
-		while (machines.some((m) => m.id === id))
-		const dir = join(vmsDir, id)
-		const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' ? 'windows' : 'iso', dir, img)})
-		if (kind === 'cloud') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
-		machines.push(m)
-		await save()
-		busy.set(id, {state: 'installing', progress: 0})
-		const step = (progress) => busy.set(id, {state: 'installing', progress})
-		const host = hostnameFor(name, id)
-		const t = beginTask(m, 'create')
-
-		;(async () => {
-			try {
-				await mkdir(dir, {recursive: true, mode: 0o700})
-				// Account first, so the password isn't held while downloading. Only hashes (or, for
-				// Windows, its own answer-file encoding) are written.
-				if (kind === 'cloud') await seed(m, img, {username, password})
-				else if (kind === 'omarchy') {
-					const hash = await hashPassword(password)
-					const seedIso = await mediaIso(m, 'seed', 'cidata', {
-						'user_configuration.json': JSON.stringify(omarchyConfiguration({host, diskSizeGb})),
-						'user_credentials.json': JSON.stringify(omarchyCredentials({username, hash})),
-					})
-					m.layout.disks.push({id: 'seed', role: 'seed', file: seedIso, device: 'cdrom', bus: 'sata', format: 'raw'})
-				} else if (kind === 'windows') {
-					const answer = await mediaIso(m, 'answer', 'OMARCHY_ANSWER', {'autounattend.xml': windowsAnswerFile({computerName: host.toUpperCase(), username, password})})
-					m.layout.disks.push({id: 'answer', role: 'answer', file: answer, device: 'cdrom', bus: 'sata', format: 'raw'})
-					m.answerIso = answer
-				}
-				step(5)
-				// Write beside the final name. A crash while qemu-img is writing must not leave a bootable disk.qcow2.
-				const part = join(dir, 'disk.qcow2.part')
-				const disk = join(dir, 'disk.qcow2')
-				if (kind === 'cloud') {
-					const src = await ensureImage(img, (p) => step(5 + Math.floor(p * 0.75)))
-					step(82)
-					await run('qemu-img', ['convert', '-O', 'qcow2', src, part], {timeout: 30 * 60_000})
-					await run('qemu-img', ['resize', part, `${diskSizeGb}G`])
-					await rename(part, disk)
-				} else {
-					// Installer ISOs: a blank disk, booted from the installer until something is on it.
-					const iso = kind === 'omarchy' ? await ensureImage(img, (p) => step(5 + Math.floor(p * 0.8))) : local.real
-					step(88)
-					await run('qemu-img', ['create', '-f', 'qcow2', part, `${diskSizeGb}G`])
-					await rename(part, disk)
-					m.layout.disks.splice(1, 0, {id: 'cd0', file: iso, device: 'cdrom', bus: 'sata', format: 'raw'})
-					m.boot = ['disk0', 'cd0']
-				}
-				step(92)
-				await define(m)
-				step(97)
-				await virsh('start', domain(id))
-				delete m.state
-				delete m.errorMessage
-				endTask(m, t)
-			} catch (error) {
-				Object.assign(m, {state: 'error', errorMessage: error.message})
-				endTask(m, t, error)
-			} finally {
-				busy.delete(id)
-				await save().catch(() => {})
+		const nameKey = String(input.name ?? '').trim().toLowerCase()
+		const runCreate = async () => {
+			const caps = await capabilities()
+			if (!caps.libvirtAvailable) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the Omarchy Server installer again to add them.')
+			if (caps.hostArchitecture !== 'amd64') throw new RpcError('PRECONDITION_FAILED', 'Machines currently need an x86-64 server')
+			const osId = String(input.osId ?? '')
+			// What to install from: a catalog image, or one of your own ISOs.
+			let img = null
+			let local = null
+			if (osId.startsWith('local:')) {
+				local = (await localIsos()).find((i) => i.id === osId)
+				if (!local) throw new RpcError('NOT_FOUND', 'That ISO isn’t in your Home folder any more')
+				local.real = (await files.resolve(osId.slice('local:'.length))).real
+			} else {
+				img = (await images()).find((i) => i.id === osId)
+				if (!img || img.arch !== caps.hostArchitecture) throw new RpcError('BAD_REQUEST', 'That operating system isn’t available here')
 			}
-		})()
-		return {id}
+			const kind = local ? (local.requiresCredentials ? 'windows' : 'manual') : img.kind === 'iso' ? 'omarchy' : 'cloud'
+			const name = String(input.name ?? '').trim()
+			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (machines.some((m) => m.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
+			const threads = os.cpus().length || 1
+			const totalGb = Math.floor(os.totalmem() / 1024 ** 3)
+			const cores = Number(input.cores)
+			const memoryGb = Number(input.memoryGb)
+			const diskSizeGb = Number(input.diskSizeGb)
+			const minDisk = kind === 'windows' ? 64 : kind === 'omarchy' ? 20 : 4
+			if (!Number.isInteger(cores) || cores < 1 || cores > threads) throw new RpcError('BAD_REQUEST', `Cores must be between 1 and ${threads}`)
+			if (!Number.isInteger(memoryGb) || memoryGb < 1 || memoryGb > Math.max(1, totalGb - 1)) throw new RpcError('BAD_REQUEST', 'Not enough memory on the server for that')
+			if (!Number.isInteger(diskSizeGb) || diskSizeGb < minDisk || diskSizeGb > 4096) throw new RpcError('BAD_REQUEST', `Disk size must be between ${minDisk} and 4096 GB`)
+			const needsAccount = kind !== 'manual'
+			const username = String(input.username ?? '').trim()
+			const password = String(input.password ?? '')
+			if (needsAccount) {
+				const userOk = kind === 'windows' ? /^[A-Za-z0-9][A-Za-z0-9_.-]{0,19}$/.test(username) && !/^(administrator|guest)$/i.test(username) : /^[a-z_][a-z0-9_-]{0,31}$/.test(username) && username !== 'root'
+				if (!userOk) throw new RpcError('BAD_REQUEST', kind === 'windows' ? 'Use a username of letters, numbers, - and _ (up to 20)' : 'Use a lower-case username: letters, numbers, - and _ (not root)')
+				if (password.length < 1 || password.length > 256 || /[\r\n]/.test(password)) throw new RpcError('BAD_REQUEST', 'Enter a password for the machine')
+			}
+			const fs = await statfs(base)
+			const freeGb = (fs.bavail * fs.bsize) / 1024 ** 3
+			const needGb = img ? ((Number(img.sizeMb) || 1024) * 3) / 1024 + 2 : 4
+			if (freeGb < needGb) throw new RpcError('PRECONDITION_FAILED', `Not enough free space: about ${Math.ceil(needGb)} GB is needed to set it up`)
+
+			let id
+			do id = randomBytes(4).toString('hex')
+			while (machines.some((m) => m.id === id))
+			const dir = join(vmsDir, id)
+			const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' ? 'windows' : 'iso', dir, img)})
+			if (kind === 'cloud') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
+			machines.push(m)
+			await save()
+			busy.set(id, {state: 'installing', progress: 0})
+			const step = (progress) => busy.set(id, {state: 'installing', progress})
+			const host = hostnameFor(name, id)
+			const t = beginTask(m, 'create')
+
+			;(async () => {
+				try {
+					await mkdir(dir, {recursive: true, mode: 0o700})
+					// Account first, so the password isn't held while downloading. Only hashes (or, for
+					// Windows, its own answer-file encoding) are written.
+					if (kind === 'cloud') await seed(m, img, {username, password})
+					else if (kind === 'omarchy') {
+						const hash = await hashPassword(password)
+						const seedIso = await mediaIso(m, 'seed', 'cidata', {
+							'user_configuration.json': JSON.stringify(omarchyConfiguration({host, diskSizeGb})),
+							'user_credentials.json': JSON.stringify(omarchyCredentials({username, hash})),
+						})
+						m.layout.disks.push({id: 'seed', role: 'seed', file: seedIso, device: 'cdrom', bus: 'sata', format: 'raw'})
+					} else if (kind === 'windows') {
+						const answer = await mediaIso(m, 'answer', 'OMARCHY_ANSWER', {'autounattend.xml': windowsAnswerFile({computerName: host.toUpperCase(), username, password})})
+						m.layout.disks.push({id: 'answer', role: 'answer', file: answer, device: 'cdrom', bus: 'sata', format: 'raw'})
+						m.answerIso = answer
+					}
+					step(5)
+					// Write beside the final name. A crash while qemu-img is writing must not leave a bootable disk.qcow2.
+					const part = join(dir, 'disk.qcow2.part')
+					const disk = join(dir, 'disk.qcow2')
+					if (kind === 'cloud') {
+						const src = await ensureImage(img, (p) => step(5 + Math.floor(p * 0.75)))
+						step(82)
+						await run('qemu-img', ['convert', '-O', 'qcow2', src, part], {timeout: 30 * 60_000})
+						await run('qemu-img', ['resize', part, `${diskSizeGb}G`])
+						await rename(part, disk)
+					} else {
+						// Installer ISOs: a blank disk, booted from the installer until something is on it.
+						const iso = kind === 'omarchy' ? await ensureImage(img, (p) => step(5 + Math.floor(p * 0.8))) : local.real
+						step(88)
+						await run('qemu-img', ['create', '-f', 'qcow2', part, `${diskSizeGb}G`])
+						await rename(part, disk)
+						m.layout.disks.splice(1, 0, {id: 'cd0', file: iso, device: 'cdrom', bus: 'sata', format: 'raw'})
+						m.boot = ['disk0', 'cd0']
+					}
+					step(92)
+					await define(m)
+					step(97)
+					await virsh('start', domain(id))
+					delete m.state
+					delete m.errorMessage
+					endTask(m, t)
+				} catch (error) {
+					Object.assign(m, {state: 'error', errorMessage: error.message})
+					endTask(m, t, error)
+				} finally {
+					busy.delete(id)
+					await save().catch(() => {})
+				}
+			})()
+			return {id}
+		}
+		return nameKey ? lock(`create:${nameKey}`, runCreate) : runCreate()
 	}
 
 	// Windows' answer file is only needed while Setup runs (Setup restarts the machine itself, which
