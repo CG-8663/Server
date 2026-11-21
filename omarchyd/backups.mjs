@@ -407,7 +407,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 
 	const remoteComputerConfigs = (remote) => [...remote.keys()].filter((p) => /^computers\/[^/]+\/config$/.test(p))
 	const hasRemoteStore = (remote) => remote.has('server/config') || remote.has('config') || remoteComputerConfigs(remote).length > 0
-	const localConfigBytes = (root) => readFile(join(root, 'server', 'config')).catch(() => null)
+	const localConfigBytes = (root) => readFile(join(root, 'server', 'config')).catch(() => readFile(join(root, 'config')).catch(() => null))
 	async function nasMatchesLocal(nas, password, remote, root) {
 		const localCfg = root ? await localConfigBytes(root) : null
 		if (!localCfg) return false
@@ -628,13 +628,28 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		return {id: entry.id, done}
 	}
 
+	const LEGACY_ENTRIES = ['keys', 'data', 'index', 'snapshots', 'locks', 'config']
+	async function migrateLegacyRepo(real) {
+		if (!real || !(await exists(join(real, 'config'))) || !(await exists(join(real, 'keys'))) || (await exists(join(real, 'server', 'config')))) return false
+		const server = join(real, 'server')
+		await mkdir(server, {recursive: true, mode: 0o700})
+		for (const name of LEGACY_ENTRIES) {
+			const src = join(real, name)
+			const dst = join(server, name)
+			if ((await exists(src)) && !(await exists(dst))) await rename(src, dst)
+		}
+		return true
+	}
+
 	async function ensureRepo({allowInit = true} = {}) {
 		if (!allowInit) {
 			const real = await repoReal({create: false}).catch(() => null)
+			if (real) await migrateLegacyRepo(real)
 			if (!real || !(await exists(join(real, 'server', 'config')))) throw new RpcError('PRECONDITION_FAILED', 'The backup folder is empty or missing. Is the drive connected?')
 			return
 		}
 		const real = await repoReal()
+		await migrateLegacyRepo(real)
 		const repo = join(real, 'server')
 		if (await exists(join(repo, 'config'))) return
 		await mkdir(real, {recursive: true, mode: 0o700})
@@ -1161,7 +1176,11 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 
 	async function snapshots() {
 		await ready
-		if (!(await hasKey()) || !(await exists(join(await serverRepo(), 'config')))) return []
+		if (!(await hasKey())) return []
+		const real = await repoReal({create: false}).catch(() => null)
+		if (!real) return []
+		await migrateLegacyRepo(real)
+		if (!(await exists(join(real, 'server', 'config')))) return []
 		const {stdout} = await restic(['snapshots', '--json'], {timeout: 120_000})
 		const list = JSON.parse(stdout || '[]')
 		return list
@@ -1253,9 +1272,11 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		job = {step: 'Copying the backup from the NAS', progress: 0, startedAt: now()}
 		try {
 			const remote = await remoteFiles(nas, password)
-			if (!remote.has('server/config')) throw new RpcError('NOT_FOUND', 'There’s no Omarchy Server backup in that folder')
+			const legacy = !remote.has('server/config') && remote.has('config')
+			if (!remote.has('server/config') && !legacy) throw new RpcError('NOT_FOUND', 'There’s no Omarchy Server backup in that folder')
 			const r = await smb(nas, password, {lines: [...intoFolder(nas.folder), 'recurse ON', 'prompt OFF', `lcd ${q(real)}`, 'mget *']})
 			if (r.errors.length) throw new RpcError('PRECONDITION_FAILED', smbMessage(r.errors))
+			if (legacy) await migrateLegacyRepo(real)
 			await writePrivate(keyFile, `${key}\n`)
 			try {
 				await ensureEngine()
@@ -1266,6 +1287,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			}
 			config.nas = nas
 			config.keySaved = true
+			config.scheduleSince = now()
 			secrets.nasPassword = password
 			await saveSecrets()
 			await saveConfig()

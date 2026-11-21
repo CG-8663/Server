@@ -1005,3 +1005,100 @@ test('#641 backups.discover decodes escaped UTF-8 bytes in avahi-browse service 
 	].sort((x, y) => x.name.localeCompare(y.name))
 	assert.deepEqual(list, expected)
 })
+
+test('#649 0.9.46 root-layout backup stores are migrated into server/ for snapshots, backups, and connectExisting', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-649-'))
+	const nasRoot = join(root, 'nas')
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	const repoDir = join(home, 'Backups', 'Omarchy Server')
+	const snapId = 'a'.repeat(64)
+	const cfgContent = 'legacy-0946-config-content'
+	const snapJson = JSON.stringify({id: snapId, short_id: snapId.slice(0, 8), time: '2026-11-10T03:00:00Z', tags: ['settings'], paths: [dataDir], summary: {total_bytes_processed: 512}})
+
+	// Seed local 0.9.46 layout.
+	await mkdir(join(dataDir, 'backups'), {recursive: true})
+	for (const sub of ['keys', 'data/aa', 'index', 'snapshots']) await mkdir(join(repoDir, sub), {recursive: true})
+	await writeFile(join(repoDir, 'config'), cfgContent)
+	await writeFile(join(repoDir, 'keys', 'k1'), 'key')
+	await writeFile(join(repoDir, 'data', 'aa', 'pack1'), 'pack')
+	await writeFile(join(repoDir, 'snapshots', snapId), snapJson)
+	const key = 'abcd-efgh-ijkl-mnop-qrst-uvwx-yz23-4567'
+	await writeFile(join(dataDir, 'backups', 'recovery-key'), `${key}\n`)
+	await writeFile(join(dataDir, 'backups', 'secrets.json'), JSON.stringify({nasPassword: 'p'}))
+	await writeFile(
+		join(dataDir, 'backups', 'config.json'),
+		JSON.stringify({nas: {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u'}, repo: '/Home/Backups/Omarchy Server'}),
+	)
+
+	// Seed matching 0.9.46 layout on two NAS folders: one for server 1's mirror, one pristine for connectExisting.
+	for (const folder of ['Omarchy Server', 'Legacy NAS Only']) {
+		const nasDir = join(nasRoot, 'backups', folder)
+		for (const sub of ['keys', 'data/aa', 'index', 'snapshots']) await mkdir(join(nasDir, sub), {recursive: true})
+		await writeFile(join(nasDir, 'config'), cfgContent)
+		await writeFile(join(nasDir, 'keys', 'k1'), 'key')
+		await writeFile(join(nasDir, 'data', 'aa', 'pack1'), 'pack')
+		await writeFile(join(nasDir, 'snapshots', snapId), snapJson)
+	}
+
+	const fakeNas = makeFakeNas(nasRoot)
+	const restic = makeFakeRestic()
+	const run = async (cmd, args, opts) => (cmd === 'smbclient' ? fakeNas(args, opts) : restic.run(args, opts))
+	const b1 = createBackups({dataDir, home, serverDataDir: join(root, 'none'), files: fakeFiles(home), apps: {backupTargets: async () => []}, resticPath: '/bin/restic', unshare: false, timers: false, run})
+
+	const home2 = join(root, 'home2')
+	const dataDir2 = join(root, 'data2')
+	await mkdir(home2, {recursive: true})
+	await mkdir(dataDir2, {recursive: true})
+	const b2 = createBackups({dataDir: dataDir2, home: home2, serverDataDir: join(root, 'none2'), files: fakeFiles(home2), apps: {backupTargets: async () => []}, resticPath: '/bin/restic', unshare: false, timers: false, run})
+	t.after(async () => {
+		b1.close()
+		b2.close()
+		await rm(root, {recursive: true, force: true})
+	})
+
+	// snapshots() recognizes and migrates local 0.9.46 store into server/.
+	const snaps1 = await b1.procedures['backups.snapshots'].run()
+	assert.equal(snaps1.length, 1)
+	assert.equal(snaps1[0].id, snapId)
+	assert.ok((await stat(join(repoDir, 'server', 'config'))).isFile())
+	await assert.rejects(stat(join(repoDir, 'config')))
+
+	// runBackup() succeeds without "isn't empty" and mirrors against the matching 0.9.46 NAS copy.
+	await (await b1.runBackup()).done
+	const st = await b1.procedures['backups.status'].run()
+	assert.equal(st.history[0].ok, true, st.history[0].error)
+	const nasFiles = await listNasFiles(nasRoot)
+	assert.ok(nasFiles.has('server/config'))
+
+	// Calling runBackup() directly on an unmigrated 0.9.46 store also migrates via ensureRepo({allowInit: false}).
+	const home3 = join(root, 'home3')
+	const dataDir3 = join(root, 'data3')
+	const repoDir3 = join(home3, 'Backups', 'Omarchy Server')
+	await mkdir(join(dataDir3, 'backups'), {recursive: true})
+	for (const sub of ['keys', 'data/aa', 'index', 'snapshots']) await mkdir(join(repoDir3, sub), {recursive: true})
+	await writeFile(join(repoDir3, 'config'), cfgContent)
+	await writeFile(join(repoDir3, 'keys', 'k1'), 'key')
+	await writeFile(join(dataDir3, 'backups', 'recovery-key'), `${key}\n`)
+	await writeFile(join(dataDir3, 'backups', 'secrets.json'), JSON.stringify({nasPassword: 'p'}))
+	await writeFile(
+		join(dataDir3, 'backups', 'config.json'),
+		JSON.stringify({nas: {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u'}, repo: '/Home/Backups/Omarchy Server'}),
+	)
+	const b3 = createBackups({dataDir: dataDir3, home: home3, serverDataDir: join(root, 'none3'), files: fakeFiles(home3), apps: {backupTargets: async () => []}, resticPath: '/bin/restic', unshare: false, timers: false, run})
+	t.after(() => b3.close())
+	await (await b3.runBackup()).done
+	const st3 = await b3.procedures['backups.status'].run()
+	assert.equal(st3.history[0].ok, true, st3.history[0].error)
+	assert.ok((await stat(join(repoDir3, 'server', 'config'))).isFile())
+
+	// connectExisting() on a fresh server recognizes and migrates a 0.9.46 NAS copy.
+	const back = await b2.procedures['backups.connectExisting'].run({
+		nas: {host: 'nas.local', share: 'backups', folder: 'Legacy NAS Only', username: 'u', password: 'p'},
+		recoveryKey: key,
+	})
+	assert.equal(back.configured, true)
+	const snaps2 = await b2.procedures['backups.snapshots'].run()
+	assert.equal(snaps2.length, 1)
+	assert.equal(snaps2[0].id, snapId)
+})
