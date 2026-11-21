@@ -354,6 +354,34 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		return parseSmbListing(r.text, nas.folder)
 	}
 
+	async function smbGetFile(nas, password, remotePath) {
+		const tmp = join(dir, `nas-get-${randomBytes(4).toString('hex')}`)
+		try {
+			const r = await smb(nas, password, {lines: [...intoFolder(nas.folder), `get ${q(remotePath)} ${q(tmp)}`], timeout: 60_000})
+			if (r.errors.length) throw new RpcError('PRECONDITION_FAILED', smbMessage(r.errors))
+			return await readFile(tmp).catch(() => {
+				throw new RpcError('PRECONDITION_FAILED', 'Couldn’t read the backup details from the NAS')
+			})
+		} finally {
+			await rm(tmp, {force: true})
+		}
+	}
+
+	const remoteComputerConfigs = (remote) => [...remote.keys()].filter((p) => /^computers\/[^/]+\/config$/.test(p))
+	const hasRemoteStore = (remote) => remote.has('server/config') || remote.has('config') || remoteComputerConfigs(remote).length > 0
+	const localConfigBytes = (root) => readFile(join(root, 'server', 'config')).catch(() => null)
+	async function nasMatchesLocal(nas, password, remote, root) {
+		const localCfg = root ? await localConfigBytes(root) : null
+		if (!localCfg) return false
+		if (remote.has('server/config')) return (await smbGetFile(nas, password, 'server/config')).equals(localCfg)
+		if (remote.has('config')) return (await smbGetFile(nas, password, 'config')).equals(localCfg)
+		for (const p of remoteComputerConfigs(remote)) {
+			const localComp = await readFile(join(root, p)).catch(() => null)
+			if (!localComp || !(await smbGetFile(nas, password, p)).equals(localComp)) return false
+		}
+		return true
+	}
+
 	async function localFiles(root) {
 		const out = new Map()
 		async function walk(d) {
@@ -385,6 +413,9 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		const local = await localFiles(root)
 		for (const k of [...local.keys()]) if (!ORDER.includes(part(k))) local.delete(k)
 		const remote = await remoteFiles(nas, secrets.nasPassword)
+		if (hasRemoteStore(remote) && !(await nasMatchesLocal(nas, secrets.nasPassword, remote, root))) {
+			throw new RpcError('PRECONDITION_FAILED', 'That NAS folder holds a different backup. Choose another folder or use “Restore from an existing backup”.')
+		}
 		const send = [...local].filter(([p, size]) => remote.get(p) !== size).sort((a, b) => rank(a[0]) - rank(b[0]))
 		const drop = [...remote.keys()].filter((p) => !local.has(p) && ORDER.includes(part(p))).sort((a, b) => rank(b) - rank(a))
 		const total = send.reduce((t, [, s]) => t + s, 0) || 1
@@ -940,6 +971,16 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		}
 	}
 
+	async function checkNasFolder(nas, password) {
+		const remote = await remoteFiles(nas, password)
+		if (!hasRemoteStore(remote)) return
+		if (await hasKey()) {
+			const resolved = await files.resolve(config.repo, {mustExist: false}).catch(() => null)
+			if (await nasMatchesLocal(nas, password, remote, resolved?.real)) return
+		}
+		throw new RpcError('PRECONDITION_FAILED', 'That folder already has backups. Use “Restore from an existing backup”, or choose another folder.')
+	}
+
 	function cleanOptions(input = {}) {
 		const out = {}
 		if (input.include) out.include = {apps: input.include.apps !== false, settings: input.include.settings !== false, machineBackups: input.include.machineBackups === true}
@@ -970,6 +1011,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			const password = input.nas.password ? String(input.nas.password) : config.nas?.host === nas.host && config.nas?.username === nas.username ? secrets.nasPassword : ''
 			if (!password) throw new RpcError('BAD_REQUEST', 'Enter the NAS account’s password')
 			await testNas(nas, password)
+			await checkNasFolder(nas, password)
 			nasPassword = password
 			config.nas = nas
 		}
