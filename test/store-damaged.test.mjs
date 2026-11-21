@@ -44,7 +44,7 @@ test('empty config.json starts from {} and keeps the damaged bytes', async () =>
 	const aside = await readOrNull(`${file}.bad`)
 	assert.equal(keptAside('', current, aside), true)
 	if (current) assert.notEqual(current.toString('utf8').trim(), '{}')
-	assert.ok(logs.some((line) => line === 'config.json is empty or invalid and was left unchanged'))
+	assert.ok(logs.some((line) => line === 'config.json is empty or invalid and was moved to config.json.bad'))
 	assert.ok(logs.every((line) => !line.includes(dir) && !line.includes(root)))
 })
 

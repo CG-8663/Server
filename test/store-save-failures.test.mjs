@@ -48,8 +48,8 @@ test('damaged config and sessions move to the next free aside, then a new config
 		assert.equal(await readFile(`${configFile}.bad.2`, 'utf8'), configOriginal)
 		assert.equal(await readFile(`${sessionsFile}.bad`, 'utf8'), 'taken-sessions')
 		assert.equal(await readFile(`${sessionsFile}.bad.1`, 'utf8'), sessionsOriginal)
-		assert.ok(lines.some((line) => line === 'config.json.bad.2'))
-		assert.ok(lines.some((line) => line === 'sessions.json.bad.1'))
+		assert.ok(lines.some((line) => line === 'config.json is empty or invalid and was moved to config.json.bad.2'))
+		assert.ok(lines.some((line) => line === 'sessions.json is empty or invalid and was moved to sessions.json.bad.1'))
 		assert.ok(lines.every((line) => !line.includes(dir) && !line.includes('do-not-log')))
 
 		const next = await store.setConfig({theme: 'ink'})

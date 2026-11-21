@@ -30,8 +30,8 @@ async function readJson(file, fallback) {
 		parsed = undefined
 	}
 	if (plainObject(parsed)) return parsed
-	console.error(`${basename(file)} is empty or invalid and was left unchanged`)
-	await keepDamaged(file)
+	const aside = await keepDamaged(file)
+	console.error(`${basename(file)} is empty or invalid and was moved to ${basename(aside)}`)
 	return fallback
 }
 
@@ -52,7 +52,7 @@ async function asideName(file) {
 async function keepDamaged(file) {
 	const aside = await asideName(file)
 	await rename(file, aside)
-	console.error(basename(aside))
+	return aside
 }
 
 async function writeJson(file, value) {
