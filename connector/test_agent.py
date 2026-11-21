@@ -232,6 +232,23 @@ class BackupFolders(unittest.TestCase):
                 names = [f["name"] for f in agent.backup_folders({})["folders"]]
                 self.assertEqual(names, ["Documents"])
 
+    # #548: the name backup_folders lists is the name home_folder resolves.
+    def test_trailing_space_in_name_is_kept(self):
+        spaced = "Photos "
+        with tempfile.TemporaryDirectory() as home:
+            os.mkdir(os.path.join(home, "Photos"))
+            os.mkdir(os.path.join(home, spaced))
+            os.mkdir(os.path.join(home, "Documents"))
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                names = [f["name"] for f in agent.backup_folders({})["folders"]]
+                self.assertIn(spaced, names)
+                self.assertEqual(agent.home_folder(spaced), os.path.realpath(os.path.join(home, spaced)))
+                self.assertEqual(agent.home_folder("Documents"), os.path.realpath(os.path.join(home, "Documents")))
+                self.assertEqual(agent.home_folder("Documents/"), os.path.realpath(os.path.join(home, "Documents")))
+                for bad in ("   ", " \t ", "Photos\n", "/Photos", "/"):
+                    with self.assertRaises(RuntimeError, msg=repr(bad)):
+                        agent.home_folder(bad)
+
 
 class Restore(unittest.TestCase):
     # #188: a failed restore leaves no empty folder.
