@@ -2,7 +2,7 @@
 // Reading drive layout needs no privileges (lsblk, /etc/fstab). Anything that needs root goes through
 // the Omarchy Server helper (helper/helper.mjs, installed root-owned, allowed by one sudoers rule),
 // which re-checks every request itself.
-import {writeAtomic} from './atomic.mjs'
+import {plainObject, writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {randomBytes} from 'node:crypto'
 import {access, readFile, rm, statfs, writeFile} from 'node:fs/promises'
@@ -73,7 +73,9 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	const sharesFile = join(dataDir, 'shares.json')
 	const sleepFile = join(dataDir, 'drive-sleep.json')
 	const passwordFile = join(dataDir, 'share-password')
+	const pendingApplyFile = join(dataDir, 'shares-apply-pending')
 	const smartCache = new Map() // path -> {at, value}
+	let sharesApplyPending = false
 
 	const helper = async (verb, args = [], input) => {
 		try {
@@ -83,8 +85,27 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			throw new RpcError('PRECONDITION_FAILED', /a password is required|not allowed|no such file|command not found/i.test(error.message) ? 'Storage tools aren’t set up. Run the Omarchy Server installer again.' : error.message)
 		}
 	}
-	const readJson = async (file, fallback) => JSON.parse(await readFile(file, 'utf8').catch(() => JSON.stringify(fallback)))
 	const writeJson = (file, value) => writeAtomic(file, JSON.stringify(value, null, 2))
+	// Missing or blank is "never set". Anything else that is not a plain object is damaged:
+	// leave the bytes alone and say which file.
+	async function readSleepMap() {
+		let raw
+		try {
+			raw = await readFile(sleepFile, 'utf8')
+		} catch (error) {
+			if (error?.code === 'ENOENT') return {}
+			throw new RpcError('PRECONDITION_FAILED', 'drive-sleep.json is damaged and was left unchanged.')
+		}
+		if (raw.trim() === '') return {}
+		let parsed
+		try {
+			parsed = JSON.parse(raw)
+		} catch {
+			throw new RpcError('PRECONDITION_FAILED', 'drive-sleep.json is damaged and was left unchanged.')
+		}
+		if (!plainObject(parsed)) throw new RpcError('PRECONDITION_FAILED', 'drive-sleep.json is damaged and was left unchanged.')
+		return parsed
+	}
 
 	async function blockDevices() {
 		const j = JSON.parse(await run('lsblk', ['-J', '-b', '-o', 'NAME,PATH,TYPE,SIZE,ROTA,TRAN,MODEL,SERIAL,FSTYPE,LABEL,UUID,MOUNTPOINTS,RM,HOTPLUG']))
@@ -115,7 +136,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	}
 
 	async function disks() {
-		const [devs, pools, sleep, helperOk, zp] = await Promise.all([blockDevices(), fstabPools(), readJson(sleepFile, {}), status().then((s) => s.helperAvailable), zfsPools()])
+		const [devs, pools, sleep, helperOk, zp] = await Promise.all([blockDevices(), fstabPools(), readSleepMap().catch(() => ({})), status().then((s) => s.helperAvailable), zfsPools()])
 		const poolByUuid = new Map(pools.map((p) => [p.uuid, p.name]))
 		const zfsGuidToName = new Map()
 		const namesWithoutGuid = new Set()
@@ -235,19 +256,54 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	}
 	// Samba treats these section names as its own, in any case. A share must not use them.
 	const SAMBA_RESERVED = new Set(['global', 'homes', 'printers'])
-	async function shareList() {
-		const shares = await readJson(sharesFile, [])
-		return Promise.all(
-			shares.map(async (s) => ({
-				name: s.name,
-				path: s.path,
-				sharename: s.name,
-				// No password: anyone on your network can open it. Otherwise your share password.
-				password: !s.guest,
-				readOnly: !!s.readOnly,
-				available: await files.resolve(s.path).then(() => true, () => false),
-			})),
-		)
+	function allocateShareName(path, shares) {
+		const base = (String(path ?? '').split('/').pop() || 'Share').replace(/[^A-Za-z0-9 _.-]/g, '').slice(0, 28) || 'Share'
+		let name = base
+		const nameTaken = (n) => SAMBA_RESERVED.has(n.toLowerCase()) || shares.some((s) => s.name.toLowerCase() === n.toLowerCase())
+		for (let n = 2; nameTaken(name); n++) name = `${base} ${n}`
+		return name
+	}
+	// Only a missing shares.json means there are no shares. A bad read is left as it is.
+	async function readSharesFile() {
+		let raw
+		try {
+			raw = await readFile(sharesFile, 'utf8')
+		} catch (error) {
+			if (error?.code === 'ENOENT') return []
+			throw new RpcError('PRECONDITION_FAILED', 'shares.json is damaged and was left unchanged.')
+		}
+		let parsed
+		try {
+			parsed = JSON.parse(raw)
+		} catch {
+			throw new RpcError('PRECONDITION_FAILED', 'shares.json is damaged and was left unchanged.')
+		}
+		if (!Array.isArray(parsed)) throw new RpcError('PRECONDITION_FAILED', 'shares.json is damaged and was left unchanged.')
+		return parsed
+	}
+	// An older version allowed Global, Homes and Printers. Rename those to a free name and save,
+	// so later changes are not rejected with the whole list.
+	async function readShares() {
+		const shares = await readSharesFile()
+		if (!shares.some((s) => typeof s?.name === 'string' && SAMBA_RESERVED.has(s.name.toLowerCase()))) return shares
+		const next = shares.map((s) => (s && typeof s === 'object' ? {...s} : s))
+		for (let i = 0; i < next.length; i++) {
+			const current = next[i]
+			if (typeof current?.name !== 'string' || !SAMBA_RESERVED.has(current.name.toLowerCase())) continue
+			current.name = allocateShareName(current.path, next.filter((_, j) => j !== i))
+		}
+		await writeJson(sharesFile, next)
+		return next
+	}
+	async function sharesApplyIsPending() {
+		if (sharesApplyPending) return true
+		try {
+			await access(pendingApplyFile)
+		} catch {
+			return false
+		}
+		sharesApplyPending = true
+		return true
 	}
 	async function applyShares(shares) {
 		const out = []
@@ -255,7 +311,36 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			const r = await files.resolve(s.path).catch(() => null)
 			if (r && r.top === 'Home') out.push({name: s.name, path: r.real, readOnly: !!s.readOnly, ...(s.guest ? {guest: true} : {})})
 		}
-		await helper('shares-apply', [], JSON.stringify({shares: out}))
+		try {
+			await helper('shares-apply', [], JSON.stringify({shares: out}))
+		} catch (error) {
+			sharesApplyPending = true
+			await writeFile(pendingApplyFile, '1', {mode: 0o600}).catch(() => {})
+			throw error
+		}
+		sharesApplyPending = false
+		await rm(pendingApplyFile, {force: true}).catch(() => {})
+	}
+	async function flushPendingApply() {
+		if (!(await sharesApplyIsPending())) return
+		await applyShares(await readShares())
+	}
+	async function shareList() {
+		return withShares(async () => {
+			await flushPendingApply()
+			const shares = await readShares()
+			return Promise.all(
+				shares.map(async (s) => ({
+					name: s.name,
+					path: s.path,
+					sharename: s.name,
+					// No password: anyone on your network can open it. Otherwise your share password.
+					password: !s.guest,
+					readOnly: !!s.readOnly,
+					available: await files.resolve(s.path).then(() => true, () => false),
+				})),
+			)
+		})
 	}
 	// `to` is the folder's new virtual path, or null when it was trashed. Nested shares follow too.
 	// /Home/Music must not take /Home/MusicVideos with it.
@@ -263,13 +348,13 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 		if (typeof from !== 'string' || !from.startsWith('/Home/')) return
 		if (to != null && (typeof to !== 'string' || !to.startsWith('/Home/'))) return
 		await withShares(async () => {
-			const shares = await readJson(sharesFile, [])
+			const shares = await readShares()
 			const under = (p) => p === from || (typeof p === 'string' && p.startsWith(from + '/'))
 			const next = to == null ? shares.filter((s) => !under(s.path)) : shares.map((s) => (under(s.path) ? {...s, path: to + s.path.slice(from.length)} : s))
 			if (next.length === shares.length && next.every((s, i) => s.path === shares[i].path)) return
-			// The folder has already moved. The list has to match even if Samba does not reload.
+			// The folder has already moved. Keep the new path, and remember a failed Samba update for retry.
 			await writeJson(sharesFile, next)
-			await applyShares(next).catch(() => {})
+			await applyShares(next)
 		})
 	}
 	// Shares without a password need a helper that knows them (installed with Omarchy Server 0.9.21 or
@@ -320,7 +405,8 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	}
 	async function sharePassword() {
 		try {
-			return (await readFile(passwordFile, 'utf8')).trim()
+			const text = await readFile(passwordFile, 'utf8')
+			return text.endsWith('\n') ? text.slice(0, -1) : text
 		} catch {
 			const words = Array.from({length: 4}, () => randomBytes(3).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, 'x').slice(0, 4))
 			const pw = words.join('-')
@@ -331,6 +417,9 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	}
 
 	files.followShares?.(relocateShares)
+	// A Samba update that failed earlier (including before this process started) is applied again
+	// before the next share call. Startup kicks the same retry; a failure there stays pending.
+	withShares(() => flushPendingApply()).catch(() => {})
 
 	return {
 		helper,
@@ -367,10 +456,10 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 				run: async (input) => {
 					const device = String(input?.device ?? '')
 					const minutes = Number(input?.minutes)
+					const sleep = await readSleepMap()
 					await helper('sleep', [device, String(minutes)])
 					const d = (await blockDevices()).find((x) => x.path === device)
 					if (d?.serial) {
-						const sleep = await readJson(sleepFile, {})
 						sleep[d.serial] = minutes
 						await writeJson(sleepFile, sleep)
 					}
@@ -395,27 +484,29 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 				},
 			},
 			'files.shares': {kind: 'query', run: shareList},
-			'files.sharePassword': {kind: 'query', run: sharePassword},
+			'files.sharePassword': {kind: 'query', run: () => withShares(async () => (await flushPendingApply(), sharePassword()))},
 			'files.shareOptions': {kind: 'query', run: async () => ({noPassword: await helperKnowsGuests(), samba: await sambaHealth()})},
 			// Your own password for network shares (the user name is your server account's).
 			'files.setSharePassword': {
 				kind: 'mutation',
-				run: async (input) => {
+				run: (input) => withShares(async () => {
 					const pw = String(input?.password ?? '')
 					if (pw.length < 8 || pw.length > 128 || /[\r\n]/.test(pw)) throw new RpcError('BAD_REQUEST', 'Use 8 to 128 characters, on one line.')
 					await requireSamba()
-					await ensureSambaConfig(await readJson(sharesFile, []))
+					await flushPendingApply()
+					await ensureSambaConfig(await readShares())
 					await helper('smb-password', [], `${pw}\n`)
 					await writeFile(passwordFile, pw, {mode: 0o600})
 					return true
-				},
+				}),
 			},
 			// Change how a folder is shared: with or without a password, read-only or not.
 			'files.updateShare': {
 				kind: 'mutation',
 				run: (input) => withShares(async () => {
+					await flushPendingApply()
 					const path = String(input?.path ?? '')
-					const shares = await readJson(sharesFile, [])
+					const shares = await readShares()
 					const i = shares.findIndex((s) => s.path === path)
 					if (i < 0) throw new RpcError('NOT_FOUND', 'That folder isn’t shared')
 					await requireSamba()
@@ -431,15 +522,13 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			'files.addShare': {
 				kind: 'mutation',
 				run: (input) => withShares(async () => {
+					await flushPendingApply()
 					const path = String(input?.path ?? '')
 					const r = await files.resolve(path)
 					if (r.top !== 'Home' || path === '/Home') throw new RpcError('BAD_REQUEST', 'Choose a folder inside Home to share')
-					const shares = await readJson(sharesFile, [])
+					const shares = await readShares()
 					if (shares.some((s) => s.path === path)) return true
-					const base = (path.split('/').pop() || 'Share').replace(/[^A-Za-z0-9 _.-]/g, '').slice(0, 28) || 'Share'
-					let name = base
-					const nameTaken = (n) => SAMBA_RESERVED.has(n.toLowerCase()) || shares.some((s) => s.name.toLowerCase() === n.toLowerCase())
-					for (let n = 2; nameTaken(name); n++) name = `${base} ${n}`
+					const name = allocateShareName(path, shares)
 					await requireSamba()
 					const settings = await shareSettings(input)
 					const next = [...shares, {name, path, ...(settings.guest ? {guest: true} : {}), ...(settings.readOnly ? {readOnly: true} : {})}]
@@ -452,7 +541,8 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			'files.removeShare': {
 				kind: 'mutation',
 				run: (input) => withShares(async () => {
-					const next = (await readJson(sharesFile, [])).filter((s) => s.path !== String(input?.path ?? ''))
+					await flushPendingApply()
+					const next = (await readShares()).filter((s) => s.path !== String(input?.path ?? ''))
 					await applyShares(next)
 					await writeJson(sharesFile, next)
 					return true
