@@ -5,7 +5,7 @@ import os from 'node:os'
 import {join} from 'node:path'
 import {after, before, test} from 'node:test'
 
-import {compareVersions, createUpdater, rawFromOrigin, releaseNotes} from '../omarchyd/updater.mjs'
+import {REPO_RAW, compareVersions, createUpdater, rawFromOrigin, releaseNotes} from '../omarchyd/updater.mjs'
 
 let dir
 before(async () => (dir = await mkdtemp(join(os.tmpdir(), 'omarchyd-u-'))))
@@ -180,7 +180,7 @@ test('checks and updates from the repository it was installed from (omarchy-serv
 	const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: dir, currentVersion: '0.5.0', run, fetchImpl, helperPath: '/nonexistent'})
 	await u.procedures['system.checkUpdate'].run()
 	assert.ok(asked.length && asked.every((a) => a.startsWith('https://raw.githubusercontent.com/TouchWorkStation/omarchy-server-dev/main/')), asked.join(' '))
-	// Anything else (no origin, not GitHub): the main repository.
+	// No origin (git isn't there): the main repository. A non-GitHub origin is not this path.
 	const asked2 = []
 	const u2 = createUpdater({autoCheck: false, appDir: '/app', dataDir: dir, currentVersion: '0.5.0', run: async () => { throw new Error('no git') }, fetchImpl: async (url) => (asked2.push(String(url)), new Response(JSON.stringify({version: '0.5.0'}))), helperPath: '/nonexistent'})
 	await u2.procedures['system.checkUpdate'].run()
@@ -370,4 +370,136 @@ test('the installer ships a revision, stamps it when it finishes, and defers its
 	assert.match(script, /systemd-run --user --collect --on-active=5s/)
 	// The stamp comes after the last sudo step, so a failed run doesn't count.
 	assert.ok(script.indexOf('installer-revision') > script.lastIndexOf('sudo '))
+})
+
+test('rawFromOrigin accepts the other GitHub URL forms', () => {
+	const raw = 'https://raw.githubusercontent.com/o/r'
+	assert.equal(rawFromOrigin('ssh://git@github.com/o/r.git'), raw)
+	assert.equal(rawFromOrigin('https://user:token@github.com/o/r.git'), raw)
+	assert.equal(rawFromOrigin('git://github.com/o/r.git'), raw)
+	assert.equal(rawFromOrigin('https://www.github.com/o/r.git'), raw)
+	assert.equal(rawFromOrigin('https://GitHub.com/o/r.git'), raw)
+})
+
+test('a file or GitLab origin is read with git and not the official raw URL', async () => {
+	for (const origin of ['file:///tmp/omarchy-fork', 'https://gitlab.com/group/omarchy-server.git']) {
+		assert.equal(rawFromOrigin(origin), null)
+		const calls = []
+		const fetched = []
+		const run = async (cmd, args) => {
+			calls.push([cmd, ...args].join(' '))
+			if (cmd === 'git' && args.includes('get-url')) return `${origin}\n`
+			if (cmd === 'git' && args[2] === 'ls-remote') return `abc\trefs/heads/main\n`
+			if (cmd === 'git' && args[2] === 'show' && String(args.at(-1)).endsWith('package.json')) return JSON.stringify({version: '0.6.1'})
+			if (cmd === 'git' && args[2] === 'show') return ''
+			return ''
+		}
+		const u = createUpdater({
+			autoCheck: false,
+			appDir: '/app',
+			dataDir: dir,
+			currentVersion: '0.5.0',
+			run,
+			fetchImpl: async (url) => {
+				fetched.push(String(url))
+				return new Response(JSON.stringify({version: '9.9.9'}))
+			},
+			helperPath: '/nonexistent',
+		})
+		const c = await u.procedures['system.checkUpdate'].run()
+		const from = await u.source()
+		u.stop()
+		assert.equal(c.version, '0.6.1', origin)
+		assert.equal(fetched.length, 0, fetched.join(' '))
+		assert.equal(from === REPO_RAW, false, from)
+		assert.ok(calls.some((line) => line.includes('ls-remote') && line.includes(origin)), calls.join('\n'))
+		assert.ok(calls.some((line) => line.includes('fetch') && line.includes(origin)), calls.join('\n'))
+		assert.equal(calls.some((line) => line.includes(REPO_RAW)), false)
+	}
+})
+
+test('update: a failed fetch does not reset or rebuild, and the status leaves Downloading', async () => {
+	const calls = []
+	const run = async (cmd, args) => {
+		calls.push([cmd, ...args].join(' '))
+		if (cmd === 'git' && args[2] === 'rev-parse') return 'old111\n'
+		if (cmd === 'git' && args[2] === 'fetch') throw new Error('fetch failed: network down')
+		return ''
+	}
+	const data = join(dir, 'fetch-fail')
+	await mkdir(data, {recursive: true})
+	const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: data, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath: '/nonexistent'})
+	await u.procedures['system.update'].run()
+	const st = await until(async () => {
+		const s = await u.procedures['system.updateStatus'].run()
+		return s.error ? s : null
+	})
+	u.stop()
+	assert.match(st.error, /fetch failed: network down/)
+	assert.equal(st.running, false)
+	assert.notEqual(st.description, 'Downloading')
+	assert.equal(calls.some((line) => line.includes('reset')), false, calls.join('\n'))
+	assert.equal(calls.some((line) => line.includes('deps.mjs')), false, calls.join('\n'))
+	assert.equal(calls.some((line) => line.startsWith('npm ')), false, calls.join('\n'))
+})
+
+test('update: a failure after the tree changed says Restoring, then puts the previous version back', async () => {
+	const calls = []
+	let u
+	let duringRestore = null
+	const run = async (cmd, args) => {
+		const line = [cmd, ...args].join(' ')
+		calls.push(line)
+		if (cmd === 'git' && args[2] === 'rev-parse') return 'old111\n'
+		if (line === 'git -C /app reset --hard old111') duringRestore = await u.procedures['system.updateStatus'].run()
+		if (cmd === 'npm' && args[1] === 'build' && !calls.some((c) => c.includes('reset --hard old111'))) throw new Error('vite: syntax error')
+		return ''
+	}
+	const data = join(dir, 'restore-desc')
+	await mkdir(data, {recursive: true})
+	u = createUpdater({autoCheck: false, appDir: '/app', dataDir: data, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath: '/nonexistent'})
+	await u.procedures['system.update'].run()
+	const st = await until(async () => {
+		const s = await u.procedures['system.updateStatus'].run()
+		return s.error ? s : null
+	})
+	u.stop()
+	assert.match(st.error, /failed and nothing changed: .*syntax error/)
+	assert.equal(st.description, '')
+	assert.equal(duringRestore?.description, 'Restoring')
+	assert.notEqual(duringRestore?.description, 'Downloading')
+	assert.ok(calls.includes('git -C /app reset --hard old111'))
+	assert.ok(calls.filter((line) => line.includes('deps.mjs')).length >= 1)
+})
+
+test('installer hint keeps the source, the app store, the repo, and the port', async () => {
+	const src = join(dir, 'hint-src')
+	const store = join(dir, 'hint-store')
+	await writeSource(src, {version: '0.6.1', helper: 'helper v2'})
+	const helperPath = join(dir, 'hint-helper.mjs')
+	await writeFile(helperPath, 'helper v1')
+	const run = async (cmd) => {
+		if (cmd === 'pacman') throw new Error('not found')
+		return ''
+	}
+	const u = createUpdater({
+		autoCheck: false,
+		appDir: join(dir, 'hint-app'),
+		dataDir: join(dir, 'hint-data'),
+		currentVersion: '0.5.0',
+		sourceDir: src,
+		appStoreDir: store,
+		webPort: 7791,
+		run,
+		helperPath,
+		fetchImpl: async () => new Response('', {status: 503}),
+	})
+	const c = await u.procedures['system.checkUpdate'].run()
+	u.stop()
+	assert.match(c.releaseNotes, /OMARCHY_SERVER_SOURCE=/)
+	assert.match(c.releaseNotes, /OMARCHY_SERVER_APP_STORE=/)
+	assert.match(c.releaseNotes, /OMARCHY_SERVER_REPO=/)
+	assert.match(c.releaseNotes, /OMARCHY_SERVER_PORT=7791/)
+	assert.ok(c.releaseNotes.includes(src))
+	assert.ok(c.releaseNotes.includes(store))
 })
