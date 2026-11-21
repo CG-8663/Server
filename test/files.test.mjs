@@ -1,12 +1,13 @@
 // Files: every path stays inside Home or the Trash, symlinks included; trash and restore round-trip.
 import assert from 'node:assert/strict'
-import {link, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile} from 'node:fs/promises'
+import {chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
 
 import {createFiles} from '../omarchyd/files.mjs'
+import {RpcError} from '../omarchyd/rpc.mjs'
 
 let root, home, outside, files
 const call = (name, input) => files.procedures[name].run(input)
@@ -333,5 +334,149 @@ describe('files: assistant store', () => {
 		} finally {
 			await new Promise((r) => server.close(r))
 		}
+	})
+})
+
+describe('files: favorites', () => {
+	async function captureErrors(fn) {
+		const lines = []
+		const orig = console.error
+		console.error = (...args) => lines.push(args.map(String).join(' '))
+		try {
+			return await fn(lines)
+		} finally {
+			console.error = orig
+		}
+	}
+
+	function assertSafeFavoritesError(err, dataDir, file) {
+		assert.ok(err instanceof RpcError, `expected RpcError, got ${err?.constructor?.name}`)
+		assert.equal(err.code, 'PRECONDITION_FAILED')
+		assert.match(err.message, /favorites\.json/)
+		assert.equal(err.message.includes(dataDir), false)
+		assert.equal(err.message.includes(file), false)
+		assert.equal(err.message.includes('secret-folder'), false)
+	}
+
+	test('missing favorites.json starts empty and round-trips addFavorite/removeFavorite', async () => {
+		const dataDir = await mkdtemp(join(root, 'fav-ok-'))
+		const f = createFiles({home, dataDir})
+		await captureErrors(async (lines) => {
+			assert.deepEqual(await f.procedures['files.favorites'].run(), [])
+			assert.deepEqual(lines, [])
+			await f.procedures['files.addFavorite'].run({path: '/Home/Documents'})
+			assert.deepEqual(await f.procedures['files.favorites'].run(), ['/Home/Documents'])
+			await f.procedures['files.removeFavorite'].run({path: '/Home/Documents'})
+			assert.deepEqual(await f.procedures['files.favorites'].run(), [])
+			assert.deepEqual(lines, [])
+		})
+	})
+
+	test('damaged or wrong-shaped favorites.json logs basename once and refuses overwrites', async () => {
+		const cases = [
+			['empty', ''],
+			['truncated', '["/Home/secret-folder"'],
+			['bom', '\uFEFF[]'],
+			['null', 'null'],
+			['object', '{}'],
+			['string', '"hello"'],
+			['number', '42'],
+			['null item', '[null]'],
+			['number item', '[123]'],
+		]
+		for (const [name, contents] of cases) {
+			const dataDir = await mkdtemp(join(root, 'fav-bad-'))
+			const file = join(dataDir, 'favorites.json')
+			await writeFile(file, contents)
+			const before = await readFile(file)
+			const f = createFiles({home, dataDir})
+			await captureErrors(async (lines) => {
+				assert.deepEqual(await f.procedures['files.favorites'].run(), [], name)
+				assert.deepEqual(await f.procedures['files.favorites'].run(), [], name)
+				const notes = lines.filter((l) => l.includes('favorites.json'))
+				assert.equal(notes.length, 1, `${name}: logged once (${JSON.stringify(lines)})`)
+				assert.equal(notes[0].includes(dataDir), false, `${name}: no dataDir`)
+				assert.equal(notes[0].includes(file), false, `${name}: no file path`)
+				if (contents.length > 0) assert.equal(notes[0].includes(contents), false, `${name}: no contents`)
+				assert.equal(notes[0].includes('secret-folder'), false, `${name}: no secret`)
+
+				for (const attempt of [
+					() => f.procedures['files.addFavorite'].run({path: '/Home/Documents'}),
+					() => f.procedures['files.removeFavorite'].run({path: '/Home/Documents'}),
+				]) {
+					await assert.rejects(attempt, (err) => {
+						assertSafeFavoritesError(err, dataDir, file)
+						return true
+					}, name)
+				}
+				assert.deepEqual(await readFile(file), before, `${name}: untouched after refused writes`)
+			})
+		}
+	})
+
+	test('EISDIR or EACCES on favorites.json logs basename once and refuses overwrites', async (t) => {
+		const dirData = await mkdtemp(join(root, 'fav-dir-'))
+		const dirFile = join(dirData, 'favorites.json')
+		await mkdir(dirFile)
+		const fDir = createFiles({home, dataDir: dirData})
+		await captureErrors(async (lines) => {
+			assert.deepEqual(await fDir.procedures['files.favorites'].run(), [])
+			assert.deepEqual(await fDir.procedures['files.favorites'].run(), [])
+			assert.equal(lines.length, 1)
+			assert.match(lines[0], /favorites\.json/)
+			assert.equal(lines[0].includes(dirData), false)
+			await assert.rejects(
+				() => fDir.procedures['files.addFavorite'].run({path: '/Home/Documents'}),
+				(err) => {
+					assertSafeFavoritesError(err, dirData, dirFile)
+					return true
+				},
+			)
+			assert.equal((await stat(dirFile)).isDirectory(), true)
+		})
+
+		if (process.getuid?.() === 0) return t.skip('root ignores file mode')
+		const accData = await mkdtemp(join(root, 'fav-acc-'))
+		const accFile = join(accData, 'favorites.json')
+		await writeFile(accFile, '["/Home/Documents"]', {mode: 0o600})
+		await chmod(accFile, 0o000)
+		const fAcc = createFiles({home, dataDir: accData})
+		try {
+			await captureErrors(async (lines) => {
+				assert.deepEqual(await fAcc.procedures['files.favorites'].run(), [])
+				assert.equal(lines.length, 1)
+				assert.match(lines[0], /favorites\.json/)
+				assert.equal(lines[0].includes(accData), false)
+				await assert.rejects(
+					() => fAcc.procedures['files.addFavorite'].run({path: '/Home/Documents'}),
+					(err) => {
+						assertSafeFavoritesError(err, accData, accFile)
+						return true
+					},
+				)
+			})
+		} finally {
+			await chmod(accFile, 0o600)
+		}
+		assert.equal(await readFile(accFile, 'utf8'), '["/Home/Documents"]')
+	})
+
+	test('favorites recover automatically after a damaged favorites.json is removed or repaired', async () => {
+		const dataDir = await mkdtemp(join(root, 'fav-rec-'))
+		const file = join(dataDir, 'favorites.json')
+		await writeFile(file, '{broken')
+		const f = createFiles({home, dataDir})
+		await captureErrors(async (lines) => {
+			assert.deepEqual(await f.procedures['files.favorites'].run(), [])
+			assert.equal(lines.length, 1)
+			await rm(file)
+			await f.procedures['files.addFavorite'].run({path: '/Home/Documents'})
+			assert.deepEqual(await f.procedures['files.favorites'].run(), ['/Home/Documents'])
+			await writeFile(file, 'bad-again')
+			assert.deepEqual(await f.procedures['files.favorites'].run(), [])
+			assert.equal(lines.length, 2)
+			await writeFile(file, '["/Home/Documents"]')
+			assert.deepEqual(await f.procedures['files.favorites'].run(), ['/Home/Documents'])
+		})
 	})
 })
