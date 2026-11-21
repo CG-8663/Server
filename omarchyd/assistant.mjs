@@ -61,7 +61,7 @@ function ownerMessage(toolName) {
 
 export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl, mcpTargets, sleep}) {
 	const keys = createKeyStore({dataDir, now})
-	const conversations = createConversations({dataDir, now})
+	const conversations = createConversations({dataDir, now, recoverRunning: true})
 	const stamp = () => (now ? now() : Date.now())
 	const actor = (auth) => {
 		const u = accounts.getUser(auth?.userId)

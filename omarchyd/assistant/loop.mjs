@@ -345,8 +345,29 @@ function providerHistory(messages, actions) {
 			out.push(found ? toOpenAI(found) : {role: 'tool', tool_call_id: t.id, content: placeholder(actionByCall.get(t.id))})
 		}
 	}
-	const history = out.slice(-MAX_MESSAGES)
-	while (history[0]?.role === 'tool') history.shift()
+	// Start on the person's message a 40-message cut would split, then drop the oldest
+	// assistant-and-tool groups until the slice fits. A long tool chain must not go out in full.
+	let start = Math.max(0, out.length - MAX_MESSAGES)
+	while (start > 0 && out[start]?.role !== 'user') start--
+	const history = out.slice(start)
+	while (history.length > MAX_MESSAGES) {
+		const at = history.findIndex((m) => m.role === 'assistant')
+		if (at < 0) break
+		let end = at + 1
+		while (end < history.length && history[end]?.role === 'tool') end++
+		history.splice(at, end - at)
+	}
+	while (history.length && history[0]?.role !== 'user') history.shift()
+	if (history.length > MAX_MESSAGES) {
+		let cut = history.length - MAX_MESSAGES
+		while (cut < history.length && history[cut]?.role !== 'user') cut++
+		if (cut < history.length) return history.slice(cut)
+	}
+	if (!history.length) {
+		const tail = out.slice(Math.max(0, out.length - MAX_MESSAGES))
+		while (tail[0]?.role === 'tool') tail.shift()
+		return tail
+	}
 	return history
 }
 
@@ -619,7 +640,17 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			if (conversationId) row = await conversations.get(userId, conversationId)
 			let key
 			try {
-				key = await keys.resolveForUser(userId, keyId || row?.keyId || undefined)
+				if (keyId) {
+					key = await keys.resolveForUser(userId, keyId)
+				} else if (row?.keyId) {
+					// If the chat's remembered key was deleted or unshared, switch to another key they can use.
+					key = await keys.resolveForUser(userId, row.keyId).catch((e) => {
+						if (e?.code !== 'NOT_FOUND') throw e
+						return keys.resolveForUser(userId)
+					})
+				} else {
+					key = await keys.resolveForUser(userId)
+				}
 			} catch (e) {
 				say('error', {message: e?.message || 'Add an API key in Settings → Assistant, or ask the owner to share one'})
 				return finish(row?.id)
