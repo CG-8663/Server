@@ -61,10 +61,15 @@ test('install.sh fetches a local clone HEAD, not origin/branch', () => {
 })
 
 test('install.sh writes Environment= only for SOURCE and APP_STORE that were set', () => {
-	assert.match(script, /Environment=OMARCHY_SERVER_SOURCE=/)
-	assert.match(script, /Environment=OMARCHY_SERVER_APP_STORE=/)
+	assert.match(script, /Environment=\\"OMARCHY_SERVER_SOURCE=/)
+	assert.match(script, /Environment=\\"OMARCHY_SERVER_APP_STORE=/)
 	assert.match(script, /OMARCHY_SERVER_SOURCE/)
 	assert.ok(!/\$HOME\/code/.test(script))
+})
+
+test('#421: source paths are quoted so a space stays one Environment assignment', () => {
+	assert.match(script, /Environment=\\"OMARCHY_SERVER_SOURCE=\$SOURCE\\"/)
+	assert.match(script, /Environment=\\"OMARCHY_SERVER_APP_STORE=\$APP_STORE\\"/)
 })
 
 test('install.sh uses SOURCE as REPO when REPO is unset', () => {

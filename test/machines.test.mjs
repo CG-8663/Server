@@ -160,7 +160,7 @@ describe('omarchyd machines', () => {
 	}
 
 	before(async () => {
-		root = await mkdtemp(join(os.tmpdir(), 'omarchyd-m-'))
+		root = await mkdtemp('/tmp/om-m-')
 		data = join(root, 'data')
 		const sum = createHash('sha256').update(image).digest('hex')
 		fixture = http.createServer((req, res) => {
@@ -202,9 +202,9 @@ describe('omarchyd machines', () => {
 		auth = {authorization: `Bearer ${login.result.data.accessToken}`}
 	})
 	after(async () => {
-		await d.close()
-		fixture.close()
-		await rm(root, {recursive: true, force: true})
+		await d?.close()
+		fixture?.close()
+		if (root) await rm(root, {recursive: true, force: true})
 	})
 	const call = async (path, input, kind = 'mutation') => {
 		const url = new URL(`${d.url}/trpc/${path}`)
@@ -278,23 +278,32 @@ describe('omarchyd machines', () => {
 			s.write('RFB 003.008\n')
 			s.on('data', (x) => s.write(x))
 		})
-		await new Promise((r) => vnc.listen(sockPath, r))
-		const wsUrl = `${d.url.replace('http', 'ws')}/machines/console?machineId=${id}`
-		const refused = new WebSocket(`${wsUrl}&ticket=nope`, ['binary'])
-		await new Promise((r) => refused.on('error', r))
-		const termTicket = await call('user.createWebSocketTicket', {target: 'terminal'})
-		const wrongKind = new WebSocket(`${wsUrl}&ticket=${termTicket}`, ['binary'])
-		await new Promise((r) => wrongKind.on('error', r)) // a terminal ticket can't open a screen
-		const ticket = await call('user.createWebSocketTicket', {target: 'machines'})
-		const ws = new WebSocket(`${wsUrl}&ticket=${ticket}`, ['binary'])
-		const first = await new Promise((r, j) => (ws.once('message', (m) => r(m.toString())), ws.once('error', j)))
-		assert.equal(first, 'RFB 003.008\n')
-		ws.send(Buffer.from('ping'))
-		assert.equal(await new Promise((r) => ws.once('message', (m) => r(m.toString()))), 'ping')
-		ws.close()
-		const reused = new WebSocket(`${wsUrl}&ticket=${ticket}`, ['binary'])
-		await new Promise((r) => reused.on('error', r))
-		vnc.close()
+		try {
+			await new Promise((resolve, reject) => {
+				vnc.once('error', reject)
+				vnc.listen(sockPath, () => {
+					vnc.off('error', reject)
+					resolve()
+				})
+			})
+			const wsUrl = `${d.url.replace('http', 'ws')}/machines/console?machineId=${id}`
+			const refused = new WebSocket(`${wsUrl}&ticket=nope`, ['binary'])
+			await new Promise((r) => refused.on('error', r))
+			const termTicket = await call('user.createWebSocketTicket', {target: 'terminal'})
+			const wrongKind = new WebSocket(`${wsUrl}&ticket=${termTicket}`, ['binary'])
+			await new Promise((r) => wrongKind.on('error', r)) // a terminal ticket can't open a screen
+			const ticket = await call('user.createWebSocketTicket', {target: 'machines'})
+			const ws = new WebSocket(`${wsUrl}&ticket=${ticket}`, ['binary'])
+			const first = await new Promise((r, j) => (ws.once('message', (m) => r(m.toString())), ws.once('error', j)))
+			assert.equal(first, 'RFB 003.008\n')
+			ws.send(Buffer.from('ping'))
+			assert.equal(await new Promise((r) => ws.once('message', (m) => r(m.toString()))), 'ping')
+			ws.close()
+			const reused = new WebSocket(`${wsUrl}&ticket=${ticket}`, ['binary'])
+			await new Promise((r) => reused.on('error', r))
+		} finally {
+			vnc.close()
+		}
 	})
 
 	test('Omarchy installs itself from its ISO with a cidata drive (hash only)', async () => {

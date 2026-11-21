@@ -15,6 +15,13 @@ const logsOf = (t) => {
 	t.mock.method(console, 'error', (...args) => logs.push(args.map(String).join(' ')))
 	return logs
 }
+// What the connector reads from the WebSocket handshake. 401 makes it delete its own key.
+const answerHandshake = async (swarm, authorization) => {
+	const chunks = []
+	const socket = {write: (s) => (chunks.push(String(s)), true), destroy() {}}
+	await swarm.upgradeAgent({headers: {authorization}}, socket, Buffer.alloc(0))
+	return chunks.join('')
+}
 
 test('a damaged apps.json is left unchanged, and the app list stays empty', async (t) => {
 	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-apps-bad-'))
@@ -101,7 +108,12 @@ test('a damaged swarm.json is left unchanged, and the swarm stays empty', async 
 				assert.deepEqual(await swarm.procedures['swarm.list'].run(), [])
 				assert.equal(await readFile(file, 'utf8'), damaged)
 				const {token} = await swarm.procedures['swarm.pair'].run({})
-				await assert.rejects(swarm.enroll({token, info: {hostname: 'pc'}, abilities: {}}), /swarm\.json is damaged/)
+				const joined = await swarm.enroll({token, info: {hostname: 'pc'}, abilities: {}})
+				assert.equal(joined.status, 503)
+				assert.equal(joined.body.error, 'swarm.json is damaged and was left unchanged.')
+				const handshake = await answerHandshake(swarm, `Bearer aabbccddeeff:${'a'.repeat(43)}`)
+				assert.match(handshake, /HTTP\/1\.1 503 /)
+				assert.equal(handshake.includes('401'), false)
 				assert.deepEqual(await swarm.procedures['swarm.list'].run(), [])
 				assert.equal(await readFile(file, 'utf8'), damaged)
 				assert.equal(logs.length, 1)
@@ -131,6 +143,8 @@ test('a valid swarm.json still loads its computers', async () => {
 			const listed = await swarm.procedures['swarm.list'].run()
 			assert.deepEqual(listed.map((a) => a.id), ['aabbccddeeff'])
 			assert.equal(await readFile(file, 'utf8'), saved)
+			const handshake = await answerHandshake(swarm, `Bearer aabbccddeeff:${'a'.repeat(43)}`)
+			assert.match(handshake, /HTTP\/1\.1 401 /)
 		} finally {
 			swarm.close()
 		}
