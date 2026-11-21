@@ -4,6 +4,22 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.54',
+		date: '2026-11-21',
+		title: 'Swarm computers, backups, and the desktop stay honest',
+		added: ['The assistant can sign in with ChatGPT.'],
+		fixed: [
+			'A stuck network disk or a terminal that is not reading no longer freezes a swarm computer. A missing tool or a command that runs too long names that command, and removing a pool leaves /etc/fstab with its trailing newline.',
+			'Storage no longer says to reinstall when a computer only reconnected. A computer that left the swarm stays in Backups, so you can restore it here or delete it. Skipped folders and unreadable files show as a warning, and older backups stay in the list.',
+			'A key check that finishes after you edit the key, model, or address is ignored. A provider that cannot be reached names the address, and a tool result that is too long is cut so the next message still works.',
+			'Desktop shortcuts act only while the desktop is in front. A screen that fails to load shows a message and a button. Uploading a photo keeps a theme change made during the upload and clears a solid colour. A hibernated computer can be started from its icon.',
+			'Move from Unraid keeps names it cannot copy on the list, keeps hard links when copying folders, and a stopped move says how many items came over.',
+			'An unplugged USB stick stays tied to its app and is left out until it is plugged back in.',
+			'Replacing or downloading a file no longer removes a parent folder or hides a file that is not a regular file. A wallpaper change that fails says why.',
+			'Machine snapshots and clones stay with the right disk. A machine name the hypervisor cannot hold is refused, and two machines cannot take the same name.',
+		],
+	},
+	{
 		version: '0.9.53',
 		date: '2026-11-20',
 		title: 'Fixes for the server, app windows and swarm computers',
