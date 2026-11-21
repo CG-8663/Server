@@ -202,7 +202,8 @@ export function createOmarchyTheme({home, run = null, env = process.env, systemS
 			() => jobs.delete(slug),
 			(e) => {
 				jobs.set(slug, {state: 'error', error: e.message})
-				setTimeout(() => jobs.get(slug)?.state === 'error' && jobs.delete(slug), 5 * 60_000)
+				// Keep the error on the theme list briefly, without holding the process open.
+				setTimeout(() => jobs.get(slug)?.state === 'error' && jobs.delete(slug), 5 * 60_000).unref()
 			},
 		)
 	}
@@ -229,7 +230,9 @@ export function createOmarchyTheme({home, run = null, env = process.env, systemS
 		if (slug && slug !== (await currentName())) await setTheme(slug)
 		const key = `bg:${hex}`
 		if (jobs.get(key)?.state === 'switching') return true
-		job(key, 'switching', inTurn('omarchy-theme-bg-set', [path]))
+		const work = inTurn('omarchy-theme-bg-set', [path])
+		job(key, 'switching', work)
+		await work
 		return true
 	}
 	// Only themes from the Omarchy manual's list are installed from here.
