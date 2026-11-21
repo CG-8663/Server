@@ -1,0 +1,156 @@
+// Concurrent app installs, updates, and store additions must serialize safely without leaving duplicate or broken state.
+import assert from 'node:assert/strict'
+import {execFile, execFileSync} from 'node:child_process'
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import net from 'node:net'
+import os from 'node:os'
+import {join} from 'node:path'
+import {test} from 'node:test'
+
+import {createApps} from '../omarchyd/apps.mjs'
+import {RpcError} from '../omarchyd/rpc.mjs'
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+const gitSync = (cwd, ...args) =>
+	execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'}).toString()
+
+function gitAsync(args, cwd, delayMs = 0) {
+	return new Promise((resolve, reject) => {
+		const runIt = () =>
+			execFile('git', args, {cwd, maxBuffer: 8 * 1024 * 1024}, (err, stdout) => {
+				if (err) return reject(err)
+				resolve(stdout.toString())
+			})
+		if (delayMs > 0) setTimeout(runIt, delayMs)
+		else runIt()
+	})
+}
+
+async function freeAppPort() {
+	for (let attempt = 0; attempt < 40; attempt++) {
+		const candidate = 30_000 + Math.floor(Math.random() * 9_000)
+		const ok = await new Promise((resolve) => {
+			const s = net.createServer()
+			s.once('error', () => resolve(false))
+			s.listen(candidate, '127.0.0.1', () => s.close(() => resolve(true)))
+		})
+		if (ok) return candidate
+	}
+	throw new Error('no free port found')
+}
+
+async function createStoreRepo(dir, appsList) {
+	await mkdir(dir, {recursive: true})
+	await writeFile(join(dir, 'omarchy-app-store.yml'), 'id: demo\nname: Demo Store\n')
+	for (const app of appsList) {
+		await mkdir(join(dir, app.id), {recursive: true})
+		await writeFile(
+			join(dir, app.id, 'omarchy-app.yml'),
+			`manifestVersion: 1\nid: ${app.id}\nname: ${app.name}\ntagline: Says hello\nversion: "${app.version ?? '1.0'}"\nport: ${app.port}\nicon: https://example.com/i.svg\ndefaultPassword: ""\n`,
+		)
+		await writeFile(
+			join(dir, app.id, 'docker-compose.yml'),
+			`version: "3.7"\nservices:\n  app_proxy:\n    environment:\n      APP_HOST: ${app.id}_web_1\n      APP_PORT: 8080\n  web:\n    image: example/${app.id}:${app.version ?? '1'}\n    volumes:\n      - \${APP_DATA_DIR}/data:/data\n`,
+		)
+	}
+	gitSync(dir, 'init', '-q', '-b', 'main')
+	gitSync(dir, 'add', '.')
+	gitSync(dir, 'commit', '-qm', 'init')
+	return `file://${dir}`
+}
+
+async function setupApps(t, {defaultStores = true, gitDelayMs = 0, pullGate = null} = {}) {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-apps-conc-'))
+	const dataDir = join(root, 'data')
+	const home = join(root, 'home')
+	const storeDir = join(root, 'store')
+	await mkdir(home, {recursive: true})
+	await mkdir(dataDir, {recursive: true})
+	const port = await freeAppPort()
+	const storeUrl = await createStoreRepo(storeDir, [{id: 'demo-app', name: 'Demo App', port, version: '1.0'}])
+	const sock = join(root, 'podman.sock')
+	await writeFile(sock, '')
+	const prevDockerHost = process.env.DOCKER_HOST
+	process.env.DOCKER_HOST = `unix://${sock}`
+
+	const up = new Set()
+	const networks = new Set()
+	const run = async (cmd, args, opts = {}) => {
+		if (cmd === 'git') return gitAsync(args, opts.cwd, gitDelayMs)
+		if (cmd === 'systemctl' || cmd === 'setfacl') return ''
+		if (cmd === 'podman') {
+			if (args[0] === 'info') {
+				await wait(30)
+				return '{}'
+			}
+			if (args[0] === 'network' && args[1] === 'exists' && !networks.has(args[2])) throw new Error('no such network')
+			if (args[0] === 'network' && args[1] === 'create') networks.add(args.at(-1))
+			if (args[1] === 'rm') await rm(args.at(-1), {recursive: true, force: true})
+			return ''
+		}
+		if (cmd === 'docker-compose') {
+			if (args[0] === 'version') return 'Docker Compose version v2.30.0'
+			const project = args[1]
+			const verb = args[4]
+			if (verb === 'pull') {
+				if (pullGate) await pullGate.wait()
+				else await wait(40)
+				return ''
+			}
+			if (verb === 'up' || verb === 'restart') up.add(project)
+			if (verb === 'stop' || verb === 'down') up.delete(project)
+			if (verb === 'ps') return JSON.stringify([{Service: 'web', State: up.has(project) ? 'running' : 'exited'}])
+			return ''
+		}
+		throw new Error(`${cmd} not simulated`)
+	}
+
+	const apps = createApps({
+		dataDir,
+		home,
+		allowFileStores: true,
+		gatewayHost: '127.0.0.1',
+		defaultStores: defaultStores ? [{url: storeUrl}] : [],
+		run,
+		systemApps: null,
+	})
+	t.after(async () => {
+		apps.close()
+		if (prevDockerHost === undefined) delete process.env.DOCKER_HOST
+		else process.env.DOCKER_HOST = prevDockerHost
+		await rm(root, {recursive: true, force: true})
+	})
+	return {root, dataDir, storeDir, storeUrl, apps, port}
+}
+
+async function waitInstalled(apps, id) {
+	const end = Date.now() + 5000
+	while (!apps.importState(id).done) {
+		if (Date.now() > end) throw new Error(`timed out waiting for ${id}`)
+		await wait(15)
+	}
+}
+
+test('concurrent installs of the same app allow one and refuse the duplicate', async (t) => {
+	const {dataDir, apps} = await setupApps(t)
+	await apps.procedures['appStore.registry'].run()
+	const results = await Promise.allSettled([
+		apps.procedures['apps.install'].run({appId: 'demo-app'}),
+		apps.procedures['apps.install'].run({appId: 'demo-app'}),
+	])
+	await waitInstalled(apps, 'demo-app')
+	const fulfilled = results.filter((r) => r.status === 'fulfilled')
+	const rejected = results.filter((r) => r.status === 'rejected')
+	assert.equal(fulfilled.length, 1)
+	assert.equal(fulfilled[0].value, true)
+	assert.equal(rejected.length, 1)
+	assert.ok(rejected[0].reason instanceof RpcError)
+	assert.equal(rejected[0].reason.code, 'CONFLICT')
+	assert.match(rejected[0].reason.message, /already installed/)
+
+	const listed = (await apps.procedures['apps.list'].run()).filter((a) => a.id === 'demo-app')
+	assert.equal(listed.length, 1)
+	assert.notEqual(listed[0].state, 'error')
+	const saved = JSON.parse(await readFile(join(dataDir, 'apps', 'apps.json'), 'utf8'))
+	assert.equal(saved.apps.filter((a) => a.id === 'demo-app').length, 1)
+})
