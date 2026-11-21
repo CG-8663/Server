@@ -191,11 +191,11 @@ export function createFiles({home, dataDir, io} = {}) {
 
 		let files
 		let countable
+		const order = sortOrder === 'descending' ? -1 : 1
 		if (key === 'modified' || key === 'size') {
 			// mtime/size sort needs every entry's stat; we still honour limit after sorting.
 			const rows = (await mapPool(dirents, STAT_CONCURRENCY, (d) => toEntry(d))).filter(Boolean)
-			rows.sort((a, b) => dirFirst({dir: a.type === 'directory'}, {dir: b.type === 'directory'}) || (a[key] ?? 0) - (b[key] ?? 0))
-			if (sortOrder === 'descending') rows.reverse()
+			rows.sort((a, b) => dirFirst({dir: a.type === 'directory'}, {dir: b.type === 'directory'}) || order * ((a[key] ?? 0) - (b[key] ?? 0)) || textCmp(a, b, 'name'))
 			countable = rows.length
 			files = cap ? rows.slice(0, cap) : rows
 		} else {
@@ -207,8 +207,7 @@ export function createFiles({home, dataDir, io} = {}) {
 				const name = shownName(d.name)
 				return {name, dir, type: dir ? 'directory' : typeFor(name), d}
 			})
-			rows.sort((a, b) => dirFirst(a, b) || textCmp(a, b, key === 'type' ? 'type' : 'name'))
-			if (sortOrder === 'descending') rows.reverse()
+			rows.sort((a, b) => dirFirst(a, b) || order * textCmp(a, b, key === 'type' ? 'type' : 'name') || textCmp(a, b, 'name'))
 			countable = rows.length
 			const page = cap ? rows.slice(0, cap) : rows
 			files = (await mapPool(page, STAT_CONCURRENCY, (row) => toEntry(row.d))).filter(Boolean)
