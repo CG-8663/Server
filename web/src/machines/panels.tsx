@@ -27,6 +27,7 @@ import {
 	type StatPoint,
 	type Task,
 } from './api'
+import {backupListView} from './backupList'
 
 export type PanelId = 'summary' | 'console' | 'hardware' | 'cloudinit' | 'options' | 'network' | 'usb' | 'snapshots' | 'backups' | 'history' | 'monitor'
 export const PANELS: {id: PanelId; label: string; icon: IconName}[] = [
@@ -855,6 +856,7 @@ export function BackupsPanel({d}: {d: MachineDetails}) {
 	const action = useMachineAction()
 	const confirm = useConfirm()
 	const backups = useBackups(d.id)
+	const backupRows = backupListView(backups)
 	const [notes, setNotes] = useState('')
 	const [asking, setAsking] = useState(false)
 	const running = d.tasks.find((t) => t.type === 'backup' && t.status === 'running')
@@ -898,8 +900,14 @@ export function BackupsPanel({d}: {d: MachineDetails}) {
 					<span>Notes</span>
 					<span />
 				</div>
-				{backups.isLoading && <div className="mx-tr empty">Loading…</div>}
-				{backups.data?.length === 0 && <div className="mx-tr empty">No backups of {d.name} yet.</div>}
+				{backupRows.loading && <div className="mx-tr empty">Loading…</div>}
+				{backupRows.error && (
+					<div className="error" role="alert">
+						<Icon name="alert" size={18} />
+						{backupRows.error}
+					</div>
+				)}
+				{backupRows.showEmpty && <div className="mx-tr empty">No backups of {d.name} yet.</div>}
 				{(backups.data ?? []).map((b) => (
 					<div className="mx-tr" role="row" key={b.id}>
 						<span className="b">

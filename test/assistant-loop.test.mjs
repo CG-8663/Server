@@ -8,7 +8,7 @@ import {openAccounts} from '../omarchyd/accounts.mjs'
 import {createAssistant} from '../omarchyd/assistant.mjs'
 import {createConversations} from '../omarchyd/assistant/conversations.mjs'
 import {SYSTEM_PROMPT} from '../omarchyd/assistant/loop.mjs'
-import {streamChat} from '../omarchyd/assistant/providers.mjs'
+import {describeReachFailure, streamChat, verifyKey} from '../omarchyd/assistant/providers.mjs'
 import {READ_TOOLS, WRITE_TOOLS, appearanceCatalog, coerceDeskShell, filterAppStore, toolsFor} from '../omarchyd/assistant/tools.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 import {ALLOWED} from '../server/app.mjs'
@@ -792,7 +792,7 @@ test('a provider transport failure becomes an error event', async () => {
 	const events = []
 	try {
 		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: (e) => events.push(e)})
-		assert.deepEqual(events, [{event: 'error', data: {message: 'socket hang up'}}])
+		assert.deepEqual(events, [{event: 'error', data: {message: describeReachFailure('https://api.x.ai/v1', new Error('socket hang up'))}}])
 		assert.ok(out.conversationId)
 	} finally {
 		await box.close()
@@ -1553,6 +1553,150 @@ test('only one reply runs per chat at a time', async () => {
 		assert.match(c.chunks.join(''), /event: done/)
 		const saved = await box.asst.conversations.get('owner', out.conversationId)
 		assert.deepEqual(saved.messages.filter((m) => m.role === 'user').map((m) => m.content), ['hi', 'again', 'once more'])
+	} finally {
+		await box.close()
+	}
+})
+
+test('a closed tool_call with parameters reaches the tool, and invalid JSON is an error', async () => {
+	const {runProcedure} = factsProcedure()
+	const bad = 'Let me look.\n<tool_call>{"name":"apps_list","arguments":{"q":"a\nb"}}</tool_call>'
+	const params = 'Removing it.\n<tool_call>{"name":"apps_uninstall","parameters":{"appId":"nextcloud"}}</tool_call>'
+	const {fetchImpl} = scripted([textSse(bad), textSse(params)])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	try {
+		const badEvents = []
+		const badOut = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'look', emit: (e) => badEvents.push(e)})
+		assert.equal(badEvents.filter((e) => e.event === 'text').map((e) => e.data.text).join(''), 'Let me look.\n')
+		assert.equal(badEvents.some((e) => e.event === 'tool'), false)
+		assert.equal(badEvents.some((e) => e.event === 'action'), false)
+		const badError = badEvents.find((e) => e.event === 'error')
+		assert.ok(badError)
+		assert.match(badError.data.message, /cut off/)
+		const badSaved = await box.asst.conversations.get('owner', badOut.conversationId)
+		assert.equal(badSaved.messages.some((m) => m.role === 'tool'), false)
+
+		const events = []
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'remove it', emit: (e) => events.push(e)})
+		const action = events.find((e) => e.event === 'action')?.data
+		assert.equal(action?.title, 'Uninstall Nextcloud')
+		assert.equal(action.rpc.path, 'apps.uninstall')
+		assert.deepEqual(action.rpc.input, {appId: 'nextcloud'})
+	} finally {
+		await box.close()
+	}
+})
+
+test('a provider fetch failure names the base URL the same way the key check does', async () => {
+	const dataDir = await mkdtemp(join(os.tmpdir(), 'al-reach-'))
+	const base = 'http://127.0.0.1:9/v1'
+	const refused = () => Object.assign(new TypeError('fetch failed'), {cause: {code: 'ECONNREFUSED'}})
+	const timedOut = () => Object.assign(new Error('The operation was aborted due to timeout'), {name: 'TimeoutError'})
+	try {
+		const checked = await verifyKey({provider: 'openai-compatible', baseUrl: base, apiKey: 'local-key', fetchImpl: async () => {
+			throw refused()
+		}})
+		const asst = createAssistant({
+			dataDir,
+			accounts: fakeAccounts(),
+			now: () => 3,
+			runProcedure: async () => null,
+			fetchImpl: async () => {
+				throw refused()
+			},
+		})
+		await asst.keys.add({userId: 'owner', role: 'owner'}, {provider: 'openai-compatible', apiKey: 'local-key', model: 'llama3', baseUrl: base})
+		const events = []
+		await asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: (e) => events.push(e)})
+		assert.equal(events.length, 1)
+		assert.equal(events[0].event, 'error')
+		assert.equal(events[0].data.message, checked.message)
+		assert.match(events[0].data.message, /127\.0\.0\.1:9\/v1/)
+		assert.match(events[0].data.message, /ECONNREFUSED/)
+		assert.notEqual(events[0].data.message, 'fetch failed')
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+	const dataDir2 = await mkdtemp(join(os.tmpdir(), 'al-term-'))
+	try {
+		const dropped = await verifyKey({provider: 'openai-compatible', baseUrl: base, apiKey: 'local-key', fetchImpl: async () => {
+			throw new TypeError('terminated')
+		}})
+		const slow = await verifyKey({provider: 'openai-compatible', baseUrl: base, apiKey: 'local-key', fetchImpl: async () => {
+			throw timedOut()
+		}})
+		const asst = createAssistant({
+			dataDir: dataDir2,
+			accounts: fakeAccounts(),
+			now: () => 4,
+			runProcedure: async () => null,
+			fetchImpl: async () => ({
+				ok: true,
+				status: 200,
+				text: async () => '',
+				body: (async function* () {
+					yield 'data: {"choices":[{"delta":{"content":"Partial ans"}}]}\n\n'
+					throw new TypeError('terminated')
+				})(),
+			}),
+		})
+		await asst.keys.add({userId: 'owner', role: 'owner'}, {provider: 'openai-compatible', apiKey: 'local-key', model: 'llama3', baseUrl: base})
+		const partial = []
+		await asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: (e) => partial.push(e)})
+		assert.equal(partial.find((e) => e.event === 'text')?.data.text, 'Partial ans')
+		const err = partial.find((e) => e.event === 'error')
+		assert.equal(err?.data.message, dropped.message)
+		assert.match(err.data.message, /terminated/)
+		assert.match(err.data.message, /127\.0\.0\.1:9\/v1/)
+		assert.notEqual(err.data.message, 'terminated')
+
+		const asst2 = createAssistant({
+			dataDir: dataDir2,
+			accounts: fakeAccounts(),
+			now: () => 5,
+			runProcedure: async () => null,
+			fetchImpl: async () => {
+				throw timedOut()
+			},
+		})
+		const later = []
+		await asst2.runTurn({userId: 'owner', role: 'owner', message: 'timeout', emit: (e) => later.push(e)})
+		assert.equal(later[0].data.message, slow.message)
+		assert.match(later[0].data.message, /didn.t answer in time/)
+		assert.match(later[0].data.message, /127\.0\.0\.1:9\/v1/)
+	} finally {
+		await rm(dataDir2, {recursive: true, force: true})
+	}
+})
+
+test('a built-in tool result is stored already cut at 20000 characters', async () => {
+	const big = 'x'.repeat(25000)
+	const exact = 'y'.repeat(20000)
+	let which = 'big'
+	const {runProcedure} = factsProcedure(async (name) => {
+		if (name === 'system.diskUsage') return which === 'big' ? big : exact
+	})
+	const {seen, fetchImpl} = scripted([
+		toolSse('call_disk', 'system_diskUsage', '{}'),
+		(body) => {
+			const tool = body.messages.find((m) => m.role === 'tool')
+			assert.equal(tool.content, `${'x'.repeat(20000)}[cut: 5000 more characters]`)
+			return textSse('short')
+		},
+		toolSse('call_disk2', 'system_diskUsage', '{}'),
+		textSse('exact'),
+	])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	try {
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'disk', emit: () => {}})
+		const saved = await box.asst.conversations.get('owner', out.conversationId)
+		const stored = saved.messages.find((m) => m.role === 'tool' && m.toolCallId === 'call_disk')
+		assert.equal(stored.content, `${'x'.repeat(20000)}[cut: 5000 more characters]`)
+		which = 'exact'
+		const second = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'again', conversationId: out.conversationId, emit: () => {}})
+		const again = await box.asst.conversations.get('owner', second.conversationId)
+		assert.equal(again.messages.find((m) => m.toolCallId === 'call_disk2').content, exact)
+		assert.equal(seen.length >= 3, true)
 	} finally {
 		await box.close()
 	}

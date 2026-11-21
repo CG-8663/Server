@@ -14,6 +14,7 @@ import {Connect, Login} from './screens/Auth'
 import {Home} from './screens/Home'
 import {Desktop} from './desktop/Desktop'
 import {resetDeskConfig} from './desktop/config'
+import {ScreenErrorBoundary} from './screenBoundary'
 import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, scrollPhoneToTop, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
 import {LayoutChooser} from './LayoutChooser'
@@ -227,6 +228,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						{conn.message}
 					</div>
 				)}
+				<ScreenErrorBoundary>
 				<Suspense fallback={<ScreenFallback />}>
 					<main key={tab} className="screen">
 						{tab === 'home' && (
@@ -250,6 +252,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={() => history.back()} />}
 					</main>
 				</Suspense>
+				</ScreenErrorBoundary>
 			</div>
 			<nav className="dock" aria-label="Main">
 				<span className="indicator" style={{transform: `translateX(${Math.max(index, 0) * 100}%)`, opacity: index < 0 ? 0 : 1}} aria-hidden="true" />
@@ -265,9 +268,11 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 			{viewing && <AppViewer app={viewing} onClose={() => setViewing(null)} />}
 
 			{terminal && (
+				<ScreenErrorBoundary>
 				<Suspense fallback={<ScreenFallback />}>
 					<TerminalScreen app={terminal.app} input={terminal.input} onClose={() => setTerminal(null)} />
 				</Suspense>
+				</ScreenErrorBoundary>
 			)}
 			{/* Not over Settings, which has its own preview of the character (and forms it would cover). */}
 			{!assistantOpen && !terminal && !viewing && tab !== 'settings' && (
@@ -280,6 +285,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 				/>
 			)}
 			{keepAssistant && (
+				<ScreenErrorBoundary>
 				<Suspense fallback={<ScreenFallback />}>
 					<Assistant
 						active={assistantOpen}
@@ -297,6 +303,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						setPrefs={setPrefs}
 					/>
 				</Suspense>
+				</ScreenErrorBoundary>
 			)}
 			<NotificationsSheet
 				open={bellOpen}

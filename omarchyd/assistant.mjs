@@ -318,7 +318,7 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			// and a custom address follows the same owner-only rule as adding one. The check isn't recorded.
 			const newKey = typeof input.apiKey === 'string' && input.apiKey.trim() ? input.apiKey.trim() : null
 			const newUrl = typeof input.baseUrl === 'string' && input.baseUrl.trim() ? input.baseUrl.trim() : null
-			if (!newKey && !newUrl) return {id: k.id, provider: k.provider, baseUrl: k.baseUrl, apiKey: k.apiKey, model: k.model}
+			if (!newKey && !newUrl) return {id: k.id, provider: k.provider, baseUrl: k.baseUrl, apiKey: k.apiKey, model: k.model, updatedAt: k.updatedAt}
 			if (k.ownerUserId !== who.userId) throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
 			if (newKey && newKey.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
 			let baseUrl = k.baseUrl
@@ -347,7 +347,7 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		const ep = await endpointFor(input, auth)
 		const result = await verifyKey({...ep, fetchImpl})
 		const check = {ok: result.ok, status: result.status, message: result.message}
-		if (ep.id) await keys.recordCheck(ep.id, check)
+		if (ep.id) await keys.recordCheck(ep.id, check, {updatedAt: ep.updatedAt, apiKey: ep.apiKey, model: ep.model, baseUrl: ep.baseUrl})
 		return {...check, modelFound: result.modelFound, models: result.models, at: stamp()}
 	}
 	return {

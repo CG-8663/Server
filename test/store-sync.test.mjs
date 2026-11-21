@@ -46,3 +46,63 @@ test('a store that gained apps since it was first downloaded shows them (shallow
 		await rm(root, {recursive: true, force: true})
 	}
 })
+
+async function seedStore(dir) {
+	await mkdir(join(dir, 'one'), {recursive: true})
+	await writeFile(join(dir, 'omarchy-app-store.yml'), 'id: demo\nname: Demo\n')
+	await writeFile(join(dir, 'one', 'omarchy-app.yml'), 'manifestVersion: 1\nid: one\nname: One\ntagline: t\ncategory: files\nport: 9100\nweb:\n  service: web\n  port: 80\n')
+	await writeFile(join(dir, 'one', 'docker-compose.yml'), 'services:\n  web:\n    image: nginx\n')
+}
+
+test('overlapping registry reads share one download and a failed download rejects both', async () => {
+	const root = await mkdtemp(join(tmpdir(), 'store-flight-'))
+	const origin = join(root, 'origin')
+	await seedStore(origin)
+	let clones = 0
+	let release
+	const gate = new Promise((r) => (release = r))
+	const run = async (cmd, args) => {
+		if (cmd !== 'git') return ''
+		if (args[0] !== 'clone') return ''
+		clones++
+		const dest = args.at(-1)
+		await gate
+		await seedStore(dest)
+		return ''
+	}
+	const apps = createApps({dataDir: join(root, 'data'), home: join(root, 'home'), allowFileStores: true, defaultStores: [{url: `file://${origin}`}], run, systemApps: null})
+	try {
+		const first = apps.procedures['appStore.registry'].run()
+		const second = apps.procedures['appStore.registry'].run()
+		await new Promise((r) => setTimeout(r, 100))
+		assert.equal(clones, 1, 'the second read must not start another download')
+		release()
+		const [a, b] = await Promise.all([first, second])
+		assert.deepEqual(a[0].apps.map((app) => app.id), ['one'])
+		assert.deepEqual(b[0].apps.map((app) => app.id), ['one'])
+	} finally {
+		apps.close()
+	}
+
+	let failed = 0
+	const failRun = async (cmd, args) => {
+		if (cmd === 'git' && args[0] === 'clone') {
+			failed++
+			throw new Error('clone failed')
+		}
+		return ''
+	}
+	const again = createApps({dataDir: join(root, 'data-fail'), home: join(root, 'home'), allowFileStores: true, defaultStores: [{url: `file://${origin}`}], run: failRun, systemApps: null})
+	try {
+		const one = again.procedures['appStore.registry'].run()
+		const two = again.procedures['appStore.registry'].run()
+		await assert.rejects(one, /clone failed/)
+		await assert.rejects(two, /clone failed/)
+		assert.equal(failed, 1, 'both callers share the failed download')
+		await assert.rejects(again.procedures['appStore.registry'].run(), /clone failed/)
+		assert.equal(failed, 2, 'a settled failure is not reused')
+	} finally {
+		again.close()
+		await rm(root, {recursive: true, force: true})
+	}
+})

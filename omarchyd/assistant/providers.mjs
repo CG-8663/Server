@@ -95,11 +95,13 @@ const toolsFromXmlInner = (block, toolList) => {
 			const obj = JSON.parse(json)
 			const name = String(obj.name ?? obj.function ?? '').trim()
 			if (name) {
-				const raw = obj.arguments
+				const raw = obj.arguments !== undefined ? obj.arguments : obj.parameters
 				const argumentsText = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {})
 				tools.push({type: 'tool', id: callId(), name, arguments: argumentsText || '{}'})
 			}
-		} catch {}
+		} catch {
+			tools.push({type: 'error', message: 'The answer was cut off; try again'})
+		}
 		return tools
 	}
 	const fn = /<function=([^\s>]+)>([\s\S]*?)<\/function>/g
@@ -257,7 +259,7 @@ export async function* streamChat({baseUrl, apiKey, model, messages, tools, tool
 	if (buf.trim()) yield* pump(buf.replace(/\r\n/g, '\n'), false)
 	yield* pump('', true)
 	if (signal?.aborted) return
-	if (finishReason === 'length') {
+	if (finishReason === 'length' || xmlTools.some((t) => t.type === 'error')) {
 		yield {type: 'error', message: 'The answer was cut off; try again'}
 		return
 	}
@@ -394,7 +396,7 @@ export async function* streamResponses({baseUrl = 'https://api.openai.com/v1', a
 		return
 	}
 	if (errored) return
-	if (badToolArgs || calls.size > 0) {
+	if (badToolArgs || calls.size > 0 || toolEvents.some((t) => t.type === 'error')) {
 		yield {type: 'error', message: 'The answer was cut off; try again'}
 		return
 	}
@@ -531,6 +533,12 @@ const isOpenAiList = (provider, baseUrl) => {
 }
 
 const trimBase = (baseUrl) => String(baseUrl ?? '').replace(/\/+$/, '')
+
+// Same sentence for a key check and a chat when the endpoint cannot be reached.
+export function describeReachFailure(baseUrl, error) {
+	const why = error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'it didn’t answer in time' : error?.cause?.code || error?.message || 'the connection failed'
+	return `Couldn’t reach ${trimBase(baseUrl)}: ${why}`
+}
 const bearer = (apiKey) => (apiKey ? {authorization: `Bearer ${apiKey}`} : {})
 const listRequest = (provider, baseUrl, apiKey) =>
 	provider === 'anthropic'
@@ -557,8 +565,7 @@ export async function listModels({provider, baseUrl, apiKey, fetchImpl = fetch, 
 		res = await fetchImpl(url, {headers: {accept: 'application/json', ...headers}, signal: withTimeout(signal, timeoutMs)})
 	} catch (e) {
 		if (signal?.aborted) throw e
-		const why = e?.name === 'TimeoutError' || e?.name === 'AbortError' ? 'it didn’t answer in time' : e?.cause?.code || e?.message || 'the connection failed'
-		throw new ProviderCheckError('unreachable', `Couldn’t reach ${trimBase(baseUrl)}: ${why}`)
+		throw new ProviderCheckError('unreachable', describeReachFailure(baseUrl, e))
 	}
 	if (res.status === 401 || res.status === 403) {
 		throw new ProviderCheckError('rejected', apiKey ? 'The endpoint rejected this API key' : 'The endpoint needs an API key', res.status)
@@ -577,7 +584,12 @@ export async function listModels({provider, baseUrl, apiKey, fetchImpl = fetch, 
 	} catch {
 		throw new ProviderCheckError('error', 'The endpoint answered, but not with a model list')
 	}
-	const rows = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : []
+	if (payload && typeof payload === 'object' && !Array.isArray(payload) && payload.error && typeof payload.error === 'object' && !Array.isArray(payload.error)) {
+		const message = payload.error.message || payload.message
+		throw new ProviderCheckError('error', message ? String(message) : 'The endpoint reported an error')
+	}
+	const rows = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : null
+	if (!rows) throw new ProviderCheckError('error', 'The endpoint answered, but not with a model list')
 	const openAi = isOpenAiList(provider, baseUrl)
 	const seen = new Set()
 	const models = []
@@ -598,7 +610,7 @@ export async function verifyKey({provider, baseUrl, apiKey, model, fetchImpl = f
 	try {
 		const models = await listModels({provider, baseUrl, apiKey, fetchImpl, signal, timeoutMs})
 		const wanted = String(model ?? '').trim()
-		const found = !wanted || !models.length ? null : models.some((m) => m.id === wanted)
+		const found = !wanted || !models.length ? null : models.some((m) => m.id === wanted || m.id === `${wanted}:latest`)
 		const count = models.length
 		if (found === false) {
 			return {ok: false, status: 'no-model', message: `Key works, but ${wanted} isn’t one of the ${count} models this endpoint serves`, models, modelFound: false}
