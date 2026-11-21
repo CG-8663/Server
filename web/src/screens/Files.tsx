@@ -30,7 +30,7 @@ import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
 import { actionsForItems, batchToast, offersDownload, selectionAfterQuery, type BatchKind } from "./filesRules";
-import { canSubmitNamePrompt, type FavoriteItem, favoritePath, filterUnsyncedPhotos, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, UPLOAD_REFRESH_KEYS } from "../filesHelpers";
+import { canSubmitNamePrompt, type FavoriteItem, favoritePath, filterUnsyncedPhotos, handleFileDragEnter, handleFileDragOver, handleFileDrop, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, UPLOAD_REFRESH_KEYS } from "../filesHelpers";
 
 const FileViewer = lazy(() =>
   import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
@@ -828,25 +828,22 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
   };
 
   const onDragEnter = (e: React.DragEvent) => {
-    if (!canUpload || !e.dataTransfer.types.includes("Files")) return;
-    e.preventDefault();
+    if (!handleFileDragEnter(e, canUpload)) return;
     dragDepth.current++;
     setDropping(true);
   };
   const onDragOver = (e: React.DragEvent) => {
-    if (!canUpload || !e.dataTransfer.types.includes("Files")) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
+    handleFileDragOver(e, canUpload);
   };
   const onDragLeave = () => {
     dragDepth.current = Math.max(0, dragDepth.current - 1);
     if (!dragDepth.current) setDropping(false);
   };
   const onDrop = async (e: React.DragEvent) => {
-    if (!canUpload || !uploadDir) return;
-    e.preventDefault();
+    const allowed = handleFileDrop(e, canUpload && !!uploadDir);
     dragDepth.current = 0;
     setDropping(false);
+    if (!allowed || !uploadDir) return;
     const items = await droppedItems(e.dataTransfer).catch(() => [] as UploadItem[]);
     if (items.length) upload(items, uploadDir);
   };
