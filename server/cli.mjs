@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // omarchy-server [--backend <address>] [--port 7780] [--host 0.0.0.0] [--data <dir>] [--app-hosts <pattern|off>]
 import http from 'node:http'
-import {networkInterfaces, homedir} from 'node:os'
+import {homedir} from 'node:os'
 import {dirname, join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {parseArgs} from 'node:util'
 
-import {createApp, normalizeAppHosts, normalizeBackendUrl, VERSION} from './app.mjs'
+import {createApp, normalizeAppHosts, normalizeBackendUrl, startupUrls, VERSION} from './app.mjs'
 import {createStore} from './store.mjs'
 import {formatDataDirError, parsePort} from '../omarchyd/cli-args.mjs'
 import {defaultTlsDir, dualProtocolServer, tlsContext} from '../omarchyd/tls.mjs'
@@ -104,18 +104,14 @@ try {
 
 // https:// on the same port as http:// (see omarchyd/tls.mjs). The certificate is shared with omarchyd.
 const secure = tlsContext({dir: defaultTlsDir()})
-const app = createApp({store, staticDir, tls: secure, secureCookies: process.env.OMARCHY_SERVER_SECURE_COOKIES === '1'})
+const app = createApp({store, staticDir, tls: secure, secureCookies: process.env.OMARCHY_SERVER_SECURE_COOKIES === '1', relayHost: host})
 const httpServer = http.createServer(app)
 const server = dualProtocolServer(httpServer, secure.get)
 server.listen(port, host, () => {
-	const lan = Object.values(networkInterfaces())
-		.flat()
-		.filter((i) => i && i.family === 'IPv4' && !i.internal)
-		.flatMap((i) => [`http://${i.address}:${port}`, `https://${i.address}:${port}`])
 	console.log(`\n  Omarchy Server ${VERSION}`)
 	console.log(`  Backend   ${store.getConfig().backendUrl ?? '(not set: open the app to connect)'}`)
 	console.log(`  Data      ${dataDir}`)
-	for (const url of lan.length ? lan : [`http://localhost:${port}`]) console.log(`  Open      ${url}`)
+	for (const url of startupUrls(host, port)) console.log(`  Open      ${url}`)
 	console.log('')
 })
 app.attachConsole(httpServer)
