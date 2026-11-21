@@ -183,9 +183,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'omarchy.plugins': {kind: 'query', run: (input) => themeCall(() => omarchyPlugins.list(input ?? {}))},
 		// Local swarm (connector.mjs): owner only.
 		...Object.fromEntries(
-			['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.wake', 'swarm.pair', 'swarm.reauthorize', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'swarm.storage.setSleep'].map((name) => [
+			['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.wake', 'swarm.pair', 'swarm.reauthorize', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'swarm.storage.setSleep', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.list', 'swarm.files.mkdir', 'swarm.files.rename', 'swarm.files.trash', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'].map((name) => [
 				name,
-				{kind: ['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable'].includes(name) ? 'query' : 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'manage the local swarm'), connector.procedures[name].run(input))},
+				{kind: ['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.services.list', 'swarm.services.logs', 'swarm.files.list'].includes(name) ? 'query' : 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'manage the local swarm'), connector.procedures[name].run(input))},
 			]),
 		),
 		'omarchy.installPlugin': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'install Omarchy plugins'), themeCall(() => omarchyPlugins.install(input)))},
@@ -446,7 +446,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const omarchyTheme = createOmarchyTheme({home, ...themeOptions})
 	const omarchyPlugins = createOmarchyPlugins({home, theme: omarchyTheme, ...pluginOptions})
 	// Local swarm: other Linux computers joined through the connector (see connector.mjs).
-	const connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, source: () => updater.source(), webPort})
+	const connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, files, source: () => updater.source(), webPort})
 	clips = createClips({
 		dataDir,
 		files,
@@ -744,6 +744,38 @@ WantedBy=graphical-session.target
 					}
 					return sendJson(res, apps.checkSession(value) ? 200 : 401, {})
 				}
+			}
+			if (url.pathname === '/api/swarm/files/download' && req.method === 'GET') {
+				const auth = accounts.authenticate(req) || accounts.checkUrlToken(url.searchParams.get('token'), req)
+				if (!auth) return sendJson(res, 401, {error: 'unauthorized'})
+				ownerOnly(auth, 'download files from the local swarm')
+				const id = url.searchParams.get('id') ?? ''
+				const remotePath = url.searchParams.get('path') ?? ''
+				const file = await connector.readRemoteFile(id, remotePath)
+				const safeDisp = file.name.replace(/["\\\r\n]/g, '_')
+				res.writeHead(200, {
+					'content-type': 'application/octet-stream',
+					'content-length': file.data.length,
+					'content-disposition': `attachment; filename="${safeDisp}"`,
+					'cache-control': 'no-store',
+				})
+				return res.end(file.data)
+			}
+			if (url.pathname === '/api/swarm/files/upload' && req.method === 'POST') {
+				const auth = accounts.authenticate(req)
+				if (!auth) return sendJson(res, 401, {error: 'unauthorized'})
+				ownerOnly(auth, 'upload files to the local swarm')
+				const id = url.searchParams.get('id') ?? ''
+				const remotePath = url.searchParams.get('path') ?? ''
+				let size = 0
+				const chunks = []
+				for await (const c of req) {
+					size += c.length
+					if (size > 20 * 1024 * 1024) return sendJson(res, 413, {error: 'Files larger than 20 MB can’t be transferred through the swarm'})
+					chunks.push(c)
+				}
+				const result = await connector.writeRemoteFile(id, remotePath, Buffer.concat(chunks))
+				return sendJson(res, 200, result)
 			}
 			const fileKind = /^\/api\/files\/(view|download|upload)$/.exec(url.pathname)?.[1]
 			if (fileKind === 'upload' && req.method === 'POST') {

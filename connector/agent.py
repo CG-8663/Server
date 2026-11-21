@@ -50,7 +50,7 @@ import urllib.parse
 import urllib.request
 
 VERSION = "1"
-ABILITY_NAMES = ("terminal", "desktop", "manage", "storage", "backup", "files")
+ABILITY_NAMES = ("terminal", "desktop", "manage", "storage", "backup", "services", "files")
 # A file channel sends this much, then waits until the server has that many chunks. The socket
 # read loop stays free to take acks, so a large file cannot stall the terminal or the desktop.
 FILE_CHUNK = 64 * 1024
@@ -1681,7 +1681,7 @@ def files_stat(args, home=None, config=None, data=None):
     return {"name": name, "size": st.st_size if stat.S_ISREG(st.st_mode) else 0, "mtime": int(st.st_mtime * 1000), "dir": stat.S_ISDIR(st.st_mode)}
 
 
-def files_list(args, home=None, config=None, data=None):
+def clip_files_list(args, home=None, config=None, data=None):
     rel = (args or {}).get("path") or ""
     home_r, config_r, data_r = _roots(home, config, data)
     fd, _st, real, _name = resolve_home(rel, "dir", home, config, data)
@@ -2541,7 +2541,6 @@ def backup_restore(conn, call_id, args, cfg):
     return {"folder": target}
 
 
-FILES_ACTIONS = {"files-stat": lambda args: files_stat(args), "files-list": lambda args: files_list(args)}
 BACKUP_ACTIONS = {"backup-folders": lambda conn, cid, args, cfg: backup_folders(args), "backup-run": backup_run, "backup-restore": backup_restore}
 
 
@@ -2550,6 +2549,360 @@ REPORT_INTERVAL = 3
 HELLO_INTERVAL = 300
 
 
+# Remote services & containers (ability "services").
+UNIT_NAME = re.compile(r"^[A-Za-z0-9@._:-]{1,128}$")
+CONTAINER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _container_engine():
+    for name in ("podman", "docker"):
+        if shutil.which(name):
+            return name
+    return ""
+
+
+def _parse_systemd_units(stdout, scope):
+    out = []
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            continue
+        name, load, active, sub = parts[0], parts[1], parts[2], parts[3]
+        desc = parts[4].strip() if len(parts) > 4 else ""
+        if not UNIT_NAME.match(name):
+            continue
+        out.append({"name": name, "scope": scope, "load": load, "active": active, "sub": sub, "description": desc[:200]})
+    return out
+
+
+def _parse_containers_json(stdout, engine):
+    text = (stdout or "").strip()
+    if not text:
+        return []
+    rows = []
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                rows = parsed
+        except ValueError:
+            rows = []
+    else:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    rows.append(obj)
+            except ValueError:
+                continue
+    out = []
+    for r in rows[:100]:
+        if not isinstance(r, dict):
+            continue
+        names = r.get("Names")
+        if isinstance(names, list):
+            cname = str(names[0] if names else "").lstrip("/")
+        else:
+            cname = str(names or r.get("Name") or "").lstrip("/")
+        cid = str(r.get("Id") or r.get("ID") or "")[:16]
+        if not cname and not cid:
+            continue
+        out.append(
+            {
+                "id": cid,
+                "name": cname or cid,
+                "image": str(r.get("Image") or "")[:160],
+                "state": str(r.get("State") or "").lower()[:32],
+                "status": str(r.get("Status") or "")[:120],
+                "engine": engine,
+            }
+        )
+    return out
+
+
+def services_list(_args):
+    user_units = []
+    failed_units = []
+    if shutil.which("systemctl"):
+        try:
+            r = subprocess.run(["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--no-legend", "--plain"], capture_output=True, text=True, timeout=15)
+            user_units = _parse_systemd_units(r.stdout, "user")[:200]
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            r = subprocess.run(["systemctl", "--system", "list-units", "--type=service", "--state=failed", "--no-pager", "--no-legend", "--plain"], capture_output=True, text=True, timeout=15)
+            failed_units = _parse_systemd_units(r.stdout, "system")[:50]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    engine = _container_engine()
+    containers = []
+    if engine:
+        try:
+            r = subprocess.run([engine, "ps", "-a", "--format", "json"], capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
+                containers = _parse_containers_json(r.stdout, engine)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return {"systemd": user_units, "systemFailed": failed_units, "containers": containers, "engine": engine}
+
+
+def services_logs(args):
+    kind = str((args or {}).get("kind", ""))
+    name = str((args or {}).get("name", ""))
+    try:
+        lines = max(10, min(1000, int((args or {}).get("lines") or 200)))
+    except (TypeError, ValueError):
+        lines = 200
+    if kind == "user":
+        if not UNIT_NAME.match(name):
+            raise RuntimeError("Invalid service name")
+        r = subprocess.run(["journalctl", "--user", "-u", name, "-n", str(lines), "--no-pager", "-o", "short-iso"], capture_output=True, text=True, timeout=20)
+        text = r.stdout or r.stderr or "No log lines."
+    elif kind == "system":
+        if not UNIT_NAME.match(name):
+            raise RuntimeError("Invalid service name")
+        r = subprocess.run(["journalctl", "-u", name, "-n", str(lines), "--no-pager", "-o", "short-iso"], capture_output=True, text=True, timeout=20)
+        text = r.stdout or r.stderr or "No log lines."
+    elif kind == "container":
+        if not CONTAINER_NAME.match(name):
+            raise RuntimeError("Invalid container name")
+        engine = _container_engine()
+        if not engine:
+            raise RuntimeError("No container runtime (podman or docker) is installed")
+        r = subprocess.run([engine, "logs", "--tail", str(lines), name], capture_output=True, text=True, timeout=20)
+        text = (r.stdout or "") + (r.stderr or "") or "No log lines."
+    else:
+        raise RuntimeError("Unknown service kind")
+    return {"logs": text[-200_000:]}
+
+
+def services_control(args):
+    kind = str((args or {}).get("kind", ""))
+    name = str((args or {}).get("name", ""))
+    action = str((args or {}).get("action", ""))
+    if action not in ("start", "stop", "restart"):
+        raise RuntimeError("Choose start, stop or restart")
+    if kind == "user":
+        if not UNIT_NAME.match(name):
+            raise RuntimeError("Invalid service name")
+        run(["systemctl", "--user", action, name], timeout=45)
+        return True
+    if kind == "container":
+        if not CONTAINER_NAME.match(name):
+            raise RuntimeError("Invalid container name")
+        engine = _container_engine()
+        if not engine:
+            raise RuntimeError("No container runtime (podman or docker) is installed")
+        run([engine, action, name], timeout=45)
+        return True
+    raise RuntimeError("System services are read-only from the swarm")
+
+
+SERVICES_ACTIONS = {
+    "services-list": services_list,
+    "services-logs": services_logs,
+    "services-control": services_control,
+}
+
+
+# ---------------------------------------------------------------------------------------------
+# Remote file browsing & transfer (ability "files"). Strictly jailed to /Home and /Pools.
+FILE_MAX_BYTES = 20 * 1024 * 1024
+
+
+def _file_roots(home=None):
+    h = os.path.realpath(home or os.path.expanduser("~"))
+    roots = {"Home": h}
+    pools = os.path.join(h, "Pools")
+    if os.path.isdir(pools):
+        roots["Pools"] = os.path.realpath(pools)
+    return roots
+
+
+def _is_inside(path, root):
+    return path == root or path.startswith(root + os.sep)
+
+
+def _is_private_connector_path(real_path):
+    cfg_real = os.path.realpath(CONFIG_DIR)
+    return _is_inside(real_path, cfg_real)
+
+
+def _resolve_file_path(virtual, must_exist=True, home=None):
+    if not isinstance(virtual, str) or not virtual.startswith("/") or "\x00" in virtual:
+        raise RuntimeError("Invalid path")
+    parts = [p for p in virtual.split("/") if p]
+    if not parts or any(p in (".", "..") for p in parts):
+        raise RuntimeError("Invalid path")
+    roots = _file_roots(home)
+    root_name = parts[0]
+    if root_name not in roots:
+        raise RuntimeError("Only /Home and /Pools can be accessed")
+    root_real = roots[root_name]
+    rel = parts[1:]
+    candidate = os.path.join(root_real, *rel) if rel else root_real
+    if must_exist:
+        real = os.path.realpath(candidate)
+        if not _is_inside(real, root_real) or _is_private_connector_path(real):
+            raise RuntimeError("That path is outside the allowed folders")
+        if not os.path.exists(real):
+            raise RuntimeError("That file or folder doesn’t exist")
+        return real, "/" + "/".join([root_name, *rel])
+    parent_real = os.path.realpath(os.path.dirname(candidate))
+    if not _is_inside(parent_real, root_real) or _is_private_connector_path(parent_real):
+        raise RuntimeError("That path is outside the allowed folders")
+    if not os.path.isdir(parent_real):
+        raise RuntimeError("The parent folder doesn’t exist")
+    leaf = parts[-1]
+    target = os.path.join(parent_real, leaf)
+    target_real = os.path.realpath(target)
+    if not _is_inside(target_real, root_real) or _is_private_connector_path(target_real):
+        raise RuntimeError("That path is outside the allowed folders")
+    return target, "/" + "/".join([root_name, *rel])
+
+
+def swarm_files_list(args, home=None):
+    virtual = str((args or {}).get("path") or "/")
+    if virtual.strip("/") == "":
+        roots = _file_roots(home)
+        items = [{"name": k, "path": f"/{k}", "isDir": True, "size": 0, "modified": 0} for k in roots]
+        return {"path": "/", "items": items}
+    real, norm = _resolve_file_path(virtual, must_exist=True, home=home)
+    if not os.path.isdir(real):
+        raise RuntimeError("That isn’t a folder")
+    roots = _file_roots(home)
+    root_real = roots[norm.split("/")[1]]
+    items = []
+    for entry in os.scandir(real):
+        try:
+            entry_real = os.path.realpath(entry.path)
+            if not _is_inside(entry_real, root_real) or _is_private_connector_path(entry_real):
+                continue
+            st = os.stat(entry_real)
+            items.append(
+                {
+                    "name": entry.name,
+                    "path": f"{norm}/{entry.name}",
+                    "isDir": os.path.isdir(entry_real),
+                    "size": 0 if os.path.isdir(entry_real) else int(st.st_size),
+                    "modified": int(st.st_mtime * 1000),
+                }
+            )
+        except OSError:
+            continue
+    items.sort(key=lambda x: (not x["isDir"], x["name"].lower()))
+    return {"path": norm, "items": items[:1000]}
+
+
+def files_mkdir(args, home=None):
+    target, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=False, home=home)
+    os.mkdir(target)
+    return {"path": norm}
+
+
+def files_rename(args, home=None):
+    src, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=True, home=home)
+    new_name = str((args or {}).get("newName") or "").strip()
+    if not new_name or "/" in new_name or "\\" in new_name or "\x00" in new_name or new_name in (".", ".."):
+        raise RuntimeError("Invalid name")
+    parent_virtual = "/" + "/".join(norm.strip("/").split("/")[:-1])
+    if parent_virtual == "/":
+        raise RuntimeError("Can’t rename a top-level folder")
+    dst, dst_norm = _resolve_file_path(f"{parent_virtual}/{new_name}", must_exist=False, home=home)
+    if os.path.exists(dst):
+        raise RuntimeError("Something with that name already exists")
+    os.rename(src, dst)
+    return {"path": dst_norm}
+
+
+def files_trash(args, home=None):
+    src, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=True, home=home)
+    if len(norm.strip("/").split("/")) < 2:
+        raise RuntimeError("Can’t trash a top-level folder")
+    h = os.path.realpath(home or os.path.expanduser("~"))
+    trash_files = os.path.join(h, ".local", "share", "Trash", "files")
+    trash_info = os.path.join(h, ".local", "share", "Trash", "info")
+    os.makedirs(trash_files, mode=0o700, exist_ok=True)
+    os.makedirs(trash_info, mode=0o700, exist_ok=True)
+    base = os.path.basename(src)
+    cand = base
+    n = 2
+    while os.path.exists(os.path.join(trash_files, cand)):
+        cand = f"{base}.{n}"
+        n += 1
+    shutil.move(src, os.path.join(trash_files, cand))
+    info_path = os.path.join(trash_info, f"{cand}.trashinfo")
+    with open(info_path, "w", encoding="utf-8") as f:
+        f.write(f"[Trash Info]\nPath={urllib.parse.quote(src)}\nDeletionDate={time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
+    return True
+
+
+def files_read(args, home=None):
+    src, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=True, home=home)
+    if os.path.isdir(src):
+        raise RuntimeError("Can’t download a folder")
+    st = os.stat(src)
+    if st.st_size > FILE_MAX_BYTES:
+        raise RuntimeError("Files larger than 20 MB can’t be transferred through the swarm")
+    with open(src, "rb") as f:
+        raw = f.read(FILE_MAX_BYTES + 1)
+    if len(raw) > FILE_MAX_BYTES:
+        raise RuntimeError("Files larger than 20 MB can’t be transferred through the swarm")
+    return {"path": norm, "name": os.path.basename(src), "size": len(raw), "data": base64.b64encode(raw).decode("ascii")}
+
+
+def files_write(args, home=None):
+    dst, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=False, home=home)
+    if os.path.isdir(dst):
+        raise RuntimeError("A folder already exists at that path")
+    b64 = str((args or {}).get("data") or "")
+    try:
+        raw = base64.b64decode(b64.encode("ascii"), validate=True)
+    except Exception:
+        raise RuntimeError("Bad file payload")
+    if len(raw) > FILE_MAX_BYTES:
+        raise RuntimeError("Files larger than 20 MB can’t be transferred through the swarm")
+    parent = os.path.dirname(dst)
+    tmp = os.path.join(parent, f".omarchy-upload.{os.getpid()}.{os.urandom(4).hex()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+        os.replace(tmp, dst)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise RuntimeError(f"Couldn’t save file: {e}")
+    return {"path": norm, "size": len(raw)}
+
+
+def files_list(args, home=None, config=None, data=None):
+    raw_path = (args or {}).get("path")
+    if isinstance(raw_path, str) and raw_path.startswith("/") and config is None and data is None:
+        return swarm_files_list(args, home=home)
+    return clip_files_list(args, home=home, config=config, data=data)
+
+
+FILES_ACTIONS = {
+    "files-stat": files_stat,
+    "files-list": files_list,
+    "files-mkdir": files_mkdir,
+    "files-rename": files_rename,
+    "files-trash": files_trash,
+    "files-read": files_read,
+    "files-write": files_write,
+}
+
+
+# ---------------------------------------------------------------------------------------------
 class Connection:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -2738,6 +3091,20 @@ class Connection:
                 if not self.allowed.get("storage"):
                     raise RuntimeError("This computer doesn’t allow Storage")
                 fn = STORAGE_ACTIONS.get(name)
+                if not fn:
+                    raise RuntimeError("Unknown action")
+                data = fn(msg.get("args") or {})
+            elif name in SERVICES_ACTIONS or str(name).startswith("services-"):
+                if not self.allowed.get("services"):
+                    raise RuntimeError("This computer doesn’t allow managing services")
+                fn = SERVICES_ACTIONS.get(name)
+                if not fn:
+                    raise RuntimeError("Unknown action")
+                data = fn(msg.get("args") or {})
+            elif name in FILES_ACTIONS or str(name).startswith("files-"):
+                if not self.allowed.get("files"):
+                    raise RuntimeError("This computer doesn’t allow file access")
+                fn = FILES_ACTIONS.get(name)
                 if not fn:
                     raise RuntimeError("Unknown action")
                 data = fn(msg.get("args") or {})

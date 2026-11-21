@@ -2,7 +2,7 @@
 // Watch them, open a terminal or their desktop, and manage them (Omarchy plugins and themes, updates,
 // restart), each only as far as that computer allowed when it joined.
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {lazy, memo, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode} from 'react'
+import {lazy, memo, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {mutate, query} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
@@ -18,7 +18,7 @@ import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, dura
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 
-type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean; files: boolean}
+type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean; services: boolean; files: boolean}
 type Ability = keyof Abilities
 export type Agent = {
 	id: string
@@ -74,7 +74,8 @@ const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = 
 	manage: {label: 'Manage', icon: 'settings', what: 'Omarchy plugins (verified only) and themes, updates, restart'},
 	storage: {label: 'Storage', icon: 'disk', what: 'See its drives, format extra disks, and manage pools on that computer'},
 	backup: {label: 'Backups', icon: 'history', what: 'Back up folders you choose to this server, on a schedule (Settings › Backups). It can add backups, never delete them.'},
-	files: {label: 'Files', icon: 'folder', what: 'Read and write the home folder of the person who installed the connector. The connector’s own keys stay off limits. A computer that’s already paired has to be added again with this switched on.'},
+	services: {label: 'Services', icon: 'server', what: 'Inspect logs and start, stop, or restart user systemd services and containers'},
+	files: {label: 'Files', icon: 'folder', what: 'Browse, upload, download, and copy files inside its Home and Pools folders (and Clip Book)'},
 }
 const may = (a: Agent, k: Ability) => a.allowed[k] && a.on[k]
 const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((100 * u.used) / u.total) : null)
@@ -377,6 +378,8 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 	const [name, setName] = useState(a.name)
 	const [plugins, setPlugins] = useState(false)
 	const [reauth, setReauth] = useState(false)
+	const [services, setServices] = useState(false)
+	const [filesOpen, setFilesOpen] = useState(false)
 	const m = a.metrics
 	const desk = a.info?.desktop
 	const offline = !a.online
@@ -429,6 +432,22 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 					label="Storage"
 					sub={offline ? undefined : storageRowSub(a.allowed.storage, a.on.storage)}
 					onClick={a.online && may(a, 'storage') ? () => (haptic(8), onStorage()) : undefined}
+					disabled={offline}
+				/>
+				<Row
+					icon="server"
+					color="#6366f1"
+					label="Services & Containers"
+					sub={offline ? undefined : may(a, 'services') ? 'User systemd services, failed system units, and containers' : 'Use Change permissions below with Services switched on.'}
+					onClick={a.online && may(a, 'services') ? () => (haptic(8), setServices(true)) : undefined}
+					disabled={offline}
+				/>
+				<Row
+					icon="folder"
+					color="#38bdf8"
+					label="Files"
+					sub={offline ? undefined : may(a, 'files') ? 'Browse, upload, download, and copy files in Home and Pools' : 'Use Change permissions below with Files switched on.'}
+					onClick={a.online && may(a, 'files') ? () => (haptic(8), setFilesOpen(true)) : undefined}
 					disabled={offline}
 				/>
 			</Group>
@@ -570,6 +589,8 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 			</button>
 			{plugins && <AgentPlugins a={a} onClose={() => setPlugins(false)} />}
 			{reauth && <ReauthorizeComputer a={a} onClose={() => setReauth(false)} />}
+			{services && <AgentServices a={a} onClose={() => setServices(false)} />}
+			{filesOpen && <AgentFiles a={a} onClose={() => setFilesOpen(false)} />}
 		</Sheet>
 	)
 }
@@ -664,8 +685,8 @@ function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 // ---- Add a computer: what it may do → the command → step by step → it appears. ----------------
 function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: () => void; onJoined: (id: string) => void}) {
 	const [beforeIds] = useState(before)
-	// Storage can format disks there, so it's a choice you make; backups are on by default.
-	const [allow, setAllow] = useState<Abilities>({terminal: true, desktop: true, manage: true, storage: false, backup: true, files: false})
+	// Storage, services and files are opt-in choices; backups are on by default.
+	const [allow, setAllow] = useState<Abilities>({terminal: true, desktop: true, manage: true, storage: false, backup: true, services: false, files: false})
 	const [pairing, setPairing] = useState<Pairing | null>(null)
 	const [host, setHost] = useState('')
 	const [copied, setCopied] = useState('')
@@ -801,6 +822,290 @@ function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: ()
 						</p>
 					</details>
 				</>
+			)}
+		</Sheet>
+	)
+}
+
+type ServiceUnit = {name: string; scope: 'user' | 'system'; load: string; active: string; sub: string; description: string}
+type ContainerItem = {id: string; name: string; image: string; state: string; status: string; engine: string}
+type ServicesPayload = {systemd: ServiceUnit[]; systemFailed: ServiceUnit[]; containers: ContainerItem[]; engine: string}
+
+function AgentServices({a, onClose}: {a: Agent; onClose: () => void}) {
+	const [tab, setTab] = useState<'user' | 'containers' | 'failed'>('user')
+	const [logTarget, setLogTarget] = useState<{kind: 'user' | 'system' | 'container'; name: string} | null>(null)
+	const qc = useQueryClient()
+	const toast = useToast()
+	const data = useQuery({
+		queryKey: ['swarm.services.list', a.id],
+		queryFn: () => query<ServicesPayload>('swarm.services.list', {id: a.id}),
+		refetchInterval: 8000,
+	})
+	const logs = useQuery({
+		queryKey: ['swarm.services.logs', a.id, logTarget?.kind, logTarget?.name],
+		queryFn: () => query<{logs: string}>('swarm.services.logs', {id: a.id, kind: logTarget!.kind, name: logTarget!.name, lines: 200}),
+		enabled: !!logTarget,
+	})
+	const ctrl = useMutation({
+		mutationFn: (p: {kind: 'user' | 'container'; name: string; action: 'start' | 'stop' | 'restart'}) => mutate('swarm.services.control', {id: a.id, ...p}),
+		onSuccess: (_r, p) => (toast(`${p.action} sent to ${p.name}`), qc.invalidateQueries({queryKey: ['swarm.services.list', a.id]})),
+		onError: (e) => toast((e as Error).message, true),
+	})
+	const payload = data.data
+	return (
+		<Sheet open onClose={onClose} label={`Services on ${a.name}`} tall>
+			<SheetHeader icon={<Icon name="server" size={30} />} title="Services & Containers" subtitle={`On ${a.name}`} onClose={onClose} />
+			<div className="chips" style={{marginBottom: 12}}>
+				<button type="button" className={`chip${tab === 'user' ? ' on' : ''}`} onClick={() => setTab('user')}>
+					User services ({payload?.systemd.length ?? 0})
+				</button>
+				<button type="button" className={`chip${tab === 'containers' ? ' on' : ''}`} onClick={() => setTab('containers')}>
+					Containers ({payload?.containers.length ?? 0})
+				</button>
+				<button type="button" className={`chip${tab === 'failed' ? ' on' : ''}`} onClick={() => setTab('failed')}>
+					Failed system ({payload?.systemFailed.length ?? 0})
+				</button>
+			</div>
+			{data.isLoading && <p className="muted">Loading…</p>}
+			{data.error && <div className="error">{(data.error as Error).message}</div>}
+			{tab === 'user' && payload && (
+				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+					{payload.systemd.length === 0 && <Row icon="server" label="No user services found" />}
+					{payload.systemd.map((u) => (
+						<Row
+							key={u.name}
+							icon="server"
+							color={u.active === 'active' ? '#2fbf71' : u.active === 'failed' ? '#ef5350' : '#8e8e93'}
+							label={u.name}
+							sub={u.description || `${u.active} (${u.sub})`}
+							trailing={
+								<span style={{display: 'flex', gap: 6, alignItems: 'center'}}>
+									<StatusPill kind={u.active === 'active' ? 'running' : 'stopped'} label={u.sub || u.active} />
+									<button type="button" className="btn small" disabled={ctrl.isPending} onClick={() => ctrl.mutate({kind: 'user', name: u.name, action: u.active === 'active' ? 'restart' : 'start'})}>
+										{u.active === 'active' ? 'Restart' : 'Start'}
+									</button>
+									{u.active === 'active' && (
+										<button type="button" className="btn small" disabled={ctrl.isPending} onClick={() => ctrl.mutate({kind: 'user', name: u.name, action: 'stop'})}>
+											Stop
+										</button>
+									)}
+									<button type="button" className="btn small" onClick={() => setLogTarget({kind: 'user', name: u.name})}>
+										Logs
+									</button>
+								</span>
+							}
+						/>
+					))}
+				</div>
+			)}
+			{tab === 'containers' && payload && (
+				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+					{payload.containers.length === 0 && <Row icon="server" label={payload.engine ? `No ${payload.engine} containers found` : 'No container runtime installed'} />}
+					{payload.containers.map((c) => (
+						<Row
+							key={c.id || c.name}
+							icon="server"
+							color={c.state === 'running' ? '#2fbf71' : '#8e8e93'}
+							label={c.name}
+							sub={`${c.image}${c.status ? ` · ${c.status}` : ''}`}
+							trailing={
+								<span style={{display: 'flex', gap: 6, alignItems: 'center'}}>
+									<StatusPill kind={c.state === 'running' ? 'running' : 'stopped'} label={c.state || 'stopped'} />
+									<button type="button" className="btn small" disabled={ctrl.isPending} onClick={() => ctrl.mutate({kind: 'container', name: c.name, action: c.state === 'running' ? 'restart' : 'start'})}>
+										{c.state === 'running' ? 'Restart' : 'Start'}
+									</button>
+									{c.state === 'running' && (
+										<button type="button" className="btn small" disabled={ctrl.isPending} onClick={() => ctrl.mutate({kind: 'container', name: c.name, action: 'stop'})}>
+											Stop
+										</button>
+									)}
+									<button type="button" className="btn small" onClick={() => setLogTarget({kind: 'container', name: c.name})}>
+										Logs
+									</button>
+								</span>
+							}
+						/>
+					))}
+				</div>
+			)}
+			{tab === 'failed' && payload && (
+				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+					{payload.systemFailed.length === 0 && <Row icon="check" color="#2fbf71" label="No failed system services" />}
+					{payload.systemFailed.map((u) => (
+						<Row
+							key={u.name}
+							icon="alert"
+							color="#ef5350"
+							label={u.name}
+							sub={u.description || `${u.active} (${u.sub}) · read-only`}
+							trailing={
+								<button type="button" className="btn small" onClick={() => setLogTarget({kind: 'system', name: u.name})}>
+									Logs
+								</button>
+							}
+						/>
+					))}
+				</div>
+			)}
+			{logTarget && (
+				<div className="glass" style={{marginTop: 14, padding: 12}}>
+					<div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8}}>
+						<b>Logs: {logTarget.name}</b>
+						<button type="button" className="btn small" onClick={() => setLogTarget(null)}>
+							Close
+						</button>
+					</div>
+					<pre className="mono" style={{maxHeight: 260, overflow: 'auto', fontSize: 12, whiteSpace: 'pre-wrap', margin: 0}}>
+						{logs.isLoading ? 'Loading logs…' : logs.error ? (logs.error as Error).message : (logs.data?.logs ?? 'No log lines.')}
+					</pre>
+				</div>
+			)}
+		</Sheet>
+	)
+}
+
+type RemoteFile = {name: string; path: string; isDir: boolean; size: number; modified: number}
+
+function AgentFiles({a, onClose}: {a: Agent; onClose: () => void}) {
+	const [path, setPath] = useState('/Home')
+	const [busy, setBusy] = useState(false)
+	const fileInput = useRef<HTMLInputElement>(null)
+	const qc = useQueryClient()
+	const toast = useToast()
+	const confirm = useConfirm()
+	const dir = useQuery({
+		queryKey: ['swarm.files.list', a.id, path],
+		queryFn: () => query<{path: string; items: RemoteFile[]}>('swarm.files.list', {id: a.id, path}),
+	})
+	const refresh = () => qc.invalidateQueries({queryKey: ['swarm.files.list', a.id, path]})
+	const parentPath = path === '/' ? null : path.split('/').filter(Boolean).length <= 1 ? '/' : '/' + path.split('/').filter(Boolean).slice(0, -1).join('/')
+
+	const createFolder = async () => {
+		const name = window.prompt('New folder name')
+		if (!name?.trim()) return
+		try {
+			await mutate('swarm.files.mkdir', {id: a.id, path: `${path.replace(/\/+$/, '')}/${name.trim()}`})
+			toast('Folder created')
+			refresh()
+		} catch (e) {
+			toast((e as Error).message, true)
+		}
+	}
+	const renameItem = async (item: RemoteFile) => {
+		const next = window.prompt('New name', item.name)
+		if (!next?.trim() || next.trim() === item.name) return
+		try {
+			await mutate('swarm.files.rename', {id: a.id, path: item.path, newName: next.trim()})
+			toast('Renamed')
+			refresh()
+		} catch (e) {
+			toast((e as Error).message, true)
+		}
+	}
+	const trashItem = async (item: RemoteFile) => {
+		if (!(await confirm({title: `Move ${item.name} to Trash?`, body: `Moves it to ${a.name}’s Trash.`, confirm: 'Move to Trash', icon: 'trash'}))) return
+		try {
+			await mutate('swarm.files.trash', {id: a.id, path: item.path})
+			toast('Moved to Trash')
+			refresh()
+		} catch (e) {
+			toast((e as Error).message, true)
+		}
+	}
+	const copyToServer = async (item: RemoteFile) => {
+		try {
+			const res = await mutate<{path: string}>('swarm.files.copyToServer', {id: a.id, remotePath: item.path, serverDir: '/Home'})
+			toast(`Copied to ${res.path} on this server`)
+		} catch (e) {
+			toast((e as Error).message, true)
+		}
+	}
+	const uploadFile = async (file: File) => {
+		setBusy(true)
+		try {
+			const qs = new URLSearchParams({id: a.id, path: `${path.replace(/\/+$/, '')}/${file.name}`}).toString()
+			const r = await fetch(`/api/swarm/files/upload?${qs}`, {method: 'POST', credentials: 'same-origin', headers: {'content-type': 'application/octet-stream'}, body: file})
+			if (!r.ok) {
+				const err = await r.json().catch(() => null)
+				throw new Error(err?.error?.message || err?.error || `Upload failed (${r.status})`)
+			}
+			toast(`Uploaded ${file.name}`)
+			refresh()
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setBusy(false)
+		}
+	}
+
+	return (
+		<Sheet open onClose={onClose} label={`Files on ${a.name}`} tall>
+			<SheetHeader icon={<Icon name="folder" size={30} />} title="Files" subtitle={`${a.name} · ${path}`} onClose={onClose} />
+			<div style={{display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap'}}>
+				{parentPath && (
+					<button type="button" className="btn small" onClick={() => setPath(parentPath)}>
+						<Icon name="back" size={15} /> Up
+					</button>
+				)}
+				{path !== '/' && (
+					<>
+						<button type="button" className="btn small" onClick={createFolder}>
+							<Icon name="folder-plus" size={15} /> New folder
+						</button>
+						<button type="button" className="btn small primary" disabled={busy} onClick={() => fileInput.current?.click()}>
+							<Icon name="upload" size={15} /> {busy ? 'Uploading…' : 'Upload'}
+						</button>
+						<input
+							ref={fileInput}
+							type="file"
+							style={{display: 'none'}}
+							onChange={(e) => {
+								const f = e.target.files?.[0]
+								e.target.value = ''
+								if (f) uploadFile(f)
+							}}
+						/>
+					</>
+				)}
+			</div>
+			{dir.isLoading && <p className="muted">Loading…</p>}
+			{dir.error && <div className="error">{(dir.error as Error).message}</div>}
+			{dir.data && (
+				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+					{dir.data.items.length === 0 && <Row icon="folder" label="Empty folder" />}
+					{dir.data.items.map((item) => (
+						<Row
+							key={item.path}
+							icon={item.isDir ? 'folder' : 'file'}
+							color={item.isDir ? '#38bdf8' : '#8e8e93'}
+							label={item.name}
+							sub={item.isDir ? 'Folder' : bytes(item.size)}
+							onClick={item.isDir ? () => setPath(item.path) : undefined}
+							trailing={
+								path !== '/' ? (
+									<span style={{display: 'flex', gap: 6, alignItems: 'center'}} onClick={(e) => e.stopPropagation()}>
+										{!item.isDir && (
+											<>
+												<a className="btn small" href={`/api/swarm/files/download?${new URLSearchParams({id: a.id, path: item.path}).toString()}`}>
+													Download
+												</a>
+												<button type="button" className="btn small" onClick={() => copyToServer(item)}>
+													To server
+												</button>
+											</>
+										)}
+										<button type="button" className="btn small" onClick={() => renameItem(item)}>
+											Rename
+										</button>
+										<button type="button" className="btn small" onClick={() => trashItem(item)}>
+											Trash
+										</button>
+									</span>
+								) : undefined
+							}
+						/>
+					))}
+				</div>
 			)}
 		</Sheet>
 	)

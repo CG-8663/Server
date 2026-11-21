@@ -16,7 +16,7 @@ import {X509Certificate, createHash, randomBytes, timingSafeEqual} from 'node:cr
 import dgram from 'node:dgram'
 import {readFile, stat} from 'node:fs/promises'
 import os from 'node:os'
-import {join} from 'node:path'
+import {basename, join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {WebSocketServer} from 'ws'
 
@@ -27,7 +27,10 @@ import {parseResize} from './terminal.mjs'
 // backup: the computer backs up folders you choose to this server (see backups.mjs). Its restic
 // uploads through the connector's own pinned connection, and can only add backups, never delete them.
 // storage: see its drives, format extra disks, and manage pools on that computer (connector/helper.py).
-const ABILITIES = ['terminal', 'desktop', 'manage', 'storage', 'backup', 'files']
+// services: inspect and restart user systemd units and Podman/Docker containers.
+// files: browse, upload, download, and copy files inside /Home and /Pools (and Clip Book home streaming).
+const ABILITIES = ['terminal', 'desktop', 'manage', 'storage', 'backup', 'services', 'files']
+const REMOTE_FILE_MAX = 20 * 1024 * 1024
 const PAIR_TTL = 15 * 60_000
 // A viewer that stops reading must not queue connector frames in memory without a bound.
 const VIEWER_BUFFER_LIMIT = 1024 * 1024
@@ -217,7 +220,7 @@ function serverAddresses() {
 	return out
 }
 
-export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(new URL('../connector', import.meta.url)), plugins = null, source = async () => 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000, sendWol = sendWolPacket}) {
+export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(new URL('../connector', import.meta.url)), plugins = null, files = null, source = async () => 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000, sendWol = sendWolPacket}) {
 	const file = join(dataDir, 'swarm.json')
 	let state = {agents: []}
 	// Set when swarm.json exists but cannot be used. Nothing may write it until the owner repairs it.
@@ -527,6 +530,26 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		if (!live.has(a.id)) throw new RpcError('PRECONDITION_FAILED', 'That computer is offline right now')
 		if (needStorage && !may(a, 'storage')) throw new RpcError('FORBIDDEN', `Pair ${a.name} again with Storage switched on`)
 		return a
+	}
+	async function requireAbility(input, ability, label) {
+		await loaded
+		const a = find(String(input?.id ?? ''))
+		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		if (!live.has(a.id)) throw new RpcError('PRECONDITION_FAILED', `${a.name} is offline right now`)
+		if (!may(a, ability)) throw new RpcError('FORBIDDEN', `${label} isn’t switched on for ${a.name}`)
+		return a
+	}
+	async function readRemoteFile(id, remotePath) {
+		const a = await requireAbility({id}, 'files', 'File access')
+		const res = await call(a.id, 'files-read', {path: String(remotePath ?? '')}, 60_000)
+		const buf = Buffer.from(String(res?.data ?? ''), 'base64')
+		if (buf.length > REMOTE_FILE_MAX) throw new RpcError('BAD_REQUEST', 'File is larger than 20 MB')
+		return {name: clip(res?.name || basename(String(remotePath ?? 'file')), 200) || 'file', path: String(res?.path ?? remotePath), data: buf}
+	}
+	async function writeRemoteFile(id, remotePath, buf) {
+		const a = await requireAbility({id}, 'files', 'File access')
+		if (!Buffer.isBuffer(buf) || buf.length > REMOTE_FILE_MAX) throw new RpcError('BAD_REQUEST', 'Files larger than 20 MB can’t be transferred through the swarm')
+		return call(a.id, 'files-write', {path: String(remotePath ?? ''), data: buf.toString('base64')}, 60_000)
 	}
 
 	function call(id, name, args = {}, timeout = 10 * 60_000) {
@@ -1055,10 +1078,10 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		},
 	}
 
-	const files = {stat: statFile, list: listFiles, pull: pullFile, push: pushFile}
+	const fleetFiles = {stat: statFile, list: listFiles, pull: pullFile, push: pushFile}
 
 	return {
-		files,
+		files: fleetFiles,
 		backup,
 		procedures: {
 			'swarm.list': {kind: 'query', run: list},
@@ -1250,6 +1273,87 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 					return true
 				},
 			},
+			'swarm.services.list': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAbility(input, 'services', 'Services')
+					return call(a.id, 'services-list', {}, 30_000)
+				},
+			},
+			'swarm.services.logs': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAbility(input, 'services', 'Services')
+					return call(a.id, 'services-logs', {kind: String(input?.kind ?? ''), name: String(input?.name ?? ''), lines: Number(input?.lines) || 200}, 30_000)
+				},
+			},
+			'swarm.services.control': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAbility(input, 'services', 'Services')
+					return call(a.id, 'services-control', {kind: String(input?.kind ?? ''), name: String(input?.name ?? ''), action: String(input?.action ?? '')}, 60_000)
+				},
+			},
+			'swarm.files.list': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAbility(input, 'files', 'File access')
+					return call(a.id, 'files-list', {path: String(input?.path || '/')}, 30_000)
+				},
+			},
+			'swarm.files.mkdir': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAbility(input, 'files', 'File access')
+					return call(a.id, 'files-mkdir', {path: String(input?.path ?? '')}, 30_000)
+				},
+			},
+			'swarm.files.rename': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAbility(input, 'files', 'File access')
+					return call(a.id, 'files-rename', {path: String(input?.path ?? ''), newName: String(input?.newName ?? '')}, 30_000)
+				},
+			},
+			'swarm.files.trash': {
+				kind: 'mutation',
+				run: async (input) => {
+					const a = await requireAbility(input, 'files', 'File access')
+					return call(a.id, 'files-trash', {path: String(input?.path ?? '')}, 30_000)
+				},
+			},
+			'swarm.files.copyToServer': {
+				kind: 'mutation',
+				run: async (input) => {
+					if (!files?.resolve) throw new RpcError('PRECONDITION_FAILED', 'Server file storage isn’t available')
+					const remote = await readRemoteFile(input?.id, input?.remotePath)
+					const destVirtual = String(input?.serverDir || '/Home').replace(/\/+$/, '') || '/Home'
+					const safeName = remote.name.replace(/[/\\\0]/g, '_')
+					if (!safeName || safeName === '.' || safeName === '..') throw new RpcError('BAD_REQUEST', 'Invalid file name')
+					const {real: destDir} = await files.resolve(destVirtual, {mustExist: true})
+					const destSt = await stat(destDir).catch(() => null)
+					if (!destSt?.isDirectory()) throw new RpcError('BAD_REQUEST', 'Destination must be a folder')
+					const fullVirtual = `${destVirtual}/${safeName}`
+					const {real: destFile} = await files.resolve(fullVirtual, {mustExist: false})
+					await writeAtomic(destFile, remote.data)
+					return {path: fullVirtual, size: remote.data.length}
+				},
+			},
+			'swarm.files.copyFromServer': {
+				kind: 'mutation',
+				run: async (input) => {
+					if (!files?.resolve) throw new RpcError('PRECONDITION_FAILED', 'Server file storage isn’t available')
+					const srcVirtual = String(input?.serverPath ?? '')
+					const {real: srcPath} = await files.resolve(srcVirtual, {mustExist: true})
+					const srcSt = await stat(srcPath)
+					if (!srcSt.isFile()) throw new RpcError('BAD_REQUEST', 'Only regular files can be copied')
+					if (srcSt.size > REMOTE_FILE_MAX) throw new RpcError('BAD_REQUEST', 'Files larger than 20 MB can’t be transferred through the swarm')
+					const buf = await readFile(srcPath)
+					const remoteDir = String(input?.remoteDir || '/Home').replace(/\/+$/, '') || '/Home'
+					const name = basename(srcPath)
+					return writeRemoteFile(input?.id, `${remoteDir}/${name}`, buf)
+				},
+			},
 		},
 		enroll,
 		authenticateAgent: async (req) => {
@@ -1257,6 +1361,8 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			return authAgent(req)
 		},
 		readAgentScript,
+		readRemoteFile,
+		writeRemoteFile,
 		upgradeAgent,
 		openChannel,
 		isAgentMachine: (machineId) => /^agent-[0-9a-f]{12}$/.test(machineId),

@@ -150,5 +150,76 @@ class TelemetryPowerAndSessionsTests(unittest.TestCase):
         self.assertIn("suspend", agent.ACTIONS)
 
 
+class ServicesAndFilesTests(unittest.TestCase):
+    def test_parse_systemd_and_containers(self):
+        units = agent._parse_systemd_units("omarchy-connector.service loaded active running Omarchy connector\n", "user")
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0]["name"], "omarchy-connector.service")
+        self.assertEqual(units[0]["sub"], "running")
+
+        # Podman JSON array format
+        pod = agent._parse_containers_json('[{"Id":"1234567890abcdef","Names":["/ollama"],"Image":"ollama/ollama","State":"running","Status":"Up 2h"}]', "podman")
+        self.assertEqual(pod[0]["name"], "ollama")
+        # Docker NDJSON format
+        doc = agent._parse_containers_json('{"ID":"abcdef1234","Names":"redis","Image":"redis:7","State":"exited","Status":"Exited (0)"}\n', "docker")
+        self.assertEqual(doc[0]["name"], "redis")
+        self.assertEqual(doc[0]["state"], "exited")
+
+    def test_services_control_blocks_system_units_and_bad_names(self):
+        with self.assertRaisesRegex(RuntimeError, "read-only"):
+            agent.services_control({"kind": "system", "name": "sshd.service", "action": "restart"})
+        with self.assertRaisesRegex(RuntimeError, "Invalid service name"):
+            agent.services_control({"kind": "user", "name": "bad;rm -rf /", "action": "restart"})
+        with self.assertRaisesRegex(RuntimeError, "Choose start"):
+            agent.services_control({"kind": "user", "name": "demo.service", "action": "mask"})
+
+    def test_files_jail_blocks_traversal_symlink_escape_and_connector_config(self):
+        with tempfile.TemporaryDirectory() as outer:
+            home = os.path.join(outer, "home")
+            outside = os.path.join(outer, "secret.txt")
+            os.makedirs(home)
+            with open(outside, "w") as f:
+                f.write("top secret")
+            os.symlink(outside, os.path.join(home, "escape.txt"))
+            os.symlink(outer, os.path.join(home, "escape_dir"))
+
+            # Basic write, list, read, rename, mkdir, trash inside /Home work.
+            agent.files_mkdir({"path": "/Home/docs"}, home=home)
+            b64 = __import__("base64").b64encode(b"hello world").decode("ascii")
+            agent.files_write({"path": "/Home/docs/a.txt", "data": b64}, home=home)
+            listed = agent.files_list({"path": "/Home/docs"}, home=home)
+            self.assertEqual([i["name"] for i in listed["items"]], ["a.txt"])
+            read_res = agent.files_read({"path": "/Home/docs/a.txt"}, home=home)
+            self.assertEqual(__import__("base64").b64decode(read_res["data"]), b"hello world")
+            agent.files_rename({"path": "/Home/docs/a.txt", "newName": "b.txt"}, home=home)
+            agent.files_trash({"path": "/Home/docs/b.txt"}, home=home)
+            self.assertTrue(os.path.exists(os.path.join(home, ".local", "share", "Trash", "files", "b.txt")))
+
+            # Traversal and symlink escapes are strictly refused.
+            with self.assertRaises(RuntimeError):
+                agent.files_read({"path": "/Home/../secret.txt"}, home=home)
+            with self.assertRaises(RuntimeError):
+                agent.files_read({"path": "/Home/escape.txt"}, home=home)
+            with self.assertRaises(RuntimeError):
+                agent.files_write({"path": "/Home/escape_dir/pwn.txt", "data": b64}, home=home)
+            with self.assertRaises(RuntimeError):
+                agent.files_list({"path": "/etc"}, home=home)
+
+            # Listing /Home skips escaping symlinks.
+            top = agent.files_list({"path": "/Home"}, home=home)
+            names = [i["name"] for i in top["items"]]
+            self.assertNotIn("escape.txt", names)
+            self.assertNotIn("escape_dir", names)
+
+            # Connector's own CONFIG_DIR is never readable even if inside home.
+            cfg_dir = os.path.join(home, ".config", "omarchy-connector")
+            os.makedirs(cfg_dir)
+            with open(os.path.join(cfg_dir, "config.json"), "w") as f:
+                f.write('{"key":"secret"}')
+            with mock.patch.object(agent, "CONFIG_DIR", cfg_dir):
+                with self.assertRaises(RuntimeError):
+                    agent.files_read({"path": "/Home/.config/omarchy-connector/config.json"}, home=home)
+
+
 if __name__ == "__main__":
     unittest.main()
