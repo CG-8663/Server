@@ -4,7 +4,7 @@ import {createContext, useContext, useState, type ReactNode} from 'react'
 import {Icon} from '../icons'
 import {swarmGaugeItems, type SwarmMetrics} from '../swarm/gauges'
 import {Ring, StatChip, haptic, levelColor, type Prefs} from '../ui'
-import {STAT_VIEW_NAME, gaugeCaption, nextStatView, readingFace, statReadings, statViewOf, type StatReading, type StatView} from './statView'
+import {STAT_VIEW_NAME, gaugeCaption, nextStatView, readingFace, statReadings, statViewOf, type PostureSummary, type StatReading, type StatView} from './statView'
 
 type StatViewApi = {view: StatView; cycle: () => void}
 
@@ -39,16 +39,26 @@ export function useStatView(): StatViewApi {
 	return api
 }
 
-export function LiveStats({metrics, temp = null, diskSizeGb = null}: {metrics: SwarmMetrics | null | undefined; temp?: number | null; diskSizeGb?: number | null}) {
-	return <StatRegion readings={statReadings({gauges: swarmGaugeItems(metrics), temp, diskSizeGb})} />
+export function LiveStats({
+	metrics,
+	temp = null,
+	diskSizeGb = null,
+	posture = null,
+}: {
+	metrics: SwarmMetrics | null | undefined
+	temp?: number | null
+	diskSizeGb?: number | null
+	posture?: PostureSummary
+}) {
+	return <StatRegion readings={statReadings({gauges: swarmGaugeItems(metrics), temp, diskSizeGb, posture})} />
 }
 
-function ValueFace({text}: {text: string}) {
+function ValueFace({text, color}: {text: string; color?: string}) {
 	const size = 84
 	const stroke = 8
 	const r = (size - stroke) / 2
 	return (
-		<div className="ring" style={{width: size, height: size, color: 'var(--fg)'}}>
+		<div className="ring" style={{width: size, height: size, color: color ?? 'var(--fg)'}}>
 			<svg viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
 				<circle className="track" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke} />
 			</svg>
@@ -108,7 +118,7 @@ export function StatRegion({readings}: {readings: readonly StatReading[]}) {
 										</span>
 									</Ring>
 								) : (
-									<ValueFace text={r.text} />
+									<ValueFace text={r.text} color={r.color} />
 								)}
 								<span className="k">{r.label}</span>
 								{caption ? <span className="sub">{caption}</span> : null}
