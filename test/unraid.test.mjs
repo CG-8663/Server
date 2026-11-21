@@ -6,6 +6,7 @@ import {mock, test} from 'node:test'
 import YAML from 'yaml'
 
 import {createMachines} from '../omarchyd/machines.mjs'
+import {createStorage} from '../omarchyd/storage.mjs'
 import {containerPlan, createUnraid, rsyncProgress, slug, sq, unraidPath, vmPlan, webuiPort} from '../omarchyd/unraid.mjs'
 
 const plex = {
@@ -369,6 +370,127 @@ test('a VM on Unraid: its settings and disks', () => {
 	assert.ok(v.notes.some((n) => /graphics card/.test(n)))
 	assert.equal(vmPlan('<domain><name>x</name><os><type machine="pc-i440fx-7.1">hvm</type></os></domain>').machineType, 'pc')
 	assert.deepEqual(vmPlan('<domain><name>x</name></domain>').problems, ['It has no disk image to copy'])
+})
+
+test('container and VM settings that are not brought over are named', () => {
+	const throughOther = containerPlan({
+		Name: '/sidecar',
+		Config: {Image: 'app:1'},
+		HostConfig: {NetworkMode: 'container:3f2a9b', PortBindings: {}},
+	})
+	assert.ok(throughOther.notes.some((n) => /3f2a9b/.test(n) && /isn’t brought over/.test(n)), throughOther.notes.join(' | '))
+	const named = containerPlan(
+		{
+			Name: '/sidecar',
+			Config: {Image: 'app:1'},
+			HostConfig: {NetworkMode: 'container:3f2a9b', PortBindings: {}},
+		},
+		{peers: new Map([['3f2a9b', 'gluetun']])},
+	)
+	assert.ok(named.notes.some((n) => /gluetun/.test(n) && /isn’t brought over/.test(n)))
+
+	const frigate = {
+		Name: '/frigate',
+		State: {Running: true},
+		Config: {Image: 'ghcr.io/blakeblackshear/frigate:stable', Env: [], Entrypoint: ['python3', '-u', '-m', 'frigate']},
+		HostConfig: {
+			NetworkMode: 'bridge',
+			PortBindings: {'5000/tcp': [{HostPort: '5000'}]},
+			Runtime: 'nvidia',
+			DeviceRequests: [{Driver: 'nvidia', Count: -1, Capabilities: [['gpu']]}],
+			Sysctls: {'net.ipv4.conf.all.src_valid_mark': '1'},
+			ShmSize: 256 * 1024 * 1024,
+			Dns: ['1.1.1.1'],
+			ExtraHosts: ['mqtt:192.168.1.20'],
+			Memory: 2 * 1024 * 1024 * 1024,
+			CpusetCpus: '0,1',
+			SecurityOpt: ['apparmor=unconfined'],
+			Tmpfs: {'/tmp/cache': 'rw,noexec,nosuid,size=64m'},
+		},
+	}
+	const dropped = containerPlan(frigate)
+	for (const what of [/NVIDIA/, /graphics card/, /python3 -u -m frigate/, /src_valid_mark/, /256 MB/, /1\.1\.1\.1/, /mqtt:192\.168\.1\.20/, /2 GB/, /0,1/, /apparmor=unconfined/, /\/tmp\/cache/]) {
+		assert.ok(dropped.notes.some((n) => what.test(n)), `${what} missing from ${dropped.notes.join(' | ')}`)
+	}
+	const sameStart = containerPlan(frigate, {imageEntrypoint: ['python3', '-u', '-m', 'frigate']})
+	assert.equal(sameStart.notes.some((n) => /python3/.test(n)), false)
+	const defaults = containerPlan({
+		Name: '/plain',
+		Config: {Image: 'app:1', Entrypoint: ['/init']},
+		HostConfig: {NetworkMode: 'bridge', Runtime: 'runc', ShmSize: 64 * 1024 * 1024, Memory: 0, PortBindings: {'8080/tcp': [{HostPort: '8080'}]}},
+	}, {imageEntrypoint: ['/init']})
+	assert.deepEqual(defaults.notes, [])
+
+	const xml = `<domain type='kvm'><name>big</name><memory unit='KiB'>1048576</memory><vcpu>16</vcpu>
+<os><nvram>/var/lib/libvirt/qemu/nvram/big_VARS.fd</nvram></os>
+<cputune><vcpupin vcpu='0' cpuset='1'/></cputune>
+<devices>
+<tpm model='tpm-crb'><backend type='emulator' version='2.0'/></tpm>
+<disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='/mnt/user/domains/big/vdisk1.img'/><target dev='sda' bus='sata'/></disk>
+</devices></domain>`
+	const reduced = vmPlan(xml, 'shut off', 8)
+	assert.ok(reduced.notes.some((n) => /TPM/.test(n)))
+	assert.ok(reduced.notes.some((n) => /NVRAM/.test(n)))
+	assert.ok(reduced.notes.some((n) => /pinning/.test(n)))
+	assert.ok(reduced.notes.some((n) => /16 CPU cores/.test(n) && /comes over with 8/.test(n)), reduced.notes.join(' | '))
+	const roomy = vmPlan(xml, 'shut off', 32)
+	assert.equal(roomy.notes.some((n) => /CPU cores/.test(n)), false)
+	assert.ok(roomy.notes.some((n) => /TPM/.test(n)))
+	const pinOnly = vmPlan(`<domain><name>p</name><vcpu>1</vcpu><vcpupin vcpu='0' cpuset='2'/><devices><disk type='file' device='disk'><source file='/mnt/user/domains/p/v.img'/><target bus='virtio'/></disk></devices></domain>`, 'shut off', 8)
+	assert.ok(pinOnly.notes.some((n) => /pinning/.test(n)))
+	for (const bus of ['scsi', 'usb']) {
+		const kept = vmPlan(`<domain><name>d</name><vcpu>1</vcpu><devices><disk type='file' device='disk'><source file='/mnt/user/domains/d/v.img'/><target dev='sda' bus='${bus}'/></disk></devices></domain>`, 'shut off', 8)
+		assert.equal(kept.disks[0].bus, bus)
+		assert.equal(kept.notes.some((n) => /sata/i.test(n)), false, bus)
+	}
+})
+
+test('a share whose Unraid name cannot be a Samba name says the name that was chosen', async () => {
+	const shareName = 'Photos+From+The+Very+Old+Unraid+Box'
+	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-share-name-'))
+	await mkdir(join(dir, 'tree', 'Home'), {recursive: true})
+	const data = join(dir, 'data')
+	const run = async (cmd, argv = [], opts) => {
+		if (cmd === 'rsync' || cmd === 'ssh-keygen') return {stdout: '', stderr: ''}
+		if (cmd === 'sh') return '/usr/bin/omarchy\n'
+		if (cmd === 'sudo') {
+			const verb = argv?.[2]
+			if (verb === 'ping' || verb === 'shares-apply' || verb === 'smb-password') return 'ok\n'
+			return 'ok\n'
+		}
+		if (cmd === 'pacman') return `${argv[1]} 1\n`
+		const remote = String(argv[argv.length - 1] ?? '')
+		if (remote.includes('unraid-version')) return {stdout: 'version="7.0.1"\nhas-rsync\n', stderr: ''}
+		if (remote.includes('/mnt/user')) return {stdout: `${shareName}\t100\nMedia\t50\n`, stderr: ''}
+		return {stdout: '', stderr: ''}
+	}
+	const files = {resolve: async (v) => ({real: join(dir, 'tree', String(v).replace(/^\//, '')), top: 'Home'})}
+	const storage = createStorage({dataDir: data, home: join(dir, 'tree', 'Home'), files, run, fstabPath: join(dir, 'fstab'), smbConf: join(dir, 'smb.conf')})
+	const u = createUnraid({dataDir: data, files, apps: {}, machines: {}, storage, run})
+	try {
+		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
+		await u.procedures['unraid.scan'].run()
+		const started = await u.procedures['unraid.start'].run({shares: [shareName, 'Media'], destination: '/Home/Unraid'})
+		let st
+		for (let i = 0; i < 200; i++) {
+			st = await u.procedures['unraid.status'].run()
+			const saved = await readFile(join(data, 'unraid', 'job.json'), 'utf8').catch(() => '')
+			if (st.job?.endedAt && saved.includes(`"id": "${started.id}"`) && /"endedAt": \d/.test(saved)) break
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		const items = Object.fromEntries(st.job.items.map((x) => [x.key, x]))
+		assert.equal(items[shareName].status, 'done', items[shareName]?.error)
+		assert.equal(items.Media.status, 'done', items.Media?.error)
+		assert.equal(items.Media.note, undefined)
+		const savedShares = JSON.parse(await readFile(join(data, 'shares.json'), 'utf8'))
+		const chosen = savedShares.find((s) => s.path.endsWith(`/${shareName}`)).name
+		assert.notEqual(chosen, shareName)
+		assert.match(chosen, /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}$/)
+		assert.match(items[shareName].note, new RegExp(chosen.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+	} finally {
+		u.close()
+		await rm(dir, {recursive: true, force: true})
+	}
 })
 
 test('a VM dump unescapes XML entities in its name and disk paths', () => {

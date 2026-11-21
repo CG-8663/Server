@@ -26,9 +26,9 @@ function isSystemMount(m, home) {
 	return SYSTEM_MOUNT_PREFIXES.some((pre) => p === pre || p.startsWith(`${pre}/`))
 }
 
-function execP(cmd, args, {input, timeout = 10 * 60_000} = {}) {
+function execP(cmd, args, {input, timeout = 10 * 60_000, env} = {}) {
 	return new Promise((resolve, reject) => {
-		const child = execFile(cmd, args, {timeout, maxBuffer: 16 * 1024 * 1024}, (error, stdout, stderr) => {
+		const child = execFile(cmd, args, {timeout, maxBuffer: 16 * 1024 * 1024, ...(env ? {env} : {})}, (error, stdout, stderr) => {
 			if (error) {
 				const e = new Error((stderr || error.message).toString().trim().split('\n')[0])
 				e.code = error.code
@@ -77,9 +77,11 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	const smartCache = new Map() // path -> {at, value}
 	let sharesApplyPending = false
 
+	// sudo’s own errors are matched in English. A translated “password is required” would otherwise be shown as-is.
+	const withCLocale = (opts = {}) => ({...opts, env: {...process.env, LC_ALL: 'C'}})
 	const helper = async (verb, args = [], input) => {
 		try {
-			return (await run('sudo', ['-n', HELPER, verb, ...args], {input})).trim()
+			return (await run('sudo', ['-n', HELPER, verb, ...args], withCLocale({input}))).trim()
 		} catch (error) {
 			// The helper's own messages are written for people; pass them on.
 			throw new RpcError('PRECONDITION_FAILED', /a password is required|not allowed|no such file|command not found/i.test(error.message) ? 'Storage tools aren’t set up. Run the Omarchy Server installer again.' : error.message)
@@ -239,7 +241,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	let statusCache = null
 	async function status() {
 		if (statusCache && Date.now() - statusCache.at < 30_000) return statusCache.value
-		const helperAvailable = await run('sudo', ['-n', HELPER, 'ping']).then((t) => t.trim() === 'ok', () => false)
+		const helperAvailable = await run('sudo', ['-n', HELPER, 'ping'], withCLocale()).then((t) => t.trim() === 'ok', () => false)
 		const zfsAvailable = helperAvailable && (await helper('zfs-available').then((t) => t === 'yes', () => false))
 		statusCache = {at: Date.now(), value: {helperAvailable, zfsAvailable}}
 		return statusCache.value
@@ -257,7 +259,8 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	// Samba treats these section names as its own, in any case. A share must not use them.
 	const SAMBA_RESERVED = new Set(['global', 'homes', 'printers'])
 	function allocateShareName(path, shares) {
-		const base = (String(path ?? '').split('/').pop() || 'Share').replace(/[^A-Za-z0-9 _.-]/g, '').slice(0, 28) || 'Share'
+		// Samba names must start with a letter or digit. A folder like "_Archive" or " notes" would otherwise be rejected.
+		const base = (String(path ?? '').split('/').pop() || 'Share').replace(/[^A-Za-z0-9 _.-]/g, '').slice(0, 28).replace(/^[^A-Za-z0-9]+/, '') || 'Share'
 		let name = base
 		const nameTaken = (n) => SAMBA_RESERVED.has(n.toLowerCase()) || shares.some((s) => s.name.toLowerCase() === n.toLowerCase())
 		for (let n = 2; nameTaken(name); n++) name = `${base} ${n}`
@@ -348,11 +351,18 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 		if (typeof from !== 'string' || !from.startsWith('/Home/')) return
 		if (to != null && (typeof to !== 'string' || !to.startsWith('/Home/'))) return
 		await withShares(async () => {
-			const shares = await readShares()
+			// The folder has already moved. A damaged share list must not turn that into an error; leave the file untouched.
+			let shares
+			try {
+				shares = await readShares()
+			} catch {
+				console.error('[omarchyd] shares.json')
+				return
+			}
 			const under = (p) => p === from || (typeof p === 'string' && p.startsWith(from + '/'))
 			const next = to == null ? shares.filter((s) => !under(s.path)) : shares.map((s) => (under(s.path) ? {...s, path: to + s.path.slice(from.length)} : s))
 			if (next.length === shares.length && next.every((s, i) => s.path === shares[i].path)) return
-			// The folder has already moved. Keep the new path, and remember a failed Samba update for retry.
+			// Keep the new path, and remember a failed Samba update for retry.
 			await writeJson(sharesFile, next)
 			await applyShares(next)
 		})
@@ -527,7 +537,8 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					const r = await files.resolve(path)
 					if (r.top !== 'Home' || path === '/Home') throw new RpcError('BAD_REQUEST', 'Choose a folder inside Home to share')
 					const shares = await readShares()
-					if (shares.some((s) => s.path === path)) return true
+					const already = shares.find((s) => s.path === path)
+					if (already) return already.name
 					const name = allocateShareName(path, shares)
 					await requireSamba()
 					const settings = await shareSettings(input)
@@ -535,7 +546,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					if (!settings.guest) await ensureSambaConfig(shares), await sharePassword()
 					await applyShares(next)
 					await writeJson(sharesFile, next)
-					return true
+					return name
 				}),
 			},
 			'files.removeShare': {

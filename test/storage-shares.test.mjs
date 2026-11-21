@@ -242,4 +242,111 @@ describe('saved shares', () => {
 		await s.procedures['files.setSharePassword'].run({password: '        '})
 		assert.equal(await s.procedures['files.sharePassword'].run(), '        ')
 	})
+
+	test('a folder named _Archive, -old, or with a leading space still gets a share name', async () => {
+		const scratch = await mkdtemp(join(root, 'odd-'))
+		await mkdir(join(scratch, 'home'))
+		const home = await realpath(join(scratch, 'home'))
+		const data = join(scratch, 'data')
+		await mkdir(data)
+		for (const name of ['_Archive', '-old', ' notes']) await mkdir(join(home, name))
+		const log = []
+		const files = createFiles({home, dataDir: data})
+		const storage = createStorage({dataDir: data, home, files, run: sambaRun(log), fstabPath: join(scratch, 'fstab'), smbConf: join(scratch, 'smb.conf')})
+		const add = (path) => storage.procedures['files.addShare'].run({path})
+		assert.equal(await add('/Home/_Archive'), 'Archive')
+		assert.equal(await add('/Home/-old'), 'old')
+		assert.equal(await add('/Home/ notes'), 'notes')
+		const saved = JSON.parse(await readFile(join(data, 'shares.json'), 'utf8'))
+		assert.deepEqual(
+			saved.map((s) => s.name),
+			['Archive', 'old', 'notes'],
+		)
+		const applied = log.filter((c) => c.verb === 'shares-apply' && c.ok).at(-1)
+		assert.deepEqual(JSON.parse(applied.input).shares.map((s) => s.name), ['Archive', 'old', 'notes'])
+	})
+
+	test('sudo for storage tools is spawned with LC_ALL=C', async () => {
+		const data = join(root, 'locale')
+		await mkdir(data)
+		await mkdir(join(root, 'locale-home', 'Music'), {recursive: true})
+		const home = await realpath(join(root, 'locale-home'))
+		const calls = []
+		const run = async (cmd, args, opts) => {
+			calls.push({cmd, args, env: opts?.env})
+			if (cmd === 'sh') return '/usr/bin/omarchy\n'
+			if (cmd === 'pacman' && args?.[0] === '-Q') return `${args[1]} 1\n`
+			if (cmd === 'lsblk') return JSON.stringify(lsblk)
+			const verb = args?.[2]
+			if (verb === 'ping' || verb === 'shares-apply' || verb === 'smb-password') return 'ok\n'
+			return 'ok\n'
+		}
+		const files = createFiles({home, dataDir: data})
+		const storage = createStorage({dataDir: data, home, files, run, fstabPath: join(data, 'fstab'), smbConf: join(data, 'smb.conf')})
+		await storage.procedures['storage.status'].run()
+		await storage.procedures['files.addShare'].run({path: '/Home/Music'})
+		const sudos = calls.filter((c) => c.cmd === 'sudo')
+		assert.ok(sudos.length >= 2, 'status and the share helper both call sudo')
+		for (const call of sudos) assert.equal(call.env?.LC_ALL, 'C')
+	})
+
+	test('a damaged shares.json does not fail a rename that already finished, and a real Samba failure still does', async () => {
+		const scratch = await mkdtemp(join(root, 'reloc-'))
+		await mkdir(join(scratch, 'home'))
+		const home = await realpath(join(scratch, 'home'))
+		const data = join(scratch, 'data')
+		await mkdir(join(home, 'Music'), {recursive: true})
+		await mkdir(data)
+		const file = join(data, 'shares.json')
+		const secret = 'super-secret-share'
+		let failApply = false
+		const log = []
+		const run = async (cmd, args, opts) => {
+			if (cmd === 'sh') return '/usr/bin/omarchy\n'
+			if (cmd === 'pacman' && args?.[0] === '-Q') return `${args[1]} 1\n`
+			const verb = args?.[2]
+			log.push(verb)
+			if (verb === 'shares-apply' && failApply) throw new Error('samba failed')
+			if (verb === 'ping' || verb === 'shares-apply' || verb === 'smb-password') return 'ok\n'
+			return 'ok\n'
+		}
+		const files = createFiles({home, dataDir: data})
+		const storage = createStorage({dataDir: data, home, files, run, fstabPath: join(scratch, 'fstab'), smbConf: join(scratch, 'smb.conf')})
+		const errors = []
+		const orig = console.error
+		console.error = (...parts) => errors.push(parts.map(String).join(' '))
+		try {
+			for (const contents of [`{"password":"${secret}"`, `{"password":"${secret}"}`]) {
+				await writeFile(file, contents)
+				const before = log.filter((v) => v === 'shares-apply').length
+				const renamed = contents.startsWith('{"password":"super-secret-share"}') ? 'TunesObj' : 'TunesCut'
+				const from = contents.includes('}') ? '/Home/Music' : '/Home/Music'
+				// First case starts at Music. Second case starts wherever the first rename left the folder.
+				const current = contents.includes('}') ? '/Home/TunesCut' : '/Home/Music'
+				await files.procedures['files.rename'].run({path: current, newName: renamed})
+				assert.equal(await readFile(file, 'utf8'), contents, 'shares.json bytes stay as they were')
+				assert.equal(log.filter((v) => v === 'shares-apply').length, before, 'the helper is not asked')
+				await access(join(home, renamed))
+			}
+			assert.ok(errors.some((line) => line.includes('shares.json')))
+			assert.equal(errors.some((line) => line.includes(secret)), false)
+			await assert.rejects(storage.procedures['files.shares'].run(), (error) => {
+				assert.equal(error.code, 'PRECONDITION_FAILED')
+				assert.match(error.message, /shares\.json is damaged and was left unchanged/)
+				return true
+			})
+
+			const valid = [{name: 'Kept', path: '/Home/TunesObj'}]
+			await writeFile(file, JSON.stringify(valid))
+			const beforeOk = log.filter((v) => v === 'shares-apply').length
+			await files.procedures['files.rename'].run({path: '/Home/TunesObj', newName: 'Library'})
+			assert.ok(log.filter((v) => v === 'shares-apply').length > beforeOk, 'a real path change still applies')
+			assert.equal(JSON.parse(await readFile(file, 'utf8')).find((s) => s.name === 'Kept').path, '/Home/Library')
+
+			failApply = true
+			await assert.rejects(files.procedures['files.rename'].run({path: '/Home/Library', newName: 'Stacks'}), /samba failed/)
+		} finally {
+			console.error = orig
+		}
+	})
 })

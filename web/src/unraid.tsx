@@ -242,7 +242,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 				{fingerprint && <p className="muted bk-next" style={{fontSize: 12.5, wordBreak: 'break-all'}}>Its key: {fingerprint}. If you want to be sure it’s your server, it matches the one Unraid shows in a terminal with: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</p>}
 			</div>
 
-			<Group title="Shares" footer="Each share is copied into a folder here and shared on your network again, with the same name.">
+			<Group title="Shares" footer="Each share is copied into a folder here and shared on your network again. The network name follows the folder, and may be shorter than on Unraid.">
 				{scan.shares.map((x) => {
 					const choosable = x.kind === 'share' || x.kind === 'isos'
 					return (
@@ -327,7 +327,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 						</select>
 					</label>
 				</div>
-				<Row icon="folder-share" color="var(--teal)" label="Share on the network" sub="With the same names as on Unraid" trailing={<Switch label="Share on the network" on={shareOnNetwork} onChange={setShareOnNetwork} />} />
+				<Row icon="folder-share" color="var(--teal)" label="Share on the network" sub="The network name follows the folder" trailing={<Switch label="Share on the network" on={shareOnNetwork} onChange={setShareOnNetwork} />} />
 				<Row icon="stop" color="#8e8e93" label="Pause for the last copy" sub="Each container pauses on Unraid for a moment, so its databases come over whole, then starts again." trailing={<Switch label="Pause each container on Unraid for its last copy" on={pauseContainers} onChange={setPauseContainers} />} />
 			</Group>
 
