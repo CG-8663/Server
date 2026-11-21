@@ -256,7 +256,23 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	})
 	const saveConfig = () => writePrivate(configFile, () => JSON.stringify(config, null, '\t'))
 	const saveSecrets = () => writePrivate(secretFile, () => JSON.stringify(secrets))
-	const saveHistory = () => writePrivate(historyFile, () => JSON.stringify(history.slice(0, 40), null, '\t'))
+	const trimHistory = (list, perSource = 20) => {
+		const counts = new Map()
+		const out = []
+		for (const h of list) {
+			if (!h || typeof h !== 'object') continue
+			const key = h.computer ? `c:${h.computer}` : 'server'
+			const n = counts.get(key) ?? 0
+			if (n >= perSource) continue
+			counts.set(key, n + 1)
+			out.push(h)
+		}
+		return out
+	}
+	const saveHistory = () => {
+		history = trimHistory(history, 20)
+		return writePrivate(historyFile, () => JSON.stringify(history, null, '\t'))
+	}
 	const savePaused = () => (pausedApps.size ? writePrivate(pausedFile, () => JSON.stringify([...pausedApps])) : removeAtomic(pausedFile))
 	const markPaused = (id) => (pausedApps.add(id), savePaused())
 	const unmarkPaused = (id) => (pausedApps.delete(id), savePaused())
@@ -1039,6 +1055,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			computersRunning: computerJobs.size,
 			nextRunAt: configured ? nextRun(config.schedule, now()) : null,
 			timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+			last: history.find((h) => h && !h.computer && h.endedAt) ?? null,
 			history: history.slice(0, 20),
 			engine: engine ? {version: engine.version} : null,
 		}

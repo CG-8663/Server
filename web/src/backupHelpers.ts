@@ -71,3 +71,7 @@ export function formatBackupStamp(t: number, timeZone?: string): string {
 	const tz = safeTimeZone(timeZone)
 	return new Date(t).toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', ...(tz ? {timeZone: tz} : {})})
 }
+
+export function serverLastRun<T extends {endedAt: number | null; computer?: string}>(s: {last?: T | null; history: readonly T[]}): T | null {
+	return s.last !== undefined ? s.last : (s.history.find((r) => r.endedAt && !r.computer) ?? null)
+}

@@ -1179,3 +1179,80 @@ test('#340 mirror ignores in-flight .tmp files from concurrent computer uploads'
 	dropNextPut = true
 	await assert.rejects(b.mirror(), /1 file didn’t reach the NAS/)
 })
+
+test('#600 history trims per source and status.last keeps the server’s last run', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-600-'))
+	const nasRoot = join(root, 'nas')
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	await mkdir(join(dataDir, 'backups'), {recursive: true})
+	await mkdir(home, {recursive: true})
+
+	const nowMs = Date.now()
+	const mkEntry = (id, computer, offsetHours) => ({
+		id,
+		...(computer ? {computer, name: computer === 'pcA' ? 'Desktop' : 'Laptop'} : {}),
+		reason: 'scheduled',
+		startedAt: nowMs - offsetHours * 3600_000,
+		endedAt: nowMs - offsetHours * 3600_000 + 1000,
+		ok: true,
+		error: null,
+		items: [],
+		added: 128,
+		nas: {ok: true},
+	})
+
+	// 25 runs for pcA, 1 older run for pcB, 1 older run for this server (beyond top 20 and top 40 total!).
+	const seeded = []
+	for (let i = 0; i < 25; i++) seeded.push(mkEntry(`a-${i}`, 'pcA', i + 1))
+	for (let i = 0; i < 16; i++) seeded.push(mkEntry(`c-${i}`, 'pcC', 30 + i))
+	seeded.push(mkEntry('b-1', 'pcB', 60))
+	seeded.push(mkEntry('srv-1', null, 156))
+
+	await writeFile(join(dataDir, 'backups', 'history.json'), JSON.stringify(seeded))
+
+	const fakeNas = makeFakeNas(nasRoot)
+	const restic = makeFakeRestic()
+	const swarm = {
+		async agents() {
+			return [
+				{id: 'pcA', name: 'Desktop', online: true, allowed: true, on: true},
+				{id: 'pcB', name: 'Laptop', online: false, allowed: true, on: true},
+			]
+		},
+		async call() {
+			return {added: 64, files: 1}
+		},
+		progress() {
+			return null
+		},
+	}
+	const run = async (cmd, args, opts) => (cmd === 'smbclient' ? fakeNas(args, opts) : restic.run(args, opts))
+	const b1 = createBackups({dataDir, home, serverDataDir: join(root, 'none'), files: fakeFiles(home), apps: {backupTargets: async () => []}, swarm, resticPath: '/bin/restic', unshare: false, timers: false, run})
+	let b2
+	t.after(async () => {
+		b1.close()
+		b2?.close()
+		await rm(root, {recursive: true, force: true})
+	})
+
+	const st1 = await b1.procedures['backups.status'].run()
+	assert.equal(st1.history.length, 20)
+	assert.equal(st1.history.some((r) => r.id === 'srv-1'), false)
+	assert.equal(st1.last?.id, 'srv-1')
+
+	// Configure and run a computer backup on pcA so saveHistory() runs, then reload a fresh instance.
+	await b1.procedures['backups.configure'].run({nas: {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u', password: 'p'}})
+	await b1.procedures['backups.setComputer'].run({id: 'pcA', folders: ['Documents'], enabled: true})
+	await (await b1.runComputer('pcA', 'manual')).done
+
+	b2 = createBackups({dataDir, home, serverDataDir: join(root, 'none'), files: fakeFiles(home), apps: {backupTargets: async () => []}, swarm, resticPath: '/bin/restic', unshare: false, timers: false, run})
+	const st2 = await b2.procedures['backups.status'].run()
+	assert.equal(st2.last?.id, 'srv-1')
+	const comps = await b2.procedures['backups.computers'].run()
+	assert.equal(comps.find((c) => c.id === 'pcB')?.last?.at, seeded.find((r) => r.id === 'b-1').endedAt)
+	const saved = JSON.parse(await readFile(join(dataDir, 'backups', 'history.json'), 'utf8'))
+	assert.equal(saved.filter((r) => r.computer === 'pcA').length, 20)
+	assert.ok(saved.some((r) => r.id === 'b-1'))
+	assert.ok(saved.some((r) => r.id === 'srv-1'))
+})

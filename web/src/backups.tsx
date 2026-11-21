@@ -1,6 +1,6 @@
 // Settings → Backups: this server's apps and settings, encrypted, copied to a NAS on a schedule.
 import {useEffect, useMemo, useState, type CSSProperties, type FormEvent} from 'react'
-import {computerSheetChanged, formatBackupHour, formatBackupStamp, formatBackupWhen} from './backupHelpers'
+import {computerSheetChanged, formatBackupHour, formatBackupStamp, formatBackupWhen, serverLastRun} from './backupHelpers'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
@@ -25,6 +25,7 @@ export type BackupStatus = {
 	running: {step: string; progress: number; startedAt: number} | null
 	nextRunAt: number | null
 	timeZone?: string
+	last?: Run | null
 	history: Run[]
 }
 type Snapshot = {id: string; shortId: string; time: number; tags: string[]; paths: string[]; size: number | null}
@@ -136,9 +137,9 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 	}, [snaps.data])
 	const names = useMemo(() => {
 		const m = new Map<string, string>()
-		for (const r of s?.history ?? []) for (const i of r.items) if (i.kind === 'app' && i.id) m.set(i.id, i.name)
+		for (const r of [...(s?.last ? [s.last] : []), ...(s?.history ?? [])]) for (const i of r.items) if (i.kind === 'app' && i.id) m.set(i.id, i.name)
 		return m
-	}, [s?.history])
+	}, [s?.history, s?.last])
 
 	return (
 		<div className="stagger">
@@ -314,7 +315,7 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 
 function StatusCard({s, busy, onRun}: {s: BackupStatus; busy: boolean; onRun: () => void}) {
 	// This server's own runs (computers show in their own rows).
-	const last = s.history.find((r) => r.endedAt && !r.computer)
+	const last = serverLastRun(s)
 	return (
 		<div className="glass card bk-status">
 			{s.running ? (

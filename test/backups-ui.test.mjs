@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 
-import {computerSheetChanged, formatBackupHour, formatBackupStamp, formatBackupWhen, sameFolders} from '../web/src/backupHelpers.ts'
+import {computerSheetChanged, formatBackupHour, formatBackupStamp, formatBackupWhen, sameFolders, serverLastRun} from '../web/src/backupHelpers.ts'
 
 test('#162 un-ticking and re-ticking a computer folder leaves the sheet unchanged', async () => {
 	const savedFolders = ['Documents', 'Pictures']
@@ -45,4 +45,17 @@ test('#437 backup schedule times and next run use the server time zone consisten
 	assert.match(src, /formatBackupWhen\(/)
 	assert.match(src, /formatBackupHour\(/)
 	assert.match(src, /formatBackupStamp\(/)
+})
+
+test('#600 serverLastRun prefers status.last when computer backups push server runs past the history slice', async () => {
+	const srv = {id: 'srv1', endedAt: 1000, ok: true}
+	const comp = {id: 'c1', computer: 'pc1', endedAt: 2000, ok: true}
+
+	assert.equal(serverLastRun({last: srv, history: [comp]}), srv)
+	assert.equal(serverLastRun({last: null, history: [comp]}), null)
+	assert.equal(serverLastRun({history: [comp, srv]}), srv)
+	assert.equal(serverLastRun({history: [comp]}), null)
+
+	const src = await readFile(new URL('../web/src/backups.tsx', import.meta.url), 'utf8')
+	assert.match(src, /serverLastRun\(/)
 })
