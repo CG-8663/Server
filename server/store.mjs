@@ -71,7 +71,8 @@ export async function createStore(dataDir) {
 		getConfig: () => ({...config}),
 		async setConfig(patch) {
 			const run = configWriting.then(async () => {
-				const next = {...config, ...patch}
+				const update = typeof patch === 'function' ? await patch({...config}) : patch
+				const next = {...config, ...update}
 				await writeJson(configFile, next)
 				config = next
 				return {...config}
