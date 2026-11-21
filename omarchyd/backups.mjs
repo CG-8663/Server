@@ -66,22 +66,32 @@ export function recoveryKey(bytes = randomBytes(20)) {
 	return out.match(/.{4}/g).join('-')
 }
 
-// When the next scheduled backup is due, in the server's local time.
-export function nextRun(schedule, from = Date.now()) {
+function slotAt(schedule, from, forward) {
 	if (!schedule || schedule.frequency === 'off') return null
-	const at = new Date(from)
-	at.setSeconds(0, 0)
-	at.setMinutes(0)
-	at.setHours(schedule.hour)
-	if (schedule.frequency === 'weekly') {
-		const add = (schedule.weekday - at.getDay() + 7) % 7
-		at.setDate(at.getDate() + add)
-		if (at.getTime() <= from) at.setDate(at.getDate() + 7)
-	} else if (at.getTime() <= from) {
-		at.setDate(at.getDate() + 1)
+	const base = new Date(from)
+	const y = base.getFullYear()
+	const m = base.getMonth()
+	const d = base.getDate()
+	const step = schedule.frequency === 'weekly' ? 7 : 1
+	let offset =
+		schedule.frequency === 'weekly'
+			? forward
+				? (schedule.weekday - base.getDay() + 7) % 7
+				: -((base.getDay() - schedule.weekday + 7) % 7)
+			: 0
+	let t = new Date(y, m, d + offset, schedule.hour, 0, 0, 0).getTime()
+	while (forward ? t <= from : t > from) {
+		offset += forward ? step : -step
+		t = new Date(y, m, d + offset, schedule.hour, 0, 0, 0).getTime()
 	}
-	return at.getTime()
+	return t
 }
+
+// When the next scheduled backup is due, in the server's local time.
+export const nextRun = (schedule, from = Date.now()) => slotAt(schedule, from, true)
+
+// The latest time the schedule said "back up" (at or before now).
+export const latestSlot = (schedule, at = Date.now()) => slotAt(schedule, at, false)
 
 // smbclient's recursive `ls`: entries, with "\dir\sub" headers (share-absolute) before each folder.
 export function parseSmbListing(text, base = '') {
@@ -634,14 +644,6 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	const mirrorOnce = (onProgress) => (mirrorChain = mirrorChain.catch(() => {}).then(() => mirror(onProgress)))
 	const DEFAULT_COMPUTER = {enabled: false, folders: [], schedule: {frequency: 'daily', hour: 1, weekday: 0}, lastSuccessAt: 0, lastAttemptAt: 0}
 	const computerConfig = (id) => ({...structuredClone(DEFAULT_COMPUTER), ...(config.computers?.[id] ?? {})})
-	const periodOf = (sc) => (sc.frequency === 'weekly' ? 7 : 1) * 86400_000
-	// The latest time the schedule said "back up" (at or before now).
-	function latestSlot(sc, at) {
-		if (!sc || sc.frequency === 'off') return null
-		let t = nextRun(sc, at - periodOf(sc))
-		while (t > at) t -= periodOf(sc)
-		return t
-	}
 
 	function cleanFolders(list) {
 		if (!Array.isArray(list) || list.length > 32) throw new RpcError('BAD_REQUEST', 'Choose up to 32 folders')

@@ -413,3 +413,66 @@ test('#599 restic exit 3 is recorded as a warning and settings/VM failures still
 	assert.equal(run2.nas?.ok, true)
 	assert.ok(restic.calls.some((c) => c.args[0] === 'forget' && c.args.includes('--prune')))
 })
+
+test('#435 schedules keep their chosen hour across daylight-saving changes', async () => {
+	const modUrl = new URL('../omarchyd/backups.mjs', import.meta.url).href
+	const script = `
+		import assert from 'node:assert/strict'
+		import {latestSlot, nextRun} from ${JSON.stringify(modUrl)}
+
+		const checkInvariant = (sc, startIso, hours) => {
+			const start = Date.parse(startIso)
+			const end = start + hours * 3600_000
+			// Build exact sequence of slots by walking nextRun forward from well before start.
+			const slots = []
+			let cur = start - 14 * 86400_000
+			while (true) {
+				const n = nextRun(sc, cur)
+				slots.push(n)
+				cur = n
+				if (n > end) break
+			}
+			for (let t = start; t <= end; t += 15 * 60_000) {
+				let expected = null
+				for (const s of slots) if (s <= t) expected = s
+				const actual = latestSlot(sc, t)
+				assert.equal(actual, expected, 'latestSlot mismatch at ' + new Date(t).toString() + ' for ' + JSON.stringify(sc))
+			}
+		}
+
+		if (process.env.TZ === 'America/New_York') {
+			const n = nextRun({frequency: 'daily', hour: 2, weekday: 0}, Date.parse('2026-03-08T07:30:00Z'))
+			const d = new Date(n)
+			assert.equal(d.getFullYear(), 2026)
+			assert.equal(d.getMonth(), 2)
+			assert.equal(d.getDate(), 9)
+			assert.equal(d.getHours(), 2)
+
+			const w = new Date(nextRun({frequency: 'weekly', hour: 2, weekday: 0}, Date.parse('2026-03-08T07:30:00Z')))
+			assert.equal(w.getDate(), 15)
+			assert.equal(w.getHours(), 2)
+
+			for (const hour of [0, 1, 2, 3]) {
+				checkInvariant({frequency: 'daily', hour, weekday: 0}, '2026-03-07T00:00:00Z', 72)
+				checkInvariant({frequency: 'daily', hour, weekday: 0}, '2026-10-31T00:00:00Z', 72)
+				checkInvariant({frequency: 'weekly', hour, weekday: 0}, '2026-03-07T00:00:00Z', 96)
+				checkInvariant({frequency: 'weekly', hour, weekday: 0}, '2026-10-31T00:00:00Z', 96)
+			}
+		} else if (process.env.TZ === 'Europe/Berlin') {
+			const n = nextRun({frequency: 'daily', hour: 2, weekday: 0}, Date.parse('2026-03-29T01:30:00Z'))
+			const d = new Date(n)
+			assert.equal(d.getFullYear(), 2026)
+			assert.equal(d.getMonth(), 2)
+			assert.equal(d.getDate(), 30)
+			assert.equal(d.getHours(), 2)
+
+			for (const hour of [0, 1, 2, 3]) {
+				checkInvariant({frequency: 'daily', hour, weekday: 0}, '2026-03-28T00:00:00Z', 72)
+				checkInvariant({frequency: 'daily', hour, weekday: 0}, '2026-10-24T00:00:00Z', 72)
+			}
+		}
+	`
+	for (const tz of ['America/New_York', 'Europe/Berlin']) {
+		await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {env: {...process.env, TZ: tz}})
+	}
+})
