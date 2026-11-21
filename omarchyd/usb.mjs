@@ -131,7 +131,7 @@ const xml = (s) => String(s).replace(/[<>&'"]/g, (c) => ({'<': '&lt;', '>': '&gt
 
 export function hostdevXml({vendorId, productId, serial}) {
 	const ser = serial && USB_SERIAL.test(serial) ? `<serial>${xml(serial)}</serial>` : ''
-	return `<hostdev mode='subsystem' type='usb' managed='yes'><source><vendor id='0x${vendorId}'/><product id='0x${productId}'/>${ser}</source></hostdev>`
+	return `<hostdev mode='subsystem' type='usb' managed='yes'><source startupPolicy='optional'><vendor id='0x${vendorId}'/><product id='0x${productId}'/>${ser}</source></hostdev>`
 }
 
 export function parseUsbLive(xmlText, devices = []) {
