@@ -35,6 +35,9 @@ const FileViewer = lazy(() =>
 
 // ---- helpers --------------------------------------------------------------------
 const isDir = (f: FileEntry) => f.type === "directory";
+// A pipe or socket is not a file. serveFile refuses it; the row must not offer Download or View.
+const offersFile = (f: FileEntry) =>
+  (f.operations as readonly string[]).includes("download");
 const enc = encodeURIComponent;
 export const viewUrl = (path: string) => `/api/files/view?path=${enc(path)}`;
 export const downloadUrl = (paths: string[]) =>
@@ -139,13 +142,21 @@ const ago = (t: number) => {
         : "numeric",
   });
 };
-const nice = (msg: string) =>
-  ({
-    "[destination-already-exists]": "Something with that name is already there",
-    "[does-not-exist]": "That item no longer exists",
-    "[subdir-of-self]": "A folder can’t go inside itself",
-    "[operation-not-allowed]": "That isn’t allowed here",
-  })[msg] ?? msg.replace(/^\[|\]$/g, "").replace(/-/g, " ");
+const nice = (msg: string) => {
+  const notDir = /^\[not-a-directory:(.*)\]$/.exec(msg);
+  if (notDir) return `${notDir[1]} is a file, not a folder`;
+  return (
+    {
+      "[destination-already-exists]": "Something with that name is already there",
+      "[does-not-exist]": "That item no longer exists",
+      "[subdir-of-self]": "A folder can’t go inside itself",
+      "[operation-not-allowed]": "That isn’t allowed here",
+      "[permission]": "You don’t have permission to change that folder",
+      "[read-only]": "That folder is read-only",
+      "[no-space]": "There isn’t enough free space",
+    }[msg] ?? msg.replace(/^\[|\]$/g, "").replace(/-/g, " ")
+  );
+};
 
 const PLACE_NAMES: Record<string, string> = {
   "/Home": "Home",
@@ -472,6 +483,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
     if (isDir(f)) return go(f.path);
     haptic(6);
     if (inTrash || f.path.startsWith("/Trash/")) return setOpen(f);
+    if (!offersFile(f)) return setOpen(f);
     viewFile(f);
   };
   const viewFile = (f: FileEntry) => {
@@ -767,7 +779,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
           </b>
           <span>{q ? parentOf(f.path) : sub}</span>
         </span>
-        {!selecting && !inTrash && !f.path.startsWith("/Trash/") && (
+        {!selecting && !inTrash && !f.path.startsWith("/Trash/") && (isDir(f) || offersFile(f)) && (
           <button
             className="icon-btn row-dl"
             style={{ alignSelf: "center" }}
@@ -1432,7 +1444,7 @@ function ItemSheet(p: {
           label: "Download",
           icon: "download",
           onClick: p.onDownload,
-          show: !isDir(f),
+          show: offersFile(f),
         },
         {
           id: "rename",
@@ -1489,7 +1501,7 @@ function ItemSheet(p: {
         subtitle={isDir(f) ? "Folder" : `${bytes(f.size)} · ${ago(f.modified)}`}
         onClose={p.onClose}
       />
-      {!p.inTrash && !isDir(f) && <Preview f={f} kind={k} />}
+      {!p.inTrash && offersFile(f) && <Preview f={f} kind={k} />}
       {!isDir(f) && !p.inTrash && p.onView && (
         <div className="primary-row">
           <button className="btn primary" onClick={p.onView}>
