@@ -2141,25 +2141,27 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					let url = normalize(input?.url)
 					if (localDefault && isGithubAppStore(url)) url = normalize(localDefault.url)
 					checkUrl(url)
-					if (state.stores.some((s) => s.url.toLowerCase() === url.toLowerCase())) throw new RpcError('CONFLICT', 'That store is already added')
-					try {
-						await rm(storeDir(url), {recursive: true, force: true})
-						await syncStore(url)
-					} catch {
-						await rm(storeDir(url), {recursive: true, force: true})
-						throw new RpcError('BAD_REQUEST', 'Couldn’t download that store. Check the address and that the repository is public.')
-					}
-					let loaded
-					try {
-						loaded = await loadStore(url)
-					} catch (e) {
-						await rm(storeDir(url), {recursive: true, force: true})
-						throw e
-					}
-					state.stores.push({url, meta: loaded.meta, syncedAt: Date.now()})
-					registryCache = null
-					await save()
-					return true
+					return lock(`store:${url.toLowerCase()}`, async () => {
+						if (state.stores.some((s) => s.url.toLowerCase() === url.toLowerCase())) throw new RpcError('CONFLICT', 'That store is already added')
+						try {
+							await rm(storeDir(url), {recursive: true, force: true})
+							await syncStore(url)
+						} catch {
+							await rm(storeDir(url), {recursive: true, force: true})
+							throw new RpcError('BAD_REQUEST', 'Couldn’t download that store. Check the address and that the repository is public.')
+						}
+						let loaded
+						try {
+							loaded = await loadStore(url)
+						} catch (e) {
+							await rm(storeDir(url), {recursive: true, force: true})
+							throw e
+						}
+						state.stores.push({url, meta: loaded.meta, syncedAt: Date.now()})
+						registryCache = null
+						await save()
+						return true
+					})
 				},
 			},
 			'appStore.removeRepository': {

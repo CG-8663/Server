@@ -213,3 +213,34 @@ test('concurrent updates refuse the second request without clearing the busy mar
 	await assert.rejects(apps.procedures['apps.update'].run({appId: 'demo-app'}), (e) => e instanceof RpcError && e.code === 'NOT_FOUND')
 	assert.equal(await apps.procedures['apps.start'].run({appId: 'demo-app'}), true)
 })
+
+test('concurrent addRepository calls for the same store allow one and refuse the duplicate', async (t) => {
+	const {root, storeUrl, apps, port} = await setupApps(t, {defaultStores: false, gitDelayMs: 25})
+	const results = await Promise.allSettled([
+		apps.procedures['appStore.addRepository'].run({url: storeUrl}),
+		apps.procedures['appStore.addRepository'].run({url: storeUrl}),
+	])
+	const fulfilled = results.filter((r) => r.status === 'fulfilled')
+	const rejected = results.filter((r) => r.status === 'rejected')
+	assert.equal(fulfilled.length, 1)
+	assert.equal(fulfilled[0].value, true)
+	assert.equal(rejected.length, 1)
+	assert.ok(rejected[0].reason instanceof RpcError)
+	assert.equal(rejected[0].reason.code, 'CONFLICT')
+	assert.equal(rejected[0].reason.message, 'That store is already added')
+
+	const repos = await apps.procedures['appStore.repositories'].run()
+	assert.equal(repos.length, 1)
+	assert.equal(repos[0].url, storeUrl)
+	const reg = await apps.procedures['appStore.registry'].run()
+	assert.deepEqual(reg[0].apps.map((a) => a.id), ['demo-app'])
+
+	// A failed addRepository must not block adding a store afterwards.
+	await assert.rejects(
+		apps.procedures['appStore.addRepository'].run({url: `file://${join(root, 'missing-store')}`}),
+		(e) => e instanceof RpcError && e.code === 'BAD_REQUEST',
+	)
+	const extraUrl = await createStoreRepo(join(root, 'extra-store'), [{id: 'extra-app', name: 'Extra App', port: port + 1}])
+	assert.equal(await apps.procedures['appStore.addRepository'].run({url: extraUrl}), true)
+	assert.equal((await apps.procedures['appStore.repositories'].run()).length, 2)
+})
