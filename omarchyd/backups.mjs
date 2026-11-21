@@ -18,6 +18,7 @@ import {access, chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile} fr
 import os from 'node:os'
 import {dirname, join, relative, sep} from 'node:path'
 
+import {Transform} from 'node:stream'
 import {pipeline} from 'node:stream/promises'
 
 import {removeAtomic, writeAtomic} from './atomic.mjs'
@@ -863,25 +864,24 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		const out = createWriteStream(tmp, {mode: 0o600})
 		let size = 0
 		try {
-			await new Promise((resolve, reject) => {
-				req.on('data', (c) => {
-					size += c.length
-					if (size > MAX_OBJECT) req.destroy(new Error('Too large'))
-				})
-				req.on('error', reject)
-				out.on('error', reject)
-				out.on('finish', resolve)
-				req.pipe(out)
+			const limit = new Transform({
+				transform(chunk, _enc, cb) {
+					size += chunk.length
+					if (size > MAX_OBJECT) return cb(new Error('Too large'))
+					cb(null, chunk)
+				},
 			})
+			await pipeline(req, limit, out)
 			if (type !== 'locks' && (await exists(file))) {
 				await rm(tmp, {force: true})
 				return send(403, 'Already stored')
 			}
 			await rename(tmp, file)
 			return send(200)
-		} catch {
+		} catch (e) {
+			out.destroy()
 			await rm(tmp, {force: true})
-			if (!res.headersSent) send(400, 'Upload failed')
+			if (!res.headersSent) e?.message === 'Too large' ? send(413) : send(400, 'Upload failed')
 		}
 	}
 	async function serveFile(req, res, file) {

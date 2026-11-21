@@ -537,3 +537,73 @@ test('#451 defaultSpawn decodes multi-byte UTF-8 characters split across stdout 
 		return true
 	})
 })
+
+test('#568 aborted uploads close their file streams without leaking descriptors', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-568-'))
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	const repoDir = join(home, 'Backups', 'Omarchy Server')
+	await mkdir(join(repoDir, 'computers', 'pc1'), {recursive: true})
+	await writeFile(join(repoDir, 'computers', 'pc1', 'config'), 'cfg')
+	await mkdir(dataDir, {recursive: true})
+
+	const b = createBackups({
+		dataDir,
+		home,
+		serverDataDir: join(root, 'none'),
+		files: fakeFiles(home),
+		apps: {backupTargets: async () => []},
+		timers: false,
+		run: async () => ({stdout: '', stderr: ''}),
+	})
+	const pending = []
+	const server = http.createServer((req, res) => {
+		const p = b.handleUpload(req, res, 'pc1', req.url.slice(1)).catch(() => {})
+		pending.push(p)
+	})
+	await new Promise((r) => server.listen(0, '127.0.0.1', r))
+	const {port} = server.address()
+	t.after(async () => {
+		await Promise.allSettled(pending)
+		await new Promise((r) => server.close(r))
+		b.close()
+		await rm(root, {recursive: true, force: true})
+	})
+
+	await b.ready
+	const countFds = async () => (await readdir('/proc/self/fd').catch(() => readdir('/dev/fd'))).length
+	const before = await countFds()
+
+	const objId = 'a'.repeat(64)
+	for (let i = 0; i < 25; i++) {
+		const id = `${i.toString(16).padStart(2, '0')}${'b'.repeat(62)}`
+		await new Promise((resolve) => {
+			const req = http.request({
+				host: '127.0.0.1',
+				port,
+				path: `/data/${id}`,
+				method: 'POST',
+				headers: {'content-length': '1000000'},
+			})
+			req.on('error', () => {})
+			req.write(Buffer.alloc(1000, 0x41))
+			setTimeout(() => {
+				req.destroy()
+				resolve()
+			}, 5)
+		})
+	}
+	await Promise.allSettled(pending)
+	await new Promise((r) => setTimeout(r, 80))
+
+	const after = await countFds()
+	assert.ok(after <= before + 2, `leaked file descriptors: before=${before}, after=${after}`)
+	const dataFiles = await readdir(join(repoDir, 'computers', 'pc1', 'data'), {recursive: true}).catch(() => [])
+	assert.deepEqual(dataFiles.filter((f) => String(f).endsWith('.tmp')), [])
+
+	// Normal upload still succeeds and writes exact bytes.
+	const body = Buffer.from('hello restic object')
+	const res = await fetch(`http://127.0.0.1:${port}/data/${objId}`, {method: 'POST', body})
+	assert.equal(res.status, 200)
+	assert.deepEqual(await readFile(join(repoDir, 'computers', 'pc1', 'data', objId.slice(0, 2), objId)), body)
+})
