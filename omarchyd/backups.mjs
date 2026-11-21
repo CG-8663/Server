@@ -179,6 +179,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	let engine = null // {path, version}
 	let engineInstall = null
 	let timer = null
+	let startedAt = 0
 
 	const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
 	// A missing file stays the default. Empty, invalid, or wrong-shaped JSON is left on disk
@@ -197,6 +198,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	}
 
 	const ready = (async () => {
+		startedAt = now()
 		await mkdir(dir, {recursive: true, mode: 0o700})
 		await chmod(dir, 0o700).catch(() => {})
 		config = {...structuredClone(DEFAULTS), ...(await readBackupFile(configFile, {}, plainObject))}
@@ -929,9 +931,11 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	}
 
 	// ---- schedule ------------------------------------------------------------------------------
-	let nextAt = null
-	function plan() {
-		nextAt = config.nas ? nextRun(config.schedule, now()) : null
+	function lastServerActivity() {
+		const last = history.find((h) => h && !h.computer)?.startedAt ?? 0
+		const since = Number(config.scheduleSince) || 0
+		if (last || since) return Math.max(last, since)
+		return startedAt
 	}
 	async function tick() {
 		await ready
@@ -945,12 +949,12 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				if (slot && c.lastSuccessAt < slot && now() - c.lastAttemptAt > 30 * 60_000) runComputer(a.id, 'scheduled').catch(() => {})
 			}
 		}
-		if (!nextAt || job || now() < nextAt) return
-		plan()
+		if (!config.nas || job || !(await hasKey())) return
+		const slot = latestSlot(config.schedule, now())
+		if (!slot || lastServerActivity() >= slot) return
 		await runBackup('scheduled').catch(() => {})
 	}
 	ready.then(() => {
-		plan()
 		if (timers) {
 			timer = setInterval(() => tick().catch(() => {}), 60_000)
 			timer.unref?.()
@@ -972,7 +976,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			keySaved: !!config.keySaved,
 			running: job,
 			computersRunning: computerJobs.size,
-			nextRunAt: configured ? nextAt : null,
+			nextRunAt: configured ? nextRun(config.schedule, now()) : null,
 			timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
 			history: history.slice(0, 20),
 			engine: engine ? {version: engine.version} : null,
@@ -1094,8 +1098,10 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			secrets.nasPassword = nasPassword
 			await saveSecrets()
 		}
+		if (!before.nas || (opts.schedule && (opts.schedule.frequency !== before.schedule.frequency || opts.schedule.hour !== before.schedule.hour || opts.schedule.weekday !== before.schedule.weekday))) {
+			config.scheduleSince = now()
+		}
 		await saveConfig()
-		plan()
 		return {...(await status()), ...out}
 	}
 
@@ -1221,7 +1227,6 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 			secrets.nasPassword = password
 			await saveSecrets()
 			await saveConfig()
-			plan()
 			return status()
 		} catch (e) {
 			await rm(real, {recursive: true, force: true}).catch(() => {})

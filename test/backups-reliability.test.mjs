@@ -697,3 +697,130 @@ test('#572 apps paused for a backup are recorded on disk and resumed on startup 
 	await b3.ready
 	assert.deepEqual(events3, [])
 })
+
+test('#578 missed scheduled server backup catches up when omarchyd comes back up', async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), 'bk-578-'))
+	const nasRoot = join(root, 'nas')
+	const home = join(root, 'home')
+	const dataDir = join(root, 'data')
+	await mkdir(join(dataDir, 'backups'), {recursive: true})
+	await mkdir(join(home, 'Backups', 'Omarchy Server', 'server', 'snapshots'), {recursive: true})
+	await mkdir(join(home, 'Backups', 'Omarchy Server', 'server', 'keys'), {recursive: true})
+	await mkdir(join(home, 'Backups', 'Omarchy Server', 'server', 'data'), {recursive: true})
+	await mkdir(join(home, 'Backups', 'Omarchy Server', 'server', 'index'), {recursive: true})
+	await writeFile(join(home, 'Backups', 'Omarchy Server', 'server', 'config'), 'server-cfg-1')
+	await writeFile(join(dataDir, 'backups', 'recovery-key'), 'abcd-efgh-ijkl-mnop-qrst-uvwx-yz23-4567\n')
+	await writeFile(join(dataDir, 'backups', 'secrets.json'), JSON.stringify({nasPassword: 'p'}))
+	await writeFile(
+		join(dataDir, 'backups', 'config.json'),
+		JSON.stringify({
+			nas: {host: 'nas.local', share: 'backups', folder: 'Omarchy Server', username: 'u'},
+			repo: '/Home/Backups/Omarchy Server',
+			schedule: {frequency: 'daily', hour: 3, weekday: 0},
+		}),
+	)
+	const mon3am = new Date(2026, 10, 16, 3, 0, 0, 0).getTime()
+	await writeFile(
+		join(dataDir, 'backups', 'history.json'),
+		JSON.stringify([{id: 'prev1', reason: 'scheduled', startedAt: mon3am, endedAt: mon3am + 1000, ok: true, error: null, items: [], added: 0, nas: {ok: true}}]),
+	)
+
+	const origSetInterval = globalThis.setInterval
+	const ticks = []
+	globalThis.setInterval = (fn, ms, ...rest) => {
+		if (ms === 60_000) {
+			ticks.push(fn)
+			return {unref() {}}
+		}
+		return origSetInterval(fn, ms, ...rest)
+	}
+	let b
+	let b2
+	t.after(async () => {
+		globalThis.setInterval = origSetInterval
+		b?.close()
+		b2?.close()
+		await rm(root, {recursive: true, force: true})
+	})
+
+	let fakeNow = new Date(2026, 10, 17, 9, 0, 0, 0).getTime() // Tue 09:00 (missed 03:00)
+	const fakeNas = makeFakeNas(nasRoot)
+	const restic = makeFakeRestic()
+	const run = async (cmd, args, opts) => (cmd === 'smbclient' ? fakeNas(args, opts) : restic.run(args, opts))
+	b = createBackups({
+		dataDir,
+		home,
+		serverDataDir: join(root, 'none'),
+		files: fakeFiles(home),
+		apps: {backupTargets: async () => []},
+		resticPath: '/bin/restic',
+		unshare: false,
+		now: () => fakeNow,
+		timers: true,
+		run,
+	})
+	await b.ready
+	await new Promise((r) => setImmediate(r))
+	assert.equal(ticks.length, 1)
+
+	const waitDone = async (inst) => {
+		for (let i = 0; i < 100; i++) {
+			const st = await inst.procedures['backups.status'].run()
+			if (!st.running) return st
+			await new Promise((r) => setTimeout(r, 5))
+		}
+		throw new Error('backup did not finish')
+	}
+
+	await ticks[0]()
+	let st = await waitDone(b)
+	assert.equal(st.history.length, 2)
+	assert.equal(st.history[0].reason, 'scheduled')
+	assert.equal(st.history[0].ok, true, st.history[0].error)
+
+	// Firing again 5 minutes later must not re-run for the same slot.
+	fakeNow += 5 * 60_000
+	await ticks[0]()
+	st = await waitDone(b)
+	assert.equal(st.history.length, 2)
+
+	// Fresh configure at 09:00 with daily 03:00 waits until tomorrow's 03:00 rather than running immediately.
+	const root2 = join(root, 'fresh')
+	const home2 = join(root2, 'home')
+	const dataDir2 = join(root2, 'data')
+	await mkdir(home2, {recursive: true})
+	await mkdir(dataDir2, {recursive: true})
+	let fakeNow2 = new Date(2026, 10, 18, 9, 0, 0, 0).getTime()
+	ticks.length = 0
+	b2 = createBackups({
+		dataDir: dataDir2,
+		home: home2,
+		serverDataDir: join(root2, 'none'),
+		files: fakeFiles(home2),
+		apps: {backupTargets: async () => []},
+		resticPath: '/bin/restic',
+		unshare: false,
+		now: () => fakeNow2,
+		timers: true,
+		run,
+	})
+	await b2.ready
+	await new Promise((r) => setImmediate(r))
+	assert.equal(ticks.length, 1)
+
+	await b2.procedures['backups.configure'].run({
+		nas: {host: 'nas.local', share: 'backups', folder: 'Fresh Folder', username: 'u', password: 'p'},
+		schedule: {frequency: 'daily', hour: 3, weekday: 0},
+	})
+	fakeNow2 += 5 * 60_000
+	await ticks[0]()
+	st = await waitDone(b2)
+	assert.equal(st.history.length, 0)
+
+	// Advancing to the next day after 03:00 catches up and runs once.
+	fakeNow2 = new Date(2026, 10, 19, 9, 0, 0, 0).getTime()
+	await ticks[0]()
+	st = await waitDone(b2)
+	assert.equal(st.history.length, 1)
+	assert.equal(st.history[0].reason, 'scheduled')
+})
