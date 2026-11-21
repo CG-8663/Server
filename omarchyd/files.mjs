@@ -377,11 +377,11 @@ export function createFiles({home, dataDir, io} = {}) {
 		}
 	}
 	async function search({query}) {
-		const q = String(query ?? '').trim().toLowerCase()
+		const q = String(query ?? '').trim().normalize('NFC').toLowerCase()
 		if (!q) return []
 		const out = []
 		await walk(async (r, d) => {
-			if (out.length < 50 && shownName(d.name).toLowerCase().includes(q)) out.push(r)
+			if (out.length < 50 && shownName(d.name).normalize('NFC').toLowerCase().includes(q)) out.push(r)
 		})
 		const rows = await Promise.all(
 			out.map(async (r) => {
