@@ -576,8 +576,8 @@ test('forgetHost removes non-default port entries and host-key errors match the 
 
 test('the idle timer forgets the Unraid password after an import ends', async () => {
 	// The idle clock is a real timer, not the injected `now`, so only mock timers can move it.
-	// Keep one real timer: the import ends with a file write, and a short setImmediate spin
-	// can return before that write lands when the runner is busy.
+	// Keep one real timer. The copy starts and ends with real file writes, and a short
+	// setImmediate spin can return before those writes land when the runner is busy.
 	const realSetTimeout = setTimeout
 	mock.timers.enable({apis: ['setTimeout', 'setInterval', 'Date']})
 	const dir = await mkdtemp(join(os.tmpdir(), 'unraid-idle-'))
@@ -608,7 +608,14 @@ test('the idle timer forgets the Unraid password after an import ends', async ()
 		await u.procedures['unraid.connect'].run({host: 'tower.local', password: 's3cret'})
 		await u.procedures['unraid.scan'].run()
 		await u.procedures['unraid.start'].run({shares: ['Media']})
-		for (let i = 0; i < 50 && !rsyncStarted; i++) await new Promise((r) => setImmediate(r))
+		const startWait = process.hrtime.bigint()
+		for (;;) {
+			if (rsyncStarted) break
+			if (process.hrtime.bigint() - startWait > 5_000_000_000n) break
+			await new Promise((r) => setImmediate(r))
+			if (rsyncStarted) break
+			await new Promise((r) => realSetTimeout(r, 20))
+		}
 		assert.equal(rsyncStarted, true, 'the 3 hour tick has to land while rsync is still pending')
 		mock.timers.tick(3 * 60 * 60 * 1000)
 		const mid = await u.procedures['unraid.status'].run()
