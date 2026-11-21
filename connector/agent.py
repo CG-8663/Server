@@ -1790,7 +1790,8 @@ def main(argv=None):
         if "-h" in args[1:] or "--help" in args[1:]:
             print(USAGE)
             return
-        if len(args) not in (3, 4) or args[1].startswith("-") or args[2].startswith("-") or (len(args) == 4 and args[3].startswith("-")):
+        # A pairing token is base64url, so it can start with "-". That is still the token.
+        if len(args) not in (3, 4) or args[1].startswith("-") or (len(args) == 4 and args[3].startswith("-")):
             print("Use: agent.py enroll SERVER TOKEN [ABILITIES]", file=sys.stderr)
             raise SystemExit(2)
         server, token = args[1], args[2]
