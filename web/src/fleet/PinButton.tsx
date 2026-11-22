@@ -1,5 +1,6 @@
 import {useEffect, useState} from 'react'
 
+import {Icon} from '../icons'
 import {haptic} from '../ui'
 import {hasPin, loadPins, PINS_KEY, togglePin, type DashboardPin} from './pins'
 
@@ -37,7 +38,7 @@ export function usePins() {
 	return {pins, toggle, has: (pin: DashboardPin) => hasPin(pins, pin)}
 }
 
-export function PinButton({pin, name, mini = false}: {pin: DashboardPin; name: string; mini?: boolean}) {
+export function PinButton({pin, name}: {pin: DashboardPin; name: string; mini?: boolean}) {
 	const {has, toggle} = usePins()
 	const on = has(pin)
 	return (
@@ -52,7 +53,8 @@ export function PinButton({pin, name, mini = false}: {pin: DashboardPin; name: s
 				toggle(pin)
 			}}
 		>
-			{on ? 'Pinned' : mini ? 'Pin' : 'Pin to dashboard'}
+			<Icon name="pin" size={16} />
+			{on ? 'pinned' : 'pin'}
 		</button>
 	)
 }

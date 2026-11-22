@@ -20,6 +20,8 @@ import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, dura
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
+const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
+const MachineFiles = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
 
 type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean; files: boolean}
 type Ability = keyof Abilities
@@ -125,6 +127,7 @@ export function LocalSwarm({
 		if (addingProp === undefined) setInnerAdd(open)
 	}
 	const [terminal, setTerminal] = useState<{agent: Agent; input?: string} | null>(null)
+	const [vmHost, setVmHost] = useState<{id: string; name: string} | null>(null)
 	const [screen, setScreen] = useState<Agent | null>(null)
 	const [storage, setStorage] = useState<Agent | null>(null)
 	const selected = (swarm.data ?? []).find((a) => a.id === selectedId) ?? null
@@ -139,7 +142,13 @@ export function LocalSwarm({
 					onTerminal={(input) => setTerminal({agent: selected, input})}
 					onDesktop={() => setScreen(selected)}
 					onStorage={() => setStorage(selected)}
+					onCreateVm={() => setVmHost({id: selected.id, name: selected.name})}
 				/>
+			)}
+			{vmHost && (
+				<Suspense fallback={null}>
+					<CreateMachine open host={vmHost} onClose={() => setVmHost(null)} />
+				</Suspense>
 			)}
 			{adding && <AddComputer before={(swarm.data ?? []).map((a) => a.id)} onClose={() => setAdding(false)} onJoined={(id) => (setAdding(false), setSelectedId(id))} />}
 			{terminal && (
@@ -304,7 +313,7 @@ function Group({title, children}: {title: string; children: ReactNode}) {
 	)
 }
 
-function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; onClose: () => void; onTerminal: (input?: string) => void; onDesktop: () => void; onStorage: () => void}) {
+function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: {a: Agent; onClose: () => void; onTerminal: (input?: string) => void; onDesktop: () => void; onStorage: () => void; onCreateVm: () => void}) {
 	const os = look(a)
 	const act = useSwarmAction()
 	const confirm = useConfirm()
@@ -365,6 +374,30 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 				</Group>
 			)}
 
+			<div className="section-head" style={{margin: '20px 4px 8px'}}>
+				<h2 style={{fontSize: 16}}>Files</h2>
+			</div>
+			{!a.online ? (
+				<p className="reason">{a.name} is offline.</p>
+			) : !may(a, 'files') ? (
+				<p className="reason">{a.name} hasn’t granted Files.</p>
+			) : (
+				<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
+					<MachineFiles scope={{kind: 'computer', id: a.id, name: a.name}} windowId={`machine:${a.id}`} />
+				</Suspense>
+			)}
+			<Group title="Virtual machines">
+				{a.online ? (
+					<>
+						<p className="quiet">No virtual machines on {a.name}.</p>
+						<button type="button" className="btn small" style={{margin: '8px 12px 12px'}} onClick={() => (haptic(6), onCreateVm())}>
+							<Icon name="plus" size={15} /> Create VM
+						</button>
+					</>
+				) : (
+					<p className="reason">{a.name} is offline, so virtual machines can’t be created there right now.</p>
+				)}
+			</Group>
 			<Group title="Apps">
 				<Row icon="store" color="var(--accent)" label="App Store" sub="Installs on this computer" onClick={() => (haptic(6), onClose(), openStore({id: a.id, kind: 'computer', name: a.name}))} />
 			</Group>

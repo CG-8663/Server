@@ -53,6 +53,28 @@ export function filesParent(path: string): string | null {
 	return `/${parts.join('/')}`
 }
 
+/** A file manager locked to one machine. The global manager has no scope. */
+export type FilesScope = {kind: 'server'} | {kind: 'computer'; id: string; name: string}
+
+export function scopeRoot(scope: FilesScope): string | null {
+	if (scope.kind === 'server') return SERVER_FILES
+	return computerPlacePath(scope.id)
+}
+
+/** Keep navigation inside one machine. A path outside that machine becomes its root. */
+export function withinScope(scope: FilesScope | undefined, path: string | null): string | null {
+	if (!scope) return path
+	const root = scopeRoot(scope)
+	if (!root) return path
+	if (scope.kind === 'server') {
+		if (path == null || parseComputerPlace(path)) return root
+		return path
+	}
+	const here = path ? parseComputerPlace(path) : null
+	if (!here || here.id !== scope.id) return root
+	return path
+}
+
 /** Parent path inside a computer place. Null means the Files root (the place list). */
 export function computerParent(path: string): string | null {
 	const here = parseComputerPlace(path)

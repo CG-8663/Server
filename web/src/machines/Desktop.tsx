@@ -2,7 +2,7 @@
 // selected machine's toolbar and its settings panels, and the task log along the bottom.
 import {lazy, Suspense, useEffect, useRef, useState} from 'react'
 
-import {SERVER_DESKTOP, type Machine} from '../api'
+import {type Machine} from '../api'
 import {useApps, useMachines, useUser} from '../data'
 import {useDesktop} from '../desktop/Desktop'
 import {Icon, type IconName} from '../icons'
@@ -44,7 +44,7 @@ export function MachinesDesktop() {
 	const [panel, setPanel] = useState<PanelId>('summary')
 	const desk = useDesktop()
 	const apps = useApps()
-	const [creating, setCreating] = useState(false)
+	const [createHost, setCreateHost] = useState<{id: string; name: string} | null>(null)
 	const [tasksOpen, setTasksOpen] = useState(true)
 	const node = useNode()
 	const selected = sel.kind === 'vm' ? (list.find((m) => m.id === sel.id) ?? null) : null
@@ -74,7 +74,7 @@ export function MachinesDesktop() {
 					<Icon name="server" size={17} /> Server view
 				</span>
 				<span className="pve-spacer" />
-				<button type="button" className="btn small primary" onClick={() => (haptic(6), setCreating(true))}>
+				<button type="button" className="btn small primary" onClick={() => (haptic(6), setCreateHost({id: SERVER_FLEET_ID, name: host}))}>
 					<Icon name="plus" size={15} /> Create VM
 				</button>
 			</header>
@@ -149,6 +149,7 @@ export function MachinesDesktop() {
 											vmsReason={vmsAbility.reason}
 											onOpenApp={(app) => desk?.launch(app)}
 											onOpenVm={(id) => setSel({kind: 'vm', id})}
+											onCreateVm={vmsAbility.granted ? () => setCreateHost({id: c.id, name: c.name}) : undefined}
 										/>
 									</div>
 								)}
@@ -162,7 +163,7 @@ export function MachinesDesktop() {
 							<LocalSwarm heading={false} onlyId={computer.id} />
 						</div>
 					) : sel.kind === 'node' || !selected ? (
-						<NodeView onSelect={(id) => setSel({kind: 'vm', id})} onCreate={() => setCreating(true)} />
+						<NodeView onSelect={(id) => setSel({kind: 'vm', id})} onCreate={() => setCreateHost({id: SERVER_FLEET_ID, name: host})} />
 					) : (
 						<VmView key={selected.id} m={selected} host={host} panel={panel} setPanel={setPanel} onGone={() => setSel({kind: 'node'})} />
 					)}
@@ -175,7 +176,7 @@ export function MachinesDesktop() {
 				</button>
 				{tasksOpen && <RecentTasks />}
 			</footer>
-			{creating && (
+			{createHost && (
 				<Suspense
 					fallback={
 						<div className="win-empty">
@@ -183,7 +184,7 @@ export function MachinesDesktop() {
 						</div>
 					}
 				>
-					<CreateMachine open={creating} onClose={() => setCreating(false)} />
+					<CreateMachine open host={createHost} onClose={() => setCreateHost(null)} />
 				</Suspense>
 			)}
 		</div>
@@ -248,20 +249,22 @@ function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreat
 						<div className="mx-card">
 							<h4>Consoles</h4>
 							<div className="pve-launch">
-								<button type="button" className="pve-desktop" onClick={() => (haptic(6), desk?.openTerminal())}>
-									<TerminalIcon size={36} />
-									<span>
-										<b>Terminal</b>
-										<small>Command line</small>
-									</span>
-								</button>
-								<button type="button" className="pve-desktop" onClick={() => (desk ? desk.openConsole('desktop') : null)}>
-									<Icon name="terminal" size={20} />
-									<span>
-										<b>{SERVER_DESKTOP.name}</b>
-										<small>This server’s own desktop, live.</small>
-									</span>
-								</button>
+								<div className="pve-launch-row">
+									<button type="button" className="pve-desktop" onClick={() => (haptic(6), desk?.openTerminal())}>
+										<TerminalIcon size={36} />
+										<span>
+											<b>Terminal</b>
+											<small>Command line</small>
+										</span>
+									</button>
+									<button type="button" className="pve-desktop" onClick={() => (desk ? desk.openConsole('desktop') : null)}>
+										<Icon name="devices" size={20} />
+										<span>
+											<b>Open desktop</b>
+											<small>This server’s own desktop, live.</small>
+										</span>
+									</button>
+								</div>
 								{desk && (
 									<button type="button" className="btn small" onClick={() => desk.addIcon('machine:desktop')}>
 										<Icon name="plus" size={15} /> Add to desktop

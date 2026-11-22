@@ -16,8 +16,10 @@ import {fleetAbility, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../flee
 import {OPEN_FLEET, takePendingFleet, type FleetOpen} from '../fleet/openMember'
 import {openStore} from '../fleet/openStore'
 import {PinButton} from '../fleet/PinButton'
+import {ServerSheet} from '../fleet/ServerSheet'
+import {ServerSpecs} from '../fleet/serverGauges'
 import {AgentCard, LocalSwarm, useSwarm} from '../swarm/Swarm'
-import {Row, Sheet, SheetHeader, StatusPill, TerminalIcon, haptic, machineStatus} from '../ui'
+import {Row, Sheet, SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
@@ -35,7 +37,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 	const [computerId, setComputerId] = useState<string | null>(null)
 	const [serverOpen, setServerOpen] = useState(false)
 	const [consoleId, setConsoleId] = useState<string | null>(null)
-	const [creating, setCreating] = useState(false)
+	const [createHost, setCreateHost] = useState<{id: string; name: string} | null>(null)
 	const [adding, setAdding] = useState(false)
 	const [expanded, setExpanded] = useState<string | null>(null)
 	const apps = useApps()
@@ -87,6 +89,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 				vmsReason={vmsAbility.reason}
 				onOpenApp={openApp}
 				onOpenVm={(id) => (haptic(6), setSelectedId(id))}
+				onCreateVm={vmsAbility.granted ? () => setCreateHost({id: memberId, name: memberName}) : undefined}
 			/>
 		)
 	}
@@ -100,7 +103,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 	return (
 		<div className="stagger">
 			<div style={{position: 'relative'}}>
-				<button className="btn primary small" style={{position: 'absolute', right: 4, top: 14}} onClick={() => (haptic(6), setCreating(true))}>
+				<button className="btn primary small" style={{position: 'absolute', right: 4, top: 14}} onClick={() => (haptic(6), setCreateHost({id: SERVER_FLEET_ID, name: serverName}))}>
 					<Icon name="plus" size={18} stroke={2.4} /> New
 				</button>
 				<h1 className="title">Machines</h1>
@@ -143,6 +146,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 									Open
 								</button>
 							</span>
+							<ServerSpecs />
 							<div className="mrow-foot">
 								<PinButton pin={{kind: 'machine', id: SERVER_FLEET_ID, computer: ''}} name={member.name} />
 								<Disc open={open} name={member.name} controls={`glance-${member.id}`} onClick={toggle} />
@@ -187,8 +191,19 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 				/>
 			)}
 			<LocalSwarm hideList selectedId={computerId} onSelect={setComputerId} adding={adding} onAdding={setAdding} />
-			{serverOpen && <ServerSheet name={serverName} owner={owner} onClose={() => setServerOpen(false)} onDesktop={openDesktop} onTerminal={onTerminal} />}
-			{creating && (
+			{serverOpen && (
+				<ServerSheet
+					name={serverName}
+					owner={owner}
+					vms={list}
+					onClose={() => setServerOpen(false)}
+					onDesktop={openDesktop}
+					onTerminal={onTerminal}
+					onOpenVm={(id) => (setServerOpen(false), setSelectedId(id))}
+					onCreateVm={() => setCreateHost({id: SERVER_FLEET_ID, name: serverName})}
+				/>
+			)}
+			{createHost && (
 				<Suspense
 					fallback={
 						<main className="screen center">
@@ -196,7 +211,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 						</main>
 					}
 				>
-					<CreateMachine open={creating} onClose={() => setCreating(false)} />
+					<CreateMachine open host={createHost} onClose={() => setCreateHost(null)} />
 				</Suspense>
 			)}
 			{consoleMachine && (
@@ -211,47 +226,6 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 				</Suspense>
 			)}
 		</div>
-	)
-}
-
-function ServerSheet({name, owner, onClose, onDesktop, onTerminal}: {name: string; owner: boolean; onClose: () => void; onDesktop: () => void; onTerminal?: () => void}) {
-	return (
-		<Sheet open onClose={onClose} label={name} tall>
-			<SheetHeader
-				icon={
-					<span className="vm-os" style={{width: 64, height: 64, borderRadius: 19, background: 'linear-gradient(140deg,#2b2b2b,#0b0b0b)'}}>
-						<Icon name="server" size={32} />
-					</span>
-				}
-				title={name}
-				subtitle="Computer · entrypoint · online"
-				onClose={onClose}
-			/>
-			<div style={{display: 'flex', justifyContent: 'flex-end', marginTop: 8}}>
-				<PinButton pin={{kind: 'machine', id: SERVER_FLEET_ID, computer: ''}} name={name} />
-			</div>
-			{(onTerminal || owner) && (
-				<div className="server-actions">
-					{onTerminal && (
-						<button className="glass system-tile press" onClick={() => (haptic(6), onTerminal())}>
-							<TerminalIcon size={46} />
-							<span>
-								<b>Terminal</b>
-								<small>Command line</small>
-							</span>
-						</button>
-					)}
-					{owner && (
-						<button className="btn primary" onClick={onDesktop}>
-							<Icon name="terminal" size={20} /> Open desktop
-						</button>
-					)}
-				</div>
-			)}
-			<div className="glass group" style={{marginTop: 12}}>
-				<Row icon="store" label="App Store" sub={`Installs on ${name}`} onClick={() => (haptic(6), onClose(), openStore({id: SERVER_FLEET_ID, kind: 'server', name}))} />
-			</div>
-		</Sheet>
 	)
 }
 

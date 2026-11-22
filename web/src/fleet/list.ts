@@ -62,7 +62,7 @@ function computerAbilities(row: ComputerFleetInput): FleetAbility[] {
 	const name = row.name
 	return [
 		grant('apps', pair(row, 'apps'), `${name} can’t take app-store apps yet.`),
-		grant('vms', false, `Virtual machines run on this server, not on ${name}.`),
+		grant('vms', row.online, row.online ? '' : `${name} is offline, so virtual machines can’t be created there right now.`),
 		grant('files', pair(row, 'files'), `${name} hasn’t granted Files.`),
 		grant('storage', pair(row, 'storage'), `${name} hasn’t granted Storage.`),
 		grant('terminal', pair(row, 'terminal'), `${name} hasn’t granted Terminal.`),

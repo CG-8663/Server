@@ -2,12 +2,13 @@
 // omarchyd streams a PTY over a WebSocket (bridged by the Touch server). The terminal fills its
 // window: when the window (or the phone's keyboard) changes its size, the shell is resized to
 // match, so programs reflow and full-screen ones redraw, the way a native terminal does.
-import {useEffect, useRef, useState} from 'react'
+import {useContext, useEffect, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 import {Terminal as XTerm} from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 
 import {clipText} from './clips'
+import {BootstrapContext} from './data'
 import {Icon} from './icons'
 import {SEQ, applyTerminalModifiers} from './terminalKeys'
 import {AppIcon, haptic, useConfirm, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -50,6 +51,7 @@ export function TerminalScreen({
 	onClose,
 	embedded,
 	input,
+	machine,
 }: {
 	app?: {id: string; name?: string; icon?: string}
 	// A computer in the local swarm (through its connector), instead of this server.
@@ -57,7 +59,12 @@ export function TerminalScreen({
 	onClose: () => void
 	embedded?: boolean
 	input?: string
+	/** The computer this shell is on. Defaults to this server, or the swarm computer when `agent` is set. */
+	machine?: string
 }) {
+	const boot = useContext(BootstrapContext)
+	const serverName = boot?.server?.device || boot?.server?.name || 'This server'
+	const machineName = machine ?? agent?.name ?? serverName
 	const portalRoot = usePortalRoot()
 	const root = useRef<HTMLDivElement>(null)
 	const host = useRef<HTMLDivElement>(null)
@@ -499,7 +506,7 @@ export function TerminalScreen({
 		setResumed(false)
 		setAttempt((a) => a + 1)
 	}
-	const title = app ? (app.name ?? app.id) : agent ? agent.name : 'Terminal'
+	const title = app ? (app.name ?? app.id) : machineName
 
 	const keys: {label: string; onClick: () => void; on?: boolean}[] = [
 		{label: 'esc', onClick: () => sendSeq(SEQ.esc)},
@@ -520,7 +527,7 @@ export function TerminalScreen({
 	]
 
 	return createPortal(
-		<div ref={root} className={`console terminal${embedded ? ' embedded' : ''}`} role="dialog" aria-modal={!embedded} aria-label={`${title} terminal`}>
+		<div ref={root} className={`console terminal${embedded ? ' embedded' : ''}`} role="dialog" aria-modal={!embedded} aria-label={`${title} terminal, on ${machineName}`}>
 			<header className="console-bar">
 				<button className="round-btn" aria-label="Close terminal" onClick={onClose}>
 					<Icon name="back" size={20} />
@@ -536,7 +543,7 @@ export function TerminalScreen({
 					<b>{title}</b>
 					<span>
 						<i className={`dot ${live ? 'live' : state === 'connecting' ? '' : 'down'}`} />
-						{live ? `${app ? 'App shell' : agent ? 'Shell through its connector' : 'Omarchy Server shell'}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? 'Connecting…' : 'Disconnected'}
+						{live ? `On ${machineName} · ${app ? 'App shell' : agent ? 'Shell through its connector' : 'Omarchy Server shell'}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? `On ${machineName} · Connecting…` : `On ${machineName} · Disconnected`}
 					</span>
 				</div>
 				{!agent && (

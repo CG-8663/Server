@@ -25,7 +25,8 @@ import {
 } from "../api";
 import { useBootstrap, useDisk, useUser } from "../data";
 import { ComputerFolder } from "../fleet/ComputerFolder";
-import { computerPlacePath, filePlaces, filesParent, parseComputerPlace, SERVER_FILES } from "../fleet/filePlaces";
+import { FittingCrumbs } from "../fleet/FittingCrumbs";
+import { computerPlacePath, filePlaces, filesParent, parseComputerPlace, scopeRoot, SERVER_FILES, withinScope, type FilesScope } from "../fleet/filePlaces";
 import { NuEntries, type NuItem } from "../fleet/NuEntries";
 import { queryProblem, useBrowserOnline } from "../connection";
 import { Icon, type IconName } from "../icons";
@@ -42,6 +43,11 @@ const FileViewer = lazy(() =>
 
 // ---- helpers --------------------------------------------------------------------
 const isDir = (f: FileEntry) => f.type === "directory";
+function folderOf(filePath: string): string {
+  const i = filePath.lastIndexOf("/");
+  if (i <= 0) return "/Home";
+  return filePath.slice(0, i);
+}
 // A pipe or socket is not a file. serveFile refuses it; the row must not offer Download or View.
 const offersFile = (f: FileEntry) =>
   (f.operations as readonly string[]).includes("download");
@@ -365,7 +371,7 @@ type Place = {
   sub?: string;
 };
 
-export function Files({ initialPath, windowId }: { initialPath?: string; windowId?: string } = {}) {
+export function Files({ initialPath, windowId, scope }: { initialPath?: string; windowId?: string; scope?: FilesScope } = {}) {
   const portalRoot = usePortalRoot();
   const boot = useBootstrap();
   const user = useUser();
@@ -374,8 +380,9 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
   const confirm = useConfirm();
   const act = useFileAction();
   const disk = useDisk();
+  const storageId = windowId ?? (scope ? `machine:${scope.kind === "computer" ? scope.id : "server"}` : undefined);
   const [nav, setNav] = useState(() => {
-    const start = readStoredFilesPath(windowId, initialPath, (key) => sessionStorage.getItem(key));
+    const start = withinScope(scope, readStoredFilesPath(storageId, initialPath ?? (scope ? scopeRoot(scope) : undefined), (key) => sessionStorage.getItem(key)));
     return {entries: [start] as (string | null)[], index: 0};
   });
   const path = nav.entries[nav.index] ?? null;
@@ -423,12 +430,12 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
   const { uploads, start: upload, clear: clearUploads } = useUploads(refresh);
 
   useEffect(() => {
-    const stored = filesPathToStore(windowId, path);
+    const stored = filesPathToStore(storageId, path);
     if (stored.value === null) sessionStorage.removeItem(stored.key);
     else sessionStorage.setItem(stored.key, stored.value);
     setSelected(new Set());
     setListLimit(FILES_LIST_PAGE);
-  }, [path, windowId]);
+  }, [path, storageId]);
   // A new search hides the previous rows, so a selection from that folder must not stay live.
   // The same query (a folder refresh) keeps the selection.
   const seenQuery = useRef(q);
@@ -446,7 +453,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
   const recents = useQuery({
     queryKey: ["files.recents"],
     queryFn: () => query<FileEntry[]>("files.recents"),
-    enabled: path === SERVER_FILES || path === "::recents",
+    enabled: !scope,
   });
   const favorites = useQuery({
     queryKey: ["files.favorites"],
@@ -492,24 +499,27 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
   );
 
   const go = (p: string | null, how: "push" | "replace" = "push") => {
+    const next = withinScope(scope, p);
     haptic(5);
     setQ("");
     scrollPhoneToTop();
     setNav((n) => {
       if (how === "replace") {
         const entries = n.entries.slice(0, n.index);
-        entries.push(p);
+        entries.push(next);
         return {entries, index: entries.length - 1};
       }
       const base = n.entries.slice(0, n.index + 1);
-      if (base[base.length - 1] === p) return n;
-      return {entries: [...base, p], index: base.length};
+      if (base[base.length - 1] === next) return n;
+      return {entries: [...base, next], index: base.length};
     });
   };
   const up = () => {
     if (!path) return;
+    const parent = withinScope(scope, filesParent(path));
+    if (parent === path) return;
     // No history yet, so Back walks up. Replacing keeps the next Back moving upward.
-    go(filesParent(path), "replace");
+    go(parent, "replace");
   };
   const back = () => {
     if (nav.index > 0) {
@@ -736,28 +746,39 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
             : path === "::favorites"
               ? "Favorites"
               : titleOf(path);
-  const crumbs: {name: string; path: string | null}[] = [{name: "Files", path: null}];
-  if (path && computerHere) {
-    const root = computerPlacePath(computerHere.id);
-    if (root) crumbs.push({name: computerName, path: root});
-    const parts = computerHere.rel.split("/").filter(Boolean);
+  const crumbs: {name: string; path: string | null}[] = [];
+  const pushComputer = (id: string, label: string, rel: string) => {
+    const root = computerPlacePath(id);
+    if (root) crumbs.push({name: label, path: root});
+    const parts = rel.split("/").filter(Boolean);
     for (let i = 0; i < parts.length; i++) {
-      const rel = parts.slice(0, i + 1).join("/");
-      const next = computerPlacePath(computerHere.id, rel);
+      const next = computerPlacePath(id, parts.slice(0, i + 1).join("/"));
       if (next) crumbs.push({name: parts[i], path: next});
     }
-  } else if (path) {
+  };
+  const pushServer = (from: string | null) => {
     crumbs.push({name: serverName, path: SERVER_FILES});
-    if (path === "::recents" || path === "::favorites") crumbs.push({name: heading, path});
-    else if (path !== SERVER_FILES && !path.startsWith("::")) {
-      const parts = path.split("/").filter(Boolean);
-      for (let i = 0; i < parts.length; i++) {
-        const p = `/${parts.slice(0, i + 1).join("/")}`;
-        crumbs.push({name: titleOf(p), path: p});
-      }
+    if (!from || from === SERVER_FILES || parseComputerPlace(from)) return;
+    if (from === "::recents" || from === "::favorites") {
+      crumbs.push({name: heading, path: from});
+      return;
     }
+    if (from.startsWith("::")) return;
+    const parts = from.split("/").filter(Boolean);
+    for (let i = 0; i < parts.length; i++) {
+      const p = `/${parts.slice(0, i + 1).join("/")}`;
+      crumbs.push({name: titleOf(p), path: p});
+    }
+  };
+  if (scope?.kind === "computer") pushComputer(scope.id, scope.name, computerHere?.id === scope.id ? computerHere.rel : "");
+  else if (scope?.kind === "server") pushServer(path);
+  else {
+    crumbs.push({name: "Files", path: null});
+    if (path && computerHere) pushComputer(computerHere.id, computerName, computerHere.rel);
+    else if (path) pushServer(path);
   }
-  const canBack = nav.index > 0 || path !== null;
+  const parentPath = path ? withinScope(scope, filesParent(path)) : null;
+  const canBack = nav.index > 0 || (!!path && parentPath !== path);
   const canForward = nav.index < nav.entries.length - 1;
   const onServer = !!path && !computerHere;
   const machineRoot = path === null && q.trim().length < 2;
@@ -793,20 +814,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
       <button type="button" className="nu-nav" aria-label="Forward" onClick={forward} disabled={!canForward}>
         <Icon name="chevron" size={16} />
       </button>
-      <nav className="nu-path" aria-label="Breadcrumbs">
-        <ol>
-          {crumbs.map((crumb, i) => {
-            const current = i === crumbs.length - 1;
-            return (
-              <li key={`${crumb.path ?? "files"}-${i}`}>
-                <button type="button" aria-current={current ? "page" : undefined} onClick={() => go(crumb.path)}>
-                  {crumb.name}
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </nav>
+      <FittingCrumbs crumbs={crumbs} onOpen={(next) => go(next)} />
       {owner && path && path.startsWith("/Home/") && (
         <button
           className="nu-nav"
@@ -898,7 +906,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
   };
 
   return (
-    <div className="stagger files-root nu" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+    <div className={`stagger files-root nu${scope ? " nu-embedded" : ""}`} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <input
         ref={fileInput}
         type="file"
@@ -973,7 +981,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
       )}
 
       <div className="nu-body">
-        <aside className="nu-side" aria-label="Places">
+        {!scope && <aside className="nu-side" aria-label="Places">
           <h3>Places</h3>
           <button type="button" className="nu-place" aria-current={path === null ? "page" : undefined} onClick={() => go(null)}>
             <span className="dot" />
@@ -995,8 +1003,32 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
               {p.name}
             </button>
           ))}
-        </aside>
+        </aside>}
         <div className="nu-main">
+      {!scope && (
+        <details className="nu-recent">
+          <summary>
+            <Icon name="chevron" size={16} className="chev" />
+            Recent
+          </summary>
+          <div className="nu-recent-body">
+            {(recents.data?.length ?? 0) === 0 ? (
+              <p className="quiet">No recent files.</p>
+            ) : (
+              <ul>
+                {recents.data!.map((f) => (
+                  <li key={f.path}>
+                    <button type="button" onClick={() => go(folderOf(f.path))}>
+                      <b>{f.name}</b>
+                      <span>{serverName}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </details>
+      )}
       {machineRoot && (
         <>
           <NuEntries items={rootItems} grid={grid} />
@@ -1075,22 +1107,6 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
                     <Icon name="chevron" size={18} className="chev" />
                   </button>
                 ))}
-              </div>
-            </section>
-          )}
-          {(recents.data?.length ?? 0) > 0 && (
-            <section>
-              <div className="section-head">
-                <h2>Recent</h2>
-                <button className="link-btn" onClick={() => go("::recents")}>
-                  See all
-                </button>
-              </div>
-              <div
-                className="glass group"
-                style={{ "--inset": "74px" } as CSSProperties}
-              >
-                {recents.data!.slice(0, 5).map((f) => renderRow(f))}
               </div>
             </section>
           )}

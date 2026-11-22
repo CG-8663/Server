@@ -60,7 +60,23 @@ function Stepper({label, value, unit, min, max, step = 1, next, onChange}: {labe
 	)
 }
 
-export function CreateMachine({open, onClose}: {open: boolean; onClose: () => void}) {
+export function CreateMachine({open, onClose, host}: {open: boolean; onClose: () => void; host?: {id: string; name: string}}) {
+	// Joined computers get the same create control. The guest is not created on this server in their place.
+	if (host && host.id !== 'server') return <RemoteVmHost name={host.name} open={open} onClose={onClose} />
+	return <LocalCreateMachine open={open} onClose={onClose} />
+}
+
+function RemoteVmHost({name, open, onClose}: {name: string; open: boolean; onClose: () => void}) {
+	return (
+		<Sheet open={open} onClose={onClose} label={`Virtual machines on ${name}`}>
+			<SheetHeader icon={<Icon name="machine" size={28} />} title={`Virtual machines on ${name}`} subtitle="Computer" onClose={onClose} />
+			<p>Create and manage virtual machines on {name} from this page. A guest has to be created on {name}.</p>
+			<p className="reason">The connector on {name} can’t host a virtual machine yet, so nothing was created on this server.</p>
+		</Sheet>
+	)
+}
+
+function LocalCreateMachine({open, onClose}: {open: boolean; onClose: () => void}) {
 	const caps = useQuery({queryKey: ['machines.capabilities'], queryFn: () => query<MachineCapabilities>('machines.capabilities'), enabled: open, staleTime: 60_000})
 	const images = useQuery({
 		queryKey: ['machines.osImages'],

@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
 import {batteryGroups, batterySweep, computerSample, fleetRings, serverSample} from '../web/src/fleet/aggregate.ts'
-import {computerParent, computerPlacePath, filePlaces, filesParent, parseComputerPlace, SERVER_FILES} from '../web/src/fleet/filePlaces.ts'
+import {computerParent, computerPlacePath, filePlaces, filesParent, parseComputerPlace, scopeRoot, SERVER_FILES, withinScope} from '../web/src/fleet/filePlaces.ts'
+import {fittingCrumbCount} from '../web/src/fleet/fittingCrumbs.ts'
 import {groupApps} from '../web/src/fleet/groupApps.ts'
 import {computerFleetInput, fleetAbility, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../web/src/fleet/list.ts'
 import {hasPin, loadPins, togglePin} from '../web/src/fleet/pins.ts'
@@ -42,7 +43,11 @@ test('the fleet list is online names, then offline names', () => {
 	assert.equal(fleetAbility(loft, 'apps').reason, 'Loft can’t take app-store apps yet.')
 	assert.equal(fleetAbility(loft, 'files').granted, false)
 	assert.equal(fleetAbility(members.find((m) => m.id === 'kitchen'), 'files').granted, true)
-	assert.equal(fleetAbility(members.find((m) => m.id === 'kitchen'), 'vms').granted, false)
+	assert.equal(fleetAbility(members.find((m) => m.id === 'kitchen'), 'vms').granted, true)
+	assert.equal(fleetAbility(members.find((m) => m.id === 'loft'), 'vms').granted, true)
+	assert.equal(fleetAbility(members.find((m) => m.id === 'garage'), 'vms').granted, false)
+	assert.match(fleetAbility(members.find((m) => m.id === 'garage'), 'vms').reason, /offline/)
+	assert.equal(fleetAbility(members.find((m) => m.id === 'haos'), 'vms').granted, false)
 	const haos = members.find((m) => m.id === 'haos')
 	assert.match(fleetAbility(haos, 'apps').reason, /connector on HA OS/)
 	assert.equal(fleetAbility(haos, 'storage').granted, false)
@@ -136,4 +141,20 @@ test('file places keep granted online computers and skip the rest', () => {
 	assert.equal(filesParent('::recents'), SERVER_FILES)
 	assert.equal(filesParent('::computer/kitchen'), null)
 	assert.equal(filesParent('::computer/kitchen/Photos'), '::computer/kitchen')
+	const server = {kind: 'server'}
+	const kitchen = {kind: 'computer', id: 'kitchen', name: 'Kitchen'}
+	assert.equal(scopeRoot(server), SERVER_FILES)
+	assert.equal(scopeRoot(kitchen), '::computer/kitchen')
+	assert.equal(withinScope(server, null), SERVER_FILES)
+	assert.equal(withinScope(server, '::computer/kitchen'), SERVER_FILES)
+	assert.equal(withinScope(server, '/Home/Photos'), '/Home/Photos')
+	assert.equal(withinScope(kitchen, '/Home'), '::computer/kitchen')
+	assert.equal(withinScope(kitchen, '::computer/loft'), '::computer/kitchen')
+	assert.equal(withinScope(kitchen, '::computer/kitchen/Photos'), '::computer/kitchen/Photos')
+	assert.equal(withinScope(undefined, null), null)
+	assert.equal(fittingCrumbCount([10, 20, 30], 100), 3)
+	assert.equal(fittingCrumbCount([10, 20, 30], 50), 2)
+	assert.equal(fittingCrumbCount([10, 20, 30], 35), 1)
+	assert.equal(fittingCrumbCount([80], 40), 1)
+	assert.equal(fittingCrumbCount([], 40), 0)
 })

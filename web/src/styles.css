@@ -1906,6 +1906,17 @@ h1.title {
 .pve-node-row.is-open .disc svg {
 	transform: rotate(90deg);
 }
+.mrow.is-open,
+.pve-node-row.is-open {
+	outline: 2px solid var(--accent-text);
+	outline-offset: 2px;
+}
+@media (forced-colors: active) {
+	.mrow.is-open,
+	.pve-node-row.is-open {
+		outline: 2px solid Highlight;
+	}
+}
 .mrow-body {
 	padding: 2px 2px 4px;
 }
@@ -3104,19 +3115,14 @@ html.screen-locked .auth {
 	padding: 0;
 	list-style: none;
 	min-width: 0;
+	width: max-content;
 }
 .nu-path li {
 	display: flex;
 	align-items: center;
-	min-width: 0;
-}
-.nu-path li:not(:last-child) {
-	flex: 0 1 auto;
-}
-.nu-path li:last-child {
 	flex: none;
 }
-.nu-path li + li::before {
+.nu-path li:not([hidden]) + li:not([hidden])::before {
 	content: "›" / "";
 	color: var(--muted);
 	flex: none;
@@ -3124,9 +3130,6 @@ html.screen-locked .auth {
 }
 .nu-path button {
 	display: block;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
 	border: 0;
 	background: transparent;
 	color: var(--fg);
@@ -3137,9 +3140,76 @@ html.screen-locked .auth {
 	white-space: nowrap;
 }
 .nu-path li:last-child button {
-	overflow: visible;
-	text-overflow: clip;
 	font-weight: 750;
+}
+.nu-recent {
+	margin: 0 0 12px;
+	border: 1px solid var(--line);
+	border-radius: 16px;
+	background: var(--glass);
+}
+.nu-recent summary {
+	list-style: none;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 12px 14px;
+	font-weight: 750;
+	cursor: pointer;
+}
+.nu-recent summary::-webkit-details-marker {
+	display: none;
+}
+.nu-recent summary .chev {
+	flex: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+	.nu-recent summary .chev {
+		transition: transform 0.18s ease;
+	}
+}
+.nu-recent[open] summary .chev {
+	transform: rotate(90deg);
+}
+.nu-recent summary:focus-visible {
+	outline: 2px solid var(--accent-text);
+	outline-offset: 2px;
+}
+.nu-recent-body {
+	padding: 0 8px 10px;
+}
+.nu-recent-body ul {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.nu-recent-body button {
+	width: 100%;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	padding: 8px 6px;
+	border-radius: 10px;
+}
+.nu-recent-body button span {
+	color: var(--muted);
+	font-size: 13px;
+}
+.nu-recent-body button:hover,
+.nu-recent-body button:focus-visible {
+	background: var(--glass-2);
+}
+.nu-embedded .nu-side {
+	display: none;
+}
+.win-body .nu-embedded .nu-body {
+	display: block;
 }
 .nu-path button:not([aria-current="page"]):hover,
 .nu-path button:not([aria-current="page"]):focus-visible {
@@ -7761,6 +7831,16 @@ html.page-locked .auth {
 	flex-direction: column;
 	align-items: stretch;
 	gap: 12px;
+}
+.pve-launch-row {
+	display: flex;
+	gap: 12px;
+	align-items: stretch;
+}
+.pve-launch-row .pve-desktop {
+	flex: 1;
+	width: auto;
+	min-width: 0;
 }
 .pve-launch .btn.small {
 	align-self: flex-start;

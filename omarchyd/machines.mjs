@@ -529,6 +529,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 
 	async function create(input = {}) {
+		// The connector cannot host a guest yet. Refuse another computer before libvirt runs, and do not create it here instead.
+		const hostId = String(input.hostId ?? '').trim()
+		if (hostId && hostId !== 'server') throw new RpcError('PRECONDITION_FAILED', 'That computer has to host this virtual machine itself. It was not created on this server.')
 		await ready
 		const nameKey = String(input.name ?? '').trim().toLowerCase()
 		const runCreate = async () => {
