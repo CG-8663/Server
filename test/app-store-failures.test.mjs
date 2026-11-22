@@ -52,6 +52,8 @@ test('no-new-privileges is not a system permission; unconfined and label disable
       - no-new-privileges:true
       - seccomp=unconfined
       - apparmor=unconfined
+      - seccomp:unconfined
+      - apparmor:unconfined
       - label=disable
       - label:disable
       - systempaths=unconfined
@@ -61,6 +63,8 @@ test('no-new-privileges is not a system permission; unconfined and label disable
 	assert.deepEqual(what.filter((w) => String(w).includes('no-new-privileges')), [])
 	assert.ok(what.includes('security_opt: seccomp=unconfined'))
 	assert.ok(what.includes('security_opt: apparmor=unconfined'))
+	assert.ok(what.includes('security_opt: seccomp:unconfined'))
+	assert.ok(what.includes('security_opt: apparmor:unconfined'))
 	assert.ok(what.includes('security_opt: label=disable'))
 	assert.ok(what.includes('security_opt: label:disable'))
 	assert.ok(what.includes('security_opt: systempaths=unconfined'))

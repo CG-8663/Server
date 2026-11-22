@@ -517,7 +517,7 @@ export function missingVars(text, alsoProvided = []) {
 function securityOptBreaksConfinement(value) {
 	const s = String(value ?? '').trim().toLowerCase()
 	if (s === 'label=disable' || s === 'label:disable') return true
-	return /^[^=:]+=unconfined$/.test(s)
+	return /^[^=:]+[=:]unconfined$/.test(s)
 }
 
 function execP(cmd, args, {env, cwd, timeout = 10 * 60_000} = {}) {
