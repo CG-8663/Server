@@ -4,6 +4,12 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.62',
+		date: '2026-11-22',
+		title: 'Try an app before it’s approved',
+		added: ['Stores › Add by link also takes a GitHub pull request or branch link, such as a Modc App Store submission, to try an app exactly as submitted. It’s listed with its pull request or branch, so it’s easy to remove afterwards.'],
+	},
+	{
 		version: '0.9.61',
 		date: '2026-11-22',
 		title: 'Submit an app',
