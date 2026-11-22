@@ -2729,9 +2729,20 @@ def _is_inside(path, root):
     return path == root or path.startswith(root + os.sep)
 
 
-def _is_private_connector_path(real_path):
-    cfg_real = os.path.realpath(CONFIG_DIR)
-    return _is_inside(real_path, cfg_real)
+# Credentials stay out of the file browser, as on the server: keys, keyrings, password stores
+# and browser profiles (saved logins and cookies).
+PRIVATE_HOME_DIRS = (
+    ".ssh", ".gnupg", ".password-store", ".pki", ".aws", ".kube", ".docker",
+    ".local/share/keyrings", ".mozilla", ".config/google-chrome", ".config/chromium",
+    ".config/BraveSoftware", ".config/omarchy-connector",
+)
+
+
+def _is_private_connector_path(real_path, home=None):
+    if _is_inside(real_path, os.path.realpath(CONFIG_DIR)):
+        return True
+    h = os.path.realpath(home or os.path.expanduser("~"))
+    return any(_is_inside(real_path, os.path.join(h, d)) for d in PRIVATE_HOME_DIRS)
 
 
 def _resolve_file_path(virtual, must_exist=True, home=None):
@@ -2749,20 +2760,20 @@ def _resolve_file_path(virtual, must_exist=True, home=None):
     candidate = os.path.join(root_real, *rel) if rel else root_real
     if must_exist:
         real = os.path.realpath(candidate)
-        if not _is_inside(real, root_real) or _is_private_connector_path(real):
+        if not _is_inside(real, root_real) or _is_private_connector_path(real, home):
             raise RuntimeError("That path is outside the allowed folders")
         if not os.path.exists(real):
             raise RuntimeError("That file or folder doesn’t exist")
         return real, "/" + "/".join([root_name, *rel])
     parent_real = os.path.realpath(os.path.dirname(candidate))
-    if not _is_inside(parent_real, root_real) or _is_private_connector_path(parent_real):
+    if not _is_inside(parent_real, root_real) or _is_private_connector_path(parent_real, home):
         raise RuntimeError("That path is outside the allowed folders")
     if not os.path.isdir(parent_real):
         raise RuntimeError("The parent folder doesn’t exist")
     leaf = parts[-1]
     target = os.path.join(parent_real, leaf)
     target_real = os.path.realpath(target)
-    if not _is_inside(target_real, root_real) or _is_private_connector_path(target_real):
+    if not _is_inside(target_real, root_real) or _is_private_connector_path(target_real, home):
         raise RuntimeError("That path is outside the allowed folders")
     return target, "/" + "/".join([root_name, *rel])
 
@@ -2782,7 +2793,7 @@ def swarm_files_list(args, home=None):
     for entry in os.scandir(real):
         try:
             entry_real = os.path.realpath(entry.path)
-            if not _is_inside(entry_real, root_real) or _is_private_connector_path(entry_real):
+            if not _is_inside(entry_real, root_real) or _is_private_connector_path(entry_real, home):
                 continue
             st = os.stat(entry_real)
             items.append(

@@ -830,7 +830,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			const qs = new URLSearchParams({id, path: remotePath}).toString()
 			const r = await fetchImpl(`${backend.baseUrl}/api/swarm/files/download?${qs}`, {
 				method: 'GET',
-				headers: {authorization: `Bearer ${session.accessToken}`},
+				headers: {authorization: `Bearer ${await accessTokenFor(req.sid, session)}`},
 				signal: AbortSignal.timeout(120_000),
 			})
 			const buf = Buffer.from(await r.arrayBuffer())
@@ -862,7 +862,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			const qs = new URLSearchParams({id, path: remotePath}).toString()
 			const r = await fetchImpl(`${backend.baseUrl}/api/swarm/files/upload?${qs}`, {
 				method: 'POST',
-				headers: {authorization: `Bearer ${session.accessToken}`, 'content-type': 'application/octet-stream'},
+				headers: {authorization: `Bearer ${await accessTokenFor(req.sid, session)}`, 'content-type': 'application/octet-stream'},
 				body: Buffer.concat(chunks),
 				signal: AbortSignal.timeout(120_000),
 			})

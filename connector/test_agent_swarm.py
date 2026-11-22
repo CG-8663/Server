@@ -173,6 +173,24 @@ class ServicesAndFilesTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Choose start"):
             agent.services_control({"kind": "user", "name": "demo.service", "action": "mask"})
 
+    def test_files_jail_keeps_credentials_private(self):
+        with tempfile.TemporaryDirectory() as home:
+            os.makedirs(os.path.join(home, ".ssh"))
+            with open(os.path.join(home, ".ssh", "id_ed25519"), "w") as f:
+                f.write("key")
+            os.makedirs(os.path.join(home, ".local", "share", "keyrings"))
+            os.makedirs(os.path.join(home, "Documents"))
+            names = [i["name"] for i in agent.files_list({"path": "/Home"}, home=home)["items"]]
+            self.assertIn("Documents", names)
+            self.assertNotIn(".ssh", names)
+            for p in ("/Home/.ssh/id_ed25519", "/Home/.ssh"):
+                with self.assertRaises(RuntimeError):
+                    agent.files_read({"path": p}, home=home)
+            with self.assertRaises(RuntimeError):
+                agent.files_write({"path": "/Home/.ssh/authorized_keys", "data": "eA=="}, home=home)
+            with self.assertRaises(RuntimeError):
+                agent.files_list({"path": "/Home/.local/share/keyrings"}, home=home)
+
     def test_files_jail_blocks_traversal_symlink_escape_and_connector_config(self):
         with tempfile.TemporaryDirectory() as outer:
             home = os.path.join(outer, "home")
