@@ -289,8 +289,9 @@ export async function readXlsx(buf: ArrayBuffer): Promise<Sheet[]> {
 }
 
 // ---- CSV / TSV ---------------------------------------------------------------------------------
-export function parseDelimited(text: string, sep: string): string[][] {
-  const rows: string[][] = [];
+export function parseDelimited(text: string, sep: string): string[][] & { eol?: "\n" | "\r\n" } {
+  const rows: string[][] & { eol?: "\n" | "\r\n" } = [];
+  rows.eol = text.includes("\r\n") ? "\r\n" : "\n";
   let row: string[] = [];
   let cell = "";
   let quoted = false;
@@ -312,8 +313,9 @@ export function parseDelimited(text: string, sep: string): string[][] {
   return rows;
 }
 export function toDelimited(rows: string[][], sep: string): string {
+  const eol = (rows as { eol?: string }).eol === "\r\n" ? "\r\n" : "\n";
   const q = (c: string) => (c.includes(sep) || /["\r\n]/.test(c) || /^\s|\s$/.test(c) ? `"${c.replace(/"/g, '""')}"` : c);
-  return rows.map((r) => r.map(q).join(sep)).join("\n") + "\n";
+  return rows.map((r) => r.map(q).join(sep)).join(eol) + eol;
 }
 
 // ---- presentations (.pptx) ---------------------------------------------------------------------

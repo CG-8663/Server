@@ -30,7 +30,7 @@ import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
 import { actionsForItems, batchToast, offersDownload, selectionAfterQuery, type BatchKind } from "./filesRules";
-import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, type FavoriteItem, favoritePath, fileKindLabel, filterUnsyncedPhotos, handleFileDragEnter, handleFileDragOver, handleFileDrop, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, UPLOAD_REFRESH_KEYS, type UploadBatch } from "../filesHelpers";
+import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, type FavoriteItem, favoritePath, fileKindLabel, filterUnsyncedPhotos, folderPickerRoots, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
 
 const FileViewer = lazy(() =>
   import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
@@ -304,16 +304,22 @@ function useUploads(onDone: () => void) {
       ]);
     }
     // Folder uploads: make the folders first (parents before children). One that already
-    // exists is fine: files land inside it, and name clashes keep both copies.
-    let dirFailed = false;
+    // exists is fine. Any other mkdir error is shown once; files under that folder are not
+    // uploaded, so a permission error is not reported again as "no longer exists".
+    let mkdirState: UploadMkdirState = { failed: [], shown: false };
     for (const d of dirs) {
-      await mutate("files.createDirectory", { path: `${dir}/${d}` }).catch((e) => {
-        const msg = (e as Error).message;
-        if (msg === "[already-exists]" || msg === "[destination-already-exists]") return;
-        if (!dirFailed) toast(`${d}: ${nice(msg)}`, true);
-        dirFailed = true;
-      });
+      if (mkdirState.failed.some((f) => d === f || d.startsWith(`${f}/`))) continue;
+      let message: string | null = null;
+      try {
+        await mutate("files.createDirectory", { path: `${dir}/${d}` });
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      const step = reduceUploadMkdir(mkdirState, d, message);
+      mkdirState = { failed: step.failed, shown: step.shown };
+      if (step.toast) toast(`${d}: ${nice(step.toast)}`, true);
     }
+    const dirFailed = mkdirState.failed.length > 0;
     if (!items.length) {
       onDone();
       if (!dirFailed) toast(dirs.length === 1 ? "Folder created" : `${dirs.length} folders created`);
@@ -326,6 +332,10 @@ function useUploads(onDone: () => void) {
       while (next < items.length) {
         const i = next++;
         const it = items[i];
+        if (uploadRelBlocked(it.rel, mkdirState.failed)) {
+          setUploads((u) => u.map((x) => (x.id === ids[i] ? { ...x, state: "error", error: "Skipped" } : x)));
+          continue;
+        }
         try {
           await uploadOne(it, dir, (loaded) =>
             setUploads((u) => u.map((x) => (x.id === ids[i] ? { ...x, loaded } : x))),
@@ -541,6 +551,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
                 } : p) as FileEntry,
             )
           : (listing.data?.files ?? []);
+  const folderListing = !!path && !path.startsWith("::") && q.trim().length < 2;
   const activeQ =
     q.trim().length >= 2
       ? search
@@ -551,6 +562,11 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
           : listing;
   const browserOnline = useBrowserOnline();
   const fileProblem = path !== null || q ? queryProblem(activeQ, browserOnline) : null;
+  const showEmpty = showFolderEmpty({
+    error: folderListing ? listing.error : activeQ.error,
+    count: items.length,
+    suppress: fileProblem != null && activeQ.data == null,
+  });
   const loading =
     q.trim().length >= 2
       ? search.isLoading
@@ -933,7 +949,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
       {path === null && !q && (
         <>
           <div className="places">
-            {places.map((p) => (
+            {places.filter((p) => isServedFilePlace(p.path)).map((p) => (
               <button
                 key={p.path}
                 className="glass place press"
@@ -1080,7 +1096,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
                 </div>
               ))}
             </div>
-          ) : fileProblem && !activeQ.data ? null : items.length === 0 ? (
+          ) : showEmpty ? (
             <div className="glass empty">
               <span className="big">
                 <Icon
@@ -1109,7 +1125,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
                 <span>Tap + to upload photos or files.</span>
               )}
             </div>
-          ) : grid && !q ? (
+          ) : items.length === 0 ? null : grid && !q ? (
             <div className="file-grid">
               {items.map((f) => (
                 <Fragment key={f.path}>{Row({ f })}</Fragment>
@@ -1788,7 +1804,7 @@ function FolderPicker({
     (f) => isDir(f) && !exclude.includes(f.path),
   );
   const blocked = exclude.some((p) => dir === p || dir.startsWith(`${p}/`));
-  const roots = ["/Home", "/External", "/Network"];
+  const roots = folderPickerRoots();
   return (
     <Sheet
       open

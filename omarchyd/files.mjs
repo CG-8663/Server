@@ -161,6 +161,8 @@ export function createFiles({home, dataDir, io} = {}) {
 		const type = dir ? 'directory' : typeFor(name)
 		const top = virtual === '/Home' || virtual === '/Trash'
 		const ops = top ? (virtual === '/Home' ? ['writable'] : []) : inTrash ? ['restore', 'delete'] : ['copy', 'move', 'rename', 'trash', 'favorite', 'writable']
+		// Home folders can be shared on the LAN. The client shows that only for the owner.
+		if (dir && virtual.startsWith('/Home/')) ops.push('share')
 		return {
 			name,
 			path: virtual,
@@ -265,9 +267,15 @@ export function createFiles({home, dataDir, io} = {}) {
 		const {real, base} = await resolve(path)
 		if (real === base) throw new RpcError('BAD_REQUEST', '[cannot-move]')
 		const {real: dest} = await resolve(toDirectory)
-		if (dest === real || dest.startsWith(real + sep)) throw new RpcError('BAD_REQUEST', '[subdir-of-self]')
-		let target = join(dest, basename(real))
+		// `dest` and `real` are the paths as typed (symlink names included). A link that sits
+		// outside the folder can still point inside it; comparing those real paths rejects the
+		// copy before it nests, and a realpath failure must not fall through to cp.
 		const sourceReal = await realpath(real)
+		const destReal = await realpath(dest)
+		if (dest === real || dest.startsWith(real + sep) || destReal === sourceReal || destReal.startsWith(sourceReal + sep)) {
+			throw new RpcError('BAD_REQUEST', '[subdir-of-self]')
+		}
+		let target = join(dest, basename(real))
 		// Only replace of this same file returns early. A directory symlink to the parent still
 		// names that file once both paths are real; a hard link in another folder does not.
 		let targetReal = null
@@ -280,7 +288,10 @@ export function createFiles({home, dataDir, io} = {}) {
 			if (collision === 'replace') {
 				// The replacement target can be this item's parent (the source sits inside it, or
 				// they are the same path). rm would delete that parent. Refuse instead.
-				if (targetReal !== null && (sourceReal === targetReal || sourceReal.startsWith(targetReal + sep))) {
+				if (
+					targetReal !== null &&
+					(sourceReal === targetReal || sourceReal.startsWith(targetReal + sep) || targetReal === destReal || targetReal.startsWith(sourceReal + sep))
+				) {
 					throw new RpcError('BAD_REQUEST', '[subdir-of-self]')
 				}
 				await rm(target, {recursive: true, force: true})
@@ -330,7 +341,10 @@ export function createFiles({home, dataDir, io} = {}) {
 		// exists, checked again with symlinks followed.
 		let dest = null
 		try {
-			dest = original ? pathResolve(decodeURI(original)) : null
+			// .trashinfo Path is a percent-encoded pathname, not a full URI. decodeURI leaves
+			// & , + = # ; : @ encoded (`Q%26A`). Reject NUL and anything pathResolve walks out of Home.
+			const decoded = original ? decodeURIComponent(original) : ''
+			dest = decoded && !decoded.includes('\0') ? pathResolve(decoded) : null
 		} catch {
 			dest = null
 		}

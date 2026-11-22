@@ -7,7 +7,7 @@ import { mutate, type FileEntry } from "../../api";
 import { useDialogFocus } from "../../focus";
 import { Icon, type IconName } from "../../icons";
 import { bytes, haptic, usePortalRoot, useToast } from "../../ui";
-import { ZIP_ENTRY_LIMIT, handleDocumentLinkClick, renderMarkdownHtml, shouldIgnoreViewerKey, zipTruncatedNote } from "./helpers";
+import { ZIP_ENTRY_LIMIT, decodeTextFile, encodeTextFile, handleDocumentLinkClick, renderMarkdownHtml, shouldIgnoreViewerKey, zipTruncatedNote } from "./helpers";
 import type { Sheet, Shape, ZipEntry } from "./office";
 
 const enc = encodeURIComponent;
@@ -600,7 +600,7 @@ function PdfPage({ doc, n, width, root }: { doc: PdfDoc; n: number; width: numbe
 const MAX_TEXT_VIEW = 8e6;
 const MAX_TEXT_EDIT = 3e6;
 function useText(f: FileEntry, reload: number) {
-  const [state, set] = useState<{ text?: string; error?: string }>({});
+  const [state, set] = useState<{ text?: string; error?: string; editable?: boolean; bom?: boolean; eol?: "\n" | "\r\n" }>({});
   useEffect(() => {
     if ((f.size ?? 0) > MAX_TEXT_VIEW) return set({ error: `Too large to show here (${bytes(f.size)}). Download it instead.` });
     const ac = new AbortController();
@@ -608,9 +608,11 @@ function useText(f: FileEntry, reload: number) {
     fetch(viewUrl(f.path), { credentials: "same-origin", signal: ac.signal })
       .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`Couldn’t open the file (${r.status})`))))
       .then((buf) => {
-        const head = new Uint8Array(buf.slice(0, 4096));
+        const bytes = new Uint8Array(buf);
+        const head = bytes.subarray(0, 4096);
         if (head.includes(0)) throw new Error("This file isn’t text, so it can’t be shown here.");
-        set({ text: new TextDecoder().decode(buf) });
+        const info = decodeTextFile(bytes);
+        set({ text: info.text, editable: info.editable, bom: info.bom, eol: info.eol });
       })
       .catch((e) => !ac.signal.aborted && set({ error: (e as Error).message }));
     return () => ac.abort();
@@ -626,22 +628,23 @@ function TextView(b: BodyProps) {
   const { f } = b;
   const toast = useToast();
   const [reload, setReload] = useState(0);
-  const { text, error } = useText(f, reload);
+  const { text, error, editable: textEditable, bom, eol } = useText(f, reload);
   const isMd = b.kind === "markdown";
   const [mode, setMode] = useState<"view" | "source" | "edit">(isMd ? "view" : "source");
   const [draft, setDraft] = useState("");
   const [wrap, setWrap] = useState(true);
   const [html, setHtml] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const editable = f.operations.includes("rename") && (f.size ?? 0) <= MAX_TEXT_EDIT;
-  const dirty = mode === "edit" && draft !== text;
+  const plain = text?.replace(/\r\n/g, "\n");
+  const editable = f.operations.includes("rename") && (f.size ?? 0) <= MAX_TEXT_EDIT && textEditable !== false;
+  const dirty = mode === "edit" && draft !== plain;
   useEffect(() => {
     if (isMd && text != null && mode === "view") renderMarkdown(text).then(setHtml, () => setHtml(null));
   }, [text, mode]);
   const save = async () => {
     setSaving(true);
     try {
-      await saveFile(f, new Blob([draft], { type: "text/plain" }));
+      await saveFile(f, new Blob([encodeTextFile(draft, { bom: !!bom, eol: eol ?? "\n" })], { type: "text/plain" }));
       toast("Saved");
       setMode(isMd ? "view" : "source");
       setReload((r) => r + 1);
@@ -679,7 +682,7 @@ function TextView(b: BodyProps) {
               </button>
             )}
             {editable && (
-              <button className="btn small" onClick={() => (setDraft(text), setMode("edit"))}>
+              <button className="btn small" onClick={() => (setDraft(plain ?? ""), setMode("edit"))}>
                 <Icon name="pencil" size={17} />
                 Edit
               </button>
@@ -803,7 +806,7 @@ function Grid({ rows, editable, onEdit, header }: { rows: string[][]; editable?:
 function CsvView(b: BodyProps) {
   const toast = useToast();
   const [reload, setReload] = useState(0);
-  const { text, error } = useText(b.f, reload);
+  const { text, error, editable: textEditable, bom } = useText(b.f, reload);
   const sep = ext(b.f.name) === "tsv" || b.f.type === "text/tab-separated-values" ? "\t" : ",";
   const [rows, setRows] = useState<string[][] | null>(null);
   const [orig, setOrig] = useState<string[][] | null>(null);
@@ -818,13 +821,13 @@ function CsvView(b: BodyProps) {
     });
   }, [text]);
   const dirty = editing && rows !== orig;
-  const editable = b.f.operations.includes("rename") && (b.f.size ?? 0) <= MAX_TEXT_EDIT;
+  const editable = b.f.operations.includes("rename") && (b.f.size ?? 0) <= MAX_TEXT_EDIT && textEditable !== false;
   const save = async () => {
     if (!rows) return;
     setSaving(true);
     try {
       const { toDelimited } = await import("./office");
-      await saveFile(b.f, new Blob([toDelimited(rows, sep)], { type: "text/csv" }));
+      await saveFile(b.f, new Blob([encodeTextFile(toDelimited(rows, sep), { bom: !!bom, eol: "\n" })], { type: "text/csv" }));
       toast("Saved");
       setEditing(false);
       setReload((r) => r + 1);
@@ -864,7 +867,8 @@ function CsvView(b: BodyProps) {
       onEdit={(r, c, v) =>
         setRows((cur) => {
           if (!cur || (cur[r]?.[c] ?? "") === v) return cur;
-          const next = cur.map((x) => x.slice());
+          const next = cur.map((x) => x.slice()) as string[][] & { eol?: "\n" | "\r\n" };
+          next.eol = (cur as { eol?: "\n" | "\r\n" }).eol;
           while (next.length <= r) next.push([]);
           while (next[r].length < c) next[r].push("");
           next[r][c] = v;

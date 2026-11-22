@@ -149,3 +149,41 @@ export function shouldIgnoreViewerKey(
   if (el.isContentEditable) return true;
   return typeof el.closest === "function" && !!el.closest(EDITABLE_SELECTOR);
 }
+
+export type TextFileInfo = {
+  text: string;
+  editable: boolean;
+  bom: boolean;
+  eol: "\n" | "\r\n";
+};
+
+/** View stays lenient. Edit is allowed only when the bytes are valid UTF-8. A leading BOM is remembered, not shown. */
+export function decodeTextFile(bytes: Uint8Array): TextFileInfo {
+  const bom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+  const body = bom ? bytes.subarray(3) : bytes;
+  let editable = true;
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(body);
+  } catch {
+    editable = false;
+    text = new TextDecoder("utf-8").decode(body);
+  }
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  const eol: "\n" | "\r\n" = text.includes("\r\n") ? "\r\n" : "\n";
+  return { text, editable, bom, eol };
+}
+
+/** Put back the file's line ending and, when it had one, the UTF-8 BOM. */
+export function encodeTextFile(draft: string, opts: { bom: boolean; eol: "\n" | "\r\n" }): Uint8Array<ArrayBuffer> {
+  const body = draft.replace(/\n/g, opts.eol);
+  const encoded = new TextEncoder().encode(body);
+  const out = new Uint8Array(new ArrayBuffer(encoded.byteLength + (opts.bom ? 3 : 0)));
+  if (opts.bom) {
+    out[0] = 0xef;
+    out[1] = 0xbb;
+    out[2] = 0xbf;
+  }
+  out.set(encoded, opts.bom ? 3 : 0);
+  return out;
+}

@@ -284,4 +284,50 @@ export function fileKindLabel(f: Pick<FileEntry, 'name' | 'type'>): string {
 	return 'Unknown file'
 }
 
+/** Empty folder copy only after a listing succeeded with no rows. An error is not an empty folder. */
+export function showFolderEmpty(input: {error: unknown; count: number; suppress?: boolean}): boolean {
+	if (input.suppress || input.error != null) return false
+	return input.count === 0
+}
+
+export type UploadMkdirState = {failed: string[]; shown: boolean}
+
+/** One folder-upload mkdir. An existing folder is fine; any other error is shown once and blocks that folder. */
+export function reduceUploadMkdir(
+	state: UploadMkdirState,
+	dir: string,
+	message: string | null,
+): UploadMkdirState & {toast: string | null; skip: boolean} {
+	if (state.failed.some((f) => dir === f || dir.startsWith(`${f}/`))) {
+		return {failed: state.failed, shown: state.shown, toast: null, skip: true}
+	}
+	if (message == null || message === '[already-exists]' || message === '[destination-already-exists]') {
+		return {failed: state.failed, shown: state.shown, toast: null, skip: false}
+	}
+	return {
+		failed: [...state.failed, dir],
+		shown: true,
+		toast: state.shown ? null : message,
+		skip: false,
+	}
+}
+
+/** A file or nested folder whose parent mkdir failed must not be uploaded as a missing item. */
+export function uploadRelBlocked(rel: string | undefined, failed: readonly string[]): boolean {
+	if (!rel) return false
+	return failed.some((dir) => rel === dir || rel.startsWith(`${dir}/`))
+}
+
+const UNSERVED_FILE_ROOTS = new Set(['/Apps', '/External', '/Network'])
+
+/** App data, Drives, and Network are not served by resolve() yet. */
+export function isServedFilePlace(path: string): boolean {
+	return !UNSERVED_FILE_ROOTS.has(path)
+}
+
+/** Move/Copy chips. Drives and Network stay off until those roots exist. */
+export function folderPickerRoots(): string[] {
+	return ['/Home']
+}
+
 export type {FileEntry}

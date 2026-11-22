@@ -356,3 +356,70 @@ describe('files screen: #494 human-readable Kind label in ItemSheet', () => {
 		assert.doesNotMatch(src, /f\.type\.split\("\/"\)\.pop\(\)/)
 	})
 })
+
+describe('files screen: folder empty state, upload errors, and unserved roots', () => {
+	test('showFolderEmpty is only a successful listing with no rows', () => {
+		assert.equal(helpers.showFolderEmpty({error: null, count: 0}), true)
+		assert.equal(helpers.showFolderEmpty({error: undefined, count: 0}), true)
+		assert.equal(helpers.showFolderEmpty({error: new Error('[permission]'), count: 0}), false)
+		assert.equal(helpers.showFolderEmpty({error: new Error('offline'), count: 3}), false)
+		assert.equal(helpers.showFolderEmpty({error: null, count: 2}), false)
+		assert.equal(helpers.showFolderEmpty({error: null, count: 0, suppress: true}), false)
+	})
+
+	test('Files.tsx uses showFolderEmpty so an error is not also an empty folder', async () => {
+		const src = await filesSource()
+		assert.match(src, /showFolderEmpty\(/)
+		assert.match(src, /listing\.error/)
+	})
+
+	test('mkdir failures other than already-exists stop that folder once', () => {
+		const start = {failed: [], shown: false}
+		const exists = helpers.reduceUploadMkdir(start, 'photos', '[already-exists]')
+		assert.equal(exists.skip, false)
+		assert.deepEqual(exists.failed, [])
+		assert.equal(exists.toast, null)
+		const sameName = helpers.reduceUploadMkdir(start, 'photos', '[destination-already-exists]')
+		assert.deepEqual(sameName.failed, [])
+		const denied = helpers.reduceUploadMkdir(start, 'photos', '[permission]')
+		assert.deepEqual(denied.failed, ['photos'])
+		assert.equal(denied.toast, '[permission]')
+		assert.equal(denied.shown, true)
+		const child = helpers.reduceUploadMkdir(denied, 'photos/raw', '[does-not-exist]')
+		assert.equal(child.skip, true)
+		assert.equal(child.toast, null)
+		assert.deepEqual(child.failed, ['photos'])
+		const again = helpers.reduceUploadMkdir(denied, 'other', '[read-only]')
+		assert.equal(again.toast, null)
+		assert.deepEqual(again.failed, ['photos', 'other'])
+		assert.equal(helpers.uploadRelBlocked('photos/a.jpg', denied.failed), true)
+		assert.equal(helpers.uploadRelBlocked('photos/raw/b.jpg', denied.failed), true)
+		assert.equal(helpers.uploadRelBlocked('photos2/a.jpg', denied.failed), false)
+		assert.equal(helpers.uploadRelBlocked(undefined, denied.failed), false)
+		assert.equal(helpers.uploadRelBlocked('other/c.jpg', again.failed), true)
+	})
+
+	test('Files.tsx skips files under a failed upload folder instead of reporting them missing', async () => {
+		const src = await filesSource()
+		assert.match(src, /reduceUploadMkdir\(/)
+		assert.match(src, /uploadRelBlocked\(/)
+		assert.doesNotMatch(src, /if \(msg === "\[already-exists\]"/)
+	})
+
+	test('App data, Drives, and Network stay hidden until the backend serves them', () => {
+		assert.equal(helpers.isServedFilePlace('/Home'), true)
+		assert.equal(helpers.isServedFilePlace('/Home/Photos'), true)
+		assert.equal(helpers.isServedFilePlace('/Trash'), true)
+		assert.equal(helpers.isServedFilePlace('::recents'), true)
+		assert.equal(helpers.isServedFilePlace('/Apps'), false)
+		assert.equal(helpers.isServedFilePlace('/External'), false)
+		assert.equal(helpers.isServedFilePlace('/Network'), false)
+		assert.deepEqual(helpers.folderPickerRoots(), ['/Home'])
+	})
+
+	test('Files.tsx filters places and picker chips through the helpers', async () => {
+		const src = await filesSource()
+		assert.match(src, /isServedFilePlace\(/)
+		assert.match(src, /folderPickerRoots\(/)
+	})
+})
