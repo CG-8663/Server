@@ -313,8 +313,7 @@ export function TerminalScreen({
 					setMessage('The shell has ended.')
 				} else {
 					setState((st) => (st === 'connecting' ? 'error' : 'lost'))
-					// A swarm computer's shell goes through its connector and isn't kept (yet): it ended.
-					setMessage(agent ? 'The connection to it dropped. Reconnect for a new shell.' : 'Your shell is still running on the server. Reconnect to pick up where you left off.')
+					setMessage(agent ? 'Your shell is still running on that computer. Reconnect to pick up where you left off.' : 'Your shell is still running on the server. Reconnect to pick up where you left off.')
 				}
 			}
 		}
@@ -539,11 +538,9 @@ export function TerminalScreen({
 						{live ? `${app ? 'App shell' : agent ? 'Shell through its connector' : 'Omarchy Server shell'}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? 'Connecting…' : 'Disconnected'}
 					</span>
 				</div>
-				{!agent && (
-					<button className="round-btn" aria-label="New session" title="New session" onClick={newSession} disabled={!live}>
-						<Icon name="reset" size={19} />
-					</button>
-				)}
+				<button className="round-btn" aria-label="New session" title="New session" onClick={newSession} disabled={!live}>
+					<Icon name="reset" size={19} />
+				</button>
 				<button className="round-btn" aria-label="Paste" onClick={paste} disabled={!live}>
 					<Icon name="clipboard" size={19} />
 				</button>

@@ -1,6 +1,7 @@
+import {useQuery} from '@tanstack/react-query'
 import {useMemo} from 'react'
 
-import {diskPct, type UserApp} from '../api'
+import {diskPct, query, type UserApp} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useApps, useBattery, useCpu, useDisk, useGpus, useMemory, useRecent, useTemp, useUpdates, useUptime, useUser} from '../data'
 import {batteryGaugeItem} from '../battery'
@@ -68,6 +69,13 @@ export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app:
 	const recent = useRecent()
 	const temp = useTemp()
 	const uptime = useUptime()
+	const swarm = useQuery({
+		queryKey: ['swarm.list'],
+		queryFn: () => query<{id: string; online: boolean}[]>('swarm.list'),
+		enabled: user.data?.role === 'owner',
+		refetchInterval: 10_000,
+	})
+	const swarmList = swarm.data ?? []
 	const updateIds = useMemo(() => new Set((updates.data ?? []).map((u) => u.id)), [updates.data])
 	const list = apps.data ?? []
 	const byId = useMemo(() => new Map(list.map((a) => [a.id, a])), [list])
@@ -119,6 +127,12 @@ export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app:
 						<Icon name="apps" size={15} />
 						{running}/{list.length} apps running
 					</span>
+					{swarmList.length > 0 && (
+						<span className="fact">
+							<Icon name="devices" size={15} />
+							{swarmList.filter((a) => a.online).length}/{swarmList.length} swarm online
+						</span>
+					)}
 				</div>
 			</div>
 
