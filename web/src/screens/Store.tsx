@@ -187,11 +187,16 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 										<Icon name="search" size={30} />
 									</span>
 									<b>No apps found</b>
-									<span>Try a different search.</span>
+									<span>Try a different search, or submit the app you’re looking for.</span>
+									<a className="btn small" href={SUBMIT_APP_URL} target="_blank" rel="noopener noreferrer" style={{marginTop: 10}}>
+										Submit an app
+									</a>
 								</div>
 							)}
 						</div>
 					)}
+
+			{browsing && !registry.isLoading && <SubmitApp compact />}
 
 			{stores && <CommunityStores owner={owner} onClose={() => setStores(false)} />}
 
@@ -212,13 +217,47 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 }
 
 // ---- community app stores ------------------------------------------------------------------------
+// Modc is where anyone can submit an app (the official store is packaged by TouchWorkStation).
+const MODC_URL = 'https://github.com/TouchWorkStation/Modc-app-store'
+const SUBMIT_APP_URL = `${MODC_URL}/issues/new?template=submit-app.yml`
+const SUBMIT_GUIDE_URL = `${MODC_URL}/blob/main/CONTRIBUTING.md`
 const SUGGESTED_STORES = [
 	{
 		url: 'https://github.com/TouchWorkStation/app-store',
 		name: 'TouchWorkStation',
 		blurb: 'Google Chrome and Brave browsers that run on your server and stream to any device.',
 	},
+	{
+		url: MODC_URL,
+		name: 'Modc',
+		blurb: 'Apps submitted by the community, checked automatically and reviewed before they’re added.',
+	},
 ]
+
+/** "Have an app?": where to submit one, for anyone signed in. */
+function SubmitApp({compact = false}: {compact?: boolean}) {
+	return (
+		<div className={`glass card submit-app${compact ? ' compact' : ''}`}>
+			<span className="row-ico" style={{'--c': 'var(--accent)'} as CSSProperties}>
+				<Icon name="upload" size={19} />
+			</span>
+			<span className="main">
+				<b>{compact ? 'Don’t see an app?' : 'Have an app to share?'}</b>
+				<span className="muted">Submit it to the Modc App Store. Fill in a short form, or open a pull request with two files.</span>
+			</span>
+			<span className="submit-app-actions">
+				<a className="btn small primary" href={SUBMIT_APP_URL} target="_blank" rel="noopener noreferrer">
+					Submit an app
+				</a>
+				{!compact && (
+					<a className="btn small" href={SUBMIT_GUIDE_URL} target="_blank" rel="noopener noreferrer">
+						How it works
+					</a>
+				)}
+			</span>
+		</div>
+	)
+}
 function CommunityStores({owner, onClose}: {owner: boolean; onClose: () => void}) {
 	const qc = useQueryClient()
 	const toast = useToast()
@@ -351,6 +390,8 @@ function CommunityStores({owner, onClose}: {owner: boolean; onClose: () => void}
 						{add.isPending && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>Downloading the store’s catalog. This can take a minute.</p>}
 					</>
 				)}
+				<h4 className="list-head">Submit an app</h4>
+				<SubmitApp />
 			</div>
 		</Sheet>
 	)

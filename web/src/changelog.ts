@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.61',
+		date: '2026-11-22',
+		title: 'Submit an app',
+		added: [
+			'Anyone can submit an app to the new Modc App Store, with a short form or a pull request. Submit an app is at the bottom of the App Store, in Stores, and in an empty search.',
+			'Modc is listed under App Store › Stores › Suggested, for owners who want community-submitted apps.',
+		],
+	},
+	{
 		version: '0.9.60',
 		date: '2026-11-22',
 		title: 'Files on every computer, and the iPhone bar',
