@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.57',
+		date: '2026-11-22',
+		title: 'The store, files, and the desktop tell the truth',
+		fixed: [
+			'A private app port stays off another app’s public port. A serial device whose name contains a colon still reaches the app. A named volume is not turned into an empty folder.',
+			'Hardening an app is not treated as reaching into the server. An option that turns confinement off still is. A comment or an optional value is not reported as a missing setting.',
+			'The store shows an install size, tries again when a store fails to load, and search ignores extra spaces and missing fields. A plugged-in device is not labeled unplugged.',
+			'Favorites survive a rename. A full disk says so. Keep both names the copy in the right place. Trash times are local. Search stays in the folder you opened, and each Files window remembers its own folder.',
+			'A name that starts with a dot is refused instead of vanishing. A large folder does not draw every row at once. Photo zoom stays on the photo, and a spreadsheet can be edited from the keyboard.',
+			'The dock closes after a brush of the edge. Maximize fills a half-snapped window. Enter on a focused icon opens it. Signing out clears Later, so it can return next time.',
+			'An unfinished disk check is not reported as clean. Unused space leaves out the other partitions. A new machine stays inside the sizes and names the server accepts. A theme keeps its name, and Show more continues past the first page.',
+		],
+	},
+	{
 		version: '0.9.56',
 		date: '2026-11-21',
 		title: 'Clip books, published apps, and a desktop that stays put',
