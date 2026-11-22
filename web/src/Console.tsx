@@ -1461,7 +1461,7 @@ function DesktopSignIn({onDone}: {onDone: () => void}) {
 			<span>
 				The Omarchy desktop is at its sign-in screen, so there’s nothing to show yet. Sign it in from here: this also clears a lockout after too many wrong passwords.
 			</span>
-			<input type="password" autoComplete="current-password" placeholder="Your Omarchy Server password" value={password} onChange={(e) => setPassword(e.target.value)} aria-label="Your Omarchy Server password" />
+			<input type="password" autoComplete="current-password" placeholder="Your password" value={password} onChange={(e) => setPassword(e.target.value)} aria-label="Your password" />
 			{error && <span className="desk-signin-error">{error}</span>}
 			<button className="btn primary small" disabled={busy || !password}>
 				{busy ? <span className="spinner" /> : 'Sign in to the desktop'}

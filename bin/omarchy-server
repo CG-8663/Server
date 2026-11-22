@@ -18,7 +18,7 @@ MARK='omarchy-server widget'
 ip_addr() { ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}'; }
 running() { systemctl --user is-active --quiet omarchyd.service 2>/dev/null && systemctl --user is-active --quiet omarchy-server-web.service 2>/dev/null; }
 any_running() { systemctl --user is-active --quiet omarchyd.service 2>/dev/null || systemctl --user is-active --quiet omarchy-server-web.service 2>/dev/null; }
-notify() { command -v notify-send >/dev/null 2>&1 && notify-send -a "Omarchy Server" "Omarchy Server" "$1"; printf '%s\n' "$1"; }
+notify() { command -v notify-send >/dev/null 2>&1 && notify-send -a "MODC" "MODC" "$1"; printf '%s\n' "$1"; }
 reload_bar() { if command -v omarchy-restart-waybar >/dev/null 2>&1; then omarchy-restart-waybar >/dev/null 2>&1; else pkill -SIGUSR2 waybar 2>/dev/null; fi; }
 
 # uninstall: take Omarchy Server off this machine. By default your data stays (account, apps and their
@@ -60,20 +60,20 @@ can_ask() {
 do_uninstall() {
 	local purge=$1 yes=$2 left word answer link
 	if [ "$purge" = 1 ] && ! can_ask; then
-		echo "Couldn't ask podman and libvirt what Omarchy Server still has, so nothing was deleted. That takes podman, virsh and node on this shell's PATH. Nothing was changed."
+		echo "Couldn't ask podman and libvirt what this server still has, so nothing was deleted. That takes podman, virsh and node on this shell's PATH. Nothing was changed."
 		exit 1
 	fi
 	left=$(leftovers)
 	if [ "$purge" = 1 ] && [ -n "$left" ]; then
-		printf 'These apps and machines were made by Omarchy Server and still exist:\n%s\n\n' "$left"
+		printf 'These apps and machines were made by this server and still exist:\n%s\n\n' "$left"
 		echo "Remove them first (Apps, then Uninstall; Machines, then Delete), then run this again. Nothing was changed."
 		exit 1
 	fi
 	if [ "$purge" = 1 ]; then
-		printf 'This removes Omarchy Server AND everything it keeps (%s, %s):\n' "$BASE" "$(du -sh "$BASE" 2>/dev/null | cut -f1)"
+		printf 'This removes My Own Data Center AND everything it keeps (%s, %s):\n' "$BASE" "$(du -sh "$BASE" 2>/dev/null | cut -f1)"
 		echo "  your account, installed apps and their data, machines and their disks."
 	else
-		echo "This removes Omarchy Server's program, services, launcher entries, top-bar icon, storage helper and firewall rules."
+		echo "This removes the program, services, launcher entries, top-bar icon, storage helper and firewall rules."
 		echo "It keeps your account, apps and their data, and machines and their disks ($BASE),"
 		echo "so installing again picks up where you left off. Add --purge to delete those too."
 		[ -n "$left" ] && printf '\nThese keep running, because their data stays:\n%s\n' "$left"
@@ -157,10 +157,10 @@ EOS
 		# App folders can belong to the apps' own user ids, so they go through podman, as the server does.
 		podman unshare rm -rf "$BASE/omarchyd/apps" >/dev/null 2>&1
 		rm -rf "$BASE"
-		echo "Omarchy Server and its data are gone."
+		echo "My Own Data Center and its data are gone."
 		echo "Firewall rules for individual app ports are not removed: see 'sudo ufw status'."
 	else
-		echo "Omarchy Server is removed. Your data is still in $BASE."
+		echo "My Own Data Center is removed. Your data is still in $BASE."
 	fi
 	echo "Left as they were: the installed packages, the 'run while logged out' setting, and ~/Pools."
 	if [ -n "$failed" ]; then
@@ -211,13 +211,13 @@ usage() {
 		uninstall) echo "Use: omarchy-server uninstall [--purge] [-y]" ;;
 		*)
 			cat <<'EOF'
-omarchy-server: check, open, start, stop and restart Omarchy Server on this machine.
+omarchy-server: check, open, start, stop and restart My Own Data Center on this machine.
   omarchy-server              status and address
   omarchy-server open         open the web app
   omarchy-server restart      restart both services (also: start, stop)
   omarchy-server logs [-f|--follow] [-n N] [--since TIME]  recent log lines
   omarchy-server widget on    add the status icon to the top bar (off to remove)
-  omarchy-server uninstall    remove Omarchy Server, keeping your data (--purge deletes that too)
+  omarchy-server uninstall    remove My Own Data Center, keeping your data (--purge deletes that too)
 EOF
 			;;
 	esac
@@ -262,7 +262,7 @@ case "$cmd" in
 		up=0
 		running && up=1
 		if [ "$up" = 0 ]; then
-			echo "Omarchy Server is not running."
+			echo "My Own Data Center is not running."
 		fi
 		# A display is required; over ssh, or with no xdg-open, print the address instead.
 		opened=0
@@ -350,9 +350,9 @@ case "$cmd" in
 		no_extra_args waybar "$@"
 		# One line of JSON for Waybar's custom module.
 		if running; then
-			printf '{"text":"󰒋","class":"running","tooltip":"Omarchy Server is running\\nhttp://%s:%s\\n\\nClick: open · Right-click: restart"}\n' "$(ip_addr)" "$PORT"
+			printf '{"text":"󰒋","class":"running","tooltip":"MODC is running\\nhttp://%s:%s\\n\\nClick: open · Right-click: restart"}\n' "$(ip_addr)" "$PORT"
 		else
-			printf '{"text":"󰒋 off","class":"stopped","tooltip":"Omarchy Server is stopped\\n\\nRight-click: start it"}\n'
+			printf '{"text":"󰒋 off","class":"stopped","tooltip":"MODC is stopped\\n\\nRight-click: start it"}\n'
 		fi
 		;;
 	widget)
@@ -380,7 +380,7 @@ const has = sections.some((s) => s.some((e) => e?.id === 'omarchy-server'))
 if (mode === 'on') {
   if (has) { console.log('The widget is already on.'); process.exit(0) }
   cfg.bar.layout.right ??= []
-  cfg.bar.layout.right.unshift({id: 'omarchy-server', type: 'command', exec: `${bin} waybar`, interval: 10, tooltip: 'Omarchy Server', onClick: `${bin} open`})
+  cfg.bar.layout.right.unshift({id: 'omarchy-server', type: 'command', exec: `${bin} waybar`, interval: 10, tooltip: 'MODC', onClick: `${bin} open`})
 } else if (mode === 'off') {
   if (!has) { console.log('The widget is not on.'); process.exit(0) }
   for (const k of Object.keys(cfg.bar.layout)) if (Array.isArray(cfg.bar.layout[k])) cfg.bar.layout[k] = cfg.bar.layout[k].filter((e) => e?.id !== 'omarchy-server')
@@ -391,7 +391,7 @@ fs.mkdirSync(require('node:path').dirname(target), {recursive: true})
 const tmp = `${target}.tmp-${process.pid}`
 fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n')
 fs.renameSync(tmp, target)
-console.log(mode === 'on' ? 'Added the Omarchy Server icon to the top bar. Remove it with: omarchy-server widget off' : 'Removed the Omarchy Server icon.')
+console.log(mode === 'on' ? 'Added the MODC icon to the top bar. Remove it with: omarchy-server widget off' : 'Removed the MODC icon.')
 EOF
 			command -v omarchy-shell >/dev/null 2>&1 && omarchy-shell shell reloadConfig >/dev/null 2>&1
 			exit 0
@@ -414,13 +414,13 @@ text = text.replace(/^(\s*)\{/, (m) => `${m}${def}`)
 fs.writeFileSync(file, text)
 EOF
 				reload_bar
-				echo "Added the Omarchy Server icon to the top bar. Remove it with: omarchy-server widget off"
+				echo "Added the MODC icon to the top bar. Remove it with: omarchy-server widget off"
 				;;
 			off)
 				grep -q "$MARK" "$WAYBAR" || { echo "The widget isn't on."; exit 0; }
 				sed -i "/\/\/ $MARK start/,/\/\/ $MARK end/d; /\/\/ $MARK\$/d" "$WAYBAR"
 				reload_bar
-				echo "Removed the Omarchy Server icon."
+				echo "Removed the MODC icon."
 				;;
 			*) echo "Use: omarchy-server widget on|off" >&2; exit 2 ;;
 		esac

@@ -17,7 +17,7 @@ sed -i \
 	-e 's/^iso_name=.*/iso_name="omarchy-server"/' \
 	-e 's/^iso_label=.*/iso_label="OMARCHY_SERVER_$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y%m)"/' \
 	-e 's|^iso_publisher=.*|iso_publisher="TouchWorkStation <https://github.com/TouchWorkStation/omarchy-server>"|' \
-	-e 's/^iso_application=.*/iso_application="Omarchy Server installer"/' \
+	-e 's/^iso_application=.*/iso_application="My Own Data Center installer"/' \
 	"$P/profiledef.sh"
 echo 'file_permissions["/usr/local/bin/omarchy-server-setup"]="0:0:755"' >>"$P/profiledef.sh"
 

@@ -8,12 +8,10 @@ import {resetDeskConfig} from '../desktop/config'
 import {useBootstrap, useUser} from '../data'
 import {checkLiveText} from '../focus'
 import {Icon, type IconName} from '../icons'
-import {Card, Field, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
-import {Appearance} from './More'
+import {Card, Field, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, useConfirm, useToast, type Prefs} from '../ui'
+import {Personalize} from '../desktop/Personalize'
 import {AssistantAppearanceSettings} from '../character/widgets'
 import {OmarchyThemes} from '../OmarchyThemes'
-import {StoragePage} from './Storage'
-import {BackupsPage} from '../backups'
 import {UnraidPage} from '../unraid'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 import {clearTotpSetupQuery} from './twoFactorQuery'
@@ -78,7 +76,7 @@ const ago = (t: number) => {
 }
 function describeSession(s: ActiveSession) {
 	if (s.client.type === 'native') {
-		const name = s.client.id === 'omarchy-server' || !s.client.id ? 'Omarchy Server' : s.client.id
+		const name = s.client.id === 'omarchy-server' || !s.client.id ? 'MODC' : s.client.id
 		return {icon: 'phone' as IconName, name, detail: [s.client.platform, s.client.appVersion && `v${s.client.appVersion}`].filter(Boolean).join(' · ')}
 	}
 	const ua = s.client.userAgent ?? ''
@@ -97,9 +95,11 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const qc = useQueryClient()
 	const [sheet, setSheet] = useState<SheetId>(null)
 	const inWindow = useContext(InWindow)
-	const layout = useLayout()
-	type Page = 'main' | 'appearance' | 'storage' | 'backups' | 'unraid' | 'omarchy-themes' | 'assistant'
-	const [page, setPage] = useState<Page>(() => (sessionStorage.getItem('omarchy-server:settings-page') as Page) || 'main')
+	type Page = 'main' | 'appearance' | 'unraid' | 'omarchy-themes' | 'assistant'
+	const [page, setPage] = useState<Page>(() => {
+		const saved = sessionStorage.getItem('omarchy-server:settings-page')
+		return saved === 'appearance' || saved === 'unraid' || saved === 'omarchy-themes' || saved === 'assistant' ? saved : 'main'
+	})
 	const openPage = (p: Page) => {
 		haptic(5)
 		if (p === 'main') sessionStorage.removeItem('omarchy-server:settings-page')
@@ -109,7 +109,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	}
 	const close = () => setSheet(null)
 	const owner = user.data?.role !== 'member'
-	const omarchyTheme = useOmarchyThemes(page === 'appearance')
 
 	const twoFactor = useQ<boolean>('user.is2faEnabled')
 	const sessions = useQ<ActiveSession[]>('user.listSessions')
@@ -130,7 +129,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const startUpdate = async () => {
 		const ok = await confirm({
 			title: `Update to ${check.data?.name ?? check.data?.version}?`,
-			body: 'Omarchy Server downloads the update, then restarts. Your apps and machines stop briefly. Keep the server powered on.',
+			body: 'The update downloads, then this server restarts. Your apps and machines stop briefly. Keep the server powered on.',
 			confirm: 'Update now',
 			icon: 'update',
 		})
@@ -170,8 +169,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	}
 
 
-	if (page === 'storage') return <StoragePage onBack={() => openPage('main')} target="host" />
-	if (page === 'backups' && owner) return <BackupsPage onBack={() => openPage('main')} />
 	if (page === 'unraid' && owner) return <UnraidPage onBack={() => openPage('main')} />
 	if (page === 'assistant') return <AssistantPage onBack={() => openPage('main')} />
 	if (page === 'omarchy-themes')
@@ -195,39 +192,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					</button>
 					<h1 className="title">Appearance</h1>
 				</div>
-				<Appearance prefs={prefs} setPrefs={setPrefs} wallpaper={user.data?.wallpaper} />
-				<section>
-					<div className="section-head">
-						<h2>Omarchy</h2>
-					</div>
-					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
-						<Row icon="palette" color="var(--blue)" label="Themes" value={omarchyTheme.data?.label ?? undefined} onClick={() => openPage('omarchy-themes')} />
-					</div>
-					<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
-						Your Omarchy desktop’s themes. Switch the whole desktop, or get more from the Omarchy manual.
-					</p>
-				</section>
-				<section>
-					<div className="section-head">
-						<h2>Layout</h2>
-					</div>
-					<Segmented<LayoutPref>
-						label="Layout"
-						value={layout.pref}
-						options={[
-							{id: 'auto', label: 'Automatic'},
-							{id: 'desktop', label: 'Desktop'},
-							{id: 'phone', label: 'Phone'},
-						]}
-						onChange={(v) => {
-							haptic(6)
-							setLayoutPref(v)
-						}}
-					/>
-					<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
-						Desktop gives you windows, a dock and Activities, like Ubuntu. Automatic uses it on a big screen with a mouse or trackpad (on this screen: {layout.detected ? 'Desktop' : 'Phone'}). Saved on this device only.
-					</p>
-				</section>
+				<Personalize embedded prefs={prefs} setPrefs={setPrefs} onOpenThemes={() => openPage('omarchy-themes')} />
 			</div>
 		)
 
@@ -266,8 +231,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				<div className="section-head" style={{marginTop: 18}} />
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					<Row icon="palette" color="var(--pink, #ec4899)" label="Appearance" onClick={() => openPage('appearance')} />
-					{owner && <Row icon="disk" color="var(--teal)" label="Storage" onClick={() => openPage('storage')} />}
-					{owner && <Row icon="history" color="var(--green)" label="Backups" onClick={() => openPage('backups')} />}
 					{owner && <Row icon="move" color="var(--orange, #f59e0b)" label="Move from Unraid" onClick={() => openPage('unraid')} />}
 				</div>
 			</div>
@@ -307,7 +270,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				<Group title="Software update">
 					<Row icon="sparkle" color="var(--pink)" label="What’s new" value={<VersionTag version={boot.touch.version} info={boot.server} />} onClick={() => setNotes(true)} />
 					{notes && <WhatsNewSheet releases={allReleases(boot.touch.version)} version={boot.touch.version} onClose={() => setNotes(false)} />}
-					<Row icon="server" color="var(--blue)" label="Omarchy Server" value={<VersionTag version={boot.server?.version} info={boot.server} />} />
+					<Row icon="server" color="var(--blue)" label="MODC" value={<VersionTag version={boot.server?.version} info={boot.server} />} />
 					{updateError && !updating && (
 						<div className="row static update-error" role="alert">
 							<span className="row-ico" style={{'--c': 'var(--red)'} as CSSProperties}>
@@ -331,7 +294,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 							<span className="progress">
 								<i style={{width: `${status.data?.progress ?? 2}%`}} />
 							</span>
-							<span className="muted" style={{fontSize: 12.5}}>Omarchy Server restarts when this finishes, and this page reloads by itself.</span>
+							<span className="muted" style={{fontSize: 12.5}}>This server restarts when this finishes, and this page reloads by itself.</span>
 						</div>
 					) : check.data?.available ? (
 						<>
@@ -382,7 +345,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				title="Secure connection"
 				footer={
 					<>
-						Apps such as Brave (HTTPS), Vaultwarden and Actual only work on https:// pages. Omarchy Server answers https:// on the same address with its own
+						Apps such as Brave (HTTPS), Vaultwarden and Actual only work on https:// pages. This server answers https:// on the same address with its own
 						certificate. To stop the browser warning, trust it on each device: iPhone and iPad, open the downloaded profile in Settings → General → VPN &
 						Device Management, then turn it on in General → About → Certificate Trust Settings. Mac: open it, then in Keychain Access set it to Always Trust.
 						Windows: open it and install it under Trusted Root Certification Authorities. Android: Settings → Security → Install a certificate → CA certificate.
@@ -403,7 +366,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				{owner && <Row icon="danger" color="var(--red)" label="Factory reset" onClick={() => setSheet('reset')} />}
 			</Group>
 			<p className="footer-note">
-				<VersionTag prefix="Omarchy Server " version={boot.touch.version} info={boot.server} />
+				<VersionTag prefix="MODC " version={boot.touch.version} info={boot.server} />
 			</p>
 
 			<NameSheet open={sheet === 'name'} current={user.data?.name ?? ''} onClose={close} />
@@ -586,7 +549,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 		const chat = k.provider === 'chatgpt'
 		const ok = await confirm({
 			title: chat ? 'Sign out of ChatGPT?' : `Delete ${k.name}?`,
-			body: chat ? 'The assistant stops using your ChatGPT plan, and Omarchy Server’s access to it is revoked.' : 'The assistant won’t use this key. Anyone you shared it with loses access.',
+			body: chat ? 'The assistant stops using your ChatGPT plan, and access to it is revoked.' : 'The assistant won’t use this key. Anyone you shared it with loses access.',
 			confirm: chat ? 'Sign out' : 'Delete',
 			danger: true,
 			icon: 'trash',
@@ -1061,7 +1024,7 @@ function ChatGptSignInSheet({keyId, onClose}: {keyId?: string; onClose: () => vo
 			/>
 			<form className="screen chatgpt-signin" onSubmit={finish}>
 				<ol className="chatgpt-steps">
-					<li>Open ChatGPT, sign in, and allow Omarchy Server to use your plan.</li>
+					<li>Open ChatGPT, sign in, and allow My Own Data Center to use your plan.</li>
 					<li>On this server’s own browser, that’s it: this finishes by itself.</li>
 					<li>Anywhere else, you’ll land on a page that won’t load. Copy its whole address and paste it below.</li>
 				</ol>
@@ -1102,7 +1065,7 @@ function ChatGptSignInSheet({keyId, onClose}: {keyId?: string; onClose: () => vo
 					</div>
 				)}
 				<p className="footer-note" style={{textAlign: 'left', margin: 0}}>
-					Your ChatGPT sign-in stays on this server, only for you. Omarchy Server can use your plan for the assistant; it can’t see your ChatGPT chats.
+					Your ChatGPT sign-in stays on this server, only for you. My Own Data Center can use your plan for the assistant; it can’t see your ChatGPT chats.
 				</p>
 			</form>
 		</Sheet>
@@ -1402,7 +1365,7 @@ function LogsSheet({onClose}: {onClose: () => void}) {
 				value={type}
 				onChange={setType}
 				options={[
-					{id: 'server', label: 'Omarchy Server'},
+					{id: 'server', label: 'MODC'},
 					{id: 'system', label: 'System'},
 				]}
 			/>
@@ -1425,9 +1388,9 @@ function ResetSheet({open, onClose, onDone}: {open: boolean; onClose: () => void
 		<FormSheet
 			open={open}
 			title="Factory reset"
-			subtitle="Erases Omarchy Server’s apps, machines and accounts"
+			subtitle="Erases this server’s apps, machines and accounts"
 			onClose={onClose}
-			submit="Reset Omarchy Server"
+			submit="Reset My Own Data Center"
 			danger
 			busy={save.isPending}
 			disabled={!password || typed !== 'RESET'}
@@ -1435,7 +1398,7 @@ function ResetSheet({open, onClose, onDone}: {open: boolean; onClose: () => void
 		>
 			<div className="error" style={{marginBottom: 16}}>
 				<Icon name="alert" size={18} />
-				Every app and its data, every machine and its disks, and all Omarchy Server accounts and settings are permanently deleted, and Omarchy Server goes back to its first-time setup. This can’t be undone. Your own files, storage pools and the Omarchy desktop are left as they are.
+				Every app and its data, every machine and its disks, and all My Own Data Center accounts and settings are permanently deleted, and it goes back to first-time setup. This can’t be undone. Your own files, storage pools and the Omarchy desktop are left as they are.
 			</div>
 			<Field id="reset-pw" label="Your password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
 			<Field id="reset-type" label="Type RESET to confirm" autoCapitalize="characters" autoCorrect="off" value={typed} onChange={(e) => setTyped(e.target.value)} />
@@ -1486,7 +1449,7 @@ function SecurityGroup() {
 	const replace = async () => {
 		const ok = await confirm({
 			title: 'Replace the certificate?',
-			body: 'Omarchy Server makes a new certificate that browsers only accept for your home network (local names and private addresses), never for a real website. Every device that trusted the old one needs the new one: download it again from “Trust this server on this device” and trust it as before. Until then those devices show a warning on https:// pages.',
+			body: 'A new certificate is made that browsers only accept for your home network (local names and private addresses), never for a real website. Every device that trusted the old one needs the new one: download it again from “Trust this server on this device” and trust it as before. Until then those devices show a warning on https:// pages.',
 			confirm: 'Replace',
 		})
 		if (ok) save.mutate({path: 'system.replaceCertificate', done: 'New certificate made. Trust it again on your devices.', refresh: ['system.security']})

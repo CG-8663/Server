@@ -9,14 +9,19 @@ import {queryProblem, useBrowserOnline} from '../connection'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
+import {isGuestAgent} from './guestLink'
 import {newlyJoined} from './join'
+import {GaugeCluster} from '../fleet/serverGauges'
+import {MachineActions} from '../fleet/machineActions'
+import {SheetGroup} from '../fleet/sheetGroup'
 import {PinButton} from '../fleet/PinButton'
 import {openStore} from '../fleet/openStore'
 import {ThemePicker} from '../theme/ThemePicker'
 import {themeAction} from '../theme/themeAction'
 import {storageRowSub} from './storageHint'
 import {StoragePage} from '../screens/Storage'
-import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, levelColor, useConfirm, useToast} from '../ui'
+import {ComputerBackups} from '../backups'
+import {Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, useConfirm, useToast} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
@@ -24,7 +29,7 @@ const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({defaul
 const MachineFiles = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
 
 type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean; files: boolean}
-type Ability = keyof Abilities
+export type Ability = keyof Abilities
 export type Agent = {
 	id: string
 	name: string
@@ -33,6 +38,8 @@ export type Agent = {
 	enrolledAt: number
 	allowed: Abilities
 	on: Abilities
+	/** Set when this connector was installed on a virtual machine. Empty for a physical computer. */
+	guestOf?: string
 	info: {
 		hostname?: string
 		os?: string
@@ -65,15 +72,16 @@ export type Agent = {
 }
 type Pairing = {token: string; ca: string; expiresAt: number; abilities: Abilities; source: string; port: number; addresses: {address: string; tailscale: boolean}[]}
 
-const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = {
+export const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = {
 	terminal: {label: 'Terminal', icon: 'terminal', what: 'A shell on it, as the person who installed the connector'},
 	desktop: {label: 'Desktop', icon: 'devices', what: 'See and use its screen (Hyprland, Sway or an X11 desktop)'},
 	manage: {label: 'Manage', icon: 'settings', what: 'Omarchy plugins (verified only) and themes, updates, restart'},
 	storage: {label: 'Storage', icon: 'disk', what: 'See its drives, format extra disks, and manage pools on that computer'},
-	backup: {label: 'Backups', icon: 'history', what: 'Back up folders you choose to this server, on a schedule (Settings › Backups). It can add backups, never delete them.'},
+	backup: {label: 'Backups', icon: 'history', what: 'Back up folders you choose to this server, on a schedule (open this computer and choose Backups). It can add backups, never delete them.'},
 	files: {label: 'Files', icon: 'folder', what: 'Read and write the home folder of the person who installed the connector. The connector’s own keys stay off limits. A computer that’s already paired has to be added again with this switched on.'},
 }
-const may = (a: Agent, k: Ability) => a.allowed[k] && a.on[k]
+export const agentMay = (a: Agent, k: Ability) => !!(a.allowed[k] && a.on[k])
+const may = agentMay
 const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((100 * u.used) / u.total) : null)
 const rootDisk = (a: Agent) => a.metrics?.disks?.find((d) => d.mount === '/') ?? a.metrics?.disks?.[0]
 const look = (a: Agent) => osLook(a.info?.omarchy ? 'omarchy' : (a.info?.osId ?? ''))
@@ -81,7 +89,7 @@ const ago = (t: number | null) => (!t ? 'never' : Date.now() - t < 60_000 ? 'jus
 
 export const useSwarm = () => useQuery({queryKey: ['swarm.list'], queryFn: () => query<Agent[]>('swarm.list'), refetchInterval: 3000})
 
-function useSwarmAction() {
+export function useSwarmAction() {
 	const qc = useQueryClient()
 	const toast = useToast()
 	return useMutation({
@@ -113,7 +121,7 @@ export function LocalSwarm({
 	const swarm = useSwarm()
 	const browserOnline = useBrowserOnline()
 	const problem = queryProblem(swarm, browserOnline)
-	const list = (swarm.data ?? []).filter((a) => !onlyId || a.id === onlyId)
+	const list = (swarm.data ?? []).filter((a) => !isGuestAgent(a) && (!onlyId || a.id === onlyId))
 	const [innerSel, setInnerSel] = useState<string | null>(null)
 	const [innerAdd, setInnerAdd] = useState(false)
 	const selectedId = selectedProp !== undefined ? selectedProp : innerSel
@@ -130,7 +138,7 @@ export function LocalSwarm({
 	const [vmHost, setVmHost] = useState<{id: string; name: string} | null>(null)
 	const [screen, setScreen] = useState<Agent | null>(null)
 	const [storage, setStorage] = useState<Agent | null>(null)
-	const selected = (swarm.data ?? []).find((a) => a.id === selectedId) ?? null
+	const selected = (swarm.data ?? []).find((a) => a.id === selectedId && !isGuestAgent(a)) ?? null
 	const online = list.filter((a) => a.online).length
 	if (storage) return <StoragePage onBack={() => setStorage(null)} target={{agentId: storage.id, name: storage.name}} />
 	const sheets = (
@@ -231,27 +239,6 @@ function Meter({icon, label, value}: {icon: IconName; label: string; value: numb
 	)
 }
 
-function SwarmGauges({metrics}: {metrics: NonNullable<Agent['metrics']>}) {
-	const items = swarmGaugeItems(metrics)
-	if (!items.length) return null
-	return (
-		<div className="glass gauges" data-n={items.length} aria-label="System usage" style={{marginTop: 16}}>
-			{items.map((g) => (
-				<div className="gauge" key={'key' in g ? g.key : g.k}>
-					<Ring value={g.p} color={'color' in g ? g.color : levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
-						<span className="pct">
-							{g.ready ? Math.round(g.p) : '–'}
-							<small>%</small>
-						</span>
-					</Ring>
-					<span className="k">{g.k}</span>
-					<span className="sub">{g.sub}</span>
-				</div>
-			))}
-		</div>
-	)
-}
-
 export function AgentCard({a, onClick, footer, extra, className}: {a: Agent; onClick: () => void; footer?: ReactNode; extra?: ReactNode; className?: string}) {
 	const os = look(a)
 	const m = a.metrics
@@ -300,15 +287,75 @@ export function AgentCard({a, onClick, footer, extra, className}: {a: Agent; onC
 	)
 }
 
-function Group({title, children}: {title: string; children: ReactNode}) {
+export function ConnectorControls({a, onTerminal}: {a: Agent; onTerminal: (input?: string) => void}) {
+	const act = useSwarmAction()
+	const confirm = useConfirm()
+	const [plugins, setPlugins] = useState(false)
+	const manage = agentMay(a, 'manage') && a.online
+	const m = a.metrics
 	return (
 		<>
-			<div className="section-head" style={{margin: '20px 4px 8px'}}>
-				<h2 style={{fontSize: 16}}>{title}</h2>
-			</div>
-			<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
-				{children}
-			</div>
+			{agentMay(a, 'manage') && (
+				<SheetGroup title="Manage">
+					{a.info?.updateCommand && (
+						<Row
+							icon="update"
+							color="#2fbf71"
+							label="Update"
+							sub={m?.updates ? `${m.updates} waiting · opens a terminal with ${a.info.updateCommand}` : `Opens a terminal with ${a.info.updateCommand} ready (you press Enter)`}
+							onClick={agentMay(a, 'terminal') && a.online ? () => onTerminal(a.info!.updateCommand!) : undefined}
+							disabled={!a.online}
+						/>
+					)}
+					{a.info?.omarchy && (
+						<>
+							<Row
+								icon="palette"
+								color="#a855f7"
+								label="Theme"
+								trailing={
+									<ThemePicker
+										themes={a.info?.themes ?? []}
+										theme={a.info?.theme ?? ''}
+										disabled={!manage || act.isPending}
+										onPick={(theme) => {
+											const call = themeAction({kind: 'computer', id: a.id, theme})
+											if ('path' in call) act.mutate({path: call.path, input: call.input, done: `Setting ${theme} on ${a.name}…`})
+										}}
+									/>
+								}
+							/>
+							<Row icon="puzzle" color="var(--accent)" label="Omarchy plugins" sub={`${a.info.plugins?.length ?? 0} installed`} onClick={manage ? () => setPlugins(true) : undefined} />
+						</>
+					)}
+					<Row
+						icon="power"
+						color="#ef5350"
+						label="Restart"
+						onClick={
+							manage
+								? async () => {
+										if (await confirm({title: `Restart ${a.name}?`, body: 'Anything open on it closes. It joins again by itself once it’s back up.', confirm: 'Restart', icon: 'power'}))
+											act.mutate({path: 'swarm.action', input: {id: a.id, name: 'reboot'}, done: `Restarting ${a.name}…`})
+									}
+								: undefined
+						}
+					/>
+				</SheetGroup>
+			)}
+			<SheetGroup title="Allowed here">
+				<Row icon="sparkle" color="#2fbf71" label="Watch" sub="Always on: CPU, memory, disks, GPU, battery, temperature, updates" />
+				{(Object.keys(ABILITY) as Ability[]).map((k) => (
+					<Row
+						key={k}
+						icon={ABILITY[k].icon}
+						label={ABILITY[k].label}
+						sub={a.allowed[k] ? ABILITY[k].what : 'Not allowed when it joined. To allow it, remove this computer and add it again with it switched on.'}
+						trailing={<Switch on={agentMay(a, k)} disabled={!a.allowed[k] || act.isPending} label={ABILITY[k].label} onChange={(v) => act.mutate({path: 'swarm.setAbilities', input: {id: a.id, [k]: v}})} />}
+					/>
+				))}
+			</SheetGroup>
+			{plugins && <AgentPlugins a={a} onClose={() => setPlugins(false)} />}
 		</>
 	)
 }
@@ -318,12 +365,11 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: 
 	const act = useSwarmAction()
 	const confirm = useConfirm()
 	const [name, setName] = useState(a.name)
-	const [plugins, setPlugins] = useState(false)
+	const [backups, setBackups] = useState(false)
 	const m = a.metrics
 	const desk = a.info?.desktop
 	const offline = !a.online
-	const manage = may(a, 'manage') && a.online
-	const action = (input: Record<string, unknown>, done: string) => act.mutate({path: 'swarm.action', input: {id: a.id, ...input}, done})
+	if (backups) return <ComputerBackups id={a.id} name={a.name} onClose={() => setBackups(false)} />
 	return (
 		<Sheet open onClose={onClose} label={a.name} tall>
 			<SheetHeader
@@ -343,18 +389,11 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: 
 			<div style={{display: 'flex', justifyContent: 'flex-end', marginTop: 8}}>
 				<PinButton pin={{kind: 'machine', id: a.id, computer: ''}} name={a.name} />
 			</div>
-			<div className="primary-row">
-				<button className="btn primary" disabled={offline || !may(a, 'terminal')} onClick={() => (haptic(8), onTerminal())}>
-					<Icon name="terminal" size={20} /> Terminal
-				</button>
-				<button className="btn" disabled={offline || !may(a, 'desktop') || desk?.ok === false} onClick={() => (haptic(8), onDesktop())}>
-					<Icon name="devices" size={20} /> Desktop
-				</button>
-			</div>
+			<MachineActions terminal={!offline && may(a, 'terminal')} desktop={!offline && may(a, 'desktop') && desk?.ok !== false} onTerminal={() => onTerminal()} onDesktop={onDesktop} />
 			{a.online && may(a, 'desktop') && desk && !desk.ok && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>{desk.why}</p>}
 
-			{a.online && m && <SwarmGauges metrics={m} />}
-			<Group title="Disks">
+			{a.online && m && <GaugeCluster metrics={m} />}
+			<SheetGroup title="Disks">
 				<Row
 					icon="disk"
 					color="var(--teal)"
@@ -363,15 +402,22 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: 
 					onClick={a.online && may(a, 'storage') ? () => (haptic(8), onStorage()) : undefined}
 					disabled={offline}
 				/>
-			</Group>
+				<Row
+					icon="history"
+					color="var(--green)"
+					label="Backups"
+					sub={a.allowed.backup ? (a.on.backup ? 'Folders on this computer, on a schedule' : 'Switched off here. Turn Backups on under Allowed here.') : 'Pair this computer again with Backups switched on.'}
+					onClick={() => (haptic(8), setBackups(true))}
+				/>
+			</SheetGroup>
 			{a.online && m && (extraDisks(m.disks).length > 0 || typeof m.temp === 'number' || m.uptime !== undefined) && (
-				<Group title="Now">
+				<SheetGroup title="Now">
 					{extraDisks(m.disks).map((d) => (
 						<Row key={d.mount} icon="disk" color="#f0a020" label={d.mount} sub={`${bytes(d.used)} of ${bytes(d.total)}`} trailing={<b>{pct(d)}%</b>} />
 					))}
 					{typeof m.temp === 'number' && <Row icon="thermo" color="#ef5350" label="Temperature" trailing={<b>{Math.round(m.temp)}°C</b>} />}
 					{m.uptime !== undefined && <Row icon="clock" color="#8e8e93" label="Up for" trailing={<b>{duration(m.uptime)}</b>} />}
-				</Group>
+				</SheetGroup>
 			)}
 
 			{may(a, 'files') && (
@@ -388,7 +434,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: 
 					)}
 				</>
 			)}
-			<Group title="Virtual machines">
+			<SheetGroup title="Virtual machines">
 				{a.online ? (
 					<>
 						<p className="quiet">No virtual machines on {a.name}.</p>
@@ -399,61 +445,13 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: 
 				) : (
 					<p className="reason">{a.name} is offline, so virtual machines can’t be created there right now.</p>
 				)}
-			</Group>
-			<Group title="Apps">
+			</SheetGroup>
+			<SheetGroup title="Apps">
 				<Row icon="store" color="var(--accent)" label="App Store" sub="Installs on this computer" onClick={() => (haptic(6), onClose(), openStore({id: a.id, kind: 'computer', name: a.name}))} />
-			</Group>
-			{may(a, 'manage') && (
-				<Group title="Manage">
-					{a.info?.updateCommand && (
-						<Row
-							icon="update"
-							color="#2fbf71"
-							label="Update"
-							sub={m?.updates ? `${m.updates} waiting · opens a terminal with ${a.info.updateCommand}` : `Opens a terminal with ${a.info.updateCommand} ready (you press Enter)`}
-							onClick={may(a, 'terminal') && a.online ? () => onTerminal(a.info!.updateCommand) : undefined}
-							disabled={offline}
-						/>
-					)}
-					{a.info?.omarchy && (
-						<>
-							<Row icon="palette" color="#a855f7" label="Theme" trailing={<ThemePicker themes={a.info?.themes ?? []} theme={a.info?.theme ?? ''} disabled={!manage || act.isPending} onPick={(theme) => {
-								const call = themeAction({kind: 'computer', id: a.id, theme})
-								if ('path' in call) act.mutate({path: call.path, input: call.input, done: `Setting ${theme} on ${a.name}…`})
-							}} />} />
-							<Row icon="puzzle" color="var(--accent)" label="Omarchy plugins" sub={`${a.info.plugins?.length ?? 0} installed`} onClick={manage ? () => setPlugins(true) : undefined} />
-						</>
-					)}
-					<Row
-						icon="power"
-						color="#ef5350"
-						label="Restart"
-						onClick={
-							manage
-								? async () => {
-										if (await confirm({title: `Restart ${a.name}?`, body: 'Anything open on it closes. It joins again by itself once it’s back up.', confirm: 'Restart', icon: 'power'}))
-											action({name: 'reboot'}, `Restarting ${a.name}…`)
-									}
-								: undefined
-						}
-					/>
-				</Group>
-			)}
+			</SheetGroup>
+			<ConnectorControls a={a} onTerminal={onTerminal} />
 
-			<Group title="Allowed here">
-				<Row icon="sparkle" color="#2fbf71" label="Watch" sub="Always on: CPU, memory, disks, GPU, battery, temperature, updates" />
-				{(Object.keys(ABILITY) as Ability[]).map((k) => (
-					<Row
-						key={k}
-						icon={ABILITY[k].icon}
-						label={ABILITY[k].label}
-						sub={a.allowed[k] ? ABILITY[k].what : 'Not allowed when it joined. To allow it, remove this computer and add it again with it switched on.'}
-						trailing={<Switch on={may(a, k)} disabled={!a.allowed[k] || act.isPending} label={ABILITY[k].label} onChange={(v) => act.mutate({path: 'swarm.setAbilities', input: {id: a.id, [k]: v}})} />}
-					/>
-				))}
-			</Group>
-
-			<Group title="About">
+			<SheetGroup title="About">
 				<div className="row static" style={{minHeight: 56, gap: 10}}>
 					<input
 						aria-label="Name"
@@ -473,7 +471,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: 
 					</>
 				)}
 				<Row icon="history" color="#8e8e93" label="Joined" sub={new Date(a.enrolledAt).toLocaleString()} />
-			</Group>
+			</SheetGroup>
 
 			<button
 				className="btn danger"
@@ -492,13 +490,12 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: 
 			>
 				<Icon name="trash" size={18} /> Remove from swarm
 			</button>
-			{plugins && <AgentPlugins a={a} onClose={() => setPlugins(false)} />}
 		</Sheet>
 	)
 }
 
 type Plugin = {id: string; name: string; description?: string; author?: string}
-function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
+export function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 	const [q, setQ] = useState('')
 	const act = useSwarmAction()
 	const confirm = useConfirm()
@@ -517,7 +514,7 @@ function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 				Only plugins the Omarchy plugin registry verified, installed at the exact version it checked. They run inside that computer’s Omarchy desktop with its user’s permissions.
 			</p>
 			{installed.size > 0 && (
-				<Group title="Installed">
+				<SheetGroup title="Installed">
 					{[...installed].map((id) => (
 						<Row
 							key={id}
@@ -537,7 +534,7 @@ function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 							}
 						/>
 					))}
-				</Group>
+				</SheetGroup>
 			)}
 			<div className="field" style={{marginTop: 18}}>
 				<input placeholder="Search verified plugins" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -572,10 +569,11 @@ function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 }
 
 // ---- Add a computer: what it may do → the command → step by step → it appears. ----------------
-function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: () => void; onJoined: (id: string) => void}) {
+export function AddComputer({before, onClose, onJoined, guest}: {before: string[]; onClose: () => void; onJoined: (id: string) => void; guest?: {id: string; name: string}}) {
 	const [beforeIds] = useState(before)
-	// Storage can format disks there, so it's a choice you make; backups are on by default.
-	const [allow, setAllow] = useState<Abilities>({terminal: true, desktop: true, manage: true, storage: false, backup: true, files: false})
+	// Storage can format disks there, so it's a choice you make. A guest watches, and can open files,
+	// a terminal, and a desktop. Backups stay off: a guest does not back up through this yet.
+	const [allow, setAllow] = useState<Abilities>(guest ? {terminal: true, desktop: true, manage: true, storage: false, backup: false, files: true} : {terminal: true, desktop: true, manage: true, storage: false, backup: true, files: false})
 	const [pairing, setPairing] = useState<Pairing | null>(null)
 	const [host, setHost] = useState('')
 	const [copied, setCopied] = useState('')
@@ -583,7 +581,7 @@ function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: ()
 	const toast = useToast()
 	const swarm = useSwarm()
 	const pair = useMutation({
-		mutationFn: () => mutate<Pairing>('swarm.pair', allow),
+		mutationFn: () => mutate<Pairing>('swarm.pair', guest ? {...allow, machineId: guest.id} : allow),
 		onSuccess: (p) => {
 			setPairing(p)
 			const here = location.hostname
@@ -598,7 +596,7 @@ function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: ()
 		return () => clearInterval(t)
 	}, [pairing])
 	// The new computer, once it shows up. beforeIds is frozen at open so a live swarm.list cannot hide it.
-	const joined = newlyJoined(swarm.data ?? [], beforeIds)
+	const joined = guest ? (swarm.data ?? []).find((a) => a.guestOf === guest.id && !beforeIds.includes(a.id)) : newlyJoined(swarm.data ?? [], beforeIds)
 	const left = pairing ? Math.max(0, Math.round((pairing.expiresAt - now) / 1000)) : 0
 	const list = (Object.keys(allow) as Ability[]).filter((k) => allow[k]).join(',')
 	const command = useMemo(() => {
@@ -621,8 +619,13 @@ function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: ()
 	const hosts = pairing ? [...new Set([location.hostname, ...pairing.addresses.map((x) => x.address)].filter((h) => h && h !== 'localhost' && h !== '127.0.0.1'))] : []
 
 	return (
-		<Sheet open onClose={onClose} label="Add a computer" tall>
-			<SheetHeader icon={<Icon name="devices" size={30} />} title="Add a computer" subtitle="Any Linux computer with systemd. Not Windows or macOS." onClose={onClose} />
+		<Sheet open onClose={onClose} label={guest ? 'Install connector' : 'Add a computer'} tall>
+			<SheetHeader
+				icon={<Icon name="devices" size={30} />}
+				title={guest ? 'Install connector' : 'Add a computer'}
+				subtitle={guest ? `Linux with systemd, inside ${guest.name}. Not Windows or Home Assistant.` : 'Any Linux computer with systemd. Not Windows or macOS.'}
+				onClose={onClose}
+			/>
 			{!pairing ? (
 				<>
 					<p className="muted" style={{fontSize: 14, margin: '0 4px 12px'}}>
@@ -644,17 +647,17 @@ function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: ()
 						<Icon name="check" size={30} />
 					</span>
 					<b>{joined.name} joined</b>
-					<span>It’s in your local swarm now.</span>
+					<span>{guest ? 'Files, a terminal, and a desktop can open on this virtual machine now.' : 'It’s in your local swarm now.'}</span>
 					<button className="btn primary small" onClick={() => onJoined(joined.id)}>
-						Open it
+						{guest ? 'Done' : 'Open it'}
 					</button>
 				</div>
 			) : (
 				<>
 					<ol className="swarm-steps">
 						<li>
-							<b>On the other computer, open a terminal</b>
-							<span>Signed in as the person who uses it, not root. It needs to reach this server on your network (or your tailnet).</span>
+							<b>{guest ? 'On this virtual machine, open a terminal' : 'On the other computer, open a terminal'}</b>
+							<span>{guest ? 'Signed in as the person who uses it, not root. The guest has to reach this server on the network.' : 'Signed in as the person who uses it, not root. It needs to reach this server on your network (or your tailnet).'}</span>
 						</li>
 						{hosts.length > 1 && (
 							<li>

@@ -63,7 +63,7 @@ export function TerminalScreen({
 	machine?: string
 }) {
 	const boot = useContext(BootstrapContext)
-	const serverName = boot?.server?.device || boot?.server?.name || 'This server'
+	const serverName = boot?.server?.device || 'This server'
 	const machineName = machine ?? agent?.name ?? serverName
 	const portalRoot = usePortalRoot()
 	const root = useRef<HTMLDivElement>(null)
@@ -497,7 +497,9 @@ export function TerminalScreen({
 		haptic(6)
 		const ok = await confirm({
 			title: 'Start a new session?',
-			body: 'The shell that’s running now ends, along with anything still running in it. (Closing the terminal doesn’t do this: your shell keeps running until you exit it.)',
+			body: agent
+				? 'The shell that’s running now ends, along with anything still running in it. This computer’s connector does not keep the shell after it closes.'
+				: 'The shell that’s running now ends, along with anything still running in it. (Closing the terminal doesn’t do this: your shell keeps running until you exit it.)',
 			confirm: 'New session',
 			icon: 'reset',
 		})
@@ -543,14 +545,12 @@ export function TerminalScreen({
 					<b>{title}</b>
 					<span>
 						<i className={`dot ${live ? 'live' : state === 'connecting' ? '' : 'down'}`} />
-						{live ? `On ${machineName} · ${app ? 'App shell' : agent ? 'Shell through its connector' : 'Omarchy Server shell'}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? `On ${machineName} · Connecting…` : `On ${machineName} · Disconnected`}
+						{live ? `On ${machineName}${app ? ' · App shell' : agent ? ' · Shell through its connector' : ''}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? `On ${machineName} · Connecting…` : `On ${machineName} · Disconnected`}
 					</span>
 				</div>
-				{!agent && (
-					<button className="round-btn" aria-label="New session" title="New session" onClick={newSession} disabled={!live}>
-						<Icon name="reset" size={19} />
-					</button>
-				)}
+				<button className="round-btn" aria-label="New session" title="New session" onClick={newSession} disabled={!live}>
+					<Icon name="reset" size={19} />
+				</button>
 				<button className="round-btn" aria-label="Paste" onClick={paste} disabled={!live}>
 					<Icon name="clipboard" size={19} />
 				</button>

@@ -169,7 +169,7 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 			title: kind === 'restart' ? 'Restart your server?' : 'Shut down your server?',
 			body:
 				kind === 'restart'
-					? 'All apps and machines stop, then come back once Omarchy Server has restarted. This takes a few minutes.'
+					? 'All apps and machines stop, then come back once this server has restarted. This takes a few minutes.'
 					: 'All apps and machines stop. You’ll need to turn the server back on yourself (for a VM, from its host).',
 			confirm: kind === 'restart' ? 'Restart' : 'Shut down',
 			danger: true,
@@ -209,7 +209,7 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 					rows={[
 						['Device', boot.server?.device ?? '–'],
 						['Address', boot.server?.host ?? '–'],
-						['Omarchy Server', <VersionTag version={boot.server?.version} info={boot.server} />],
+						['MODC', <VersionTag version={boot.server?.version} info={boot.server} />],
 						['Software update', update.data ? (update.data.available ? `${update.data.name} available` : 'Up to date') : '–'],
 						['Signed in as', `${user.data?.name ?? '–'}${user.data?.role ? ` (${user.data.role})` : ''}`],
 					]}
@@ -217,14 +217,14 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					{onClips && <Row icon="clipboard" color="var(--teal)" label="Clip book" onClick={onClips} />}
 					<Row icon="settings" color="#8e8e93" label="Settings" onClick={onSettings} />
-					<Row icon="open" color="var(--blue)" label="Open Omarchy Server" href={boot.server?.url} />
+					<Row icon="open" color="var(--blue)" label="Open this server" href={boot.server?.url} />
 					<Row icon="restart" color="var(--peach)" label="Restart server" onClick={() => power('restart')} />
 					<Row icon="power" color="var(--red)" label="Shut down server" onClick={() => power('shutdown')} />
 					<Row icon="signout" color="#8e8e93" label="Sign out of this device" onClick={signOut} />
 				</div>
 			</section>
 			<p className="footer-note">
-				<VersionTag prefix="Omarchy Server " version={boot.touch.version} info={boot.server} />
+				<VersionTag prefix="MODC " version={boot.touch.version} info={boot.server} />
 			</p>
 		</div>
 	)

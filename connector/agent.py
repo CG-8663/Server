@@ -2320,7 +2320,7 @@ def forget():
 
 
 # ---------------------------------------------------------------------------------------------
-USAGE = """Omarchy Server connector: joins this Linux computer to an Omarchy Server's local swarm.
+USAGE = """MODC connector: joins this Linux computer to a My Own Data Center local swarm.
 
   agent.py                                run the connector (after enrolling)
   agent.py enroll SERVER TOKEN [ABILITIES]

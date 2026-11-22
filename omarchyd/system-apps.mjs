@@ -28,7 +28,7 @@ const execRun = (cmd, args) =>
 export const SYSTEM_PERMISSIONS = {
 	'system-software': {
 		label: 'Install software on the server itself',
-		detail: 'It isn’t a container: it is installed on your server with administrator rights, as Omarchy’s own menu installs it, and runs as a system service. You become its operator, so Omarchy Server can sign it in and out for you.',
+		detail: 'It isn’t a container: it is installed on your server with administrator rights, as Omarchy’s own menu installs it, and runs as a system service. You become its operator, so My Own Data Center can sign it in and out for you.',
 	},
 }
 
@@ -41,7 +41,7 @@ const TAILSCALE_LISTING = {
 	port: 8240,
 	path: '',
 	description: [
-		'Tailscale puts this server on your own private network (your tailnet), together with your phone, laptop and other devices, wherever they are. Open Omarchy Server and your apps at the server’s Tailscale address from anywhere, without opening any port to the internet. Connections are end-to-end encrypted with WireGuard.',
+		'Tailscale puts this server on your own private network (your tailnet), together with your phone, laptop and other devices, wherever they are. Open My Own Data Center and your apps at the server’s Tailscale address from anywhere, without opening any port to the internet. Connections are end-to-end encrypted with WireGuard.',
 		'Open it and choose Log in to connect it to your Tailscale account. Its page then shows this server’s Tailscale name and address: on your other devices, install Tailscale, sign in to the same account, and go to http://that-address:7780.',
 		'It is installed on the server itself, the same way Omarchy’s menu installs Tailscale (the official package and its service), not in a container. If you already installed Tailscale from Omarchy’s menu, this adds its page here and leaves your setup as it is; uninstalling then leaves Tailscale installed.',
 	].join('\n\n'),

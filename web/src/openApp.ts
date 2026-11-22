@@ -31,7 +31,7 @@ export function explainProbe(name: string, p: Probe | null | undefined): string 
 	const r = readinessOf(p)
 	if (r === 'ready' || r === 'no-web' || r === 'starting') return null
 	if (r === 'stopped') return `${name} isn’t running. Start it, then open it.`
-	if (r === 'gateway-down') return `${name} is answering, but Omarchy Server couldn’t open its port (another program may be using it). Restart ${name}; if that doesn’t help, restart Omarchy Server.`
+	if (r === 'gateway-down') return `${name} is answering, but its port didn’t open (another program may be using it). Restart ${name}; if that doesn’t help, restart this server.`
 	const how =
 		p.result === 'timeout'
 			? 'accepts connections but hasn’t answered within 6 seconds'

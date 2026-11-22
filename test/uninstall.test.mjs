@@ -231,7 +231,7 @@ test('--purge deletes everything Omarchy Server keeps, but never your files', as
 	const box = await install('purge')
 	const r = run(box, ['--purge', '-y'])
 	assert.equal(r.status, 0, r.out)
-	assert.match(r.out, /Omarchy Server and its data are gone/)
+	assert.match(r.out, /My Own Data Center and its data are gone/)
 	assert.equal(await exists(join(box.base, 'omarchyd/accounts.json')), false)
 	assert.equal(await exists(join(box.base, 'omarchyd/apps/installed/demo/data/notes.txt')), false)
 	assert.equal((await readdir(join(box.home, '.local/share'))).includes('omarchy-server'), false, 'the whole data folder is gone')

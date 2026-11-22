@@ -319,7 +319,7 @@ function ConfigureForm({os, hostArch, onBack, onDone, threads, memory}: {os: OsI
 								hint={
 									windows
 										? 'Used to sign in to Windows. It’s kept only in the installer’s answer file, which is deleted the first time you shut down or restart this machine here.'
-										: `Used to sign in to ${os.name}. Only a scrambled (hashed) copy goes into the machine; Omarchy Server doesn’t keep it.`
+										: `Used to sign in to ${os.name}. Only a scrambled (hashed) copy goes into the machine; This server doesn’t keep it.`
 								}
 							/>
 						)}

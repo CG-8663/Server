@@ -284,7 +284,7 @@ async function runFirstboot(nmExit) {
 test('#257 first-boot exits non-zero when curl and nm-online fail', async () => {
 	const r = await runFirstboot(1)
 	assert.notEqual(r.code, 0, `stdout=${r.stdout}\nstderr=${r.stderr}`)
-	assert.doesNotMatch(r.stdout, /Omarchy Server is running/)
+	assert.doesNotMatch(r.stdout, /My Own Data Center is running/)
 	assert.doesNotMatch(r.stdout, / ok/)
 	assert.match(r.stdout, /didn't finish installing/)
 	assert.doesNotMatch(r.stderr, /pacman should not run/)
@@ -295,7 +295,7 @@ test('#257 first-boot prints network ok only when nm-online succeeds', async () 
 	const r = await runFirstboot(0)
 	assert.notEqual(r.code, 0, r.stdout)
 	assert.match(r.stdout, / ok/)
-	assert.doesNotMatch(r.stdout, /Omarchy Server is running/)
+	assert.doesNotMatch(r.stdout, /My Own Data Center is running/)
 })
 
 test('#765 the live installer does not ask you to sign in after the restart', async () => {

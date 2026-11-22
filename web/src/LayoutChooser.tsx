@@ -26,7 +26,7 @@ export function LayoutChooser({onDone}: {onDone: () => void}) {
 	return createPortal(
 		<div className="layout-chooser" role="dialog" aria-modal="true" aria-labelledby="layout-title">
 			<div className="layout-card glass">
-				<h2 id="layout-title">How do you want to use Omarchy Server on this device?</h2>
+				<h2 id="layout-title">How do you want to use My Own Data Center on this device?</h2>
 				<p>You can change this any time in Settings → Layout. It’s saved on this device only.</p>
 				<div className="layout-options">
 					<Option id="desktop" icon="window" title="Desktop" body="Windows, a dock and Activities, like a computer. Best with a mouse or trackpad." />

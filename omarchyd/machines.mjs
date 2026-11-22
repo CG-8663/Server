@@ -546,7 +546,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const nameKey = String(input.name ?? '').trim().toLowerCase()
 		const runCreate = async () => {
 			const caps = await capabilities()
-			if (!caps.libvirtAvailable) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the Omarchy Server installer again to add them.')
+			if (!caps.libvirtAvailable) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the installer again to add them.')
 			if (caps.hostArchitecture !== 'amd64') throw new RpcError('PRECONDITION_FAILED', 'Machines currently need an x86-64 server')
 			const osId = String(input.osId ?? '')
 			// What to install from: a catalog image, or one of your own ISOs.

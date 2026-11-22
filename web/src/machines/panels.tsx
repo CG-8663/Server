@@ -32,7 +32,7 @@ import {backupListView} from './backupList'
 export type PanelId = 'summary' | 'console' | 'hardware' | 'cloudinit' | 'options' | 'network' | 'usb' | 'snapshots' | 'backups' | 'history' | 'monitor'
 export const PANELS: {id: PanelId; label: string; icon: IconName}[] = [
 	{id: 'summary', label: 'Summary', icon: 'activity'},
-	{id: 'console', label: 'Console', icon: 'terminal'},
+	{id: 'console', label: 'Desktop', icon: 'devices'},
 	{id: 'hardware', label: 'Hardware', icon: 'cpu'},
 	{id: 'cloudinit', label: 'Cloud-Init', icon: 'key'},
 	{id: 'options', label: 'Options', icon: 'settings'},

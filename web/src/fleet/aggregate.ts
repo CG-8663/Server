@@ -33,8 +33,8 @@ export type BatteryGroup = {
 
 export type FleetRings = {
 	cpu: {percent: number; ready: boolean; busiest: string | null}
-	memory: {percent: number; ready: boolean; busiest: string | null}
-	storage: {percent: number; ready: boolean; busiest: string | null}
+	memory: {percent: number; ready: boolean; busiest: string | null; used: number; total: number}
+	storage: {percent: number; ready: boolean; busiest: string | null; used: number; total: number}
 	gpu: {percent: number; ready: boolean; busiest: string | null} | null
 	battery: {lowest: BatteryMember; groups: BatteryGroup[]} | null
 	temp: {celsius: number; name: string} | null
@@ -125,8 +125,8 @@ export function fleetRings(samples: readonly FleetSample[]): FleetRings {
 	const lowestMember = lowest ? groups.flatMap((g) => g.members).find((m) => m.id === lowest.id) : undefined
 	return {
 		cpu: {percent: round(cpu), ready: cpuRows.length > 0, busiest: busiest(cpuRows.map((s) => ({name: s.name, value: s.cpu ?? 0})))},
-		memory: {percent: round(pct(memUsed, memTotal)), ready: memRows.length > 0, busiest: busiest(memRows.map((s) => ({name: s.name, value: pct(s.memUsed ?? 0, s.memTotal ?? 0)})))},
-		storage: {percent: round(pct(diskUsed, diskTotal)), ready: diskRows.length > 0, busiest: busiest(diskRows.map((s) => ({name: s.name, value: pct(s.diskUsed ?? 0, s.diskTotal ?? 0)})))},
+		memory: {percent: round(pct(memUsed, memTotal)), ready: memRows.length > 0, busiest: busiest(memRows.map((s) => ({name: s.name, value: pct(s.memUsed ?? 0, s.memTotal ?? 0)}))), used: memUsed, total: memTotal},
+		storage: {percent: round(pct(diskUsed, diskTotal)), ready: diskRows.length > 0, busiest: busiest(diskRows.map((s) => ({name: s.name, value: pct(s.diskUsed ?? 0, s.diskTotal ?? 0)}))), used: diskUsed, total: diskTotal},
 		gpu: gpuRows.length ? {percent: round(gpuRows.reduce((sum, row) => sum + row.value, 0) / gpuRows.length), ready: true, busiest: busiest(gpuRows)} : null,
 		battery: lowestMember ? {lowest: lowestMember, groups} : null,
 		temp: hottest?.temp != null ? {celsius: hottest.temp, name: hottest.name} : null,

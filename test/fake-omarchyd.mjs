@@ -275,7 +275,7 @@ export async function startFakeserverd({
 	}
 
 	const procedures = {
-		'system.version': {kind: 'query', public: true, run: () => ({version: '2.0.0', name: 'Omarchy Server 2.0', startedAt: 1_700_000_000_000, revision: 'abc1234'})},
+		'system.version': {kind: 'query', public: true, run: () => ({version: '2.0.0', name: 'MODC 2.0', startedAt: 1_700_000_000_000, revision: 'abc1234'})},
 		'system.discoveryInfo': {kind: 'query', public: true, run: () => ({id: 'abc', device: 'Linux VM', version: '2.0.0', onboarded: true})},
 		'user.listAccounts': {kind: 'query', public: true, run: () => [accountOf('owner'), accountOf('sam')].map((a) => ({...a, language: 'en', wallpaper}))},
 		'user.loginNative': {
@@ -491,7 +491,7 @@ export async function startFakeserverd({
 		},
 		'machines.tasks': {kind: 'query', run: () => machines.flatMap((m) => machineDetails(m).tasks.map((t) => ({...t, machineId: m.id, machineName: m.name, vmid: m.vmid}))).sort((a, b) => b.startedAt - a.startedAt)},
 		'machines.backups': {kind: 'query', run: () => [{id: '101-debian-server-20261112-030000', name: 'Debian Server', vmid: 101, sourceId: 'debian-1', createdAt: now - 70_000_000, notes: 'nightly', live: true, sizeBytes: 1_830_000_000, path: '/Home/Backups/Machines/101-debian-server-20261112-030000'}]},
-		'system.checkUpdate': {kind: 'query', run: () => (process.env.FAKE_UPDATE_FAIL ? {available: true, version: '2.1.0', name: 'Omarchy Server 2.1'} : {available: false, version: '2.0.0', name: 'Omarchy Server 2.0'})},
+		'system.checkUpdate': {kind: 'query', run: () => (process.env.FAKE_UPDATE_FAIL ? {available: true, version: '2.1.0', name: 'MODC 2.1'} : {available: false, version: '2.0.0', name: 'MODC 2.0'})},
 		'apps.uninstall': {kind: 'mutation', run: ({appId}) => (apps.splice(apps.findIndex((a) => a.id === appId), 1), true)},
 		'machines.start': {kind: 'mutation', run: ({id}) => ((machines.find((m) => m.id === id).state = 'running'), true)},
 		'notifications.get': {kind: 'query', run: () => notifications},
@@ -541,7 +541,7 @@ export async function startFakeserverd({
 			run: () => {
 				// FAKE_UPDATE_FAIL: fail the way omarchyd reports it, through the status.
 				updateStatus = process.env.FAKE_UPDATE_FAIL
-					? {running: false, progress: 0, description: '', error: "Omarchy Server 2.1.0 doesn't include an update for this device"}
+					? {running: false, progress: 0, description: '', error: "MODC 2.1.0 doesn't include an update for this device"}
 					: {running: true, progress: 40, description: 'Downloading update', error: false}
 				return !process.env.FAKE_UPDATE_FAIL
 			},

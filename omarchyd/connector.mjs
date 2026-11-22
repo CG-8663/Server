@@ -184,11 +184,14 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		}
 	})()
 	const save = () => (damaged ? Promise.reject(new RpcError('PRECONDITION_FAILED', 'swarm.json is damaged and was left unchanged.')) : writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600}))
-	const pairings = new Map() // sha(token) -> {abilities, expires}
+	const pairings = new Map() // sha(token) -> {abilities, expires, guestOf?}
 	const live = new Map() // agentId -> {ws, metrics, info, channels: Map, nextCh, calls: Map, nextCall}
 	const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024})
 
 	const find = (id) => state.agents.find((a) => a.id === id)
+	// A guest connector is the same agent, remembered against the virtual machine it was installed on.
+	// Anything else stays a physical computer. A bad value must not hide that computer.
+	const guestOf = (a) => (typeof a?.guestOf === 'string' && /^[a-f0-9]{8}$/.test(a.guestOf) ? a.guestOf : '')
 	const view = (a) => {
 		const l = live.get(a.id)
 		return {
@@ -197,6 +200,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			online: !!l,
 			lastSeen: l ? now() : (a.lastSeen ?? null),
 			enrolledAt: a.enrolledAt,
+			guestOf: guestOf(a),
 			// What it may do: allowed at pairing (and by the connector itself) and still switched on here.
 			allowed: a.allowed,
 			on: a.on,
@@ -212,12 +216,19 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 	}
 
 	// ---- owner actions (tRPC) ------------------------------------------------------------------
+	function pairingGuest(input) {
+		if (input == null || input === '') return ''
+		const id = String(input)
+		if (!/^[a-f0-9]{8}$/.test(id)) throw new RpcError('BAD_REQUEST', 'That virtual machine isn’t valid')
+		return id
+	}
 	async function pair(input = {}) {
 		await loaded
 		const abilities = Object.fromEntries(ABILITIES.map((k) => [k, input?.[k] === true]))
+		const linked = pairingGuest(input?.machineId)
 		const token = randomBytes(24).toString('base64url')
 		for (const [k, p] of pairings) if (p.expires < now()) pairings.delete(k)
-		pairings.set(sha(token), {abilities, expires: now() + PAIR_TTL})
+		pairings.set(sha(token), {abilities, expires: now() + PAIR_TTL, ...(linked ? {guestOf: linked} : {})})
 		return {token, ca: await caFingerprint(), expiresAt: now() + PAIR_TTL, abilities, source: await source(), port: webPort, addresses: serverAddresses()}
 	}
 	// Fleet gauges sample only while this server is reading them. A list (the swarm
@@ -356,7 +367,9 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		const key = randomBytes(32).toString('base64url')
 		let name = info.hostname || 'computer'
 		for (let n = 2; state.agents.some((a) => a.name === name); n++) name = `${info.hostname || 'computer'} ${n}`
-		state.agents.push({id, name, keyHash: sha(key), allowed, on: {...allowed}, enrolledAt: t, lastSeen: null, info})
+		const agent = {id, name, keyHash: sha(key), allowed, on: {...allowed}, enrolledAt: t, lastSeen: null, info}
+		if (p.guestOf) agent.guestOf = p.guestOf
+		state.agents.push(agent)
 		await save()
 		return {status: 200, body: {id, key, name, abilities: allowed}}
 	}

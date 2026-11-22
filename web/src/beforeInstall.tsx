@@ -130,7 +130,7 @@ export function BeforeInstall({
 						</div>
 					))}
 					{access.some((p) => p.id === 'refused') ? (
-						<p className="access-refused">{appName} asks for folders Omarchy Server never gives an app (your whole home, its hidden folders, or system folders), so it can’t be installed.</p>
+						<p className="access-refused">{appName} asks for folders this server never gives an app (your whole home, its hidden folders, or system folders), so it can’t be installed.</p>
 					) : (
 						<label className="access-allow">
 							<input type="checkbox" checked={allowed} onChange={(e) => setAllowed(e.target.checked)} />

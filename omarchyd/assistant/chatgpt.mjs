@@ -24,7 +24,7 @@ export const JWKS = `${AUTH}/.well-known/jwks.json`
 export const RESOURCE = 'https://api.openai.com/v1'
 export const SCOPE = 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct'
 export const PLAN_SCOPE = 'chatgpt.tokens.use.direct'
-const AGENT_NAME = 'Omarchy Server'
+const AGENT_NAME = 'My Own Data Center'
 const PORTS = [1455, 1456, 1457, 1458, 1459, 1460]
 const PENDING_MS = 10 * 60_000
 const PASTE_MAX = 8192
@@ -104,7 +104,7 @@ export function createChatGpt({dataDir, keys, fetchImpl = fetch, now = Date.now,
 				}
 				if (url.pathname !== '/auth/callback') return res.writeHead(404).end()
 				finish(userId, url.href).then(
-					() => page(res, 200, 'Signed in to ChatGPT', 'You can close this tab and go back to Omarchy Server.'),
+					() => page(res, 200, 'Signed in to ChatGPT', 'You can close this tab and go back to My Own Data Center.'),
 					(e) => page(res, 400, 'Couldn’t sign in', e.message),
 				)
 			})
@@ -200,7 +200,7 @@ export function createChatGpt({dataDir, keys, fetchImpl = fetch, now = Date.now,
 		const issued = q.get('client_id')
 		if (p.clientId && issued && issued !== p.clientId) throw new RpcError('BAD_REQUEST', 'That address is from a different sign-in. Start again.')
 		const clientId = p.clientId ?? issued
-		if (!clientId || clientId === 'dynamic_agent_client') throw new RpcError('BAD_GATEWAY', 'ChatGPT didn’t register Omarchy Server; try again')
+		if (!clientId || clientId === 'dynamic_agent_client') throw new RpcError('BAD_GATEWAY', 'ChatGPT didn’t register My Own Data Center; try again')
 		if (p.busy) return p.busy
 		p.busy = (async () => {
 			const res = await ask(fetchImpl, TOKEN, {

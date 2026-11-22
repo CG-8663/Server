@@ -48,7 +48,7 @@ const RESERVED = (p) => p === 7780 || p === 2021 || (p >= 40_000 && p <= 49_999)
 function portRefusal(name, port) {
 	if (port < 1024) return `${name} uses port ${port}. Apps need a port of 1024 or higher`
 	if (port > 65535) return `${name} lists port ${port}, which is not a valid port`
-	if (RESERVED(port)) return `${name} wants port ${port}, which Omarchy Server keeps for itself`
+	if (RESERVED(port)) return `${name} wants port ${port}, which this server keeps for itself`
 	return null
 }
 function bumpPort(start, avoid) {
@@ -153,7 +153,7 @@ ENTRYPOINT ["/usr/local/bin/api-proxy"]
 
 export const PERMISSIONS = {
 	containers: {label: 'Control your containers', detail: 'It can start, stop, create and delete every container you run (and see their settings and data). Container managers need this.'},
-	'low-ports': {label: 'Use network ports below 1024', detail: 'It listens on system ports such as 53 (DNS), 80 or 443. To allow it, Omarchy Server lets programs running as you use ports from that number up, for the whole server, and keeps that after this app is removed.'},
+	'low-ports': {label: 'Use network ports below 1024', detail: 'It listens on system ports such as 53 (DNS), 80 or 443. To allow it, this server lets programs running as you use ports from that number up, for the whole server, and keeps that after this app is removed.'},
 	devices: {label: 'Use hardware devices', detail: 'It gets direct access to devices plugged into your server, such as USB sticks or video cards.'},
 	network: {label: 'Change networking inside its container', detail: 'It can create network interfaces, routes and firewall rules inside its own container (VPNs need this). It can’t change your server’s own network.'},
 	privileged: {label: 'Run with every container permission', detail: 'It runs with all permissions inside its container. Containers here run as you, not as root, so it still can’t become root on your server.'},
@@ -353,7 +353,7 @@ export function appPermissions(text, where = {}) {
 			if (Number.isInteger(host) && host > 0 && host < 1024) add('low-ports', host)
 		}
 	}
-	return [...found].map(([id, set]) => ({id, ...(PERMISSIONS[id] ?? {label: 'Not allowed', detail: 'Omarchy Server never gives an app these folders.'}), what: [...set].slice(0, 8)}))
+	return [...found].map(([id, set]) => ({id, ...(PERMISSIONS[id] ?? {label: 'Not allowed', detail: 'This server never gives an app these folders.'}), what: [...set].slice(0, 8)}))
 }
 
 // Compose-style ${NAME}, $NAME, ${NAME:-default}, ${NAME-default} and ${NAME:?message}.
@@ -832,7 +832,7 @@ export async function podmanHealth(run, env, home) {
 	} catch (e) {
 		const text = `${e.stderr ?? ''} ${e.message ?? ''}`
 		const other = /(\/home\/[^/\s"']+)\/\.local\/share\/containers/.exec(text)?.[1]
-		if (e.code === 'ENOENT') return {ok: false, message: 'Apps need Podman. Run the Omarchy Server installer again to add it.'}
+		if (e.code === 'ENOENT') return {ok: false, message: 'Apps need Podman. Run the installer again to add it.'}
 		if ((other && other !== home) || /does not match our (static|graph|run|tmp) dir/i.test(text)) return {ok: false, message: storageHelp(other && other !== home ? other : 'another user')}
 		return {ok: false, message: `Podman didn’t start: ${text.replace(/^\s*(podman:\s*)?(Error:\s*)?/i, '').trim().split('\n').slice(-1)[0].slice(0, 300)}`}
 	}
@@ -1161,7 +1161,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				tickets.delete(url.searchParams.get('t') ?? '')
 				if (!t || t.exp < Date.now() || t.appId !== app.id) {
 					res.writeHead(403, {'content-type': 'text/plain'})
-					return res.end('This link has expired. Open the app again from Omarchy Server.')
+					return res.end('This link has expired. Open the app again from My Own Data Center.')
 				}
 				res.writeHead(302, {'set-cookie': sessionCookie(issueSession(t.userId)), location: safePath(url.searchParams.get('r')), 'cache-control': 'no-store'})
 				return res.end()
@@ -1318,7 +1318,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			const caution = optionalFrom.length
 				? `Works with ${optionalFrom.join(', ')} too: install ${optionalFrom.length > 1 ? 'them' : 'it'} to use those features.`
 				: unknown.length
-					? `Some features may not work here: it expects settings Omarchy Server doesn’t have (${unknown.slice(0, 3).join(', ')}).`
+					? `Some features may not work here: it expects settings this server doesn’t have (${unknown.slice(0, 3).join(', ')}).`
 					: null
 			const installSize = installSizeOf(a.installSize)
 			const media = (f) => (typeof f === 'string' && /^https:\/\//.test(f) ? f : gallery && typeof f === 'string' && /^[\w.-]+$/.test(f) ? `${gallery}/${a.id}/${f}` : null)
@@ -1465,7 +1465,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			/* nothing published */
 		}
 		// Apps that are part of the server itself (Tailscale) come first, so a store can't stand in for them.
-		if (systemApps) list.unshift({url: BUILTIN_STORE, meta: {id: 'omarchy-server', name: 'Omarchy Server'}, apps: systemApps.listings()})
+		if (systemApps) list.unshift({url: BUILTIN_STORE, meta: {id: 'omarchy-server', name: 'MODC'}, apps: systemApps.listings()})
 		const current = list.filter((l) => l.url === BUILTIN_STORE || l.url === IMPORTED_STORE || l.url === PUBLISHED_STORE || stillAdded(l.url))
 		// Installed apps pick up how their listing says to open them (https, an https app inside),
 		// so an app installed before its listing changed doesn't need reinstalling.
@@ -2234,7 +2234,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			const plan = await installPlan(id)
 			for (const src of plan) hold(src.id)
 			if (plan.some((src) => !src.system)) {
-				if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
+				if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the installer again to add it.')
 				const h = await engineHealth({fresh: true})
 				if (!h.ok) throw new RpcError('PRECONDITION_FAILED', h.message)
 			}
@@ -2273,7 +2273,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				const folders = Object.fromEntries(folderIds.filter((fid) => placed.has(`${src.id}/${fid}`)).map((fid) => [fid, placed.get(`${src.id}/${fid}`)]))
 				const perms = await permissionsOf({...src, folderIds, folders})
 				const refused = perms.find((p) => p.id === 'refused')
-				if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
+				if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders this server never gives an app: ${refused.what.join(', ')}.`)
 				needs.set(src.id, perms.map((p) => p.id))
 			}
 			const missing = [...new Set([...needs.values()].flat())].filter((p) => !granted.has(p))
@@ -2377,7 +2377,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			// An update never adds access you didn't allow. (Apps installed before permissions existed keep what they run with.)
 			const wantsPerms = await permissionsOf({...src, folderIds: app.folderIds, folders: app.folders && !Array.isArray(app.folders) ? app.folders : undefined})
 			const refused = wantsPerms.find((p) => p.id === 'refused')
-			if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
+			if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders this server never gives an app: ${refused.what.join(', ')}.`)
 			wants = wantsPerms.map((p) => p.id)
 			app.permissions ??= wants
 			const extra = wants.filter((p) => !app.permissions.includes(p) && !(Array.isArray(input?.grant) && input.grant.includes(p)))
@@ -2738,7 +2738,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (!Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535) throw new RpcError('BAD_REQUEST', 'The app’s own port has to be from 1 to 65535')
 		if (installed && previousWeb !== null && containerPort !== previousWeb) throw new RpcError('PRECONDITION_FAILED', 'Unpublish it before changing the port inside the app')
 		const publicPort = input?.port === undefined ? (installed?.port ?? containerPort) : Number(input.port)
-		if (!Number.isInteger(publicPort) || publicPort < 1024 || publicPort > 65535 || RESERVED(publicPort)) throw new RpcError('BAD_REQUEST', 'Pick a port from 1024 up that Omarchy Server doesn’t keep for itself')
+		if (!Number.isInteger(publicPort) || publicPort < 1024 || publicPort > 65535 || RESERVED(publicPort)) throw new RpcError('BAD_REQUEST', 'Pick a port from 1024 up that this server doesn’t keep for itself')
 		if (installed && publicPort !== installed.port) throw new RpcError('PRECONDITION_FAILED', 'Unpublish it before changing its port')
 		const version = String(input?.version ?? installed?.version ?? '1').replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 40) || '1'
 		let image = typeof input?.image === 'string' ? input.image.trim() : ''
@@ -2769,7 +2769,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			const avoidHost = new Set(taken)
 			if (mcp?.port) avoidHost.add(mcp.port)
 			apiHost = input?.apiPort === undefined ? (previousApi ?? nextHostPort(publicPort, avoidHost)) : Number(input.apiPort)
-			if (!Number.isInteger(apiHost) || apiHost < 1024 || apiHost > 65535 || RESERVED(apiHost)) throw new RpcError('BAD_REQUEST', 'Pick an API port from 1024 up that Omarchy Server doesn’t keep for itself')
+			if (!Number.isInteger(apiHost) || apiHost < 1024 || apiHost > 65535 || RESERVED(apiHost)) throw new RpcError('BAD_REQUEST', 'Pick an API port from 1024 up that this server doesn’t keep for itself')
 			if (apiHost === publicPort) throw new RpcError('BAD_REQUEST', 'The job API needs its own port')
 			if (mcp?.port && apiHost === mcp.port) throw new RpcError('BAD_REQUEST', 'The job API can’t use the MCP port')
 			if (installed && previousApi !== undefined && apiHost !== previousApi) throw new RpcError('PRECONDITION_FAILED', 'Unpublish it before changing its API port')
@@ -2914,7 +2914,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			const plan = await installPlan(id)
 			const grant = new Set()
 			for (const a of plan) for (const p of await permissionsOf({...a, folderIds: [], folders: {}})) grant.add(p.id)
-			if (grant.has('refused')) throw new RpcError('FORBIDDEN', 'It uses folders Omarchy Server never gives an app')
+			if (grant.has('refused')) throw new RpcError('FORBIDDEN', 'It uses folders this server never gives an app')
 			await install({appId: id, grant: [...grant]})
 		},
 		importState(id) {

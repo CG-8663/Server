@@ -507,12 +507,14 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   const machines = useMachines();
   const swarm = useQuery({
     queryKey: ["swarm.list"],
-    queryFn: () => query<{ id: string; name: string; online: boolean; allowed?: { files?: boolean }; on?: { files?: boolean } }[]>("swarm.list"),
+    queryFn: () => query<{ id: string; name: string; online: boolean; guestOf?: string; allowed?: { files?: boolean }; on?: { files?: boolean } }[]>("swarm.list"),
     enabled: owner,
     refetchInterval: 3000,
   });
   const computerFiles = filePlaces(
-    (swarm.data ?? []).map((a) => ({
+    (swarm.data ?? [])
+      .filter((a) => !a.guestOf)
+      .map((a) => ({
       id: a.id,
       name: a.name,
       online: a.online,
@@ -642,7 +644,13 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   ];
   const computerHere = path ? parseComputerPlace(path) : null;
   const guestHere = path ? parseGuestPlace(path) : null;
-  const computerName = computerHere ? (swarm.data?.find((a) => a.id === computerHere.id)?.name ?? "Computer") : "";
+  const computerLabel = (id: string) => {
+    const agent = swarm.data?.find((a) => a.id === id);
+    if (!agent) return "Computer";
+    if (agent.guestOf) return machines.data?.find((m) => m.id === agent.guestOf)?.name ?? agent.name;
+    return agent.name;
+  };
+  const computerName = computerHere ? computerLabel(computerHere.id) : "";
   const guestName = guestHere ? (machines.data?.find((m) => m.id === guestHere.id)?.name ?? "Virtual machine") : "";
   const computerKnown = computerHere ? swarm.data?.find((a) => a.id === computerHere.id) : undefined;
   const computerBrowsable = !computerHere
@@ -787,7 +795,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   };
   const used = disk.data ? diskPct(disk.data) / 100 : 0;
 
-  const serverName = boot.server?.device || boot.server?.name || "This server";
+  const serverName = boot.server?.device || "This server";
   const heading =
     path === null
       ? "Files"
@@ -851,7 +859,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   ];
   const placeLabel = (filePath: string) => {
     const computer = parseComputerPlace(filePath);
-    if (computer) return swarm.data?.find((a) => a.id === computer.id)?.name ?? "Computer";
+    if (computer) return computerLabel(computer.id);
     const guest = parseGuestPlace(filePath);
     if (guest) return machines.data?.find((m) => m.id === guest.id)?.name ?? "Virtual machine";
     return serverName;
@@ -2371,7 +2379,7 @@ export function ShareSheet({
         name={accessRadioName}
         on={!current}
         title="No password"
-        note={noPasswordOk ? "Anyone on your home LAN can open it. Writes are not saved as you. Only for folders you don’t mind anyone at home seeing." : "Needs Omarchy Server’s installer to run once more on this server."}
+        note={noPasswordOk ? "Anyone on your home LAN can open it. Writes are not saved as you. Only for folders you don’t mind anyone at home seeing." : "Needs the installer to run once more on this server."}
         onPick={() => pick(false)}
         disabled={!noPasswordOk}
       />

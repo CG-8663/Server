@@ -14,7 +14,7 @@ set -euo pipefail
 
 usage() {
 	cat <<'EOF'
-Omarchy Server connector installer
+My Own Data Center connector installer
 
   connector/install.sh --server <https://...> --ca <fingerprint> --token <code> [--allow <list>] [--source <url>]
   connector/install.sh --uninstall
@@ -77,7 +77,7 @@ UNIT="$UNIT_DIR/omarchy-connector.service"
 command -v systemctl >/dev/null || die "systemd is required."
 
 if [ "$UNINSTALL" = 1 ]; then
-	say "Removing the Omarchy Server connector"
+	say "Removing the connector"
 	systemctl --user disable --now omarchy-connector.service 2>/dev/null || true
 	rm -f "$UNIT"
 	systemctl --user daemon-reload 2>/dev/null || true
@@ -173,7 +173,7 @@ has storage || nnp="NoNewPrivileges=yes"
 mkdir -p "$UNIT_DIR"
 cat >"$UNIT" <<EOF
 [Unit]
-Description=Omarchy Server connector (local swarm)
+Description=MODC connector (local swarm)
 After=network-online.target
 Wants=network-online.target
 

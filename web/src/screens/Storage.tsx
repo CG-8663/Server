@@ -178,7 +178,7 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 		if (ok) act('importPool', {uuid: i.uuid, force: !!i.otherSystem}, `${i.label} imported`)
 	}
 	const forget = async (p: Pool) => {
-		if (await confirm({title: swarm ? `Remove “${p.name}” from this computer?` : `Remove “${p.name}” from Omarchy Server?`, body: `The pool is ${p.kind === 'zfs' ? 'exported' : 'unmounted'} and no longer mounted at startup. Nothing on its drives is erased, and you can import it again later. Stop apps and shares that use it first.`, confirm: 'Remove', danger: true}))
+		if (await confirm({title: swarm ? `Remove “${p.name}” from this computer?` : `Remove “${p.name}” from this server?`, body: `The pool is ${p.kind === 'zfs' ? 'exported' : 'unmounted'} and no longer mounted at startup. Nothing on its drives is erased, and you can import it again later. Stop apps and shares that use it first.`, confirm: 'Remove', danger: true}))
 			act('forgetPool', {name: p.name, kind: p.kind}, `${p.name} removed`)
 	}
 
@@ -210,7 +210,7 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 					<p className="muted" style={{margin: '6px 0 0', fontSize: 14}}>
 						{swarm
 							? 'Run the connector install again on this computer (Machines → Local swarm → Add a computer).'
-							: 'Run the Omarchy Server installer again on the server. It adds the small helper that manages drives, pools and network shares, then come back here.'}
+							: 'Run the installer again on the server. It adds the small helper that manages drives, pools and network shares, then come back here.'}
 					</p>
 				</Card>
 			)}
@@ -336,7 +336,7 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 			<DriveSheet d={drive} onClose={() => setDrive(null)} onChanged={refresh} rpc={rpc} args={args} />
 			{ready && !status.data?.zfsAvailable && !swarm && (
 				<p className="footer-note storage-note" style={{marginTop: -8}}>
-					ZFS isn’t installed. To add it, run the Omarchy Server installer with <code>--zfs</code> on the server.
+					ZFS isn’t installed. To add it, run the installer with <code>--zfs</code> on the server.
 				</p>
 			)}
 			{creating && <NewPool drives={blank} zfs={!!status.data?.zfsAvailable} taken={pools.map((p) => p.name)} onClose={() => setCreating(false)} onDone={refresh} rpc={rpc} args={args} />}

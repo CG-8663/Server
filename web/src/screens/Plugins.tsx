@@ -59,7 +59,7 @@ export function PluginBrowser({q}: {q: string}) {
 		haptic(6)
 		const ok = await confirm({
 			title: `Install ${p.name}?`,
-			body: `It runs inside your Omarchy desktop with your permissions, like any Omarchy plugin. Omarchy Server installs the exact version the Omarchy plugin registry verified (an automated check of its code, not a full security review), by ${p.author || 'its author'}.`,
+			body: `It runs inside your Omarchy desktop with your permissions, like any Omarchy plugin. My Own Data Center installs the exact version the Omarchy plugin registry verified (an automated check of its code, not a full security review), by ${p.author || 'its author'}.`,
 			confirm: 'Install',
 			icon: 'puzzle',
 		})

@@ -141,7 +141,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	}
 	const procedures = {
 		// ---- who's here -----------------------------------------------------------------------
-		'system.version': {kind: 'query', public: true, run: () => ({version: OMARCHYD_VERSION, name: `Omarchy Server ${OMARCHYD_VERSION}`, startedAt, ...(revision ? {revision} : {})})},
+		'system.version': {kind: 'query', public: true, run: () => ({version: OMARCHYD_VERSION, name: `MODC ${OMARCHYD_VERSION}`, startedAt, ...(revision ? {revision} : {})})},
 		'system.discoveryInfo': {
 			kind: 'query',
 			public: true,
@@ -258,7 +258,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'system.factoryReset': {
 			kind: 'mutation',
 			run: async (input, {auth}) => {
-				ownerOnly(auth, 'reset Omarchy Server')
+				ownerOnly(auth, 'reset this server')
 				await accounts.confirmPassword(auth.userId, input?.password)
 				// Answer first; the reset carries on by itself. The next owner must not inherit
 				// assistant keys and chats, swarm computers, backup secrets or network shares.
@@ -319,7 +319,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 				try {
 					return JSON.parse(await storage.helper('grow-system', [], pw ? `${pw}\n` : ''))
 				} catch (e) {
-					if (/Unknown action/.test(e.message)) throw new RpcError('PRECONDITION_FAILED', 'Run the Omarchy Server installer again once to add this (its storage helper changed).')
+					if (/Unknown action/.test(e.message)) throw new RpcError('PRECONDITION_FAILED', 'Run the installer again once to add this (its storage helper changed).')
 					// "NEEDS_PASSWORD: …" tells the web app to ask for the disk password.
 					throw new RpcError('PRECONDITION_FAILED', e.message)
 				} finally {
@@ -419,7 +419,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		...Object.fromEntries(Object.entries(unraid.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'move from Unraid'), p.run(input))}])),
 		...Object.fromEntries(
 			Object.entries(updater.procedures).map(([name, p]) =>
-				name === 'system.update' || name === 'system.setReleaseChannel' ? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'update Omarchy Server'), p.run(input))}] : [name, p],
+				name === 'system.update' || name === 'system.setReleaseChannel' ? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'update this server'), p.run(input))}] : [name, p],
 			),
 		),
 		// Running the installer needs sudo on the server: only the owner is asked.
@@ -565,7 +565,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	// Move an older install's desktop share from 127.0.0.1:5900 to the private socket, so updating is
 	// enough (no need to run the installer again).
 	const DESKTOP_UNIT = `[Unit]
-Description=Omarchy Server: share this Omarchy desktop with the web app (private socket)
+Description=MODC: share this Omarchy desktop with the web app (private socket)
 PartOf=graphical-session.target
 After=graphical-session.target
 
@@ -652,7 +652,7 @@ WantedBy=graphical-session.target
 		if (machineOptions.run) return true // the dev/test stand-in has no desktop
 		if (await desktopUp()) return true
 		if (!(await readFile('/usr/bin/wayvnc').then(() => true, () => false)))
-			throw new RpcError('PRECONDITION_FAILED', 'Screen sharing (wayvnc) isn’t installed. Run the Omarchy Server installer again to add it.')
+			throw new RpcError('PRECONDITION_FAILED', 'Screen sharing (wayvnc) isn’t installed. Run the installer again to add it.')
 		await sh('systemctl', ['--user', 'reset-failed', 'omarchy-server-desktop.service'])
 		await sh('systemctl', ['--user', 'start', 'omarchy-server-desktop.service'])
 		if (await waitFor(desktopVncPort, 5)) return true

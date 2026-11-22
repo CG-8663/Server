@@ -84,7 +84,7 @@ test('first sign-in registers this install with PKCE, a stable host id and the p
 		assert.ok(url.startsWith(`${AUTHORIZE}?`))
 		const q = new URL(url).searchParams
 		assert.equal(q.get('client_id'), 'dynamic_agent_client')
-		assert.equal(q.get('agent_name_hint'), 'Omarchy Server')
+		assert.equal(q.get('agent_name_hint'), 'My Own Data Center')
 		assert.match(q.get('ext_agent_host_id'), /^urn:uuid:[0-9a-f-]{36}$/)
 		assert.equal(q.get('scope'), 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct')
 		assert.equal(q.get('resource'), 'https://api.openai.com/v1')
@@ -215,7 +215,7 @@ test('a turn uses the plan through the Responses API, refreshing the token when 
 		assert.equal(call.body.model, 'gpt-plan')
 		assert.equal(call.body.store, false)
 		assert.equal(call.body.stream, true)
-		assert.match(call.body.instructions, /Omarchy Server assistant/)
+		assert.match(call.body.instructions, /My Own Data Center assistant/)
 		assert.equal(call.body.input.some((i) => i.role === 'system'), false, 'no system input items')
 		assert.equal(call.body.tools.find((t) => t.name === 'apps_list').type, 'function')
 		// The rotated refresh token is kept.

@@ -131,7 +131,7 @@ async function handshake(url, fetchImpl, signal) {
 	const started = await rpc(url, 'initialize', {
 		protocolVersion: '2024-11-05',
 		capabilities: {},
-		clientInfo: {name: 'Omarchy Server', version: '1'},
+		clientInfo: {name: 'MODC', version: '1'},
 	}, fetchImpl, signal, null)
 	await notify(url, fetchImpl, signal, started.session)
 	return started.session

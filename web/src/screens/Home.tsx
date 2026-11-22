@@ -12,6 +12,7 @@ import {usePins} from '../fleet/PinButton'
 import {pinKey, type DashboardPin} from '../fleet/pins'
 import {gpuGaugeItems} from '../gauges'
 import {Icon, type IconName} from '../icons'
+import {guestAgent, isGuestAgent} from '../swarm/guestLink'
 import {useSwarm} from '../swarm/Swarm'
 import {AppIcon, Ring, Row, Sheet, SheetHeader, appStatus, bytes, duration, greeting, haptic, levelColor, pct, today} from '../ui'
 
@@ -26,20 +27,32 @@ type GaugeItem = {
 	battery?: FleetRings['battery']
 }
 
+function percentSub(p: number, ready: boolean) {
+	return ready ? `${Math.round(p)}%` : '–'
+}
+
+/** High use is a warning at 75% and danger at 90%. A low battery flips that: 25% and 15%. */
+function gaugeLevel(name: string, p: number, ready: boolean): 'ok' | 'warning' | 'danger' {
+	if (!ready) return 'ok'
+	if (name === 'Battery') return p <= 15 ? 'danger' : p <= 25 ? 'warning' : 'ok'
+	return p >= 90 ? 'danger' : p >= 75 ? 'warning' : 'ok'
+}
+
 export function Gauges({onOpen, fleet}: {onOpen?: (gauge: {title: string; kind: GaugeKind; gpuId?: string}) => void; fleet?: FleetRings | null}) {
 	const cpu = useCpu()
 	const mem = useMemory()
 	const disk = useDisk()
 	const gpus = useGpus()
 	const battery = useBattery()
+	const diskTotal = disk.data ? disk.data.totalUsed + disk.data.available : 0
 	const items: GaugeItem[] = fleet
 		? [
-				{k: 'CPU', icon: 'cpu', p: fleet.cpu.percent, sub: fleet.cpu.busiest ?? '–', ready: fleet.cpu.ready},
-				{k: 'Memory', icon: 'memory', p: fleet.memory.percent, sub: fleet.memory.busiest ?? '–', ready: fleet.memory.ready},
-				{k: 'Storage', icon: 'disk', p: fleet.storage.percent, sub: fleet.storage.busiest ?? '–', ready: fleet.storage.ready},
-				...(fleet.gpu ? [{k: 'GPU', icon: 'gpu' as const, p: fleet.gpu.percent, sub: fleet.gpu.busiest ?? '–', ready: fleet.gpu.ready}] : []),
+				{k: 'CPU', icon: 'cpu', p: fleet.cpu.percent, sub: percentSub(fleet.cpu.percent, fleet.cpu.ready), ready: fleet.cpu.ready},
+				{k: 'Memory', icon: 'memory', p: fleet.memory.percent, sub: fleet.memory.ready ? `${bytes(fleet.memory.used, 1, 1024)} of ${bytes(fleet.memory.total, 0, 1024)}` : '–', ready: fleet.memory.ready},
+				{k: 'Storage', icon: 'disk', p: fleet.storage.percent, sub: fleet.storage.ready ? `${bytes(fleet.storage.used, 1)} of ${bytes(fleet.storage.total, 0)}` : '–', ready: fleet.storage.ready},
+				...(fleet.gpu ? [{k: 'GPU', icon: 'gpu' as const, p: fleet.gpu.percent, sub: percentSub(fleet.gpu.percent, fleet.gpu.ready), ready: fleet.gpu.ready}] : []),
 				...(fleet.battery
-					? [{k: 'Battery', icon: 'battery' as const, p: fleet.battery.lowest.percent, sub: fleet.battery.lowest.name, ready: true, color: batteryColor(fleet.battery.lowest.percent), battery: fleet.battery}]
+					? [{k: 'Battery', icon: 'battery' as const, p: fleet.battery.lowest.percent, sub: percentSub(fleet.battery.lowest.percent, true), ready: true, color: batteryColor(fleet.battery.lowest.percent), battery: fleet.battery}]
 					: []),
 			]
 		: [
@@ -47,7 +60,7 @@ export function Gauges({onOpen, fleet}: {onOpen?: (gauge: {title: string; kind: 
 					k: 'CPU',
 					icon: 'cpu' as const,
 					p: cpu.data?.totalUsed ?? 0,
-					sub: cpu.data ? `${cpu.data.threads} threads` : '–',
+					sub: percentSub(cpu.data?.totalUsed ?? 0, !!cpu.data),
 					ready: !!cpu.data,
 				},
 				{
@@ -61,36 +74,46 @@ export function Gauges({onOpen, fleet}: {onOpen?: (gauge: {title: string; kind: 
 					k: 'Storage',
 					icon: 'disk' as const,
 					p: disk.data ? diskPct(disk.data) : 0,
-					sub: disk.data ? `${bytes(disk.data.available, 0)} free` : '–',
+					sub: disk.data ? `${bytes(disk.data.totalUsed, 1)} of ${bytes(diskTotal, 0)}` : '–',
 					ready: !!disk.data,
 				},
-				...gpuGaugeItems(gpus.data?.gpus ?? []),
-				...batteryGaugeItem(battery.data?.batteries ?? []),
+				...gpuGaugeItems(gpus.data?.gpus ?? []).map((g) => ({...g, sub: percentSub(g.p, g.ready)})),
+				...batteryGaugeItem(battery.data?.batteries ?? []).map((g) => ({...g, sub: percentSub(g.p, g.ready)})),
 			]
 	return (
 		<div className="glass gauges" data-n={items.length} role="group" aria-label="System usage">
-			{items.map((g) => (
-				<button
-					type="button"
-					className="gauge press"
-					key={g.key ?? g.k}
-					aria-label={`${g.k}, open machines`}
-					onClick={() => onOpen?.({title: g.k, kind: g.k === 'Memory' || g.k === 'Storage' || g.k === 'Battery' ? g.k : g.k.startsWith('GPU') ? 'GPU' : 'CPU', gpuId: g.key})}
-				>
-					{g.battery ? (
-						<BatteryRing groups={g.battery.groups} lowest={g.battery.lowest} color={g.color} />
-					) : (
-						<Ring value={g.p} color={g.color ?? levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
-							<span className="pct">
-								{g.ready ? Math.round(g.p) : '–'}
-								<small>%</small>
+			{items.map((g) => {
+				const level = gaugeLevel(g.k, g.p, g.ready)
+				return (
+					<button
+						type="button"
+						className="gauge press"
+						key={g.key ?? g.k}
+						aria-label={level === 'ok' ? `${g.k}, ${g.sub}` : `${g.k}, tap for details`}
+						onClick={() => onOpen?.({title: g.k, kind: g.k === 'Memory' || g.k === 'Storage' || g.k === 'Battery' ? g.k : g.k.startsWith('GPU') ? 'GPU' : 'CPU', gpuId: g.key})}
+					>
+						{g.battery ? (
+							<BatteryRing groups={g.battery.groups} lowest={g.battery.lowest} color={g.color} />
+						) : (
+							<Ring value={g.p} color={g.color ?? levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
+								<span className="pct">
+									{g.ready ? Math.round(g.p) : '–'}
+									<small>%</small>
+								</span>
+							</Ring>
+						)}
+						<span className="k">{g.k}</span>
+						{level === 'ok' ? (
+							<span className="sub">{g.sub}</span>
+						) : (
+							<span className={`sub gauge-alert${level === 'danger' ? ' danger' : ''}`}>
+								<Icon name={level === 'danger' ? 'exclaim' : 'alert'} size={13} />
+								Tap for details
 							</span>
-						</Ring>
-					)}
-					<span className="k">{g.k}</span>
-					<span className="sub">{g.sub}</span>
-				</button>
-			))}
+						)}
+					</button>
+				)
+			})}
 		</div>
 	)
 }
@@ -121,7 +144,7 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 	const list = apps.data ?? []
 	const running = list.filter((a) => appStatus(a.state).kind === 'running').length
 	const problems = list.filter((a) => a.error || a.state === 'unknown')
-	const serverName = boot.server?.device || boot.server?.name || 'This server'
+	const serverName = boot.server?.device || 'This server'
 	const samples = useMemo(
 		() => [
 			serverSample({
@@ -136,7 +159,7 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 				gpus: (gpus.data?.gpus ?? []).map((g) => ({id: g.id, used: g.used})),
 				battery: combineBatteries(battery.data?.batteries ?? [])?.percent ?? null,
 			}),
-			...(swarm.data ?? []).map(computerSample),
+			...(swarm.data ?? []).filter((a) => !isGuestAgent(a)).map(computerSample),
 		],
 		[serverName, cpu.data, mem.data, disk.data, temp.data, gpus.data, battery.data, swarm.data],
 	)
@@ -146,8 +169,8 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 		() =>
 			fleetList({
 				server: {name: serverName},
-				computers: (swarm.data ?? []).map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
-				guests: (machines.data ?? []).map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state})),
+				computers: (swarm.data ?? []).filter((a) => !isGuestAgent(a)).map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
+				guests: (machines.data ?? []).map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state, connector: !!guestAgent(swarm.data ?? [], m.id)})),
 			}),
 		[serverName, swarm.data, machines.data],
 	)
@@ -193,7 +216,7 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 					{rings?.temp ? (
 						<span className="fact">
 							<Icon name="thermo" size={15} />
-							{Math.round(rings.temp.celsius)}°C · {rings.temp.name}
+							{Math.round(rings.temp.celsius)}°C
 						</span>
 					) : (
 						temp.data?.temperature != null && (

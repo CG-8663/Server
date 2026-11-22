@@ -99,7 +99,7 @@ export const WRITE_TOOLS = [
 		theme: {type: 'string'},
 	}, true),
 	mutation('swarm_rename', 'swarm.rename', 'Rename a swarm computer', {id: {type: 'string'}, name: {type: 'string'}}, true),
-	mutation('desktop_setLayout', 'desktop.setLayout', 'Set this Omarchy Server’s desktop layout on this machine: Ubuntu (gnome: floating, rounded corners) or Hyprland (hyprland: tiling, square corners). Not a swarm theme and not omarchy_setTheme.', {
+	mutation('desktop_setLayout', 'desktop.setLayout', 'Set this server’s desktop layout on this machine: Ubuntu (gnome: floating, rounded corners) or Hyprland (hyprland: tiling, square corners). Not a swarm theme and not omarchy_setTheme.', {
 		shell: {type: 'string', enum: ['gnome', 'hyprland'], description: 'gnome = Ubuntu, floating, rounded. hyprland = Hyprland, tiling, square.'},
 	}),
 	mutation('omarchy_setTheme', 'omarchy.setTheme', 'Set this machine’s Omarchy theme colours. Use this only when they want colours and not a wallpaper change.', {slug: {type: 'string'}}, true),

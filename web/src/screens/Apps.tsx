@@ -38,7 +38,7 @@ export function Apps({onOpenApp, onStore}: {onOpenApp: (app: UserApp) => void; o
 	const [filter, setFilter] = useState<Filter>('all')
 	const [openId, setOpenId] = useState<string | null>(null)
 	const boot = useBootstrap()
-	const serverName = boot.server?.device || boot.server?.name || 'This server'
+	const serverName = boot.server?.device || 'This server'
 	const updateMap = useMemo(() => new Map((updates.data ?? []).map((u) => [u.id, u.version])), [updates.data])
 	const list = apps.data ?? []
 

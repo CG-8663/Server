@@ -48,7 +48,7 @@ test('piped into bash, a package step that reads its input does not skip the res
 		})
 		const text = (out.stdout + out.stderr).replace(/\x1b\[[0-9;]*m/g, '')
 		assert.match(text, /PACMAN -Syu/)
-		assert.match(text, /==> Downloading Omarchy Server/)
+		assert.match(text, /==> Downloading My Own Data Center/)
 		assert.match(text, /GIT clone --depth 1 --branch main /)
 		assert.doesNotMatch(text, /cannot touch/)
 		assert.equal(out.status, 7)

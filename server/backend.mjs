@@ -6,7 +6,7 @@
 //   success  {"result":{"data":<value>}}
 //   failure  {"error":{"message":"...","code":-32001,"data":{"code":"UNAUTHORIZED","httpStatus":401}}}
 
-export const UNREACHABLE_MESSAGE = 'Omarchy Server is restarting or not answering. Wait a moment and try again.'
+export const UNREACHABLE_MESSAGE = 'My Own Data Center is restarting or not answering. Wait a moment and try again.'
 
 export class BackendError extends Error {
 	constructor(message, {code = 'INTERNAL_SERVER_ERROR', status = 500, path, detail} = {}) {
@@ -45,7 +45,7 @@ export function createBackendClient({baseUrl, timeoutMs = 20_000, fetchImpl = fe
 				code: 'UNREACHABLE',
 				status: 502,
 				path,
-				detail: `Can't reach Omarchy Server at ${base} (${reason})`,
+				detail: `Can't reach My Own Data Center at ${base} (${reason})`,
 			})
 		}
 
@@ -58,12 +58,12 @@ export function createBackendClient({baseUrl, timeoutMs = 20_000, fetchImpl = fe
 				code: 'BAD_RESPONSE',
 				status: 502,
 				path,
-				detail: `Omarchy Server returned an unexpected response for ${path} (HTTP ${response.status})`,
+				detail: `My Own Data Center returned an unexpected response for ${path} (HTTP ${response.status})`,
 			})
 		}
 		if (body?.error) {
 			const data = body.error.data ?? {}
-			throw new BackendError(body.error.message || 'Omarchy Server error', {
+			throw new BackendError(body.error.message || 'My Own Data Center error', {
 				code: data.code ?? 'INTERNAL_SERVER_ERROR',
 				status: data.httpStatus ?? response.status ?? 500,
 				path,
@@ -74,7 +74,7 @@ export function createBackendClient({baseUrl, timeoutMs = 20_000, fetchImpl = fe
 				code: 'BAD_RESPONSE',
 				status: response.status >= 400 ? response.status : 502,
 				path,
-				detail: `Omarchy Server returned HTTP ${response.status} for ${path}`,
+				detail: `My Own Data Center returned HTTP ${response.status} for ${path}`,
 			})
 		}
 		const data = body?.result?.data

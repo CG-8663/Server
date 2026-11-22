@@ -1,21 +1,23 @@
-// "Desktop & Dock": desktop themes, wallpapers, dock layout and desktop icons. Desktop only,
-// saved per device; your phone's appearance (Settings → Appearance) isn't changed.
+// Appearance for the app and for this device's desktop: one page, so phone-or-desktop and
+// Ubuntu-or-Hyprland sit together, and the dock is not a second theme picker.
 import {useEffect, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {applyPrefsUpdate, prefsAfterPhotoUpload} from '../photoPrefs'
-import {Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, useToast, wallpaperUrl, type Prefs} from '../ui'
-import {PRESETS, STYLES, solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
+import {Appearance} from '../screens/More'
+import {Row, Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, setLayoutPref, useLayout, useOmarchyThemes, useToast, wallpaperUrl, type LayoutPref, type Prefs} from '../ui'
+import {takeAppearanceFocus} from './settingsPage'
+import {STYLES, solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
 import {CAPTURE_KEY, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
 import {SnippetBlock} from './hyprland/Snippet'
 import {DESKTOP_KEY, useDesktop, useItems, type ItemInfo} from './Desktop'
 
-type Tab = 'themes' | 'background' | 'dock' | 'desktop' | 'layout'
-const ACCENT_CHOICES: {id: DeskAccent; label: string; swatch: string}[] = [
-	{id: 'wallpaper', label: 'From wallpaper', swatch: 'conic-gradient(#f97316,#eab308,#22c55e,#06b6d4,#8b5cf6,#ec4899,#f97316)'},
+const FOCUS: Record<string, string> = {layout: 'appearance-layout', dock: 'appearance-dock', desktop: 'appearance-desktop', themes: 'appearance-themes', background: 'appearance-background'}
+const PANEL_ACCENTS: {id: DeskAccent; label: string; swatch: string}[] = [
 	{id: 'app', label: 'App theme', swatch: 'var(--accent)'},
+	{id: 'wallpaper', label: 'From wallpaper', swatch: 'conic-gradient(#f97316,#eab308,#22c55e,#06b6d4,#8b5cf6,#ec4899,#f97316)'},
 	{id: 'blue', label: 'Blue', swatch: 'var(--blue)'},
 	{id: 'mauve', label: 'Mauve', swatch: 'var(--mauve)'},
 	{id: 'teal', label: 'Teal', swatch: 'var(--teal)'},
@@ -24,35 +26,59 @@ const ACCENT_CHOICES: {id: DeskAccent; label: string; swatch: string}[] = [
 	{id: 'pink', label: 'Pink', swatch: 'var(--pink)'},
 ]
 
-export function Personalize({tab: initial, prefs, setPrefs}: {tab?: string; prefs: Prefs; setPrefs: (p: Prefs) => void}) {
-	const [tab, setTab] = useState<Tab>(((['themes', 'background', 'dock', 'desktop', 'layout'] as string[]).includes(initial ?? '') ? initial : 'themes') as Tab)
-	useEffect(() => {
-		if (initial && (['themes', 'background', 'dock', 'desktop', 'layout'] as string[]).includes(initial)) setTab(initial as Tab)
-	}, [initial])
+export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThemes}: {tab?: string; prefs: Prefs; setPrefs: (p: Prefs) => void; embedded?: boolean; onOpenThemes?: () => void}) {
+	const user = useUser()
+	const root = useRef<HTMLDivElement>(null)
+	const omarchyTheme = useOmarchyThemes(!!onOpenThemes)
 	const [cfg, setCfg] = useDeskConfig()
+	useEffect(() => {
+		let focus = initial ?? ''
+		try {
+			const saved = takeAppearanceFocus(sessionStorage)
+			if (saved) focus = saved
+		} catch {
+			/* private */
+		}
+		const id = FOCUS[focus]
+		if (!id) return
+		root.current?.querySelector(`#${id}`)?.scrollIntoView({block: 'start'})
+	}, [initial])
 	return (
-		<div className="personalize">
-			<h1 className="title" style={{margin: '4px 0 14px'}}>
-				Desktop &amp; Dock
-			</h1>
-			<Segmented<Tab>
-				label="Section"
-				value={tab}
-				options={[
-					{id: 'themes', label: 'Themes'},
-					{id: 'background', label: 'Background'},
-					{id: 'dock', label: 'Dock'},
-					{id: 'desktop', label: 'Desktop icons'},
-					{id: 'layout', label: 'Layout'},
-				]}
-				onChange={setTab}
-			/>
-			<div style={{height: 6}} />
-			{tab === 'themes' && <Themes cfg={cfg} setCfg={setCfg} />}
-			{tab === 'background' && <Background cfg={cfg} setCfg={setCfg} prefs={prefs} setPrefs={setPrefs} />}
-			{tab === 'dock' && <DockSettings cfg={cfg} setCfg={setCfg} />}
-			{tab === 'desktop' && <DesktopSettings cfg={cfg} setCfg={setCfg} />}
-			{tab === 'layout' && <LayoutSettings cfg={cfg} setCfg={setCfg} />}
+		<div className="personalize" ref={root}>
+			{!embedded && (
+				<h1 className="title" style={{margin: '4px 0 14px'}}>
+					Appearance
+				</h1>
+			)}
+			<Appearance prefs={prefs} setPrefs={setPrefs} wallpaper={user.data?.wallpaper} />
+			{onOpenThemes && (
+				<section>
+					<div className="section-head">
+						<h2>Omarchy</h2>
+					</div>
+					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+						<Row icon="palette" color="var(--blue)" label="Themes" value={omarchyTheme.data?.label ?? undefined} onClick={onOpenThemes} />
+					</div>
+					<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
+						Your Omarchy desktop’s themes. Switch the whole desktop, or get more from the Omarchy manual.
+					</p>
+				</section>
+			)}
+			<div id="appearance-layout">
+				<LayoutSettings cfg={cfg} setCfg={setCfg} />
+			</div>
+			<div id="appearance-dock">
+				<DockSettings cfg={cfg} setCfg={setCfg} />
+			</div>
+			<div id="appearance-desktop">
+				<DesktopSettings cfg={cfg} setCfg={setCfg} />
+			</div>
+			<div id="appearance-themes">
+				<Themes cfg={cfg} setCfg={setCfg} />
+			</div>
+			<div id="appearance-background">
+				<Background desktopPictures cfg={cfg} setCfg={setCfg} prefs={prefs} setPrefs={setPrefs} />
+			</div>
 		</div>
 	)
 }
@@ -73,6 +99,7 @@ function Section({title, note, children}: {title: string; note?: ReactNode; chil
 
 function LayoutSettings({cfg, setCfg}: P) {
 	const toast = useToast()
+	const layout = useLayout()
 	const secure = typeof window !== 'undefined' && window.isSecureContext
 	const hasLock = typeof navigator !== 'undefined' && !!keyboardLockApi()
 	const [mode, setMode] = useState<CaptureMode>(() => {
@@ -96,14 +123,32 @@ function LayoutSettings({cfg, setCfg}: P) {
 	}
 	return (
 		<>
-			<Section title="Desktop layout" note="Ubuntu is the floating desktop with a dock. Hyprland tiles windows, with workspaces 1–9 and Omarchy Super shortcuts.">
+			<Section title="Layout" note="Phone or desktop is this screen. Automatic uses the desktop on a big screen with a pointer. Ubuntu floats windows over a dock. Hyprland tiles them, with workspaces 1–9 and Omarchy Super shortcuts.">
 				<div className="glass group pz-rows">
 					<div className="row static">
 						<span className="main">
-							<b>Layout</b>
+							<b>Phone or desktop</b>
+						</span>
+						<Segmented<LayoutPref>
+							label="Phone or desktop"
+							value={layout.pref}
+							options={[
+								{id: 'auto', label: 'Automatic'},
+								{id: 'desktop', label: 'Desktop'},
+								{id: 'phone', label: 'Phone'},
+							]}
+							onChange={(v) => {
+								haptic(6)
+								setLayoutPref(v)
+							}}
+						/>
+					</div>
+					<div className="row static">
+						<span className="main">
+							<b>Ubuntu or Hyprland</b>
 						</span>
 						<Segmented<DeskShell>
-							label="Layout"
+							label="Ubuntu or Hyprland"
 							value={cfg.shell ?? 'gnome'}
 							options={[
 								{id: 'gnome', label: 'Ubuntu'},
@@ -160,33 +205,7 @@ function LayoutSettings({cfg, setCfg}: P) {
 function Themes({cfg, setCfg}: P) {
 	return (
 		<>
-			<Section title="Desktop themes" note="A theme sets the wallpaper, the look of the top bar, dock and menus, and the accent colour. Fine-tune any of them below or in Background.">
-				<div className="pz-grid themes">
-					{PRESETS.map((t) => {
-						const on = cfg.preset === t.id && cfg.wallpaper === t.wallpaper && cfg.style === t.style && cfg.accent === t.accent
-						return (
-							<button
-								key={t.id}
-								className={`pz-card${on ? ' on' : ''}`}
-								onClick={() => {
-									haptic(6)
-									setCfg((c) => ({...c, preset: t.id, wallpaper: t.wallpaper, style: t.style, accent: t.accent}))
-								}}
-							>
-								<span className={`pz-thumb theme-thumb style-${t.style}`} style={{backgroundImage: `url(${wallpaperSrc(t.wallpaper, true)})`}}>
-									<i className="tt-bar" />
-									<i className="tt-dock" />
-									<i className="tt-win" />
-									{on && <Icon name="check" size={16} stroke={3} className="pz-check" />}
-								</span>
-								<b>{t.name}</b>
-								<small>{STYLES.find((s) => s.id === t.style)?.name}</small>
-							</button>
-						)
-					})}
-				</div>
-			</Section>
-			<Section title="Panel style">
+			<Section title="Panels" note="The top bar and the dock on this device. App theme uses the accent in the theme above.">
 				<div className="pz-grid styles">
 					{STYLES.map((s) => (
 						<button key={s.id} className={`pz-card style-card${cfg.style === s.id ? ' on' : ''}`} onClick={() => setCfg((c) => ({...c, preset: null, style: s.id}))}>
@@ -201,9 +220,9 @@ function Themes({cfg, setCfg}: P) {
 					))}
 				</div>
 			</Section>
-			<Section title="Accent colour" note="“App theme” uses the accent from Settings → Appearance, the same as your phone.">
+			<Section title="Panel accent">
 				<div className="pz-accents">
-					{ACCENT_CHOICES.map((a) => (
+					{PANEL_ACCENTS.map((a) => (
 						<button key={a.id} className={`pz-accent${cfg.accent === a.id ? ' on' : ''}`} onClick={() => setCfg((c) => ({...c, preset: null, accent: a.id}))} aria-pressed={cfg.accent === a.id}>
 							<i style={{background: a.swatch}} />
 							{a.label}
@@ -215,7 +234,7 @@ function Themes({cfg, setCfg}: P) {
 	)
 }
 
-function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs: (p: Prefs) => void}) {
+function Background({cfg, setCfg, prefs, setPrefs, desktopPictures = false}: P & {prefs: Prefs; setPrefs: (p: Prefs) => void; desktopPictures?: boolean}) {
 	const user = useUser()
 	const toast = useToast()
 	const fileRef = useRef<HTMLInputElement>(null)
@@ -247,16 +266,18 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 	}
 	return (
 		<>
-			<Section title="Omarchy" note="Backgrounds from your Omarchy desktop’s themes. “Same as desktop” follows whatever the desktop shows.">
-				<OmarchyBackgrounds
-					selected={cfg.wallpaper === 'omarchy' ? (prefs.omarchyBackground ?? null) : undefined}
-					onChoose={(id) => {
-						setPrefs({...prefs, omarchyBackground: id})
-						setCfg((c) => ({...c, preset: null, wallpaper: 'omarchy'}))
-					}}
-				/>
-			</Section>
-						<Section title="Wallpapers" note="High-resolution photos from the elementary OS collection (CC0, Unsplash and Pexels licences; credits in wallpapers/CREDITS.md).">
+			{!desktopPictures && (
+				<Section title="Omarchy" note="Backgrounds from your Omarchy desktop’s themes. “Same as desktop” follows whatever the desktop shows.">
+					<OmarchyBackgrounds
+						selected={cfg.wallpaper === 'omarchy' ? (prefs.omarchyBackground ?? null) : undefined}
+						onChoose={(id) => {
+							setPrefs({...prefs, omarchyBackground: id})
+							setCfg((c) => ({...c, preset: null, wallpaper: 'omarchy'}))
+						}}
+					/>
+				</Section>
+			)}
+						<Section title={desktopPictures ? 'Desktop pictures' : 'Wallpapers'} note={desktopPictures ? 'Pictures behind the windows on this device. The theme above is the app.' : 'High-resolution photos from the elementary OS collection (CC0, Unsplash and Pexels licences; credits in wallpapers/CREDITS.md).'}>
 				<div className="pz-grid walls">
 					{WALLPAPERS.map((w) => (
 						<button key={w.id} className={`pz-card wall-card${cfg.wallpaper === w.id ? ' on' : ''}`} onClick={() => pick(w.id)} title={`${w.name} · ${w.by}`}>
@@ -268,16 +289,18 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 					))}
 				</div>
 			</Section>
-			<Section title="Solid colour" note="A plain colour instead of a picture.">
-				<SolidColors value={solidOf(cfg.wallpaper)} onChange={(c) => (haptic(6), setCfg((x) => ({...x, preset: null, wallpaper: (c ? `color:${c}` : 'omarchy') as DeskConfig['wallpaper']})))} />
-			</Section>
+			{!desktopPictures && (
+				<Section title="Solid colour" note="A plain colour instead of a picture.">
+					<SolidColors value={solidOf(cfg.wallpaper)} onChange={(c) => (haptic(6), setCfg((x) => ({...x, preset: null, wallpaper: (c ? `color:${c}` : 'omarchy') as DeskConfig['wallpaper']})))} />
+				</Section>
+			)}
 			<Section title="Your own">
 				<div className="pz-grid walls">
 					<button className={`pz-card wall-card${cfg.wallpaper === 'server' ? ' on' : ''}`} onClick={() => pick('server')}>
 						<span className="pz-thumb" style={{backgroundImage: serverWall ? `url(${serverWall})` : undefined}}>
 							{cfg.wallpaper === 'server' && <Icon name="check" size={16} stroke={3} className="pz-check" />}
 						</span>
-						<b>Omarchy Server wallpaper</b>
+						<b>Server wallpaper</b>
 					</button>
 					{photo && (
 						<button className={`pz-card wall-card${cfg.wallpaper === 'photo' ? ' on' : ''}`} onClick={() => pick('photo')}>
@@ -314,7 +337,7 @@ function DockSettings({cfg, setCfg}: P) {
 	const candidates = allKeys(appList, machineList, owner).filter((k) => !d.items.includes(k))
 	return (
 		<>
-			<Section title="Layout" note={hyprNote}>
+			<Section title="Position" note={hyprNote}>
 				<div className="glass group pz-rows">
 					<div className="row static">
 						<span className="main">
@@ -438,7 +461,7 @@ function DesktopSettings({cfg, setCfg}: P) {
 		<>
 			<Section
 				title="Opening apps"
-				note="Some apps (Forgejo, Nextcloud, Home Assistant and others) don’t allow being shown inside another page. Those always open in their own browser tab, like in Omarchy Server."
+				note="Some apps (Forgejo, Nextcloud, Home Assistant and others) don’t allow being shown inside another page. Those always open in their own browser tab."
 			>
 				<div className="glass group pz-rows">
 					<div className="row static">

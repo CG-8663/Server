@@ -121,8 +121,8 @@ export function App() {
 	} else if (boot.error || !b) {
 		content = (
 			<main className="auth center screen">
-				<h1>Omarchy Server is offline</h1>
-				<p className="lead">The Omarchy Server server isn’t answering. Is it still running?</p>
+				<h1>My Own Data Center is offline</h1>
+				<p className="lead">The server isn’t answering. Is it still running?</p>
 				<button className="btn primary block" onClick={() => void boot.refetch()}>
 					Try again
 				</button>
@@ -361,7 +361,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 }
 
 const NOTIFICATION_TEXT: Record<string, string> = {
-	'update-available': 'A new version of Omarchy Server is available',
+	'update-available': 'A new version of My Own Data Center is available',
 	migration: 'Your data migration finished',
 }
 const noteText = (n: string) => NOTIFICATION_TEXT[n] ?? n.replace(/[-_]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
@@ -370,7 +370,7 @@ function NotificationsSheet({open, notes, onClose, onOpen}: {open: boolean; note
 	const action = useAction()
 	return (
 		<Sheet open={open} onClose={onClose} label="Notifications">
-			<SheetHeader title="Notifications" subtitle={notes.length ? `${notes.length} from Omarchy Server` : undefined} onClose={onClose} />
+			<SheetHeader title="Notifications" subtitle={notes.length ? `${notes.length}` : undefined} onClose={onClose} />
 			{notes.length === 0 ? (
 				<div className="empty" style={{paddingTop: 20}}>
 					<span className="big">

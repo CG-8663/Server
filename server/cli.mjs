@@ -33,7 +33,7 @@ try {
 }
 
 if (values.help) {
-	console.log(`Omarchy Server ${VERSION}
+	console.log(`MODC ${VERSION}
 
   omarchy-server [--backend <address>] [--port <n>] [--host <addr>] [--data <dir>] [--app-hosts <pattern|off>]
 
@@ -108,7 +108,7 @@ const app = createApp({store, staticDir, tls: secure, secureCookies: process.env
 const httpServer = http.createServer(app)
 const server = dualProtocolServer(httpServer, secure.get)
 server.listen(port, host, () => {
-	console.log(`\n  Omarchy Server ${VERSION}`)
+	console.log(`\n  MODC ${VERSION}`)
 	console.log(`  Backend   ${store.getConfig().backendUrl ?? '(not set: open the app to connect)'}`)
 	console.log(`  Data      ${dataDir}`)
 	for (const url of startupUrls(host, port)) console.log(`  Open      ${url}`)

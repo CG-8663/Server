@@ -442,13 +442,13 @@ function StoreSheet({
 }) {
 	const boot = useBootstrap()
 	const machines = useMachines()
-	const computers = useQuery({queryKey: ['swarm.list'], queryFn: () => query<{id: string; name: string; online: boolean; allowed?: {apps?: boolean}; on?: {apps?: boolean}}[]>('swarm.list')})
+	const computers = useQuery({queryKey: ['swarm.list'], queryFn: () => query<{id: string; name: string; online: boolean; guestOf?: string; allowed?: {apps?: boolean}; on?: {apps?: boolean}}[]>('swarm.list')})
 	const targets = useMemo(
 		() =>
 			installTargets({
 				serverName: boot.server?.device || 'This server',
-				computers: (computers.data ?? []).map(computerInstallInput),
-				guests: (machines.data ?? []).map(guestInstallInput),
+				computers: (computers.data ?? []).filter((a) => !a.guestOf).map(computerInstallInput),
+				guests: (machines.data ?? []).map((m) => guestInstallInput({id: m.id, name: m.name, state: m.state, connector: (computers.data ?? []).some((a) => a.guestOf === m.id)})),
 			}),
 		[boot.server?.device, computers.data, machines.data],
 	)
@@ -596,7 +596,7 @@ function StoreSheet({
 					) : incompatible ? (
 						<div className="error">
 							<Icon name="alert" size={18} />
-							{app.unsupported ?? 'This app needs a newer version of Omarchy Server.'}
+							{app.unsupported ?? 'This app needs a newer version of My Own Data Center.'}
 						</div>
 					) : (
 						<>

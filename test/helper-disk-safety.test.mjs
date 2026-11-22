@@ -164,7 +164,7 @@ errors: 3 data errors, use '-v' for a list
 			for (const script of [link, spacedHelper]) {
 				const result = await invoke(script)
 				assert.equal(result.code, 2, result.stderr || result.stdout)
-				assert.match(result.stderr, /Run this through sudo as the Omarchy Server owner/)
+				assert.match(result.stderr, /Run this through sudo as the owner of this server/)
 			}
 		} finally {
 			await rm(dir, {recursive: true, force: true})

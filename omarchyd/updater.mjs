@@ -259,7 +259,7 @@ export function createUpdater({
 			const reasons = await needsInstaller()
 			if (reasons.length) notes = `**After updating, run the installer on the server** (${reasons.join('; ')}):\n\n    ${await installerHint()}\n\n${notes}`
 		}
-		const value = {available, version: available ? latest : currentVersion, name: `Omarchy Server ${available ? latest : currentVersion}`, ...(notes ? {releaseNotes: notes} : {})}
+		const value = {available, version: available ? latest : currentVersion, name: `MODC ${available ? latest : currentVersion}`, ...(notes ? {releaseNotes: notes} : {})}
 		cache = {at: Date.now(), value}
 		return value
 	}
@@ -278,7 +278,7 @@ export function createUpdater({
 		try {
 			const checked = await check({force: true})
 			version = checked.version
-			if (!checked.available) throw new RpcError('BAD_REQUEST', 'Omarchy Server is already up to date')
+			if (!checked.available) throw new RpcError('BAD_REQUEST', 'My Own Data Center is already up to date')
 			if (!(await run('git', ['-C', appDir, 'rev-parse', 'HEAD']).then(() => true, () => false))) throw new RpcError('PRECONDITION_FAILED', `This copy can’t update itself. Run the installer: ${await installerHint()}`)
 		} catch (error) {
 			busy = false
@@ -403,7 +403,7 @@ export function createUpdater({
 			'system.setReleaseChannel': {
 				kind: 'mutation',
 				run: (input) => {
-					if (input?.channel !== 'stable') throw new RpcError('BAD_REQUEST', 'Omarchy Server has only stable updates for now')
+					if (input?.channel !== 'stable') throw new RpcError('BAD_REQUEST', 'Only stable updates are available for now')
 					return true
 				},
 			},

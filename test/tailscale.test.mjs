@@ -156,7 +156,7 @@ describe('Tailscale on the system', () => {
 
 	test('listed first, as part of Omarchy Server; a store’s own “tailscale” can’t stand in for it', async () => {
 		const reg = await q('appStore.registry')
-		assert.equal(reg[0].meta.name, 'Omarchy Server')
+		assert.equal(reg[0].meta.name, 'MODC')
 		const listing = reg[0].apps.find((a) => a.id === 'tailscale')
 		assert.equal(listing.system, true)
 		assert.equal(listing.port, port)

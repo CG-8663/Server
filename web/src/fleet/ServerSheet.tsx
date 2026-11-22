@@ -1,31 +1,22 @@
-import {lazy, Suspense, type CSSProperties, type ReactNode} from 'react'
+import {lazy, Suspense, useState} from 'react'
 import {useQuery} from '@tanstack/react-query'
 
 import {mutate, query, type Machine} from '../api'
 import {useAction} from '../data'
 import {Icon} from '../icons'
+import {MachineActions} from './machineActions'
 import {PinButton} from './PinButton'
 import {ServerRings, useServerGaugeMetrics} from './serverGauges'
+import {SheetGroup} from './sheetGroup'
 import {themeAction} from '../theme/themeAction'
 import {ThemePicker} from '../theme/ThemePicker'
 import {Row, Sheet, SheetHeader, bytes, duration, haptic, useConfirm, useToast} from '../ui'
 import {openStore} from './openStore'
 import {SERVER_FLEET_ID} from './list'
+import {StoragePage} from '../screens/Storage'
+import {BackupsPage} from '../backups'
 
 const MachineFiles = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
-
-function Group({title, children}: {title: string; children: ReactNode}) {
-	return (
-		<>
-			<div className="section-head" style={{margin: '20px 4px 8px'}}>
-				<h2 style={{fontSize: 16}}>{title}</h2>
-			</div>
-			<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
-				{children}
-			</div>
-		</>
-	)
-}
 
 export function ServerSheet({
 	name,
@@ -59,6 +50,9 @@ export function ServerSheet({
 	const confirm = useConfirm()
 	const toast = useToast()
 	const currentTheme = installed.find((t) => t.current)?.name ?? ''
+	const [more, setMore] = useState<'storage' | 'backups' | null>(null)
+	if (more === 'storage') return <StoragePage onBack={() => setMore(null)} target="host" />
+	if (more === 'backups') return <BackupsPage onBack={() => setMore(null)} />
 	return (
 		<Sheet open onClose={onClose} label={name} tall>
 			<SheetHeader
@@ -74,36 +68,31 @@ export function ServerSheet({
 			<div style={{display: 'flex', justifyContent: 'flex-end', marginTop: 8}}>
 				<PinButton pin={{kind: 'machine', id: SERVER_FLEET_ID, computer: ''}} name={name} />
 			</div>
-			<div className="primary-row">
-				<button type="button" className="btn primary" disabled={!onTerminal} onClick={() => (haptic(8), onTerminal?.())}>
-					<Icon name="terminal" size={20} /> Terminal
-				</button>
-				<button type="button" className="btn" disabled={!owner} onClick={() => (haptic(8), onDesktop())}>
-					<Icon name="devices" size={20} /> Open desktop
-				</button>
-			</div>
+			<MachineActions terminal={!!onTerminal} desktop={owner} onTerminal={() => onTerminal?.()} onDesktop={onDesktop} />
 			<ServerRings />
-			<Group title="Disks">
+			<SheetGroup title="Disks">
 				<Row
 					icon="disk"
 					color="var(--teal)"
-					label={disk?.mount ?? 'Storage'}
+					label={disk?.mount ?? 'Disk'}
 					sub={disk ? `${bytes(disk.total - disk.used, 0)} free` : undefined}
 					trailing={diskPct != null ? <b>{diskPct}%</b> : undefined}
 				/>
-			</Group>
-			<Group title="Now">
+				{owner && <Row icon="disk" color="var(--teal)" label="Storage" sub="Drives, pools, and drive sleep" onClick={() => (haptic(6), setMore('storage'))} />}
+				{owner && <Row icon="history" color="var(--green)" label="Backups" sub="Apps, settings, and this server’s machines" onClick={() => (haptic(6), setMore('backups'))} />}
+			</SheetGroup>
+			<SheetGroup title="Now">
 				{temp != null && <Row icon="thermo" color="#ef5350" label="Temperature" trailing={<b>{Math.round(temp)}°C</b>} />}
 				{uptime !== undefined && <Row icon="clock" color="#8e8e93" label="Up for" trailing={<b>{duration(uptime)}</b>} />}
 				{temp == null && uptime === undefined && <p className="quiet">No live readings yet.</p>}
-			</Group>
+			</SheetGroup>
 			<div className="section-head" style={{margin: '20px 4px 8px'}}>
 				<h2 style={{fontSize: 16}}>Files</h2>
 			</div>
 			<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
 				<MachineFiles scope={{kind: 'server'}} windowId="machine:server" />
 			</Suspense>
-			<Group title="Virtual machines">
+			<SheetGroup title="Virtual machines">
 				{vms.length === 0 ? (
 					<p className="quiet">No virtual machines on {name}.</p>
 				) : (
@@ -114,19 +103,19 @@ export function ServerSheet({
 				<button type="button" className="btn small" style={{margin: '8px 12px 12px'}} onClick={() => (haptic(6), onCreateVm())}>
 					<Icon name="plus" size={15} /> Create VM
 				</button>
-			</Group>
-			<Group title="Apps">
+			</SheetGroup>
+			<SheetGroup title="Apps">
 				<Row icon="store" color="var(--accent)" label="App Store" sub={`Installs on ${name}`} onClick={() => (haptic(6), onClose(), openStore({id: SERVER_FLEET_ID, kind: 'server', name}))} />
-			</Group>
+			</SheetGroup>
 			{owner && (
-				<Group title="Manage">
+				<SheetGroup title="Manage">
 					<Row
 						icon="update"
 						color="#2fbf71"
 						label="Update"
 						sub="Downloads the update, then restarts"
 						onClick={async () => {
-							if (!(await confirm({title: `Update ${name}?`, body: 'Omarchy Server downloads the update, then restarts. Your apps and machines stop briefly. Keep the server powered on.', confirm: 'Update', icon: 'update'}))) return
+							if (!(await confirm({title: `Update ${name}?`, body: 'The update downloads, then this server restarts. Your apps and machines stop briefly. Keep the server powered on.', confirm: 'Update', icon: 'update'}))) return
 							toast('Updating…')
 							mutate('system.update').catch(() => {})
 						}}
@@ -158,7 +147,7 @@ export function ServerSheet({
 							action.mutate({path: 'system.restart', done: `Restarting ${name}…`})
 						}}
 					/>
-				</Group>
+				</SheetGroup>
 			)}
 		</Sheet>
 	)

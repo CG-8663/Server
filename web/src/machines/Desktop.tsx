@@ -11,6 +11,8 @@ import {Disc} from '../fleet/Disc'
 import {fleetAbility, fleetList, SERVER_FLEET_ID} from '../fleet/list'
 import {MachineGlance} from '../fleet/MachineGlance'
 import {openStore} from '../fleet/openStore'
+import {GuestLive} from '../fleet/GuestLive'
+import {isGuestAgent} from '../swarm/guestLink'
 import {LocalSwarm, useSwarm} from '../swarm/Swarm'
 import {TerminalIcon, bytes, duration, haptic, useConfirm} from '../ui'
 import {mib, useAllTasks, useBackups, useMachineAction, useMachineDetails, useNode, when} from './api'
@@ -56,14 +58,14 @@ export function MachinesDesktop() {
 	const swarmList = swarm.data ?? []
 	const fleet = fleetList({
 		server: {name: host},
-		computers: swarmList.map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
+		computers: swarmList.filter((a) => !isGuestAgent(a)).map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
 		guests: [],
 	})
 	const hostMember = fleet.find((m) => m.kind === 'server')
 	const computers = fleet.filter((m) => m.kind === 'computer')
 	const hostOpen = openId === SERVER_FLEET_ID
 	const toggleOpen = (id: string) => setOpenId(openId === id ? null : id)
-	const computer = sel.kind === 'computer' ? (swarmList.find((a) => a.id === sel.id) ?? null) : null
+	const computer = sel.kind === 'computer' ? (swarmList.find((a) => a.id === sel.id && !isGuestAgent(a)) ?? null) : null
 	useEffect(() => {
 		if (sel.kind === 'computer' && swarm.isSuccess && !computer) setSel({kind: 'node'})
 	}, [sel, computer, swarm.isSuccess])
@@ -247,7 +249,7 @@ function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreat
 					{/* This server’s own desktop is the owner’s signed-in session: owner-only. */}
 					{owner && (
 						<div className="mx-card">
-							<h4>Consoles</h4>
+							<h4>Terminal and desktop</h4>
 							<div className="pve-launch">
 								<div className="pve-launch-row">
 									<button type="button" className="pve-desktop" onClick={() => (haptic(6), desk?.openTerminal())}>
@@ -403,9 +405,6 @@ function VmView({m, host, panel, setPanel, onGone}: {m: Machine; host: string; p
 							</div>
 						)}
 					</span>
-					<button type="button" className="btn small" disabled={m.state !== 'running'} onClick={() => desk?.openConsole(m.id)}>
-						<Icon name="terminal" size={14} /> Console
-					</button>
 					<button type="button" className="btn small" title={`Installs on ${m.name}`} onClick={() => (haptic(6), openStore({id: m.id, kind: 'guest', name: m.name}))}>
 						<Icon name="store" size={14} /> App Store
 					</button>
@@ -436,15 +435,18 @@ function VmView({m, host, panel, setPanel, onGone}: {m: Machine; host: string; p
 					{!d ? (
 						<div className="win-empty">{details.error ? (details.error as Error).message : <span className="spinner" />}</div>
 					) : panel === 'summary' ? (
-						<SummaryPanel d={d} />
+						<>
+							<GuestLive machine={m} onOpenDesktop={() => desk?.openConsole(m.id)} onBackups={() => setPanel('backups')} />
+							<SummaryPanel d={d} />
+						</>
 					) : panel === 'console' ? (
 						<div className="mx-panel">
 							<div className="mx-empty">
 								<Icon name="terminal" size={30} />
 								<b>{m.state === 'running' ? `${m.name}’s screen` : `${m.name} isn’t running`}</b>
-								<span>The console opens in its own window, so you can keep it beside these settings.</span>
+								<span>The desktop opens in its own window, so you can keep it beside these settings.</span>
 								<button type="button" className="btn primary" disabled={m.state !== 'running'} onClick={() => desk?.openConsole(m.id)}>
-									<Icon name="open" size={16} /> Open console
+									<Icon name="devices" size={16} /> Open desktop
 								</button>
 							</div>
 						</div>

@@ -15,11 +15,13 @@ import {MachineGlance} from '../fleet/MachineGlance'
 import {fleetAbility, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../fleet/list'
 import {OPEN_FLEET, takePendingFleet, type FleetOpen} from '../fleet/openMember'
 import {openStore} from '../fleet/openStore'
+import {GuestLive} from '../fleet/GuestLive'
 import {PinButton} from '../fleet/PinButton'
 import {ServerSheet} from '../fleet/ServerSheet'
 import {ServerSpecs} from '../fleet/serverGauges'
+import {guestAgent, isGuestAgent} from '../swarm/guestLink'
 import {AgentCard, LocalSwarm, useSwarm} from '../swarm/Swarm'
-import {Row, Sheet, SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
+import {Sheet, SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
@@ -42,20 +44,21 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 	const [expanded, setExpanded] = useState<string | null>(null)
 	const apps = useApps()
 	const list = machines.data ?? []
-	const serverName = boot.server?.device || boot.server?.name || 'This server'
+	const serverName = boot.server?.device || 'This server'
+	const agents = swarm.data ?? []
 	const members = useMemo(
 		() =>
 			fleetList({
 				server: {name: serverName},
-				computers: (swarm.data ?? []).map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
-				guests: list.map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state})),
+				computers: agents.filter((a) => !isGuestAgent(a)).map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
+				guests: list.map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state, connector: !!guestAgent(agents, m.id)})),
 			}),
-		[serverName, swarm.data, list],
+		[serverName, agents, list],
 	)
 	const selected = list.find((m) => m.id === selectedId) ?? null
 	const consoleMachine = consoleId === 'desktop' ? SERVER_DESKTOP : (list.find((m) => m.id === consoleId) ?? null)
 	const online = members.filter((m) => m.online).length
-	const agents = new Map((swarm.data ?? []).map((a) => [a.id, a]))
+	const agentById = new Map(agents.filter((a) => !isGuestAgent(a)).map((a) => [a.id, a]))
 	useEffect(() => {
 		const apply = (member: FleetOpen | null | undefined) => {
 			if (!member) return
@@ -159,7 +162,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 						</article>
 					)
 				}
-				const agent = agents.get(member.id)
+				const agent = agentById.get(member.id)
 				if (!agent) return null
 				return (
 					<AgentCard
@@ -265,23 +268,14 @@ function MachineSheet({machine: m, onClose, onConsole}: {machine: Machine; onClo
 					{/^\[[\w-]+\]$/.test(m.errorMessage) ? m.errorMessage.slice(1, -1).replace(/-/g, ' ') : m.errorMessage}
 				</div>
 			)}
-			<div className="primary-row">
-				{m.state === 'running' ? (
-					<button className="btn primary" onClick={onConsole}>
-						<Icon name="machine" size={20} />
-						Open console
-					</button>
-				) : (
-					<button className="btn primary" onClick={power.paused ? power.resume : power.start} disabled={busy || !(power.canStart || power.paused)}>
-						{busy ? <span className="spinner" /> : <Icon name="play" size={20} />}
+			<GuestLive machine={m} onOpenStore={() => (onClose(), openStore({id: m.id, kind: 'guest', name: m.name}))} onOpenDesktop={onConsole} onBackups={() => setTab('backups')} />
+			<div className="actions mx-power">
+				{m.state !== 'running' && (
+					<button className="action" onClick={power.paused ? power.resume : power.start} disabled={busy || !(power.canStart || power.paused)}>
+						{busy ? <span className="spinner" /> : <Icon name="play" size={22} />}
 						{busy ? 'Working…' : m.state === 'hibernated' || power.paused ? 'Resume' : 'Start'}
 					</button>
 				)}
-			</div>
-			<div className="glass group" style={{marginTop: 12}}>
-				<Row icon="store" label="App Store" sub={`Installs on ${m.name}`} onClick={() => (haptic(6), onClose(), openStore({id: m.id, kind: 'guest', name: m.name}))} />
-			</div>
-			<div className="actions mx-power">
 				<button className="action" onClick={power.reboot} disabled={busy || m.state !== 'running'}>
 					<Icon name="restart" size={22} />
 					Reboot

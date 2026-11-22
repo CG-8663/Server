@@ -77,15 +77,15 @@ def call(procedure, payload, token):
                 break
             rest += chunk
     except OSError as error:
-        die(f"Can't reach Omarchy Server ({error})")
+        die(f"Can't reach My Own Data Center ({error})")
     finally:
         sock.close()
     try:
         parsed = json.loads(rest[:length] or b"{}")
     except json.JSONDecodeError:
-        die(f"Omarchy Server answered {status} with something that isn't JSON")
+        die(f"My Own Data Center answered {status} with something that isn't JSON")
     if status != 200 or "error" in parsed:
-        message = parsed.get("error", {}).get("message") or f"Omarchy Server answered {status}"
+        message = parsed.get("error", {}).get("message") or f"My Own Data Center answered {status}"
         die(message)
     return parsed.get("result", {}).get("data")
 

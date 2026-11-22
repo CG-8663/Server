@@ -47,8 +47,8 @@ export function ServerSpecs() {
 	)
 }
 
-export function ServerRings() {
-	const {metrics} = useServerGaugeMetrics()
+/** The ring row on this server, a joined computer, and a guest. */
+export function GaugeCluster({metrics}: {metrics: SwarmMetrics}) {
 	const items = swarmGaugeItems(metrics)
 	if (!items.length) return null
 	return (
@@ -67,4 +67,9 @@ export function ServerRings() {
 			))}
 		</div>
 	)
+}
+
+export function ServerRings() {
+	const {metrics} = useServerGaugeMetrics()
+	return <GaugeCluster metrics={metrics} />
 }

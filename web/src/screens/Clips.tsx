@@ -28,11 +28,15 @@ type FleetList = {path: string; entries: FleetEntry[]; truncated: boolean}
 
 const KIND: Record<Clip['kind'], IconName> = {text: 'file-text', image: 'image', stats: 'activity', file: 'folder'}
 
-function fileOrigin(clip: Clip, serverName: string, computers: {id: string; name: string}[], machines: {id: string; name: string}[]): string | null {
+function fileOrigin(clip: Clip, serverName: string, computers: {id: string; name: string; guestOf?: string}[], machines: {id: string; name: string}[]): string | null {
 	if (clip.kind !== 'file') return null
 	const ref = clip.ref
 	if (!ref || ref.scope === 'server') return serverName
-	if (ref.scope === 'swarm') return computers.find((a) => a.id === ref.id)?.name ?? 'Another computer'
+	if (ref.scope === 'swarm') {
+		const agent = computers.find((a) => a.id === ref.id)
+		if (agent?.guestOf) return machines.find((m) => m.id === agent.guestOf)?.name ?? agent.name
+		return agent?.name ?? 'Another computer'
+	}
 	return machines.find((m) => m.id === ref.id)?.name ?? 'A virtual machine'
 }
 
@@ -42,7 +46,7 @@ export function Clips({onBack}: {onBack?: () => void}) {
 	const qc = useQueryClient()
 	const user = useUser()
 	const boot = useBootstrap()
-	const serverName = boot.server?.device || boot.server?.name || 'This server'
+	const serverName = boot.server?.device || 'This server'
 	const owner = user.data?.role === 'owner'
 	const inWindow = useContext(InWindow)
 	const book = useQuery({queryKey: ['clips.list'], queryFn: () => query<Book>('clips.list')})
