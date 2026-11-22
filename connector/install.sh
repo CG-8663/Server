@@ -145,16 +145,36 @@ got=$(python3 -c 'import ssl,sys,hashlib; print(hashlib.sha256(ssl.PEM_cert_to_D
 [ "$got" = "$CA" ] || die "That isn't your server (its certificate doesn't match the fingerprint in the command). Nothing was installed."
 install -m 600 "$tmp" "$CONF/server-ca.crt"
 
+# A GitHub source is https://raw.githubusercontent.com/<owner>/<repo> and the files are under
+# main/connector/. This server serves the same files at <server>/api/connector/<file> when the
+# install was copied from a directory curl cannot fetch.
+connector_url() {
+	local name="$1"
+	local base="${SOURCE%/}"
+	case "$base" in
+		*/api/connector) printf '%s/%s' "$base" "$name" ;;
+		*) printf '%s/main/connector/%s' "$base" "$name" ;;
+	esac
+}
+fetch_connector() {
+	local url="$1" dest="$2"
+	# Match the server literally. An IPv6 address is in brackets, which a glob would treat as a class.
+	case "$url" in
+		"$SERVER"*) curl -fsSL --cacert "$CONF/server-ca.crt" --max-time 60 "$url" -o "$dest" ;;
+		*) curl -fsSL --max-time 60 "$url" -o "$dest" ;;
+	esac
+}
+
 # 3. The connector itself.
 say "Downloading the connector"
-curl -fsSL --max-time 60 "${SOURCE%/}/main/connector/agent.py" -o "$DIR/agent.py.new" || die "Couldn't download the connector."
+fetch_connector "$(connector_url agent.py)" "$DIR/agent.py.new" || die "Couldn't download the connector."
 python_ok "$DIR/agent.py.new" || die "The downloaded connector didn't check out."
 mv "$DIR/agent.py.new" "$DIR/agent.py"
 chmod 700 "$DIR/agent.py"
 
 if has storage; then
 	say "Installing the storage helper"
-	curl -fsSL --max-time 60 "${SOURCE%/}/main/connector/helper.py" -o "$tmp.helper.py" || die "Couldn't download the storage helper."
+	fetch_connector "$(connector_url helper.py)" "$tmp.helper.py" || die "Couldn't download the storage helper."
 	python_ok "$tmp.helper.py" || die "The downloaded storage helper didn't check out."
 	sudo install -D -m 755 "$tmp.helper.py" /usr/local/libexec/omarchy-connector/helper.py
 	rm -f "$tmp.helper.py"

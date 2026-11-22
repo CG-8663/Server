@@ -405,7 +405,7 @@ export function normalizeAppHosts(input) {
 	return p
 }
 
-export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0'}) {
+export function createApp({store, staticDir, connectorDir = staticDir ? join(staticDir, '..', 'connector') : '', fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0'}) {
 	const app = express()
 	app.disable('x-powered-by')
 	app.set('trust proxy', 'loopback')
@@ -417,6 +417,20 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		res.send(ca)
 	})
 	app.get('/api/tls/status', (_req, res) => res.json({available: !!tls?.get(), alwaysHttps: !!tls?.policy?.().alwaysHttps}))
+	// The connector installer, for a guest whose copy of this server lives in a local directory
+	// (curl cannot fetch that path). Public, like the certificate above: the guest is not signed in yet.
+	const connectorFiles = new Map([
+		['install.sh', 'text/plain; charset=utf-8'],
+		['agent.py', 'text/plain; charset=utf-8'],
+		['helper.py', 'text/plain; charset=utf-8'],
+	])
+	app.get('/api/connector/:name', async (req, res) => {
+		const type = connectorFiles.get(req.params.name)
+		if (!type || !connectorDir) return res.status(404).type('text/plain').send('Not found')
+		const body = await readFile(join(connectorDir, req.params.name), 'utf8').catch(() => null)
+		if (body == null) return res.status(404).type('text/plain').send('Not found')
+		res.set({'content-type': type, 'cache-control': 'no-store'}).send(body)
+	})
 	// "Always use the secure address" (Settings → Security): page loads over http:// go to https://.
 	// The certificate download above stays reachable either way.
 	app.use((req, res, next) => {

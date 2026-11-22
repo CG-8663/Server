@@ -10,6 +10,7 @@ import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
 import {isGuestAgent} from './guestLink'
+import {connectorInstallCommand} from './installCommand'
 import {newlyJoined} from './join'
 import {GaugeCluster} from '../fleet/serverGauges'
 import {MachineActions} from '../fleet/machineActions'
@@ -599,13 +600,13 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 	const joined = guest ? (swarm.data ?? []).find((a) => a.guestOf === guest.id && !beforeIds.includes(a.id)) : newlyJoined(swarm.data ?? [], beforeIds)
 	const left = pairing ? Math.max(0, Math.round((pairing.expiresAt - now) / 1000)) : 0
 	const list = (Object.keys(allow) as Ability[]).filter((k) => allow[k]).join(',')
-	const command = useMemo(() => {
-		if (!pairing) return ''
+	const install = useMemo(() => {
+		if (!pairing) return null
 		const server = `https://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${pairing.port}`
-		const src = pairing.source.replace(/\/+$/, '')
-		return `curl -fsSL ${src}/main/connector/install.sh | bash -s -- --server ${server} --ca ${pairing.ca} --token ${pairing.token}${list ? ` --allow ${list}` : ''} --source ${src}`
+		return connectorInstallCommand({source: pairing.source, server, ca: pairing.ca, token: pairing.token, allow: list})
 	}, [pairing, host, list])
-	const uninstall = pairing ? `curl -fsSL ${pairing.source.replace(/\/+$/, '')}/main/connector/install.sh | bash -s -- --uninstall` : ''
+	const command = install?.command ?? ''
+	const uninstall = install?.uninstall ?? ''
 	const copy = async (text: string, what: string) => {
 		try {
 			await navigator.clipboard.writeText(text)
