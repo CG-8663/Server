@@ -355,7 +355,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const NICS = ['virtio', 'e1000e', 'e1000', 'rtl8139']
 	const CACHES = ['default', 'none', 'writeback', 'writethrough', 'directsync', 'unsafe']
 	const BUSES = ['virtio', 'sata', 'scsi', 'ide']
-	function domainXml(m, kvm) {
+	function domainXml(m, kvm, uuid = '') {
 		const dir = join(vmsDir, m.id)
 		const layout = m.layout ?? layoutFor('cloud', dir)
 		const o = m.options ?? {}
@@ -398,7 +398,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const memoryMb = m.memoryMb ?? (m.memoryGb ?? 1) * 1024
 		const nic = `<interface type='user'><backend type='passt'/><mac address='${m.mac}'/><model type='${layout.nic}'/>${m.linkDown ? "<link state='down'/>" : ''}${forwards}${order('net')}</interface>`
 		return `<domain type='${useKvm ? 'kvm' : 'qemu'}'>
-  <name>${domain(m.id)}</name>
+  <name>${domain(m.id)}</name>${uuid ? `\n  <uuid>${uuid}</uuid>` : ''}
   <title>${xml(m.name)}</title>${o.notes ? `\n  <description>${xml(o.notes)}</description>` : ''}
   <memory unit='MiB'>${memoryMb}</memory>
   <vcpu>${sockets * m.cores}</vcpu>
@@ -418,12 +418,23 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 </domain>
 `
 	}
+	// A domain XML with no uuid is a new domain. Defining that name again makes libvirt
+	// invent a second uuid and refuse: the name already exists with the first one.
+	async function definedUuid(id) {
+		try {
+			const text = String(await virsh('domuuid', domain(id))).trim()
+			return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text) ? text.toLowerCase() : ''
+		} catch {
+			return ''
+		}
+	}
 	async function define(m) {
 		const dir = join(vmsDir, m.id)
 		await mkdir(dir, {recursive: true, mode: 0o700})
 		const file = join(dir, 'domain.xml')
 		const kvm = await access(kvmDevice, constants.R_OK | constants.W_OK).then(() => true, () => false)
-		await writeFile(file, domainXml(m, kvm), {mode: 0o600})
+		const uuid = await definedUuid(m.id)
+		await writeFile(file, domainXml(m, kvm, uuid), {mode: 0o600})
 		await virsh('define', file)
 	}
 	// libvirt and qemu throw plain errors. The RPC layer would otherwise hide them as "Internal error".
