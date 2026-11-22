@@ -7,9 +7,10 @@ import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {applyPrefsUpdate, prefsAfterPhotoUpload} from '../photoPrefs'
 import {Appearance} from '../screens/More'
-import {Row, Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, setLayoutPref, useLayout, useOmarchyThemes, useToast, wallpaperUrl, type LayoutPref, type Prefs} from '../ui'
+import {Row, Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, setLayoutPref, useLayout, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SHOW_SHELL_KEY, takeAppearanceFocus} from './settingsPage'
 import {solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskShell, type DeskStyle, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
+import {DesktopStyleCards, ScreenLayoutCards} from '../LayoutPicker'
 import {CAPTURE_KEY, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
 import {SnippetBlock} from './hyprland/Snippet'
 import {DESKTOP_KEY, useDesktop, useItems, type ItemInfo} from './Desktop'
@@ -137,49 +138,24 @@ function LayoutSettings({cfg, setCfg}: P) {
 	return (
 		<>
 			<Section title="Layout" note="Phone or desktop is this screen. Automatic uses the desktop on a big screen with a pointer. Ubuntu floats windows over a dock. Hyprland tiles them, with workspaces 1–9 and Omarchy Super shortcuts.">
-				<div className="glass group pz-rows">
-					<div className="row static">
-						<span className="main">
-							<b>Phone or desktop</b>
-						</span>
-						<Segmented<LayoutPref>
-							label="Phone or desktop"
-							value={layout.pref}
-							options={[
-								{id: 'auto', label: 'Automatic'},
-								{id: 'desktop', label: 'Desktop'},
-								{id: 'phone', label: 'Phone'},
-							]}
-							onChange={(v) => {
-								haptic(6)
-								setLayoutPref(v)
-							}}
-						/>
-					</div>
-					<div className="row static">
-						<span className="main">
-							<b>Ubuntu or Hyprland</b>
-						</span>
-						<Segmented<DeskShell>
-							label="Ubuntu or Hyprland"
-							value={cfg.shell ?? 'gnome'}
-							options={[
-								{id: 'gnome', label: 'Ubuntu'},
-								{id: 'hyprland', label: 'Hyprland'},
-							]}
-							onChange={(v) => {
-								setCfg((c) => ({...c, shell: v}))
-								if (layout.desktop) return
-								try {
-									sessionStorage.setItem(SHOW_SHELL_KEY, 'appearance')
-								} catch {
-									/* private */
-								}
-								setLayoutPref('desktop')
-							}}
-						/>
-					</div>
-				</div>
+				<ScreenLayoutCards value={layout.pref} detected={layout.detected} onPick={setLayoutPref} />
+			</Section>
+			<Section title="Ubuntu or Hyprland">
+				<DesktopStyleCards<DeskShell>
+					value={cfg.shell ?? 'gnome'}
+					floating="gnome"
+					tiling="hyprland"
+					onPick={(v) => {
+						setCfg((c) => ({...c, shell: v}))
+						if (layout.desktop) return
+						try {
+							sessionStorage.setItem(SHOW_SHELL_KEY, 'appearance')
+						} catch {
+							/* private */
+						}
+						setLayoutPref('desktop')
+					}}
+				/>
 			</Section>
 			{/* Key capture and the snippet only matter in the Hyprland layout (Ubuntu keeps Super for Activities). */}
 			{cfg.shell === 'hyprland' && (

@@ -331,8 +331,7 @@ export function TerminalScreen({
 					setMessage('The shell has ended.')
 				} else {
 					setState((st) => (st === 'connecting' ? 'error' : 'lost'))
-					// A swarm computer's shell goes through its connector and isn't kept (yet): it ended.
-					setMessage(agent ? 'The connection to it dropped. Reconnect for a new shell.' : 'Your shell is still running on the server. Reconnect to pick up where you left off.')
+					setMessage(agent ? 'Your shell is still running on that computer. Reconnect to pick up where you left off.' : 'Your shell is still running on the server. Reconnect to pick up where you left off.')
 				}
 			}
 		}

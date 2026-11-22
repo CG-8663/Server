@@ -39,8 +39,8 @@ test('the document itself does not scroll on the phone', () => {
 	assert.match(root, /height:\s*100%/)
 })
 
-test('ios-gap does not resize the wallpaper on scroll', () => {
-	assert.match(css, /\n\.scrim,\n\.menu-scrim,/)
+test('nothing is pushed by an iOS gap (the wallpaper and bottom bar keep their own positions)', () => {
+	assert.doesNotMatch(css, /--ios-gap/)
 	assert.doesNotMatch(css, /\n\.backdrop,\n\.scrim,/)
 })
 

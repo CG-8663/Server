@@ -112,6 +112,18 @@ const TOR_PASSWORD = 'moneyprintergobrrr' // the control password these store ap
 const APP_UID = 1000
 
 // Variables a compose file uses with no default, that we don't provide.
+// A store's address can be a whole repository (its default branch), one branch on GitHub
+// (…/tree/<branch>), or one pull request on GitHub (…/pull/<number>). The last two let a reviewer
+// install a submitted app exactly as submitted, before it's approved.
+export function storeSource(url) {
+	const pr = /^(https:\/\/github\.com\/[\w.-]+\/[\w.-]+)\/pull\/(\d{1,7})$/i.exec(url)
+	if (pr) return {remote: pr[1], ref: `pull/${pr[2]}/head`, label: `pull request #${pr[2]}`, slug: `pr-${pr[2]}`}
+	const tree = /^(https:\/\/github\.com\/[\w.-]+\/[\w.-]+)\/tree\/([\w.\-/]{1,120})$/i.exec(url)
+	if (tree && !tree[2].startsWith('-') && !tree[2].includes('..') && !tree[2].endsWith('/') && !tree[2].endsWith('.lock'))
+		return {remote: tree[1], ref: `refs/heads/${tree[2]}`, label: `branch ${tree[2]}`, slug: `branch-${tree[2].replace(/[^\w-]+/g, '-')}`}
+	return {remote: url, ref: 'HEAD'}
+}
+
 // ---- extra access an app asks for -------------------------------------------------------------
 // Worked out from the compose file itself (a listing can't leave anything out). Each needs your
 // explicit permission when installing; plain apps need none.
@@ -1365,6 +1377,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			const repo = url.replace(/\.git$/, '').split('/').pop() ?? 'store'
 			meta = {id: slug, name: repo.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
 		}
+		const src = storeSource(url)
+		if (src.label) meta = {id: `${meta.id}~${src.slug}`, name: `${meta.name ?? meta.id} · ${src.label}`}
 		return {url, meta: {id: String(meta.id), name: String(meta.name ?? meta.id)}, apps}
 	}
 	const syncFlights = new Map()
@@ -1380,13 +1394,22 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 	async function syncStoreNow(url) {
 		const dir = storeDir(url)
+		const {remote, ref} = storeSource(url)
 		if (await exists(join(dir, '.git'))) {
 			// A shallow clone can't `pull --ff-only` once the store has moved on (the new tip doesn't
 			// connect to the one commit it has), so take the store's latest commit as it is.
-			await run('git', ['-C', dir, 'fetch', '--depth', '1', 'origin', 'HEAD'], {timeout: 120_000})
+			await run('git', ['-C', dir, 'fetch', '--depth', '1', 'origin', ref], {timeout: 120_000})
 			await run('git', ['-C', dir, 'reset', '--hard', 'FETCH_HEAD'], {timeout: 60_000})
 			await run('git', ['-C', dir, 'clean', '-fdx'], {timeout: 60_000})
-		} else await run('git', ['clone', '--depth', '1', '--', url, dir], {timeout: 120_000})
+		} else if (ref === 'HEAD') await run('git', ['clone', '--depth', '1', '--', url, dir], {timeout: 120_000})
+		else {
+			// One branch or one pull request: fetch just that.
+			await mkdir(dir, {recursive: true})
+			await run('git', ['init', '-q', dir], {timeout: 30_000})
+			await run('git', ['-C', dir, 'remote', 'add', 'origin', remote], {timeout: 30_000})
+			await run('git', ['-C', dir, 'fetch', '--depth', '1', 'origin', ref], {timeout: 120_000})
+			await run('git', ['-C', dir, 'reset', '--hard', 'FETCH_HEAD'], {timeout: 60_000})
+		}
 	}
 	let registryFlight = null
 	// A publish rewrites the local store while a registry read may already be in flight. Drop that

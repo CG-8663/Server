@@ -1,6 +1,15 @@
 // Glance rings for a swarm computer: same set as Home, from connector metrics.
 
-export type SwarmGpu = {id: string; index: number; name: string; used: number | null}
+export type SwarmGpu = {
+	id: string
+	index: number
+	name: string
+	used: number | null
+	vramUsed?: number | null
+	vramTotal?: number | null
+	temp?: number | null
+	power?: number | null
+}
 export type SwarmBattery = {
 	id: string
 	index: number
@@ -86,6 +95,19 @@ function combineBatteries(batteries: SwarmBattery[]): {percent: number | null; s
 	return {percent, status, secondsRemaining}
 }
 
+function shortGpuName(name: string) {
+	return name.replace(/^NVIDIA GeForce /, '').replace(/^NVIDIA /, '').replace(/^AMD Radeon /, '').replace(/^Intel\(R\) /, '').replace(/^Intel /, '')
+}
+
+function gpuSub(gpu: SwarmGpu) {
+	const name = shortGpuName(gpu.name)
+	if (gpu.vramTotal && gpu.vramTotal > 0 && gpu.vramUsed != null) {
+		const vram = `${bytes(gpu.vramUsed, 1, 1024)}/${bytes(gpu.vramTotal, 0, 1024)}`
+		return name ? `${name} · ${vram}` : vram
+	}
+	return name || ' '
+}
+
 function gpuItems(gpus: SwarmGpu[]) {
 	const many = gpus.length > 1
 	return gpus.map((gpu) => ({
@@ -93,7 +115,7 @@ function gpuItems(gpus: SwarmGpu[]) {
 		key: gpu.id,
 		icon: 'gpu' as const,
 		p: gpu.used ?? 0,
-		sub: gpu.used != null ? `${Math.round(gpu.used)}%` : '–',
+		sub: gpu.used == null ? '–' : gpuSub(gpu),
 		ready: gpu.used != null,
 	}))
 }

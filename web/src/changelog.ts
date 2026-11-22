@@ -4,6 +4,51 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.62',
+		date: '2026-11-22',
+		title: 'Try an app before it’s approved',
+		added: ['Stores › Add by link also takes a GitHub pull request or branch link, such as a Modc App Store submission, to try an app exactly as submitted. It’s listed with its pull request or branch, so it’s easy to remove afterwards.'],
+	},
+	{
+		version: '0.9.61',
+		date: '2026-11-22',
+		title: 'Submit an app',
+		added: [
+			'Anyone can submit an app to the new Modc App Store, with a short form or a pull request. Submit an app is at the bottom of the App Store, in Stores, and in an empty search.',
+			'Modc is listed under App Store › Stores › Suggested, for owners who want community-submitted apps.',
+		],
+	},
+	{
+		version: '0.9.60',
+		date: '2026-11-22',
+		title: 'Files on every computer, and the iPhone bar',
+		added: ['Files lists the computers in your swarm. Open one to browse its home folder, upload, download, or copy a file to this server. A computer needs Files switched on in Machines.'],
+		fixed: ['On an iPhone home-screen app, Omarchy Server no longer adjusts the page after the keyboard closes. That adjustment could leave a dark strip under the bottom bar until the app was reinstalled.'],
+	},
+	{
+		version: '0.9.59',
+		date: '2026-11-22',
+		title: 'A welcome, and one place for how things look',
+		added: ['The first time you sign in on a device, a short setup walks you through picking a layout and a theme and shows where things are. Skip it any time.'],
+		fixed: [
+			'Layouts and themes live together in Appearance. Layout comes first, with pictures of each choice. On the desktop, right-click the background and choose Appearance….',
+			'On an iPhone home-screen app, the strip under the bottom bar is gone, and the bar is no longer cut off.',
+		],
+	},
+	{
+		version: '0.9.58',
+		date: '2026-11-22',
+		title: 'A stronger swarm',
+		added: [
+			'Swarm computers can update their connector from this server, one at a time or all at once, and you can change what a computer allows without removing it.',
+			'Terminals on swarm computers keep running when you close them, and pick up where you left off. New session starts fresh.',
+			'Each computer shows an hour or a day of CPU, memory, disk and network history, GPU memory and temperature, and fleet alerts for full disks, heat and waiting updates.',
+			'Swarm computers can be suspended, shut down, and woken with Wake-on-LAN.',
+			'New, off by default: Services, to see and start, stop or restart a computer’s user services and containers, and Files, to browse its home folder and copy files to and from this server. Keys, keyrings and browser profiles stay private.',
+		],
+		fixed: ['Connectors on Python 3.13 and newer connect to this server again.'],
+	},
+	{
 		version: '0.9.57',
 		date: '2026-11-22',
 		title: 'The store, files, and the desktop tell the truth',

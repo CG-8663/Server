@@ -22,7 +22,7 @@ import {linkProxy} from '../omarchyd/proxy-link.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.57'
+export const VERSION = '0.9.62'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -121,9 +121,14 @@ export const ALLOWED = {
 	'appStore.refresh': 'mutation',
 	'omarchy.plugins': 'query',
 	'swarm.list': 'query',
-	'swarm.files.list': 'query',
 	'swarm.files.recents': 'query',
+	'swarm.history': 'query',
+	'swarm.alerts': 'query',
+	'swarm.wake': 'mutation',
 	'swarm.pair': 'mutation',
+	'swarm.reauthorize': 'mutation',
+	'swarm.updateConnector': 'mutation',
+	'swarm.updateAllConnectors': 'mutation',
 	'swarm.remove': 'mutation',
 	'swarm.rename': 'mutation',
 	'swarm.setAbilities': 'mutation',
@@ -141,6 +146,15 @@ export const ALLOWED = {
 	'swarm.storage.forgetPool': 'mutation',
 	'swarm.storage.scrub': 'mutation',
 	'swarm.storage.setSleep': 'mutation',
+	'swarm.services.list': 'query',
+	'swarm.services.logs': 'query',
+	'swarm.services.control': 'mutation',
+	'swarm.files.list': 'query',
+	'swarm.files.mkdir': 'mutation',
+	'swarm.files.rename': 'mutation',
+	'swarm.files.trash': 'mutation',
+	'swarm.files.copyToServer': 'mutation',
+	'swarm.files.copyFromServer': 'mutation',
 	'assistant.keys': 'query',
 	'assistant.addKey': 'mutation',
 	'assistant.updateKey': 'mutation',
@@ -318,7 +332,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-export const SLOW = new Set(['unraid.connect', 'unraid.scan', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList'])
+export const SLOW = new Set(['unraid.connect', 'unraid.scan', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
 export const timeoutFor = (path) => (SLOW.has(path) ? 30 * 60 * 1000 : 20_000)
 
 // An IPv6 address in a URL needs brackets; req.hostname and URL.hostname may already have them.
@@ -482,6 +496,25 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		try {
 			const r = await fetchImpl(`${getClient().baseUrl}/connector/enroll`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(req.body ?? {}), signal: AbortSignal.timeout(15_000)})
 			res.status(r.status).json(await r.json().catch(() => ({})))
+		} catch {
+			res.status(502).json({error: 'The server isn’t answering right now'})
+		}
+	})
+	// A connector fetching the bundled agent.py for self-update (omarchyd checks its key).
+	app.get('/connector/agent.py', async (req, res) => {
+		const backend = getClient()
+		if (!backend) return res.status(503).end()
+		try {
+			const headers = {}
+			if (req.headers.authorization) headers.authorization = req.headers.authorization
+			const r = await fetchImpl(`${backend.baseUrl}/connector/agent.py`, {method: 'GET', headers, signal: AbortSignal.timeout(30_000)})
+			const buf = Buffer.from(await r.arrayBuffer())
+			res.status(r.status)
+			for (const h of ['content-type', 'x-connector-sha256', 'cache-control']) {
+				const v = r.headers.get(h)
+				if (v) res.set(h, v)
+			}
+			res.end(buf)
 		} catch {
 			res.status(502).json({error: 'The server isn’t answering right now'})
 		}
@@ -799,6 +832,60 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			res.send(Buffer.from(await r.arrayBuffer()))
 		} catch {
 			res.status(404).end()
+		}
+	})
+
+	// Owner-only file download/upload to a swarm computer (proxied to omarchyd with the session token).
+	api.get('/swarm/files/download', async (req, res) => {
+		const session = requireSession(req, res)
+		if (!session) return
+		const backend = getClient()
+		const id = String(req.query.id ?? '')
+		const remotePath = String(req.query.path ?? '')
+		if (!/^[0-9a-f]{12}$/.test(id) || !remotePath) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Missing file parameters'}})
+		try {
+			const qs = new URLSearchParams({id, path: remotePath}).toString()
+			const r = await fetchImpl(`${backend.baseUrl}/api/swarm/files/download?${qs}`, {
+				method: 'GET',
+				headers: {authorization: `Bearer ${await accessTokenFor(req.sid, session)}`},
+				signal: AbortSignal.timeout(120_000),
+			})
+			const buf = Buffer.from(await r.arrayBuffer())
+			res.status(r.status)
+			for (const h of ['content-type', 'content-disposition', 'cache-control']) {
+				const v = r.headers.get(h)
+				if (v) res.set(h, v)
+			}
+			res.end(buf)
+		} catch {
+			res.status(502).json({error: {code: 'UNAVAILABLE', message: 'Couldn’t download file from that computer'}})
+		}
+	})
+	api.post('/swarm/files/upload', async (req, res) => {
+		const session = requireSession(req, res)
+		if (!session) return
+		const backend = getClient()
+		const id = String(req.query.id ?? '')
+		const remotePath = String(req.query.path ?? '')
+		if (!/^[0-9a-f]{12}$/.test(id) || !remotePath) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Missing file parameters'}})
+		try {
+			let size = 0
+			const chunks = []
+			for await (const c of req) {
+				size += c.length
+				if (size > 20 * 1024 * 1024) return res.status(413).json({error: {code: 'BAD_REQUEST', message: 'Files larger than 20 MB can’t be transferred through the swarm'}})
+				chunks.push(c)
+			}
+			const qs = new URLSearchParams({id, path: remotePath}).toString()
+			const r = await fetchImpl(`${backend.baseUrl}/api/swarm/files/upload?${qs}`, {
+				method: 'POST',
+				headers: {authorization: `Bearer ${await accessTokenFor(req.sid, session)}`, 'content-type': 'application/octet-stream'},
+				body: Buffer.concat(chunks),
+				signal: AbortSignal.timeout(120_000),
+			})
+			res.status(r.status).json(await r.json().catch(() => ({})))
+		} catch {
+			res.status(502).json({error: {code: 'UNAVAILABLE', message: 'Couldn’t upload file to that computer'}})
 		}
 	})
 
@@ -1943,7 +2030,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					if (agentId && !/^[0-9a-f]{12}$/.test(agentId)) return refuse('400 Bad Request')
 					if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || cols > 500 || rows < 4 || rows > 300) return refuse('400 Bad Request')
 					target.pathname = '/terminal'
-					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
+					const session = url.searchParams.get('session') ?? ''
+					if (session && !/^[A-Za-z0-9._-]{1,40}$/.test(session)) return refuse('400 Bad Request')
+					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), ...(session ? {session} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
 				}
 				const needsOwner = route === 'terminal' || params.machineId === 'desktop' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
 				if (needsOwner) {

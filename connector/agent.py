@@ -21,6 +21,7 @@ server can't widen):
 
 Standard library only, so it runs on any distribution with Python 3.8+.
 """
+import ast
 import base64
 import bz2
 import http.client
@@ -49,7 +50,7 @@ import urllib.parse
 import urllib.request
 
 VERSION = "1"
-ABILITY_NAMES = ("terminal", "desktop", "manage", "storage", "backup", "files")
+ABILITY_NAMES = ("terminal", "desktop", "manage", "storage", "backup", "services", "files")
 # A file channel sends this much, then waits until the server has that many chunks. The socket
 # read loop stays free to take acks, so a large file cannot stall the terminal or the desktop.
 FILE_CHUNK = 64 * 1024
@@ -88,6 +89,20 @@ def reconnect_action(exc):
     return "forget" if isinstance(exc, Rejected) else "retry"
 
 
+def _ssl_context(cafile=None):
+    ctx = ssl.create_default_context(cafile=cafile or CA_FILE)
+    # Trust only this server's own certificate authority (pinned when installing). Its
+    # certificate names the server's addresses, which can change, so the name isn't checked:
+    # the private authority is what proves it's your server. Python 3.13+ enables
+    # VERIFY_X509_STRICT by default, which rejects private CAs without an Authority Key
+    # Identifier extension; full cryptographic verification against the pinned CA stays on.
+    ctx.check_hostname = False
+    strict = getattr(ssl, "VERIFY_X509_STRICT", 0)
+    if strict and isinstance(getattr(ctx, "verify_flags", None), int):
+        ctx.verify_flags &= ~strict
+    return ctx
+
+
 # ---------------------------------------------------------------------------------------------
 # A small WebSocket client (RFC 6455), enough for this: text and binary frames, ping/pong, close.
 class WS:
@@ -96,11 +111,7 @@ class WS:
         if u.scheme != "wss":
             raise ValueError("The server address must start with https://")
         host, port = u.hostname, u.port or 443
-        ctx = ssl.create_default_context(cafile=cafile)
-        # Trust only this server's own certificate authority (pinned when installing). Its
-        # certificate names the server's addresses, which can change, so the name isn't checked:
-        # the private authority is what proves it's your server.
-        ctx.check_hostname = False
+        ctx = _ssl_context(cafile)
         raw = socket.create_connection((host, port), timeout=20)
         self.sock = ctx.wrap_socket(raw, server_hostname=host)
         key = base64.b64encode(os.urandom(16)).decode()
@@ -250,6 +261,40 @@ def omarchy_facts():
     return {"omarchy": True, "plugins": plugins, "themes": themes, "theme": theme}
 
 
+def _file_sha256(path):
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return ""
+
+
+def lan_macs(list_dir=os.listdir, read_file=read, root="/sys/class/net"):
+    """Non-virtual network adapter MAC addresses for Wake-on-LAN."""
+    try:
+        names = sorted(list_dir(root))
+    except OSError:
+        return []
+    skip_prefix = ("docker", "podman", "veth", "virbr", "br-", "cni", "tailscale", "wg", "tun", "tap")
+    seen, out = set(), []
+    for name in names:
+        if name == "lo" or name.startswith(skip_prefix):
+            continue
+        mac = read_file(os.path.join(root, name, "address")).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", mac) or mac == "00:00:00:00:00:00":
+            continue
+        if mac not in seen:
+            seen.add(mac)
+            out.append(mac)
+    return out[:8]
+
+
 def info():
     rel = os_release()
     pkg = package_manager()
@@ -262,6 +307,9 @@ def info():
         "arch": os.uname().machine,
         "user": pwd.getpwuid(os.getuid()).pw_name,
         "version": VERSION,
+        "agentSha": _file_sha256(__file__),
+        "helperSha": _file_sha256(HELPER),
+        "macs": lan_macs(),
         "pkg": pkg,
         "updateCommand": update_command(pkg, om.get("omarchy")),
         "desktop": desktop_kind(),
@@ -436,7 +484,7 @@ def batteries(list_dir=os.listdir, read_file=read, root="/sys/class/power_supply
 
 def _nvidia_gpus(run):
     try:
-        out = run("nvidia-smi", ["--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits"])
+        out = run("nvidia-smi", ["--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw", "--format=csv,noheader,nounits"])
     except (OSError, subprocess.SubprocessError):
         return []
     gpus = []
@@ -449,7 +497,20 @@ def _nvidia_gpus(run):
         if index is None or not name:
             continue
         used = _num(parts[3])
-        gpus.append({"id": parts[2] or f"nvidia-{int(index)}", "index": int(index), "name": name, "used": None if used is None else int(round(used))})
+        mem_used = _num(parts[4]) if len(parts) > 4 else None
+        mem_total = _num(parts[5]) if len(parts) > 5 else None
+        temp = _num(parts[6]) if len(parts) > 6 else None
+        power = _num(parts[7]) if len(parts) > 7 else None
+        row = {"id": parts[2] or f"nvidia-{int(index)}", "index": int(index), "name": name, "used": None if used is None else int(round(used))}
+        if mem_used is not None:
+            row["vramUsed"] = int(round(mem_used * 1024 * 1024))
+        if mem_total is not None:
+            row["vramTotal"] = int(round(mem_total * 1024 * 1024))
+        if temp is not None:
+            row["temp"] = round(temp, 1)
+        if power is not None:
+            row["power"] = round(power, 1)
+        gpus.append(row)
     return gpus
 
 
@@ -554,7 +615,26 @@ def _drm_gpus(list_dir, read_file, skip_vendors=None, now=time.monotonic):
         name = product or _drm_fallback_name(vendor, card)
         if used is None and vendor != _VENDOR_INTEL:
             continue
-        gpus.append({"id": f"drm-{card}", "index": int(card[4:]), "name": name, "used": None if used is None else int(round(used))})
+        row = {"id": f"drm-{card}", "index": int(card[4:]), "name": name, "used": None if used is None else int(round(used))}
+        if vendor == _VENDOR_AMD:
+            vused = _num(read_file(f"/sys/class/drm/{card}/device/mem_info_vram_used"))
+            vtot = _num(read_file(f"/sys/class/drm/{card}/device/mem_info_vram_total"))
+            if vused is not None:
+                row["vramUsed"] = int(round(vused))
+            if vtot is not None:
+                row["vramTotal"] = int(round(vtot))
+            try:
+                hwmons = sorted(list_dir(f"/sys/class/drm/{card}/device/hwmon"))
+            except OSError:
+                hwmons = []
+            for hm in hwmons:
+                t_raw = _num(read_file(f"/sys/class/drm/{card}/device/hwmon/{hm}/temp1_input"))
+                if t_raw is not None and "temp" not in row:
+                    row["temp"] = round(t_raw / 1000.0, 1)
+                p_raw = _num(read_file(f"/sys/class/drm/{card}/device/hwmon/{hm}/power1_average"))
+                if p_raw is not None and "power" not in row:
+                    row["power"] = round(p_raw / 1e6, 1)
+        gpus.append(row)
     return gpus
 
 
@@ -643,10 +723,48 @@ def _check_updates(pkg):
         _updates["busy"] = False
 
 
+_net_last = None
+
+
+def net_io(read_file=read, now=time.monotonic):
+    """Aggregate bytes/sec across non-virtual interfaces from /proc/net/dev."""
+    global _net_last
+    raw = read_file("/proc/net/dev")
+    if not raw:
+        return None
+    skip_prefix = ("docker", "podman", "veth", "virbr", "br-", "cni")
+    rx_total, tx_total, found = 0, 0, False
+    for line in raw.splitlines()[2:]:
+        if ":" not in line:
+            continue
+        iface, rest = line.split(":", 1)
+        iface = iface.strip()
+        if iface == "lo" or iface.startswith(skip_prefix):
+            continue
+        cols = rest.split()
+        if len(cols) < 9:
+            continue
+        try:
+            rx_total += int(cols[0])
+            tx_total += int(cols[8])
+            found = True
+        except ValueError:
+            continue
+    if not found:
+        return None
+    t = now()
+    prev, _net_last = _net_last, (t, rx_total, tx_total)
+    if not prev or t <= prev[0]:
+        return {"rx": 0, "tx": 0}
+    dt = t - prev[0]
+    return {"rx": max(0, int(round((rx_total - prev[1]) / dt))), "tx": max(0, int(round((tx_total - prev[2]) / dt)))}
+
+
 DEFAULT_INTERVALS = {
     "cpu": 1,
     "memory": 1,
     "gpu": 1,
+    "net": 2,
     "temp": 5,
     "battery": 5,
     "disk": 30,
@@ -666,6 +784,7 @@ def empty_snapshot():
         "disks": [],
         "gpus": [],
         "batteries": [],
+        "net": None,
         "temp": None,
         "uptime": 0,
         "updates": None,
@@ -677,6 +796,7 @@ def default_reads():
         "cpu": cpu_percent,
         "memory": meminfo,
         "gpu": gpus,
+        "net": net_io,
         "temp": temperature,
         "battery": batteries,
         "disk": disks,
@@ -752,6 +872,7 @@ class Sampler:
             else:
                 self._snap["mem"] = v
         self._take("memory", mem, t)
+        self._take("net", lambda v: self._snap.update(net=v), t)
         self._take("temp", lambda v: self._snap.update(temp=v), t)
         self._take("battery", lambda v: self._snap.update(batteries=v), t)
         self._take("uptime", lambda v: self._snap.update(uptime=v), t)
@@ -1139,6 +1260,261 @@ class Shell(Channel):
         # The pump thread closes the pty and reaps the shell when it sees this.
 
 
+SHELL_SCROLLBACK_MAX = 256 * 1024
+MAX_SHELL_SESSIONS = 6
+SESSION_NAME = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
+
+
+def _trim_scrollback(buf, limit=SHELL_SCROLLBACK_MAX):
+    """Keep at most `limit` bytes without cutting inside a UTF-8 sequence."""
+    if len(buf) <= limit:
+        return
+    del buf[: len(buf) - limit]
+    i = 0
+    while i < len(buf) and (buf[i] & 0xC0) == 0x80:
+        i += 1
+    if i:
+        del buf[:i]
+
+
+class ShellSession:
+    """A persistent PTY session that survives browser disconnect and replays scrollback on reattach."""
+
+    def __init__(self, name, cols, rows):
+        self.name = name
+        self.alive = True
+        self.cols = min(500, max(10, int(cols or 80)))
+        self.rows = min(300, max(4, int(rows or 24)))
+        self.scrollback = bytearray()
+        self._lock = threading.Lock()
+        self.attached = None
+        me = pwd.getpwuid(os.getuid())
+        shell = me.pw_shell if me.pw_shell and os.path.exists(me.pw_shell) else "/bin/bash"
+        pid, fd = pty.fork()
+        if pid == 0:
+            try:
+                signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+                signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
+                os.chdir(me.pw_dir)
+                env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", HOME=me.pw_dir, SHELL=shell, USER=me.pw_name, LANG=os.environ.get("LANG") or "C.UTF-8")
+                os.execvpe(shell, [shell, "-l"], env)
+            except BaseException:  # noqa: BLE001
+                pass
+            os._exit(127)
+        self.pid, self.fd = pid, fd
+        flags = fcntl.fcntl(self.fd, fcntl.F_GETFL)
+        fcntl.fcntl(self.fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        self._pending = bytearray()
+        self._write_cv = threading.Condition()
+        self.resize(self.cols, self.rows)
+        threading.Thread(target=self._pump, daemon=True).start()
+        threading.Thread(target=self._write_loop, daemon=True).start()
+
+    def resize(self, cols, rows):
+        try:
+            c = min(500, max(10, int(cols or 80)))
+            r = min(300, max(4, int(rows or 24)))
+            self.cols, self.rows = c, r
+            fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", r, c, 0, 0))
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def attach(self, channel, cols, rows, resumed):
+        with self._lock:
+            prev = self.attached
+            self.attached = channel
+            replay = bytes(self.scrollback)
+            cur_cols, cur_rows = self.cols, self.rows
+        if prev is not None and prev is not channel:
+            prev.closed = True
+            prev.conn.send({"op": "closed", "ch": prev.ch, "reason": "Opened elsewhere", "code": 1000})
+        channel.conn.send({"op": "attached", "ch": channel.ch, "session": self.name, "resumed": bool(resumed), "cols": cur_cols, "rows": cur_rows})
+        if replay:
+            channel.out(replay)
+        self.resize(cols, rows)
+
+    def detach(self, channel):
+        with self._lock:
+            if self.attached is channel:
+                self.attached = None
+
+    def write(self, data):
+        if not data or not self.alive:
+            return False
+        overflow = False
+        with self._write_cv:
+            if self.alive:
+                if len(self._pending) + len(data) > SHELL_IN_MAX:
+                    overflow = True
+                else:
+                    self._pending += data
+                    self._write_cv.notify()
+        if overflow:
+            self.kill("The terminal stopped reading")
+            return False
+        return True
+
+    def _pump(self):
+        try:
+            while self.alive:
+                try:
+                    r, _, _ = select.select([self.fd], [], [], 1)
+                    if r:
+                        data = os.read(self.fd, 65536)
+                        if not data:
+                            break
+                        with self._lock:
+                            self.scrollback += data
+                            _trim_scrollback(self.scrollback)
+                            target = self.attached
+                        if target is not None and not target.closed:
+                            target.out(data)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    break
+            self._finish("Shell ended")
+        finally:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self._reap()
+
+    def _write_loop(self):
+        while self.alive:
+            with self._write_cv:
+                if not self._pending and self.alive:
+                    self._write_cv.wait(0.2)
+                if not self.alive or not self._pending:
+                    continue
+                data = bytes(self._pending)
+            try:
+                n = os.write(self.fd, data)
+            except BlockingIOError:
+                try:
+                    select.select([], [self.fd], [], 0.2)
+                except (OSError, ValueError):
+                    self._finish("Shell ended")
+                    return
+                continue
+            except OSError:
+                self._finish("Shell ended")
+                return
+            if n:
+                with self._write_cv:
+                    del self._pending[:n]
+
+    def _finish(self, reason):
+        with self._lock:
+            if not self.alive:
+                return
+            self.alive = False
+            target = self.attached
+            self.attached = None
+        with self._write_cv:
+            self._write_cv.notify_all()
+        with _shell_sessions_lock:
+            if _shell_sessions.get(self.name) is self:
+                _shell_sessions.pop(self.name, None)
+        if target is not None and not target.closed:
+            target.closed = True
+            target.conn.send({"op": "closed", "ch": target.ch, "reason": reason, "code": 1000})
+
+    def _reap(self):
+        for _ in range(30):
+            try:
+                if os.waitpid(self.pid, os.WNOHANG)[0]:
+                    return
+            except OSError:
+                return
+            time.sleep(0.1)
+        try:
+            os.kill(self.pid, signal.SIGKILL)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+    def kill(self, reason="Shell ended"):
+        self._finish(reason)
+        try:
+            os.kill(self.pid, signal.SIGHUP)
+        except OSError:
+            pass
+
+
+class ShellChannel(Channel):
+    """Channel adapter attached to a persistent ShellSession (close detaches without SIGHUP)."""
+
+    def __init__(self, conn, ch, session):
+        super().__init__(conn, ch)
+        self.session = session
+
+    @property
+    def fd(self):
+        return self.session.fd
+
+    @property
+    def pid(self):
+        return self.session.pid
+
+    def resize(self, cols, rows):
+        self.session.resize(cols, rows)
+
+    def write(self, data):
+        if self.closed:
+            return
+        if not self.session.write(data):
+            self.closed = True
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.session.detach(self)
+
+
+_shell_sessions = {}
+_shell_sessions_lock = threading.Lock()
+
+
+def open_shell_session(conn, ch, cols, rows, name="main", fresh=False):
+    sname = name if isinstance(name, str) and SESSION_NAME.match(name) else "main"
+    old = None
+    with _shell_sessions_lock:
+        existing = _shell_sessions.get(sname)
+        if existing is not None and (fresh or not existing.alive):
+            old = _shell_sessions.pop(sname, None)
+            existing = None
+        if existing is None:
+            if len(_shell_sessions) >= MAX_SHELL_SESSIONS:
+                raise RuntimeError(f"At most {MAX_SHELL_SESSIONS} terminal sessions can run at once")
+            session = ShellSession(sname, cols, rows)
+            _shell_sessions[sname] = session
+            resumed = False
+        else:
+            session = existing
+            resumed = True
+    if old is not None:
+        old.kill("Started a new session")
+    channel = ShellChannel(conn, ch, session)
+    session.attach(channel, cols, rows, resumed)
+    return channel
+
+
+def kill_shell_session(name="*"):
+    with _shell_sessions_lock:
+        if name == "*":
+            targets = list(_shell_sessions.values())
+            _shell_sessions.clear()
+        else:
+            s = _shell_sessions.pop(name, None)
+            targets = [s] if s is not None else []
+    for s in targets:
+        s.kill("Shell ended")
+    return len(targets)
+
+
 class Screen(Channel):
     def __init__(self, conn, ch):
         super().__init__(conn, ch)
@@ -1305,7 +1681,7 @@ def files_stat(args, home=None, config=None, data=None):
     return {"name": name, "size": st.st_size if stat.S_ISREG(st.st_mode) else 0, "mtime": int(st.st_mtime * 1000), "dir": stat.S_ISDIR(st.st_mode)}
 
 
-def files_list(args, home=None, config=None, data=None):
+def clip_files_list(args, home=None, config=None, data=None):
     rel = (args or {}).get("path") or ""
     home_r, config_r, data_r = _roots(home, config, data)
     fd, _st, real, _name = resolve_home(rel, "dir", home, config, data)
@@ -1665,8 +2041,78 @@ def app_install(args):
     return True
 
 
-ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "theme-set": theme_set, "reboot": reboot}
 
+def shutdown(_args):
+    run(["systemctl", "poweroff"], timeout=30)
+    return True
+
+
+def suspend(_args):
+    run(["systemctl", "suspend"], timeout=30)
+    return True
+
+
+def _exit_for_restart():
+    os._exit(0)
+
+
+def update_self(args, cfg, cafile=None, target_path=None, on_restart=None, fetch=None):
+    expected = str((args or {}).get("sha256", "")).strip().lower()
+    if not re.match(r"^[0-9a-f]{64}$", expected):
+        raise RuntimeError("Bad connector checksum")
+    if fetch is not None:
+        body = fetch()
+    else:
+        server = str((cfg or {}).get("server", "")).rstrip("/")
+        u = urllib.parse.urlsplit(server)
+        if u.scheme != "https" or not u.hostname:
+            raise RuntimeError("Invalid server address")
+        ctx = _ssl_context(cafile)
+        req = urllib.request.Request(
+            server + "/connector/agent.py",
+            headers={"Authorization": f"Bearer {cfg['id']}:{cfg['key']}", "User-Agent": f"omarchy-connector/{VERSION}"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=60) as r:
+                body = r.read(2 * 1024 * 1024 + 1)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"Couldn’t download connector update (HTTP {e.code})")
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(f"Couldn’t download connector update: {e}")
+    if not body or len(body) > 2 * 1024 * 1024:
+        raise RuntimeError("The connector download was empty or too large")
+    actual = hashlib.sha256(body).hexdigest()
+    if actual != expected:
+        raise RuntimeError("The connector download didn’t match the expected checksum")
+    try:
+        ast.parse(body.decode("utf-8"))
+    except (UnicodeDecodeError, SyntaxError):
+        raise RuntimeError("The connector download wasn’t valid Python")
+    target = os.path.realpath(target_path or __file__)
+    parent = os.path.dirname(target)
+    tmp = os.path.join(parent, f".agent.py.{os.getpid()}.{os.urandom(4).hex()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700)
+        with os.fdopen(fd, "wb") as f:
+            f.write(body)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise RuntimeError(f"Couldn’t replace connector script: {e}")
+    restart_fn = on_restart or _exit_for_restart
+    t = threading.Timer(0.3, restart_fn)
+    t.daemon = True
+    t.start()
+    return {"sha256": actual, "restarting": True}
+
+
+ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "theme-set": theme_set, "reboot": reboot, "shutdown": shutdown, "suspend": suspend}
 HELPER = "/usr/local/libexec/omarchy-connector/helper.py"
 
 
@@ -1866,8 +2312,7 @@ class _Relay(http.server.ThreadingHTTPServer):
 
 def start_relay(cfg):
     u = urllib.parse.urlsplit(cfg["server"])
-    ctx = ssl.create_default_context(cafile=CA_FILE)
-    ctx.check_hostname = False  # pinned to the server's own authority, as for the WebSocket
+    ctx = _ssl_context(CA_FILE)
     secret = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
     auth = f"Bearer {cfg['id']}:{cfg['key']}"
 
@@ -2131,7 +2576,7 @@ def backup_restore(conn, call_id, args, cfg):
     return {"folder": target}
 
 
-def files_mkdir(args, home=None, config=None, data=None):
+def home_files_mkdir(args, home=None, config=None, data=None):
     rel = (args or {}).get("path") or ""
     parts = split_home_path(rel) if rel else []
     if not parts:
@@ -2245,16 +2690,6 @@ def files_recents(args, home=None, config=None, data=None):
     found.sort(key=lambda row: row["mtime"], reverse=True)
     return {"files": found[:40]}
 
-
-FILES_ACTIONS = {
-    "files-stat": lambda args: files_stat(args),
-    "files-list": lambda args: files_list(args),
-    "files-copy": lambda args: files_transfer(args, True),
-    "files-move": lambda args: files_transfer(args, False),
-    "files-delete": lambda args: files_delete(args),
-    "files-mkdir": lambda args: files_mkdir(args),
-    "files-recents": lambda args: files_recents(args),
-}
 BACKUP_ACTIONS = {"backup-folders": lambda conn, cid, args, cfg: backup_folders(args), "backup-run": backup_run, "backup-restore": backup_restore}
 
 
@@ -2263,6 +2698,382 @@ REPORT_INTERVAL = 3
 HELLO_INTERVAL = 300
 
 
+# Remote services & containers (ability "services").
+UNIT_NAME = re.compile(r"^[A-Za-z0-9@._:-]{1,128}$")
+CONTAINER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _container_engine():
+    for name in ("podman", "docker"):
+        if shutil.which(name):
+            return name
+    return ""
+
+
+def _parse_systemd_units(stdout, scope):
+    out = []
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            continue
+        name, load, active, sub = parts[0], parts[1], parts[2], parts[3]
+        desc = parts[4].strip() if len(parts) > 4 else ""
+        if not UNIT_NAME.match(name):
+            continue
+        out.append({"name": name, "scope": scope, "load": load, "active": active, "sub": sub, "description": desc[:200]})
+    return out
+
+
+def _parse_containers_json(stdout, engine):
+    text = (stdout or "").strip()
+    if not text:
+        return []
+    rows = []
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                rows = parsed
+        except ValueError:
+            rows = []
+    else:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    rows.append(obj)
+            except ValueError:
+                continue
+    out = []
+    for r in rows[:100]:
+        if not isinstance(r, dict):
+            continue
+        names = r.get("Names")
+        if isinstance(names, list):
+            cname = str(names[0] if names else "").lstrip("/")
+        else:
+            cname = str(names or r.get("Name") or "").lstrip("/")
+        cid = str(r.get("Id") or r.get("ID") or "")[:16]
+        if not cname and not cid:
+            continue
+        out.append(
+            {
+                "id": cid,
+                "name": cname or cid,
+                "image": str(r.get("Image") or "")[:160],
+                "state": str(r.get("State") or "").lower()[:32],
+                "status": str(r.get("Status") or "")[:120],
+                "engine": engine,
+            }
+        )
+    return out
+
+
+def services_list(_args):
+    user_units = []
+    failed_units = []
+    if shutil.which("systemctl"):
+        try:
+            r = subprocess.run(["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--no-legend", "--plain"], capture_output=True, text=True, timeout=15)
+            user_units = _parse_systemd_units(r.stdout, "user")[:200]
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            r = subprocess.run(["systemctl", "--system", "list-units", "--type=service", "--state=failed", "--no-pager", "--no-legend", "--plain"], capture_output=True, text=True, timeout=15)
+            failed_units = _parse_systemd_units(r.stdout, "system")[:50]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    engine = _container_engine()
+    containers = []
+    if engine:
+        try:
+            r = subprocess.run([engine, "ps", "-a", "--format", "json"], capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
+                containers = _parse_containers_json(r.stdout, engine)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return {"systemd": user_units, "systemFailed": failed_units, "containers": containers, "engine": engine}
+
+
+def services_logs(args):
+    kind = str((args or {}).get("kind", ""))
+    name = str((args or {}).get("name", ""))
+    try:
+        lines = max(10, min(1000, int((args or {}).get("lines") or 200)))
+    except (TypeError, ValueError):
+        lines = 200
+    if kind == "user":
+        if not UNIT_NAME.match(name):
+            raise RuntimeError("Invalid service name")
+        r = subprocess.run(["journalctl", "--user", "-u", name, "-n", str(lines), "--no-pager", "-o", "short-iso"], capture_output=True, text=True, timeout=20)
+        text = r.stdout or r.stderr or "No log lines."
+    elif kind == "system":
+        if not UNIT_NAME.match(name):
+            raise RuntimeError("Invalid service name")
+        r = subprocess.run(["journalctl", "-u", name, "-n", str(lines), "--no-pager", "-o", "short-iso"], capture_output=True, text=True, timeout=20)
+        text = r.stdout or r.stderr or "No log lines."
+    elif kind == "container":
+        if not CONTAINER_NAME.match(name):
+            raise RuntimeError("Invalid container name")
+        engine = _container_engine()
+        if not engine:
+            raise RuntimeError("No container runtime (podman or docker) is installed")
+        r = subprocess.run([engine, "logs", "--tail", str(lines), name], capture_output=True, text=True, timeout=20)
+        text = (r.stdout or "") + (r.stderr or "") or "No log lines."
+    else:
+        raise RuntimeError("Unknown service kind")
+    return {"logs": text[-200_000:]}
+
+
+def services_control(args):
+    kind = str((args or {}).get("kind", ""))
+    name = str((args or {}).get("name", ""))
+    action = str((args or {}).get("action", ""))
+    if action not in ("start", "stop", "restart"):
+        raise RuntimeError("Choose start, stop or restart")
+    if kind == "user":
+        if not UNIT_NAME.match(name):
+            raise RuntimeError("Invalid service name")
+        run(["systemctl", "--user", action, name], timeout=45)
+        return True
+    if kind == "container":
+        if not CONTAINER_NAME.match(name):
+            raise RuntimeError("Invalid container name")
+        engine = _container_engine()
+        if not engine:
+            raise RuntimeError("No container runtime (podman or docker) is installed")
+        run([engine, action, name], timeout=45)
+        return True
+    raise RuntimeError("System services are read-only from the swarm")
+
+
+SERVICES_ACTIONS = {
+    "services-list": services_list,
+    "services-logs": services_logs,
+    "services-control": services_control,
+}
+
+
+# ---------------------------------------------------------------------------------------------
+# Remote file browsing & transfer (ability "files"). Strictly jailed to /Home and /Pools.
+FILE_MAX_BYTES = 20 * 1024 * 1024
+
+
+def _file_roots(home=None):
+    h = os.path.realpath(home or os.path.expanduser("~"))
+    roots = {"Home": h}
+    pools = os.path.join(h, "Pools")
+    if os.path.isdir(pools):
+        roots["Pools"] = os.path.realpath(pools)
+    return roots
+
+
+def _is_inside(path, root):
+    return path == root or path.startswith(root + os.sep)
+
+
+# Credentials stay out of the file browser, as on the server: keys, keyrings, password stores
+# and browser profiles (saved logins and cookies).
+PRIVATE_HOME_DIRS = (
+    ".ssh", ".gnupg", ".password-store", ".pki", ".aws", ".kube", ".docker",
+    ".local/share/keyrings", ".mozilla", ".config/google-chrome", ".config/chromium",
+    ".config/BraveSoftware", ".config/omarchy-connector",
+)
+
+
+def _is_private_connector_path(real_path, home=None):
+    if _is_inside(real_path, os.path.realpath(CONFIG_DIR)):
+        return True
+    h = os.path.realpath(home or os.path.expanduser("~"))
+    return any(_is_inside(real_path, os.path.join(h, d)) for d in PRIVATE_HOME_DIRS)
+
+
+def _resolve_file_path(virtual, must_exist=True, home=None):
+    if not isinstance(virtual, str) or not virtual.startswith("/") or "\x00" in virtual:
+        raise RuntimeError("Invalid path")
+    parts = [p for p in virtual.split("/") if p]
+    if not parts or any(p in (".", "..") for p in parts):
+        raise RuntimeError("Invalid path")
+    roots = _file_roots(home)
+    root_name = parts[0]
+    if root_name not in roots:
+        raise RuntimeError("Only /Home and /Pools can be accessed")
+    root_real = roots[root_name]
+    rel = parts[1:]
+    candidate = os.path.join(root_real, *rel) if rel else root_real
+    if must_exist:
+        real = os.path.realpath(candidate)
+        if not _is_inside(real, root_real) or _is_private_connector_path(real, home):
+            raise RuntimeError("That path is outside the allowed folders")
+        if not os.path.exists(real):
+            raise RuntimeError("That file or folder doesn’t exist")
+        return real, "/" + "/".join([root_name, *rel])
+    parent_real = os.path.realpath(os.path.dirname(candidate))
+    if not _is_inside(parent_real, root_real) or _is_private_connector_path(parent_real, home):
+        raise RuntimeError("That path is outside the allowed folders")
+    if not os.path.isdir(parent_real):
+        raise RuntimeError("The parent folder doesn’t exist")
+    leaf = parts[-1]
+    target = os.path.join(parent_real, leaf)
+    target_real = os.path.realpath(target)
+    if not _is_inside(target_real, root_real) or _is_private_connector_path(target_real, home):
+        raise RuntimeError("That path is outside the allowed folders")
+    return target, "/" + "/".join([root_name, *rel])
+
+
+def swarm_files_list(args, home=None):
+    virtual = str((args or {}).get("path") or "/")
+    if virtual.strip("/") == "":
+        roots = _file_roots(home)
+        items = [{"name": k, "path": f"/{k}", "isDir": True, "size": 0, "modified": 0} for k in roots]
+        return {"path": "/", "items": items}
+    real, norm = _resolve_file_path(virtual, must_exist=True, home=home)
+    if not os.path.isdir(real):
+        raise RuntimeError("That isn’t a folder")
+    roots = _file_roots(home)
+    root_real = roots[norm.split("/")[1]]
+    items = []
+    for entry in os.scandir(real):
+        try:
+            entry_real = os.path.realpath(entry.path)
+            if not _is_inside(entry_real, root_real) or _is_private_connector_path(entry_real, home):
+                continue
+            st = os.stat(entry_real)
+            items.append(
+                {
+                    "name": entry.name,
+                    "path": f"{norm}/{entry.name}",
+                    "isDir": os.path.isdir(entry_real),
+                    "size": 0 if os.path.isdir(entry_real) else int(st.st_size),
+                    "modified": int(st.st_mtime * 1000),
+                }
+            )
+        except OSError:
+            continue
+    items.sort(key=lambda x: (not x["isDir"], x["name"].lower()))
+    return {"path": norm, "items": items[:1000]}
+
+
+def virtual_files_mkdir(args, home=None):
+    target, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=False, home=home)
+    os.mkdir(target)
+    return {"path": norm}
+
+
+def files_rename(args, home=None):
+    src, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=True, home=home)
+    new_name = str((args or {}).get("newName") or "").strip()
+    if not new_name or "/" in new_name or "\\" in new_name or "\x00" in new_name or new_name in (".", ".."):
+        raise RuntimeError("Invalid name")
+    parent_virtual = "/" + "/".join(norm.strip("/").split("/")[:-1])
+    if parent_virtual == "/":
+        raise RuntimeError("Can’t rename a top-level folder")
+    dst, dst_norm = _resolve_file_path(f"{parent_virtual}/{new_name}", must_exist=False, home=home)
+    if os.path.exists(dst):
+        raise RuntimeError("Something with that name already exists")
+    os.rename(src, dst)
+    return {"path": dst_norm}
+
+
+def files_trash(args, home=None):
+    src, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=True, home=home)
+    if len(norm.strip("/").split("/")) < 2:
+        raise RuntimeError("Can’t trash a top-level folder")
+    h = os.path.realpath(home or os.path.expanduser("~"))
+    trash_files = os.path.join(h, ".local", "share", "Trash", "files")
+    trash_info = os.path.join(h, ".local", "share", "Trash", "info")
+    os.makedirs(trash_files, mode=0o700, exist_ok=True)
+    os.makedirs(trash_info, mode=0o700, exist_ok=True)
+    base = os.path.basename(src)
+    cand = base
+    n = 2
+    while os.path.exists(os.path.join(trash_files, cand)):
+        cand = f"{base}.{n}"
+        n += 1
+    shutil.move(src, os.path.join(trash_files, cand))
+    info_path = os.path.join(trash_info, f"{cand}.trashinfo")
+    with open(info_path, "w", encoding="utf-8") as f:
+        f.write(f"[Trash Info]\nPath={urllib.parse.quote(src)}\nDeletionDate={time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
+    return True
+
+
+def files_read(args, home=None):
+    src, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=True, home=home)
+    if os.path.isdir(src):
+        raise RuntimeError("Can’t download a folder")
+    st = os.stat(src)
+    if st.st_size > FILE_MAX_BYTES:
+        raise RuntimeError("Files larger than 20 MB can’t be transferred through the swarm")
+    with open(src, "rb") as f:
+        raw = f.read(FILE_MAX_BYTES + 1)
+    if len(raw) > FILE_MAX_BYTES:
+        raise RuntimeError("Files larger than 20 MB can’t be transferred through the swarm")
+    return {"path": norm, "name": os.path.basename(src), "size": len(raw), "data": base64.b64encode(raw).decode("ascii")}
+
+
+def files_write(args, home=None):
+    dst, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=False, home=home)
+    if os.path.isdir(dst):
+        raise RuntimeError("A folder already exists at that path")
+    b64 = str((args or {}).get("data") or "")
+    try:
+        raw = base64.b64decode(b64.encode("ascii"), validate=True)
+    except Exception:
+        raise RuntimeError("Bad file payload")
+    if len(raw) > FILE_MAX_BYTES:
+        raise RuntimeError("Files larger than 20 MB can’t be transferred through the swarm")
+    parent = os.path.dirname(dst)
+    tmp = os.path.join(parent, f".omarchy-upload.{os.getpid()}.{os.urandom(4).hex()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+        os.replace(tmp, dst)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise RuntimeError(f"Couldn’t save file: {e}")
+    return {"path": norm, "size": len(raw)}
+
+
+def files_list(args, home=None, config=None, data=None):
+    raw_path = (args or {}).get("path")
+    if isinstance(raw_path, str) and raw_path.startswith("/") and config is None and data is None:
+        return swarm_files_list(args, home=home)
+    return clip_files_list(args, home=home, config=config, data=data)
+
+
+def files_mkdir(args, home=None, config=None, data=None):
+    rel = (args or {}).get("path") or ""
+    if isinstance(rel, str) and rel.startswith("/"):
+        return virtual_files_mkdir(args, home=home)
+    return home_files_mkdir(args, home=home, config=config, data=data)
+
+
+FILES_ACTIONS = {
+    "files-stat": files_stat,
+    "files-list": files_list,
+    "files-mkdir": files_mkdir,
+    "files-rename": files_rename,
+    "files-trash": files_trash,
+    "files-read": files_read,
+    "files-write": files_write,
+    "files-copy": lambda args: files_transfer(args, True),
+    "files-move": lambda args: files_transfer(args, False),
+    "files-delete": files_delete,
+    "files-recents": files_recents,
+}
+
+
+# ---------------------------------------------------------------------------------------------
 class Connection:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -2389,14 +3200,20 @@ class Connection:
                 self._open_vnc(ch)
                 return
             try:
-                self.channels[ch] = Shell(self, ch, msg.get("cols"), msg.get("rows"))
+                if msg.get("session"):
+                    self.channels[ch] = open_shell_session(self, ch, msg.get("cols"), msg.get("rows"), name=msg.get("session"), fresh=bool(msg.get("fresh")))
+                else:
+                    self.channels[ch] = Shell(self, ch, msg.get("cols"), msg.get("rows"))
             except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
                 self.send({"op": "closed", "ch": ch, "code": 1011, "reason": str(e)[:200]})
+        elif op == "kill":
+            if self.allowed.get("terminal"):
+                kill_shell_session(str(msg.get("session") or "*"))
         elif op == "resize":
             # The terminal's window changed size: the shell takes it (the kernel tells the programs
             # in it with SIGWINCH, so full-screen ones redraw). Older servers never send this.
             ch = self.channels.get(int(msg.get("ch", 0)))
-            if isinstance(ch, Shell):
+            if isinstance(ch, (Shell, ShellChannel)):
                 ch.resize(msg.get("cols"), msg.get("rows"))
         elif op == "ack":
             ch = self.channels.get(int(msg.get("ch", 0)))
@@ -2451,13 +3268,30 @@ class Connection:
                 if not fn:
                     raise RuntimeError("Unknown action")
                 data = fn(msg.get("args") or {})
-            else:
-                if not self.allowed.get("manage"):
-                    raise RuntimeError("This computer doesn’t allow managing")
-                fn = ACTIONS.get(name)
+            elif name in SERVICES_ACTIONS or str(name).startswith("services-"):
+                if not self.allowed.get("services"):
+                    raise RuntimeError("This computer doesn’t allow managing services")
+                fn = SERVICES_ACTIONS.get(name)
                 if not fn:
                     raise RuntimeError("Unknown action")
                 data = fn(msg.get("args") or {})
+            elif name in FILES_ACTIONS or str(name).startswith("files-"):
+                if not self.allowed.get("files"):
+                    raise RuntimeError("This computer doesn’t allow file access")
+                fn = FILES_ACTIONS.get(name)
+                if not fn:
+                    raise RuntimeError("Unknown action")
+                data = fn(msg.get("args") or {})
+            else:
+                if not self.allowed.get("manage"):
+                    raise RuntimeError("This computer doesn’t allow managing")
+                if name == "update-self":
+                    data = update_self(msg.get("args") or {}, self.cfg)
+                else:
+                    fn = ACTIONS.get(name)
+                    if not fn:
+                        raise RuntimeError("Unknown action")
+                    data = fn(msg.get("args") or {})
             self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})
             if name in ("plugin-install", "plugin-remove", "theme-set"):
                 self.send({"op": "hello", "info": info(), "abilities": self.allowed})
@@ -2496,12 +3330,11 @@ def enroll(server, token, abilities):
         raise SystemExit("The server address must start with https://")
     body = json.dumps({"token": token, "info": info(), "abilities": abilities}).encode()
     try:
-        ctx = ssl.create_default_context(cafile=CA_FILE)
+        ctx = _ssl_context(CA_FILE)
     except FileNotFoundError:
         raise SystemExit(f"Server certificate not found ({CA_FILE}). Run the install command from Machines → Local swarm → Add a computer.")
     except OSError as e:
         raise SystemExit(f"Couldn't read server certificate ({CA_FILE}): {e}")
-    ctx.check_hostname = False
     req = urllib.request.Request(server.rstrip("/") + "/connector/enroll", data=body, headers={"content-type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=30) as r:

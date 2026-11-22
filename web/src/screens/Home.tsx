@@ -88,6 +88,7 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 	const uptime = useUptime()
 	const {pins} = usePins()
 	const [gauge, setGauge] = useState<{title: string; kind: GaugeKind; gpuId?: string} | null>(null)
+	const swarmList = (swarm.data ?? []).filter((a) => !isGuestAgent(a))
 	const list = apps.data ?? []
 	const running = list.filter((a) => appStatus(a.state).kind === 'running').length
 	const problems = list.filter((a) => a.error || a.state === 'unknown')
@@ -181,6 +182,12 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 						<Icon name="apps" size={15} />
 						{running}/{list.length} apps running
 					</span>
+					{swarmList.length > 0 && (
+						<span className="fact">
+							<Icon name="devices" size={15} />
+							{swarmList.filter((a) => a.online).length}/{swarmList.length} swarm online
+						</span>
+					)}
 				</div>
 			</div>
 

@@ -84,7 +84,18 @@ class Gpus(unittest.TestCase):
 
         gpus = agent.gpus(run=run, list_dir=lambda p: [], read_file=lambda p, d="": d)
         self.assertEqual(len(gpus), 2)
-        self.assertEqual(gpus[0], {"id": "GPU-aaa", "index": 0, "name": "NVIDIA GeForce RTX 3060", "used": 32})
+        self.assertEqual(
+            gpus[0],
+            {
+                "id": "GPU-aaa",
+                "index": 0,
+                "name": "NVIDIA GeForce RTX 3060",
+                "used": 32,
+                "vramUsed": 1477 * 1024 * 1024,
+                "vramTotal": 12288 * 1024 * 1024,
+                "temp": 39.0,
+            },
+        )
         self.assertEqual(gpus[1]["id"], "GPU-bbb")
         self.assertEqual(gpus[1]["used"], 0)
 

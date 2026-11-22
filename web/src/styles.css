@@ -6638,19 +6638,9 @@ html:not(.desk-mode) .upload-panel {
 [data-theme='omarchy'] .win { background: #1a1b26 !important; }
 [data-theme='omarchy'] .win-bar { background: #16161e; }
 /* Phone console: sized to the visible area by script while the keyboard is up. */
-.console:not(.desk-ui):not(.embedded) { bottom: calc(0px - var(--ios-gap, 0px)); }
+.console:not(.desk-ui):not(.embedded) { bottom: 0; }
 .console:not(.desk-ui):not(.embedded) .console-input { bottom: auto; top: 0; }
 
-/* iOS home-screen app: push bottom-anchored layers down by the gap iOS sometimes leaves (see watchStandaloneGap). */
-.scrim,
-.menu-scrim,
-.ct-scrim,
-.fv { bottom: calc(0px - var(--ios-gap, 0px)); }
-.sheet { bottom: calc(0px - var(--ios-gap, 0px)); }
-.dock { bottom: calc(var(--safe-b) + 12px - var(--ios-gap, 0px)); }
-.fab { bottom: calc(var(--safe-b) + var(--dock-h) + 26px - var(--ios-gap, 0px)); }
-.select-bar { bottom: calc(var(--safe-b) + var(--dock-h) + 22px - var(--ios-gap, 0px)); }
-html:not(.desk-mode) .upload-panel { bottom: calc(var(--safe-b) + var(--dock-h) + 22px - var(--ios-gap, 0px)); }
 
 /* App Store: community stores sheet */
 .list-head {
@@ -8840,39 +8830,6 @@ html:not(.desk-mode) body:has(.ac-widget) .shell { padding-bottom: calc(var(--do
 }
 .layout-card h2 { margin: 0 0 6px; font-size: 22px; line-height: 1.25; }
 .layout-card > p { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
-.layout-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-.layout-option {
-	position: relative;
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	gap: 6px;
-	padding: 22px 16px 18px;
-	border-radius: 18px;
-	border: 1.5px solid var(--line);
-	background: var(--glass-2);
-	color: var(--fg);
-	cursor: pointer;
-	transition: border-color 0.15s, transform 0.15s;
-}
-.layout-option:hover { border-color: var(--accent); }
-.layout-option:active { transform: scale(0.98); }
-.layout-option.suits { border-color: var(--green, var(--accent)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green, var(--accent)) 22%, transparent); }
-.layout-option b { font-size: 18px; }
-.layout-option > span:last-child { color: var(--muted); font-size: 13.5px; line-height: 1.4; }
-.layout-art { display: grid; place-items: center; width: 72px; height: 72px; border-radius: 20px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
-.layout-badge {
-	position: absolute;
-	top: -11px;
-	padding: 3px 10px;
-	border-radius: 999px;
-	background: var(--green, var(--accent));
-	color: #111;
-	font-size: 11.5px;
-	font-weight: 700;
-	white-space: nowrap;
-}
-.layout-auto { margin-top: 14px; padding: 8px 14px; border: 0; background: none; color: var(--muted); font-size: 14px; text-decoration: underline; cursor: pointer; }
 .assistant-password {
 	margin: 8px 0 0;
 }
@@ -9118,3 +9075,77 @@ select.field {
 .fleet-menu button:hover {
 	background: var(--glass-2);
 }
+
+/* ---- Layout cards (welcome setup, Settings › Appearance, desktop Appearance) ---- */
+.lp-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.lp-cards-2 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.lp-card {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 12px;
+	border-radius: 20px;
+	border: 1.5px solid var(--line);
+	background: var(--glass-2, var(--card));
+	color: var(--fg);
+	text-align: left;
+	cursor: pointer;
+	transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+.lp-card:hover { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
+.lp-card:active { transform: scale(0.985); }
+.lp-card.on { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent); }
+.lp-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.lp-text { display: flex; flex-direction: column; gap: 4px; padding: 0 4px 4px; }
+.lp-text b { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 16px; }
+.lp-text > span { color: var(--muted); font-size: 13px; line-height: 1.4; }
+.lp-badge { font-style: normal; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--green, var(--accent)) 22%, transparent); color: var(--green, var(--accent)); font-size: 11px; font-weight: 650; }
+/* The drawings: a small screen with windows and a dock, a phone with a tab bar, or tiles. */
+.lp-art { position: relative; display: block; height: 96px; border-radius: 14px; overflow: hidden; background: linear-gradient(150deg, color-mix(in srgb, var(--accent) 30%, #1b1d2a), #11131c); }
+.lp-art i { position: absolute; display: block; }
+.lp-art-desktop .lp-win { left: 12%; top: 16%; width: 46%; height: 46%; border-radius: 6px; background: rgba(255, 255, 255, 0.82); box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3); }
+.lp-art-desktop .lp-win-2 { left: 42%; top: 30%; width: 44%; height: 40%; background: rgba(255, 255, 255, 0.6); }
+.lp-art-desktop .lp-dock { left: 30%; right: 30%; bottom: 8%; height: 11%; border-radius: 6px; background: rgba(255, 255, 255, 0.35); }
+.lp-art-phone .lp-phone { left: 50%; top: 10%; width: 42px; height: 80%; transform: translateX(-50%); border-radius: 9px; border: 2px solid rgba(255, 255, 255, 0.85); background: rgba(0, 0, 0, 0.25); }
+.lp-art-phone .lp-tiles { left: 5px; right: 5px; top: 7px; height: 52%; border-radius: 3px; background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.7) 0 9px, transparent 9px 12px); opacity: 0.8; }
+.lp-art-phone .lp-tabbar { left: 4px; right: 4px; bottom: 4px; height: 9px; border-radius: 4px; background: rgba(255, 255, 255, 0.55); }
+.lp-art-auto .lp-mini-desk { left: 14%; top: 18%; width: 50%; height: 56%; border-radius: 6px; border: 2px solid rgba(255, 255, 255, 0.8); background: rgba(255, 255, 255, 0.15); }
+.lp-art-auto .lp-mini-phone { left: 68%; top: 26%; width: 16%; height: 58%; border-radius: 5px; border: 2px solid rgba(255, 255, 255, 0.8); background: rgba(255, 255, 255, 0.15); }
+.lp-art-tiles .lp-bar { left: 6%; right: 6%; top: 7%; height: 8%; border-radius: 4px; background: rgba(255, 255, 255, 0.4); }
+.lp-art-tiles .lp-tile { border-radius: 5px; background: rgba(255, 255, 255, 0.75); }
+.lp-art-tiles .lp-tile-a { left: 6%; top: 21%; width: 43%; bottom: 8%; }
+.lp-art-tiles .lp-tile-b { left: 51%; top: 21%; width: 43%; height: 33%; background: rgba(255, 255, 255, 0.6); }
+.lp-art-tiles .lp-tile-c { left: 51%; top: 58%; width: 43%; bottom: 8%; background: rgba(255, 255, 255, 0.5); }
+@media (max-width: 520px) {
+	.lp-cards { grid-template-columns: 1fr; }
+	.lp-card { flex-direction: row; align-items: center; }
+	.lp-card .lp-art { flex: 0 0 104px; height: 78px; }
+}
+
+/* ---- Welcome setup ---- */
+.welcome-card { text-align: left; display: flex; flex-direction: column; gap: 4px; max-height: calc(100dvh - 32px); overflow-y: auto; }
+.welcome-card > h2 { font-size: 24px; }
+.welcome-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.welcome-dots { display: flex; gap: 6px; }
+.welcome-dots i { width: 22px; height: 4px; border-radius: 2px; background: var(--line-2, var(--line)); transition: background 0.2s; }
+.welcome-dots i.on { background: var(--accent); }
+.welcome-skip { border: 0; background: none; color: var(--muted); font-size: 13.5px; cursor: pointer; padding: 6px 2px; }
+.welcome-skip:hover { color: var(--fg); }
+.welcome-themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
+.welcome-theme { display: flex; flex-direction: column; justify-content: space-between; gap: 18px; min-height: 76px; padding: 12px; border-radius: 16px; border: 1.5px solid rgba(255, 255, 255, 0.08); font-weight: 600; text-align: left; cursor: pointer; }
+.welcome-theme.on { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 26%, transparent); }
+.welcome-theme .dots { display: flex; gap: 4px; }
+.welcome-theme .dots i { width: 10px; height: 10px; border-radius: 50%; }
+.welcome-tour { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.welcome-tour li { display: flex; gap: 12px; align-items: flex-start; }
+.welcome-tour li > span:last-child { display: flex; flex-direction: column; gap: 2px; }
+.welcome-tour li > span:last-child > span { color: var(--muted); font-size: 13.5px; line-height: 1.4; }
+.welcome-ico { flex: 0 0 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-text, var(--accent)); }
+.welcome-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
+
+/* "Submit an app" in the App Store */
+.submit-app { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border-radius: 18px; margin-top: 18px; }
+.submit-app .main { flex: 1 1 220px; display: flex; flex-direction: column; gap: 3px; }
+.submit-app .main .muted { font-size: 13px; line-height: 1.4; }
+.submit-app-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.submit-app.compact { margin: 26px 0 8px; }
