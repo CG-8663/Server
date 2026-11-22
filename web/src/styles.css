@@ -8815,3 +8815,10 @@ select.field {
 .welcome-tour li > span:last-child > span { color: var(--muted); font-size: 13.5px; line-height: 1.4; }
 .welcome-ico { flex: 0 0 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-text, var(--accent)); }
 .welcome-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
+
+/* "Submit an app" in the App Store */
+.submit-app { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border-radius: 18px; margin-top: 18px; }
+.submit-app .main { flex: 1 1 220px; display: flex; flex-direction: column; gap: 3px; }
+.submit-app .main .muted { font-size: 13px; line-height: 1.4; }
+.submit-app-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.submit-app.compact { margin: 26px 0 8px; }
