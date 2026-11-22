@@ -5,6 +5,7 @@ import {closeSync, mkdirSync, openSync, utimesSync} from 'node:fs'
 import {chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
+import {fileURLToPath} from 'node:url'
 import {Readable, Writable} from 'node:stream'
 import {describe, test} from 'node:test'
 
@@ -252,7 +253,7 @@ describe('files listing fixes', () => {
 			import {mkdtemp, mkdir, writeFile, readFile, readdir, rm} from 'node:fs/promises'
 			import {tmpdir} from 'node:os'
 			import {join} from 'node:path'
-			import {createFiles, deletionDateStamp} from ${JSON.stringify(join('/tmp/omarchy-w13-files/omarchyd/files.mjs'))}
+			import {createFiles, deletionDateStamp} from ${JSON.stringify(fileURLToPath(new URL('../omarchyd/files.mjs', import.meta.url)))}
 			const root = await mkdtemp(join(tmpdir(), 'omarchy-trash-tz-'))
 			const home = join(root, 'home')
 			const dataDir = join(root, 'data')
