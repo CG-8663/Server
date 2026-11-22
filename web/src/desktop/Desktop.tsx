@@ -2806,7 +2806,7 @@ function AppsWindow() {
 	const update = updates.data?.find((u) => u.id === appId)
 	return (
 		<>
-			<Apps onOpenApp={(a) => setAppId(a.id)} onTerminal={() => desk.openTerminal()} onStore={() => desk.open('store')} />
+			<Apps onOpenApp={(a) => setAppId(a.id)} onStore={() => desk.open('store')} />
 			<AppSheet app={app} update={update} onClose={() => setAppId(null)} onTerminal={(t) => (setAppId(null), desk.openTerminal(t))} />
 		</>
 	)

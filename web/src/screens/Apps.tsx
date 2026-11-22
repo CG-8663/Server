@@ -8,7 +8,7 @@ import {groupApps} from '../fleet/groupApps'
 import {machineCountLabel} from '../fleet/installTargets'
 import {PinButton} from '../fleet/PinButton'
 import {Icon} from '../icons'
-import {AppIcon, Segmented, StatusPill, StoreIcon, TerminalIcon, appStatus, haptic, isAppBusy, useConfirm} from '../ui'
+import {AppIcon, Segmented, StatusPill, StoreIcon, appStatus, haptic, isAppBusy, useConfirm} from '../ui'
 
 type Filter = 'all' | 'running' | 'stopped' | 'updates'
 
@@ -27,7 +27,7 @@ export function SearchField({value, onChange, placeholder}: {value: string; onCh
 	)
 }
 
-export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp) => void; onTerminal?: () => void; onStore?: () => void}) {
+export function Apps({onOpenApp, onStore}: {onOpenApp: (app: UserApp) => void; onStore?: () => void}) {
 	const apps = useApps()
 	const browserOnline = useBrowserOnline()
 	const problem = queryProblem(apps, browserOnline)
@@ -89,8 +89,8 @@ export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp
 					{apps.isLoading ? 'Loading…' : problem && !apps.data ? 'Can’t reach your server' : `${counts.running} running${counts.stopped ? ` · ${counts.stopped} stopped` : ''}${counts.updates ? ` · ${counts.updates} to update` : ''}`}
 				</p>
 			</div>
-			<div className="system-tiles">
-				{onStore && (
+			{onStore && (
+				<div className="system-tiles">
 					<button className="glass system-tile press" onClick={() => (haptic(6), onStore())}>
 						<StoreIcon size={46} />
 						<span>
@@ -98,17 +98,8 @@ export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp
 							<small>Find new apps</small>
 						</span>
 					</button>
-				)}
-				{onTerminal && (
-					<button className="glass system-tile press" onClick={() => (haptic(6), onTerminal())}>
-						<TerminalIcon size={46} />
-						<span>
-							<b>Terminal</b>
-							<small>Command line</small>
-						</span>
-					</button>
-				)}
-			</div>
+				</div>
+			)}
 			<SearchField value={q} onChange={setQ} placeholder={`Search ${list.length} apps`} />
 			<Segmented value={filter} options={segments} onChange={setFilter} label="Filter apps" />
 			{filter === 'updates' && counts.updates > 1 && (

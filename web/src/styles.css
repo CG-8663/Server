@@ -2922,6 +2922,9 @@ html.screen-locked .auth {
 	gap: 10px;
 	margin-bottom: 12px;
 }
+.system-tiles:has(> :only-child) {
+	grid-template-columns: minmax(0, 1fr);
+}
 .system-tile {
 	display: flex;
 	align-items: center;

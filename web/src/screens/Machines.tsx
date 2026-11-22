@@ -17,12 +17,12 @@ import {OPEN_FLEET, takePendingFleet, type FleetOpen} from '../fleet/openMember'
 import {openStore} from '../fleet/openStore'
 import {PinButton} from '../fleet/PinButton'
 import {AgentCard, LocalSwarm, useSwarm} from '../swarm/Swarm'
-import {Row, Sheet, SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
+import {Row, Sheet, SheetHeader, StatusPill, TerminalIcon, haptic, machineStatus} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
 
-export function Machines({onOpenApp}: {onOpenApp?: (app: UserApp) => void} = {}) {
+export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) => void; onTerminal?: () => void} = {}) {
 	const desk = useDesktop()
 	const boot = useBootstrap()
 	const machines = useMachines()
@@ -187,7 +187,7 @@ export function Machines({onOpenApp}: {onOpenApp?: (app: UserApp) => void} = {})
 				/>
 			)}
 			<LocalSwarm hideList selectedId={computerId} onSelect={setComputerId} adding={adding} onAdding={setAdding} />
-			{serverOpen && <ServerSheet name={serverName} owner={owner} onClose={() => setServerOpen(false)} onDesktop={openDesktop} />}
+			{serverOpen && <ServerSheet name={serverName} owner={owner} onClose={() => setServerOpen(false)} onDesktop={openDesktop} onTerminal={onTerminal} />}
 			{creating && (
 				<Suspense
 					fallback={
@@ -214,7 +214,7 @@ export function Machines({onOpenApp}: {onOpenApp?: (app: UserApp) => void} = {})
 	)
 }
 
-function ServerSheet({name, owner, onClose, onDesktop}: {name: string; owner: boolean; onClose: () => void; onDesktop: () => void}) {
+function ServerSheet({name, owner, onClose, onDesktop, onTerminal}: {name: string; owner: boolean; onClose: () => void; onDesktop: () => void; onTerminal?: () => void}) {
 	return (
 		<Sheet open onClose={onClose} label={name} tall>
 			<SheetHeader
@@ -230,6 +230,17 @@ function ServerSheet({name, owner, onClose, onDesktop}: {name: string; owner: bo
 			<div style={{display: 'flex', justifyContent: 'flex-end', marginTop: 8}}>
 				<PinButton pin={{kind: 'machine', id: SERVER_FLEET_ID, computer: ''}} name={name} />
 			</div>
+			{onTerminal && (
+				<div className="system-tiles" style={{marginTop: 12}}>
+					<button className="glass system-tile press" onClick={() => (haptic(6), onTerminal())}>
+						<TerminalIcon size={46} />
+						<span>
+							<b>Terminal</b>
+							<small>Command line</small>
+						</span>
+					</button>
+				</div>
+			)}
 			{owner && (
 				<div className="primary-row">
 					<button className="btn primary" onClick={onDesktop}>

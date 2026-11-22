@@ -12,7 +12,7 @@ import {fleetAbility, fleetList, SERVER_FLEET_ID} from '../fleet/list'
 import {MachineGlance} from '../fleet/MachineGlance'
 import {openStore} from '../fleet/openStore'
 import {LocalSwarm, useSwarm} from '../swarm/Swarm'
-import {bytes, duration, haptic, useConfirm} from '../ui'
+import {TerminalIcon, bytes, duration, haptic, useConfirm} from '../ui'
 import {mib, useAllTasks, useBackups, useMachineAction, useMachineDetails, useNode, when} from './api'
 import {backupListView} from './backupList'
 import {PortForwarding} from './PortForwarding'
@@ -247,6 +247,13 @@ function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreat
 					{owner && (
 						<div className="mx-card">
 							<h4>Consoles</h4>
+							<button type="button" className="pve-desktop" style={{marginBottom: 8}} onClick={() => (haptic(6), desk?.openTerminal())}>
+								<TerminalIcon size={36} />
+								<span>
+									<b>Terminal</b>
+									<small>Command line</small>
+								</span>
+							</button>
 							<button type="button" className="pve-desktop" onClick={() => (desk ? desk.openConsole('desktop') : null)}>
 								<Icon name="terminal" size={20} />
 								<span>
