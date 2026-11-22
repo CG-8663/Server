@@ -200,3 +200,23 @@ test('removing a theme clears any prior failed job for that slug', async () => {
 	assert.equal(after.installed.some((x) => x.slug === 'monokai'), false)
 	assert.equal(after.more.find((x) => x.slug === 'monokai')?.job, undefined)
 })
+
+test('installed community themes keep the list name, and 0x alacritty colours parse', async () => {
+	const home = join(root, 'home-names')
+	const themes = join(home, '.config/omarchy/themes')
+	await mkdir(join(themes, 'omarchy'), {recursive: true})
+	await writeFile(join(themes, 'omarchy', 'alacritty.toml'), "[colors.primary]\nbackground = '0x1d1f21'\nforeground = '0xc5c8c6'\n\n[colors.normal]\nblue = '0x81a2be'\n")
+	await mkdir(join(themes, 'my_custom_theme'), {recursive: true})
+	await writeFile(join(themes, 'my_custom_theme', 'colors.toml'), 'background = "#112233"\n')
+	const t = createOmarchyTheme({home})
+	const list = await t.themes()
+	assert.equal(list.installed.find((x) => x.slug === 'omarchy')?.name, 'Eldritch')
+	assert.equal(list.installed.find((x) => x.slug === 'my_custom_theme')?.name, 'My Custom Theme')
+	const colors = list.installed.find((x) => x.slug === 'omarchy')?.colors
+	assert.equal(colors.background, '#1d1f21')
+	assert.equal(colors.foreground, '#c5c8c6')
+	assert.equal(colors.accent, '#81a2be')
+	assert.deepEqual(colors.dots, ['#81a2be'])
+	assert.equal(parseThemeColors("background = '#aabbcc'\n").background, '#aabbcc')
+	assert.equal(parseThemeColors('background = 112233\n').background, '#112233')
+})

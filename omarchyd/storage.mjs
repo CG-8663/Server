@@ -39,6 +39,15 @@ function execP(cmd, args, {input, timeout = 10 * 60_000, env} = {}) {
 		if (input !== undefined) child.stdin.end(input)
 	})
 }
+// "none requested" is a pool that was never scrubbed, not a finished check.
+export function zfsScrub(scan) {
+	const text = String(scan ?? '').trim()
+	const none = !text || /^none requested$/i.test(text)
+	const state = !none && /in progress/i.test(text) ? 'running' : none ? 'never' : 'finished'
+	const errors = none || / 0B repaired.* 0 errors| with 0 errors/.test(text) ? '' : /errors/.test(text) ? text : ''
+	return {state, errors, started: null, summary: none ? '' : text}
+}
+
 const flat = (d) => [d, ...(d.children ?? []).flatMap(flat)]
 const truthy = (v) => v === true || v === 1 || v === '1'
 
@@ -229,7 +238,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			profile: z.layout,
 			health: z.health,
 			errors: z.devices.reduce((n, d) => n + d.errors, 0) + (z.errors && z.errors !== 'No known data errors' ? 1 : 0),
-			scrub: {state: /in progress/.test(z.scan) ? 'running' : z.scan ? 'finished' : 'never', errors: / 0B repaired.* 0 errors| with 0 errors/.test(z.scan) || !z.scan ? '' : /errors/.test(z.scan) ? z.scan : '', started: null, summary: z.scan},
+			scrub: zfsScrub(z.scan),
 		}))
 		return [...btrfs, ...zfsList]
 	}

@@ -11,7 +11,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {Icon} from '../icons'
-import {storageDrivesView, storageStatusMessage} from '../storageList'
+import {poolCheckText, storageDrivesView, storageStatusMessage} from '../storageList'
 import {canFormat, canMount, canUnmount, formatConfirmToken, formatPhraseMatches, type FormatKind} from '../storageTools'
 import {Card, Field, KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
 
@@ -277,19 +277,7 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 												<b>{tb(p.free)}</b> free
 											</span>
 										</div>
-										<p className="muted" style={{fontSize: 12.5, margin: '8px 0 0'}}>
-											{p.errors > 0
-												? `${p.errors} drive error${p.errors === 1 ? '' : 's'} recorded. Run an error check and look at the drives’ health.`
-												: p.scrub?.state === 'running'
-													? 'Checking for errors now…'
-													: p.scrub?.errors
-														? `Last check: ${p.scrub.errors}`
-														: p.kind === 'zfs' && p.scrub?.summary
-															? `Last check: ${p.scrub.summary.replace(/^scrub /, '')}`
-														: p.scrub?.started
-															? `Last checked ${new Date(p.scrub.started).toLocaleDateString()}, no errors`
-															: 'Never checked for errors'}
-										</p>
+										<p className="muted" style={{fontSize: 12.5, margin: '8px 0 0'}}>{poolCheckText(p)}</p>
 									</>
 								)}
 								<div style={{display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap'}}>

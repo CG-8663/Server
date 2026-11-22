@@ -101,6 +101,16 @@ async function measure(home, dataDir) {
 let driveCache = {at: 0, value: null}
 export const forgetDrive = () => (driveCache = {at: 0, value: null})
 const MB = 1024 * 1024
+// Room a grow can add: unallocated space after the partitions, plus a filesystem that is
+// meaningfully smaller than its own partition. Other partitions and ordinary metadata are in use.
+export function unusedDriveBytes({diskSize, partSizes, fsPartitionSize, fsSize}) {
+	const parts = (partSizes ?? []).map(Number).filter((n) => Number.isFinite(n) && n > 0)
+	const partLag = parts.length ? Math.max(0, Number(diskSize) - parts.reduce((t, n) => t + n, 0)) : 0
+	const rawFs = fsPartitionSize && fsSize ? Number(fsPartitionSize) - Number(fsSize) : 0
+	const fsThreshold = Math.max(1024 * MB, Number(fsPartitionSize || 0) * 0.06)
+	const fsLag = rawFs > fsThreshold ? rawFs : 0
+	return (partLag > 256 * MB ? partLag : 0) + fsLag
+}
 async function driveOf(path, fsSize) {
 	if (Date.now() - driveCache.at < 60_000) return driveCache.value
 	let value = null
@@ -128,7 +138,7 @@ async function driveOf(path, fsSize) {
 				if (fsSize && Number(fsDevice.size) - fsSize > Math.max(1024 * MB, Number(fsDevice.size) * 0.06)) steps.push('filesystem')
 				if (crypt && part && partLag > 256 * MB && !steps.includes('encryption')) steps.push('encryption')
 				if (part && partLag > 256 * MB && !steps.includes('filesystem')) steps.push('filesystem')
-				const notInUse = steps.length ? Math.max(0, Number(disk.size) - fsSize) : 0
+				const notInUse = unusedDriveBytes({diskSize: Number(disk.size), partSizes: parts.map((c) => Number(c.size || 0)), fsPartitionSize: part ? Number(part.size) : 0, fsSize})
 				const partNumber = part ? Number(/(\d+)$/.exec(part.name)?.[1]) : null
 				value = {
 					name: disk.path,

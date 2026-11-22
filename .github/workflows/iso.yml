@@ -25,7 +25,10 @@ jobs:
       - name: Install archiso
         run: pacman -Syu --noconfirm archiso git
       - name: Check the scripts
-        run: bash -n iso/build.sh iso/live/omarchy-server-setup iso/target/target-setup.sh
+        run: |
+          for f in iso/build.sh iso/live/omarchy-server-setup iso/target/target-setup.sh; do
+            bash -n "$f"
+          done
       - name: Build
         run: OUT="$GITHUB_WORKSPACE/release" iso/build.sh
       - name: Keep the build (manual runs)
