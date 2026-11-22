@@ -43,6 +43,13 @@ const APP_FILES = ['omarchy-app.yml', 'umbrel-app.yml']
 const COMPOSE_FILES = ['omarchy-compose.yml', 'docker-compose.yml']
 const APP_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
 const RESERVED = (p) => p === 7780 || p === 2021 || (p >= 40_000 && p <= 49_999)
+// Three different mistakes were one sentence, so a low port sounded like a port the server reserves.
+function portRefusal(name, port) {
+	if (port < 1024) return `${name} uses port ${port}. Apps need a port of 1024 or higher`
+	if (port > 65535) return `${name} lists port ${port}, which is not a valid port`
+	if (RESERVED(port)) return `${name} wants port ${port}, which Omarchy Server keeps for itself`
+	return null
+}
 function bumpPort(start, avoid) {
 	let p = start
 	for (let i = 0; i < 65535; i++) {
@@ -78,7 +85,21 @@ const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN
 export const SHARED_NETWORK = 'omarchy_main_network'
 // Your folders an app may be given (read-write; an access entry lets the app's user in).
 const USER_DIRS = {DOWNLOADS_DIR: 'Downloads', VIDEOS_DIR: 'Videos', MUSIC_DIR: 'Music', PICTURES_DIR: 'Pictures', DOCUMENTS_DIR: 'Documents'}
-const serverIp = () => Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === 'IPv4' && !i.internal && !/^(10\.88|10\.89|172\.1[6-9]|172\.2\d|172\.3[01])\./.test(i.address))?.address ?? '127.0.0.1'
+// Podman and Docker bridges only. A LAN address in 172.16.0.0/12 (other than Docker's 172.17.0.0/16) is the server.
+const BRIDGE_IFACE = /^(docker0|podman.*|cni.*|br-.*|veth.*)$/
+const BRIDGE_ADDR = /^(10\.88\.|10\.89\.|172\.17\.)/
+export function pickServerIp(ifaces) {
+	for (const [name, addrs] of Object.entries(ifaces ?? {})) {
+		if (BRIDGE_IFACE.test(name)) continue
+		for (const i of addrs ?? []) {
+			if (!i || (i.family !== 'IPv4' && i.family !== 4) || i.internal) continue
+			if (BRIDGE_ADDR.test(i.address)) continue
+			return i.address
+		}
+	}
+	return '127.0.0.1'
+}
+const serverIp = () => pickServerIp(os.networkInterfaces())
 const SHARED_SUBNET = '10.21.0.0/16'
 const SHARED_GATEWAY = '10.21.0.1'
 // A shared Tor proxy for apps that route through Tor (started the first time one is installed),
@@ -531,12 +552,26 @@ const stringList = (v) => (Array.isArray(v) ? v.map((x) => (typeof x === 'string
 // The apps `id` needs, dependencies first (a depth-first post-order).
 function orderNeeds(id, byId, seen = new Set(), out = []) {
 	for (const d of stringList(byId.get(id)?.a.dependencies)) {
-		if (seen.has(d)) continue
+		if (d === id || seen.has(d)) continue
 		seen.add(d)
 		orderNeeds(d, byId, seen, out)
 		out.push(d)
 	}
 	return out
+}
+// True when `id` depends on itself or the dependency links come back to an app already on the path.
+function dependencyLoop(id, byId) {
+	const stack = []
+	const visit = (cur) => {
+		if (stack.includes(cur)) return true
+		const row = byId.get(cur)
+		if (!row) return false
+		stack.push(cur)
+		for (const d of stringList(row.a.dependencies)) if (visit(d)) return true
+		stack.pop()
+		return false
+	}
+	return visit(id)
 }
 const varName = (v) => /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(String(v ?? '').trim())?.[1] ?? null
 // A number round-trip drops digits past 2^53 and leading zeros. Compose reads 0400 as octal.
@@ -575,6 +610,29 @@ function retainPorts(svc, keep) {
 	const ports = svc.get('ports')
 	if (YAML.isSeq(ports)) ports.items = ports.items.filter((item) => keep(asJSON(item)))
 	else if (Array.isArray(ports)) svc.set('ports', ports.filter((item) => keep(asJSON(item))))
+}
+function hostPortNumber(spec, expand) {
+	const long = !!spec && typeof spec === 'object'
+	const raw = long ? String(spec.published ?? '') : String(spec ?? '').split('/')[0]
+	const expanded = expand ? expand(raw) : String(raw)
+	const parts = long ? null : expanded.split(':')
+	const hostPort = long ? expanded : parts.length >= 3 ? parts[parts.length - 2] : parts.length === 2 ? parts[0] : ''
+	const host = Number(String(hostPort).split('-')[0])
+	return Number.isInteger(host) && host > 0 ? host : null
+}
+// A low port left in the file is published when Compose expands it, even if lowPorts was never called.
+function dropLowPorts(text, expand) {
+	const doc = YAML.parseDocument(String(text ?? ''))
+	const services = doc.get('services')
+	if (!YAML.isMap(services)) return text
+	for (const pair of services.items) {
+		if (!YAML.isMap(pair.value)) continue
+		retainPorts(pair.value, (p) => {
+			const host = hostPortNumber(p, expand)
+			return !(host && host < 1024)
+		})
+	}
+	return emitCompose(doc)
 }
 export function prepareCompose(appId, text, allocatePort, {shared = false, vars = {}, web = null, mcp = null} = {}) {
 	const doc = YAML.parseDocument(String(text ?? ''))
@@ -737,6 +795,13 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	const publishTokenFile = join(base, 'publish.token')
 	const busy = new Map() // appId -> {state, progress}
 	const lock = createKeyedLock()
+	// Uninstalls of different apps must not overlap: each would still see the other and leave Tor up.
+	let uninstallQueue = Promise.resolve()
+	const afterUninstalls = (fn) => {
+		const run = uninstallQueue.then(fn, fn)
+		uninstallQueue = run.then(() => {}, () => {})
+		return run
+	}
 	let statesCache = new Map(), statesAt = 0, statesInFlight = null
 	// When an app stops being busy (installed, started, stopped…), look at it afresh next time.
 	const busyDelete = busy.delete.bind(busy)
@@ -1165,7 +1230,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		// Everything an app needs, all the way down (bitcoin → lightning → …).
 		const needsOf = (id, seen = new Set()) => {
 			for (const d of stringList(byId.get(id)?.a.dependencies)) {
-				if (seen.has(d)) continue
+				if (d === id || seen.has(d)) continue
 				seen.add(d)
 				needsOf(d, seen)
 			}
@@ -1174,11 +1239,17 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const neededByOthers = new Set(found.flatMap((f) => stringList(f.a.dependencies)))
 		for (const {a, entry, compose, exported} of found) {
 			const deps = stringList(a.dependencies)
-			const all = [...needsOf(a.id)]
+			const loop = dependencyLoop(a.id, byId)
+			const all = [...needsOf(a.id)].filter((d) => d !== a.id)
 			const absent = all.filter((d) => !byId.has(d))
 			const fromDeps = all.flatMap((d) => byId.get(d)?.exported ?? [])
 			const missing = missingVars(compose, [...exported, ...fromDeps])
-			const unsupported = absent.length ? `Needs ${absent.join(', ')}, which isn’t in this store.` : null
+			const unsupported = loop
+				? (deps.includes(a.id) ? 'It depends on itself.' : 'It is part of a dependency loop.')
+				: absent.length
+					? `Needs ${absent.join(', ')}, which isn’t in this store.`
+					: null
+			const needs = loop ? [] : orderNeeds(a.id, byId).filter((d) => d !== a.id)
 			// Settings it can use but doesn't require: from another app it works with when that app is
 			// installed (e.g. Mempool), or ones nothing here provides. It installs either way; they stay empty.
 			const optionalFrom = [...new Set(missing.flatMap((v) => found.filter((f) => f.exported.includes(v)).map((f) => String(f.a.name ?? f.a.id))))]
@@ -1205,8 +1276,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				gallery: (Array.isArray(a.gallery) ? a.gallery : []).map(media).filter(Boolean),
 				releaseNotes: a.releaseNotes,
 				dependencies: deps,
-				// Everything installed along with it, in install order (what it needs comes first).
-				...(all.length ? {needs: orderNeeds(a.id, byId)} : {}),
+				// Everything installed along with it, in install order (what it needs comes first). Never itself.
+				...(needs.length ? {needs} : {}),
 				...(Array.isArray(a.implements) ? {implements: a.implements.filter((x) => typeof x === 'string')} : {}),
 				shared: a.shared === true || deps.length > 0 || neededByOthers.has(a.id) || /ipv4_address/.test(compose),
 				defaultUsername: a.defaultUsername || undefined,
@@ -1297,7 +1368,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 						await rm(storeDir(s.url), {recursive: true, force: true}).catch(() => {})
 						continue
 					}
-					throw e
+					// The client toasts this. A raw git error becomes "Internal error" and looks like success was the only other outcome.
+					const stderr = e && typeof e === 'object' && e.stderr != null ? String(e.stderr) : ''
+					const line = stderr.split('\n').map((l) => l.trim()).filter(Boolean).at(-1)
+						?? String(e?.message ?? e ?? 'download failed').split('\n').map((l) => l.trim()).filter(Boolean).at(-1)
+						?? 'download failed'
+					throw new RpcError('BAD_GATEWAY', `Couldn't reach ${s.url}: ${line}`)
 				}
 			}
 			if (!stillAdded(s.url)) continue
@@ -1374,11 +1450,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	const entropyKey = () => createHmac('sha256', secret).update('omarchy-server app entropy v1').digest('hex')
 	const deriveEntropy = (identifier) => createHmac('sha256', entropyKey()).update(identifier).digest('hex')
 	const appPassword = (id) => deriveEntropy(`app-${id}-seed-APP_PASSWORD`)
-	function composeEnv(app) {
+	function composeEnv(app, {isolate = false} = {}) {
 		const dir = appDir(app.id)
 		const host = os.hostname().split('.')[0]
 		// Variables from every installed app (an app reads those of the apps it needs), its own last.
-		const others = Object.assign({}, ...state.apps.filter((a) => a.id !== app.id).map((a) => a.exports ?? {}))
+		// Review runs exports before the app is installed and must not see other apps' secrets.
+		const others = isolate ? {} : Object.assign({}, ...state.apps.filter((a) => a.id !== app.id).map((a) => a.exports ?? {}))
 		return {
 			...engineEnv,
 			...others,
@@ -1546,10 +1623,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// An app's exports.sh (bash from its store) sets extra variables, such as ports or derived
 	// passwords. It runs in a bubblewrap sandbox: no network, read-only system, only its own app folder
 	// (writable, as some keep generated passwords there), a clean environment, and a time limit. Its exported variables are returned.
-	async function runExports(app) {
-		const dir = appDir(app.id)
+	async function runExports(app, dir = appDir(app.id), {isolate = false} = {}) {
 		if (!(await exists(join(dir, 'exports.sh')))) return {}
-		const base = composeEnv({...app, exports: {}})
+		const base = composeEnv({...app, exports: {}}, {isolate})
+		base.APP_DATA_DIR = dir
+		base.APP_DATA_ROOT = dir
 		const ips = Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i.address).join(' ')
 		// The server's key never enters the sandbox. derive_entropy looks its answer up in a table
 		// made here; an identifier that isn't in it yet is noted, and the script runs again with it
@@ -1651,10 +1729,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				apps.map(async (a) => {
 					if (a.system) return out.set(a.id, await liveState(a))
 					const states = byProject.get(project(a.id)) ?? []
-					out.set(a.id, states.some((x) => x === 'running') ? 'running' : 'stopped')
+					const st = states.some((x) => x === 'running') ? 'running' : 'stopped'
+					out.set(a.id, await shownLive(a, st))
 				}),
 			)
-		} else await Promise.all(apps.map(async (a) => out.set(a.id, await liveState(a))))
+		} else await Promise.all(apps.map(async (a) => out.set(a.id, await shownLive(a, await liveState(a)))))
 		return out
 	}
 	async function liveStates() {
@@ -1674,12 +1753,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 
 	// Ask the app's web port directly (not through its gateway), the way the gateway reaches it:
 	// https when the listing says the app itself speaks https.
-	function askWeb(app) {
+	function askWeb(app, {timeout = 6000} = {}) {
 		const target = app.internalPort ?? app.port
 		if (!target) return Promise.resolve({result: 'no-web'})
 		const secureUpstream = !!app.internalPort && !!app.internalHttps
 		return new Promise((resolve) => {
-			const opts = {host: '127.0.0.1', port: target, path: app.path || '/', method: 'GET', timeout: 6000, headers: {accept: 'text/html'}, ...(secureUpstream ? {rejectUnauthorized: false} : {})}
+			const opts = {host: '127.0.0.1', port: target, path: app.path || '/', method: 'GET', timeout, headers: {accept: 'text/html'}, ...(secureUpstream ? {rejectUnauthorized: false} : {})}
 			const req = (secureUpstream ? https : http).request(opts, (r) => {
 				r.resume()
 				resolve({result: 'answered', status: r.statusCode, location: r.headers.location ?? null})
@@ -1688,6 +1767,18 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			req.on('error', (e) => resolve({result: e.code === 'ECONNREFUSED' ? 'refused' : 'error', error: e.code ?? e.message}))
 			req.end()
 		})
+	}
+	// The list used to trust Podman alone, so a container whose page is down still looked running.
+	// Ask the app's own port (never the sign-in gateway) and only after it has had time to start.
+	const LIST_WEB_MS = 800
+	async function shownLive(app, container) {
+		if (container !== 'running' || app.system) return container
+		if (!(app.internalPort || app.port)) return container
+		const asked = await askWeb(app, {timeout: LIST_WEB_MS})
+		if (asked.result === 'answered' && (asked.status ?? 500) < 500) return 'running'
+		if (asked.result !== 'refused' && asked.result !== 'timeout') return container
+		const runningForMs = Date.now() - (startedAt.get(app.id) ?? bootedAt)
+		return runningForMs > startGraceMs ? 'stopped' : 'running'
 	}
 	async function probe(app) {
 		const asked = await askWeb(app)
@@ -1785,7 +1876,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			if (other.id === exceptId) continue
 			if (await composeMentionsTor(appDir(other.id))) return
 		}
-		await run('docker-compose', ['-p', 'omarchy-tor', '-f', file, 'down'], {env: engineEnv, cwd: dir})
+		// A second call (two uninstalls, or uninstallAll after the last app) must not fail once Tor is gone.
+		if (!(await exists(file))) return
+		await run('docker-compose', ['-p', 'omarchy-tor', '-f', file, 'down'], {env: engineEnv, cwd: dir}).catch(async (error) => {
+			if (await exists(file)) throw error
+		})
 		await rm(dir, {recursive: true, force: true})
 	}
 
@@ -1823,6 +1918,13 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			} catch (error) {
 				if (!['EACCES', 'EPERM'].includes(error.code)) throw error
 				await run('podman', ['unshare', 'cp', '-rT', '--no-preserve=ownership', stage, dir], {env: engineEnv})
+			}
+			// cp never deletes. An old omarchy-compose.yml would keep winning over the new docker-compose.yml.
+			for (const name of ['omarchy-compose.yml', 'docker-compose.yml', 'exports.sh']) {
+				if (await exists(join(stage, name))) continue
+				const target = join(dir, name)
+				if (data.some((d) => target === d || target.startsWith(`${d}/`))) continue
+				await rm(target, {force: true})
 			}
 		} finally {
 			await rm(stage, {recursive: true, force: true}).catch(() => {})
@@ -1889,8 +1991,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		// System ports (below 1024): only for apps you allowed; the helper lowers the limit once.
 		// Expand with the env Compose will bind: the app .env, process env, and composeEnv (exports.sh).
 		const dotenv = parseDotEnv(await readFile(join(dir, '.env'), 'utf8').catch(() => ''))
-		const low = appPermissions(finalText, whereFor(app, dotenv)).find((p) => p.id === 'low-ports')
-		if (low && (app.permissions ?? []).includes('low-ports') && firewall?.lowPorts) await firewall.lowPorts(Math.min(...low.what.map(Number)))
+		const where = whereFor(app, dotenv)
+		const low = appPermissions(finalText, where).find((p) => p.id === 'low-ports')
+		const allowLow = (app.permissions ?? []).includes('low-ports')
+		if (low && !allowLow) finalText = dropLowPorts(finalText, where.expand)
+		else if (low && allowLow && firewall?.lowPorts) await firewall.lowPorts(Math.min(...low.what.map(Number)))
 		prepared.text = finalText
 		await writeFile(join(dir, 'compose.omarchy.yml'), prepared.text, {mode: 0o600})
 		await createBindSources(app, prepared.text)
@@ -1920,12 +2025,39 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 	}
 	const publishPermission = () => ({id: 'publish', ...PERMISSIONS.publish, what: []})
+	// Same expansion placeApp uses, but in a throwaway copy so a review cannot write into the store.
+	async function listingExports(src) {
+		if (!(await exists(join(src.folder, 'exports.sh')))) return src.exports ?? {}
+		const stage = await mkdtemp(join(base, `.exports-${String(src.id).replace(/[^a-z0-9-]/gi, '') || 'app'}-`))
+		try {
+			const filter = async (p) => {
+				if (p.split('/').includes('.git')) return false
+				const st = await lstat(p).catch(() => null)
+				if (!st?.isSymbolicLink()) return true
+				const target = await realpath(p).catch(() => null)
+				const root = await realpath(src.folder).catch(() => src.folder)
+				return !!(target && under(target, root))
+			}
+			await cp(src.folder, stage, {recursive: true, filter})
+			return await runExports({
+				id: src.id,
+				port: src.port,
+				version: src.version,
+				folderIds: src.folderIds,
+				folders: src.folders && !Array.isArray(src.folders) ? src.folders : undefined,
+				ownSecretsOnly: true,
+			}, stage, {isolate: true})
+		} finally {
+			await rm(stage, {recursive: true, force: true}).catch(() => {})
+		}
+	}
 	async function permissionsOf(src) {
 		if (src.system) return systemApps?.permissions(src.id) ?? []
 		const c = await readYaml(src.folder, COMPOSE_FILES).catch(() => null)
 		if (!c) return src.publish === true ? [publishPermission()] : []
 		const dotenv = parseDotEnv(await readFile(join(src.folder, '.env'), 'utf8').catch(() => ''))
-		const perms = appPermissions(await readFile(join(src.folder, c.name), 'utf8'), whereFor(src, dotenv))
+		const exported = await listingExports(src)
+		const perms = appPermissions(await readFile(join(src.folder, c.name), 'utf8'), whereFor({...src, exports: {...(src.exports ?? {}), ...exported}}, dotenv))
 		if (src.publish === true && !perms.some((p) => p.id === 'publish')) perms.push(publishPermission())
 		return perms
 	}
@@ -1983,14 +2115,33 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 
 	async function install(input) {
-		await ready
 		const id = String(input?.appId ?? '')
-		return lock(`install:${id}`, async () => {
+		// Marked before the first await so uninstall cannot pass the busy check while prechecks run.
+		const held = new Map()
+		let handedOff = false
+		const hold = (appId) => {
+			if (!appId || held.has(appId) || busy.has(appId)) return
+			const token = {state: 'installing', progress: 0}
+			busy.set(appId, token)
+			held.set(appId, token)
+		}
+		const releaseHeld = () => {
+			if (handedOff) return
+			for (const appId of held.keys()) busy.delete(appId)
+			held.clear()
+		}
+		hold(id)
+		try {
+		await ready
+		return await lock(`install:${id}`, async () => {
+			try {
+			hold(id)
 			if (stateDamaged) throw new RpcError('PRECONDITION_FAILED', 'apps.json is damaged and was left unchanged.')
 			// A failed install stays until the plan and the checks succeed. Deleting it first
 			// made a later port conflict look like the app was gone.
 			if (state.apps.some((a) => a.id === id && a.state !== 'error')) throw new RpcError('CONFLICT', 'That app is already installed')
 			const plan = await installPlan(id)
+			for (const src of plan) hold(src.id)
 			if (plan.some((src) => !src.system)) {
 				if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
 				const h = await engineHealth({fresh: true})
@@ -2001,7 +2152,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			const ports = new Set()
 			for (const src of plan) {
 				if (!src.port) continue
-				if (src.port < 1024 || src.port > 65535 || RESERVED(src.port)) throw new RpcError('PRECONDITION_FAILED', `${src.name} wants port ${src.port}, which Omarchy Server keeps for itself`)
+				const refusal = portRefusal(src.name, src.port)
+				if (refusal) throw new RpcError('PRECONDITION_FAILED', refusal)
 				// Error-state apps are about to be replaced, so their recorded ports are not in use.
 				if (ports.has(src.port) || state.apps.some((a) => a.port === src.port && a.state !== 'error') || !(await portFree(src.port))) throw new RpcError('CONFLICT', `Port ${src.port} is already in use, so ${src.name} can’t be installed`)
 				ports.add(src.port)
@@ -2056,6 +2208,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				return {src, app}
 			})
 			await save()
+			handedOff = true
+			held.clear()
 			;(async () => {
 				let broken = null
 				for (const {src, app} of queued) {
@@ -2107,7 +2261,15 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				}
 			})()
 			return true
+			} catch (error) {
+				releaseHeld()
+				throw error
+			}
 		})
+		} catch (error) {
+			releaseHeld()
+			throw error
+		}
 	}
 
 	async function update(input) {
@@ -2147,7 +2309,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const previousUsb = await readFile(usbPath).catch(() => null)
 		let switched = false
 		let usbWritten = false
+		let wasStopped = false
 		try {
+			wasStopped = (await liveState(app)) === 'stopped'
 			const internalPort = await placeApp(src, app)
 			await writeUsbOverlay(app)
 			usbWritten = true
@@ -2161,8 +2325,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			closeGateway(app.id)
 			app.internalPort = internalPort
 			switched = true
-			await compose(app, 'up', '-d', '--remove-orphans')
-			markStarted(app.id)
+			if (wasStopped) await compose(app, 'up', '--no-start', '--remove-orphans')
+			else {
+				await compose(app, 'up', '-d', '--remove-orphans')
+				markStarted(app.id)
+			}
 			app.permissions = [...new Set([...app.permissions, ...wants])]
 			const nextPorts = [...(src.openPorts ?? [])]
 			for (const p of app.openPorts ?? []) if (!nextPorts.includes(p)) await firewall?.close(p)
@@ -2236,6 +2403,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	async function uninstall(input) {
 		await ready
 		const app = findInstalled(String(input?.appId ?? ''))
+		if (busy.has(app.id)) throw new RpcError('CONFLICT', `${app.name} is busy`)
+		busy.set(app.id, {state: 'uninstalling'})
+		try {
 		// Keep apps that other installed apps rely on (unless another app stands in for it).
 		const provides = [app.id, ...(app.implements ?? [])]
 		const users = []
@@ -2246,27 +2416,28 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			if (needs.some((n) => !state.apps.some((a) => a.id !== app.id && a.state !== 'error' && (a.id === n || (a.implements ?? []).includes(n))))) users.push(other.name ?? other.id)
 		}
 		if (users.length) throw new RpcError('PRECONDITION_FAILED', `${users.join(', ')} ${users.length > 1 ? 'need' : 'needs'} ${app.name ?? app.id}. Uninstall ${users.length > 1 ? 'them' : 'it'} first.`)
-		busy.set(app.id, {state: 'uninstalling'})
-		try {
-			closeGateway(app.id)
-			if (app.port) await firewall?.close(app.port)
-			if (app.viewPort) await firewall?.close(app.viewPort)
-			for (const p of app.openPorts ?? []) await firewall?.close(p)
-			// A failed `down` (or a system uninstall) leaves the app in place so it can be retried.
-			try {
-				if (app.system) await systemApps?.uninstall(app)
-				if (await exists(join(appDir(app.id), 'compose.omarchy.yml'))) await compose(app, 'down', '--volumes', '--remove-orphans')
+			await afterUninstalls(async () => {
+				closeGateway(app.id)
+				if (app.port) await firewall?.close(app.port)
+				if (app.viewPort) await firewall?.close(app.viewPort)
+				for (const p of app.openPorts ?? []) await firewall?.close(p)
+				// A failed `down` (or a system uninstall) leaves the app in place so it can be retried.
+				try {
+					if (app.system) await systemApps?.uninstall(app)
+					if (await exists(join(appDir(app.id), 'compose.omarchy.yml'))) await compose(app, 'down', '--volumes', '--remove-orphans')
+				} catch (error) {
+					if (error instanceof RpcError) throw error
+					console.error(`[omarchyd] uninstalling ${app.id}:`, error)
+					const detail = String(error.message ?? error).replace(/\s+/g, ' ').trim().slice(-300)
+					throw new RpcError('BAD_GATEWAY', `Couldn’t uninstall ${app.name ?? app.id}: ${detail}`)
+				}
+				await removeAppDir(app.id)
+				state.apps = state.apps.filter((a) => a.id !== app.id)
+				state.recent = state.recent.filter((r) => r !== app.id)
+				await save()
+				// After this app is gone, so the other uninstall in a pair is not still counted.
 				await stopTorIfIdle(app.id)
-			} catch (error) {
-				if (error instanceof RpcError) throw error
-				console.error(`[omarchyd] uninstalling ${app.id}:`, error)
-				const detail = String(error.message ?? error).replace(/\s+/g, ' ').trim().slice(-300)
-				throw new RpcError('BAD_GATEWAY', `Couldn’t uninstall ${app.name ?? app.id}: ${detail}`)
-			}
-			await removeAppDir(app.id)
-			state.apps = state.apps.filter((a) => a.id !== app.id)
-			state.recent = state.recent.filter((r) => r !== app.id)
-			await save()
+			})
 		} finally {
 			busy.delete(app.id)
 		}
