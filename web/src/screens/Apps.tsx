@@ -1,6 +1,7 @@
 import {useMemo, useState} from 'react'
 
 import type {UserApp} from '../api'
+import {appVersionLine, joinedFields, searchNeedle} from '../storeBrowse'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useAction, useApps, useUpdates} from '../data'
 import {Icon} from '../icons'
@@ -41,8 +42,9 @@ export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp
 		stopped: list.filter((a) => a.state === 'stopped').length,
 		updates: list.filter((a) => updateMap.has(a.id)).length,
 	}
+	const needle = searchNeedle(q)
 	const shown = list.filter((a) => {
-		if (q && !`${a.name} ${a.id}`.toLowerCase().includes(q.toLowerCase())) return false
+		if (needle && !joinedFields([a.name, a.id]).toLowerCase().includes(needle)) return false
 		if (filter === 'running') return appStatus(a.state).kind === 'running'
 		if (filter === 'stopped') return a.state === 'stopped'
 		if (filter === 'updates') return updateMap.has(a.id)
@@ -130,8 +132,8 @@ export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp
 					<span className="big">
 						<Icon name={q ? 'search' : 'check'} size={30} />
 					</span>
-					<b>{q ? 'No matches' : filter === 'updates' ? 'All up to date' : 'Nothing here'}</b>
-					{q && <span>No apps match “{q}”.</span>}
+					<b>{needle ? 'No matches' : filter === 'updates' ? 'All up to date' : 'Nothing here'}</b>
+					{needle && <span>No apps match “{q.trim()}”.</span>}
 				</div>
 			) : (
 				<div className="glass group" style={{'--inset': '74px'} as React.CSSProperties}>
@@ -153,9 +155,7 @@ export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp
 									<span>
 										{app.error
 											? app.error
-											: updateMap.has(app.id)
-												? `${app.version} → ${updateMap.get(app.id)}`
-												: `Version ${app.version}${app.port ? ` · port ${app.port}` : ''}`}
+											: appVersionLine(app, updateMap.has(app.id) ? updateMap.get(app.id) : undefined)}
 									</span>
 								</span>
 								<StatusPill {...status} />

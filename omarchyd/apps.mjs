@@ -228,7 +228,7 @@ function realpathExisting(path, seen) {
 	return realParent === parent ? path : realParent + path.slice(parent.length)
 }
 // KEY=value lines Compose reads from a listing's .env (shell env still wins).
-function parseDotEnv(text) {
+export function parseDotEnv(text) {
 	const env = {}
 	for (const line of String(text).split('\n')) {
 		const t = line.trim()
@@ -236,7 +236,10 @@ function parseDotEnv(text) {
 		const m = t.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
 		if (!m) continue
 		let v = m[2]
-		if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
+		// A quoted value is read to its closing quote, so a trailing " # comment" is not part of it.
+		const quoted = /^(["'])([\s\S]*?)\1\s*(?:#.*)?$/.exec(v)
+		if (quoted) v = quoted[2]
+		else if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
 		else {
 			const cut = v.search(/\s+#/)
 			if (cut >= 0) v = v.slice(0, cut).trimEnd()
@@ -288,7 +291,7 @@ export function appPermissions(text, where = {}) {
 		if (s.privileged === true || s.privileged === 'true') add('privileged', name)
 		if (s.network_mode === 'host') add('host-network', name)
 		for (const k of ['pid', 'ipc', 'uts', 'cgroup']) if (s[k] === 'host') add('system', `${k}: host`)
-		for (const o of s.security_opt ?? []) add('system', `security_opt: ${o}`)
+		for (const o of s.security_opt ?? []) if (securityOptBreaksConfinement(o)) add('system', `security_opt: ${o}`)
 		for (const v of s.volumes ?? []) {
 			const type = typeof v === 'object' ? v?.type : null
 			if (type === 'volume' || type === 'tmpfs') continue
@@ -454,15 +457,67 @@ export function folderAllowed(path, home) {
 	return !refusedMount(p, home)
 }
 
+// ${VAR:+text} and ${VAR+text} expand to empty when VAR is unset, same as a default.
+// Comments are not settings: scan parsed string values, not the raw file.
+function composeValueText(text) {
+	const raw = String(text)
+	try {
+		const doc = YAML.parse(raw)
+		if (doc && typeof doc === 'object') {
+			const parts = []
+			const walk = (v) => {
+				if (typeof v === 'string') parts.push(v)
+				else if (Array.isArray(v)) for (const x of v) walk(x)
+				else if (v && typeof v === 'object') for (const x of Object.values(v)) walk(x)
+			}
+			walk(doc)
+			return parts.join('\n')
+		}
+	} catch {
+		/* not YAML: drop comments, then scan */
+	}
+	return raw
+		.split('\n')
+		.map((line) => {
+			if (line.trim().startsWith('#')) return ''
+			let out = ''
+			let quote = ''
+			for (let i = 0; i < line.length; i++) {
+				const c = line[i]
+				if (quote) {
+					out += c
+					if (c === quote && line[i - 1] !== '\\') quote = ''
+					continue
+				}
+				if (c === '"' || c === "'") {
+					quote = c
+					out += c
+					continue
+				}
+				if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) break
+				out += c
+			}
+			return out
+		})
+		.join('\n')
+}
+
 export function missingVars(text, alsoProvided = []) {
 	const out = new Set()
-	for (const m of String(text).replace(/\$\$/g, '').matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) {
+	for (const m of composeValueText(text).replace(/\$\$/g, '').matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) {
 		const name = m[1] ?? m[3]
 		const rest = m[2] ?? ''
-		if (/^:?[-=]/.test(rest)) continue // has a default
+		if (/^:?[-=+]/.test(rest)) continue // default, or ${VAR:+text} / ${VAR+text}
 		if (!PROVIDED.has(name) && !alsoProvided.includes(name) && !/^FOLDER_[A-Z0-9_]+$/.test(name)) out.add(name)
 	}
 	return [...out]
+}
+
+// no-new-privileges tightens the sandbox. Only options that turn confinement off are "system".
+function securityOptBreaksConfinement(value) {
+	const s = String(value ?? '').trim().toLowerCase()
+	if (s === 'label=disable' || s === 'label:disable') return true
+	return /^[^=:]+[=:]unconfined$/.test(s)
 }
 
 function execP(cmd, args, {env, cwd, timeout = 10 * 60_000} = {}) {
@@ -525,7 +580,7 @@ async function readFirst(dir, names) {
 
 // Public listing fields. Pick these by name so a later loadStore change cannot leak folder, store, or compose.
 const LIST_FIELDS = [
-	'id', 'name', 'tagline', 'icon', 'category', 'version', 'developer', 'unsupported', 'caution',
+	'id', 'name', 'tagline', 'icon', 'category', 'version', 'installSize', 'developer', 'unsupported', 'caution',
 	'needs', 'dependencies', 'implements', 'port', 'path', 'web', 'shared', 'folders', 'openPorts',
 	'requiresHttps', 'system', 'defaultUsername', 'defaultPassword', 'deterministicPassword', 'repo',
 ]
@@ -535,6 +590,11 @@ function pickFields(a, keys) {
 	const out = {}
 	for (const k of keys) if (a[k] !== undefined) out[k] = a[k]
 	return out
+}
+
+function installSizeOf(v) {
+	if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return undefined
+	return v
 }
 
 // Browse payload: keep a shots count so Featured can pick apps that have screenshots.
@@ -1259,6 +1319,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				: unknown.length
 					? `Some features may not work here: it expects settings Omarchy Server doesn’t have (${unknown.slice(0, 3).join(', ')}).`
 					: null
+			const installSize = installSizeOf(a.installSize)
 			const media = (f) => (typeof f === 'string' && /^https:\/\//.test(f) ? f : gallery && typeof f === 'string' && /^[\w.-]+$/.test(f) ? `${gallery}/${a.id}/${f}` : null)
 			const mcp = parseMcp(a.mcp)
 			apps.push({
@@ -1268,6 +1329,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				icon: media(a.icon) ?? (gallery ? `${gallery}/${a.id}/icon.svg` : undefined),
 				category: a.category,
 				version: a.version !== undefined ? String(a.version) : undefined,
+				...(installSize !== undefined ? {installSize} : {}),
 				port: Number(a.port) || undefined,
 				path: typeof a.path === 'string' ? a.path : '',
 				description: a.description,
@@ -1350,6 +1412,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const stillAdded = (url) => state.stores.some((x) => x.url.toLowerCase() === url.toLowerCase())
 		const list = []
 		let dirty = false
+		let storeFailed = false
 		for (const s of snapshot) {
 			if (!stillAdded(s.url)) continue
 			if (refresh || Date.now() - (s.syncedAt ?? 0) > 60 * 60_000) {
@@ -1385,7 +1448,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				s.meta = loaded.meta
 				if (!prev || prev.id !== loaded.meta.id || prev.name !== loaded.meta.name) dirty = true
 				list.push(loaded)
-			} catch {}
+			} catch {
+				// Don't cache a hole where this store should be. The next open tries again.
+				storeFailed = true
+			}
 		}
 		try {
 			if ((await readdir(storeDir(IMPORTED_STORE))).length) list.push(await loadStore(IMPORTED_STORE))
@@ -1415,7 +1481,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			else delete app.internalHttps
 		}
 		if (dirty) await save()
-		if (gen === registryGen) registryCache = {at: Date.now(), list: current, gen}
+		if (!storeFailed && gen === registryGen) registryCache = {at: Date.now(), list: current, gen}
 		return current
 	}
 	// An app's listing. An installed app stays with the store it came from (two stores can list the
@@ -1560,9 +1626,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const allowed = [dir, shared, ...Object.values(USER_DIRS).map((d) => join(home, d)), ...Object.values(app.folders ?? {}).filter((p) => typeof p === 'string')]
 		for (const s of Object.values(doc.services ?? {})) {
 			for (const v of s?.volumes ?? []) {
+				if (v && typeof v === 'object' && (v.type === 'volume' || v.type === 'tmpfs')) continue
 				// Expand first: a source like ${APP_DATA_DIR:-.}/data has a colon of its own.
+				// A short string is a bind only when it starts with / . or ~ (Compose's rule). pgdata:/var is a named volume.
 				const src = typeof v === 'string' ? expandVars(v, env).split(':')[0] : v?.source && expandVars(v.source, env)
-				if (!src) continue
+				if (!src || typeof src !== 'string') continue
+				if (typeof v === 'string' && !src.startsWith('/') && !src.startsWith('.') && !src.startsWith('~')) continue
 				const path = bindHostPath(src, {home, cwd: dir})
 				if (!path.startsWith('/') || path.includes('\0') || CLOCK_FILES.includes(path)) continue
 				const real = realpathExisting(path)
@@ -1931,10 +2000,13 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 	}
 
-	// Loopback ports already given to other apps (web gateway target and MCP).
+	// Loopback ports already given to other apps, plus every app's public and view port
+	// (the gateway listens on those, so a private 127.0.0.1 bind cannot reuse the number).
 	function takenLoopbacks(exceptId) {
 		const used = new Set()
 		for (const other of state.apps) {
+			if (other.port) used.add(other.port)
+			if (other.viewPort) used.add(other.viewPort)
 			if (other.id === exceptId) continue
 			if (other.internalPort) used.add(other.internalPort)
 			if (other.mcpInternalPort) used.add(other.mcpInternalPort)
@@ -1942,11 +2014,24 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		return used
 	}
 
-	function systemPortFor(app) {
-		const used = takenLoopbacks(app.id)
-		let p = 20_000 + (parseInt(createHash('sha256').update(app.id).digest('hex').slice(0, 4), 16) % 9000)
-		while (used.has(p)) p++
-		return p
+	// Own loopback ports stay put on update even while the container still holds them.
+	async function allocateLoopback(appId, used, keep = new Set()) {
+		const span = 9000
+		const base = 20_000
+		let p = base + (parseInt(createHash('sha256').update(String(appId)).digest('hex').slice(0, 4), 16) % span)
+		for (let n = 0; n < span; n++) {
+			if (!used.has(p) && (keep.has(p) || (await portFree(p)))) {
+				used.add(p)
+				return p
+			}
+			p = base + ((p - base + 1) % span)
+		}
+		throw new Error(`No free private port for ${appId}`)
+	}
+
+	async function systemPortFor(app) {
+		const keep = new Set([app.internalPort, app.mcpInternalPort].filter((p) => Number.isInteger(p)))
+		return allocateLoopback(app.id, takenLoopbacks(app.id), keep)
 	}
 
 	async function placeApp(src, app) {
@@ -1958,10 +2043,13 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const text = await readFile(join(dir, c.name), 'utf8')
 		// Other apps' ports (an update keeps the app's own). A second call is the MCP loopback port.
 		const used = takenLoopbacks(app.id)
+		const keep = new Set([app.internalPort, app.mcpInternalPort].filter((p) => Number.isInteger(p)))
+		// Web and MCP each ask once. Reserve both before the synchronous compose rewrite.
+		const reserved = [await allocateLoopback(app.id, used, keep), await allocateLoopback(app.id, used, keep)]
+		let cursor = 0
 		const prepared = prepareCompose(app.id, text, () => {
-			let p = 20_000 + (parseInt(createHash('sha256').update(app.id).digest('hex').slice(0, 4), 16) % 9000)
-			while (used.has(p)) p++
-			used.add(p)
+			const p = reserved[cursor++]
+			if (!Number.isInteger(p)) throw new Error(`No free private port for ${app.id}`)
 			return p
 		}, {shared: !!src.shared, vars: composeEnv(app), web: src.web ?? null, mcp: src.mcp ?? null})
 		app.shared = !!src.shared
@@ -2223,7 +2311,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 						try {
 							app.system = true
 							app.store = BUILTIN_STORE
-							app.internalPort = systemPortFor(app)
+							app.internalPort = await systemPortFor(app)
 							busy.set(app.id, {state: 'installing', progress: 20})
 							await systemApps.install(app)
 							markStarted(app.id)

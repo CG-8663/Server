@@ -5,6 +5,7 @@ import {query, type UsbList} from './api'
 import {useAction, useUser} from './data'
 import {Icon} from './icons'
 import {haptic, useToast} from './ui'
+import {showUnplugged} from './usbPresent'
 
 export function DevicesPanel({guest}: {guest: {kind: 'machine' | 'app'; id: string; name: string}}) {
 	const action = useAction()
@@ -45,7 +46,7 @@ export function DevicesPanel({guest}: {guest: {kind: 'machine' | 'app'; id: stri
 										{d.vendorId}:{d.productId}
 										{d.path ? ` · ${d.path}` : ''}
 									</span>
-									{here && !d.path && <span className="muted">Unplugged</span>}
+									{here && showUnplugged(d) && <span className="muted">Unplugged</span>}
 									{d.bound && !here && <span className="muted">Used by {d.bound.name}</span>}
 									{here && d.needsRestart && <span className="muted">Restart {guest.name} to apply</span>}
 								</span>
