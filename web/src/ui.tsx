@@ -24,16 +24,7 @@ export const InWindow = createContext(false)
 
 // ---- formatting -------------------------------------------------------------
 // Storage in decimal units (as drives are sold); memory in binary (16 GB RAM reads as 16 GB).
-export function bytes(n: number | undefined, digits = 1, base: 1000 | 1024 = 1000) {
-	if (n === undefined || !Number.isFinite(n)) return '–'
-	const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-	let i = 0
-	while (n >= base && i < units.length - 1) {
-		n /= base
-		i++
-	}
-	return `${n.toFixed(n >= 100 || i === 0 ? 0 : digits)} ${units[i]}`
-}
+export {bytes} from './formatBytes'
 export function duration(seconds: number | undefined) {
 	if (!seconds) return '–'
 	const d = Math.floor(seconds / 86400)

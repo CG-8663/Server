@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useRef, useState, type ReactNode} from 'react'
 
-import {scrollSelectedRow, stepLauncherSelection} from './launcherScroll'
+import {launcherRowMatches, scrollSelectedRow, stepLauncherSelection} from './launcherScroll'
 
 export type LaunchItem = {key: string; label: string; icon: (size: number) => ReactNode}
 
@@ -9,7 +9,7 @@ export function Launcher({onClose, onOpen, items}: {onClose: () => void; onOpen:
 	const [sel, setSel] = useState(0)
 	const input = useRef<HTMLInputElement>(null)
 	const list = useRef<HTMLUListElement>(null)
-	const rows = useMemo(() => items.filter((r) => !q || r.label.toLowerCase().includes(q.toLowerCase())), [items, q])
+	const rows = useMemo(() => items.filter((r) => launcherRowMatches(r.label, q)), [items, q])
 	const pick = (key: string) => {
 		onOpen(key)
 		onClose()
