@@ -43,8 +43,8 @@ finish_firstboot() {
 }
 
 clear
-printf "\n  ${o}${b}Omarchy Server${r} first-time setup\n\n"
-printf "  You'll be asked for your password (for sudo), then to create your Omarchy Server account.\n\n"
+printf "\n  ${o}${b}My Own Data Center${r} first-time setup\n\n"
+printf "  You'll be asked for your password (for sudo), then to create your account.\n\n"
 printf "  Waiting for the network…"
 if nm-online -t 120 >/dev/null 2>&1; then
 	printf " ok\n\n"
@@ -54,12 +54,12 @@ fi
 
 # Firewall rules first, so they're in place when Omarchy turns the firewall on later.
 sudo pacman -S --needed --noconfirm ufw curl git >/dev/null
-sudo ufw allow 7780/tcp comment 'Omarchy Server' >/dev/null
-sudo ufw allow 40000:49999/tcp comment 'Omarchy Server machine forwards' >/dev/null
-sudo ufw allow 40000:49999/udp comment 'Omarchy Server machine forwards' >/dev/null
+sudo ufw allow 7780/tcp comment 'MODC' >/dev/null
+sudo ufw allow 40000:49999/tcp comment 'MODC machine forwards' >/dev/null
+sudo ufw allow 40000:49999/udp comment 'MODC machine forwards' >/dev/null
 
 if ! curl -fsSL "$SERVER_INSTALL" | bash; then
-	printf "\n  ${b}Omarchy Server didn't finish installing.${r} Fix the problem above, then run:\n"
+	printf "\n  ${b}My Own Data Center didn't finish installing.${r} Fix the problem above, then run:\n"
 	printf "    curl -fsSL %s | bash\n\n" "$SERVER_INSTALL"
 	if [ -t 0 ]; then
 		read -rp "  Press Enter for a command line " _
@@ -69,11 +69,11 @@ if ! curl -fsSL "$SERVER_INSTALL" | bash; then
 fi
 finish_firstboot
 
-printf "\n  ${o}${b}Omarchy Server is running.${r} Next: Omarchy, the desktop.\n\n"
+printf "\n  ${o}${b}My Own Data Center is running.${r} Next: Omarchy, the desktop.\n\n"
 if curl -fsSL "$OMARCHY_INSTALL" | bash; then
 	exit 0
 fi
-printf "\n  ${b}Omarchy didn't install.${r} Omarchy Server still works in your browser.\n"
+printf "\n  ${b}Omarchy didn't install.${r} My Own Data Center still works in your browser.\n"
 printf "  Install Omarchy later with:  curl -fsSL %s | bash\n\n" "$OMARCHY_INSTALL"
 if [ -t 0 ]; then
 	read -rp "  Press Enter for a command line " _

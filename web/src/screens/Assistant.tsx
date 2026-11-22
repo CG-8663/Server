@@ -29,7 +29,8 @@ import {
 } from '../assistantTurn'
 import {AssistantCharacter, lookName, useAssistantLook} from '../character/AssistantCharacter'
 import {patchDeskConfig} from '../desktop/config'
-import {haptic, omarchyBackgroundUrl, resetZoom, useOmarchyThemes, usePortalRoot, useScreenLock, type Prefs} from '../ui'
+import {SHOW_SHELL_KEY} from '../desktop/settingsPage'
+import {haptic, omarchyBackgroundUrl, resetZoom, setLayoutPref, useLayout, useOmarchyThemes, usePortalRoot, useScreenLock, type Prefs} from '../ui'
 
 const prettyTool = (name: string) => name.replaceAll('_', ' ')
 
@@ -209,6 +210,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 	const deciding = useRef(new Set<string>())
 	const [installGate, setInstallGate] = useState<{actionId: string; appId: string; appName: string} | null>(null)
 	const desk = useDesktop()
+	const layout = useLayout()
 	const decisionAbort = useRef(new Map<string, AbortController>())
 	const followQueued = useRef(false)
 	const pumping = useRef(false)
@@ -506,8 +508,18 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 			if (path === 'assistant.approve' && ok && cur.action.toolName === 'system_restart') reloadAfterRestart = true
 			if (path === 'assistant.approve' && ok && cur.action.toolName === 'desktop_setLayout') {
 				const label = String((updated && typeof updated === 'object' && 'detail' in updated ? updated.detail : cur.action.detail) ?? '').toLowerCase()
-				if (label.includes('hyprland')) patchDeskConfig({shell: 'hyprland'})
-				else if (label.includes('ubuntu')) patchDeskConfig({shell: 'gnome'})
+				const shell = label.includes('hyprland') ? 'hyprland' : label.includes('ubuntu') ? 'gnome' : null
+				if (shell) {
+					patchDeskConfig({shell})
+					if (!layout.desktop) {
+						try {
+							sessionStorage.setItem(SHOW_SHELL_KEY, 'retile')
+						} catch {
+							/* private */
+						}
+						setLayoutPref('desktop')
+					}
+				}
 			}
 			if (path === 'assistant.approve' && ok && cur.action.toolName === 'omarchy_setBackground' && extra?.id && setPrefs && prefs) {
 				setPrefs({

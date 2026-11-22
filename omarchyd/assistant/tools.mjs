@@ -99,7 +99,7 @@ export const WRITE_TOOLS = [
 		theme: {type: 'string'},
 	}, true),
 	mutation('swarm_rename', 'swarm.rename', 'Rename a swarm computer', {id: {type: 'string'}, name: {type: 'string'}}, true),
-	mutation('desktop_setLayout', 'desktop.setLayout', 'Set this Omarchy Server’s desktop layout on this machine: Ubuntu (gnome: floating, rounded corners) or Hyprland (hyprland: tiling, square corners). Not a swarm theme and not omarchy_setTheme.', {
+	mutation('desktop_setLayout', 'desktop.setLayout', 'Set this server’s desktop layout on this machine: Ubuntu (gnome: floating, rounded corners) or Hyprland (hyprland: tiling, square corners). Not a swarm theme and not omarchy_setTheme.', {
 		shell: {type: 'string', enum: ['gnome', 'hyprland'], description: 'gnome = Ubuntu, floating, rounded. hyprland = Hyprland, tiling, square.'},
 	}),
 	mutation('omarchy_setTheme', 'omarchy.setTheme', 'Set this machine’s Omarchy theme colours. Use this only when they want colours and not a wallpaper change.', {slug: {type: 'string'}}, true),
@@ -139,7 +139,7 @@ export function appearanceCatalog() {
 	return {
 		appearance: {
 			where: 'Settings → Appearance',
-			note: 'This is the app look: rounding and glass vs square solid panels. Picking a wallpaper here can switch the theme to Omarchy unless you were already on Horizon.',
+			note: 'Theme sets how the app and the panels are drawn. Background is the picture or a solid colour. Accent is one colour for the app and the desktop.',
 		},
 		themes: [
 			{id: 'horizon', name: 'Horizon', look: 'Rounded glass over the wallpaper'},
@@ -151,8 +151,8 @@ export function appearanceCatalog() {
 			{id: 'omarchy', name: 'Omarchy', look: 'Square corners, solid panels, no blur'},
 		],
 		panelStyle: {
-			where: 'Personalize → Panel style',
-			note: 'Desktop chrome only (top bar, dock, windows).',
+			where: 'Settings → Appearance',
+			note: 'The theme sets the panels. Horizon, Your photo, and Neon are frosted glass. Midnight is flat. Ember is solid and dark. Daylight is light. Omarchy is square and solid.',
 			styles: [
 				{id: 'yaru', name: 'Yaru', note: 'Ubuntu’s look: solid dark panels'},
 				{id: 'glass', name: 'Glass', note: 'Frosted, see-through panels'},
@@ -161,8 +161,8 @@ export function appearanceCatalog() {
 			],
 		},
 		layout: {
-			where: 'Personalize → Layout',
-			note: 'Ubuntu is floating with rounded windows. Hyprland tiles with square corners. App chrome rounding is Settings → Appearance.',
+			where: 'Settings → Appearance',
+			note: 'Ubuntu floats windows over a dock, with rounded corners. Hyprland tiles them and hides the dock, with square corners. Choosing either on the phone opens the desktop so the change is visible.',
 			options: [
 				{id: 'gnome', name: 'Ubuntu'},
 				{id: 'hyprland', name: 'Hyprland'},

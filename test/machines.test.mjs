@@ -119,6 +119,8 @@ describe('omarchyd machines', () => {
 				case 'list':
 					if (seen.failList) throw new Error('virsh list: error: failed to connect to the hypervisor')
 					return ` Id   Name   State\n------------------\n${[...doms].map(([n, s]) => ` -    ${n}   ${s}`).join('\n')}\n`
+				case 'domuuid':
+					throw new Error(`virsh domuuid: error: failed to get domain '${a[1]}'`)
 				case 'define': {
 					if (seen.failDefine) throw new Error("virsh define: error: unsupported configuration: domain configuration does not support video model 'virtio'")
 					seen.xml = await readFile(a[1], 'utf8')

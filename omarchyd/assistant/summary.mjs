@@ -18,7 +18,7 @@ const TOOL_RESULT_CHARS = 1_500
 const SUMMARY_CHARS = 8_000
 
 export const SUMMARY_PROMPT = [
-	'You keep the running notes for a chat between a person and the Omarchy Server assistant, which looks things up and proposes changes on their server.',
+	'You keep the running notes for a chat between a person and the My Own Data Center assistant, which looks things up and proposes changes on their server.',
 	'Write a summary of the conversation below that the assistant can rely on later instead of the full text.',
 	'Keep: what the person wants and any preferences they stated; facts learned from lookups (names, ids, sizes, versions) that may matter again; what was changed, approved, rejected or failed; anything still open.',
 	'Drop greetings, repetition and raw tool output that no longer matters.',

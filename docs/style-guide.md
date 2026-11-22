@@ -1,0 +1,185 @@
+# Style guide
+
+Use this when you add or change a screen in My Own Data Center. Match a component and a screen type that already exist. If a task needs a kind of screen this guide does not name, extend the guide in the same change.
+
+The vision for what the product is responsible for is [vision.md](vision.md). This guide is how the interface is built.
+
+## Touch, phone, and desktop
+
+Touch is the primary input. A control that works only by hovering, or only with a precise pointer, is incomplete. The main action of a screen is a row or a button large enough to tap. Hover may add a shortcut. It is not the only path.
+
+The phone layout is a stack of pages and sheets. The person moves forward into a task and back to the place that opened it. The thumb can reach the primary actions.
+
+The desktop layout shows those same screens in windows. The desktop has a Home window. The Machines window is the Machines screen, with the list and the open machine side by side when the window is wide enough. Phone and desktop are not on screen together. The person chooses Automatic, Phone, or Desktop. Automatic uses the desktop on a large screen with a pointer.
+
+Ubuntu is the windowed shell: floating windows, a dock, and icons on the desktop. Hyprland is the tiled shell: windows tile, workspaces remain, and the dock and desktop icons are hidden. Choosing Ubuntu or Hyprland changes that shell. On the phone, choosing either opens the desktop so the shell is visible. Phone or desktop stays its own control.
+
+A window frame belongs to the shell. The screen inside the frame is the same component the phone uses.
+
+## Reuse components
+
+Prefer the existing piece over a new one with the same job.
+
+- A machine uses the machine page. A virtual machine uses that page.
+- A file list uses the file manager. A shorter list still has the path bar, favorites, and recent files.
+- A measure uses the gauge. A shell uses the terminal. A yes-or-no uses the confirm sheet. A short form uses a sheet.
+- An application uses the app row and the app page.
+
+Give the same action the same name everywhere. Terminal is the command prompt by itself. Desktop is the machine's screen. Storage is the machine's drives. Backups is the machine's backups. A second label for the same action is a defect.
+
+Build a new component when the behavior is different. A container is different from a machine. A confirm is different from a page. Those differences earn a component. A new visual for the same action does not.
+
+## Machines
+
+### Physical machines
+
+This server and every joined computer share the row, the open page, and the actions. Order in a list may show the host first and its guests with it. The opened page does not change its sections because the machine is this server.
+
+### Virtual machines
+
+Start from the physical machine page. Add a control only when the host or the guest makes it real: hypervisor power, the guest screen, USB, port forwards, snapshots, cloud-init, and the host's disk backups.
+
+Leave out what cannot be done. A virtual machine does not host another virtual machine. The control is absent there, and the page still looks like a machine.
+
+### Without a connector
+
+The host can power the guest and can open its screen while it is running. Show gauges only from measurements the host actually has. An unreadable guest is not listed in the file manager, and the machine page does not invent files. Terminal stays unavailable until a shell exists. Offer Install connector when the guest can run Linux with systemd. When the operating system cannot run the connector, say that on the machine. Do not offer the guest as a place to install an application until its connector is online and the guest is running.
+
+### With a connector
+
+The connector is the Linux connector, tied to that virtual machine. Files, terminal, desktop, and applications follow the grants, the same way they do for a joined computer. Storage and folder backups follow those grants too. While the connector reports CPU and memory, those readings replace the host's estimate. The guest is not also listed as a physical computer.
+
+### Applications
+
+An application is a container on one machine.
+
+- Show it as an app: icon, name, state, and address when it has one.
+- Keep it out of the machine list. It has no drives, no connector, and no desktop of its own.
+- Open the application in the product when it allows that. When it refuses to be embedded, open it in a browser tab.
+- The store names the machine that will receive the install. Opened from a machine, the install targets that machine. Only this server, or a machine whose connector is online, is offered. A virtual machine can receive an application while its connector is online and the machine is running. The install is sent to that connector. An offline connector is not offered.
+- When the same application runs on more than one machine, show one application and a count.
+
+## Where a control lives
+
+Put a control on the thing it changes.
+
+- Fleet health lives on Home.
+- One machine's gauges, power, files, apps, storage, backups, terminal, and desktop live on that machine. This server's network and its logs live on that machine too.
+- The lower sections of a machine are one tab strip, on the phone and on the desktop. A section is a tab only when that machine can do it.
+- Account, appearance, sign-in, and updating this application live in Settings. Product update stays in Settings. It is not repeated on the machine.
+- This server's identity and power live on System, including factory reset. Restart and shut down are not also on Settings or on the machine page. Its disks and its health live on the machine page.
+- A decision that takes a moment lives in a sheet or a confirm.
+- Work that takes a while lives on a page, which the desktop shows as a window.
+
+## Screens
+
+### Home
+
+The fleet at a glance. Gauges, then the machines and applications the person pinned. Each gauge names the measure and shows an aggregate: a percentage, or how much is used out of the total. At a warning or a danger, that line becomes the mark and "Tap for details". Tapping opens every machine for that measure, including guests, and a missing reading is a dash. Home does not list every unpinned machine and does not hold settings.
+
+### Machines
+
+Every physical machine, with a host's virtual machines available from that host. One row opens one machine. Terminal and Desktop are on the machine, for this server, a joined computer, and a virtual machine alike. On the desktop, a wide window keeps the list beside the open machine.
+
+### Machine page
+
+The machine's own place. How it is doing, what it is doing now, its files, its applications, its terminal, its desktop, its storage, its backups, and its power. This server, a joined computer, and a virtual machine share this shape. The lower sections are a tab strip. Host-only controls sit in that same strip, in their own tabs. A joined computer does not get a virtual-machines tab.
+
+### Apps
+
+The containers. Group by application. Show a count only when more than one machine runs it.
+
+### Store
+
+The catalog of containers. The person can see which machine will receive the install before it happens.
+
+### Files
+
+One manager. Places for this server and for machines whose files can be read. A machine that cannot be read is not listed. Move, copy, and the clip book cross those machines. Recent files and favorites belong to each machine that can do file work. The global lists add those collections together. A recent file shows its size and can open its folder. Opening the file itself is there when the bytes are on this server. A file's origin is the machine it came from.
+
+An opened place with no entries is an empty folder. Do not add a sentence about a missing permission. The way to grant files, or to install the connector, is a control on that machine.
+
+### Terminal
+
+The shell on that machine, with the same new-session control for this server, a joined computer, and a guest. Closing a connector shell ends it. Say that in the confirm.
+
+### Desktop
+
+The machine's screen. The label is Desktop on every machine, including a virtual machine. The host screen and the connector desktop are that same action. Which one opens depends on what the machine can show. Terminal is the command prompt by itself.
+
+### Storage and backups
+
+Open them from the machine. This server's drives and its backup store are the owner's. A joined computer shows its own drives and its own backup folders, when those were allowed. A virtual machine's Backups section is the host's disk backups. A connector's folder backups stay the connector's. The titles say which job the person is in.
+
+### Settings
+
+The product: appearance, account, sign-in, and the application's update. Appearance is one theme, one background, and one accent, then phone or desktop, then Ubuntu or Hyprland. Dock and desktop icons stay with the desktop shell. A machine's disks and backups are not settings.
+
+### System
+
+This server as the host of the product: what it is, and power for the whole server. Live graphs and disk detail stay on the machine page.
+
+### Sign-in
+
+The door. It uses the same theme and the same touch targets as the rest of the product. It does not preview the fleet.
+
+### Assistant
+
+Help on this server. It can look something up, and it can propose a change the person approves. It uses the screens that already perform that change. It does not grow a parallel set of machine controls.
+
+### Notifications and clips
+
+A notification leads to the machine or the application it is about. A clip names the machine it was copied from. Both stay small.
+
+## Pages, panels, sheets, windows, and pop-ups
+
+### Page
+
+A full phone screen, and the body of a desktop window. One job. Back returns to the place that opened it. The title names the place or the machine.
+
+### Panel
+
+A named section of a machine: USB, snapshots, backups, monitor, history. It is still that machine. Opening a panel does not create a new top-level destination.
+
+### Sheet
+
+A short task over a page: add a computer, install a connector, confirm a destructive action, a few fields. It closes back to the page. A confirm may sit on top of a sheet. A sheet does not hold a file manager or a machine page.
+
+### Window
+
+A page in a desktop frame. Ubuntu floats and snaps. Hyprland tiles. Resizing the frame does not change which component is inside it.
+
+### Pop-up
+
+A menu, a toast, a gauge list, or a small picker. It is brief, and it closes without a trail of navigation. When the person will compare machines, edit more than a few fields, or stay for a while, use a page, a sheet, or a window.
+
+### Row
+
+The repeated unit for a machine, a file, a setting, or an application. Icon, name, secondary line, and action line up the same way across the product.
+
+### Gauge
+
+One component, drawn the same way on Home and on a machine. It can be opened on Home. On a machine page that click is off, and the gauge does not say "Tap for details". The subtitles stay the same: a percentage, or how much is used out of the total. Color follows the same warning and danger thresholds everywhere. A missing reading is a dash. A battery is one shared ring, with each laptop as a mark on it.
+
+### Empty
+
+An empty list looks empty. If the person can act, the action is a button and the words say what the button does, such as Install connector. Do not explain an empty file list with a paragraph about permissions.
+
+## Writing and motion
+
+Sentences that name the product say My Own Data Center. A short label in chrome says MODC. When the name adds nothing, say this server, or name the machine.
+
+Destructive actions use a confirm sheet and the danger treatment. The confirm names the outcome, including when a shell will end.
+
+Paths drop whole crumbs that do not fit, and they keep the current folder. Labels do not truncate into a different meaning.
+
+Reduced motion is respected. A transition does not hide a change of state. After a shell switch, an install, or a power action, the screen shows the new state.
+
+## Checks before you finish
+
+- The same action uses the same component and the same words on this server, a joined computer, and a virtual machine.
+- A virtual machine differs only where the host, the guest operating system, or the connector makes a real difference.
+- An application is presented as a container on a machine.
+- The screen works by touch on a phone and in a window on the desktop, in both the floating shell and the tiled shell.
+- A new component was added because the behavior is different, and an existing one could not carry it.
+- Readings, files, and permissions match what that machine reported.

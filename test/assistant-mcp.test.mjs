@@ -399,7 +399,7 @@ test('readOnly MCP tools auto-run; others become pending', async () => {
 		const init = mcp.seen.find((m) => m.method === 'initialize')
 		assert.equal(init.jsonrpc, '2.0')
 		assert.equal(init.params.protocolVersion, '2024-11-05')
-		assert.equal(init.params.clientInfo.name, 'Omarchy Server')
+		assert.equal(init.params.clientInfo.name, 'MODC')
 		assert.ok(mcp.seen.every((m) => m.reqMethod === 'POST' && m.url === addr.path && m.jsonrpc === '2.0'))
 		const statusCall = mcp.seen.filter((m) => m.method === 'tools/call' && m.params?.name === 'status')
 		assert.equal(statusCall.length, 1)

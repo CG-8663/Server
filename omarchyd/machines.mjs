@@ -355,7 +355,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const NICS = ['virtio', 'e1000e', 'e1000', 'rtl8139']
 	const CACHES = ['default', 'none', 'writeback', 'writethrough', 'directsync', 'unsafe']
 	const BUSES = ['virtio', 'sata', 'scsi', 'ide']
-	function domainXml(m, kvm) {
+	function domainXml(m, kvm, uuid = '') {
 		const dir = join(vmsDir, m.id)
 		const layout = m.layout ?? layoutFor('cloud', dir)
 		const o = m.options ?? {}
@@ -398,7 +398,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const memoryMb = m.memoryMb ?? (m.memoryGb ?? 1) * 1024
 		const nic = `<interface type='user'><backend type='passt'/><mac address='${m.mac}'/><model type='${layout.nic}'/>${m.linkDown ? "<link state='down'/>" : ''}${forwards}${order('net')}</interface>`
 		return `<domain type='${useKvm ? 'kvm' : 'qemu'}'>
-  <name>${domain(m.id)}</name>
+  <name>${domain(m.id)}</name>${uuid ? `\n  <uuid>${uuid}</uuid>` : ''}
   <title>${xml(m.name)}</title>${o.notes ? `\n  <description>${xml(o.notes)}</description>` : ''}
   <memory unit='MiB'>${memoryMb}</memory>
   <vcpu>${sockets * m.cores}</vcpu>
@@ -418,12 +418,33 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 </domain>
 `
 	}
+	// A domain XML with no uuid is a new domain. Defining that name again makes libvirt
+	// invent a second uuid and refuse: the name already exists with the first one.
+	async function definedUuid(id) {
+		try {
+			const text = String(await virsh('domuuid', domain(id))).trim()
+			return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text) ? text.toLowerCase() : ''
+		} catch {
+			return ''
+		}
+	}
 	async function define(m) {
-		const file = join(vmsDir, m.id, 'domain.xml')
+		const dir = join(vmsDir, m.id)
+		await mkdir(dir, {recursive: true, mode: 0o700})
+		const file = join(dir, 'domain.xml')
 		const kvm = await access(kvmDevice, constants.R_OK | constants.W_OK).then(() => true, () => false)
-		await writeFile(file, domainXml(m, kvm), {mode: 0o600})
+		const uuid = await definedUuid(m.id)
+		await writeFile(file, domainXml(m, kvm, uuid), {mode: 0o600})
 		await virsh('define', file)
 	}
+	// libvirt and qemu throw plain errors. The RPC layer would otherwise hide them as "Internal error".
+	function engineFailure(error, name, action) {
+		if (error instanceof RpcError) return error
+		const detail = String(error?.message ?? error).replace(/\s+/g, ' ').trim().slice(-300)
+		console.error(`[omarchyd] ${action} ${name}:`, error)
+		return new RpcError('BAD_GATEWAY', `${name} couldn’t ${action}: ${detail}`)
+	}
+	const alreadyActive = (error) => /already (?:running|active)/i.test(String(error?.message ?? error))
 
 	const hashPassword = async (password) => {
 		const hash = (await run('openssl', ['passwd', '-6', '-stdin'], {input: `${password}\n`})).trim()
@@ -529,11 +550,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 
 	async function create(input = {}) {
+		// The connector cannot host a guest yet. Refuse another computer before libvirt runs, and do not create it here instead.
+		const hostId = String(input.hostId ?? '').trim()
+		if (hostId && hostId !== 'server') throw new RpcError('PRECONDITION_FAILED', 'That computer has to host this virtual machine itself. It was not created on this server.')
 		await ready
 		const nameKey = String(input.name ?? '').trim().toLowerCase()
 		const runCreate = async () => {
 			const caps = await capabilities()
-			if (!caps.libvirtAvailable) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the Omarchy Server installer again to add them.')
+			if (!caps.libvirtAvailable) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the installer again to add them.')
 			if (caps.hostArchitecture !== 'amd64') throw new RpcError('PRECONDITION_FAILED', 'Machines currently need an x86-64 server')
 			const osId = String(input.osId ?? '')
 			// What to install from: a catalog image, or one of your own ISOs.
@@ -673,13 +697,26 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const own = `${join(vmsDir, m.id)}/`
 			const ownDisks = (m.layout?.disks ?? []).every((d) => d.device !== 'disk' || !d.file || d.file.startsWith(own))
 			if (pending !== 'starting' || !ownDisks || !(await exists(join(vmsDir, m.id, 'disk.qcow2')))) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish setting up. Delete it and create it again.`)
-			await define(m)
+			try {
+				await define(m)
+			} catch (error) {
+				throw engineFailure(error, m.name, 'start')
+			}
 			defined = true
 			delete m.state
 			delete m.errorMessage
 			await save()
 		}
+		const action = pending === 'stopping' && verb(domain(m.id))[0] === 'destroy' ? 'stop' : {starting: 'start', stopping: 'shut down', restarting: 'restart', pausing: 'pause', resuming: 'resume', hibernating: 'hibernate'}[pending] ?? pending
 		const t = beginTask(m, pending === 'stopping' && verb(domain(m.id))[0] === 'destroy' ? 'stop' : VERBS[pending] ?? pending)
+		const boot = async (name) => {
+			try {
+				await virsh('start', name)
+			} catch (error) {
+				// The list can still say stopped after libvirt has already started the domain.
+				if (!alreadyActive(error)) throw error
+			}
+		}
 		busy.set(m.id, {state: pending === 'pausing' || pending === 'resuming' || pending === 'hibernating' ? 'stopping' : pending})
 		try {
 			if (pending === 'restarting' && m.pending) {
@@ -691,10 +728,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					await new Promise((r) => setTimeout(r, 1000))
 				}
 				await define(m)
-				await virsh('start', domain(m.id))
+				await boot(domain(m.id))
 			} else {
 				if (pending === 'starting' && !defined) await define(m)
-				await virsh(...verb(domain(m.id)))
+				if (pending === 'starting') await boot(domain(m.id))
+				else await virsh(...verb(domain(m.id)))
 			}
 			if (pending === 'starting' || pending === 'restarting') {
 				delete m.pending
@@ -707,7 +745,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			endTask(m, t)
 		} catch (error) {
 			endTask(m, t, error)
-			throw error
+			throw engineFailure(error, m.name, action)
 		} finally {
 			await save().catch(() => {})
 			// Shown a little longer so the next list reads libvirt's settled state; other actions may go ahead.

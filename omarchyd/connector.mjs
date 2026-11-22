@@ -279,7 +279,7 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		}
 	})()
 	const save = () => (damaged ? Promise.reject(new RpcError('PRECONDITION_FAILED', 'swarm.json is damaged and was left unchanged.')) : writeAtomic(file, JSON.stringify(state, null, '\t'), {mode: 0o600}))
-	const pairings = new Map() // sha(token) -> {abilities, expires}
+	const pairings = new Map() // sha(token) -> {abilities, expires, guestOf?}
 	const live = new Map() // agentId -> {ws, metrics, info, channels: Map, nextCh, calls: Map, nextCall}
 	const history = new Map() // agentId -> {fine: Point[], coarse: Point[]}
 	const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024})
@@ -311,6 +311,9 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 	}
 
 	const find = (id) => state.agents.find((a) => a.id === id)
+	// A guest connector is the same agent, remembered against the virtual machine it was installed on.
+	// Anything else stays a physical computer. A bad value must not hide that computer.
+	const guestOf = (a) => (typeof a?.guestOf === 'string' && /^[a-f0-9]{8}$/.test(a.guestOf) ? a.guestOf : '')
 	const view = (a) => {
 		const l = live.get(a.id)
 		const agentSha = a.info?.agentSha || ''
@@ -321,6 +324,7 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			online: !!l,
 			lastSeen: l ? now() : (a.lastSeen ?? null),
 			enrolledAt: a.enrolledAt,
+			guestOf: guestOf(a),
 			// What it may do: allowed at pairing (and by the connector itself) and still switched on here.
 			allowed: a.allowed,
 			on: a.on,
@@ -338,12 +342,19 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 	}
 
 	// ---- owner actions (tRPC) ------------------------------------------------------------------
+	function pairingGuest(input) {
+		if (input == null || input === '') return ''
+		const id = String(input)
+		if (!/^[a-f0-9]{8}$/.test(id)) throw new RpcError('BAD_REQUEST', 'That virtual machine isn’t valid')
+		return id
+	}
 	async function pair(input = {}) {
 		await loaded
 		const abilities = Object.fromEntries(ABILITIES.map((k) => [k, input?.[k] === true]))
+		const linked = pairingGuest(input?.machineId)
 		const token = randomBytes(24).toString('base64url')
 		for (const [k, p] of pairings) if (p.expires < now()) pairings.delete(k)
-		pairings.set(sha(token), {abilities, expires: now() + PAIR_TTL})
+		pairings.set(sha(token), {abilities, expires: now() + PAIR_TTL, ...(linked ? {guestOf: linked} : {})})
 		return {token, ca: await caFingerprint(), expiresAt: now() + PAIR_TTL, abilities, source: await source(), port: webPort, addresses: serverAddresses()}
 	}
 	// Re-authorize an existing computer in place so its name, id, metrics and backups stay intact.
@@ -469,6 +480,7 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
 		state.agents = state.agents.filter((x) => x !== a)
 		await save()
+		await forgetRemote(a.id).catch(() => {})
 		const l = live.get(a.id)
 		// Tell it to forget this server and stop; then cut it off either way.
 		if (l) {
@@ -627,7 +639,9 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		const key = randomBytes(32).toString('base64url')
 		let name = info.hostname || 'computer'
 		for (let n = 2; state.agents.some((a) => a.name === name); n++) name = `${info.hostname || 'computer'} ${n}`
-		state.agents.push({id, name, keyHash: sha(key), allowed, on: {...allowed}, enrolledAt: t, lastSeen: null, info})
+		const agent = {id, name, keyHash: sha(key), allowed, on: {...allowed}, enrolledAt: t, lastSeen: null, info}
+		if (p.guestOf) agent.guestOf = p.guestOf
+		state.agents.push(agent)
 		await save()
 		return {status: 200, body: {id, key, name, abilities: allowed}}
 	}
@@ -1078,7 +1092,115 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		},
 	}
 
-	const fleetFiles = {stat: statFile, list: listFiles, pull: pullFile, push: pushFile}
+	async function transferOn(id, from, to, copy) {
+		const {a} = await requireFilesAgent(id)
+		const relFrom = safeHomePath(from)
+		const relTo = safeHomePath(to ?? '', {empty: true})
+		if (relFrom == null || relTo == null) throw new RpcError('BAD_REQUEST', 'Use a path inside that computer’s home folder')
+		return call(a.id, copy ? 'files-copy' : 'files-move', {from: relFrom, to: relTo})
+	}
+	async function removeOn(id, path) {
+		const {a} = await requireFilesAgent(id)
+		const rel = safeHomePath(path)
+		if (rel == null) throw new RpcError('BAD_REQUEST', 'Use a path inside that computer’s home folder')
+		return call(a.id, 'files-delete', {path: rel})
+	}
+	async function mkdirOn(id, path) {
+		const {a} = await requireFilesAgent(id)
+		const rel = safeHomePath(path, {empty: true})
+		if (rel == null) throw new RpcError('BAD_REQUEST', 'Use a path inside that computer’s home folder')
+		if (!rel) return true
+		return call(a.id, 'files-mkdir', {path: rel})
+	}
+	async function recentsOn(id) {
+		const {a} = await requireFilesAgent(id)
+		const data = await call(a.id, 'files-recents', {})
+		const files = Array.isArray(data?.files) ? data.files : []
+		return files.slice(0, 40).flatMap((row) => {
+			const rel = safeHomePath(row?.path)
+			if (!rel || typeof row?.name !== 'string') return []
+			return [{name: clip(row.name, 200), path: rel, size: Number(row.size) || 0, mtime: Number(row.mtime) || 0, dir: row.dir === true}]
+		})
+	}
+	async function fileAgents() {
+		await loaded
+		return state.agents.filter((a) => may(a, 'files')).map((a) => ({id: a.id, name: a.name, online: live.has(a.id), files: true}))
+	}
+	const remoteFile = join(dataDir, 'remote-apps.json')
+	const APP_INSTALL_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,64}$/
+	async function readRemote() {
+		try {
+			const data = JSON.parse(await readFile(remoteFile, 'utf8'))
+			return Array.isArray(data?.apps) ? data.apps : []
+		} catch {
+			return []
+		}
+	}
+	async function writeRemote(apps) {
+		await writeAtomic(remoteFile, JSON.stringify({apps}), {mode: 0o600})
+	}
+	async function forgetRemote(computerId) {
+		const apps = (await readRemote()).filter((a) => a.computerId !== computerId)
+		await writeRemote(apps)
+	}
+	async function rememberRemote(agent, apps) {
+		const current = await readRemote()
+		const ids = new Set(apps.map((a) => a.appId))
+		const kept = current.filter((a) => !(a.computerId === agent.id && ids.has(a.id)))
+		const next = [
+			...kept,
+			...apps.map((a) => ({
+				id: a.appId,
+				name: clip(a.name || a.appId, 80),
+				version: clip(a.version || '', 40),
+				icon: typeof a.icon === 'string' ? a.icon.slice(0, 500) : '',
+				computerId: agent.id,
+				computerName: agent.name,
+				state: 'running',
+				installedAt: Date.now(),
+			})),
+		]
+		await writeRemote(next)
+	}
+	async function remoteApps() {
+		await loaded
+		const names = new Map(state.agents.map((a) => [a.id, a.name]))
+		return (await readRemote())
+			.filter((a) => a && names.has(a.computerId) && typeof a.id === 'string')
+			.map((a) => ({
+				id: a.id,
+				name: a.name || a.id,
+				version: a.version || '',
+				icon: a.icon || '',
+				state: 'running',
+				computerId: a.computerId,
+				computerName: names.get(a.computerId) || a.computerName || 'Computer',
+				remote: true,
+			}))
+	}
+	function agentForInstall(target) {
+		return state.agents.find((a) => a.id === target || guestOf(a) === target) ?? null
+	}
+	async function forwardAppInstall(target, payload) {
+		await loaded
+		const agent = agentForInstall(String(target ?? ''))
+		if (!agent) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		if (!live.has(agent.id)) throw new RpcError('PRECONDITION_FAILED', `${agent.name} is offline, so it can’t take an install.`)
+		const apps = Array.isArray(payload?.apps) ? payload.apps : []
+		if (!apps.length || apps.length > 8) throw new RpcError('BAD_REQUEST', 'Nothing to install')
+		for (const app of apps) {
+			const id = String(app?.appId ?? '')
+			if (!APP_INSTALL_ID.test(id) || id.includes('..')) throw new RpcError('BAD_REQUEST', 'Unknown app')
+			if (typeof app?.compose !== 'string' || !app.compose || app.compose.length > 200_000 || app.compose.includes('\0')) throw new RpcError('PRECONDITION_FAILED', `${app?.name || id} has no compose file this computer can install.`)
+		}
+		await call(agent.id, 'app-install', {
+			apps: apps.map((app) => ({appId: String(app.appId), name: clip(app.name || app.appId, 80), version: clip(app.version || '', 40), icon: typeof app.icon === 'string' ? app.icon.slice(0, 500) : '', compose: app.compose})),
+		})
+		await rememberRemote(agent, apps)
+		return true
+	}
+
+	const fleetFiles = {stat: statFile, list: listFiles, pull: pullFile, push: pushFile, copy: (id, from, to) => transferOn(id, from, to, true), move: (id, from, to) => transferOn(id, from, to, false), remove: removeOn, mkdir: mkdirOn, recents: recentsOn, agents: fileAgents}
 
 	return {
 		files: fleetFiles,
@@ -1088,6 +1210,7 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			'swarm.history': {kind: 'query', run: getHistory},
 			'swarm.alerts': {kind: 'query', run: getAlerts},
 			'swarm.wake': {kind: 'mutation', run: wake},
+			'swarm.files.recents': {kind: 'query', run: async (input) => ({files: await recentsOn(input?.id)})},
 			'swarm.pair': {kind: 'mutation', run: pair},
 			'swarm.reauthorize': {kind: 'mutation', run: reauthorize},
 			'swarm.updateConnector': {kind: 'mutation', run: updateConnector},
@@ -1297,8 +1420,13 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			'swarm.files.list': {
 				kind: 'query',
 				run: async (input) => {
-					const a = await requireAbility(input, 'files', 'File access')
-					return call(a.id, 'files-list', {path: String(input?.path || '/')}, 30_000)
+					const path = input?.path ?? ''
+					// A leading slash is the Home and Pools browser. Anything else is a path inside that computer's home folder.
+					if (typeof path === 'string' && path.startsWith('/')) {
+						const a = await requireAbility(input, 'files', 'File access')
+						return call(a.id, 'files-list', {path}, 30_000)
+					}
+					return listFiles(input?.id, path)
 				},
 			},
 			'swarm.files.mkdir': {
@@ -1356,6 +1484,8 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			},
 		},
 		enroll,
+		forwardAppInstall,
+		remoteApps,
 		authenticateAgent: async (req) => {
 			await loaded
 			return authAgent(req)

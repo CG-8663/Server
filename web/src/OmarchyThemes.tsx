@@ -4,6 +4,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query} from './api'
 import {Icon} from './icons'
 import {isMoreThemeBusy, runThemeAction, shouldPollThemes} from './omarchyThemesLogic'
+import {themeAction} from './theme/themeAction'
 import {haptic, useConfirm, useToast} from './ui'
 
 type Job = {state: 'installing' | 'switching' | 'removing' | 'error'; error?: string}
@@ -12,9 +13,9 @@ type Installed = {slug: string; name: string; user: boolean; current: boolean; c
 type More = {slug: string; name: string; url: string; preview: string | null; job?: Job}
 type Themes = {available: boolean; current: string | null; installed: Installed[]; more: More[]; source: string}
 
-// Settings → Appearance → Omarchy → Themes: the desktop's own themes, like the Omarchy menu.
-// Tap one to switch the whole desktop; get more from the Omarchy manual's theme list.
-export function OmarchyThemes({owner}: {owner: boolean}) {
+// Settings → Appearance → Omarchy → Themes: this server's themes. They drive the app's colours
+// and wallpaper. Another computer's theme is changed from that computer, through the connector.
+export function OmarchyThemes({owner, onSwitched}: {owner: boolean; onSwitched?: () => void}) {
 	const qc = useQueryClient()
 	const toast = useToast()
 	const confirm = useConfirm()
@@ -80,7 +81,11 @@ export function OmarchyThemes({owner}: {owner: boolean}) {
 								aria-checked={t.current}
 								className="omt-pick"
 								disabled={!owner || !data.available || t.current || !!busy}
-								onClick={() => act('omarchy.setTheme', t.slug)}
+								onClick={() => {
+									onSwitched?.()
+									const call = themeAction({kind: 'server', slug: t.slug})
+									if ('path' in call) act(call.path, t.slug)
+								}}
 							>
 								{t.preview ? <img src={`/api/omarchy/preview/${t.slug}`} alt="" loading="lazy" decoding="async" /> : <span className="omt-noimg" />}
 								<span className="omt-name">

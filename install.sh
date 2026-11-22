@@ -19,7 +19,7 @@ if (: </dev/tty) 2>/dev/null; then exec </dev/tty; else exec </dev/null; fi
 
 usage() {
 	cat <<'EOF'
-Omarchy Server installer
+My Own Data Center installer
 
   install.sh [--zfs] [-h|--help]
 
@@ -107,7 +107,7 @@ fi
 command -v systemctl >/dev/null || die "systemd is required."
 # Omarchy, its packages and the machine images are x86-64 only.
 arch=$(uname -m)
-[ "$arch" = x86_64 ] || die "Omarchy Server needs an x86-64 (Intel or AMD 64-bit) computer; this one is $arch."
+[ "$arch" = x86_64 ] || die "My Own Data Center needs an x86-64 (Intel or AMD 64-bit) computer; this one is $arch."
 
 # 1. Packages. Machines: QEMU + libvirt (per-user session), passt for their networking, xorriso
 #    (libisoburn) for cloud-init seeds. Apps: rootless Podman driven by docker-compose. NAS: Btrfs,
@@ -147,7 +147,7 @@ node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)
 mkdir -p "$BASE"
 local_repo() { [ -e "$1/.git" ]; }
 if [ -d "$APP/.git" ]; then
-	say "Updating Omarchy Server"
+	say "Updating My Own Data Center"
 	# Installed from somewhere else before (e.g. omarchy-server, now the dev copy, or back): follow this
 	# installer's repository from now on, for this update and the in-app updates after it.
 	if [ "$(git -C "$APP" remote get-url origin 2>/dev/null)" != "$REPO" ]; then
@@ -164,7 +164,7 @@ if [ -d "$APP/.git" ]; then
 		git -C "$APP" reset --hard "origin/$BRANCH"
 	fi
 else
-	say "Downloading Omarchy Server"
+	say "Downloading My Own Data Center"
 	if local_repo "$REPO"; then
 		git clone --depth 1 "$REPO" "$APP"
 		git -C "$APP" fetch --depth 1 "$REPO" HEAD
@@ -300,7 +300,7 @@ sudo install -d -o root -g root -m 0755 /usr/local/libexec/omarchy-server
 sudo install -o root -g root -m 0755 "$APP/helper/helper.mjs" /usr/local/libexec/omarchy-server/helper.mjs
 rule="$USER ALL=(root) NOPASSWD: /usr/local/libexec/omarchy-server/helper.mjs"
 tmp=$(mktemp)
-printf '# Omarchy Server: lets %s run the storage helper (and nothing else) without a password.\n%s\n' "$USER" "$rule" >"$tmp"
+printf '# MODC: lets %s run the storage helper (and nothing else) without a password.\n%s\n' "$USER" "$rule" >"$tmp"
 if sudo visudo -cf "$tmp" >/dev/null; then
 	sudo install -o root -g root -m 0440 "$tmp" /etc/sudoers.d/omarchy-server
 else
@@ -318,8 +318,8 @@ APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 cat >"$APPS/omarchy-server.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Omarchy Server
-Comment=Open the Omarchy Server web app
+Name=My Own Data Center
+Comment=Open this server
 Exec=$HOME/.local/bin/omarchy-server open
 Icon=network-server
 Terminal=false
@@ -328,8 +328,8 @@ EOF
 cat >"$APPS/omarchy-server-restart.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Restart Omarchy Server
-Comment=Restart the Omarchy Server services
+Name=Restart My Own Data Center
+Comment=Restart this server
 Exec=$HOME/.local/bin/omarchy-server restart
 Icon=view-refresh
 Terminal=false
@@ -349,7 +349,7 @@ fi
 
 # 3. Your account, created here in the terminal so the password never crosses the network.
 if ! node "$APP/omarchyd/cli.mjs" has-owner --data "$BASE/omarchyd" >/dev/null 2>&1; then
-	say "Create your Omarchy Server account"
+	say "Create your account"
 	if (: </dev/tty) 2>/dev/null; then
 		# The same rule create-owner enforces (^[\p{L}\p{N} ._-]{1,40}$). A directory login
 		# (an @ or a backslash) is refused only after the password unless it is fixed here.
@@ -387,7 +387,7 @@ if [ -n "$APP_STORE" ]; then SOURCE_ENV="${SOURCE_ENV}Environment=\"OMARCHY_SERV
 "; fi
 cat >"$UNITS/omarchyd.service" <<EOF
 [Unit]
-Description=Omarchy Server backend (localhost only)
+Description=MODC backend (localhost only)
 After=network-online.target
 
 [Service]
@@ -402,7 +402,7 @@ WantedBy=default.target
 EOF
 cat >"$UNITS/omarchy-server-web.service" <<EOF
 [Unit]
-Description=Omarchy Server web app
+Description=MODC web app
 After=omarchyd.service
 Wants=omarchyd.service
 
@@ -422,7 +422,7 @@ EOF
 # sign-in. It runs while you're signed in to Omarchy on this machine, and stops when you sign out.
 cat >"$UNITS/omarchy-server-desktop.service" <<'EOF'
 [Unit]
-Description=Omarchy Server: share this Omarchy desktop with the web app (private socket)
+Description=MODC: share this Omarchy desktop with the web app (private socket)
 PartOf=graphical-session.target
 After=graphical-session.target
 
@@ -445,21 +445,21 @@ systemctl --user is-active --quiet graphical-session.target && systemctl --user 
 # Omarchy turns on a firewall (ufw) that blocks incoming connections: let the web app through.
 # Rules are added even while ufw is off, so they apply as soon as it's turned on.
 if command -v ufw >/dev/null 2>&1; then
-	say "Allowing Omarchy Server through the firewall (sudo needed)"
-	sudo ufw allow "$PORT/tcp" comment 'Omarchy Server' >/dev/null
+	say "Allowing this server through the firewall (sudo needed)"
+	sudo ufw allow "$PORT/tcp" comment 'MODC' >/dev/null
 
 	# Machine port forwards live in 40000-49999. Nothing listens there until you add a forward to a
 	# machine, so this only lets forwards you create be reached from your network.
-	sudo ufw allow 40000:49999/tcp comment 'Omarchy Server machine forwards' >/dev/null
-	sudo ufw allow 40000:49999/udp comment 'Omarchy Server machine forwards' >/dev/null
+	sudo ufw allow 40000:49999/tcp comment 'MODC machine forwards' >/dev/null
+	sudo ufw allow 40000:49999/udp comment 'MODC machine forwards' >/dev/null
 
 	# App windows that can't load straight from the app (rare) go through a relay on 7800-7899.
-	sudo ufw allow 7800:7899/tcp comment 'Omarchy Server app windows' >/dev/null
+	sudo ufw allow 7800:7899/tcp comment 'MODC app windows' >/dev/null
 fi
 
 # Keep the services running when you're not logged in (needs sudo once).
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]; then
-	say "Letting Omarchy Server run while you're logged out (sudo needed)"
+	say "Letting this server run while you're logged out (sudo needed)"
 	sudo loginctl enable-linger "$USER" || say "Couldn't enable that; the server will run only while you're logged in."
 fi
 
@@ -472,7 +472,7 @@ if [ "$FROM_APP" = 1 ]; then
 	# A separate, short-lived unit restarts both services after this script has finished.
 	systemd-run --user --collect --on-active=5s --unit="omarchy-server-installer-restart-$(date +%s)" \
 		systemctl --user restart omarchyd.service omarchy-server-web.service >/dev/null
-	say "Done. Omarchy Server restarts in a few seconds; the page reconnects by itself."
+	say "Done. This server restarts in a few seconds; the page reconnects by itself."
 	exit 0
 fi
 
@@ -481,7 +481,7 @@ sleep 2
 lan_urls() {
 	local port="$1" ip private_only=yes ips
 	ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 ~ /^(docker0|podman.*|cni.*|virbr.*|br-.*)$/ { next } { split($4, a, "/"); if (a[1] != "") print a[1] }' || true)
-	say "Omarchy Server is running."
+	say "My Own Data Center is running."
 	for ip in $ips; do
 		printf '    http://%s:%s\n' "$ip" "$port"
 		if [[ "$ip" =~ ^10\.0\.2\.([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$ ]]; then

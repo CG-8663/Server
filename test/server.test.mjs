@@ -116,7 +116,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 				const r = await fresh.req('POST', `/api/rpc/${name}`, {input: {}})
 				assert.equal(r.status, 404, name)
 				assert.equal(r.body?.error?.code, 'NOT_FOUND', name)
-				assert.match(r.body?.error?.message ?? '', /is not available in Omarchy Server/, name)
+				assert.match(r.body?.error?.message ?? '', /is not available in My Own Data Center/, name)
 			}
 		} finally {
 			await fresh.close()

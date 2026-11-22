@@ -1,0 +1,95 @@
+// A virtual machine's connector is the same Linux connector, remembered against that guest.
+import assert from 'node:assert/strict'
+import {execFileSync} from 'node:child_process'
+import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import os from 'node:os'
+import {join} from 'node:path'
+import {test} from 'node:test'
+
+import {createConnector} from '../omarchyd/connector.mjs'
+import {RpcError} from '../omarchyd/rpc.mjs'
+import {guestAgent, hostGuestMetrics, isGuestAgent, linuxConnectorOs} from '../web/src/swarm/guestLink.ts'
+
+test('the connector installs on Linux guests, and host stats omit disk use', () => {
+	assert.equal(linuxConnectorOs('ubuntu'), true)
+	assert.equal(linuxConnectorOs(''), true)
+	assert.equal(linuxConnectorOs('omarchy'), true)
+	assert.equal(linuxConnectorOs('windows-11'), false)
+	assert.equal(linuxConnectorOs('macos'), false)
+	assert.equal(linuxConnectorOs('haos'), false)
+	assert.equal(linuxConnectorOs('home-assistant'), false)
+	const metrics = hostGuestMetrics({cpu: 12, memMb: 512}, 1024, 2)
+	assert.equal(metrics.cpu, 12)
+	assert.equal(metrics.cores, 2)
+	assert.equal(metrics.mem.used, 512 * 1024 * 1024)
+	assert.equal(metrics.mem.total, 1024 * 1024 * 1024)
+	assert.equal(metrics.disks, undefined)
+	assert.equal(hostGuestMetrics(null, 1024, 2), null)
+	const online = {guestOf: 'abcd1234', online: true, enrolledAt: 1, id: 'new'}
+	const older = {guestOf: 'abcd1234', online: false, enrolledAt: 9, id: 'old'}
+	assert.equal(guestAgent([older, online], 'abcd1234').id, 'new')
+	assert.equal(guestAgent([older], 'abcd1234').id, 'old')
+	assert.equal(guestAgent([online], 'ffffffff'), undefined)
+	assert.equal(isGuestAgent({guestOf: 'abcd1234'}), true)
+	assert.equal(isGuestAgent({guestOf: ''}), false)
+	assert.equal(isGuestAgent({}), false)
+})
+
+test('pairing a virtual machine keeps the connector off the physical computer list', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'guest-connector-'))
+	try {
+		execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-days', '1', '-subj', '/CN=t'], {cwd: root, stdio: 'ignore'})
+		const swarm = createConnector({dataDir: root, tlsDir: root, source: async () => 'https://example.test'})
+		try {
+			await assert.rejects(() => swarm.procedures['swarm.pair'].run({machineId: 'not-a-vm', terminal: true}), (e) => e instanceof RpcError && e.code === 'BAD_REQUEST')
+			const {token} = await swarm.procedures['swarm.pair'].run({machineId: 'abcd1234', terminal: true, desktop: true, files: true})
+			const joined = await swarm.enroll({token, info: {hostname: 'guest'}, abilities: {terminal: true, desktop: true, files: true, manage: false, storage: false, backup: false}})
+			assert.equal(joined.status, 200)
+			const [guest] = await swarm.procedures['swarm.list'].run()
+			assert.equal(guest.guestOf, 'abcd1234')
+			assert.equal(guest.allowed.terminal, true)
+			assert.equal(guest.allowed.files, true)
+			const physical = await swarm.procedures['swarm.pair'].run({terminal: true})
+			const pc = await swarm.enroll({token: physical.token, info: {hostname: 'pc'}, abilities: {terminal: true}})
+			assert.equal(pc.status, 200)
+			const list = await swarm.procedures['swarm.list'].run()
+			assert.equal(list.find((a) => a.id === pc.body.id).guestOf, '')
+			const saved = JSON.parse(await readFile(join(root, 'swarm.json'), 'utf8'))
+			assert.equal(saved.agents.find((a) => a.id === pc.body.id).guestOf, undefined)
+			assert.equal(saved.agents.find((a) => a.guestOf === 'abcd1234').id, guest.id)
+		} finally {
+			swarm.close()
+		}
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('an older connector file still loads, and a bad guest id does not hide the computer', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'guest-connector-old-'))
+	try {
+		const saved = JSON.stringify({
+			agents: [
+				{id: 'aabbccddeeff', name: 'Study PC', keyHash: 'ab', allowed: {terminal: true}, on: {terminal: true}, enrolledAt: 1},
+				{id: 'bbccddeeff00', name: 'Odd', keyHash: 'cd', allowed: {terminal: true}, on: {terminal: true}, enrolledAt: 2, guestOf: 'not-hex'},
+			],
+		})
+		await writeFile(join(root, 'swarm.json'), saved)
+		const swarm = createConnector({dataDir: root, tlsDir: root})
+		try {
+			const listed = await swarm.procedures['swarm.list'].run()
+			assert.deepEqual(
+				listed.map((a) => [a.id, a.guestOf]),
+				[
+					['aabbccddeeff', ''],
+					['bbccddeeff00', ''],
+				],
+			)
+			assert.equal(await readFile(join(root, 'swarm.json'), 'utf8'), saved)
+		} finally {
+			swarm.close()
+		}
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})

@@ -418,7 +418,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 				out = await run('smbclient', args, {env: baseEnv(), input: lines.map((l) => `${l}\n`).join(''), timeout})
 			} catch (e) {
 				out = {stdout: e.stdout ?? '', stderr: e.stderr ?? e.message}
-				if (e.code === 'ENOENT') throw new RpcError('PRECONDITION_FAILED', 'smbclient isn’t installed on this server. Run Omarchy Server’s installer once more.')
+				if (e.code === 'ENOENT') throw new RpcError('PRECONDITION_FAILED', 'smbclient isn’t installed on this server. Run the installer once more.')
 			}
 			const text = `${out.stdout}\n${out.stderr}`
 			return {text, errors: smbErrors(text)}
@@ -1485,7 +1485,7 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		try {
 			const remote = await remoteFiles(nas, password)
 			const legacy = !remote.has('server/config') && remote.has('config')
-			if (!remote.has('server/config') && !legacy) throw new RpcError('NOT_FOUND', 'There’s no Omarchy Server backup in that folder')
+			if (!remote.has('server/config') && !legacy) throw new RpcError('NOT_FOUND', 'There’s no backup in that folder')
 			await ensureEngine()
 			const r = await smb(nas, password, {lines: [...intoFolder(nas.folder), 'recurse ON', 'prompt OFF', `lcd ${q(real)}`, 'mget *']})
 			if (r.errors.length) throw new RpcError('PRECONDITION_FAILED', smbMessage(r.errors))

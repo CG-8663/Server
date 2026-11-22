@@ -353,7 +353,7 @@ export function AssistantAppearanceSettings() {
 			<h2 className="ac-title" id="ac-settings-title">
 				Choose Your <em>AI Assistant</em>
 			</h2>
-			<p className="ac-lead">Pick a mascot for your Omarchy Server widget. Your assistant lives in the UI, helps you manage your home lab, and keeps everything running smoothly.</p>
+			<p className="ac-lead">Pick a mascot for your MODC widget. Your assistant lives in the UI, helps you manage your home lab, and keeps everything running smoothly.</p>
 			<div className="ac-choose">
 				<AssistantCharacterPicker value={look.character} focus={focus} onFocus={setFocus} animate={look.animate} intensity={look.intensity} />
 				<AssistantCharacterPreview id={focus} look={look} inUse={focus === look.character} onUse={() => set({character: focus})} onCustomize={customize} />

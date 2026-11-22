@@ -54,7 +54,9 @@ export type DeskConfig = {
 	appsOpenIn: 'auto' | 'tab'
 }
 
-export const SYSTEM_DOCK = ['files', 'apps', 'store', 'terminal', 'machines', 'system', 'settings'] as const
+/** The dock before Home was a window. A saved dock that still matches this, item for item, gains Home once. */
+const PREVIOUS_SYSTEM_DOCK = ['files', 'apps', 'store', 'terminal', 'machines', 'system', 'settings'] as const
+export const SYSTEM_DOCK = ['home', ...PREVIOUS_SYSTEM_DOCK] as const
 
 export const PRESETS: {id: string; name: string; wallpaper: BuiltinWallpaper; style: DeskStyle; accent: DeskAccent}[] = [
 	{id: 'ubuntu', name: 'Ubuntu', wallpaper: 'canyon', style: 'yaru', accent: 'peach'},
@@ -101,6 +103,8 @@ function clean(raw: unknown): DeskConfig {
 		/* none */
 	}
 	const items = Array.isArray(dock.items) ? dock.items.filter((k) => typeof k === 'string') : d.dock.items
+	const previousDefault = items.length === PREVIOUS_SYSTEM_DOCK.length && PREVIOUS_SYSTEM_DOCK.every((key, index) => items[index] === key)
+	const dockItems = previousDefault ? ['home', ...items] : items
 	return {
 		v: 1,
 		preset: typeof c.preset === 'string' ? c.preset : null,
@@ -118,7 +122,7 @@ function clean(raw: unknown): DeskConfig {
 			floating: !!dock.floating,
 			autohide: !!dock.autohide,
 			showRunning: dock.showRunning !== false,
-			items: [...new Set([...items, ...(c.dock ? [] : legacyPins)])],
+			items: [...new Set([...dockItems, ...(c.dock ? [] : legacyPins)])],
 		},
 		icons: Array.isArray(c.icons) ? c.icons.filter((i) => i && typeof i.key === 'string' && Number.isInteger(i.col) && Number.isInteger(i.row)) : d.icons,
 		showIcons: c.showIcons !== false,

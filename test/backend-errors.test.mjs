@@ -95,9 +95,9 @@ test('web api maps UNREACHABLE, BAD_RESPONSE, NOT_CONFIGURED, and HTML 502/503/5
 	console.warn = (...args) => warned.push(args.join(' '))
 
 	for (const [code, rawMsg] of [
-		['UNREACHABLE', "Can't reach Omarchy Server at http://127.0.0.1:42241 (ECONNREFUSED)"],
-		['BAD_RESPONSE', 'Omarchy Server returned an unexpected response for user.get (HTTP 502)'],
-		['NOT_CONFIGURED', 'The Omarchy Server backend (omarchyd) isn’t set up yet'],
+		['UNREACHABLE', "Can't reach My Own Data Center at http://127.0.0.1:42241 (ECONNREFUSED)"],
+		['BAD_RESPONSE', 'My Own Data Center returned an unexpected response for user.get (HTTP 502)'],
+		['NOT_CONFIGURED', 'The My Own Data Center backend (omarchyd) isn’t set up yet'],
 	]) {
 		globalThis.fetch = async () => new Response(JSON.stringify({error: {code, message: rawMsg}}), {status: code === 'NOT_CONFIGURED' ? 409 : 502})
 		await assert.rejects(

@@ -22,7 +22,7 @@ const cleanedAccountName = (raw) => {
 }
 const nameRejected = (name) => `“${name}” can’t be an account name. Use 1-40 letters, numbers, spaces, dots, dashes or underscores, or pass --name.`
 
-const USAGE = `omarchyd: the Omarchy Server backend
+const USAGE = `omarchyd: the My Own Data Center backend
 
   omarchyd serve [--port 2021] [--web-port 7780] [--data <dir>]
   omarchyd create-owner [--name <name>] [--data <dir>]

@@ -4,7 +4,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query, type Machine} from '../api'
 import {clipItemUrl} from '../clips'
-import {useUser} from '../data'
+import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {type Agent} from '../swarm/Swarm'
 import {Field, Group, InWindow, Row, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
@@ -28,11 +28,25 @@ type FleetList = {path: string; entries: FleetEntry[]; truncated: boolean}
 
 const KIND: Record<Clip['kind'], IconName> = {text: 'file-text', image: 'image', stats: 'activity', file: 'folder'}
 
+function fileOrigin(clip: Clip, serverName: string, computers: {id: string; name: string; guestOf?: string}[], machines: {id: string; name: string}[]): string | null {
+	if (clip.kind !== 'file') return null
+	const ref = clip.ref
+	if (!ref || ref.scope === 'server') return serverName
+	if (ref.scope === 'swarm') {
+		const agent = computers.find((a) => a.id === ref.id)
+		if (agent?.guestOf) return machines.find((m) => m.id === agent.guestOf)?.name ?? agent.name
+		return agent?.name ?? 'Another computer'
+	}
+	return machines.find((m) => m.id === ref.id)?.name ?? 'A virtual machine'
+}
+
 export function Clips({onBack}: {onBack?: () => void}) {
 	const toast = useToast()
 	const confirm = useConfirm()
 	const qc = useQueryClient()
 	const user = useUser()
+	const boot = useBootstrap()
+	const serverName = boot.server?.device || 'This server'
 	const owner = user.data?.role === 'owner'
 	const inWindow = useContext(InWindow)
 	const book = useQuery({queryKey: ['clips.list'], queryFn: () => query<Book>('clips.list')})
@@ -42,8 +56,6 @@ export function Clips({onBack}: {onBack?: () => void}) {
 	const [folder, setFolder] = useState('/Home')
 	const [computer, setComputer] = useState('')
 	const [destPath, setDestPath] = useState('')
-	const [machineId, setMachineId] = useState('')
-	const [vmPath, setVmPath] = useState('')
 	const [statsMachine, setStatsMachine] = useState('')
 	const [statsComputer, setStatsComputer] = useState('')
 	const [browseId, setBrowseId] = useState('')
@@ -99,6 +111,7 @@ export function Clips({onBack}: {onBack?: () => void}) {
 
 	const machineList = (machines.data ?? []).filter((m) => m.id && m.id !== 'desktop')
 	const computerList = computers.data ?? []
+	const fileComputers = computerList.filter((a) => a.online && a.allowed.files && a.on.files)
 	const clips = book.data?.clips ?? []
 
 	return (
@@ -157,18 +170,16 @@ export function Clips({onBack}: {onBack?: () => void}) {
 					</div>
 				)}
 			</Group>
-			{owner && (
-				<Group title="A file on another computer" footer="An already-paired computer needs the connector install again, with Files switched on. A file on a virtual machine stays on that computer.">
-					{computerList.length > 0 && (
-						<div className="row static" style={{minHeight: 56}}>
-							<select className="field" aria-label="Computer to browse" value={browseId} onChange={(e) => { setBrowseId(e.target.value); setBrowsePath('') }}>
-								<option value="">Choose a computer</option>
-								{computerList.map((a) => (
-									<option key={a.id} value={a.id}>{a.name}</option>
-								))}
-							</select>
-						</div>
-					)}
+			{owner && fileComputers.length > 0 && (
+				<Group title="A file on another computer">
+					<div className="row static" style={{minHeight: 56}}>
+						<select className="field" aria-label="Computer to browse" value={browseId} onChange={(e) => { setBrowseId(e.target.value); setBrowsePath('') }}>
+							<option value="">Choose a computer</option>
+							{fileComputers.map((a) => (
+								<option key={a.id} value={a.id}>{a.name}</option>
+							))}
+						</select>
+					</div>
 					{browseId && (
 						<>
 							<div className="row static" style={{minHeight: 44}}>
@@ -202,56 +213,33 @@ export function Clips({onBack}: {onBack?: () => void}) {
 							{fleet.data?.truncated && <p className="footer-note">This folder has more than the list shows.</p>}
 						</>
 					)}
-					{machineList.length > 0 && (
-						<>
-							<div className="row static" style={{minHeight: 56, gap: 8, flexWrap: 'wrap'}}>
-								<select className="field" aria-label="Virtual machine" value={machineId} onChange={(e) => setMachineId(e.target.value)}>
-									<option value="">A virtual machine</option>
-									{machineList.map((m) => (
-										<option key={m.id} value={m.id}>{m.name}</option>
-									))}
-								</select>
-								<Field label="File on that machine" value={vmPath} onChange={(e) => setVmPath(e.target.value)} placeholder="Documents/notes.txt" />
-								<button
-									className="btn small"
-									disabled={!machineId || !vmPath.trim() || busy}
-									onClick={() => run(async () => {
-										await mutate('clips.addFile', {scope: 'machine', id: machineId, path: vmPath.trim()})
-										toast('Saved to the clip book')
-										setVmPath('')
-										refresh()
-									})}
-								>
-									Clip that file
-								</button>
-							</div>
-							<p className="footer-note">That file is still on that computer. Paste says so, and the bytes stay there.</p>
-						</>
-					)}
 				</Group>
 			)}
 			<Group title="Your clips" footer="Copy or cut in a terminal or on a desktop and it lands here. On a desktop, Save a screenshot keeps the picture on this computer, and the clipboard button puts it in the book. Saving into a folder on this server keeps both files if the name is already there. Saving onto another computer refuses a name that’s already there.">
 				{book.isPending && <p className="footer-note">Loading…</p>}
 				{!book.isPending && clips.length === 0 && <p className="footer-note">Nothing clipped yet.</p>}
-				{clips.map((clip) => (
-					<Row
-						key={clip.id}
-						icon={KIND[clip.kind]}
-						color={clip.kind === 'image' ? 'var(--mauve)' : clip.kind === 'stats' ? 'var(--peach)' : 'var(--blue)'}
-						label={clip.cut ? `${clip.label} · cut` : clip.label}
-						sub={clip.preview}
-						onClick={() => {
-							haptic(6)
-							setOpen(clip)
-							setFolder('/Home')
-						}}
-					/>
-				))}
+				{clips.map((clip) => {
+					const origin = fileOrigin(clip, serverName, computerList, machineList)
+					return (
+						<Row
+							key={clip.id}
+							icon={KIND[clip.kind]}
+							color={clip.kind === 'image' ? 'var(--mauve)' : clip.kind === 'stats' ? 'var(--peach)' : 'var(--blue)'}
+							label={clip.cut ? `${clip.label} · cut` : clip.label}
+							sub={origin ? `${origin} · ${clip.preview}` : clip.preview}
+							onClick={() => {
+								haptic(6)
+								setOpen(clip)
+								setFolder('/Home')
+							}}
+						/>
+					)
+				})}
 			</Group>
 			<Sheet open={!!open} onClose={() => setOpen(null)} label={open?.label ?? 'Clip'} tall>
 				{open && (
 					<>
-						<SheetHeader icon={<Icon name={KIND[open.kind]} size={28} />} title={open.label} subtitle={open.preview} onClose={() => setOpen(null)} />
+						<SheetHeader icon={<Icon name={KIND[open.kind]} size={28} />} title={open.label} subtitle={fileOrigin(open, serverName, computerList, machineList) ? `${fileOrigin(open, serverName, computerList, machineList)} · ${open.preview}` : open.preview} onClose={() => setOpen(null)} />
 						{open.kind === 'image' && <img src={clipItemUrl(open.id)} alt="" style={{width: '100%', borderRadius: 12, margin: '8px 0'}} />}
 						{open.ref?.scope === 'machine' ? (
 							<p className="footer-note">That file is still on that computer.</p>
@@ -271,12 +259,12 @@ export function Clips({onBack}: {onBack?: () => void}) {
 								<button className="btn" disabled={busy} onClick={() => pasteFolder(open)}>
 									Save into that folder
 								</button>
-								{owner && (
+								{owner && fileComputers.length > 0 && (
 									<>
 										<div className="row static" style={{minHeight: 56, gap: 8, flexWrap: 'wrap'}}>
 											<select className="field" aria-label="Computer to paste onto" value={computer} onChange={(e) => setComputer(e.target.value)}>
 												<option value="">A computer</option>
-												{computerList.map((a) => (
+												{fileComputers.map((a) => (
 													<option key={a.id} value={a.id}>{a.name}</option>
 												))}
 											</select>

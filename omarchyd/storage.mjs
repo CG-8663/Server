@@ -93,7 +93,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			return (await run('sudo', ['-n', HELPER, verb, ...args], withCLocale({input}))).trim()
 		} catch (error) {
 			// The helper's own messages are written for people; pass them on.
-			throw new RpcError('PRECONDITION_FAILED', /a password is required|not allowed|no such file|command not found/i.test(error.message) ? 'Storage tools aren’t set up. Run the Omarchy Server installer again.' : error.message)
+			throw new RpcError('PRECONDITION_FAILED', /a password is required|not allowed|no such file|command not found/i.test(error.message) ? 'Storage tools aren’t set up. Run the installer again.' : error.message)
 		}
 	}
 	const writeJson = (file, value) => writeAtomic(file, JSON.stringify(value, null, 2))
@@ -424,7 +424,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 		const out = {}
 		if (input?.password !== undefined) out.guest = input.password === false
 		if (input?.readOnly !== undefined) out.readOnly = input.readOnly === true
-		if (out.guest && !(await helperKnowsGuests())) throw new RpcError('PRECONDITION_FAILED', 'Sharing without a password needs Omarchy Server’s installer to run once more on this server. Shares with a password work now.')
+		if (out.guest && !(await helperKnowsGuests())) throw new RpcError('PRECONDITION_FAILED', 'Sharing without a password needs the installer to run once more on this server. Shares with a password work now.')
 		return out
 	}
 	// Samba's password tool won't run until /etc/samba/smb.conf exists, and Arch's samba package doesn't

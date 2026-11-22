@@ -277,8 +277,8 @@ export async function openAccounts(dataDir, {create = true} = {}) {
 		is2faEnabled: (userId) => !!userById(userId)?.totp,
 		totpUri(userId) {
 			const u = userById(userId)
-			const label = encodeURIComponent(`Omarchy Server:${u?.name ?? 'owner'}`)
-			return `otpauth://totp/${label}?secret=${base32(randomBytes(20))}&issuer=${encodeURIComponent('Omarchy Server')}&algorithm=SHA1&digits=6&period=30`
+			const label = encodeURIComponent(`MODC:${u?.name ?? 'owner'}`)
+			return `otpauth://totp/${label}?secret=${base32(randomBytes(20))}&issuer=${encodeURIComponent('MODC')}&algorithm=SHA1&digits=6&period=30`
 		},
 		async enable2fa(userId, {totpUri, totpToken} = {}) {
 			const u = userById(userId)

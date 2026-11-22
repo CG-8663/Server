@@ -44,7 +44,7 @@ export function Connect({onDone, onRetry, unreachable}: {onDone: () => void; onR
 					if (next?.server?.reachable) {
 						haptic(12)
 					} else {
-						setError(next?.server?.error ?? 'Omarchy Server still isn’t answering. Wait a moment and try again.')
+						setError(next?.server?.error ?? 'This server still isn’t answering. Wait a moment and try again.')
 						setTries((t) => t + 1)
 					}
 				} else {
@@ -69,9 +69,9 @@ export function Connect({onDone, onRetry, unreachable}: {onDone: () => void; onR
 			<p className="lead">
 				{unreachable
 					? unreachable.url
-						? `Omarchy Server couldn’t reach ${unreachable.url}. Checking automatically — wait a moment or enter a different address.`
-						: 'Omarchy Server isn’t answering yet — it may be starting or restarting. Checking automatically…'
-					: 'Enter the address you use to open Omarchy Server. Nothing on your server is changed.'}
+						? `Couldn’t reach ${unreachable.url}. Checking automatically — wait a moment or enter a different address.`
+						: 'This server isn’t answering yet — it may be starting or restarting. Checking automatically…'
+					: 'Enter the address you use to open My Own Data Center. Nothing on your server is changed.'}
 			</p>
 			<form onSubmit={submit}>
 				{error && <ErrorBox message={error} k={tries} />}
@@ -134,7 +134,7 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 		<main className="auth center screen">
 			<Logo />
 			<h1>Sign in</h1>
-			<p className="lead">Use your Omarchy Server username and password.</p>
+			<p className="lead">Use your username and password.</p>
 			<form onSubmit={submit}>
 				{error && <ErrorBox message={error} k={tries} />}
 				<Field
@@ -193,7 +193,7 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 					<div className="muted" style={{fontSize: 12.5, marginTop: 2}}>
 						{boot.server?.host} ·{' '}
 						<VersionTag
-							version={boot.server?.name ?? (boot.server?.version ? `Omarchy Server ${boot.server.version}` : undefined)}
+							version={boot.server?.name ?? (boot.server?.version ? `MODC ${boot.server.version}` : undefined)}
 							info={boot.server}
 						/>
 					</div>
@@ -201,7 +201,7 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 				<Icon name="shield" size={20} className="muted" />
 			</div>
 			<p className="footer-note" style={{marginTop: 14}}>
-				Shows up as its own device in Omarchy Server, so you can sign it out from there.
+				Shows up as its own device, so you can sign it out from Settings.
 			</p>
 		</main>
 	)

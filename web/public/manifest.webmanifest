@@ -1,6 +1,6 @@
 {
-  "name": "Omarchy Server",
-  "short_name": "Omarchy Server",
+  "name": "My Own Data Center",
+  "short_name": "MODC",
   "description": "A touch-first interface for your server.",
   "start_url": "/",
   "scope": "/",

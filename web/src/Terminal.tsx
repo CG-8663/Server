@@ -2,13 +2,15 @@
 // omarchyd streams a PTY over a WebSocket (bridged by the Touch server). The terminal fills its
 // window: when the window (or the phone's keyboard) changes its size, the shell is resized to
 // match, so programs reflow and full-screen ones redraw, the way a native terminal does.
-import {useEffect, useRef, useState} from 'react'
+import {useContext, useEffect, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 import {Terminal as XTerm} from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 
 import {clipText} from './clips'
+import {BootstrapContext} from './data'
 import {Icon} from './icons'
+import {terminalPasteDecision} from './terminalPaste'
 import {SEQ, applyTerminalModifiers} from './terminalKeys'
 import {AppIcon, haptic, useConfirm, usePortalRoot, useScreenLock, useToast} from './ui'
 
@@ -50,6 +52,7 @@ export function TerminalScreen({
 	onClose,
 	embedded,
 	input,
+	machine,
 }: {
 	app?: {id: string; name?: string; icon?: string}
 	// A computer in the local swarm (through its connector), instead of this server.
@@ -57,7 +60,12 @@ export function TerminalScreen({
 	onClose: () => void
 	embedded?: boolean
 	input?: string
+	/** The computer this shell is on. Defaults to this server, or the swarm computer when `agent` is set. */
+	machine?: string
 }) {
+	const boot = useContext(BootstrapContext)
+	const serverName = boot?.server?.device || 'This server'
+	const machineName = machine ?? agent?.name ?? serverName
 	const portalRoot = usePortalRoot()
 	const root = useRef<HTMLDivElement>(null)
 	const host = useRef<HTMLDivElement>(null)
@@ -152,6 +160,16 @@ export function TerminalScreen({
 			)
 		}
 		el.addEventListener('contextmenu', onContextMenu)
+		// Take a clipboard paste once. Otherwise the browser also drops it into xterm's hidden
+		// field and keeps sending the last character.
+		const onPaste = (e: ClipboardEvent) => {
+			const decision = terminalPasteDecision(e.clipboardData ? e.clipboardData.getData('text/plain') : null)
+			if (!decision.prevent) return
+			e.preventDefault()
+			e.stopPropagation()
+			if (decision.text) term.paste(decision.text)
+		}
+		el.addEventListener('paste', onPaste, true)
 		const onClip = (e: ClipboardEvent) => {
 			const selected = term.getSelection()
 			const target = e.target
@@ -422,6 +440,7 @@ export function TerminalScreen({
 			ta?.removeEventListener('blur', onBlur)
 			wsRef.current?.close()
 			el.removeEventListener('contextmenu', onContextMenu)
+			el.removeEventListener('paste', onPaste, true)
 			document.removeEventListener('copy', onClip)
 			document.removeEventListener('cut', onClip)
 			term.dispose()
@@ -489,7 +508,9 @@ export function TerminalScreen({
 		haptic(6)
 		const ok = await confirm({
 			title: 'Start a new session?',
-			body: 'The shell that’s running now ends, along with anything still running in it. (Closing the terminal doesn’t do this: your shell keeps running until you exit it.)',
+			body: agent
+				? 'The shell that’s running now ends, along with anything still running in it. This computer’s connector does not keep the shell after it closes.'
+				: 'The shell that’s running now ends, along with anything still running in it. (Closing the terminal doesn’t do this: your shell keeps running until you exit it.)',
 			confirm: 'New session',
 			icon: 'reset',
 		})
@@ -498,7 +519,7 @@ export function TerminalScreen({
 		setResumed(false)
 		setAttempt((a) => a + 1)
 	}
-	const title = app ? (app.name ?? app.id) : agent ? agent.name : 'Terminal'
+	const title = app ? (app.name ?? app.id) : machineName
 
 	const keys: {label: string; onClick: () => void; on?: boolean}[] = [
 		{label: 'esc', onClick: () => sendSeq(SEQ.esc)},
@@ -519,7 +540,7 @@ export function TerminalScreen({
 	]
 
 	return createPortal(
-		<div ref={root} className={`console terminal${embedded ? ' embedded' : ''}`} role="dialog" aria-modal={!embedded} aria-label={`${title} terminal`}>
+		<div ref={root} className={`console terminal${embedded ? ' embedded' : ''}`} role="dialog" aria-modal={!embedded} aria-label={`${title} terminal, on ${machineName}`}>
 			<header className="console-bar">
 				<button className="round-btn" aria-label="Close terminal" onClick={onClose}>
 					<Icon name="back" size={20} />
@@ -535,7 +556,7 @@ export function TerminalScreen({
 					<b>{title}</b>
 					<span>
 						<i className={`dot ${live ? 'live' : state === 'connecting' ? '' : 'down'}`} />
-						{live ? `${app ? 'App shell' : agent ? 'Shell through its connector' : 'Omarchy Server shell'}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? 'Connecting…' : 'Disconnected'}
+						{live ? `On ${machineName}${app ? ' · App shell' : agent ? ' · Shell through its connector' : ''}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? `On ${machineName} · Connecting…` : `On ${machineName} · Disconnected`}
 					</span>
 				</div>
 				<button className="round-btn" aria-label="New session" title="New session" onClick={newSession} disabled={!live}>

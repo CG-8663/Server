@@ -121,6 +121,7 @@ export const ALLOWED = {
 	'appStore.refresh': 'mutation',
 	'omarchy.plugins': 'query',
 	'swarm.list': 'query',
+	'swarm.files.recents': 'query',
 	'swarm.history': 'query',
 	'swarm.alerts': 'query',
 	'swarm.wake': 'mutation',
@@ -292,6 +293,8 @@ export const ALLOWED = {
 	'files.rename': 'mutation',
 	'files.copy': 'mutation',
 	'files.move': 'mutation',
+	'files.transfer': 'mutation',
+	'files.fleetRecents': 'query',
 	'files.trash': 'mutation',
 	'files.restore': 'mutation',
 	'files.delete': 'mutation',
@@ -329,7 +332,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-export const SLOW = new Set(['unraid.connect', 'unraid.scan', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.list', 'swarm.files.copyToServer', 'swarm.files.copyFromServer', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList'])
+export const SLOW = new Set(['unraid.connect', 'unraid.scan', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
 export const timeoutFor = (path) => (SLOW.has(path) ? 30 * 60 * 1000 : 20_000)
 
 // An IPv6 address in a URL needs brackets; req.hostname and URL.hostname may already have them.
@@ -419,7 +422,7 @@ export function normalizeAppHosts(input) {
 	return p
 }
 
-export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0'}) {
+export function createApp({store, staticDir, connectorDir = staticDir ? join(staticDir, '..', 'connector') : '', fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0'}) {
 	const app = express()
 	app.disable('x-powered-by')
 	app.set('trust proxy', 'loopback')
@@ -431,6 +434,20 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		res.send(ca)
 	})
 	app.get('/api/tls/status', (_req, res) => res.json({available: !!tls?.get(), alwaysHttps: !!tls?.policy?.().alwaysHttps}))
+	// The connector installer, for a guest whose copy of this server lives in a local directory
+	// (curl cannot fetch that path). Public, like the certificate above: the guest is not signed in yet.
+	const connectorFiles = new Map([
+		['install.sh', 'text/plain; charset=utf-8'],
+		['agent.py', 'text/plain; charset=utf-8'],
+		['helper.py', 'text/plain; charset=utf-8'],
+	])
+	app.get('/api/connector/:name', async (req, res) => {
+		const type = connectorFiles.get(req.params.name)
+		if (!type || !connectorDir) return res.status(404).type('text/plain').send('Not found')
+		const body = await readFile(join(connectorDir, req.params.name), 'utf8').catch(() => null)
+		if (body == null) return res.status(404).type('text/plain').send('Not found')
+		res.set({'content-type': type, 'cache-control': 'no-store'}).send(body)
+	})
 	// "Always use the secure address" (Settings → Security): page loads over http:// go to https://.
 	// The certificate download above stays reachable either way.
 	app.use((req, res, next) => {
@@ -577,7 +594,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			return res.status(error.status >= 400 ? error.status : 502).json({error: {code: error.code, message: error.message}})
 		}
 		console.error('[omarchy-server]', error)
-		return res.status(500).json({error: {code: 'INTERNAL', message: 'Something went wrong in Omarchy Server'}})
+		return res.status(500).json({error: {code: 'INTERNAL', message: 'Something went wrong in My Own Data Center'}})
 	}
 
 	// Express 4 does not turn a rejected async handler into a response, so a failed settings save
@@ -627,7 +644,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 
 	async function authedCall(req, path, kind, input) {
 		const backend = getClient()
-		if (!backend) throw new BackendError('The Omarchy Server backend (omarchyd) isn’t set up yet', {code: 'NOT_CONFIGURED', status: 409})
+		if (!backend) throw new BackendError('The My Own Data Center backend (omarchyd) isn’t set up yet', {code: 'NOT_CONFIGURED', status: 409})
 		const session = store.getSession(req.sid)
 		if (!session) throw new BackendError('Signed out', {code: 'UNAUTHORIZED', status: 401})
 		const timeout = timeoutFor(path)
@@ -742,7 +759,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		try {
 			const probe = createBackendClient({baseUrl: url, fetchImpl, timeoutMs: 8000})
 			const version = await probe.query('system.version')
-			if (!version?.version) throw new BackendError('That address answered, but not like Omarchy Server', {status: 502})
+			if (!version?.version) throw new BackendError('That address answered, but not like My Own Data Center', {status: 502})
 			if (configured && url !== store.getConfig().backendUrl) await store.clearSessions()
 			await store.setConfig({backendUrl: url})
 			res.json({ok: true, url, version: version.version, name: version.name})
@@ -941,7 +958,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			if (!(error instanceof BackendError) || error.code !== 'NOT_FOUND') return sendError(res, error)
 			try {
 				const token = await backend.mutation('user.login', credentials, {userAgent})
-				if (typeof token !== 'string') throw new BackendError('Unsupported Omarchy Server version', {status: 502})
+				if (typeof token !== 'string') throw new BackendError('Unsupported My Own Data Center version', {status: 502})
 				session = {mode: 'legacy', accountId: userId ?? 'owner', accessToken: token}
 			} catch (legacyError) {
 				if (legacyError instanceof BackendError && /incorrect password/i.test(legacyError.message)) return res.status(401).json(WRONG)
@@ -1615,7 +1632,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				appTickets.delete(url.searchParams.get('t') ?? '')
 				if (!t || t.exp < Date.now() || t.appId !== app.id || !store.getSession(t.sid)) {
 					res.writeHead(401, {'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store'})
-					return res.end('This link has expired. Open the app again from Omarchy Server.')
+					return res.end('This link has expired. Open the app again from My Own Data Center.')
 				}
 				const id = randomBytes(32).toString('base64url')
 				const nowMs = Date.now()
@@ -1633,7 +1650,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			const sid = relaySid(req, app.id)
 			if (!sid) {
 				res.writeHead(401, {'content-type': 'text/plain; charset=utf-8'})
-				return res.end('Sign in to Omarchy Server first.')
+				return res.end('Sign in to My Own Data Center first.')
 			}
 			const up = http.request(upstream(req, sid), (ur) => {
 				const headers = {...ur.headers}
@@ -1645,7 +1662,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 							// Omarchy Server wants a fresh sign-in; its page can't load in a window.
 							ur.resume()
 							res.writeHead(401, {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'})
-							return res.end('<!doctype html><meta charset="utf-8"><body style="font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0;color:#888;text-align:center;padding:24px">Your Omarchy Server app session ended.<br>Sign out of Omarchy Server and back in, then reopen this app.</body>')
+							return res.end('<!doctype html><meta charset="utf-8"><body style="font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0;color:#888;text-align:center;padding:24px">Your app session ended.<br>Sign out and back in, then reopen this app.</body>')
 						}
 						if (to.port === String(relay.targetPort) && (to.hostname === hostname || isLoopback(to.hostname) || to.hostname === serverHost)) {
 							// Back to the address the browser used: its scheme and its host, port and all (an
@@ -1721,7 +1738,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const sid = relaySid(req, appId) ?? (t?.appId === appId ? t.sid : null)
 		const relay = sid ? relaysByApp.get(appId) ?? (await hostRelay(appId, sid)) : null
 		if (!relay) {
-			res.status(401).type('text/plain').send('Open this app from Omarchy Server.')
+			res.status(401).type('text/plain').send('Open this app from My Own Data Center.')
 			return
 		}
 		relay.port = -1
@@ -2165,7 +2182,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 
 	const proxy = async (req, res) => {
 		const path = req.params.path
-		if (!Object.hasOwn(ALLOWED, path)) return res.status(404).json({error: {code: 'NOT_FOUND', message: `${path} is not available in Omarchy Server`}})
+		if (!Object.hasOwn(ALLOWED, path)) return res.status(404).json({error: {code: 'NOT_FOUND', message: `${path} is not available in My Own Data Center`}})
 		const kind = ALLOWED[path]
 		if ((kind === 'query') !== (req.method === 'GET')) {
 			return res.set('Allow', kind === 'query' ? 'GET' : 'POST').status(405).json({error: {code: 'METHOD_NOT_SUPPORTED', message: 'Wrong method'}})
@@ -2191,7 +2208,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	// SSE from omarchyd. Pipe the body; do not buffer the model reply.
 	api.post('/assistant/stream', async (req, res) => {
 		const backend = getClient()
-		if (!backend) return res.status(409).json({error: {code: 'NOT_CONFIGURED', message: 'The Omarchy Server backend (omarchyd) isn’t set up yet'}})
+		if (!backend) return res.status(409).json({error: {code: 'NOT_CONFIGURED', message: 'The My Own Data Center backend (omarchyd) isn’t set up yet'}})
 		const session = store.getSession(req.sid)
 		if (!session) return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Signed out'}})
 		const ac = new AbortController()

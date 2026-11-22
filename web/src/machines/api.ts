@@ -75,7 +75,6 @@ export const useStats = (id: string | null, enabled = true) =>
 		refetchInterval: 3000,
 	})
 export const useBackups = (id?: string | null) => useQuery({queryKey: ['machines.backups', id ?? 'all'], queryFn: () => query<Backup[]>('machines.backups', id ? {id} : {}), refetchInterval: 15_000})
-export const useAllTasks = () => useQuery({queryKey: ['machines.tasks'], queryFn: () => query<Task[]>('machines.tasks'), refetchInterval: 5000})
 
 // Run a machine action; refresh everything that could have changed; toast the outcome.
 export function useMachineAction() {
@@ -88,7 +87,7 @@ export function useMachineAction() {
 		},
 		onError: (error: Error) => toast(error.message, true),
 		onSettled: () => {
-			for (const k of ['machines.list', 'machines.details', 'machines.tasks', 'machines.backups', 'machines.node']) qc.invalidateQueries({queryKey: [k]})
+			for (const k of ['machines.list', 'machines.details', 'machines.backups', 'machines.node']) qc.invalidateQueries({queryKey: [k]})
 		},
 	})
 }

@@ -461,9 +461,9 @@ test('install port errors distinguish low, invalid, and reserved ports', async (
 	})
 	await assert.rejects(fx.call('apps.install', {appId: 'lowapp'}), (e) => e.message === 'lowapp uses port 80. Apps need a port of 1024 or higher')
 	await assert.rejects(fx.call('apps.install', {appId: 'huge'}), (e) => e.message === 'huge lists port 70000, which is not a valid port')
-	await assert.rejects(fx.call('apps.install', {appId: 'kept'}), (e) => e.message === 'kept wants port 7780, which Omarchy Server keeps for itself')
-	await assert.rejects(fx.call('apps.install', {appId: 'wide'}), (e) => e.message === 'wide wants port 45000, which Omarchy Server keeps for itself')
-	await assert.rejects(fx.call('apps.install', {appId: 'old'}), (e) => e.message === 'old wants port 2021, which Omarchy Server keeps for itself')
+	await assert.rejects(fx.call('apps.install', {appId: 'kept'}), (e) => e.message === 'kept wants port 7780, which this server keeps for itself')
+	await assert.rejects(fx.call('apps.install', {appId: 'wide'}), (e) => e.message === 'wide wants port 45000, which this server keeps for itself')
+	await assert.rejects(fx.call('apps.install', {appId: 'old'}), (e) => e.message === 'old wants port 2021, which this server keeps for itself')
 })
 
 test('serverIp gives a compose app the LAN address, not a bridge address', async (t) => {

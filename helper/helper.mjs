@@ -103,7 +103,7 @@ export function defaultRun(cmd, args, {input} = {}) {
 
 // Everything the helper touches comes through ctx, so tests can run it without root.
 export function createHelper({run = defaultRun, user, fs = {readFile, writeFile, mkdir, chown, realpath, rename, readdir, access: fileAccess}}) {
-	if (!user?.name || !/^[a-z_][a-z0-9_-]{0,31}$/.test(user.name) || !Number.isInteger(user.uid) || user.uid === 0 || !user.home?.startsWith('/')) fail('Run this through sudo as the Omarchy Server owner')
+	if (!user?.name || !/^[a-z_][a-z0-9_-]{0,31}$/.test(user.name) || !Number.isInteger(user.uid) || user.uid === 0 || !user.home?.startsWith('/')) fail('Run this through sudo as the owner of this server')
 	const poolsDir = join(user.home, 'Pools')
 	const mountOf = (name) => join(poolsDir, name)
 
@@ -331,13 +331,13 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			const sessions = await graphicalSessions()
 			if (sessions.some((x) => x.user === user.name)) return 'already'
 			if (sessions.length) fail('Someone else is signed in to this desktop, so it was left alone.')
-			if (!(await exists('/usr/lib/systemd/system/sddm.service'))) fail('This desktop doesn’t use SDDM, so Omarchy Server can’t sign it in.')
+			if (!(await exists('/usr/lib/systemd/system/sddm.service'))) fail('This desktop doesn’t use SDDM, so this server can’t sign it in.')
 			let session = null
 			for (const f of SESSIONS) if (await exists(f)) (session ??= f.split('/').pop())
 			if (!session) fail('No Omarchy desktop session was found to start.')
 			await run('faillock', ['--user', user.name, '--reset']).catch(() => {})
 			await fs.mkdir('/etc/sddm.conf.d', {recursive: true})
-			await fs.writeFile(SDDM_ONCE, `# Omarchy Server: one-time sign-in, removed once the session starts\n[Autologin]\nUser=${user.name}\nSession=${session}\nRelogin=false\n`, {mode: 0o644})
+			await fs.writeFile(SDDM_ONCE, `# MODC: one-time sign-in, removed once the session starts\n[Autologin]\nUser=${user.name}\nSession=${session}\nRelogin=false\n`, {mode: 0o644})
 			try {
 				await run('systemctl', ['restart', 'sddm.service'])
 				for (let i = 0; i < 40; i++) {
@@ -800,10 +800,10 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 				const who = s.guest === true ? `   guest ok = yes\n` : `   valid users = ${user.name}\n   force user = ${user.name}\n`
 				blocks.push(`[${name}]\n   path = ${written}\n${who}   read only = ${s.readOnly ? 'yes' : 'no'}\n   browseable = yes\n`)
 			}
-			const shares = `${SMB_MARK}. Edit shares in the Omarchy Server web app.\n\n${blocks.join('\n')}`
+			const shares = `${SMB_MARK}. Edit shares in My Own Data Center.\n\n${blocks.join('\n')}`
 			const current = await fs.readFile(SMB_CONF, 'utf8').catch(() => null)
 			const guests = anyGuest ? `   map to guest = bad user\n   guest account = nobody\n   restrict anonymous = 0\n` : `   map to guest = never\n   restrict anonymous = 2\n`
-			const globalSection = `[global]\n   server string = Omarchy Server\n   server min protocol = SMB2_10\n${guests}   disable netbios = yes\n   smb ports = 445\n`
+			const globalSection = `[global]\n   server string = MODC\n   server min protocol = SMB2_10\n${guests}   disable netbios = yes\n   smb ports = 445\n`
 			if (current === null || current.startsWith(SMB_MARK)) await writeAtomic(SMB_CONF, `${SMB_MARK}\n${globalSection}\n${blocks.join('\n')}`)
 			else {
 				// Your own Samba setup: its [global] section is yours, so guests stay as you set them.
@@ -830,7 +830,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			// smbpasswd won't run without an smb.conf, and Arch's samba package doesn't ship one: start
 			// with Omarchy Server's own (no shares yet; shares-apply fills it in).
 			if ((await fs.readFile(SMB_CONF, 'utf8').catch(() => null)) === null)
-				await writeAtomic(SMB_CONF, `${SMB_MARK}\n[global]\n   server string = Omarchy Server\n   server min protocol = SMB2_10\n   map to guest = never\n   restrict anonymous = 2\n   disable netbios = yes\n   smb ports = 445\n`)
+				await writeAtomic(SMB_CONF, `${SMB_MARK}\n[global]\n   server string = MODC\n   server min protocol = SMB2_10\n   map to guest = never\n   restrict anonymous = 2\n   disable netbios = yes\n   smb ports = 445\n`)
 			await samba(() => run('smbpasswd', ['-s', '-a', user.name], {input: `${pw}\n${pw}\n`}))
 			return 'ok'
 		},
@@ -850,7 +850,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			if (!Number.isInteger(want) || want < 1 || want > 1024) fail('Bad port')
 			const now = Number((await run('sysctl', ['-n', 'net.ipv4.ip_unprivileged_port_start'])).trim())
 			if (Number.isInteger(now) && now <= want) return 'ok'
-			await fs.writeFile('/etc/sysctl.d/60-omarchy-server-ports.conf', `# Omarchy Server: apps you allowed to use system ports\nnet.ipv4.ip_unprivileged_port_start = ${want}\n`, {mode: 0o644})
+			await fs.writeFile('/etc/sysctl.d/60-omarchy-server-ports.conf', `# MODC: apps you allowed to use system ports\nnet.ipv4.ip_unprivileged_port_start = ${want}\n`, {mode: 0o644})
 			await run('sysctl', ['-w', `net.ipv4.ip_unprivileged_port_start=${want}`])
 			return 'ok'
 		},
@@ -877,7 +877,7 @@ async function main() {
 		const name = process.env.SUDO_USER
 		const uid = Number(process.env.SUDO_UID)
 		const gid = Number(process.env.SUDO_GID)
-		if (process.getuid() !== 0 || !name || !uid) fail('Run this through sudo as the Omarchy Server owner')
+		if (process.getuid() !== 0 || !name || !uid) fail('Run this through sudo as the owner of this server')
 		const passwd = (await readFile('/etc/passwd', 'utf8')).split('\n').map((l) => l.split(':')).find((f) => f[0] === name && Number(f[2]) === uid)
 		if (!passwd) fail('Unknown user')
 		let stdin = ''

@@ -496,6 +496,22 @@ describe('files: favorites', () => {
 		assert.equal(await readFile(accFile, 'utf8'), '["/Home/Documents"]')
 	})
 
+	test('a computer file can be favorited without reading it from this server', async () => {
+		const dataDir = await mkdtemp(join(root, 'fav-remote-'))
+		const f = createFiles({home, dataDir})
+		const path = '::computer/kitchen/Documents/notes.txt'
+		await f.procedures['files.addFavorite'].run({path})
+		const listed = await f.procedures['files.favorites'].run()
+		assert.equal(listed.length, 1)
+		assert.equal(listed[0].path, path)
+		assert.equal(listed[0].name, 'notes.txt')
+		assert.equal(listed[0].operations.includes('favorite'), true)
+		await f.procedures['files.removeFavorite'].run({path})
+		assert.deepEqual(await f.procedures['files.favorites'].run(), [])
+		await assert.rejects(() => f.procedures['files.addFavorite'].run({path: '::computer/../secret'}), (err) => err instanceof RpcError)
+		await assert.rejects(() => f.procedures['files.addFavorite'].run({path: '::computer/kitchen/../secret'}), (err) => err instanceof RpcError)
+	})
+
 	test('favorites recover automatically after a damaged favorites.json is removed or repaired', async () => {
 		const dataDir = await mkdtemp(join(root, 'fav-rec-'))
 		const file = join(dataDir, 'favorites.json')

@@ -16,7 +16,7 @@ import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 import {mutate, type Machine} from './api'
 import {clipImage, clipText} from './clips'
 import {consoleShouldTakeFocus} from './consoleFocus'
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, mouseButtonFromEvent, pasteKeySequence, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
+import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, handleConsoleWheel, keysymOfChar, mouseButtonFromEvent, PASTE_STEP_MS, pasteKeySequence, pasteKeySteps, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -54,21 +54,11 @@ const MIN_ZOOM = 1
 const MAX_ZOOM = 5
 const LONG_PRESS_MS = 450
 const TAP_SLOP = 9
-const keysymOf = (ch: string) => {
-	const cp = ch.codePointAt(0)!
-	return cp < 0x100 ? cp : 0x01000000 | cp
-}
+type KeySender = {sendKey: (keysym: number, code: string | null, down?: boolean) => void}
 // The VM's keyboard works in physical keys (US layout): '|' is Shift + backslash, 'A' is Shift + 'a'.
 // Sending '|' alone types a backslash, so characters that need Shift are wrapped in a Shift press.
-const NEEDS_SHIFT = /^[A-Z~!@#$%^&*()_+{}|:"<>?]$/
-type KeySender = {sendKey: (keysym: number, code: string | null, down?: boolean) => void}
 function sendChar(r: KeySender, ch: string, shiftHeld = false) {
-	const k = ch === '\n' ? KEY.Enter : ch === '\t' ? KEY.Tab : keysymOf(ch)
-	const shift = !shiftHeld && NEEDS_SHIFT.test(ch)
-	if (shift) r.sendKey(KEY.Shift, null, true)
-	r.sendKey(k, null, true)
-	r.sendKey(k, null, false)
-	if (shift) r.sendKey(KEY.Shift, null, false)
+	for (const step of charKeySteps(ch, shiftHeld)) r.sendKey(step.keysym, null, step.down)
 }
 
 type State = 'connecting' | 'connected' | 'lost' | 'superseded' | 'error'
@@ -98,6 +88,9 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	const cursorRef = useRef<HTMLDivElement>(null)
 	const input = useRef<HTMLTextAreaElement>(null)
 	const rfbRef = useRef<InstanceType<RFBClass>>()
+	const pasteTimer = useRef(0)
+	const pasteGen = useRef(0)
+	const pasteDown = useRef<number[]>([])
 	useScreenLock(rootRef, false, !embedded)
 	// In a desktop window with a mouse, noVNC gets the real mouse and keyboard directly
 	// (like any desktop VNC client) and the console gets a desktop toolbar instead of touch controls.
@@ -493,12 +486,41 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		for (const k of [...syms].reverse()) r.sendKey(k, null, false)
 		r.focus()
 	}
+	// One key event at a time. A burst overflows QEMU's keyboard queue when the guest terminal
+	// pauses at the right edge, and the next character then repeats.
+	const releasePasteDown = () => {
+		const live = rfbRef.current
+		const down = pasteDown.current
+		pasteDown.current = []
+		if (!live) return
+		for (const keysym of [...down].reverse()) live.sendKey(keysym, null, false)
+	}
 	const typeText = (text: string) => {
 		const r = rfbRef.current
-		if (!r) return
-		for (const ch of text.replace(/\r\n?/g, '\n')) sendChar(r, ch)
+		if (!r || !text) return
+		window.clearTimeout(pasteTimer.current)
+		releasePasteDown()
+		const gen = ++pasteGen.current
+		const steps = pasteKeySteps(text)
+		let i = 0
+		const tick = () => {
+			if (pasteGen.current !== gen) return
+			const live = rfbRef.current
+			if (!live || i >= steps.length) return
+			const step = steps[i++]
+			live.sendKey(step.keysym, null, step.down)
+			if (step.down) pasteDown.current = [...pasteDown.current, step.keysym]
+			else pasteDown.current = pasteDown.current.filter((k) => k !== step.keysym)
+			if (i < steps.length) pasteTimer.current = window.setTimeout(tick, PASTE_STEP_MS)
+		}
+		tick()
 		r.focus()
 	}
+	useEffect(() => () => {
+		window.clearTimeout(pasteTimer.current)
+		pasteGen.current += 1
+		releasePasteDown()
+	}, [])
 	const screenshot = async () => {
 		const canvas = canvasHost.current?.querySelector('canvas')
 		if (!canvas) return
@@ -1041,7 +1063,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	const typeChar = (ch: string) => {
 		const rfb = rfbRef.current
 		if (!rfb) return
-		if (mods.Ctrl || mods.Alt || mods.Super) return tapKey(ch === '\n' ? KEY.Enter : keysymOf(ch.toLowerCase()))
+		if (mods.Ctrl || mods.Alt || mods.Super) return tapKey(ch === '\n' ? KEY.Enter : keysymOfChar(ch.toLowerCase()))
 		if (mods.Shift) {
 			rfb.sendKey(KEY.Shift, null, true)
 			sendChar(rfb, ch, true)
@@ -1052,8 +1074,13 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	}
 	const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
 		const el = e.currentTarget
-		for (const ch of el.value) typeChar(ch)
+		const value = el.value
 		el.value = ''
+		if (value.length > 1) {
+			typeText(value)
+			return
+		}
+		if (value) typeChar(value)
 	}
 	// Paste: on HTTPS a tap reads the clipboard; anywhere, press and hold the key for iOS's own Paste.
 	const pasteText = (text: string) => {
@@ -1331,7 +1358,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 							) : (
 							<>
 								<Icon name={state === 'superseded' ? 'machine' : 'alert'} size={34} />
-								<b>{state === 'superseded' ? 'This console was opened somewhere else' : 'Console unavailable'}</b>
+								<b>{state === 'superseded' ? 'This desktop was opened somewhere else' : 'Desktop unavailable'}</b>
 								{state === 'error' && <span>{message}</span>}
 								<button
 									className="btn primary small"
@@ -1461,7 +1488,7 @@ function DesktopSignIn({onDone}: {onDone: () => void}) {
 			<span>
 				The Omarchy desktop is at its sign-in screen, so there’s nothing to show yet. Sign it in from here: this also clears a lockout after too many wrong passwords.
 			</span>
-			<input type="password" autoComplete="current-password" placeholder="Your Omarchy Server password" value={password} onChange={(e) => setPassword(e.target.value)} aria-label="Your Omarchy Server password" />
+			<input type="password" autoComplete="current-password" placeholder="Your password" value={password} onChange={(e) => setPassword(e.target.value)} aria-label="Your password" />
 			{error && <span className="desk-signin-error">{error}</span>}
 			<button className="btn primary small" disabled={busy || !password}>
 				{busy ? <span className="spinner" /> : 'Sign in to the desktop'}

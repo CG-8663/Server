@@ -50,7 +50,8 @@ describe('files screen listing helpers', () => {
 		store.set(cleared.key, cleared.value)
 		assert.equal(readStoredFilesPath('win-a', '/Home/Documents', read), null)
 		assert.match(deskSrc, /<Files windowId=\{win\.id\} initialPath=\{win\.payload\?\.path\} \/>/)
-		assert.match(filesSrc, /readStoredFilesPath\(windowId/)
+		assert.match(filesSrc, /const storageId = windowId \?\?/)
+		assert.match(filesSrc, /readStoredFilesPath\(storageId/)
 		assert.equal(filesSrc.includes('sessionStorage.getItem("omarchy-server:files-path")'), false)
 	})
 

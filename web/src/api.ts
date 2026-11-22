@@ -37,6 +37,9 @@ const SLOW_RPC = new Set([
 	'swarm.storage.forgetPool',
 	'swarm.storage.scrub',
 	'files.copy',
+	'files.transfer',
+	'files.fleetRecents',
+	'swarm.files.recents',
 	'files.unarchive',
 	'files.move',
 	'files.delete',
@@ -68,7 +71,7 @@ const SLOW_RPC = new Set([
 	'clips.fleetList',
 ])
 
-const RESTARTING_MESSAGE = 'Omarchy Server is restarting or not answering. Wait a moment and try again.'
+const RESTARTING_MESSAGE = 'My Own Data Center is restarting or not answering. Wait a moment and try again.'
 const FRIENDLY_ERROR: Record<string, string> = {
 	UNREACHABLE: RESTARTING_MESSAGE,
 	BAD_RESPONSE: RESTARTING_MESSAGE,
@@ -138,7 +141,7 @@ async function handle<T>(res: Response, signal?: AbortSignal): Promise<T> {
 		throw error
 	}
 	if (!body || typeof body !== 'object' || Array.isArray(body)) {
-		throw new ApiError(`Omarchy Server sent an answer this page can’t read (${res.status})`, 'INVALID_RESPONSE', res.status)
+		throw new ApiError(`My Own Data Center sent an answer this page can’t read (${res.status})`, 'INVALID_RESPONSE', res.status)
 	}
 	return body as T
 }
@@ -162,7 +165,7 @@ async function request<T>(input: string, init: RequestInit, options?: RequestOpt
 		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
 			throw new ApiError('You’re offline. Check your connection and try again.', 'OFFLINE', 0)
 		}
-		throw new ApiError('Can’t reach Omarchy Server. Check your connection and try again.', 'NETWORK', 0)
+		throw new ApiError('Can’t reach My Own Data Center. Check your connection and try again.', 'NETWORK', 0)
 	} finally {
 		cleanup()
 	}
@@ -262,6 +265,11 @@ export type UserApp = {
 	error?: string
 	/** Runs on the server itself (Tailscale), not in a container: no container terminal. */
 	system?: boolean
+	/** Which machine this install is on. Absent or "server" is this server. */
+	computerId?: string
+	computerName?: string
+	/** Installed on another machine. It does not open through this server’s gateway. */
+	remote?: boolean
 }
 
 export type UsageItem = {id: string; used: number; name?: string}

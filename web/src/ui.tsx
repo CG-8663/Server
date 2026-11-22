@@ -9,6 +9,7 @@ export {detectDesktop}
 import {fieldAria, liveRegionText, useDialogFocus} from './focus'
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
+import {solidOf, WALLPAPERS, useDeskConfig, wallpaperSrc} from './desktop/config'
 import {wallpaperBlocked} from './desktop/wallpaperGate'
 import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
@@ -1035,15 +1036,22 @@ export const wallpaperUrl = (w?: Wallpaper | null) => (w?.id ? `/api/wallpaper/$
 export const customBackgroundUrl = (version?: number | null) => (version ? `/api/background?v=${version}` : null)
 
 export function Backdrop({wallpaper, prefs, signedIn = false}: {wallpaper?: Wallpaper | null; prefs: Prefs; signedIn?: boolean}) {
-	const desktopBg = useOmarchyThemes(prefs.theme === 'omarchy' || prefs.theme === 'horizon').data?.current
-	const url =
-		prefs.theme === 'horizon'
-			? omarchyBackgroundUrl(prefs.omarchyBackground, desktopBg)
-			: prefs.theme === 'custom'
-				? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(wallpaper))
-				: prefs.theme === 'omarchy'
+	const [desk] = useDeskConfig()
+	const solid = prefs.solidColor || solidOf(desk.wallpaper)
+	const wantsOmarchy = desk.wallpaper === 'omarchy' || prefs.theme === 'omarchy' || prefs.theme === 'horizon'
+	const desktopBg = useOmarchyThemes(wantsOmarchy).data?.current
+	const builtin = WALLPAPERS.find((w) => w.id === desk.wallpaper)
+	const url = builtin
+		? wallpaperSrc(builtin.id)
+		: desk.wallpaper === 'photo'
+			? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(wallpaper))
+			: desk.wallpaper === 'server'
+				? wallpaperUrl(wallpaper)
+				: desk.wallpaper === 'omarchy' || prefs.theme === 'horizon' || prefs.theme === 'omarchy'
 					? omarchyBackgroundUrl(prefs.omarchyBackground, desktopBg)
-					: null
+					: prefs.theme === 'custom'
+						? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(wallpaper))
+						: null
 	const [ready, setReady] = useState<string | null>(null)
 	const [failed, setFailed] = useState<{url: string; session: boolean} | null>(null)
 	useEffect(() => {
@@ -1063,7 +1071,7 @@ export function Backdrop({wallpaper, prefs, signedIn = false}: {wallpaper?: Wall
 		}
 	}, [url, signedIn])
 	const blocked = wallpaperBlocked(failed?.url ?? null, failed?.session ?? false, url, signedIn)
-	if (prefs.solidColor) return <div className="backdrop" aria-hidden="true" style={{background: prefs.solidColor}} />
+	if (solid) return <div className="backdrop" aria-hidden="true" style={{background: solid}} />
 	return (
 		<div className="backdrop" aria-hidden="true">
 			{url && !blocked ? (

@@ -12,6 +12,7 @@ import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory
 import {useServerReachable} from '../connection'
 import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
+import {OPEN_STORE, type StoreBinding} from '../fleet/openStore'
 import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../osLook'
 import {closeAssistantView, keepAssistantWindow, openAssistantView, resetAssistantTurn} from '../assistantTurn'
@@ -36,7 +37,7 @@ import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as inser
 import {Onboarding} from './hyprland/Onboarding'
 import {loadWallpaper} from './wallpaperLoader'
 import {overviewEnterOpensApp} from './overviewEnter'
-import {rememberSettingsPage, settingsPayloadFor, settingsRemountKey} from './settingsPage'
+import {SHOW_SHELL_KEY, rememberAppearanceFocus, rememberSettingsPage, settingsPayloadFor, settingsRemountKey} from './settingsPage'
 import {clampDragY, clampWindowRect} from './windowGeometry'
 import {nextMaximizeSnap} from './windowSnap'
 import {bindWindowScrollReset} from './winScroll'
@@ -47,7 +48,8 @@ const HINT_KEY = 'omarchy-server:desk-hint-closed'
 const Files = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
 const ShareSheet = lazy(() => import('../screens/Files').then((m) => ({default: m.ShareSheet})))
 const Store = lazy(() => import('../screens/Store').then((m) => ({default: m.Store})))
-const MachinesDesktop = lazy(() => import('../machines/Desktop').then((m) => ({default: m.MachinesDesktop})))
+const Machines = lazy(() => import('../screens/Machines').then((m) => ({default: m.Machines})))
+const Home = lazy(() => import('../screens/Home').then((m) => ({default: m.Home})))
 const Clips = lazy(() => import('../screens/Clips').then((m) => ({default: m.Clips})))
 const More = lazy(() => import('../screens/More').then((m) => ({default: m.More})))
 const Settings = lazy(() => import('../screens/Settings').then((m) => ({default: m.Settings})))
@@ -65,8 +67,8 @@ function WinFallback() {
 }
 
 // ---- model ---------------------------------------------------------------------------------
-type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app'
-type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; page?: string; pageNonce?: number; term?: {id: string; name?: string; icon?: string}; input?: string}
+type Kind = 'home' | 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app'
+type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; page?: string; pageNonce?: number; term?: {id: string; name?: string; icon?: string}; input?: string; store?: StoreBinding}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
 type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number; workspace?: number; float?: boolean; minAt?: number}
@@ -81,12 +83,13 @@ const CELL_H = 112
 // `bg` is the icon in the colourful themes; `tone` is the palette colour it takes in the others
 // (Midnight, Neon, Ember, Daylight and the Omarchy desktop's own theme), see .sys-ico in styles.css.
 export const SYS: Record<SysKind, {title: string; icon?: IconName; bg?: string; tone?: string; w: number; h: number}> = {
+	home: {title: 'Home', icon: 'home-filled', bg: 'linear-gradient(150deg,#93c5fd,#1d4ed8 70%)', tone: 'var(--blue)', w: 860, h: 720},
 	files: {title: 'Files', icon: 'folder-filled', bg: 'linear-gradient(150deg,#7cb4ff,#2563eb 70%)', tone: 'var(--blue)', w: 960, h: 660},
 	apps: {title: 'Apps', icon: 'apps-filled', bg: 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', tone: 'var(--mauve)', w: 800, h: 680},
 	store: {title: 'App Store', w: 1040, h: 720},
 	terminal: {title: 'Terminal', w: 860, h: 540},
 	machines: {title: 'Machines', icon: 'machine-filled', bg: 'linear-gradient(150deg,#5eead4,#0f766e 70%)', tone: 'var(--teal)', w: 1180, h: 760},
-	system: {title: 'System Monitor', icon: 'activity-filled', bg: 'linear-gradient(150deg,#fdba74,#c2410c 70%)', tone: 'var(--peach)', w: 820, h: 720},
+	system: {title: 'System', icon: 'activity-filled', bg: 'linear-gradient(150deg,#fdba74,#c2410c 70%)', tone: 'var(--peach)', w: 820, h: 720},
 	settings: {title: 'Settings', icon: 'settings', bg: 'linear-gradient(150deg,#cbd5e1,#475569 70%)', tone: 'var(--fg)', w: 760, h: 720},
 	personalize: {title: 'Appearance', icon: 'palette', bg: 'linear-gradient(150deg,#f9a8d4,#be185d 70%)', tone: 'var(--pink)', w: 880, h: 720},
 	assistant: {title: 'Assistant', icon: 'sparkle', bg: 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', tone: 'var(--mauve)', w: 720, h: 640},
@@ -183,7 +186,7 @@ export function useItems() {
 				}
 			}
 			// The server's own Omarchy desktop (Machines → Consoles), for a quick icon or dock slot.
-			if (key === DESKTOP_KEY) return {key, label: 'Omarchy Desktop', icon: (s) => <MachineIcon m={SERVER_DESKTOP} size={s} />, status: 'running', missing: !owner}
+			if (key === DESKTOP_KEY) return {key, label: 'Desktop', icon: (s) => <MachineIcon m={SERVER_DESKTOP} size={s} />, status: 'running', missing: !owner}
 			if (key.startsWith('machine:')) {
 				const m = machineList.find((x) => x.id === key.slice(8))
 				return {
@@ -313,6 +316,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	startingRef.current = starting
 	const startingFlightRef = useRef(new Set<string>())
 	const hypr = cfg.shell === 'hyprland'
+	const [shellGen, setShellGen] = useState(0)
 	const [hyprWs, setHyprWs] = useState(() => loadLayout().workspace)
 	const [trees, setTrees] = useState<Record<number, Node | null>>(() => loadLayout().trees)
 	const [grab, setGrab] = useState<GrabState>(() => {
@@ -353,6 +357,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const runHyprRef = useRef<(act: Action) => void>(() => {})
 	const hyprRef = useRef(hypr)
 	hyprRef.current = hypr
+	const hyprPrev = useRef(hypr)
 	// The focused tile on a workspace: the top tiled window there (what a new window splits).
 	const topTileOn = (ws: number, except?: string) =>
 		winsRef.current.filter((x) => x.id !== except && !x.min && !x.float && (x.workspace ?? 1) === ws).sort((a, b) => b.z - a.z)[0]
@@ -534,6 +539,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			const existing = winsRef.current.filter((w) => w.key === key).sort((a, b) => b.z - a.z)[0]
 			if (existing && !(multi && opts?.newWindow)) {
 				if (kind === 'personalize' && payload?.tab) update(existing.id, {payload})
+				if (kind === 'store') update(existing.id, {payload: storedPayload})
 				if (settingsPayload) update(existing.id, {payload: settingsPayload})
 				if (opener && !winElsRef.current.get(existing.id)?.contains(opener)) {
 					winOpenersRef.current.set(existing.id, opener)
@@ -676,6 +682,16 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		window.addEventListener(OPEN_TERMINAL, onOpen)
 		return () => window.removeEventListener(OPEN_TERMINAL, onOpen)
 	}, [api])
+	useEffect(() => {
+		const onOpen = (e: Event) => {
+			const bound = (e as CustomEvent<StoreBinding>).detail
+			if (!bound || (bound.kind !== 'server' && bound.kind !== 'computer' && bound.kind !== 'guest')) return
+			if (!bound.id || !bound.name) return
+			open('store', {store: bound})
+		}
+		window.addEventListener(OPEN_STORE, onOpen)
+		return () => window.removeEventListener(OPEN_STORE, onOpen)
+	}, [open])
 
 	// Clicking into an app's iframe doesn't reach our handlers; notice the focus moving to it.
 	useEffect(() => {
@@ -890,7 +906,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			title: kind === 'restart' ? 'Restart your server?' : 'Shut down your server?',
 			body:
 				kind === 'restart'
-					? 'All apps and machines stop, then come back once Omarchy Server has restarted. This takes a few minutes.'
+					? 'All apps and machines stop, then come back once this server has restarted. This takes a few minutes.'
 					: 'All apps and machines stop. You’ll need to turn the server back on yourself (for a VM, from its host).',
 			confirm: kind === 'restart' ? 'Restart' : 'Shut down',
 			danger: true,
@@ -923,17 +939,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			? omarchyBackgroundUrl(prefs.omarchyBackground, omarchy.data?.current)
 			: cfg.wallpaper === 'photo'
 				? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(user.data?.wallpaper))
-				: null
+				: cfg.wallpaper === 'server'
+					? wallpaperUrl(user.data?.wallpaper)
+					: null
 	const deskStyle: Record<string, string> = {'--dock-thick': `${thick}px`, '--dock-icon': `${cfg.dock.iconSize}px`}
-	const omarchyAccent = cfg.wallpaper === 'omarchy' ? omarchy.data?.colors?.accent : null
-	if (cfg.accent === 'wallpaper' && omarchyAccent) {
-		Object.assign(deskStyle, {'--accent': omarchyAccent, '--accent-text': omarchyAccent, '--on-accent': omarchy.data?.colors?.background ?? '#111'})
-	} else if (cfg.accent === 'wallpaper' && wp) {
-		const [h, s] = wp.hsl.split(' ').map((v) => parseFloat(v))
-		Object.assign(deskStyle, {'--accent': `hsl(${h} ${s}% 52%)`, '--accent-text': `hsl(${h} ${Math.min(s + 10, 95)}% 68%)`, '--on-accent': '#fff'})
-	} else if (cfg.accent !== 'app' && cfg.accent !== 'wallpaper') {
-		Object.assign(deskStyle, {'--accent': `var(--${cfg.accent})`, '--accent-text': `var(--${cfg.accent})`, '--on-accent': '#111'})
-	}
+	const solid = prefs.solidColor ?? solidOf(cfg.wallpaper)
 
 	const arrangeIcons = () =>
 		setCfg((c) => {
@@ -945,23 +955,30 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			})
 			return {...c, icons: sorted.map((i, n) => ({...i, col: Math.floor(n / rows), row: n % rows}))}
 		})
+	const openAppearance = (tab?: string) => {
+		try {
+			if (tab) rememberAppearanceFocus(sessionStorage, tab)
+		} catch {
+			/* private */
+		}
+		open('settings', {page: 'appearance'})
+	}
 	const desktopMenu = (x: number, y: number, opener?: HTMLElement | null) =>
 		setMenu({
 			x,
 			y,
 			opener,
 			items: [
-				{label: 'Add icons to the desktop…', icon: 'plus', onClick: () => open('personalize', {tab: 'desktop'})},
+				{label: 'Add icons to the desktop…', icon: 'plus', onClick: () => openAppearance('desktop')},
 				{label: 'Arrange icons by name', icon: 'sort', onClick: arrangeIcons},
 				{label: cfg.showIcons ? 'Hide desktop icons' : 'Show desktop icons', icon: 'grid', onClick: () => setCfg((c) => ({...c, showIcons: !c.showIcons}))},
 				'sep',
 				{label: 'Open Home folder', icon: 'folder', onClick: () => api.openItem('folder:/Home')},
 				...(owner ? [{label: 'Open Terminal', icon: 'terminal' as IconName, onClick: () => api.openTerminal()}] : []),
 				'sep',
-				{label: 'Appearance…', icon: 'palette', onClick: () => open('personalize', {tab: 'layout'})},
-				{label: 'Change background…', icon: 'image', onClick: () => open('personalize', {tab: 'background'})},
-				{label: 'Themes…', icon: 'wallpaper', onClick: () => open('personalize', {tab: 'themes'})},
-				{label: 'Dock settings…', icon: 'apps', onClick: () => open('personalize', {tab: 'dock'})},
+				{label: 'Change background…', icon: 'image', onClick: () => openAppearance('background')},
+				{label: 'Appearance…', icon: 'palette', onClick: () => openAppearance('themes')},
+				{label: 'Dock settings…', icon: 'apps', onClick: () => openAppearance('dock')},
 			],
 		})
 
@@ -1007,13 +1024,42 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		window.addEventListener('omarchy:key-capture', on)
 		return () => window.removeEventListener('omarchy:key-capture', on)
 	}, [])
+	const shellShown = useRef(false)
 	useEffect(() => {
-		if (!hypr) return
-		setWins((ws) => ws.map((w) => (w.workspace ? w : {...w, workspace: 1})))
+		if (shellShown.current) return
+		let flag: string | null = null
+		try {
+			flag = sessionStorage.getItem(SHOW_SHELL_KEY)
+			if (flag) sessionStorage.removeItem(SHOW_SHELL_KEY)
+		} catch {
+			return
+		}
+		if (!flag) return
+		shellShown.current = true
+		setShellGen((n) => n + 1)
+		if (flag === 'appearance') {
+			try {
+				rememberAppearanceFocus(sessionStorage, 'layout')
+			} catch {
+				/* private */
+			}
+			open('settings', {page: 'appearance'})
+		}
+	}, [open])
+	useEffect(() => {
+		if (!hypr) {
+			hyprPrev.current = false
+			return
+		}
+		const entered = !hyprPrev.current
+		hyprPrev.current = true
+		const force = entered || shellGen > 0
+		const source = winsRef.current.map((w) => ({...w, workspace: w.workspace ?? 1, ...(force ? {snap: null, float: false} : {})}))
+		if (force || source.some((w) => !winsRef.current.find((o) => o.id === w.id && o.workspace))) setWins(source)
 		setTrees((ts) => {
 			const groups: Record<number, string[]> = {}
-			for (const w of [...winsRef.current].sort((a, b) => a.z - b.z)) {
-				if (w.float) continue
+			for (const w of [...source].sort((a, b) => a.z - b.z)) {
+				if (w.min || w.float) continue
 				const n = w.workspace ?? 1
 				;(groups[n] ??= []).push(w.id)
 			}
@@ -1021,7 +1067,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			for (let n = 1; n <= 9; n++) next[n] = reconcile(ts[n], groups[n] ?? [], usable())
 			return next
 		})
-	}, [hypr])
+	}, [hypr, shellGen])
 	useEffect(() => {
 		const top = topVisibleWindow(wins, hyprWs, hypr)
 		const id = top?.kind === 'console' ? top.id : null
@@ -1080,7 +1126,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				className={`desk style-${cfg.style} dock-${cfg.dock.position}${cfg.dock.floating ? ' dock-floating' : ''}${cfg.dock.autohide ? ' dock-autohide' : ''} dock-hover-${cfg.dock.hover}${dragging ? ' dragging' : ''}${overview ? ` overview-on ov-${overview}` : ''}${hypr ? ' shell-hypr' : ''}${grab.keysLocked ? ' keys-locked' : ''}`}
 				style={deskStyle as CSSProperties}
 			>
-				{solidOf(cfg.wallpaper) ? <div className="desk-wall" aria-hidden="true" style={{background: solidOf(cfg.wallpaper)!}} /> : wallUrl && <Wall url={wallUrl} />}
+				{solid ? <div className="desk-wall" aria-hidden="true" style={{background: solid}} /> : wallUrl && <Wall url={wallUrl} />}
 				{/* The assistant's floating character: opens (or brings forward) the Assistant window. */}
 				{!overview && !wins.some((w) => w.kind === 'assistant' && !w.min) && <AssistantCharacterWidget onOpen={() => open('assistant')} />}
 				<TopBar
@@ -1099,7 +1145,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					onSignOut={signOut}
 					onSettings={() => open('settings')}
 					onSystem={() => open('system')}
-					onPersonalize={() => open('personalize')}
+					onPersonalize={() => openAppearance()}
 					left={
 						hypr ? (
 							<WorkspacePills
@@ -1188,7 +1234,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 							title: 'Dock',
 							opener,
 							items: [
-								{label: 'Dock settings…', icon: 'settings', onClick: () => open('personalize', {tab: 'dock'})},
+								{label: 'Dock settings…', icon: 'settings', onClick: () => openAppearance('dock')},
 								{label: cfg.dock.autohide ? 'Always show the dock' : 'Auto-hide the dock', icon: 'apps', onClick: () => setCfg((c) => ({...c, dock: {...c.dock, autohide: !c.dock.autohide}}))},
 							],
 						})
@@ -1767,7 +1813,7 @@ function useClock() {
 }
 
 const NOTIFICATION_TEXT: Record<string, string> = {
-	'update-available': 'A new version of Omarchy Server is available',
+	'update-available': 'A new version of My Own Data Center is available',
 	migration: 'Your data migration finished',
 }
 const noteText = (n: string) => NOTIFICATION_TEXT[n] ?? n.replace(/[-_]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
@@ -1843,8 +1889,8 @@ function TopBar(p: {
 						<button
 							className={`top-bell${count ? ' lit' : ''}${serverUpdate ? ' ringing' : ''}${p.menu === 'clock' ? ' on' : ''}`}
 							onClick={() => p.setMenu(p.menu === 'clock' ? null : 'clock')}
-							aria-label={count ? `${count} notification${count > 1 ? 's' : ''}${serverUpdate ? ', an Omarchy Server update is ready' : ''}` : 'Notifications'}
-							title={serverUpdate ? 'An Omarchy Server update is ready' : 'Notifications'}
+							aria-label={count ? `${count} notification${count > 1 ? 's' : ''}${serverUpdate ? ', an update is ready' : ''}` : 'Notifications'}
+							title={serverUpdate ? 'An update is ready' : 'Notifications'}
 						>
 							<Icon name="bell" size={16} />
 							{count > 0 && <span className="badge-n">{count}</span>}
@@ -1914,7 +1960,7 @@ function TopBar(p: {
 							<b>{p.boot.server?.device ?? 'server'}</b>
 							<span className="mono muted">{p.boot.server?.host}</span>
 							<span className="muted">
-								<VersionTag prefix="Omarchy Server " version={p.boot.touch.version} info={p.boot.server} />
+								<VersionTag prefix="MODC " version={p.boot.touch.version} info={p.boot.server} />
 							</span>
 						</span>
 					</div>
@@ -1932,7 +1978,7 @@ function TopBar(p: {
 						<Icon name="palette" size={17} /> Appearance
 					</button>
 					<button role="menuitem" onClick={() => runSysAction(p.onSystem)}>
-						<Icon name="activity" size={17} /> System Monitor
+						<Icon name="activity" size={17} /> System
 					</button>
 					<button role="menuitem" onClick={() => runSysAction(() => setLayoutPref('phone'))}>
 						<Icon name="phone" size={17} /> Switch to phone layout
@@ -2393,8 +2439,8 @@ function RelayedFrame({app}: {app: UserApp}) {
 				<span>
 					{problem === 'unreachable'
 						? location.protocol === 'https:'
-							? 'This app’s address didn’t answer. Check that your tunnel also routes the app addresses to Omarchy Server.'
-							: 'Omarchy Server couldn’t reach this app’s window. If a firewall runs on this server, allow ports 7800 to 7899.'
+							? 'This app’s address didn’t answer. Check that your tunnel also routes the app addresses to this server.'
+							: 'This server couldn’t reach this app’s window. If a firewall runs on this server, allow ports 7800 to 7899.'
 						: problem}
 				</span>
 				<div className="app-gate-actions">
@@ -2453,7 +2499,7 @@ function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetr
 			: probe.data.result === 'timeout'
 				? `${name} accepted the connection but hasn’t answered in 6 seconds. It’s probably still starting.`
 				: probe.data.result === 'answered'
-					? `${name} answered (${probe.data.status}${probe.data.location ? `, sending the browser to ${probe.data.location}` : ''}), so it’s likely your browser won’t show it inside Omarchy Server. Open it in its own tab.`
+					? `${name} answered (${probe.data.status}${probe.data.location ? `, sending the browser to ${probe.data.location}` : ''}), so it’s likely your browser won’t show it in a window here. Open it in its own tab.`
 					: probe.data.result === 'error'
 						? `Couldn’t reach ${name}: ${probe.data.error}.`
 						: null
@@ -2470,7 +2516,7 @@ function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetr
 			<b>{name} is taking a while</b>
 			<span>
 				{why ??
-					'It may still be starting (some apps need a few minutes the first time), or it may not allow being shown inside Omarchy Server. You can keep waiting, try again, or open it in its own tab.'}
+					'It may still be starting (some apps need a few minutes the first time), or it may not allow being shown in a window here. You can keep waiting, try again, or open it in its own tab.'}
 			</span>
 			<div className="app-gate-actions">
 				<button className="btn" onClick={() => (onRetry ? onRetry() : location.reload())}>
@@ -2563,7 +2609,7 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 				<AppIcon src={app.icon} name={name} size={64} />
 				<b>{name} needs a secure connection</b>
 				<span>
-					It only works on an https:// page. Switch Omarchy Server to its secure address to use it in a window, or open it in its own tab. The first time, your
+					It only works on an https:// page. Switch to the secure address to use it in a window, or open it in its own tab. The first time, your
 					browser may warn about the certificate until you trust this server (Settings → Secure connection).
 				</span>
 				<div className="app-gate-actions">
@@ -2609,7 +2655,7 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 				<AppIcon src={app.icon} name={name} size={64} />
 				<b>Apps need their own addresses for remote access</b>
 				<span>
-					You’re using Omarchy Server over HTTPS (for example through a Cloudflare tunnel), where the app’s own port can’t be reached. Set app addresses (see the README) so each app
+					You’re using this server over HTTPS (for example through a Cloudflare tunnel), where the app’s own port can’t be reached. Set app addresses (see the README) so each app
 					gets an address like {name.toLowerCase().replace(/[^a-z0-9]+/g, '')}.your-domain.
 				</span>
 			</div>
@@ -2643,8 +2689,8 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 				<b>{waiting ? 'Waiting for you to sign in…' : `Sign in to open ${name}`}</b>
 				<span>
 					{waiting
-						? `Sign in to Omarchy Server in the tab that opened. ${name} then loads here by itself; you can close that tab.`
-						: 'Omarchy Server asks each browser to sign in once before it opens your apps. Its sign-in page can’t be shown inside a window, so it opens in a new tab. Afterwards every app opens here for the next 7 days.'}
+						? `Sign in in the tab that opened. ${name} then loads here by itself; you can close that tab.`
+						: 'This server asks each browser to sign in once before it opens your apps. Its sign-in page can’t be shown inside a window, so it opens in a new tab. Afterwards every app opens here for the next 7 days.'}
 				</span>
 				<div className="app-gate-actions">
 					<button
@@ -2673,8 +2719,7 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 				<AppIcon src={app.icon} name={name} size={64} />
 				<b>{name} opens in a browser tab</b>
 				<span>
-					{name} doesn’t allow itself to be shown inside other pages (one of its own security settings), so it opens in its own tab, just like from the Omarchy Server
-					dashboard. From now on it goes straight there.
+					{name} doesn’t allow itself to be shown inside other pages (one of its own security settings), so it opens in its own tab, just like from the dashboard. From now on it goes straight there.
 				</span>
 				<div className="app-gate-actions">
 					<button
@@ -2696,7 +2741,7 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 			<div className="win-empty app-gate">
 				<AppIcon src={app.icon} name={name} size={64} dim />
 				<b>{name} isn’t shared with you</b>
-				<span>Ask the server’s owner to share it with your account in Omarchy Server.</span>
+				<span>Ask the server’s owner to share it with your account.</span>
 			</div>
 		)
 	// Apps that hold their own port are shown through their view gateway (which allows the window).
@@ -2729,20 +2774,29 @@ const WindowContent = memo(
 		const close = () => desk.close(win.id)
 		const body = (() => {
 			switch (win.kind) {
+				case 'home':
+					return (
+						<Home
+							onOpenApp={(a) => desk.launch(a)}
+							go={(tab) => (tab === 'more' ? desk.open('system') : desk.open(tab))}
+							onTerminal={() => desk.openTerminal()}
+							onAssistant={() => desk.open('assistant')}
+						/>
+					)
 				case 'files':
 					return <Files windowId={win.id} initialPath={win.payload?.path} />
 				case 'apps':
 					return <AppsWindow />
 				case 'store':
-					return <Store onOpenInstalled={(a) => desk.launch(a)} />
+					return <Store bound={win.payload?.store ?? null} onOpenInstalled={(a) => desk.launch(a)} />
 				case 'machines':
-					return <MachinesDesktop />
+					return <Machines onOpenApp={(a) => desk.launch(a)} onTerminal={() => desk.openTerminal()} />
 				case 'system':
 					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} onClips={() => desk.open('clips')} />
 				case 'settings':
 					return <Settings key={settingsRemountKey(win.payload)} prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={close} />
 				case 'personalize':
-					return <Personalize tab={win.payload?.tab} prefs={prefs} setPrefs={setPrefs} />
+					return <Personalize tab={win.payload?.tab} prefs={prefs} setPrefs={setPrefs} onOpenThemes={() => desk.open('settings', {page: 'omarchy-themes'})} />
 				case 'assistant':
 					return (
 						<Assistant
@@ -2769,7 +2823,7 @@ const WindowContent = memo(
 				<Suspense fallback={<WinFallback />}>{body}</Suspense>
 			</ScreenErrorBoundary>
 		)
-		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'machines' || win.kind === 'assistant') return content
+		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'assistant') return content
 		return (
 			<div className="win-scroll" ref={scrollRef}>
 				<main className="screen win-screen">{content}</main>
@@ -2795,7 +2849,7 @@ function AppsWindow() {
 	const update = updates.data?.find((u) => u.id === appId)
 	return (
 		<>
-			<Apps onOpenApp={(a) => setAppId(a.id)} onTerminal={() => desk.openTerminal()} onStore={() => desk.open('store')} />
+			<Apps onOpenApp={(a) => setAppId(a.id)} onStore={() => desk.open('store')} />
 			<AppSheet app={app} update={update} onClose={() => setAppId(null)} onTerminal={(t) => (setAppId(null), desk.openTerminal(t))} />
 		</>
 	)
@@ -2820,7 +2874,7 @@ function MachineConsoleWindow({machineId, windowId, onClose}: {machineId: string
 			<div className="win-empty">
 				<MachineIcon m={m} size={64} />
 				<b>{m.name} isn’t running</b>
-				<span>{m.state === 'starting' ? 'It’s starting. The console connects once it’s up.' : 'Start it from its desktop icon or from Machines.'}</span>
+				<span>{m.state === 'starting' ? 'It’s starting. The desktop connects once it’s up.' : 'Start it from its desktop icon or from Machines.'}</span>
 			</div>
 		)
 	return <Console embedded machine={m} windowId={windowId} onClose={onClose} />

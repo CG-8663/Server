@@ -7,6 +7,8 @@ import {AppSheet} from './AppSheet'
 import {AppViewer} from './AppViewer'
 import {VIEW_APP} from './openApp'
 import {OPEN_TERMINAL} from './terminalEvent'
+import {OPEN_FLEET} from './fleet/openMember'
+import {OPEN_STORE, type StoreBinding} from './fleet/openStore'
 import {BootstrapContext, useAction, useApps, useNotifications, useUpdates, useUser} from './data'
 import {Icon, type IconName} from './icons'
 import {Apps} from './screens/Apps'
@@ -119,8 +121,8 @@ export function App() {
 	} else if (boot.error || !b) {
 		content = (
 			<main className="auth center screen">
-				<h1>Omarchy Server is offline</h1>
-				<p className="lead">The Omarchy Server server isn’t answering. Is it still running?</p>
+				<h1>My Own Data Center is offline</h1>
+				<p className="lead">The server isn’t answering. Is it still running?</p>
 				<button className="btn primary block" onClick={() => void boot.refetch()}>
 					Try again
 				</button>
@@ -150,6 +152,7 @@ export function App() {
 
 function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Bootstrap; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; reopenAssistant?: boolean}) {
 	const [tab, setTab] = useState<Tab>(tabFromHash)
+	const [storeBound, setStoreBound] = useState<StoreBinding | null>(null)
 	const [appId, setAppId] = useState<string | null>(null)
 	// An app open inside Omarchy Server (full screen, back button returns here).
 	const [viewing, setViewing] = useState<UserApp | null>(null)
@@ -185,6 +188,28 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 		window.addEventListener('hashchange', onHash)
 		return () => window.removeEventListener('hashchange', onHash)
 	}, [])
+	useEffect(() => {
+		const onOpen = (e: Event) => {
+			setStoreBound((e as CustomEvent<StoreBinding>).detail ?? null)
+			setTab('store')
+			history.pushState(null, '', '#/store')
+			scrollPhoneToTop()
+		}
+		window.addEventListener(OPEN_STORE, onOpen)
+		return () => window.removeEventListener(OPEN_STORE, onOpen)
+	}, [])
+	useEffect(() => {
+		const onOpen = () => {
+			setTab('machines')
+			history.pushState(null, '', '#/machines')
+			scrollPhoneToTop()
+		}
+		window.addEventListener(OPEN_FLEET, onOpen)
+		return () => window.removeEventListener(OPEN_FLEET, onOpen)
+	}, [])
+	useEffect(() => {
+		if (tab !== 'store') setStoreBound((cur) => (cur ? null : cur))
+	}, [tab])
 	const go = (t: Tab) => {
 		haptic(5)
 		if (t === tab) scrollPhoneToTop('smooth')
@@ -254,10 +279,10 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 								}}
 							/>
 						)}
-						{tab === 'apps' && <Apps onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} onStore={() => go('store')} />}
+						{tab === 'apps' && <Apps onOpenApp={(a) => setAppId(a.id)} onStore={() => go('store')} />}
 						{tab === 'files' && <Files />}
-						{tab === 'store' && <Store onOpenInstalled={(a) => setAppId(a.id)} onBack={() => history.back()} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
-						{tab === 'machines' && <Machines />}
+						{tab === 'store' && <Store bound={storeBound} onOpenInstalled={(a) => setAppId(a.id)} onBack={() => history.back()} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
+						{tab === 'machines' && <Machines onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} />}
 						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} onClips={() => go('clips')} />}
 						{tab === 'clips' && <Clips onBack={() => history.back()} />}
 						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={() => history.back()} />}
@@ -268,7 +293,10 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 			<nav className="dock" aria-label="Main">
 				<span className="indicator" style={{transform: `translateX(${Math.max(index, 0) * 100}%)`, opacity: index < 0 ? 0 : 1}} aria-hidden="true" />
 				{TABS.map((t) => (
-					<button key={t.id} aria-current={tab === t.id ? 'page' : undefined} onClick={() => go(t.id)} style={{'--tone': t.tone} as CSSProperties}>
+					<button key={t.id} aria-current={tab === t.id ? 'page' : undefined} onClick={() => {
+						if (t.id === 'store') setStoreBound(null)
+						go(t.id)
+					}} style={{'--tone': t.tone} as CSSProperties}>
 						<Icon name={tab === t.id ? t.active : t.icon} size={23} stroke={tab === t.id ? 2 : 1.75} />
 						{t.label}
 						{t.id === 'apps' && updateCount > 0 && <span className="count">{updateCount}</span>}
@@ -333,7 +361,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 }
 
 const NOTIFICATION_TEXT: Record<string, string> = {
-	'update-available': 'A new version of Omarchy Server is available',
+	'update-available': 'A new version of My Own Data Center is available',
 	migration: 'Your data migration finished',
 }
 const noteText = (n: string) => NOTIFICATION_TEXT[n] ?? n.replace(/[-_]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
@@ -342,7 +370,7 @@ function NotificationsSheet({open, notes, onClose, onOpen}: {open: boolean; note
 	const action = useAction()
 	return (
 		<Sheet open={open} onClose={onClose} label="Notifications">
-			<SheetHeader title="Notifications" subtitle={notes.length ? `${notes.length} from Omarchy Server` : undefined} onClose={onClose} />
+			<SheetHeader title="Notifications" subtitle={notes.length ? `${notes.length}` : undefined} onClose={onClose} />
 			{notes.length === 0 ? (
 				<div className="empty" style={{paddingTop: 20}}>
 					<span className="big">

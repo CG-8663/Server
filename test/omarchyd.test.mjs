@@ -77,7 +77,7 @@ describe('omarchyd', () => {
 	test('two-factor: turning it on needs a right code, then signing in needs one; off again with a code', async () => {
 		assert.equal((await call('query', 'user.is2faEnabled', undefined, native)).body.result.data, false)
 		const uri = (await call('query', 'user.generateTotpUri', undefined, native)).body.result.data
-		assert.match(uri, /^otpauth:\/\/totp\/Omarchy%20Server%3AChris\?secret=[A-Z2-7]{32}&issuer=Omarchy%20Server/)
+		assert.match(uri, /^otpauth:\/\/totp\/MODC%3AChris\?secret=[A-Z2-7]{32}&issuer=MODC/)
 		const secret = secretFromUri(uri)
 		assert.equal((await call('mutation', 'user.enable2fa', {totpUri: uri, totpToken: '000000'}, native)).status, 400)
 		assert.equal((await call('mutation', 'user.enable2fa', {totpUri: uri, totpToken: totpCode(secret)}, native)).status, 200)

@@ -44,7 +44,7 @@ test('check: up to date, then an update with notes and a note to run the install
 	const old = createUpdater({autoCheck: false, appDir: dir, dataDir: dir, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath})
 	const c = await old.procedures['system.checkUpdate'].run()
 	assert.equal(c.available, true)
-	assert.equal(c.name, 'Omarchy Server 0.6.1')
+	assert.equal(c.name, 'MODC 0.6.1')
 	assert.match(c.releaseNotes, /run the installer.*the storage helper changed; it needs new packages \(newthing\)/)
 	assert.match(c.releaseNotes, /0\.6\.1 · Fixes/)
 	assert.equal(old.updateWaiting(), '0.6.1', 'the bell lights up for it')

@@ -40,5 +40,5 @@ test('versionTagProps: tooltip and accessible name once start time and revision 
 })
 
 test('versionTagProps: footer prefix stays in the visible text', () => {
-	assert.deepEqual(versionTagProps('0.9.35', undefined, {prefix: 'Omarchy Server '}), {text: 'Omarchy Server 0.9.35'})
+	assert.deepEqual(versionTagProps('0.9.35', undefined, {prefix: 'MODC '}), {text: 'MODC 0.9.35'})
 })

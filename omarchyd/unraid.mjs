@@ -430,7 +430,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 			return stdout
 		} catch (e) {
 			const msg = String(e.message)
-			if (e.code === 'ENOENT') throw new RpcError('PRECONDITION_FAILED', 'This server needs ssh. Run Omarchy Server’s installer once more.')
+			if (e.code === 'ENOENT') throw new RpcError('PRECONDITION_FAILED', 'This server needs ssh. Run the installer once more.')
 			if (/Permission denied|Authentication failed/i.test(msg)) throw new RpcError('FORBIDDEN', 'Unraid didn’t accept that password (it’s the root password, the one you sign in to Unraid’s web page with).')
 			if (/Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(msg)) throw new RpcError('FORBIDDEN', 'That server isn’t the one you connected to before (its key changed). If you reinstalled Unraid, choose Forget this server’s key and connect again.')
 			if (/Connection refused/i.test(msg)) throw new RpcError('PRECONDITION_FAILED', 'Unraid isn’t accepting SSH. Turn it on in Unraid: Settings › Management Access › Use SSH.')
@@ -594,7 +594,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 				console.warn('[omarchyd] unraid rsync: some source files vanished while copying (exit 24)')
 				return
 			}
-			if (err.code === 'ENOENT') throw new RpcError('PRECONDITION_FAILED', 'This server needs rsync. Run Omarchy Server’s installer once more.')
+			if (err.code === 'ENOENT') throw new RpcError('PRECONDITION_FAILED', 'This server needs rsync. Run the installer once more.')
 			throw new RpcError('INTERNAL_SERVER_ERROR', `Copying ${from} didn’t finish: ${String(err.message).replace(/^rsync: /, '').slice(0, 200)}`)
 		}
 	}

@@ -30,8 +30,10 @@ test('sameThemePicker is false when the picker becomes disabled', () => {
 })
 
 test('the fleet theme <select> skips re-render when sameThemePicker is true', async () => {
-	const src = await readFile(new URL('../web/src/swarm/Swarm.tsx', import.meta.url), 'utf8')
-	assert.match(src, /from '\.\/themePicker'/)
-	assert.match(src, /memo\(function ThemePicker/)
-	assert.match(src, /sameThemePicker\(/)
+	const swarm = await readFile(new URL('../web/src/swarm/Swarm.tsx', import.meta.url), 'utf8')
+	const picker = await readFile(new URL('../web/src/theme/ThemePicker.tsx', import.meta.url), 'utf8')
+	assert.match(swarm, /from '\.\.\/theme\/ThemePicker'/)
+	assert.match(picker, /from '\.\.\/swarm\/themePicker'/)
+	assert.match(picker, /memo\(\s*function ThemePicker/)
+	assert.match(picker, /sameThemePicker\(/)
 })

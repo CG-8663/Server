@@ -1,4 +1,5 @@
-// Settings → Backups: this server's apps and settings, encrypted, copied to a NAS on a schedule.
+// This server's backups: apps and settings, encrypted, copied to a NAS on a schedule.
+// Opened from this server on the Machines page.
 import {useEffect, useMemo, useState, type CSSProperties, type FormEvent} from 'react'
 import {backupGapText, computerSheetChanged, computerSnapshotRows, folderListError, formatBackupHour, formatBackupStamp, formatBackupWhen, historyRowTone, serverLastRun} from './backupHelpers'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
@@ -592,9 +593,9 @@ function KeySheet({recoveryKey, saved, onClose}: {recoveryKey: string; saved: bo
 		}
 	}
 	const download = () => {
-		const text = `Omarchy Server backup recovery key\n\n${recoveryKey}\n\nYou need this key to open your backups on a new server (Settings › Backups › Restore from an existing backup).\nKeep it somewhere safe, away from the server: a password manager, or printed.\n`
+		const text = `My Own Data Center backup recovery key\n\n${recoveryKey}\n\nYou need this key to open your backups on a new server (open this server from Machines, then Backups › Restore from an existing backup).\nKeep it somewhere safe, away from the server: a password manager, or printed.\n`
 		const url = URL.createObjectURL(new Blob([text], {type: 'text/plain'}))
-		const a = Object.assign(document.createElement('a'), {href: url, download: 'omarchy-server-recovery-key.txt'})
+		const a = Object.assign(document.createElement('a'), {href: url, download: 'modc-recovery-key.txt'})
 		a.click()
 		setTimeout(() => URL.revokeObjectURL(url), 1000)
 	}
@@ -929,6 +930,39 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 						</button>
 					)}
 				</>
+			)}
+		</Sheet>
+	)
+}
+
+/** One computer's backup folders and schedule, opened from that computer's machine page. */
+export function ComputerBackups({id, name, onClose}: {id: string; name: string; onClose: () => void}) {
+	const status = useStatus()
+	const comps = useQuery({
+		queryKey: ['backups.computers'],
+		queryFn: () => query<Computer[]>('backups.computers'),
+		enabled: !!status.data?.configured,
+		retry: false,
+	})
+	const computer = comps.data?.find((row) => row.id === id) ?? null
+	if (computer && status.data) return <ComputerSheet c={computer} timeZone={status.data.timeZone} onClose={onClose} />
+	const waiting = status.isLoading || (!!status.data?.configured && comps.isLoading)
+	const body = waiting
+		? null
+		: !status.data?.configured
+			? `Backups for ${name} copy its folders to this server’s NAS. Open this server and choose Backups to set that up.`
+			: `${name} isn’t in Backups yet. If it joined without Backups allowed, remove it and add it again with Backups switched on.`
+	return (
+		<Sheet open onClose={onClose} label={`Back up ${name}`}>
+			<SheetHeader title="Backups" subtitle={name} onClose={onClose} />
+			{waiting ? (
+				<div className="row static">
+					<span className="spinner" />
+				</div>
+			) : (
+				<p className="prose" style={{fontSize: 14.5}}>
+					{body}
+				</p>
 			)}
 		</Sheet>
 	)

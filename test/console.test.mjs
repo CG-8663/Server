@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {describe, test} from 'node:test'
 
-import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, mouseButtonFromEvent, pasteKeySequence, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, wheelButtons} from '../web/src/consoleHelpers.ts'
+import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, handleConsoleWheel, mouseButtonFromEvent, PASTE_STEP_MS, pasteKeySequence, pasteKeySteps, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, wheelButtons} from '../web/src/consoleHelpers.ts'
 
 describe('console helpers', () => {
 	test('#120: reconnects on clean and unclean disconnects unless disposed or superseded', async () => {
@@ -224,6 +224,40 @@ describe('console helpers', () => {
 
 		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
 		assert.match(src, /pasteKeySequence\(/)
+	})
+
+	test('a paste is one key event at a time so the character after the right edge is released', async () => {
+		assert.deepEqual(charKeySteps('i'), [
+			{keysym: 0x69, down: true},
+			{keysym: 0x69, down: false},
+		])
+		assert.deepEqual(charKeySteps('A'), [
+			{keysym: 0xffe1, down: true},
+			{keysym: 0x41, down: true},
+			{keysym: 0x41, down: false},
+			{keysym: 0xffe1, down: false},
+		])
+		assert.deepEqual(pasteKeySteps('hi'), [
+			{keysym: 0x68, down: true},
+			{keysym: 0x68, down: false},
+			{keysym: 0x69, down: true},
+			{keysym: 0x69, down: false},
+		])
+		assert.deepEqual(pasteKeySteps('A\n'), [
+			{keysym: 0xffe1, down: true},
+			{keysym: 0x41, down: true},
+			{keysym: 0x41, down: false},
+			{keysym: 0xffe1, down: false},
+			{keysym: 0xff0d, down: true},
+			{keysym: 0xff0d, down: false},
+		])
+		assert.deepEqual(pasteKeySteps(''), [])
+		assert.equal(PASTE_STEP_MS >= 10, true)
+
+		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
+		assert.match(src, /pasteKeySteps\(/)
+		assert.match(src, /setTimeout\(tick, PASTE_STEP_MS\)/)
+		assert.doesNotMatch(src, /for \(const ch of clean\) sendChar/)
 	})
 
 	test('#373: ignores unmapped mouse buttons such as Back and Forward', async () => {

@@ -62,7 +62,7 @@ export function InstallerPrompt({ready}: {ready: boolean}) {
 					</span>
 				}
 				title="Finish the update"
-				subtitle="Omarchy Server needs its installer run once more"
+				subtitle="The installer needs to run once more"
 				onClose={close}
 			/>
 			<div className="screen installer-prompt">
@@ -73,7 +73,7 @@ export function InstallerPrompt({ready}: {ready: boolean}) {
 				</ul>
 				<p className="muted">
 					The installer gets everything this version needs. It opens in the terminal: press Enter to start, then type your password when it asks (sudo). Your apps,
-					files and accounts are kept, and Omarchy Server restarts when it’s done.
+					files and accounts are kept, and this server restarts when it’s done.
 				</p>
 				<button className="btn primary block" onClick={run}>
 					<Icon name="update" size={18} /> Run the installer
