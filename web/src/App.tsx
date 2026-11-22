@@ -17,7 +17,7 @@ import {resetDeskConfig} from './desktop/config'
 import {ScreenErrorBoundary} from './screenBoundary'
 import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, scrollPhoneToTop, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
-import {LayoutChooser} from './LayoutChooser'
+import {WelcomeForUser} from './Welcome'
 import {InstallerPrompt} from './InstallerPrompt'
 import {consumeReopenAssistant, reopenOnMount} from './assistant'
 import {closeAssistantView, openAssistantView, resetAssistantTurn, useAssistantTurn} from './assistantTurn'
@@ -80,7 +80,7 @@ export function App() {
 		return res.data ?? null
 	}, [boot])
 	const layout = useLayout()
-	// The first time anyone signs in on this device: Desktop or Phone & tablet (then What's New).
+	// The first time anyone signs in on this device: a short welcome setup (then What's New).
 	const [askLayout, setAskLayout] = useState(() => !layoutAsked())
 	// Consumed once per page load. Cleared after the first signed-in Shell or Desktop has seen it,
 	// so a later remount (wallpaper, theme, restart) does not open the assistant again.
@@ -134,7 +134,7 @@ export function App() {
 			<BootstrapContext.Provider value={b}>
 			<AssistantLookContext.Provider value={lookValue}>
 				{layout.desktop ? <Desktop boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} reopenAssistant={reopenAssistant} /> : <Shell boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} reopenAssistant={reopenAssistant} />}
-				{askLayout ? <LayoutChooser onDone={() => setAskLayout(false)} /> : <WhatsNewOnUpdate version={b.touch.version} onDone={() => setWhatsNewDone(true)} />}
+				{askLayout ? <WelcomeForUser prefs={prefs} setPrefs={setPrefs} onDone={() => setAskLayout(false)} /> : <WhatsNewOnUpdate version={b.touch.version} onDone={() => setWhatsNewDone(true)} />}
 				<InstallerPrompt ready={whatsNewDone} />
 			</AssistantLookContext.Provider>
 			</BootstrapContext.Provider>

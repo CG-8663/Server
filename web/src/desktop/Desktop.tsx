@@ -88,7 +88,7 @@ export const SYS: Record<SysKind, {title: string; icon?: IconName; bg?: string; 
 	machines: {title: 'Machines', icon: 'machine-filled', bg: 'linear-gradient(150deg,#5eead4,#0f766e 70%)', tone: 'var(--teal)', w: 1180, h: 760},
 	system: {title: 'System Monitor', icon: 'activity-filled', bg: 'linear-gradient(150deg,#fdba74,#c2410c 70%)', tone: 'var(--peach)', w: 820, h: 720},
 	settings: {title: 'Settings', icon: 'settings', bg: 'linear-gradient(150deg,#cbd5e1,#475569 70%)', tone: 'var(--fg)', w: 760, h: 720},
-	personalize: {title: 'Desktop & Dock', icon: 'palette', bg: 'linear-gradient(150deg,#f9a8d4,#be185d 70%)', tone: 'var(--pink)', w: 880, h: 720},
+	personalize: {title: 'Appearance', icon: 'palette', bg: 'linear-gradient(150deg,#f9a8d4,#be185d 70%)', tone: 'var(--pink)', w: 880, h: 720},
 	assistant: {title: 'Assistant', icon: 'sparkle', bg: 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', tone: 'var(--mauve)', w: 720, h: 640},
 	clips: {title: 'Clip book', icon: 'clipboard', bg: 'linear-gradient(150deg,#5eead4,#0f766e 70%)', tone: 'var(--teal)', w: 760, h: 720},
 }
@@ -958,8 +958,9 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				{label: 'Open Home folder', icon: 'folder', onClick: () => api.openItem('folder:/Home')},
 				...(owner ? [{label: 'Open Terminal', icon: 'terminal' as IconName, onClick: () => api.openTerminal()}] : []),
 				'sep',
+				{label: 'Appearance…', icon: 'palette', onClick: () => open('personalize', {tab: 'layout'})},
 				{label: 'Change background…', icon: 'image', onClick: () => open('personalize', {tab: 'background'})},
-				{label: 'Desktop themes…', icon: 'palette', onClick: () => open('personalize', {tab: 'themes'})},
+				{label: 'Themes…', icon: 'wallpaper', onClick: () => open('personalize', {tab: 'themes'})},
 				{label: 'Dock settings…', icon: 'apps', onClick: () => open('personalize', {tab: 'dock'})},
 			],
 		})
@@ -1928,7 +1929,7 @@ function TopBar(p: {
 						<Icon name="settings" size={17} /> Settings
 					</button>
 					<button role="menuitem" onClick={() => runSysAction(p.onPersonalize)}>
-						<Icon name="palette" size={17} /> Desktop &amp; Dock
+						<Icon name="palette" size={17} /> Appearance
 					</button>
 					<button role="menuitem" onClick={() => runSysAction(p.onSystem)}>
 						<Icon name="activity" size={17} /> System Monitor
