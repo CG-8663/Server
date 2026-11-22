@@ -1847,6 +1847,12 @@ h1.title {
 	align-items: center;
 	gap: 13px;
 }
+.vm-card .main b,
+.vm-card .main > span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 .vm-os {
 	width: 50px;
 	height: 50px;
@@ -1920,8 +1926,13 @@ h1.title {
 .run-row b {
 	display: block;
 	font-size: 14.5px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 .run-row small {
+	display: block;
+	margin-top: 3px;
 	color: var(--muted);
 }
 .run-row .btn {
@@ -2945,10 +2956,19 @@ html.screen-locked .auth {
 	display: block;
 	font-size: 12.5px;
 	color: var(--fg-3);
-	margin-top: 1px;
+	margin-top: 3px;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+.server-actions {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	margin: 16px 0;
+}
+.server-actions > .btn {
+	width: 100%;
 }
 
 /* ---- Files ------------------------------------------------------------------------ */
@@ -7499,11 +7519,21 @@ html.page-locked .auth {
 .pve-node-row {
 	display: flex;
 	align-items: center;
-	gap: 2px;
+	gap: 8px;
 }
 .pve-node-row > .pve-node {
 	flex: 1;
 	min-width: 0;
+}
+.pve-node > span {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.pve-node > span.muted {
+	flex: none;
+	overflow: visible;
 }
 .pve-node-row .disc {
 	width: 28px;
@@ -7716,9 +7746,26 @@ html.page-locked .auth {
 	text-align: left;
 	cursor: pointer;
 }
+.pve-launch {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 12px;
+}
+.pve-launch .btn.small {
+	align-self: flex-start;
+}
 .pve-desktop span {
 	display: flex;
 	flex-direction: column;
+	gap: 3px;
+	min-width: 0;
+}
+.pve-desktop b,
+.pve-desktop small {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 .pve-desktop small {
 	color: var(--muted);

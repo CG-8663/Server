@@ -254,7 +254,7 @@ export function AgentCard({a, onClick, footer, extra, className}: {a: Agent; onC
 				</span>
 				<span className="main" style={{flex: 1, minWidth: 0}}>
 					<b style={{display: 'block', fontSize: 16.5, fontWeight: 650}}>{a.name}</b>
-					<span style={{display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 2}}>
+					<span style={{display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 4}}>
 						{a.info?.os ?? 'Linux'}
 						{a.online ? '' : ` · seen ${ago(a.lastSeen)}`}
 					</span>

@@ -247,25 +247,27 @@ function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreat
 					{owner && (
 						<div className="mx-card">
 							<h4>Consoles</h4>
-							<button type="button" className="pve-desktop" style={{marginBottom: 8}} onClick={() => (haptic(6), desk?.openTerminal())}>
-								<TerminalIcon size={36} />
-								<span>
-									<b>Terminal</b>
-									<small>Command line</small>
-								</span>
-							</button>
-							<button type="button" className="pve-desktop" onClick={() => (desk ? desk.openConsole('desktop') : null)}>
-								<Icon name="terminal" size={20} />
-								<span>
-									<b>{SERVER_DESKTOP.name}</b>
-									<small>This server’s own desktop, live.</small>
-								</span>
-							</button>
-							{desk && (
-								<button type="button" className="btn small" style={{marginTop: 8}} onClick={() => desk.addIcon('machine:desktop')}>
-									<Icon name="plus" size={15} /> Add to desktop
+							<div className="pve-launch">
+								<button type="button" className="pve-desktop" onClick={() => (haptic(6), desk?.openTerminal())}>
+									<TerminalIcon size={36} />
+									<span>
+										<b>Terminal</b>
+										<small>Command line</small>
+									</span>
 								</button>
-							)}
+								<button type="button" className="pve-desktop" onClick={() => (desk ? desk.openConsole('desktop') : null)}>
+									<Icon name="terminal" size={20} />
+									<span>
+										<b>{SERVER_DESKTOP.name}</b>
+										<small>This server’s own desktop, live.</small>
+									</span>
+								</button>
+								{desk && (
+									<button type="button" className="btn small" onClick={() => desk.addIcon('machine:desktop')}>
+										<Icon name="plus" size={15} /> Add to desktop
+									</button>
+								)}
+							</div>
 						</div>
 					)}
 				</div>

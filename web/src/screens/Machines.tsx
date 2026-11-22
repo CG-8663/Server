@@ -136,7 +136,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 								</span>
 								<span className="main" style={{flex: 1, minWidth: 0}}>
 									<b style={{display: 'block', fontSize: 16.5, fontWeight: 650}}>{member.name}</b>
-									<span style={{display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 2}}>{member.meta}</span>
+									<span style={{display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 4}}>{member.meta}</span>
 								</span>
 								<StatusPill kind="running" label="Online" />
 								<button type="button" className="btn small" onClick={() => (haptic(6), setServerOpen(true))}>
@@ -230,22 +230,22 @@ function ServerSheet({name, owner, onClose, onDesktop, onTerminal}: {name: strin
 			<div style={{display: 'flex', justifyContent: 'flex-end', marginTop: 8}}>
 				<PinButton pin={{kind: 'machine', id: SERVER_FLEET_ID, computer: ''}} name={name} />
 			</div>
-			{onTerminal && (
-				<div className="system-tiles" style={{marginTop: 12}}>
-					<button className="glass system-tile press" onClick={() => (haptic(6), onTerminal())}>
-						<TerminalIcon size={46} />
-						<span>
-							<b>Terminal</b>
-							<small>Command line</small>
-						</span>
-					</button>
-				</div>
-			)}
-			{owner && (
-				<div className="primary-row">
-					<button className="btn primary" onClick={onDesktop}>
-						<Icon name="terminal" size={20} /> Open desktop
-					</button>
+			{(onTerminal || owner) && (
+				<div className="server-actions">
+					{onTerminal && (
+						<button className="glass system-tile press" onClick={() => (haptic(6), onTerminal())}>
+							<TerminalIcon size={46} />
+							<span>
+								<b>Terminal</b>
+								<small>Command line</small>
+							</span>
+						</button>
+					)}
+					{owner && (
+						<button className="btn primary" onClick={onDesktop}>
+							<Icon name="terminal" size={20} /> Open desktop
+						</button>
+					)}
 				</div>
 			)}
 			<div className="glass group" style={{marginTop: 12}}>
