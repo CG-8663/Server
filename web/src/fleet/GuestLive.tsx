@@ -3,7 +3,6 @@ import {lazy, Suspense, useState, type ReactNode} from 'react'
 import type {Machine} from '../api'
 import {Icon} from '../icons'
 import {useStats} from '../machines/api'
-import {StoragePage} from '../screens/Storage'
 import {extraDisks, rootDisk} from '../swarm/gauges'
 import {guestAgent, hostGuestMetrics, linuxConnectorOs} from '../swarm/guestLink'
 import {storageRowSub} from '../swarm/storageHint'
@@ -27,13 +26,12 @@ const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((1
  */
 export type GuestSections = {files?: ReactNode; apps?: ReactNode; storage?: ReactNode; backups?: ReactNode; manage?: ReactNode}
 
-export function GuestLive({machine, onOpenStore, onOpenDesktop, onBackups, tabs}: {machine: Machine; onOpenStore?: () => void; onOpenDesktop?: () => void; onBackups?: () => void; tabs: (sections: GuestSections) => ReactNode}) {
+export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, onBackups, tabs}: {machine: Machine; onOpenStore?: () => void; onOpenDesktop?: () => void; onOpenStorage: (target: {agentId: string; name: string}) => void; onBackups?: () => void; tabs: (sections: GuestSections) => ReactNode}) {
 	const swarm = useSwarm()
 	const agent = guestAgent(swarm.data ?? [], machine.id)
 	const [install, setInstall] = useState(false)
 	const [terminal, setTerminal] = useState<{input?: string} | null>(null)
 	const [desktop, setDesktop] = useState(false)
-	const [storage, setStorage] = useState(false)
 	const [storageNote, setStorageNote] = useState(false)
 	const live = machine.state === 'running' && !!agent?.online
 	const metrics = agent?.online ? agent.metrics : null
@@ -52,7 +50,6 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onBackups, tabs}
 	const openTerminal = (input?: string) => setTerminal({input})
 	const hostScreen = !!onOpenDesktop && machine.state === 'running'
 	const connectorDesktop = live && !!agent && agentMay(agent, 'desktop') && agent.info?.desktop?.ok !== false
-	if (storage && agent) return <StoragePage onBack={() => setStorage(false)} target={{agentId: agent.id, name: machine.name}} />
 	return (
 		<>
 			<MachineActions terminal={live && !!agent && agentMay(agent, 'terminal')} desktop={hostScreen || connectorDesktop} onTerminal={() => openTerminal()} onDesktop={() => (onOpenDesktop && machine.state === 'running' ? onOpenDesktop() : setDesktop(true))} />
@@ -89,7 +86,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onBackups, tabs}
 				apps: live ? (
 					<Row icon="store" color="var(--accent)" label="App Store" sub={`Installs on ${machine.name}`} onClick={() => (haptic(6), onOpenStore ? onOpenStore() : openStore({id: machine.id, kind: 'guest', name: machine.name}))} />
 				) : undefined,
-				storage: <Row icon="disk" color="var(--teal)" label="Storage" sub={storageSub} onClick={() => (haptic(8), canStorage ? setStorage(true) : setStorageNote(true))} />,
+				storage: <Row icon="disk" color="var(--teal)" label="Storage" sub={storageSub} onClick={() => (haptic(8), canStorage && agent ? onOpenStorage({agentId: agent.id, name: machine.name}) : setStorageNote(true))} />,
 				backups: onBackups ? <Row icon="history" color="var(--green)" label="Backups" sub="Back up this virtual machine" onClick={() => (haptic(8), onBackups())} /> : undefined,
 				manage: agent ? <ConnectorControls a={agent} onTerminal={openTerminal} /> : undefined,
 			})}

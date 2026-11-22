@@ -14,7 +14,7 @@ import {ThemePicker} from '../theme/ThemePicker'
 import {Row, SheetHeader, bytes, duration, haptic} from '../ui'
 import {openStore} from './openStore'
 import {SERVER_FLEET_ID} from './list'
-import {StoragePage} from '../screens/Storage'
+import {StoragePanel} from '../screens/Storage'
 import {BackupsPage} from '../backups'
 import {ServerLogs, ServerNetwork} from '../screens/machineHost'
 
@@ -55,7 +55,7 @@ export function ServerSheet({
 	const currentTheme = installed.find((t) => t.current)?.name ?? ''
 	const [tab, setTab] = useState('files')
 	const [more, setMore] = useState<'storage' | 'backups' | null>(null)
-	if (more === 'storage') return <StoragePage onBack={() => setMore(null)} target="host" />
+	if (more === 'storage') return <StoragePanel bare={bare} target="host" onClose={() => setMore(null)} />
 	if (more === 'backups') return <BackupsPage onBack={() => setMore(null)} />
 	const tabs = [
 		{

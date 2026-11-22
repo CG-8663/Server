@@ -22,6 +22,7 @@ import {ServerSheet} from '../fleet/ServerSheet'
 import {ServerSpecs} from '../fleet/serverGauges'
 import {guestAgent, isGuestAgent} from '../swarm/guestLink'
 import {AgentCard, LocalSwarm, useSwarm} from '../swarm/Swarm'
+import {StoragePanel} from './Storage'
 import {SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
@@ -266,6 +267,7 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 	const busy = status.kind === 'busy' || power.pending
 	const os = osLook(m.osId)
 	const [tab, setTab] = useState('files')
+	const [storage, setStorage] = useState<{agentId: string; name: string} | null>(null)
 	const hostTabs = PANELS.filter((p) => p.id !== 'console' && p.id !== 'backups' && (p.id !== 'cloudinit' || d?.cloudInit))
 	const panel = (id: PanelId) => {
 		if (!d) return <div className="skeleton" style={{height: 160, borderRadius: 20}} />
@@ -322,6 +324,8 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 		</>
 	)
 
+	if (storage) return <StoragePanel bare={bare} target={storage} onClose={() => setStorage(null)} />
+
 	return (
 		<MachineShell bare={bare} label={m.name} onClose={onClose}>
 			<SheetHeader
@@ -348,7 +352,7 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 					{/^\[[\w-]+\]$/.test(m.errorMessage) ? m.errorMessage.slice(1, -1).replace(/-/g, ' ') : m.errorMessage}
 				</div>
 			)}
-			<GuestLive machine={m} onOpenStore={() => (onClose(), openStore({id: m.id, kind: 'guest', name: m.name}))} onOpenDesktop={onConsole} onBackups={() => setTab('backups')} tabs={(sections) => {
+			<GuestLive machine={m} onOpenStore={() => (onClose(), openStore({id: m.id, kind: 'guest', name: m.name}))} onOpenDesktop={onConsole} onOpenStorage={setStorage} onBackups={() => setTab('backups')} tabs={(sections) => {
 				const rows: MachineTab[] = [
 					...(sections.files ? [{id: 'files', label: 'Files', body: sections.files}] : []),
 					...(sections.apps ? [{id: 'apps', label: 'Apps', body: sections.apps}] : []),

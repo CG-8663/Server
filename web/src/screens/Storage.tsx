@@ -13,6 +13,7 @@ import {queryProblem, useBrowserOnline} from '../connection'
 import {Icon} from '../icons'
 import {poolCheckText, storageDrivesView, storageStatusMessage} from '../storageList'
 import {canFormat, canMount, canUnmount, formatConfirmToken, formatPhraseMatches, type FormatKind} from '../storageTools'
+import {MachineShell} from '../fleet/MachineTabs'
 import {Card, Field, KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
 
 type Health = {passed: boolean | null; temperature: number | null; powerOnHours: number | null; lifetimeUsed: number | null; reallocated: number | null; pending: number | null}
@@ -121,6 +122,16 @@ function DriveRow({d, onClick, trailing}: {d: Drive; onClick?: () => void; trail
 }
 
 export type StorageTarget = 'host' | {agentId: string; name: string}
+
+/** Storage is its own panel: a sheet on the phone, the machine pane on the desktop. Closing it returns to the machine that opened it. */
+export function StoragePanel({bare, target = 'host', onClose}: {bare?: boolean; target?: StorageTarget; onClose: () => void}) {
+	const label = target === 'host' ? 'Storage' : `Storage · ${target.name}`
+	return (
+		<MachineShell bare={bare} label={label} onClose={onClose}>
+			<StoragePage onBack={onClose} target={target} />
+		</MachineShell>
+	)
+}
 
 export function StoragePage({onBack, target = 'host'}: {onBack: () => void; target?: StorageTarget}) {
 	const qc = useQueryClient()

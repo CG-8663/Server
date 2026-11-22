@@ -21,7 +21,7 @@ import {openStore} from '../fleet/openStore'
 import {ThemePicker} from '../theme/ThemePicker'
 import {themeAction} from '../theme/themeAction'
 import {storageRowSub} from './storageHint'
-import {StoragePage} from '../screens/Storage'
+import {StoragePanel} from '../screens/Storage'
 import {ComputerBackups} from '../backups'
 import {Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, useConfirm, useToast} from '../ui'
 
@@ -140,10 +140,8 @@ export function LocalSwarm({
 	}
 	const [terminal, setTerminal] = useState<{agent: Agent; input?: string} | null>(null)
 	const [screen, setScreen] = useState<Agent | null>(null)
-	const [storage, setStorage] = useState<Agent | null>(null)
 	const selected = (swarm.data ?? []).find((a) => a.id === selectedId && !isGuestAgent(a)) ?? null
 	const online = list.filter((a) => a.online).length
-	if (storage) return <StoragePage onBack={() => setStorage(null)} target={{agentId: storage.id, name: storage.name}} />
 	const sheets = (
 		<>
 			{selected && !terminal && !screen && (
@@ -153,7 +151,6 @@ export function LocalSwarm({
 					onClose={() => setSelectedId(null)}
 					onTerminal={(input) => setTerminal({agent: selected, input})}
 					onDesktop={() => setScreen(selected)}
-					onStorage={() => setStorage(selected)}
 				/>
 			)}
 			{adding && <AddComputer before={(swarm.data ?? []).map((a) => a.id)} onClose={() => setAdding(false)} onJoined={(id) => (setAdding(false), setSelectedId(id))} />}
@@ -358,16 +355,18 @@ export function ConnectorControls({a, onTerminal}: {a: Agent; onTerminal: (input
 	)
 }
 
-function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, bare}: {a: Agent; onClose: () => void; onTerminal: (input?: string) => void; onDesktop: () => void; onStorage: () => void; bare?: boolean}) {
+function AgentSheet({a, onClose, onTerminal, onDesktop, bare}: {a: Agent; onClose: () => void; onTerminal: (input?: string) => void; onDesktop: () => void; bare?: boolean}) {
 	const os = look(a)
 	const act = useSwarmAction()
 	const confirm = useConfirm()
 	const [name, setName] = useState(a.name)
 	const [backups, setBackups] = useState(false)
+	const [storage, setStorage] = useState(false)
 	const [tab, setTab] = useState('files')
 	const m = a.metrics
 	const desk = a.info?.desktop
 	const offline = !a.online
+	if (storage) return <StoragePanel bare={bare} target={{agentId: a.id, name: a.name}} onClose={() => setStorage(false)} />
 	if (backups) return <ComputerBackups id={a.id} name={a.name} onClose={() => setBackups(false)} />
 	const tabs: MachineTab[] = [
 		...(may(a, 'files')
@@ -403,7 +402,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, bare}: {a: Ag
 					color="var(--teal)"
 					label="Storage"
 					sub={offline ? undefined : storageRowSub(a.allowed.storage, a.on.storage)}
-					onClick={a.online && may(a, 'storage') ? () => (haptic(8), onStorage()) : undefined}
+					onClick={a.online && may(a, 'storage') ? () => (haptic(8), setStorage(true)) : undefined}
 					disabled={offline}
 				/>
 			),
