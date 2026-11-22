@@ -157,6 +157,42 @@ export function pasteKeySequence({
 	return {releaseSuper: meta, keys}
 }
 
+// Characters a US keyboard types with Shift. The keysym is the character itself; Shift is
+// what makes QEMU's keyboard produce it instead of the unshifted key.
+const NEEDS_SHIFT = /^[A-Z~!@#$%^&*()_+{}|:"<>?]$/
+export const PASTE_SHIFT = 0xffe1
+export const PASTE_ENTER = 0xff0d
+export const PASTE_TAB = 0xff09
+
+export function keysymOfChar(ch: string): number {
+	const cp = ch.codePointAt(0) ?? 0
+	return cp < 0x100 ? cp : (0x01000000 | cp)
+}
+
+// One typed character as key down then key up, with Shift around it when the character needs it.
+export function charKeySteps(ch: string, shiftHeld = false): {keysym: number; down: boolean}[] {
+	const keysym = ch === '\n' ? PASTE_ENTER : ch === '\t' ? PASTE_TAB : keysymOfChar(ch)
+	const shift = !shiftHeld && ch !== '\n' && ch !== '\t' && NEEDS_SHIFT.test(ch)
+	const steps: {keysym: number; down: boolean}[] = []
+	if (shift) steps.push({keysym: PASTE_SHIFT, down: true})
+	steps.push({keysym, down: true}, {keysym, down: false})
+	if (shift) steps.push({keysym: PASTE_SHIFT, down: false})
+	return steps
+}
+
+// Gap between key events of a paste. QEMU's keyboard queue is 16 bytes and it does not
+// let the guest run while it drains one burst. The guest terminal pauses when the cursor
+// reaches the right edge, the queue drops the next key-up, and that character repeats.
+export const PASTE_STEP_MS = 20
+
+// Every key-down and key-up of a paste, in order. The sender must wait PASTE_STEP_MS
+// between steps so each key-up lands before the next character.
+export function pasteKeySteps(text: string): {keysym: number; down: boolean}[] {
+	const steps: {keysym: number; down: boolean}[] = []
+	for (const ch of text.replace(/\r\n?/g, '\n')) steps.push(...charKeySteps(ch))
+	return steps
+}
+
 // Map DOM mouse button numbers (0..2) to VNC button masks; ignore extra buttons like Back/Forward.
 export function mouseButtonFromEvent(button: number): number | null {
 	if (button === 0) return BTN.left

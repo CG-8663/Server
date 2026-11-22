@@ -10,6 +10,7 @@ import '@xterm/xterm/css/xterm.css'
 import {clipText} from './clips'
 import {BootstrapContext} from './data'
 import {Icon} from './icons'
+import {terminalPasteDecision} from './terminalPaste'
 import {SEQ, applyTerminalModifiers} from './terminalKeys'
 import {AppIcon, haptic, useConfirm, usePortalRoot, useScreenLock, useToast} from './ui'
 
@@ -159,6 +160,16 @@ export function TerminalScreen({
 			)
 		}
 		el.addEventListener('contextmenu', onContextMenu)
+		// Take a clipboard paste once. Otherwise the browser also drops it into xterm's hidden
+		// field and keeps sending the last character.
+		const onPaste = (e: ClipboardEvent) => {
+			const decision = terminalPasteDecision(e.clipboardData ? e.clipboardData.getData('text/plain') : null)
+			if (!decision.prevent) return
+			e.preventDefault()
+			e.stopPropagation()
+			if (decision.text) term.paste(decision.text)
+		}
+		el.addEventListener('paste', onPaste, true)
 		const onClip = (e: ClipboardEvent) => {
 			const selected = term.getSelection()
 			const target = e.target
@@ -430,6 +441,7 @@ export function TerminalScreen({
 			ta?.removeEventListener('blur', onBlur)
 			wsRef.current?.close()
 			el.removeEventListener('contextmenu', onContextMenu)
+			el.removeEventListener('paste', onPaste, true)
 			document.removeEventListener('copy', onClip)
 			document.removeEventListener('cut', onClip)
 			term.dispose()
