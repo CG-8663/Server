@@ -242,6 +242,13 @@ export const ALLOWED = {
 	'backups.runComputer': 'mutation',
 	'backups.computerSnapshots': 'query',
 	'backups.restoreComputer': 'mutation',
+	'backups.gdrive.status': 'query',
+	'backups.gdrive.authStart': 'mutation',
+	'backups.gdrive.authFinish': 'mutation',
+	'backups.gdrive.configure': 'mutation',
+	'backups.gdrive.test': 'mutation',
+	'backups.gdrive.connectExisting': 'mutation',
+	'backups.gdrive.disconnect': 'mutation',
 	// Move from Unraid (owner only, checked in omarchyd)
 	'unraid.status': 'query',
 	'unraid.connect': 'mutation',
@@ -362,7 +369,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-export const SLOW = new Set(['hyprland.launch', 'hyprland.profileRun', 'unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'apps.start', 'apps.stop', 'apps.restart', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.installConnector', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.start', 'machines.hibernate', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
+export const SLOW = new Set(['hyprland.launch', 'hyprland.profileRun', 'unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'backups.gdrive.authFinish', 'backups.gdrive.configure', 'backups.gdrive.test', 'backups.gdrive.connectExisting', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'apps.start', 'apps.stop', 'apps.restart', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.installConnector', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.start', 'machines.hibernate', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
 export const timeoutFor = (path) => (SLOW.has(path) ? 30 * 60 * 1000 : 20_000)
 
 // An IPv6 address in a URL needs brackets; req.hostname and URL.hostname may already have them.
@@ -2701,6 +2708,46 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		} catch {
 			unregister()
 			if (!res.headersSent) res.status(502).end()
+		}
+	})
+
+	api.get('/backups/gdrive/callback', async (req, res) => {
+		res.set('Cache-Control', 'no-store')
+		const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]))
+		const page = (title, body, {ok = false, refreshUrl = '', linkHref = '', linkLabel = ''} = {}) =>
+			res
+				.status(ok || refreshUrl ? 200 : 400)
+				.type('text/html; charset=utf-8')
+				.send(
+					`<!doctype html><meta charset="utf-8">${refreshUrl ? `<meta http-equiv="refresh" content="0;url=${esc(refreshUrl)}">` : ''}<title>${esc(title)}</title><body style="font:15px system-ui;background:#0f1117;color:#eef2ff;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px"><div style="max-width:460px;text-align:center"><h2>${esc(title)}</h2><p style="opacity:.82;line-height:1.45">${esc(body)}</p>${linkHref ? `<p style="margin-top:18px"><a href="${esc(linkHref)}" style="display:inline-block;padding:10px 18px;border-radius:10px;background:#38bdf8;color:#0b1120;font-weight:600;text-decoration:none">${esc(linkLabel || 'Continue')}</a></p>` : ok ? '<p><a href="/" style="color:#7dd3fc">Return to My Own Data Center</a></p>' : ''}</div></body>`,
+				)
+		if (req.query.error) return page('Google Drive sign-in cancelled', String(req.query.error))
+		const code = String(req.query.code ?? '').trim()
+		const state = String(req.query.state ?? '').trim()
+		if (!code || !state) return page('Missing authorization code', 'Google didn’t return a code. Try connecting Google Drive again from the Backups screen.')
+		// The My Own Data Center session cookie is SameSite=Strict, so browsers withhold it on the initial
+		// cross-site redirect from accounts.google.com. A same-origin hop re-attaches the Strict cookie
+		// without relaxing SameSite protection.
+		if (!store.getSession(req.sid)) {
+			const sameOriginUrl = `/api/backups/gdrive/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}&r=1`
+			if (req.query.r !== '1') {
+				return page('Completing Google Drive sign-in…', 'Finishing secure handoff to My Own Data Center. Click below if this page doesn’t continue automatically.', {
+					refreshUrl: sameOriginUrl,
+					linkHref: sameOriginUrl,
+					linkLabel: 'Complete Google Drive sign-in',
+				})
+			}
+			return page(
+				'Sign in required',
+				'Your browser didn’t attach a My Own Data Center session cookie. Copy this tab’s full URL from the address bar and paste it into the “Paste callback URL” box on the Backups screen.',
+				{linkHref: '/', linkLabel: 'Open My Own Data Center'},
+			)
+		}
+		try {
+			await authedCall(req, 'backups.gdrive.authFinish', 'mutation', {code, state})
+			return page('Google Drive connected', 'Your Google Drive backup account is linked. You can close this tab and finish setup on the Backups screen.', {ok: true})
+		} catch (e) {
+			return page('Couldn’t connect Google Drive', e?.message || 'Sign-in failed')
 		}
 	})
 
