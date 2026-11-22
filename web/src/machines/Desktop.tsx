@@ -262,7 +262,7 @@ function NodeView({onSelect, onCreate}: {onSelect: (id: string) => void; onCreat
 									<button type="button" className="pve-desktop" onClick={() => (desk ? desk.openConsole('desktop') : null)}>
 										<Icon name="devices" size={20} />
 										<span>
-											<b>Open desktop</b>
+											<b>Desktop</b>
 											<small>This server’s own desktop, live.</small>
 										</span>
 									</button>
@@ -446,7 +446,7 @@ function VmView({m, host, panel, setPanel, onGone}: {m: Machine; host: string; p
 								<b>{m.state === 'running' ? `${m.name}’s screen` : `${m.name} isn’t running`}</b>
 								<span>The desktop opens in its own window, so you can keep it beside these settings.</span>
 								<button type="button" className="btn primary" disabled={m.state !== 'running'} onClick={() => desk?.openConsole(m.id)}>
-									<Icon name="devices" size={16} /> Open desktop
+									<Icon name="devices" size={16} /> Desktop
 								</button>
 							</div>
 						</div>

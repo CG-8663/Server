@@ -48,10 +48,6 @@ export function extraDisks(disks: SwarmDisk[] = []) {
 	return root ? disks.filter((d) => d !== root) : []
 }
 
-function shortGpuName(name: string) {
-	return name.replace(/^NVIDIA GeForce /, '').replace(/^NVIDIA /, '').replace(/^AMD Radeon /, '').replace(/^Intel\(R\) /, '').replace(/^Intel /, '')
-}
-
 function sumKnown(xs: Array<number | null>) {
 	const known = xs.filter((n): n is number => n != null)
 	return known.length ? known.reduce((a, b) => a + b, 0) : null
@@ -90,22 +86,6 @@ function combineBatteries(batteries: SwarmBattery[]): {percent: number | null; s
 	return {percent, status, secondsRemaining}
 }
 
-function formatEta(seconds: number | null) {
-	if (seconds == null || seconds < 60) return null
-	const d = Math.floor(seconds / 86400)
-	const h = Math.floor((seconds % 86400) / 3600)
-	const m = Math.floor((seconds % 3600) / 60)
-	return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`
-}
-
-function batterySub(status: SwarmBattery['status'], secondsRemaining: number | null) {
-	if (status === 'charging') return 'Charging'
-	if (status === 'full') return 'Full'
-	if (status === 'discharging') return formatEta(secondsRemaining) ?? 'Discharging'
-	if (status === 'not-charging') return 'Not charging'
-	return ' '
-}
-
 function gpuItems(gpus: SwarmGpu[]) {
 	const many = gpus.length > 1
 	return gpus.map((gpu) => ({
@@ -113,7 +93,7 @@ function gpuItems(gpus: SwarmGpu[]) {
 		key: gpu.id,
 		icon: 'gpu' as const,
 		p: gpu.used ?? 0,
-		sub: shortGpuName(gpu.name) || ' ',
+		sub: gpu.used != null ? `${Math.round(gpu.used)}%` : '–',
 		ready: gpu.used != null,
 	}))
 }
@@ -126,7 +106,7 @@ function batteryItem(batteries: SwarmBattery[]) {
 			k: 'Battery',
 			icon: 'battery' as const,
 			p: combined.percent ?? 0,
-			sub: batterySub(combined.status, combined.secondsRemaining),
+			sub: combined.percent != null ? `${Math.round(combined.percent)}%` : '–',
 			ready: combined.percent != null,
 			color: batteryColor(combined.percent ?? 0),
 		},
@@ -142,7 +122,7 @@ export function swarmGaugeItems(m: SwarmMetrics | null | undefined) {
 			k: 'CPU',
 			icon: 'cpu' as const,
 			p: m.cpu ?? 0,
-			sub: m.cores ? `${m.cores} threads` : '–',
+			sub: m.cpu != null ? `${Math.round(m.cpu)}%` : '–',
 			ready: m.cpu != null,
 		},
 		{
@@ -158,7 +138,7 @@ export function swarmGaugeItems(m: SwarmMetrics | null | undefined) {
 						k: 'Storage',
 						icon: 'disk' as const,
 						p: pct(disk.used, disk.total),
-						sub: `${bytes(disk.total - disk.used, 0)} free`,
+						sub: `${bytes(disk.used, 1)} of ${bytes(disk.total, 0)}`,
 						ready: true,
 					},
 				]

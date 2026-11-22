@@ -16,6 +16,8 @@ import {createBackups} from './backups.mjs'
 import {createUnraid} from './unraid.mjs'
 import {APP_COOKIE, createApps} from './apps.mjs'
 import {createFiles} from './files.mjs'
+import {createFileTransfer} from './file-transfer.mjs'
+import {installTargetId} from './install-target.mjs'
 import {fileUrl, localGitDir} from './local-source.mjs'
 import {createMachines} from './machines.mjs'
 import {createOmarchyTheme} from './omarchy-theme.mjs'
@@ -82,7 +84,25 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const secure = appOptions.secure ?? tlsContext({dir: tlsDir, lazy: true})
 	// Apps that are part of the server itself (Tailscale), installed through the root helper.
 	const systemApps = appOptions.systemApps !== undefined ? appOptions.systemApps || null : createSystemApps({helper: storage.helper})
-	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...(defaultStores ? {defaultStores} : {}), ...appOptions, systemApps, tlsDir, secure})
+	// The connector is created later. These bindings are filled in once it exists, so an install
+	// aimed at another machine is forwarded there instead of running on this server.
+	let forwardInstall = async () => {
+		throw new RpcError('PRECONDITION_FAILED', 'That computer can’t take this install yet.')
+	}
+	let remoteApps = async () => []
+	const apps = createApps({
+		dataDir,
+		home,
+		webPort,
+		firewall: storage.firewall,
+		...(defaultStores ? {defaultStores} : {}),
+		...appOptions,
+		systemApps,
+		tlsDir,
+		secure,
+		forwardInstall: (...args) => forwardInstall(...args),
+		remoteApps: () => remoteApps(),
+	})
 	// Backups need apps: to pause them while their files are saved, and to know where those files are.
 	// …and the local swarm's connector (created further down), for computers that back up here.
 	const backups = createBackups({dataDir, home, files, apps, swarm: {agents: () => connector.backup.agents(), call: (...a) => connector.backup.call(...a), progress: (id) => connector.backup.progress(id)}, ...backupOptions})
@@ -183,9 +203,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'omarchy.plugins': {kind: 'query', run: (input) => themeCall(() => omarchyPlugins.list(input ?? {}))},
 		// Local swarm (connector.mjs): owner only.
 		...Object.fromEntries(
-			['swarm.list', 'swarm.files.list', 'swarm.pair', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'swarm.storage.setSleep'].map((name) => [
+			['swarm.list', 'swarm.files.list', 'swarm.files.recents', 'swarm.pair', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'swarm.storage.setSleep'].map((name) => [
 				name,
-				{kind: ['swarm.list', 'swarm.files.list', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable'].includes(name) ? 'query' : 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'manage the local swarm'), connector.procedures[name].run(input))},
+				{kind: ['swarm.list', 'swarm.files.list', 'swarm.files.recents', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable'].includes(name) ? 'query' : 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'manage the local swarm'), connector.procedures[name].run(input))},
 			]),
 		),
 		'omarchy.installPlugin': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'install Omarchy plugins'), themeCall(() => omarchyPlugins.install(input)))},
@@ -407,7 +427,19 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			Object.entries(apps.procedures).map(([name, p]) =>
 				name === 'appStore.addRepository' || name === 'appStore.removeRepository'
 					? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'change app stores'), p.run(input))}]
-					: [name, p],
+					: name === 'apps.install'
+						? [
+								name,
+								{
+									kind: p.kind,
+									run: (input, {auth}) => {
+										// This server’s own install stays as open as it is today. Another machine is owner-only.
+										if (installTargetId(input?.target)) ownerOnly(auth, 'install an app on another computer')
+										return p.run(input)
+									},
+								},
+							]
+						: [name, p],
 			),
 		),
 		...Object.fromEntries(
@@ -480,6 +512,23 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		urlUser: (token, req) => accounts.checkUrlToken(token, req),
 	})
 	Object.assign(procedures, clips.procedures)
+	forwardInstall = (target, payload) => connector.forwardAppInstall(target, payload)
+	remoteApps = () => connector.remoteApps()
+	const transfer = createFileTransfer({files, fleet: connector.files})
+	const crossesComputers = (input) => [input?.path, input?.toDirectory].some((p) => typeof p === 'string' && p.startsWith('::'))
+	Object.assign(procedures, {
+		'files.transfer': {
+			kind: 'mutation',
+			run: (input, {auth}) => {
+				if (crossesComputers(input)) ownerOnly(auth, 'move files between computers')
+				return transfer.transfer(input)
+			},
+		},
+		'files.fleetRecents': {
+			kind: 'query',
+			run: (_input, {auth}) => (ownerOnly(auth, 'read files on other computers'), transfer.fleetRecents()),
+		},
+	})
 	let signedInAt = 0
 	// After a sign-in from the web, lock the desktop again once nobody is viewing it (Settings →
 	// Security), so the screen isn't left signed in at the server itself. A short wait lets a page

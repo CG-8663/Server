@@ -61,8 +61,8 @@ function pair(row: ComputerFleetInput, key: 'terminal' | 'desktop' | 'storage' |
 function computerAbilities(row: ComputerFleetInput): FleetAbility[] {
 	const name = row.name
 	return [
-		grant('apps', pair(row, 'apps'), `${name} can’t take app-store apps yet.`),
-		grant('vms', row.online, row.online ? '' : `${name} is offline, so virtual machines can’t be created there right now.`),
+		grant('apps', row.online, `${name} is offline, so it can’t take an install.`),
+		grant('vms', false, `${name} can’t host its own virtual machines.`),
 		grant('files', pair(row, 'files'), `${name} hasn’t granted Files.`),
 		grant('storage', pair(row, 'storage'), `${name} hasn’t granted Storage.`),
 		grant('terminal', pair(row, 'terminal'), `${name} hasn’t granted Terminal.`),
@@ -75,7 +75,7 @@ function guestAbilities(row: GuestFleetInput): FleetAbility[] {
 	const name = row.name
 	const on = !!row.connector
 	return [
-		grant('apps', on, `Install the connector on ${name} before apps can be installed there.`),
+		grant('apps', on && row.state === 'running', on ? `${name} is not running.` : `Install the connector on ${name} before apps can be installed there.`),
 		grant('vms', false, `${name} can’t host its own virtual machines.`),
 		grant('files', on, `Install the connector on ${name} before its files can be opened.`),
 		grant('storage', false, `Storage stays on the computer that hosts ${name}.`),

@@ -2,9 +2,8 @@
 import {useContext, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {logout, mutate, query, type ActiveSession, type AssistantApi, type AssistantCheck, type AssistantEffort, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
-import {resetAssistantTurn} from '../assistantTurn'
-import {patchDeskConfig, resetDeskConfig} from '../desktop/config'
+import {mutate, query, type ActiveSession, type AssistantApi, type AssistantCheck, type AssistantEffort, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
+import {patchDeskConfig} from '../desktop/config'
 import {useBootstrap, useUser} from '../data'
 import {checkLiveText} from '../focus'
 import {Icon, type IconName} from '../icons'
@@ -85,14 +84,13 @@ function describeSession(s: ActiveSession) {
 	return {icon: 'browser' as IconName, name: `${browser}${os ? ` on ${os}` : ''}`, detail: ''}
 }
 
-type SheetId = null | 'name' | 'password' | '2fa' | 'hostname' | 'wifi' | 'logs' | 'reset'
+type SheetId = null | 'name' | 'password' | '2fa'
 
 export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; setPrefs: (p: Prefs) => void; onBack: () => void; onSignedOut: () => void}) {
 	const boot = useBootstrap()
 	const user = useUser()
 	const confirm = useConfirm()
 	const save = useSave()
-	const qc = useQueryClient()
 	const [sheet, setSheet] = useState<SheetId>(null)
 	const inWindow = useContext(InWindow)
 	type Page = 'main' | 'appearance' | 'unraid' | 'omarchy-themes' | 'assistant'
@@ -121,11 +119,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 		enabled: owner && updating,
 		refetchInterval: updating ? 1500 : false,
 	})
-	const hostname = useQ<string>('system.getHostname', undefined, {enabled: owner})
-	const ips = useQ<string[]>('system.getIpAddresses')
-	const wifiSupported = useQ<boolean>('wifi.supported', undefined, {enabled: owner})
-	const wifi = useQ<{status: 'connected' | 'disconnected'; ssid?: string}>('wifi.connected', undefined, {enabled: owner && !!wifiSupported.data})
-
 	const startUpdate = async () => {
 		const ok = await confirm({
 			title: `Update to ${check.data?.name ?? check.data?.version}?`,
@@ -157,18 +150,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 			return
 		save.mutate({path: 'user.revokeOtherSessions', done: 'Other devices signed out', refresh: ['user.listSessions']})
 	}
-	const power = async (kind: 'restart' | 'shutdown') => {
-		const ok = await confirm({
-			title: kind === 'restart' ? 'Restart your server?' : 'Shut down your server?',
-			body: kind === 'restart' ? 'Apps and machines stop, then come back after the restart.' : 'You’ll need to turn the server back on yourself (for a VM, from its host).',
-			confirm: kind === 'restart' ? 'Restart' : 'Shut down',
-			danger: true,
-			icon: kind === 'restart' ? 'restart' : 'power',
-		})
-		if (ok) save.mutate({path: `system.${kind}`, done: kind === 'restart' ? 'Your server is restarting' : 'Your server is shutting down'})
-	}
-
-
 	if (page === 'unraid' && owner) return <UnraidPage onBack={() => openPage('main')} />
 	if (page === 'assistant') return <AssistantPage onBack={() => openPage('main')} />
 	if (page === 'omarchy-themes')
@@ -339,14 +320,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				</Group>
 			)}
 
-			{owner && (
-				<Group title="Network & privacy">
-					<Row icon="network" color="var(--teal)" label="Device name" value={hostname.data ? `${hostname.data}.local` : ''} onClick={() => setSheet('hostname')} />
-					<Row icon="networking" color="var(--blue)" label="IP address" value={(ips.data ?? []).join(', ') || '–'} />
-					{wifiSupported.data && <Row icon="wifi" color="var(--blue)" label="Wi-Fi" value={wifi.data?.status === 'connected' ? wifi.data.ssid : 'Off'} onClick={() => setSheet('wifi')} />}
-				</Group>
-			)}
-
 			<Group
 				title="Secure connection"
 				footer={
@@ -365,12 +338,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 
 			{owner && <SecurityGroup />}
 
-			<Group title="More">
-				{owner && <Row icon="logfile" color="#8e8e93" label="System logs" onClick={() => setSheet('logs')} />}
-				{owner && <Row icon="restart" color="var(--peach)" label="Restart server" onClick={() => power('restart')} />}
-				{owner && <Row icon="power" color="var(--red)" label="Shut down server" onClick={() => power('shutdown')} />}
-				{owner && <Row icon="danger" color="var(--red)" label="Factory reset" onClick={() => setSheet('reset')} />}
-			</Group>
 			<p className="footer-note">
 				<VersionTag prefix="MODC " version={boot.touch.version} info={boot.server} />
 			</p>
@@ -378,20 +345,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 			<NameSheet open={sheet === 'name'} current={user.data?.name ?? ''} onClose={close} />
 			<PasswordSheet open={sheet === 'password'} onClose={close} />
 			<TwoFactorSheet open={sheet === '2fa'} enabled={!!twoFactor.data} onClose={close} />
-			<HostnameSheet open={sheet === 'hostname'} current={hostname.data ?? ''} onClose={close} />
-			{sheet === 'wifi' && <WifiSheet onClose={close} connected={wifi.data?.status === 'connected' ? wifi.data.ssid : undefined} />}
-			{sheet === 'logs' && <LogsSheet onClose={close} />}
-			<ResetSheet
-				open={sheet === 'reset'}
-				onClose={close}
-				onDone={async () => {
-					await logout().catch(() => {})
-					qc.clear()
-					resetDeskConfig()
-					resetAssistantTurn()
-					onSignedOut()
-				}}
-			/>
 		</div>
 	)
 }
@@ -1250,164 +1203,6 @@ function TwoFactorSheet({open, enabled, onClose}: {open: boolean; enabled: boole
 				onChange={(e) => setCode(e.target.value)}
 				style={{textAlign: 'center', letterSpacing: '0.3em', fontSize: 20}}
 			/>
-		</FormSheet>
-	)
-}
-
-function HostnameSheet({open, current, onClose}: {open: boolean; current: string; onClose: () => void}) {
-	const save = useSave()
-	const [name, setName] = useState(current)
-	useEffect(() => setName(current), [current, open])
-	const valid = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name.trim().toLowerCase())
-	return (
-		<FormSheet
-			open={open}
-			title="Device name"
-			subtitle="How your server appears on your network"
-			onClose={onClose}
-			submit="Save"
-			busy={save.isPending}
-			disabled={!valid || name.trim().toLowerCase() === current}
-			onSubmit={() => save.mutate({path: 'system.setHostname', input: {hostname: name.trim().toLowerCase()}, done: 'Device name changed', refresh: ['system.getHostname']}, {onSuccess: onClose})}
-		>
-			<Field
-				id="host"
-				label="Name"
-				autoCapitalize="off"
-				autoCorrect="off"
-				spellCheck={false}
-				value={name}
-				onChange={(e) => setName(e.target.value)}
-				hint={valid ? `Reachable at http://${name.trim().toLowerCase()}.local` : undefined}
-				error={!valid ? 'Letters, numbers and dashes only.' : undefined}
-				autoFocus
-			/>
-		</FormSheet>
-	)
-}
-
-function WifiSheet({onClose, connected}: {onClose: () => void; connected?: string}) {
-	const save = useSave()
-	const confirm = useConfirm()
-	const networks = useQ<{ssid: string; signal: number; authenticated: boolean; active: boolean}[]>('wifi.networks', undefined, {refetchInterval: 10_000})
-	const [target, setTarget] = useState<{ssid: string; authenticated: boolean} | null>(null)
-	const [password, setPassword] = useState('')
-	const connect = (ssid: string, pw?: string) =>
-		save.mutate({path: 'wifi.connect', input: {ssid, ...(pw ? {password: pw} : {})}, done: `Connected to ${ssid}`, refresh: ['wifi.connected', 'wifi.networks']}, {onSuccess: () => setTarget(null)})
-	return (
-		<Sheet open onClose={onClose} label="Wi-Fi">
-			<SheetHeader title="Wi-Fi" subtitle={connected ? `Connected to ${connected}` : 'Not connected'} onClose={onClose} />
-			{target ? (
-				<form
-					onSubmit={(e) => {
-						e.preventDefault()
-						connect(target.ssid, password)
-					}}
-				>
-					<Field id="wifi-pw" label={`Password for ${target.ssid}`} type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
-					<div className="stack">
-						<button className="btn primary block" disabled={save.isPending || !password}>
-							{save.isPending && <span className="spinner" />}
-							Join
-						</button>
-						<button type="button" className="btn block ghost" onClick={() => setTarget(null)}>
-							Back
-						</button>
-					</div>
-				</form>
-			) : (
-				<>
-					<div className="glass group" style={{borderRadius: 18, '--inset': '62px'} as CSSProperties}>
-						{networks.isLoading && <div className="row static"><span className="spinner" /> Looking for networks…</div>}
-						{(networks.data ?? []).map((n) => (
-							<button
-								key={n.ssid}
-								className="row"
-								style={{minHeight: 56}}
-								disabled={n.active || save.isPending}
-								onClick={() => (n.authenticated ? (setPassword(''), setTarget(n)) : connect(n.ssid))}
-							>
-								<span className="row-ico" style={{'--c': n.active ? 'var(--green)' : 'var(--blue)'} as CSSProperties}>
-									<Icon name="wifi" size={18} />
-								</span>
-								<span className="main">
-									<b style={{fontWeight: 550}}>{n.ssid}</b>
-									<span>{n.active ? 'Connected' : `${n.signal}% signal${n.authenticated ? ' · secured' : ''}`}</span>
-								</span>
-							</button>
-						))}
-						{networks.data?.length === 0 && <div className="row static muted">No networks found.</div>}
-					</div>
-					{connected && (
-						<button
-							className="btn danger block"
-							style={{marginTop: 14}}
-							onClick={async () => {
-								if (await confirm({title: 'Turn off Wi-Fi?', body: 'If Wi-Fi is how your server connects, you’ll lose access until it’s wired in.', confirm: 'Disconnect', danger: true}))
-									save.mutate({path: 'wifi.disconnect', done: 'Wi-Fi disconnected', refresh: ['wifi.connected']})
-							}}
-						>
-							Disconnect
-						</button>
-					)}
-				</>
-			)}
-		</Sheet>
-	)
-}
-
-function LogsSheet({onClose}: {onClose: () => void}) {
-	const [type, setType] = useState<'server' | 'system'>('server')
-	const logs = useQ<string>('system.logs', {type, lines: 1500, maxOutputBytes: 400_000})
-	const [el, setEl] = useState<HTMLPreElement | null>(null)
-	useEffect(() => {
-		if (el) el.scrollTop = el.scrollHeight
-	}, [el, logs.data])
-	return (
-		<Sheet open onClose={onClose} label="System logs" tall>
-			<SheetHeader title="System logs" subtitle="Latest 1,500 lines" onClose={onClose} />
-			<Segmented
-				label="Log"
-				value={type}
-				onChange={setType}
-				options={[
-					{id: 'server', label: 'MODC'},
-					{id: 'system', label: 'System'},
-				]}
-			/>
-			<pre className="logs" ref={setEl}>
-				{logs.isLoading ? 'Loading…' : logs.error ? (logs.error as Error).message : logs.data?.trim() || 'No log output.'}
-			</pre>
-		</Sheet>
-	)
-}
-
-function ResetSheet({open, onClose, onDone}: {open: boolean; onClose: () => void; onDone: () => void}) {
-	const save = useSave()
-	const [password, setPassword] = useState('')
-	const [typed, setTyped] = useState('')
-	useEffect(() => {
-		setPassword('')
-		setTyped('')
-	}, [open])
-	return (
-		<FormSheet
-			open={open}
-			title="Factory reset"
-			subtitle="Erases this server’s apps, machines and accounts"
-			onClose={onClose}
-			submit="Reset My Own Data Center"
-			danger
-			busy={save.isPending}
-			disabled={!password || typed !== 'RESET'}
-			onSubmit={() => save.mutate({path: 'system.factoryReset', input: {password}, done: 'Your server is resetting'}, {onSuccess: onDone})}
-		>
-			<div className="error" style={{marginBottom: 16}}>
-				<Icon name="alert" size={18} />
-				Every app and its data, every machine and its disks, and all My Own Data Center accounts and settings are permanently deleted, and it goes back to first-time setup. This can’t be undone. Your own files, storage pools and the Omarchy desktop are left as they are.
-			</div>
-			<Field id="reset-pw" label="Your password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-			<Field id="reset-type" label="Type RESET to confirm" autoCapitalize="characters" autoCorrect="off" value={typed} onChange={(e) => setTyped(e.target.value)} />
 		</FormSheet>
 	)
 }

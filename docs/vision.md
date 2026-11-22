@@ -33,7 +33,7 @@ Two states are part of the product:
 
 ### Applications
 
-An application is a container on one machine. It is installed, started, stopped, and opened there. It has a name, a state, and an address when it serves one. It is not a computer: it has no drives of its own, no connector, and no row in the machine list. Its data and its updates belong to that container. The catalog asks which machine receives an install. A virtual machine can take an application after its connector is installed.
+An application is a container on one machine. It is installed, started, stopped, and opened there. It has a name, a state, and an address when it serves one. It is not a computer: it has no drives of its own, no connector, and no row in the machine list. Its data and its updates belong to that container. The catalog asks which machine receives an install, and it only offers this server or a machine whose connector is online. A virtual machine can take an application while its connector is online and the machine is running. That install is sent to the connector and runs on that machine. A machine with no connector, or a connector that is offline, is not offered.
 
 ### Storage
 
@@ -45,11 +45,11 @@ Backups belong to the machine they protect. This server can keep the copies. Res
 
 ### Files
 
-There is one file manager. It lists this server and the other machines that can be browsed, and it is how you open, move, and copy files and folders. A file shows which machine it came from. Recent files and favorites are part of every file list.
+There is one file manager. It lists this server and the other machines whose files can be read. A machine that cannot be read is left out. Move, copy, and the clip book work across this server, joined computers, and virtual machines whose files can be read. Each of those machines keeps its own recent files and favorites. The lists at the top of Files are those collections added together. A file shows which machine it came from.
 
 ### The screen and the shell
 
-Every machine that can show a desktop offers Open desktop, and that includes a virtual machine's screen. Every machine that can offer a shell offers Terminal, with the same controls. The terminal is the shell. The desktop is the screen.
+Every machine that can show a screen offers Desktop, and that includes a virtual machine's screen. Desktop is the screen. Every machine that can offer a shell offers Terminal, with the same controls. Terminal is the command prompt by itself. The terminal is the shell. The desktop is the screen.
 
 ### Power
 
@@ -73,7 +73,9 @@ Sign-in, devices, appearance, and updating My Own Data Center belong to the prod
 
 ### Alerts
 
-When a measure crosses a warning or a danger, Home shows it. Opening it names the machines. The interface does not hide a full disk, a hot CPU, or a low battery behind a separate tool.
+When a measure crosses a warning or a danger, Home shows it. Opening it names the machines. The interface does not hide a full disk, a hot CPU, or a low battery behind a separate tool. The gauge is one component. On Home it can be opened. On a machine page the same gauge is shown and that click is off.
+
+The desktop has a Home window with that same screen. The Machines window is the same Machines screen the phone uses. When the window is wide enough, the list stays beside the open machine. The lower part of every machine page is a tab strip, on the phone and on the desktop. A tab is there only when that machine can do the job.
 
 ## Where it is going
 

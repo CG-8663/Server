@@ -37,6 +37,9 @@ const SLOW_RPC = new Set([
 	'swarm.storage.forgetPool',
 	'swarm.storage.scrub',
 	'files.copy',
+	'files.transfer',
+	'files.fleetRecents',
+	'swarm.files.recents',
 	'files.unarchive',
 	'files.move',
 	'files.delete',
@@ -262,6 +265,11 @@ export type UserApp = {
 	error?: string
 	/** Runs on the server itself (Tailscale), not in a container: no container terminal. */
 	system?: boolean
+	/** Which machine this install is on. Absent or "server" is this server. */
+	computerId?: string
+	computerName?: string
+	/** Installed on another machine. It does not open through this server’s gateway. */
+	remote?: boolean
 }
 
 export type UsageItem = {id: string; used: number; name?: string}

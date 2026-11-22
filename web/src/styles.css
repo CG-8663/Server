@@ -7567,6 +7567,93 @@ html.page-locked .auth {
 	gap: 6px;
 	align-items: center;
 }
+/* The Machines window is the phone screen. A wide window puts the list beside the open machine.
+   The query is on the frame, so a narrow window on a wide screen stacks instead of overflowing. */
+.machines-frame {
+	container-type: inline-size;
+	container-name: machines;
+}
+.machines-split {
+	display: grid;
+	grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+	gap: 18px;
+	align-items: start;
+}
+.machines-detail {
+	min-width: 0;
+	max-height: calc(100vh - 96px);
+	overflow: auto;
+}
+@container machines (max-width: 760px) {
+	.machines-split {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+.machine-page {
+	min-width: 0;
+}
+/* One tab row for every machine. The selected tab keeps the same size. The underline is a border,
+   so it stays visible when color is forced. Arrow keys move focus and do not open a section. */
+.machine-tabs {
+	margin-top: 18px;
+}
+.machine-tabs-list {
+	display: flex;
+	flex-wrap: nowrap;
+	gap: 4px;
+	overflow-x: auto;
+	scrollbar-width: none;
+	margin: 0 -4px 12px;
+	padding: 0 4px;
+}
+.machine-tabs-list::-webkit-scrollbar {
+	display: none;
+}
+.machine-tabs-list [role="tab"] {
+	flex: none;
+	position: relative;
+	min-block-size: 44px;
+	border: 0;
+	background: transparent;
+	color: var(--muted);
+	font: inherit;
+	font-weight: 600;
+	font-size: 14px;
+	padding: 10px 12px 12px;
+	cursor: pointer;
+}
+.machine-tabs-list [role="tab"][aria-selected="true"] {
+	color: var(--fg);
+}
+.machine-tabs-list [role="tab"][aria-selected="true"]::after {
+	content: "";
+	position: absolute;
+	inset-inline: 12px;
+	inset-block-end: 4px;
+	border-block-end: 3px solid var(--accent);
+}
+.machine-tab-panel:focus {
+	outline: none;
+}
+.machine-tab-panel:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+.nu-acts {
+	display: inline-flex;
+	gap: 2px;
+	flex: none;
+}
+.nu-acts button {
+	border: 0;
+	background: transparent;
+	color: var(--muted);
+	font: inherit;
+	font-size: 12px;
+	min-block-size: 32px;
+	padding: 4px 6px;
+	cursor: pointer;
+}
 .mx-touch .mx-row-head {
 	grid-template-columns: 20px 1fr 16px;
 	padding: 13px 14px;

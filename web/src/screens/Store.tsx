@@ -448,7 +448,7 @@ function StoreSheet({
 			installTargets({
 				serverName: boot.server?.device || 'This server',
 				computers: (computers.data ?? []).filter((a) => !a.guestOf).map(computerInstallInput),
-				guests: (machines.data ?? []).map((m) => guestInstallInput({id: m.id, name: m.name, state: m.state, connector: (computers.data ?? []).some((a) => a.guestOf === m.id)})),
+				guests: (machines.data ?? []).map((m) => guestInstallInput({id: m.id, name: m.name, state: m.state, connector: (computers.data ?? []).some((a) => a.guestOf === m.id && a.online)})),
 			}),
 		[boot.server?.device, computers.data, machines.data],
 	)
@@ -539,7 +539,9 @@ function StoreSheet({
 							{
 								path: 'apps.install',
 								input: {appId: app.id, ...input, target},
-								adding: [...missingDeps.map((d) => all.find((a) => a.id === d)).filter((a): a is StoreApp => !!a), app].map((a) => ({id: a.id, name: a.name, icon: a.icon})),
+								...(target === 'server'
+									? {adding: [...missingDeps.map((d) => all.find((a) => a.id === d)).filter((a): a is StoreApp => !!a), app].map((a) => ({id: a.id, name: a.name, icon: a.icon}))}
+									: {}),
 								done: `Installing ${app.name}…`,
 							},
 							{onSuccess: () => setReviewing(false)},

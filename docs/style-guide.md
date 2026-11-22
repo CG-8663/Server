@@ -10,7 +10,7 @@ Touch is the primary input. A control that works only by hovering, or only with 
 
 The phone layout is a stack of pages and sheets. The person moves forward into a task and back to the place that opened it. The thumb can reach the primary actions.
 
-The desktop layout shows those same screens in windows. Phone and desktop are not on screen together. The person chooses Automatic, Phone, or Desktop. Automatic uses the desktop on a large screen with a pointer.
+The desktop layout shows those same screens in windows. The desktop has a Home window. The Machines window is the Machines screen, with the list and the open machine side by side when the window is wide enough. Phone and desktop are not on screen together. The person chooses Automatic, Phone, or Desktop. Automatic uses the desktop on a large screen with a pointer.
 
 Ubuntu is the windowed shell: floating windows, a dock, and icons on the desktop. Hyprland is the tiled shell: windows tile, workspaces remain, and the dock and desktop icons are hidden. Choosing Ubuntu or Hyprland changes that shell. On the phone, choosing either opens the desktop so the shell is visible. Phone or desktop stays its own control.
 
@@ -25,7 +25,7 @@ Prefer the existing piece over a new one with the same job.
 - A measure uses the gauge. A shell uses the terminal. A yes-or-no uses the confirm sheet. A short form uses a sheet.
 - An application uses the app row and the app page.
 
-Give the same action the same name everywhere. Terminal is the shell. Open desktop is the machine's screen. Storage is the machine's drives. Backups is the machine's backups. A second label for the same action is a defect.
+Give the same action the same name everywhere. Terminal is the command prompt by itself. Desktop is the machine's screen. Storage is the machine's drives. Backups is the machine's backups. A second label for the same action is a defect.
 
 Build a new component when the behavior is different. A container is different from a machine. A confirm is different from a page. Those differences earn a component. A new visual for the same action does not.
 
@@ -43,7 +43,7 @@ Leave out what cannot be done. A virtual machine does not host another virtual m
 
 ### Without a connector
 
-The host can power the guest and can open its screen while it is running. Show gauges only from measurements the host actually has. Files are an empty folder. Terminal stays unavailable until a shell exists. Offer Install connector when the guest can run Linux with systemd. When the operating system cannot run the connector, say that on the machine.
+The host can power the guest and can open its screen while it is running. Show gauges only from measurements the host actually has. An unreadable guest is not listed in the file manager, and the machine page does not invent files. Terminal stays unavailable until a shell exists. Offer Install connector when the guest can run Linux with systemd. When the operating system cannot run the connector, say that on the machine. Do not offer the guest as a place to install an application until its connector is online and the guest is running.
 
 ### With a connector
 
@@ -56,7 +56,7 @@ An application is a container on one machine.
 - Show it as an app: icon, name, state, and address when it has one.
 - Keep it out of the machine list. It has no drives, no connector, and no desktop of its own.
 - Open the application in the product when it allows that. When it refuses to be embedded, open it in a browser tab.
-- The store names the machine that will receive the install. Opened from a machine, the install targets that machine. A virtual machine can receive an application after its connector is installed.
+- The store names the machine that will receive the install. Opened from a machine, the install targets that machine. Only this server, or a machine whose connector is online, is offered. A virtual machine can receive an application while its connector is online and the machine is running. The install is sent to that connector. An offline connector is not offered.
 - When the same application runs on more than one machine, show one application and a count.
 
 ## Where a control lives
@@ -64,9 +64,10 @@ An application is a container on one machine.
 Put a control on the thing it changes.
 
 - Fleet health lives on Home.
-- One machine's gauges, power, files, apps, storage, backups, terminal, and desktop live on that machine.
-- Account, appearance, sign-in, and updating this application live in Settings.
-- This server's identity and power live on System. Its disks and its health live on the machine page.
+- One machine's gauges, power, files, apps, storage, backups, terminal, and desktop live on that machine. This server's network and its logs live on that machine too.
+- The lower sections of a machine are one tab strip, on the phone and on the desktop. A section is a tab only when that machine can do it.
+- Account, appearance, sign-in, and updating this application live in Settings. Product update stays in Settings. It is not repeated on the machine.
+- This server's identity and power live on System, including factory reset. Restart and shut down are not also on Settings or on the machine page. Its disks and its health live on the machine page.
 - A decision that takes a moment lives in a sheet or a confirm.
 - Work that takes a while lives on a page, which the desktop shows as a window.
 
@@ -78,11 +79,11 @@ The fleet at a glance. Gauges, then the machines and applications the person pin
 
 ### Machines
 
-Every physical machine, with a host's virtual machines available from that host. One row opens one machine. Terminal and Open desktop are on the machine, for this server, a joined computer, and a virtual machine alike.
+Every physical machine, with a host's virtual machines available from that host. One row opens one machine. Terminal and Desktop are on the machine, for this server, a joined computer, and a virtual machine alike. On the desktop, a wide window keeps the list beside the open machine.
 
 ### Machine page
 
-The machine's own place. How it is doing, what it is doing now, its files, its applications, its terminal, its desktop, its storage, its backups, and its power. This server, a joined computer, and a virtual machine share this shape. Host-only controls sit in the same page, in their own sections.
+The machine's own place. How it is doing, what it is doing now, its files, its applications, its terminal, its desktop, its storage, its backups, and its power. This server, a joined computer, and a virtual machine share this shape. The lower sections are a tab strip. Host-only controls sit in that same strip, in their own tabs. A joined computer does not get a virtual-machines tab.
 
 ### Apps
 
@@ -94,9 +95,9 @@ The catalog of containers. The person can see which machine will receive the ins
 
 ### Files
 
-One manager. Places for this server and for machines that can be browsed, the folder you are in, and move and copy of files and folders. Recent files and favorites are on every file list. A recent file shows its size and can open its folder. Opening the file itself is there when the bytes are on this server. A file's origin is the machine it came from.
+One manager. Places for this server and for machines whose files can be read. A machine that cannot be read is not listed. Move, copy, and the clip book cross those machines. Recent files and favorites belong to each machine that can do file work. The global lists add those collections together. A recent file shows its size and can open its folder. Opening the file itself is there when the bytes are on this server. A file's origin is the machine it came from.
 
-A machine that cannot be listed shows an empty folder. Do not add a sentence about the missing permission. The way to grant files, or to install the connector, is a control on that machine.
+An opened place with no entries is an empty folder. Do not add a sentence about a missing permission. The way to grant files, or to install the connector, is a control on that machine.
 
 ### Terminal
 
@@ -104,7 +105,7 @@ The shell on that machine, with the same new-session control for this server, a 
 
 ### Desktop
 
-The machine's screen. The label is Open desktop on every machine, including a virtual machine. The host screen and the connector desktop are that same action. Which one opens depends on what the machine can show.
+The machine's screen. The label is Desktop on every machine, including a virtual machine. The host screen and the connector desktop are that same action. Which one opens depends on what the machine can show. Terminal is the command prompt by itself.
 
 ### Storage and backups
 
@@ -158,7 +159,7 @@ The repeated unit for a machine, a file, a setting, or an application. Icon, nam
 
 ### Gauge
 
-One measure, drawn the same way on Home and on a machine. Color follows the same warning and danger thresholds everywhere. A missing reading is a dash. A battery is one shared ring, with each laptop as a mark on it.
+One component, drawn the same way on Home and on a machine. It can be opened on Home. On a machine page that click is off, and the gauge does not say "Tap for details". The subtitles stay the same: a percentage, or how much is used out of the total. Color follows the same warning and danger thresholds everywhere. A missing reading is a dash. A battery is one shared ring, with each laptop as a mark on it.
 
 ### Empty
 

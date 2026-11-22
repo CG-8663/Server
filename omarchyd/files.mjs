@@ -743,6 +743,7 @@ export function createFiles({home, dataDir, io} = {}) {
 		describe,
 		openRead,
 		saveNew,
+		resolve,
 		copy: (input) => moveOrCopy(input, true),
 		procedures: {
 			'files.list': {kind: 'query', run: guard((i) => list(i))},

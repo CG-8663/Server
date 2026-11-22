@@ -40,13 +40,14 @@ test('the fleet list is online names, then offline names', () => {
 	assert.equal(members.find((m) => m.id === 'haos')?.meta, 'Virtual machine · running')
 	assert.equal(members.find((m) => m.id === 'win')?.meta, 'Virtual machine · stopped')
 	const loft = members.find((m) => m.id === 'loft')
-	assert.equal(fleetAbility(loft, 'apps').reason, 'Loft can’t take app-store apps yet.')
+	assert.equal(fleetAbility(loft, 'apps').granted, true)
+	assert.match(fleetAbility(members.find((m) => m.id === 'garage'), 'apps').reason, /offline/)
 	assert.equal(fleetAbility(loft, 'files').granted, false)
 	assert.equal(fleetAbility(members.find((m) => m.id === 'kitchen'), 'files').granted, true)
-	assert.equal(fleetAbility(members.find((m) => m.id === 'kitchen'), 'vms').granted, true)
-	assert.equal(fleetAbility(members.find((m) => m.id === 'loft'), 'vms').granted, true)
+	assert.equal(fleetAbility(members.find((m) => m.id === 'kitchen'), 'vms').granted, false)
+	assert.match(fleetAbility(members.find((m) => m.id === 'kitchen'), 'vms').reason, /can’t host/)
+	assert.equal(fleetAbility(members.find((m) => m.id === 'loft'), 'vms').granted, false)
 	assert.equal(fleetAbility(members.find((m) => m.id === 'garage'), 'vms').granted, false)
-	assert.match(fleetAbility(members.find((m) => m.id === 'garage'), 'vms').reason, /offline/)
 	assert.equal(fleetAbility(members.find((m) => m.id === 'haos'), 'vms').granted, false)
 	const haos = members.find((m) => m.id === 'haos')
 	assert.match(fleetAbility(haos, 'apps').reason, /connector on HA OS/)
@@ -112,7 +113,7 @@ test('pins round-trip and apps stay in arrival order', () => {
 	assert.equal(groups[1].instances.length, 1)
 })
 
-test('file places list every running machine', () => {
+test('file places list only machines whose files can be read', () => {
 	const {places} = filePlaces(
 		[
 			{id: 'kitchen', name: 'Kitchen', online: true, filesGranted: true},
@@ -120,14 +121,14 @@ test('file places list every running machine', () => {
 			{id: 'garage', name: 'Garage', online: false, filesGranted: true},
 		],
 		[
-			{id: 'vm1', name: 'Ubuntu', state: 'running'},
-			{id: 'vm2', name: 'Stopped', state: 'stopped'},
+			{id: 'vm1', name: 'Ubuntu', state: 'running', agentId: 'agentvm', filesGranted: true},
+			{id: 'vm2', name: 'Stopped', state: 'stopped', agentId: 'agentoff', filesGranted: true},
+			{id: 'vm3', name: 'Plain', state: 'running'},
 		],
 	)
 	assert.deepEqual(places, [
 		{id: 'kitchen', name: 'Kitchen', path: '::computer/kitchen', kind: 'computer', browsable: true},
-		{id: 'loft', name: 'Loft', path: '::computer/loft', kind: 'computer', browsable: false},
-		{id: 'vm1', name: 'Ubuntu', path: '::guest/vm1', kind: 'guest', browsable: false},
+		{id: 'agentvm', name: 'Ubuntu', path: '::computer/agentvm', kind: 'computer', browsable: true},
 	])
 	const den = serverSample({name: 'Den', cores: 4, cpu: 10, memUsed: 1, memTotal: 4, diskUsed: 2, diskTotal: 8, temp: null, gpus: [{id: 'g0', used: 40}], battery: 55})
 	assert.equal(samplePercent(den, 'CPU'), 10)

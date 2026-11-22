@@ -1,6 +1,7 @@
-// Files places for running machines. The path is not a server folder: files.list must not see it.
-// Offline computers and stopped virtual machines are left out. A computer that has not granted
-// Files is still listed; its folder stays empty. A virtual machine has no file listing.
+// Files places for machines whose files can be read. The path is not a server folder: files.list
+// must not see it. A computer is listed only while it is online and Files was granted. A virtual
+// machine is listed only while it is running and its connector has granted Files. Its place uses
+// the connector’s id, because that is how the files are addressed. Unreadable machines are omitted.
 
 export const COMPUTER_PLACE = '::computer/'
 export const GUEST_PLACE = '::guest/'
@@ -19,6 +20,9 @@ export type GuestFileInput = {
 	id: string
 	name: string
 	state: string
+	/** Connector that can read this machine’s files. The place is addressed by this id. */
+	agentId?: string
+	filesGranted?: boolean
 }
 
 export type FilePlace = {
@@ -116,14 +120,21 @@ export function computerParent(path: string): string | null {
 }
 
 export function filePlaces(computers: readonly ComputerFileInput[], guests: readonly GuestFileInput[] = []): {places: FilePlace[]} {
-	const computerPlaces: FilePlace[] = computers.filter((row) => row.online).flatMap((row) => {
+	const computerPlaces: FilePlace[] = computers.filter((row) => row.online && row.filesGranted).flatMap((row) => {
 		const path = computerPlacePath(row.id)
-		return path ? [{id: row.id, name: row.name, path, kind: 'computer', browsable: row.filesGranted}] : []
+		return path ? [{id: row.id, name: row.name, path, kind: 'computer' as const, browsable: true}] : []
 	})
-	const guestPlaces: FilePlace[] = guests.filter((row) => row.state === 'running').flatMap((row) => {
-		const path = guestPlacePath(row.id)
-		return path ? [{id: row.id, name: row.name, path, kind: 'guest', browsable: false}] : []
+	const guestPlaces: FilePlace[] = guests.filter((row) => row.state === 'running' && row.filesGranted && !!row.agentId).flatMap((row) => {
+		const path = computerPlacePath(row.agentId ?? '')
+		return path ? [{id: row.agentId ?? '', name: row.name, path, kind: 'computer' as const, browsable: true}] : []
 	})
-	const places = [...computerPlaces, ...guestPlaces].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+	const seen = new Set<string>()
+	const places = [...computerPlaces, ...guestPlaces]
+		.filter((place) => {
+			if (seen.has(place.path)) return false
+			seen.add(place.path)
+			return true
+		})
+		.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
 	return {places}
 }

@@ -16,12 +16,13 @@ import {fleetAbility, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../flee
 import {OPEN_FLEET, takePendingFleet, type FleetOpen} from '../fleet/openMember'
 import {openStore} from '../fleet/openStore'
 import {GuestLive} from '../fleet/GuestLive'
+import {MachineShell, MachineTabs, type MachineTab} from '../fleet/MachineTabs'
 import {PinButton} from '../fleet/PinButton'
 import {ServerSheet} from '../fleet/ServerSheet'
 import {ServerSpecs} from '../fleet/serverGauges'
 import {guestAgent, isGuestAgent} from '../swarm/guestLink'
 import {AgentCard, LocalSwarm, useSwarm} from '../swarm/Swarm'
-import {Sheet, SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
+import {SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
@@ -62,9 +63,9 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 	useEffect(() => {
 		const apply = (member: FleetOpen | null | undefined) => {
 			if (!member) return
-			if (member.kind === 'computer') setComputerId(member.id)
-			else if (member.kind === 'guest') setSelectedId(member.id)
-			else setServerOpen(true)
+			setSelectedId(member.kind === 'guest' ? member.id : null)
+			setComputerId(member.kind === 'computer' ? member.id : null)
+			setServerOpen(member.kind === 'server')
 		}
 		apply(takePendingFleet())
 		const onOpen = (e: Event) => {
@@ -74,6 +75,11 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 		window.addEventListener(OPEN_FLEET, onOpen)
 		return () => window.removeEventListener(OPEN_FLEET, onOpen)
 	}, [])
+	const openMember = (kind: 'server' | 'computer' | 'guest', id: string) => {
+		setSelectedId(kind === 'guest' ? id : null)
+		setComputerId(kind === 'computer' ? id : null)
+		setServerOpen(kind === 'server')
+	}
 	const openApp = (app: UserApp) => {
 		haptic(6)
 		if (desk) desk.launch(app)
@@ -91,20 +97,50 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 				vms={vmsAbility.granted ? (kind === 'server' ? list : []) : null}
 				vmsReason={vmsAbility.reason}
 				onOpenApp={openApp}
-				onOpenVm={(id) => (haptic(6), setSelectedId(id))}
+				onOpenVm={(id) => (haptic(6), openMember('guest', id))}
 				onCreateVm={vmsAbility.granted ? () => setCreateHost({id: memberId, name: memberName}) : undefined}
 			/>
 		)
 	}
 	const openDesktop = () => {
 		haptic(8)
-		setServerOpen(false)
+		if (!desk) setServerOpen(false)
 		if (desk) desk.openConsole('desktop')
 		else setConsoleId('desktop')
 	}
-
-	return (
-		<div className="stagger">
+	const wide = desk != null
+	const detail = (
+		<>
+			{selected && !consoleMachine && (
+				<MachineSheet
+					bare={wide}
+					machine={selected}
+					onClose={() => setSelectedId(null)}
+					onConsole={() => {
+						haptic(8)
+						if (desk) desk.openConsole(selected.id)
+						else setConsoleId(selected.id)
+					}}
+				/>
+			)}
+			<LocalSwarm bare={wide} hideList selectedId={computerId} onSelect={(id) => (id ? openMember('computer', id) : setComputerId(null))} adding={adding} onAdding={setAdding} />
+			{serverOpen && (
+				<ServerSheet
+					bare={wide}
+					name={serverName}
+					owner={owner}
+					vms={list}
+					onClose={() => setServerOpen(false)}
+					onDesktop={openDesktop}
+					onTerminal={desk ? () => desk.openTerminal() : onTerminal}
+					onOpenVm={(id) => openMember('guest', id)}
+					onCreateVm={() => setCreateHost({id: SERVER_FLEET_ID, name: serverName})}
+				/>
+			)}
+		</>
+	)
+	const listBody = (
+		<>
 			<div style={{position: 'relative'}}>
 				<button className="btn primary small" style={{position: 'absolute', right: 4, top: 14}} onClick={() => (haptic(6), setCreateHost({id: SERVER_FLEET_ID, name: serverName}))}>
 					<Icon name="plus" size={18} stroke={2.4} /> New
@@ -145,7 +181,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 									<span style={{display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 4}}>{member.meta}</span>
 								</span>
 								<StatusPill kind="running" label="Online" />
-								<button type="button" className="btn small" onClick={() => (haptic(6), setServerOpen(true))}>
+								<button type="button" className="btn small" onClick={() => (haptic(6), openMember('server', member.id))}>
 									Open
 								</button>
 							</span>
@@ -169,7 +205,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 						key={member.id}
 						className={`mrow${open ? ' is-open' : ''}`}
 						a={agent}
-						onClick={() => (haptic(6), setComputerId(agent.id))}
+						onClick={() => (haptic(6), openMember('computer', agent.id))}
 						footer={
 							<div className="mrow-foot">
 								<PinButton pin={{kind: 'machine', id: agent.id, computer: ''}} name={agent.name} />
@@ -180,31 +216,21 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 					/>
 				)
 			})}
-			{selected && !consoleMachine && (
-				<MachineSheet
-					machine={selected}
-					onClose={() => setSelectedId(null)}
-					onConsole={() => {
-						haptic(8)
-						if (desk) {
-							setSelectedId(null)
-							desk.openConsole(selected.id)
-						}						else setConsoleId(selected.id)
-					}}
-				/>
-			)}
-			<LocalSwarm hideList selectedId={computerId} onSelect={setComputerId} adding={adding} onAdding={setAdding} />
-			{serverOpen && (
-				<ServerSheet
-					name={serverName}
-					owner={owner}
-					vms={list}
-					onClose={() => setServerOpen(false)}
-					onDesktop={openDesktop}
-					onTerminal={onTerminal}
-					onOpenVm={(id) => (setServerOpen(false), setSelectedId(id))}
-					onCreateVm={() => setCreateHost({id: SERVER_FLEET_ID, name: serverName})}
-				/>
+		</>
+	)
+
+	return (
+		<div className={wide ? 'machines-frame' : 'stagger'}>
+			{wide && (selected || computerId || serverOpen) ? (
+				<div className="machines-split">
+					<div className="machines-list">{listBody}</div>
+					<div className="machines-detail">{detail}</div>
+				</div>
+			) : (
+				<>
+					{listBody}
+					{detail}
+				</>
 			)}
 			{createHost && (
 				<Suspense
@@ -232,43 +258,29 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 	)
 }
 
-function MachineSheet({machine: m, onClose, onConsole}: {machine: Machine; onClose: () => void; onConsole: () => void}) {
+function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine; onClose: () => void; onConsole: () => void; bare?: boolean}) {
 	const status = machineStatus(m.state)
 	const details = useMachineDetails(m.id)
 	const d = details.data
 	const power = usePowerActions({id: m.id, name: m.name, state: m.state, protected: m.protected})!
 	const busy = status.kind === 'busy' || power.pending
 	const os = osLook(m.osId)
-	const [tab, setTab] = useState<PanelId>('summary')
-	const tabs = PANELS.filter((p) => p.id !== 'console' && (p.id !== 'cloudinit' || d?.cloudInit))
-
-	return (
-		<Sheet open onClose={onClose} label={m.name} tall>
-			<SheetHeader
-				icon={
-					<span className="vm-os" style={{width: 64, height: 64, borderRadius: 19, background: os.bg}}>
-						<Icon name={os.icon} size={32} />
-					</span>
-				}
-				title={m.name}
-				subtitle={
-					<span style={{display: 'inline-flex', gap: 8, alignItems: 'center'}}>
-						<StatusPill {...status} />
-						{m.vmid !== undefined && <span className="muted mono">ID {m.vmid}</span>}
-					</span>
-				}
-				onClose={onClose}
-			/>
-			<div style={{display: 'flex', justifyContent: 'flex-end', marginTop: 8}}>
-				<PinButton pin={{kind: 'vm', id: m.id, computer: SERVER_FLEET_ID}} name={m.name} />
-			</div>
-			{m.errorMessage && (
-				<div className="error">
-					<Icon name="alert" size={18} />
-					{/^\[[\w-]+\]$/.test(m.errorMessage) ? m.errorMessage.slice(1, -1).replace(/-/g, ' ') : m.errorMessage}
-				</div>
-			)}
-			<GuestLive machine={m} onOpenStore={() => (onClose(), openStore({id: m.id, kind: 'guest', name: m.name}))} onOpenDesktop={onConsole} onBackups={() => setTab('backups')} />
+	const [tab, setTab] = useState('files')
+	const hostTabs = PANELS.filter((p) => p.id !== 'console' && p.id !== 'backups' && (p.id !== 'cloudinit' || d?.cloudInit))
+	const panel = (id: PanelId) => {
+		if (!d) return <div className="skeleton" style={{height: 160, borderRadius: 20}} />
+		if (id === 'summary') return <SummaryPanel d={d} />
+		if (id === 'hardware') return <HardwarePanel d={d} />
+		if (id === 'cloudinit') return <CloudInitPanel d={d} />
+		if (id === 'options') return <OptionsPanel d={d} />
+		if (id === 'network') return <PortForwarding machine={m} />
+		if (id === 'usb') return <DevicesPanel guest={{kind: 'machine', id: m.id, name: m.name}} />
+		if (id === 'snapshots') return <SnapshotsPanel d={d} />
+		if (id === 'history') return <HistoryPanel d={d} />
+		return <MonitorPanel d={d} />
+	}
+	const powerBody = (
+		<>
 			<div className="actions mx-power">
 				{m.state !== 'running' && (
 					<button className="action" onClick={power.paused ? power.resume : power.start} disabled={busy || !(power.canStart || power.paused)}>
@@ -301,45 +313,53 @@ function MachineSheet({machine: m, onClose, onConsole}: {machine: Machine; onClo
 					Clone
 				</button>
 			</div>
-			<div className="mx-tabs" role="tablist" aria-label={`${m.name} settings`}>
-				{tabs.map((p) => (
-					<button key={p.id} role="tab" aria-selected={tab === p.id} className={`chip${tab === p.id ? ' on' : ''}`} onClick={(e) => (haptic(5), setTab(p.id), e.currentTarget.scrollIntoView({behavior: 'smooth', inline: 'center', block: 'nearest'}))}>
-						<Icon name={p.icon} size={15} />
-						{p.label}
-					</button>
-				))}
-			</div>
-			<div className="mx-touch">
-				{!d ? (
-					<div className="skeleton" style={{height: 160, borderRadius: 20}} />
-				) : tab === 'summary' ? (
-					<SummaryPanel d={d} />
-				) : tab === 'hardware' ? (
-					<HardwarePanel d={d} />
-				) : tab === 'cloudinit' ? (
-					<CloudInitPanel d={d} />
-				) : tab === 'options' ? (
-					<OptionsPanel d={d} />
-				) : tab === 'network' ? (
-					<PortForwarding machine={m} />
-				) : tab === 'usb' ? (
-					<DevicesPanel guest={{kind: 'machine', id: m.id, name: m.name}} />
-				) : tab === 'snapshots' ? (
-					<SnapshotsPanel d={d} />
-				) : tab === 'backups' ? (
-					<BackupsPanel d={d} />
-				) : tab === 'history' ? (
-					<HistoryPanel d={d} />
-				) : (
-					<MonitorPanel d={d} />
-				)}
-			</div>
 			<div className="stack" style={{marginTop: 18}}>
 				<button className="btn danger block" onClick={() => power.remove(onClose)} disabled={busy}>
 					<Icon name="trash" size={18} />
 					Delete machine
 				</button>
 			</div>
-		</Sheet>
+		</>
+	)
+
+	return (
+		<MachineShell bare={bare} label={m.name} onClose={onClose}>
+			<SheetHeader
+				icon={
+					<span className="vm-os" style={{width: 64, height: 64, borderRadius: 19, background: os.bg}}>
+						<Icon name={os.icon} size={32} />
+					</span>
+				}
+				title={m.name}
+				subtitle={
+					<span style={{display: 'inline-flex', gap: 8, alignItems: 'center'}}>
+						<StatusPill {...status} />
+						{m.vmid !== undefined && <span className="muted mono">ID {m.vmid}</span>}
+					</span>
+				}
+				onClose={onClose}
+			/>
+			<div style={{display: 'flex', justifyContent: 'flex-end', marginTop: 8}}>
+				<PinButton pin={{kind: 'vm', id: m.id, computer: SERVER_FLEET_ID}} name={m.name} />
+			</div>
+			{m.errorMessage && (
+				<div className="error">
+					<Icon name="alert" size={18} />
+					{/^\[[\w-]+\]$/.test(m.errorMessage) ? m.errorMessage.slice(1, -1).replace(/-/g, ' ') : m.errorMessage}
+				</div>
+			)}
+			<GuestLive machine={m} onOpenStore={() => (onClose(), openStore({id: m.id, kind: 'guest', name: m.name}))} onOpenDesktop={onConsole} onBackups={() => setTab('backups')} tabs={(sections) => {
+				const rows: MachineTab[] = [
+					...(sections.files ? [{id: 'files', label: 'Files', body: sections.files}] : []),
+					...(sections.apps ? [{id: 'apps', label: 'Apps', body: sections.apps}] : []),
+					...(sections.storage ? [{id: 'storage', label: 'Storage', body: sections.storage}] : []),
+					...(sections.backups ? [{id: 'backups', label: 'Backups', body: d ? <BackupsPanel d={d} /> : sections.backups}] : []),
+					{id: 'power', label: 'Power', body: powerBody},
+					...(sections.manage ? [{id: 'manage', label: 'Manage', body: sections.manage}] : []),
+					...hostTabs.map((p) => ({id: p.id, label: p.label, body: panel(p.id)})),
+				]
+				return <MachineTabs label={`${m.name} sections`} tabs={rows} tab={tab} onTab={setTab} />
+			}} />
+		</MachineShell>
 	)
 }

@@ -257,6 +257,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
 		state.agents = state.agents.filter((x) => x !== a)
 		await save()
+		await forgetRemote(a.id).catch(() => {})
 		const l = live.get(a.id)
 		// Tell it to forget this server and stop; then cut it off either way.
 		if (l) {
@@ -809,7 +810,115 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		},
 	}
 
-	const files = {stat: statFile, list: listFiles, pull: pullFile, push: pushFile}
+	async function transferOn(id, from, to, copy) {
+		const {a} = await requireFilesAgent(id)
+		const relFrom = safeHomePath(from)
+		const relTo = safeHomePath(to ?? '', {empty: true})
+		if (relFrom == null || relTo == null) throw new RpcError('BAD_REQUEST', 'Use a path inside that computer’s home folder')
+		return call(a.id, copy ? 'files-copy' : 'files-move', {from: relFrom, to: relTo})
+	}
+	async function removeOn(id, path) {
+		const {a} = await requireFilesAgent(id)
+		const rel = safeHomePath(path)
+		if (rel == null) throw new RpcError('BAD_REQUEST', 'Use a path inside that computer’s home folder')
+		return call(a.id, 'files-delete', {path: rel})
+	}
+	async function mkdirOn(id, path) {
+		const {a} = await requireFilesAgent(id)
+		const rel = safeHomePath(path, {empty: true})
+		if (rel == null) throw new RpcError('BAD_REQUEST', 'Use a path inside that computer’s home folder')
+		if (!rel) return true
+		return call(a.id, 'files-mkdir', {path: rel})
+	}
+	async function recentsOn(id) {
+		const {a} = await requireFilesAgent(id)
+		const data = await call(a.id, 'files-recents', {})
+		const files = Array.isArray(data?.files) ? data.files : []
+		return files.slice(0, 40).flatMap((row) => {
+			const rel = safeHomePath(row?.path)
+			if (!rel || typeof row?.name !== 'string') return []
+			return [{name: clip(row.name, 200), path: rel, size: Number(row.size) || 0, mtime: Number(row.mtime) || 0, dir: row.dir === true}]
+		})
+	}
+	async function fileAgents() {
+		await loaded
+		return state.agents.filter((a) => may(a, 'files')).map((a) => ({id: a.id, name: a.name, online: live.has(a.id), files: true}))
+	}
+	const remoteFile = join(dataDir, 'remote-apps.json')
+	const APP_INSTALL_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,64}$/
+	async function readRemote() {
+		try {
+			const data = JSON.parse(await readFile(remoteFile, 'utf8'))
+			return Array.isArray(data?.apps) ? data.apps : []
+		} catch {
+			return []
+		}
+	}
+	async function writeRemote(apps) {
+		await writeAtomic(remoteFile, JSON.stringify({apps}), {mode: 0o600})
+	}
+	async function forgetRemote(computerId) {
+		const apps = (await readRemote()).filter((a) => a.computerId !== computerId)
+		await writeRemote(apps)
+	}
+	async function rememberRemote(agent, apps) {
+		const current = await readRemote()
+		const ids = new Set(apps.map((a) => a.appId))
+		const kept = current.filter((a) => !(a.computerId === agent.id && ids.has(a.id)))
+		const next = [
+			...kept,
+			...apps.map((a) => ({
+				id: a.appId,
+				name: clip(a.name || a.appId, 80),
+				version: clip(a.version || '', 40),
+				icon: typeof a.icon === 'string' ? a.icon.slice(0, 500) : '',
+				computerId: agent.id,
+				computerName: agent.name,
+				state: 'running',
+				installedAt: Date.now(),
+			})),
+		]
+		await writeRemote(next)
+	}
+	async function remoteApps() {
+		await loaded
+		const names = new Map(state.agents.map((a) => [a.id, a.name]))
+		return (await readRemote())
+			.filter((a) => a && names.has(a.computerId) && typeof a.id === 'string')
+			.map((a) => ({
+				id: a.id,
+				name: a.name || a.id,
+				version: a.version || '',
+				icon: a.icon || '',
+				state: 'running',
+				computerId: a.computerId,
+				computerName: names.get(a.computerId) || a.computerName || 'Computer',
+				remote: true,
+			}))
+	}
+	function agentForInstall(target) {
+		return state.agents.find((a) => a.id === target || guestOf(a) === target) ?? null
+	}
+	async function forwardAppInstall(target, payload) {
+		await loaded
+		const agent = agentForInstall(String(target ?? ''))
+		if (!agent) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		if (!live.has(agent.id)) throw new RpcError('PRECONDITION_FAILED', `${agent.name} is offline, so it can’t take an install.`)
+		const apps = Array.isArray(payload?.apps) ? payload.apps : []
+		if (!apps.length || apps.length > 8) throw new RpcError('BAD_REQUEST', 'Nothing to install')
+		for (const app of apps) {
+			const id = String(app?.appId ?? '')
+			if (!APP_INSTALL_ID.test(id) || id.includes('..')) throw new RpcError('BAD_REQUEST', 'Unknown app')
+			if (typeof app?.compose !== 'string' || !app.compose || app.compose.length > 200_000 || app.compose.includes('\0')) throw new RpcError('PRECONDITION_FAILED', `${app?.name || id} has no compose file this computer can install.`)
+		}
+		await call(agent.id, 'app-install', {
+			apps: apps.map((app) => ({appId: String(app.appId), name: clip(app.name || app.appId, 80), version: clip(app.version || '', 40), icon: typeof app.icon === 'string' ? app.icon.slice(0, 500) : '', compose: app.compose})),
+		})
+		await rememberRemote(agent, apps)
+		return true
+	}
+
+	const files = {stat: statFile, list: listFiles, pull: pullFile, push: pushFile, copy: (id, from, to) => transferOn(id, from, to, true), move: (id, from, to) => transferOn(id, from, to, false), remove: removeOn, mkdir: mkdirOn, recents: recentsOn, agents: fileAgents}
 
 	return {
 		files,
@@ -817,6 +926,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		procedures: {
 			'swarm.list': {kind: 'query', run: list},
 			'swarm.files.list': {kind: 'query', run: (input) => listFiles(input?.id, input?.path ?? '')},
+			'swarm.files.recents': {kind: 'query', run: async (input) => ({files: await recentsOn(input?.id)})},
 			'swarm.pair': {kind: 'mutation', run: pair},
 			'swarm.remove': {kind: 'mutation', run: remove},
 			'swarm.rename': {kind: 'mutation', run: rename},
@@ -1001,6 +1111,8 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			},
 		},
 		enroll,
+		forwardAppInstall,
+		remoteApps,
 		upgradeAgent,
 		openChannel,
 		isAgentMachine: (machineId) => /^agent-[0-9a-f]{12}$/.test(machineId),

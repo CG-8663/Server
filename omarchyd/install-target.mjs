@@ -1,7 +1,13 @@
-// apps.install still runs on this server. A target of "server", or no target, is that install.
-// Any other id is refused until that computer or guest can actually host the app.
+// A target of "server", or no target, installs on this server.
+// Any other id is a machine whose connector is online. apps.install forwards that request.
+// An id that is not a machine id is refused here, before any install starts.
 
-export function refuseForeignInstall(target) {
+const TARGET_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+
+/** Null means this server. A string is the other machine. False means the id is not usable. */
+export function installTargetId(target) {
 	if (target == null || target === '' || target === 'server') return null
-	return 'That computer can’t take this install yet. Choose this server, or open the App Store from a machine that can host apps.'
+	const id = String(target)
+	if (!TARGET_ID.test(id) || id.includes('..')) return false
+	return id
 }

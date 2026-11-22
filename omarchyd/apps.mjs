@@ -33,7 +33,7 @@ import {RpcError, handleRpc, sendError} from './rpc.mjs'
 import {SYSTEM_PERMISSIONS} from './system-apps.mjs'
 import {dualProtocolServer, tlsContext, wantsUpgrade} from './tls.mjs'
 import {linkProxy} from './proxy-link.mjs'
-import {refuseForeignInstall} from './install-target.mjs'
+import {installTargetId} from './install-target.mjs'
 import {usbComposeOverlay} from './usb.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
@@ -838,7 +838,7 @@ export async function podmanHealth(run, env, home) {
 	}
 }
 
-export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000, systemApps = null, deviceExists = exists}) {
+export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000, systemApps = null, deviceExists = exists, forwardInstall = null, remoteApps = async () => []}) {
 	const base = join(dataDir, 'apps')
 	const storesDir = join(base, 'stores')
 	const installedDir = join(base, 'installed')
@@ -1869,7 +1869,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		// Read the stores once after start, in the background, so installed apps get any listing changes.
 		if (!registryCache && !registryWarm) registryWarm = registry().catch(() => {}).finally(() => (registryWarm = null))
 		const live = await liveStates()
-		return state.apps.map((a) => {
+		const local = state.apps.map((a) => {
 			const b = busy.get(a.id)
 			return {
 				id: a.id,
@@ -1891,8 +1891,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					return {defaultUsername: a.defaultUsername, defaultPassword: password, showBeforeOpen: !!password, ...(apiToken ? {label: 'API token'} : {})}
 				})(),
 				...(a.store === PUBLISHED_STORE && a.openPorts?.[0] ? {apiPort: a.openPorts[0]} : {}),
+				computerId: 'server',
 			}
 		})
+		const remote = await remoteApps().catch(() => [])
+		const elsewhere = (Array.isArray(remote) ? remote : []).filter((a) => a && a.id && a.computerId && a.computerId !== 'server')
+		return [...local, ...elsewhere]
 	}
 	const findInstalled = (id) => {
 		const a = state.apps.find((x) => x.id === id)
@@ -2204,9 +2208,24 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 
 	async function install(input) {
-		const elsewhere = refuseForeignInstall(input?.target)
-		if (elsewhere) throw new RpcError('PRECONDITION_FAILED', elsewhere)
+		const target = installTargetId(input?.target)
+		if (target === false) throw new RpcError('BAD_REQUEST', 'That computer can’t take this install.')
 		const id = String(input?.appId ?? '')
+		if (target) {
+			if (typeof forwardInstall !== 'function') throw new RpcError('PRECONDITION_FAILED', 'That computer can’t take this install yet.')
+			await ready
+			const plan = await installPlan(id)
+			const payload = []
+			for (const src of plan) {
+				if (src.system) throw new RpcError('PRECONDITION_FAILED', `${src.name} installs on this server only.`)
+				const file = src.folder ? await readFirst(src.folder, COMPOSE_FILES) : null
+				const compose = file?.text ?? ''
+				if (!compose || compose.length > 200_000 || compose.includes('\0')) throw new RpcError('PRECONDITION_FAILED', `${src.name} has no compose file this computer can install.`)
+				payload.push({appId: src.id, name: src.name, version: src.version ?? '', icon: src.icon ?? '', compose})
+			}
+			await forwardInstall(target, {apps: payload})
+			return true
+		}
 		// Marked before the first await so uninstall cannot pass the busy check while prechecks run.
 		const held = new Map()
 		let handedOff = false

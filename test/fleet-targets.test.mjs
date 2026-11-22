@@ -1,18 +1,18 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
-import {refuseForeignInstall} from '../omarchyd/install-target.mjs'
+import {installTargetId} from '../omarchyd/install-target.mjs'
 import {computerInstallInput, confirmInstallTarget, guestInstallInput, installKindLabel, installTargets, installsOf, machineCountLabel, SERVER_INSTALL_ID} from '../web/src/fleet/installTargets.ts'
 import {matchThemeName} from '../web/src/swarm/themePicker.ts'
 import {themeAction} from '../web/src/theme/themeAction.ts'
 
-test('install targets keep this server ready and explain the others', () => {
+test('install targets list only machines that can take an install', () => {
 	const targets = installTargets({
 		serverName: 'Den',
 		computers: [
-			computerInstallInput({id: 'kitchen', name: 'Kitchen', online: true, allowed: {apps: true}, on: {apps: true}}),
+			computerInstallInput({id: 'kitchen', name: 'Kitchen', online: true}),
 			computerInstallInput({id: 'loft', name: 'Loft', online: true}),
-			computerInstallInput({id: 'garage', name: 'Garage', online: false, allowed: {apps: true}, on: {apps: true}}),
+			computerInstallInput({id: 'garage', name: 'Garage', online: false}),
 		],
 		guests: [
 			guestInstallInput({id: 'ubuntu', name: 'Ubuntu lab', state: 'running', connector: true}),
@@ -25,16 +25,11 @@ test('install targets keep this server ready and explain the others', () => {
 		[
 			[SERVER_INSTALL_ID, 'ready'],
 			['kitchen', 'ready'],
-			['loft', 'refused'],
-			['garage', 'offline'],
-			['haos', 'needs-connector'],
+			['loft', 'ready'],
 			['ubuntu', 'ready'],
-			['win', 'offline'],
 		],
 	)
 	assert.equal(targets[0].name, 'Den')
-	assert.equal(targets.find((t) => t.id === 'loft')?.reason, 'Loft can’t take app-store apps yet.')
-	assert.equal(targets.find((t) => t.id === 'haos')?.reason, 'Install the connector on HA OS before apps can be installed there.')
 	assert.equal(installKindLabel('guest'), 'Virtual machine')
 	assert.equal(confirmInstallTarget({id: 'kitchen', ability: 'ready'}), 'kitchen')
 	assert.equal(confirmInstallTarget({id: 'kitchen', ability: 'offline'}), null)
@@ -50,11 +45,14 @@ test('an app count is shown only when it is on more than one machine', () => {
 	assert.equal(installsOf('code', [{appIds: ['jellyfin']}]), 0)
 })
 
-test('apps.install refuses a machine that cannot host the app', () => {
-	assert.equal(refuseForeignInstall(undefined), null)
-	assert.equal(refuseForeignInstall(''), null)
-	assert.equal(refuseForeignInstall('server'), null)
-	assert.match(refuseForeignInstall('kitchen') ?? '', /can’t take this install yet/)
+test('an install target id is this server, another machine, or unusable', () => {
+	assert.equal(installTargetId(undefined), null)
+	assert.equal(installTargetId(''), null)
+	assert.equal(installTargetId('server'), null)
+	assert.equal(installTargetId('kitchen'), 'kitchen')
+	assert.equal(installTargetId('abc123'), 'abc123')
+	assert.equal(installTargetId('../secret'), false)
+	assert.equal(installTargetId('has space'), false)
 })
 
 test('theme changes go through one action', () => {

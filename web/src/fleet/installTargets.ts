@@ -1,7 +1,8 @@
 // Where an App Store install can go.
 // The main store asks. A store opened from a machine is already aimed at that machine.
-// This server can take an install today. A joined computer can take one only after it has
-// granted Apps. A virtual machine can take one only after its connector is installed.
+// This server can take an install. Another machine can take one only while its connector is online.
+// A virtual machine’s connector has to be online and the machine has to be running.
+// Machines that cannot take an install are left out of the list.
 
 export type InstallKind = 'server' | 'computer' | 'guest'
 export type InstallAbility = 'ready' | 'offline' | 'refused' | 'needs-connector'
@@ -27,8 +28,6 @@ export type ComputerInstallInput = {
 	id: string
 	name: string
 	online: boolean
-	/** Both the grant at join and the connector currently offering Apps. */
-	appsGranted: boolean
 }
 
 export type GuestInstallInput = {
@@ -40,37 +39,27 @@ export type GuestInstallInput = {
 
 const byName = (a: {name: string}, b: {name: string}) => a.name.localeCompare(b.name)
 
-export function computerInstallInput(row: {id: string; name: string; online: boolean; allowed?: {apps?: boolean}; on?: {apps?: boolean}}): ComputerInstallInput {
-	return {id: row.id, name: row.name, online: row.online, appsGranted: !!(row.allowed?.apps && row.on?.apps)}
+export function computerInstallInput(row: {id: string; name: string; online: boolean}): ComputerInstallInput {
+	return {id: row.id, name: row.name, online: row.online}
 }
 
 export function guestInstallInput(row: {id: string; name: string; state: string; connector?: boolean}): GuestInstallInput {
 	return {id: row.id, name: row.name, state: row.state, connector: !!row.connector}
 }
 
-function computerTarget(row: ComputerInstallInput): InstallTarget {
-	if (!row.online) return {id: row.id, kind: 'computer', name: row.name, ability: 'offline', reason: `${row.name} is offline.`}
-	if (!row.appsGranted) return {id: row.id, kind: 'computer', name: row.name, ability: 'refused', reason: `${row.name} can’t take app-store apps yet.`}
+function readyComputer(row: ComputerInstallInput): InstallTarget {
 	return {id: row.id, kind: 'computer', name: row.name, ability: 'ready', reason: ''}
 }
 
-function guestTarget(row: GuestInstallInput): InstallTarget {
-	if (!row.connector) return {id: row.id, kind: 'guest', name: row.name, ability: 'needs-connector', reason: `Install the connector on ${row.name} before apps can be installed there.`}
-	if (row.state !== 'running') return {id: row.id, kind: 'guest', name: row.name, ability: 'offline', reason: `${row.name} is not running.`}
+function readyGuest(row: GuestInstallInput): InstallTarget {
 	return {id: row.id, kind: 'guest', name: row.name, ability: 'ready', reason: ''}
 }
 
 export function installTargets(input: {serverName: string; computers: readonly ComputerInstallInput[]; guests: readonly GuestInstallInput[]}): InstallTarget[] {
 	const server: InstallTarget = {id: SERVER_INSTALL_ID, kind: 'server', name: input.serverName || 'This server', ability: 'ready', reason: ''}
-	const computers = [...input.computers].sort(byName)
-	const guests = [...input.guests].sort(byName)
-	return [
-		server,
-		...computers.filter((c) => c.online).map(computerTarget),
-		...computers.filter((c) => !c.online).map(computerTarget),
-		...guests.filter((g) => g.state === 'running').map(guestTarget),
-		...guests.filter((g) => g.state !== 'running').map(guestTarget),
-	]
+	const computers = input.computers.filter((row) => row.online).sort(byName).map(readyComputer)
+	const guests = input.guests.filter((row) => row.connector && row.state === 'running').sort(byName).map(readyGuest)
+	return [server, ...computers, ...guests]
 }
 
 export function installKindLabel(kind: InstallKind): string {

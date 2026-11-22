@@ -1358,7 +1358,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 							) : (
 							<>
 								<Icon name={state === 'superseded' ? 'machine' : 'alert'} size={34} />
-								<b>{state === 'superseded' ? 'This console was opened somewhere else' : 'Console unavailable'}</b>
+								<b>{state === 'superseded' ? 'This desktop was opened somewhere else' : 'Desktop unavailable'}</b>
 								{state === 'error' && <span>{message}</span>}
 								<button
 									className="btn primary small"

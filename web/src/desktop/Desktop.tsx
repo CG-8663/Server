@@ -48,7 +48,8 @@ const HINT_KEY = 'omarchy-server:desk-hint-closed'
 const Files = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
 const ShareSheet = lazy(() => import('../screens/Files').then((m) => ({default: m.ShareSheet})))
 const Store = lazy(() => import('../screens/Store').then((m) => ({default: m.Store})))
-const MachinesDesktop = lazy(() => import('../machines/Desktop').then((m) => ({default: m.MachinesDesktop})))
+const Machines = lazy(() => import('../screens/Machines').then((m) => ({default: m.Machines})))
+const Home = lazy(() => import('../screens/Home').then((m) => ({default: m.Home})))
 const Clips = lazy(() => import('../screens/Clips').then((m) => ({default: m.Clips})))
 const More = lazy(() => import('../screens/More').then((m) => ({default: m.More})))
 const Settings = lazy(() => import('../screens/Settings').then((m) => ({default: m.Settings})))
@@ -66,7 +67,7 @@ function WinFallback() {
 }
 
 // ---- model ---------------------------------------------------------------------------------
-type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app'
+type Kind = 'home' | 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app'
 type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; page?: string; pageNonce?: number; term?: {id: string; name?: string; icon?: string}; input?: string; store?: StoreBinding}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
@@ -82,12 +83,13 @@ const CELL_H = 112
 // `bg` is the icon in the colourful themes; `tone` is the palette colour it takes in the others
 // (Midnight, Neon, Ember, Daylight and the Omarchy desktop's own theme), see .sys-ico in styles.css.
 export const SYS: Record<SysKind, {title: string; icon?: IconName; bg?: string; tone?: string; w: number; h: number}> = {
+	home: {title: 'Home', icon: 'home-filled', bg: 'linear-gradient(150deg,#93c5fd,#1d4ed8 70%)', tone: 'var(--blue)', w: 860, h: 720},
 	files: {title: 'Files', icon: 'folder-filled', bg: 'linear-gradient(150deg,#7cb4ff,#2563eb 70%)', tone: 'var(--blue)', w: 960, h: 660},
 	apps: {title: 'Apps', icon: 'apps-filled', bg: 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', tone: 'var(--mauve)', w: 800, h: 680},
 	store: {title: 'App Store', w: 1040, h: 720},
 	terminal: {title: 'Terminal', w: 860, h: 540},
 	machines: {title: 'Machines', icon: 'machine-filled', bg: 'linear-gradient(150deg,#5eead4,#0f766e 70%)', tone: 'var(--teal)', w: 1180, h: 760},
-	system: {title: 'System Monitor', icon: 'activity-filled', bg: 'linear-gradient(150deg,#fdba74,#c2410c 70%)', tone: 'var(--peach)', w: 820, h: 720},
+	system: {title: 'System', icon: 'activity-filled', bg: 'linear-gradient(150deg,#fdba74,#c2410c 70%)', tone: 'var(--peach)', w: 820, h: 720},
 	settings: {title: 'Settings', icon: 'settings', bg: 'linear-gradient(150deg,#cbd5e1,#475569 70%)', tone: 'var(--fg)', w: 760, h: 720},
 	personalize: {title: 'Appearance', icon: 'palette', bg: 'linear-gradient(150deg,#f9a8d4,#be185d 70%)', tone: 'var(--pink)', w: 880, h: 720},
 	assistant: {title: 'Assistant', icon: 'sparkle', bg: 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', tone: 'var(--mauve)', w: 720, h: 640},
@@ -184,7 +186,7 @@ export function useItems() {
 				}
 			}
 			// The server's own Omarchy desktop (Machines → Consoles), for a quick icon or dock slot.
-			if (key === DESKTOP_KEY) return {key, label: 'Omarchy Desktop', icon: (s) => <MachineIcon m={SERVER_DESKTOP} size={s} />, status: 'running', missing: !owner}
+			if (key === DESKTOP_KEY) return {key, label: 'Desktop', icon: (s) => <MachineIcon m={SERVER_DESKTOP} size={s} />, status: 'running', missing: !owner}
 			if (key.startsWith('machine:')) {
 				const m = machineList.find((x) => x.id === key.slice(8))
 				return {
@@ -1976,7 +1978,7 @@ function TopBar(p: {
 						<Icon name="palette" size={17} /> Appearance
 					</button>
 					<button role="menuitem" onClick={() => runSysAction(p.onSystem)}>
-						<Icon name="activity" size={17} /> System Monitor
+						<Icon name="activity" size={17} /> System
 					</button>
 					<button role="menuitem" onClick={() => runSysAction(() => setLayoutPref('phone'))}>
 						<Icon name="phone" size={17} /> Switch to phone layout
@@ -2772,6 +2774,15 @@ const WindowContent = memo(
 		const close = () => desk.close(win.id)
 		const body = (() => {
 			switch (win.kind) {
+				case 'home':
+					return (
+						<Home
+							onOpenApp={(a) => desk.launch(a)}
+							go={(tab) => (tab === 'more' ? desk.open('system') : desk.open(tab))}
+							onTerminal={() => desk.openTerminal()}
+							onAssistant={() => desk.open('assistant')}
+						/>
+					)
 				case 'files':
 					return <Files windowId={win.id} initialPath={win.payload?.path} />
 				case 'apps':
@@ -2779,7 +2790,7 @@ const WindowContent = memo(
 				case 'store':
 					return <Store bound={win.payload?.store ?? null} onOpenInstalled={(a) => desk.launch(a)} />
 				case 'machines':
-					return <MachinesDesktop />
+					return <Machines onOpenApp={(a) => desk.launch(a)} onTerminal={() => desk.openTerminal()} />
 				case 'system':
 					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} onClips={() => desk.open('clips')} />
 				case 'settings':
@@ -2812,7 +2823,7 @@ const WindowContent = memo(
 				<Suspense fallback={<WinFallback />}>{body}</Suspense>
 			</ScreenErrorBoundary>
 		)
-		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'machines' || win.kind === 'assistant') return content
+		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'assistant') return content
 		return (
 			<div className="win-scroll" ref={scrollRef}>
 				<main className="screen win-screen">{content}</main>
@@ -2863,7 +2874,7 @@ function MachineConsoleWindow({machineId, windowId, onClose}: {machineId: string
 			<div className="win-empty">
 				<MachineIcon m={m} size={64} />
 				<b>{m.name} isn’t running</b>
-				<span>{m.state === 'starting' ? 'It’s starting. The console connects once it’s up.' : 'Start it from its desktop icon or from Machines.'}</span>
+				<span>{m.state === 'starting' ? 'It’s starting. The desktop connects once it’s up.' : 'Start it from its desktop icon or from Machines.'}</span>
 			</div>
 		)
 	return <Console embedded machine={m} windowId={windowId} onClose={onClose} />

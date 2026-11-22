@@ -8,6 +8,7 @@ import {useBootstrap, useUser} from '../data'
 import {Icon} from '../icons'
 import {applyPrefsUpdate, prefsAfterPhotoUpload, prefsChoosingYourPhoto} from '../photoPrefs'
 import {ACCENTS, Card, KV, Row, THEMES, VersionTag, customBackgroundUrl, haptic, omarchyBackgroundUrl, preparePhoto, useConfirm, useOmarchyThemes, useToast, type Prefs, type ThemeId} from '../ui'
+import {FactoryReset} from './machineHost'
 
 export function Appearance({prefs, setPrefs, wallpaper, onTheme}: {prefs: Prefs; setPrefs: (p: Prefs) => void; wallpaper?: Wallpaper | null; onTheme?: (id: ThemeId) => void}) {
 	const toast = useToast()
@@ -123,6 +124,7 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 	const confirm = useConfirm()
 	const toast = useToast()
 	const qc = useQueryClient()
+	const owner = user.data?.role !== 'member'
 	const update = useQuery({
 		queryKey: ['system.checkUpdate'],
 		queryFn: () => query<{available: boolean; name: string; version: string}>('system.checkUpdate'),
@@ -186,6 +188,17 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 					<Row icon="open" color="var(--blue)" label="Open this server" href={boot.server?.url} />
 					<Row icon="restart" color="var(--peach)" label="Restart server" onClick={() => power('restart')} />
 					<Row icon="power" color="var(--red)" label="Shut down server" onClick={() => power('shutdown')} />
+					{owner && (
+						<FactoryReset
+							onDone={async () => {
+								await logout().catch(() => {})
+								qc.clear()
+								resetDeskConfig()
+								resetAssistantTurn()
+								onSignedOut()
+							}}
+						/>
+					)}
 					<Row icon="signout" color="#8e8e93" label="Sign out of this device" onClick={signOut} />
 				</div>
 			</section>

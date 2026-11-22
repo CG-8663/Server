@@ -14,6 +14,7 @@ import {connectorInstallCommand} from './installCommand'
 import {newlyJoined} from './join'
 import {GaugeCluster} from '../fleet/serverGauges'
 import {MachineActions} from '../fleet/machineActions'
+import {MachineShell, MachineTabs, type MachineTab} from '../fleet/MachineTabs'
 import {SheetGroup} from '../fleet/sheetGroup'
 import {PinButton} from '../fleet/PinButton'
 import {openStore} from '../fleet/openStore'
@@ -26,7 +27,6 @@ import {Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, 
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
-const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
 const MachineFiles = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
 
 type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean; files: boolean}
@@ -109,6 +109,7 @@ export function LocalSwarm({
 	onSelect,
 	adding: addingProp,
 	onAdding,
+	bare,
 }: {
 	heading?: boolean
 	/** The phone fleet list owns the rows. Sheets still open for the selected computer. */
@@ -118,6 +119,8 @@ export function LocalSwarm({
 	onSelect?: (id: string | null) => void
 	adding?: boolean
 	onAdding?: (open: boolean) => void
+	/** Desktop Machines window: the page sits in the split, not over the screen. */
+	bare?: boolean
 } = {}) {
 	const swarm = useSwarm()
 	const browserOnline = useBrowserOnline()
@@ -136,7 +139,6 @@ export function LocalSwarm({
 		if (addingProp === undefined) setInnerAdd(open)
 	}
 	const [terminal, setTerminal] = useState<{agent: Agent; input?: string} | null>(null)
-	const [vmHost, setVmHost] = useState<{id: string; name: string} | null>(null)
 	const [screen, setScreen] = useState<Agent | null>(null)
 	const [storage, setStorage] = useState<Agent | null>(null)
 	const selected = (swarm.data ?? []).find((a) => a.id === selectedId && !isGuestAgent(a)) ?? null
@@ -147,17 +149,12 @@ export function LocalSwarm({
 			{selected && !terminal && !screen && (
 				<AgentSheet
 					a={selected}
+					bare={bare}
 					onClose={() => setSelectedId(null)}
 					onTerminal={(input) => setTerminal({agent: selected, input})}
 					onDesktop={() => setScreen(selected)}
 					onStorage={() => setStorage(selected)}
-					onCreateVm={() => setVmHost({id: selected.id, name: selected.name})}
 				/>
-			)}
-			{vmHost && (
-				<Suspense fallback={null}>
-					<CreateMachine open host={vmHost} onClose={() => setVmHost(null)} />
-				</Suspense>
 			)}
 			{adding && <AddComputer before={(swarm.data ?? []).map((a) => a.id)} onClose={() => setAdding(false)} onJoined={(id) => (setAdding(false), setSelectedId(id))} />}
 			{terminal && (
@@ -361,18 +358,119 @@ export function ConnectorControls({a, onTerminal}: {a: Agent; onTerminal: (input
 	)
 }
 
-function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: {a: Agent; onClose: () => void; onTerminal: (input?: string) => void; onDesktop: () => void; onStorage: () => void; onCreateVm: () => void}) {
+function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, bare}: {a: Agent; onClose: () => void; onTerminal: (input?: string) => void; onDesktop: () => void; onStorage: () => void; bare?: boolean}) {
 	const os = look(a)
 	const act = useSwarmAction()
 	const confirm = useConfirm()
 	const [name, setName] = useState(a.name)
 	const [backups, setBackups] = useState(false)
+	const [tab, setTab] = useState('files')
 	const m = a.metrics
 	const desk = a.info?.desktop
 	const offline = !a.online
 	if (backups) return <ComputerBackups id={a.id} name={a.name} onClose={() => setBackups(false)} />
+	const tabs: MachineTab[] = [
+		...(may(a, 'files')
+			? [
+					{
+						id: 'files',
+						label: 'Files',
+						body: !a.online ? (
+							<p className="reason">{a.name} is offline.</p>
+						) : (
+							<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
+								<MachineFiles scope={{kind: 'computer', id: a.id, name: a.name}} windowId={`machine:${a.id}`} />
+							</Suspense>
+						),
+					},
+				]
+			: []),
+		...(a.online
+			? [
+					{
+						id: 'apps',
+						label: 'Apps',
+						body: <Row icon="store" color="var(--accent)" label="App Store" sub="Installs on this computer" onClick={() => (haptic(6), onClose(), openStore({id: a.id, kind: 'computer', name: a.name}))} />,
+					},
+				]
+			: []),
+		{
+			id: 'storage',
+			label: 'Storage',
+			body: (
+				<Row
+					icon="disk"
+					color="var(--teal)"
+					label="Storage"
+					sub={offline ? undefined : storageRowSub(a.allowed.storage, a.on.storage)}
+					onClick={a.online && may(a, 'storage') ? () => (haptic(8), onStorage()) : undefined}
+					disabled={offline}
+				/>
+			),
+		},
+		{
+			id: 'backups',
+			label: 'Backups',
+			body: (
+				<Row
+					icon="history"
+					color="var(--green)"
+					label="Backups"
+					sub={a.allowed.backup ? (a.on.backup ? 'Folders on this computer, on a schedule' : 'Switched off here. Turn Backups on under Allowed here.') : 'Pair this computer again with Backups switched on.'}
+					onClick={() => (haptic(8), setBackups(true))}
+				/>
+			),
+		},
+		{
+			id: 'manage',
+			label: 'Manage',
+			body: (
+				<>
+					<ConnectorControls a={a} onTerminal={onTerminal} />
+					<SheetGroup title="About">
+						<div className="row static" style={{minHeight: 56, gap: 10}}>
+							<input
+								aria-label="Name"
+								value={name}
+								maxLength={48}
+								onChange={(e) => setName(e.target.value)}
+								style={{flex: 1, background: 'transparent', border: 0, color: 'inherit', font: 'inherit', fontWeight: 600, padding: '0 6px'}}
+							/>
+							<button className="btn small" disabled={!name.trim() || name.trim() === a.name} onClick={() => act.mutate({path: 'swarm.rename', input: {id: a.id, name: name.trim()}, done: 'Renamed'})}>
+								Rename
+							</button>
+						</div>
+						{a.info && (
+							<>
+								<Row icon="server" color="#8e8e93" label={a.info.os ?? 'Linux'} sub={`${a.info.kernel ?? ''} · ${a.info.arch ?? ''}`} />
+								<Row icon="user" color="#8e8e93" label={`Runs as ${a.info.user ?? '?'}`} sub={`on ${a.info.hostname ?? '?'} · connector ${a.info.version ?? '?'}`} />
+							</>
+						)}
+						<Row icon="history" color="#8e8e93" label="Joined" sub={new Date(a.enrolledAt).toLocaleString()} />
+					</SheetGroup>
+					<button
+						className="btn danger"
+						style={{width: '100%', marginTop: 20}}
+						onClick={async () => {
+							if (
+								await confirm({
+									title: `Remove ${a.name}?`,
+									body: 'It’s cut off from this server straight away. If it’s online, its connector forgets this server and stops; if it’s offline, it’s refused when it comes back. To remove the connector from that computer too, run the uninstall command shown in Add a computer.',
+									confirm: 'Remove',
+									icon: 'trash',
+								})
+							)
+								act.mutate({path: 'swarm.remove', input: {id: a.id}, done: `${a.name} removed`}, {onSuccess: onClose})
+						}}
+					>
+						<Icon name="trash" size={18} /> Remove from swarm
+					</button>
+				</>
+			),
+		},
+	]
 	return (
-		<Sheet open onClose={onClose} label={a.name} tall>
+		<MachineShell bare={bare} label={a.name} onClose={onClose}>
 			<SheetHeader
 				icon={
 					<span className="vm-os" style={{width: 64, height: 64, borderRadius: 19, background: os.bg}}>
@@ -392,25 +490,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: 
 			</div>
 			<MachineActions terminal={!offline && may(a, 'terminal')} desktop={!offline && may(a, 'desktop') && desk?.ok !== false} onTerminal={() => onTerminal()} onDesktop={onDesktop} />
 			{a.online && may(a, 'desktop') && desk && !desk.ok && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>{desk.why}</p>}
-
 			{a.online && m && <GaugeCluster metrics={m} />}
-			<SheetGroup title="Disks">
-				<Row
-					icon="disk"
-					color="var(--teal)"
-					label="Storage"
-					sub={offline ? undefined : storageRowSub(a.allowed.storage, a.on.storage)}
-					onClick={a.online && may(a, 'storage') ? () => (haptic(8), onStorage()) : undefined}
-					disabled={offline}
-				/>
-				<Row
-					icon="history"
-					color="var(--green)"
-					label="Backups"
-					sub={a.allowed.backup ? (a.on.backup ? 'Folders on this computer, on a schedule' : 'Switched off here. Turn Backups on under Allowed here.') : 'Pair this computer again with Backups switched on.'}
-					onClick={() => (haptic(8), setBackups(true))}
-				/>
-			</SheetGroup>
 			{a.online && m && (extraDisks(m.disks).length > 0 || typeof m.temp === 'number' || m.uptime !== undefined) && (
 				<SheetGroup title="Now">
 					{extraDisks(m.disks).map((d) => (
@@ -420,78 +500,8 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: 
 					{m.uptime !== undefined && <Row icon="clock" color="#8e8e93" label="Up for" trailing={<b>{duration(m.uptime)}</b>} />}
 				</SheetGroup>
 			)}
-
-			{may(a, 'files') && (
-				<>
-					<div className="section-head" style={{margin: '20px 4px 8px'}}>
-						<h2 style={{fontSize: 16}}>Files</h2>
-					</div>
-					{!a.online ? (
-						<p className="reason">{a.name} is offline.</p>
-					) : (
-						<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
-							<MachineFiles scope={{kind: 'computer', id: a.id, name: a.name}} windowId={`machine:${a.id}`} />
-						</Suspense>
-					)}
-				</>
-			)}
-			<SheetGroup title="Virtual machines">
-				{a.online ? (
-					<>
-						<p className="quiet">No virtual machines on {a.name}.</p>
-						<button type="button" className="btn small" style={{margin: '8px 12px 12px'}} onClick={() => (haptic(6), onCreateVm())}>
-							<Icon name="plus" size={15} /> Create VM
-						</button>
-					</>
-				) : (
-					<p className="reason">{a.name} is offline, so virtual machines can’t be created there right now.</p>
-				)}
-			</SheetGroup>
-			<SheetGroup title="Apps">
-				<Row icon="store" color="var(--accent)" label="App Store" sub="Installs on this computer" onClick={() => (haptic(6), onClose(), openStore({id: a.id, kind: 'computer', name: a.name}))} />
-			</SheetGroup>
-			<ConnectorControls a={a} onTerminal={onTerminal} />
-
-			<SheetGroup title="About">
-				<div className="row static" style={{minHeight: 56, gap: 10}}>
-					<input
-						aria-label="Name"
-						value={name}
-						maxLength={48}
-						onChange={(e) => setName(e.target.value)}
-						style={{flex: 1, background: 'transparent', border: 0, color: 'inherit', font: 'inherit', fontWeight: 600, padding: '0 6px'}}
-					/>
-					<button className="btn small" disabled={!name.trim() || name.trim() === a.name} onClick={() => act.mutate({path: 'swarm.rename', input: {id: a.id, name: name.trim()}, done: 'Renamed'})}>
-						Rename
-					</button>
-				</div>
-				{a.info && (
-					<>
-						<Row icon="server" color="#8e8e93" label={a.info.os ?? 'Linux'} sub={`${a.info.kernel ?? ''} · ${a.info.arch ?? ''}`} />
-						<Row icon="user" color="#8e8e93" label={`Runs as ${a.info.user ?? '?'}`} sub={`on ${a.info.hostname ?? '?'} · connector ${a.info.version ?? '?'}`} />
-					</>
-				)}
-				<Row icon="history" color="#8e8e93" label="Joined" sub={new Date(a.enrolledAt).toLocaleString()} />
-			</SheetGroup>
-
-			<button
-				className="btn danger"
-				style={{width: '100%', marginTop: 20}}
-				onClick={async () => {
-					if (
-						await confirm({
-							title: `Remove ${a.name}?`,
-							body: 'It’s cut off from this server straight away. If it’s online, its connector forgets this server and stops; if it’s offline, it’s refused when it comes back. To remove the connector from that computer too, run the uninstall command shown in Add a computer.',
-							confirm: 'Remove',
-							icon: 'trash',
-						})
-					)
-						act.mutate({path: 'swarm.remove', input: {id: a.id}, done: `${a.name} removed`}, {onSuccess: onClose})
-				}}
-			>
-				<Icon name="trash" size={18} /> Remove from swarm
-			</button>
-		</Sheet>
+			<MachineTabs label={`${a.name} sections`} tabs={tabs} tab={tab} onTab={setTab} />
+		</MachineShell>
 	)
 }
 

@@ -11,6 +11,7 @@ export type NuItem = {
 	onOpen?: () => void
 	favorite?: boolean
 	onFavorite?: () => void
+	actions?: {id: string; label: string; onClick: () => void}[]
 }
 
 function favoriteButton(item: NuItem): ReactNode {
@@ -28,6 +29,27 @@ function favoriteButton(item: NuItem): ReactNode {
 		>
 			<Icon name={item.favorite ? 'star-filled' : 'star'} size={16} />
 		</button>
+	)
+}
+
+function actionButtons(item: NuItem): ReactNode {
+	if (!item.actions?.length) return null
+	return (
+		<span className="nu-acts">
+			{item.actions.map((action) => (
+				<button
+					key={action.id}
+					type="button"
+					aria-label={action.label}
+					onClick={(e) => {
+						e.stopPropagation()
+						action.onClick()
+					}}
+				>
+					{action.label}
+				</button>
+			))}
+		</span>
 	)
 }
 
@@ -53,9 +75,10 @@ export function NuEntries({items, grid}: {items: NuItem[]; grid: boolean}) {
 						<span className="nu-label">
 							<span className="nu-name-text">{item.name}</span>
 							{favoriteButton(item)}
+							{actionButtons(item)}
 						</span>
 					)
-					if (item.onFavorite) {
+					if (item.onFavorite || item.actions?.length) {
 						return (
 							<div key={item.key} className="nu-cell" role={item.onOpen ? 'button' : undefined} tabIndex={item.onOpen ? 0 : undefined} onClick={item.onOpen} onKeyDown={(e) => onKey(item, e)}>
 								{glyph}
@@ -95,12 +118,13 @@ export function NuEntries({items, grid}: {items: NuItem[]; grid: boolean}) {
 						<span className="nu-name">
 							<span className="nu-name-text">{item.name}</span>
 							{favoriteButton(item)}
+							{actionButtons(item)}
 						</span>
 						<span className="nu-size">{item.size || '—'}</span>
 						<span className="nu-mod">{item.modified || ''}</span>
 					</>
 				)
-				if (item.onFavorite) {
+				if (item.onFavorite || item.actions?.length) {
 					return (
 						<div key={item.key} className="nu-row" role={item.onOpen ? 'button' : undefined} tabIndex={item.onOpen ? 0 : undefined} onClick={item.onOpen} onKeyDown={(e) => onKey(item, e)}>
 							{inner}

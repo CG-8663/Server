@@ -1630,6 +1630,41 @@ def reboot(_args):
     return True
 
 
+APP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,64}$")
+
+
+def app_install(args):
+    apps = (args or {}).get("apps")
+    if not isinstance(apps, list) or not apps:
+        raise RuntimeError("Nothing to install")
+    if shutil.which("podman"):
+        engine = ["podman", "compose"]
+    elif shutil.which("docker"):
+        engine = ["docker", "compose"]
+    else:
+        raise RuntimeError("Podman isn’t on this computer, so this app can’t be installed here.")
+    root = os.path.expanduser("~/.local/share/omarchy-connector/apps")
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    for app in apps:
+        app_id = str((app or {}).get("appId", ""))
+        compose = (app or {}).get("compose")
+        if not APP_ID.match(app_id) or ".." in app_id or not isinstance(compose, str) or not compose or len(compose) > 200_000 or "\0" in compose:
+            raise RuntimeError("That app can’t be installed here")
+        dest = os.path.join(root, app_id)
+        os.makedirs(dest, mode=0o700, exist_ok=True)
+        path = os.path.join(dest, "compose.yml")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, compose.encode())
+        finally:
+            os.close(fd)
+        try:
+            run(engine + ["-f", "compose.yml", "up", "-d"], cwd=dest, timeout=600)
+        except RuntimeError as e:
+            raise RuntimeError(str(e) or "Podman isn’t on this computer, so this app can’t be installed here.") from e
+    return True
+
+
 ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "theme-set": theme_set, "reboot": reboot}
 
 HELPER = "/usr/local/libexec/omarchy-connector/helper.py"
@@ -2096,7 +2131,130 @@ def backup_restore(conn, call_id, args, cfg):
     return {"folder": target}
 
 
-FILES_ACTIONS = {"files-stat": lambda args: files_stat(args), "files-list": lambda args: files_list(args)}
+def files_mkdir(args, home=None, config=None, data=None):
+    rel = (args or {}).get("path") or ""
+    parts = split_home_path(rel) if rel else []
+    if not parts:
+        return True
+    home_r, config_r, data_r = _roots(home, config, data)
+    cur = home_r
+    for part in parts:
+        if not _PART.match(part):
+            raise RuntimeError("That path isn’t in your home folder")
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            raise RuntimeError("That path isn’t in your home folder")
+        if not os.path.isdir(cur):
+            os.mkdir(cur, 0o755)
+        real = os.path.realpath(cur)
+        if not _under(real, home_r) or _blocked(real, config_r, data_r):
+            raise RuntimeError("That path isn’t in your home folder")
+    return True
+
+
+def _free_target(directory, name, is_dir):
+    target = os.path.join(directory, name)
+    if not os.path.lexists(target):
+        return target
+    stem, ext = os.path.splitext(name)
+    for n in range(2, 100):
+        candidate = os.path.join(directory, f"{name} {n}" if is_dir else f"{stem} {n}{ext}")
+        if not os.path.lexists(candidate):
+            return candidate
+    raise RuntimeError("That name is already there")
+
+
+def files_transfer(args, copy, home=None, config=None, data=None):
+    src = (args or {}).get("from")
+    dest = (args or {}).get("to") or ""
+    fd, st, real, name = resolve_home(src, "any", home, config, data)
+    os.close(fd)
+    if not name or os.path.islink(real):
+        raise RuntimeError("That path isn’t in your home folder")
+    dfd, _dst, dreal, _dname = resolve_home(dest, "dir", home, config, data)
+    os.close(dfd)
+    home_r, config_r, data_r = _roots(home, config, data)
+    is_dir = stat.S_ISDIR(st.st_mode)
+    target = _free_target(dreal, name, is_dir)
+    if not _under(os.path.realpath(dreal), home_r) or _blocked(os.path.realpath(dreal), config_r, data_r):
+        raise RuntimeError("That path isn’t in your home folder")
+    if os.path.realpath(real) == os.path.realpath(target) or os.path.realpath(target).startswith(os.path.realpath(real) + os.sep):
+        raise RuntimeError("That folder is inside itself")
+    if not copy:
+        try:
+            os.rename(real, target)
+            return {"path": os.path.relpath(target, home_r)}
+        except OSError:
+            pass
+    if is_dir:
+        shutil.copytree(real, target, symlinks=True, ignore=lambda _dir, names: [n for n in names if n.startswith(".")])
+        if not copy:
+            shutil.rmtree(real)
+    else:
+        shutil.copy2(real, target)
+        if not copy:
+            os.remove(real)
+    placed = os.path.realpath(target)
+    if not _under(placed, home_r) or _blocked(placed, config_r, data_r):
+        shutil.rmtree(target, ignore_errors=True) if is_dir else os.remove(target)
+        raise RuntimeError("That path isn’t in your home folder")
+    return {"path": os.path.relpath(target, home_r)}
+
+
+def files_delete(args, home=None, config=None, data=None):
+    fd, st, real, name = resolve_home((args or {}).get("path"), "any", home, config, data)
+    os.close(fd)
+    if not name or os.path.islink(real):
+        raise RuntimeError("That path isn’t in your home folder")
+    if stat.S_ISDIR(st.st_mode):
+        shutil.rmtree(real)
+    else:
+        os.remove(real)
+    return True
+
+
+def files_recents(args, home=None, config=None, data=None):
+    home_r, config_r, data_r = _roots(home, config, data)
+    found = []
+    seen = 0
+    stack = [home_r]
+    while stack and seen < 8000:
+        cur = stack.pop()
+        try:
+            names = os.listdir(cur)
+        except OSError:
+            continue
+        for name in names:
+            if name.startswith(".") or name == "node_modules" or not _PART.match(name):
+                continue
+            full = os.path.join(cur, name)
+            try:
+                if os.path.islink(full):
+                    continue
+                st = os.lstat(full)
+                real = os.path.realpath(full)
+            except OSError:
+                continue
+            if not _under(real, home_r) or _blocked(real, config_r, data_r):
+                continue
+            seen += 1
+            if stat.S_ISDIR(st.st_mode):
+                stack.append(full)
+            elif stat.S_ISREG(st.st_mode):
+                found.append({"name": name, "path": os.path.relpath(full, home_r), "size": st.st_size, "mtime": int(st.st_mtime * 1000), "dir": False})
+    found.sort(key=lambda row: row["mtime"], reverse=True)
+    return {"files": found[:40]}
+
+
+FILES_ACTIONS = {
+    "files-stat": lambda args: files_stat(args),
+    "files-list": lambda args: files_list(args),
+    "files-copy": lambda args: files_transfer(args, True),
+    "files-move": lambda args: files_transfer(args, False),
+    "files-delete": lambda args: files_delete(args),
+    "files-mkdir": lambda args: files_mkdir(args),
+    "files-recents": lambda args: files_recents(args),
+}
 BACKUP_ACTIONS = {"backup-folders": lambda conn, cid, args, cfg: backup_folders(args), "backup-run": backup_run, "backup-restore": backup_restore}
 
 
@@ -2273,6 +2431,9 @@ class Connection:
     def call(self, msg):
         name = msg.get("name")
         try:
+            if name == "app-install":
+                data = app_install(msg.get("args") or {})
+                return self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})
             if name in FILES_ACTIONS:
                 if not self.allowed.get("files"):
                     raise RuntimeError("This computer doesn’t allow files")

@@ -56,7 +56,7 @@ export function Apps({onOpenApp, onStore}: {onOpenApp: (app: UserApp) => void; o
 		if (filter === 'updates') return updateMap.has(a.id)
 		return true
 	})
-	const groups = groupApps(shown.map((app) => ({appId: app.id, name: app.name ?? app.id, computerId: 'server', computerName: serverName})))
+	const groups = groupApps(shown.map((app) => ({appId: app.id, name: app.name ?? app.id, computerId: app.computerId || 'server', computerName: app.computerName || serverName})))
 
 	const updateAll = async () => {
 		const targets = list.filter((a) => updateMap.has(a.id))
@@ -149,7 +149,7 @@ export function Apps({onOpenApp, onStore}: {onOpenApp: (app: UserApp) => void; o
 									onClick={() => {
 										haptic(6)
 										if (many) setOpenId((id) => (id === group.appId ? null : group.appId))
-										else onOpenApp(app)
+										else if (!app.remote && (app.computerId ?? 'server') === 'server') onOpenApp(app)
 									}}
 									style={{flex: 1, display: 'flex', alignItems: 'center', gap: 13, minWidth: 0, border: 0, background: 'none', padding: 0, color: 'inherit', textAlign: 'left'}}
 								>
@@ -177,7 +177,7 @@ export function Apps({onOpenApp, onStore}: {onOpenApp: (app: UserApp) => void; o
 												role="menuitem"
 												onClick={() => {
 													setOpenId(null)
-													if (inst.computerId === 'server') onOpenApp(app)
+													if (!app.remote && inst.computerId === 'server') onOpenApp(app)
 												}}
 											>
 												{inst.computerName}

@@ -5,7 +5,6 @@ import {batteryColor, batteryGaugeItem, combineBatteries} from '../battery'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useApps, useBattery, useBootstrap, useCpu, useDisk, useGpus, useMachines, useMemory, useTemp, useUptime, useUser} from '../data'
 import {computerSample, fleetRings, samplePercent, serverSample, type FleetRings, type GaugeKind} from '../fleet/aggregate'
-import {BatteryRing} from '../fleet/BatteryRing'
 import {fleetList, guestFleetInput, type FleetMember} from '../fleet/list'
 import {openFleetMember} from '../fleet/openMember'
 import {usePins} from '../fleet/PinButton'
@@ -14,28 +13,11 @@ import {gpuGaugeItems} from '../gauges'
 import {Icon, type IconName} from '../icons'
 import {guestAgent, isGuestAgent} from '../swarm/guestLink'
 import {useSwarm} from '../swarm/Swarm'
+import {GaugeCluster, type GaugeModel} from '../fleet/serverGauges'
 import {AppIcon, Ring, Row, Sheet, SheetHeader, appStatus, bytes, duration, greeting, haptic, levelColor, pct, today} from '../ui'
-
-type GaugeItem = {
-	k: string
-	key?: string
-	icon: IconName
-	p: number
-	sub: string
-	ready: boolean
-	color?: string
-	battery?: FleetRings['battery']
-}
 
 function percentSub(p: number, ready: boolean) {
 	return ready ? `${Math.round(p)}%` : '–'
-}
-
-/** High use is a warning at 75% and danger at 90%. A low battery flips that: 25% and 15%. */
-function gaugeLevel(name: string, p: number, ready: boolean): 'ok' | 'warning' | 'danger' {
-	if (!ready) return 'ok'
-	if (name === 'Battery') return p <= 15 ? 'danger' : p <= 25 ? 'warning' : 'ok'
-	return p >= 90 ? 'danger' : p >= 75 ? 'warning' : 'ok'
 }
 
 export function Gauges({onOpen, fleet}: {onOpen?: (gauge: {title: string; kind: GaugeKind; gpuId?: string}) => void; fleet?: FleetRings | null}) {
@@ -45,7 +27,7 @@ export function Gauges({onOpen, fleet}: {onOpen?: (gauge: {title: string; kind: 
 	const gpus = useGpus()
 	const battery = useBattery()
 	const diskTotal = disk.data ? disk.data.totalUsed + disk.data.available : 0
-	const items: GaugeItem[] = fleet
+	const items: GaugeModel[] = fleet
 		? [
 				{k: 'CPU', icon: 'cpu', p: fleet.cpu.percent, sub: percentSub(fleet.cpu.percent, fleet.cpu.ready), ready: fleet.cpu.ready},
 				{k: 'Memory', icon: 'memory', p: fleet.memory.percent, sub: fleet.memory.ready ? `${bytes(fleet.memory.used, 1, 1024)} of ${bytes(fleet.memory.total, 0, 1024)}` : '–', ready: fleet.memory.ready},
@@ -80,42 +62,7 @@ export function Gauges({onOpen, fleet}: {onOpen?: (gauge: {title: string; kind: 
 				...gpuGaugeItems(gpus.data?.gpus ?? []).map((g) => ({...g, sub: percentSub(g.p, g.ready)})),
 				...batteryGaugeItem(battery.data?.batteries ?? []).map((g) => ({...g, sub: percentSub(g.p, g.ready)})),
 			]
-	return (
-		<div className="glass gauges" data-n={items.length} role="group" aria-label="System usage">
-			{items.map((g) => {
-				const level = gaugeLevel(g.k, g.p, g.ready)
-				return (
-					<button
-						type="button"
-						className="gauge press"
-						key={g.key ?? g.k}
-						aria-label={level === 'ok' ? `${g.k}, ${g.sub}` : `${g.k}, tap for details`}
-						onClick={() => onOpen?.({title: g.k, kind: g.k === 'Memory' || g.k === 'Storage' || g.k === 'Battery' ? g.k : g.k.startsWith('GPU') ? 'GPU' : 'CPU', gpuId: g.key})}
-					>
-						{g.battery ? (
-							<BatteryRing groups={g.battery.groups} lowest={g.battery.lowest} color={g.color} />
-						) : (
-							<Ring value={g.p} color={g.color ?? levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
-								<span className="pct">
-									{g.ready ? Math.round(g.p) : '–'}
-									<small>%</small>
-								</span>
-							</Ring>
-						)}
-						<span className="k">{g.k}</span>
-						{level === 'ok' ? (
-							<span className="sub">{g.sub}</span>
-						) : (
-							<span className={`sub gauge-alert${level === 'danger' ? ' danger' : ''}`}>
-								<Icon name={level === 'danger' ? 'exclaim' : 'alert'} size={13} />
-								Tap for details
-							</span>
-						)}
-					</button>
-				)
-			})}
-		</div>
-	)
+	return <GaugeCluster items={items} interactive onOpen={onOpen} />
 }
 
 function machineIcon(member: FleetMember): IconName {

@@ -35,7 +35,7 @@ import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
 import { actionsForItems, asFileSearch, batchToast, copyTextOrToast, FILES_LIST_PAGE, filesListMoreLeft, filesPathToStore, nice, offersDownload, readStoredFilesPath, searchMatchNote, selectionAfterQuery, viewerAfterPathChange, type BatchKind } from "./filesRules";
-import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, type FavoriteItem, favoritePath, fileKindLabel, filterUnsyncedPhotos, folderPickerRoots, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
+import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, type FavoriteItem, favoritePath, fileKindLabel, filterUnsyncedPhotos, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
 
 const FileViewer = lazy(() =>
   import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
@@ -211,6 +211,12 @@ const PLACE_NAMES: Record<string, string> = {
 // Photos synced from your phone or computer live here (a normal folder in Home).
 const PHOTOS = "/Home/Photos";
 const titleOf = (path: string) => PLACE_NAMES[path] ?? baseName(path);
+const pickerTitle = (dir: string, places: {path: string; name: string}[]) => {
+  const place = places.find((p) => dir === p.path || dir.startsWith(`${p.path}/`));
+  if (place && dir === place.path) return place.name;
+  if (dir.startsWith("::")) return baseName(dir) || place?.name || "Folder";
+  return titleOf(dir);
+};
 
 function FileIcon({ f, size = 44 }: { f: FileEntry; size?: number }) {
   const [failed, setFailed] = useState(false);
@@ -271,6 +277,9 @@ function useFileAction() {
       qc.invalidateQueries({ queryKey: ["files.list"] });
       qc.invalidateQueries({ queryKey: ["files.favorites"] });
       qc.invalidateQueries({ queryKey: ["files.recents"] });
+      qc.invalidateQueries({ queryKey: ["files.fleetRecents"] });
+      qc.invalidateQueries({ queryKey: ["swarm.files.list"] });
+      qc.invalidateQueries({ queryKey: ["swarm.files.recents"] });
       qc.invalidateQueries({ queryKey: ["files.shares"] });
       qc.invalidateQueries({ queryKey: ["files.search"] });
     }
@@ -494,16 +503,26 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     path && (path === "/Home" || path === "/Trash" || path.startsWith("/Home/") || path.startsWith("/Trash/"))
       ? path
       : "/Home";
+  const owner = user.data != null && user.data.role !== "member";
   const recents = useQuery({
     queryKey: ["files.recents"],
     queryFn: () => query<FileEntry[]>("files.recents"),
-    enabled: !scope || scope.kind === "server",
+    enabled: scope?.kind === "server" || (!scope && !owner),
+  });
+  const fleetRecents = useQuery({
+    queryKey: ["files.fleetRecents"],
+    queryFn: () => query<FileEntry[]>("files.fleetRecents"),
+    enabled: !scope && owner,
+  });
+  const computerRecents = useQuery({
+    queryKey: ["swarm.files.recents", scope?.kind === "computer" ? scope.id : ""],
+    queryFn: () => query<{files: {name: string; path: string; size: number; mtime: number; dir: boolean}[]}>("swarm.files.recents", {id: scope?.kind === "computer" ? scope.id : ""}),
+    enabled: scope?.kind === "computer" && owner,
   });
   const favorites = useQuery({
     queryKey: ["files.favorites"],
     queryFn: () => query<FavoriteItem[]>("files.favorites"),
   });
-  const owner = user.data != null && user.data.role !== "member";
   const machines = useMachines();
   const swarm = useQuery({
     queryKey: ["swarm.list"],
@@ -520,7 +539,11 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
       online: a.online,
       filesGranted: !!(a.allowed?.files && a.on?.files),
     })),
-    (machines.data ?? []).filter((m) => m.id !== "desktop").map((m) => ({id: m.id, name: m.name, state: m.state})),
+    (machines.data ?? []).filter((m) => m.id !== "desktop").map((m) => {
+      const agent = (swarm.data ?? []).find((a) => a.guestOf === m.id);
+      const granted = !!(agent?.online && agent.allowed?.files && agent.on?.files);
+      return {id: m.id, name: m.name, state: m.state, agentId: agent?.id, filesGranted: granted && m.state === "running"};
+    }),
   );
   const shares = useQuery({
     queryKey: ["files.shares"],
@@ -659,12 +682,37 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
       ? !!(computerKnown.online && computerKnown.allowed?.files && computerKnown.on?.files)
       : !swarm.isFetched;
 
+  const recentQuery = scope?.kind === "computer" ? computerRecents : !scope && owner ? fleetRecents : recents;
+  const recentSource: FileEntry[] = (
+    scope?.kind === "computer"
+      ? (computerRecents.data?.files ?? []).flatMap((row) => {
+          const next = computerPlacePath(scope.id, row.path);
+          if (!next) return [];
+          const entry: FileEntry = {
+            name: row.name,
+            path: next,
+            type: row.dir ? "directory" : "application/octet-stream",
+            size: row.size,
+            modified: row.mtime,
+            operations: ["favorite", "copy", "move"],
+          };
+          return [entry];
+        })
+      : !scope && owner
+        ? (fleetRecents.data ?? [])
+        : (recents.data ?? [])
+  ).filter((f) => {
+    if (scope?.kind === "computer") return f.path.startsWith(`::computer/${scope.id}/`);
+    if (scope?.kind === "server") return !f.path.startsWith("::");
+    return true;
+  });
+
   // Items shown in the current view.
   const items: FileEntry[] =
     q.trim().length >= 2
       ? found.files
       : path === "::recents"
-        ? (recents.data ?? [])
+        ? recentSource
         : path === "::favorites"
           ? (favorites.data ?? []).map(
               (p) =>
@@ -682,7 +730,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     q.trim().length >= 2
       ? search
       : path === "::recents"
-        ? recents
+        ? recentQuery
         : path === "::favorites"
           ? favorites
           : listing;
@@ -697,7 +745,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     q.trim().length >= 2
       ? search.isLoading
       : path === "::recents"
-        ? recents.isLoading
+        ? recentQuery.isLoading
         : path && !path.startsWith("::")
           ? listing.isLoading
           : false;
@@ -883,7 +931,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     onOpen: f.path.startsWith("::") ? undefined : () => openShown(f),
     onFavorite: () => toggleFavorite(f.path),
   });
-  const recentRows = (!scope || scope.kind === "server" ? recents.data ?? [] : []).map(shelfRow);
+  const recentRows = recentSource.map(shelfRow);
   const favoriteRows = (favorites.data ?? [])
     .map((item) => (typeof item === "string" ? ({name: baseName(item) || item, path: item, type: "directory", modified: 0, operations: ["favorite"]} as FileEntry) : item))
     .filter((f) => {
@@ -1107,7 +1155,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
         </aside>}
         <div className="nu-main">
       <Shelf title="Favorites" empty={favorites.isLoading ? "Loading…" : "No favorites yet."} rows={favoriteRows} />
-      <Shelf title="Recent" empty={recents.isLoading ? "Loading…" : "No recent files."} rows={recentRows} />
+      <Shelf title="Recent" empty={recentQuery.isLoading ? "Loading…" : "No recent files."} rows={recentRows} />
       {machineRoot && (
         <>
           <NuEntries items={rootItems} grid={grid} />
@@ -1222,6 +1270,22 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
           onOpen={(rel) => {
             const next = computerPlacePath(computerHere.id, rel)
             if (next) go(next)
+          }}
+          onMove={(rel) => {
+            const next = computerPlacePath(computerHere.id, rel);
+            if (next) setPicker({mode: "move", paths: [next]});
+          }}
+          onCopy={(rel) => {
+            const next = computerPlacePath(computerHere.id, rel);
+            if (next) setPicker({mode: "copy", paths: [next]});
+          }}
+          onClip={(rel) => {
+            mutate("clips.addFile", {scope: "swarm", id: computerHere.id, path: rel})
+              .then(() => {
+                toast("Saved to the clip book");
+                qc.invalidateQueries({queryKey: ["clips.list"]});
+              })
+              .catch((e: Error) => toast(e.message, true));
           }}
         />
       )}
@@ -1491,20 +1555,25 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
         <FolderPicker
           mode={picker.mode}
           count={picker.paths.length}
-          start={path && !path.startsWith("::") && !inTrash ? path : "/Home"}
+          start={path && !inTrash && (path.startsWith("::computer/") || !path.startsWith("::")) ? path : "/Home"}
+          places={computerFiles.places.map((p) => ({path: p.path, name: p.name}))}
           exclude={picker.paths}
           onClose={() => setPicker(null)}
           onPick={async (dir) => {
+            const cross = picker.paths.some((p) => p.startsWith("::computer/")) || dir.startsWith("::computer/");
             const verb = picker.mode === "move" ? "files.move" : "files.copy";
             let ok = 0;
             for (const p of picker.paths) {
-              if (parentOf(p) === dir && picker.mode === "move") continue;
+              const fromParent = p.startsWith("::") ? filesParent(p) : parentOf(p);
+              if (fromParent === dir && picker.mode === "move") continue;
               try {
-                const next = await act(verb, {
-                  path: p,
-                  toDirectory: dir,
-                  collision: "keep-both",
-                });
+                const next = cross
+                  ? await act("files.transfer", {path: p, toDirectory: dir, mode: picker.mode})
+                  : await act(verb, {
+                      path: p,
+                      toDirectory: dir,
+                      collision: "keep-both",
+                    });
                 if (picker.mode === "move")
                   setViewing((v) => viewerAfterPathChange(v, p, typeof next === "string" ? next : null));
                 ok++;
@@ -1514,7 +1583,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
             }
             if (ok)
               toast(
-                `${ok === 1 ? "1 item" : `${ok} items`} ${picker.mode === "move" ? "moved" : "copied"} to ${titleOf(dir)}`,
+                `${ok === 1 ? "1 item" : `${ok} items`} ${picker.mode === "move" ? "moved" : "copied"} to ${pickerTitle(dir, computerFiles.places)}`,
               );
             setPicker(null);
             setSelected(new Set());
@@ -2106,6 +2175,7 @@ function FolderPicker({
   mode,
   count,
   start,
+  places,
   exclude,
   onClose,
   onPick,
@@ -2113,18 +2183,35 @@ function FolderPicker({
   mode: "move" | "copy";
   count: number;
   start: string;
+  places: {path: string; name: string}[];
   exclude: string[];
   onClose: () => void;
   onPick: (dir: string) => Promise<void>;
 }) {
   const [dir, setDir] = useState(start);
   const [busy, setBusy] = useState(false);
-  const listing = useListing(dir, "name");
-  const folders = (listing.data?.files ?? []).filter(
-    (f) => isDir(f) && !exclude.includes(f.path),
-  );
+  const here = parseComputerPlace(dir);
+  const listing = useListing(here ? null : dir, "name");
+  const computerList = useQuery({
+    queryKey: ["swarm.files.list", here?.id ?? "", here?.rel ?? ""],
+    queryFn: () => query<{entries: {name: string; dir: boolean}[]}>("swarm.files.list", {id: here?.id, path: here?.rel ?? ""}),
+    enabled: !!here,
+  });
+  const serverFolders = (listing.data?.files ?? [])
+    .filter((f) => isDir(f) && !exclude.includes(f.path))
+    .map((f) => ({path: f.path, name: f.name}));
+  const computerFolders = (computerList.data?.entries ?? []).flatMap((entry) => {
+    if (!entry.dir || !here) return [];
+    const next = computerPlacePath(here.id, here.rel ? `${here.rel}/${entry.name}` : entry.name);
+    if (!next || exclude.includes(next)) return [];
+    return [{path: next, name: entry.name}];
+  });
+  const folders = here ? computerFolders : serverFolders;
+  const loading = here ? computerList.isLoading : listing.isLoading;
+  const failed = here ? computerList.error : listing.error;
   const blocked = exclude.some((p) => dir === p || dir.startsWith(`${p}/`));
-  const roots = folderPickerRoots();
+  const upTo = here ? filesParent(dir) : dir.split("/").filter(Boolean).length > 1 ? parentOf(dir) : null;
+  const roots = [{path: "/Home", name: "Home"}, ...places];
   return (
     <Sheet
       open
@@ -2134,17 +2221,17 @@ function FolderPicker({
     >
       <SheetHeader
         title={`${mode === "move" ? "Move" : "Copy"} ${count === 1 ? "1 item" : `${count} items`}`}
-        subtitle={`to ${dir}`}
+        subtitle={`to ${pickerTitle(dir, places)}`}
         onClose={onClose}
       />
       <div className="chips" style={{ marginBottom: 10 }}>
         {roots.map((r) => (
           <button
-            key={r}
-            className={`chip${dir === r || dir.startsWith(`${r}/`) ? " on" : ""}`}
-            onClick={() => setDir(r)}
+            key={r.path}
+            className={`chip${dir === r.path || dir.startsWith(`${r.path}/`) ? " on" : ""}`}
+            onClick={() => setDir(r.path)}
           >
-            {titleOf(r)}
+            {r.name}
           </button>
         ))}
       </div>
@@ -2160,11 +2247,11 @@ function FolderPicker({
           className="glass group"
           style={{ borderRadius: 18, "--inset": "62px" } as CSSProperties}
         >
-          {dir.split("/").length > 2 && (
+          {upTo && (
             <button
               className="row"
               style={{ minHeight: 54 }}
-              onClick={() => setDir(parentOf(dir))}
+              onClick={() => setDir(upTo)}
             >
               <span
                 className="row-ico"
@@ -2173,11 +2260,11 @@ function FolderPicker({
                 <Icon name="back" size={18} />
               </span>
               <span className="main">
-                <b style={{ fontWeight: 550 }}>{titleOf(parentOf(dir))}</b>
+                <b style={{ fontWeight: 550 }}>{pickerTitle(upTo, places)}</b>
               </span>
             </button>
           )}
-          {listing.isLoading && (
+          {loading && (
             <div className="row static">
               <span className="spinner" />
             </div>
@@ -2201,7 +2288,7 @@ function FolderPicker({
               <Icon name="chevron" size={18} className="chev" />
             </button>
           ))}
-          {!listing.isLoading && folders.length === 0 && (
+          {!loading && folders.length === 0 && (
             <div className="row static muted">No folders here</div>
           )}
         </div>
@@ -2209,7 +2296,7 @@ function FolderPicker({
       <button
         className="btn primary block"
         style={{ marginTop: 14 }}
-        disabled={busy || blocked || !!listing.error}
+        disabled={busy || blocked || !!failed}
         onClick={async () => {
           setBusy(true);
           await onPick(dir);

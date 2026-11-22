@@ -1,4 +1,4 @@
-import {lazy, Suspense, useState} from 'react'
+import {lazy, Suspense, useState, type ReactNode} from 'react'
 
 import type {Machine} from '../api'
 import {Icon} from '../icons'
@@ -22,10 +22,12 @@ const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((1
 
 /**
  * The computer sections of a virtual machine. Power, USB, and snapshots stay with the host page.
- * Terminal is the connector shell. Open desktop is the virtual machine's screen.
+ * Terminal is the connector shell. Desktop is the virtual machine's screen.
  * Files and gauges use the guest's connector when it is installed.
  */
-export function GuestLive({machine, onOpenStore, onOpenDesktop, onBackups}: {machine: Machine; onOpenStore?: () => void; onOpenDesktop?: () => void; onBackups?: () => void}) {
+export type GuestSections = {files?: ReactNode; apps?: ReactNode; storage?: ReactNode; backups?: ReactNode; manage?: ReactNode}
+
+export function GuestLive({machine, onOpenStore, onOpenDesktop, onBackups, tabs}: {machine: Machine; onOpenStore?: () => void; onOpenDesktop?: () => void; onBackups?: () => void; tabs?: (sections: GuestSections) => ReactNode}) {
 	const swarm = useSwarm()
 	const agent = guestAgent(swarm.data ?? [], machine.id)
 	const [install, setInstall] = useState(false)
@@ -68,48 +70,54 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onBackups}: {mac
 			)}
 			{swarm.isFetched && !agent && !linux && <p className="quiet">The connector runs on Linux with systemd. It can’t be installed on this guest.</p>}
 			{metrics ? <GaugeCluster metrics={metrics} /> : host ? <GaugeCluster metrics={host} /> : null}
-			<SheetGroup title="Disks">
+			<SheetGroup title="Now">
 				<Row
 					icon="disk"
 					color="var(--teal)"
 					label={disk && disk.mount !== '/' ? disk.mount : 'Disk'}
-					sub={disk ? `${bytes(disk.total - disk.used, 0)} free` : machine.diskSizeGb ? `${machine.diskSizeGb} GB` : undefined}
+					sub={disk ? `${bytes(disk.used, 1)} of ${bytes(disk.total, 0)}` : machine.diskSizeGb ? `${machine.diskSizeGb} GB` : undefined}
 					trailing={disk ? <b>{pct(disk)}%</b> : undefined}
 				/>
-				<Row icon="disk" color="var(--teal)" label="Storage" sub={storageSub} onClick={() => (haptic(8), canStorage ? setStorage(true) : setStorageNote(true))} />
-				<Row icon="history" color="var(--green)" label="Backups" sub="Back up this virtual machine" onClick={onBackups ? () => (haptic(8), onBackups()) : undefined} />
+				{extraDisks(metrics?.disks).map((d) => (
+					<Row key={d.mount} icon="disk" color="#f0a020" label={d.mount} sub={`${bytes(d.used)} of ${bytes(d.total)}`} trailing={<b>{pct(d)}%</b>} />
+				))}
+				{typeof metrics?.temp === 'number' && <Row icon="thermo" color="#ef5350" label="Temperature" trailing={<b>{Math.round(metrics.temp)}°C</b>} />}
+				{metrics?.uptime !== undefined && <Row icon="clock" color="#8e8e93" label="Up for" trailing={<b>{duration(metrics.uptime)}</b>} />}
 			</SheetGroup>
-			{metrics && (extraDisks(metrics.disks).length > 0 || typeof metrics.temp === 'number' || metrics.uptime !== undefined) && (
-				<SheetGroup title="Now">
-					{extraDisks(metrics.disks).map((d) => (
-						<Row key={d.mount} icon="disk" color="#f0a020" label={d.mount} sub={`${bytes(d.used)} of ${bytes(d.total)}`} trailing={<b>{pct(d)}%</b>} />
-					))}
-					{typeof metrics.temp === 'number' && <Row icon="thermo" color="#ef5350" label="Temperature" trailing={<b>{Math.round(metrics.temp)}°C</b>} />}
-					{metrics.uptime !== undefined && <Row icon="clock" color="#8e8e93" label="Up for" trailing={<b>{duration(metrics.uptime)}</b>} />}
-				</SheetGroup>
-			)}
-			<div className="section-head" style={{margin: '20px 4px 8px'}}>
-				<h2 style={{fontSize: 16}}>Files</h2>
-			</div>
-			{live && agent && agentMay(agent, 'files') ? (
-				<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
-					<MachineFiles scope={{kind: 'computer', id: agent.id, name: machine.name}} windowId={`guest:${machine.id}`} />
-				</Suspense>
+			{tabs ? (
+				tabs({
+					files:
+						live && agent && agentMay(agent, 'files') ? (
+							<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
+								<MachineFiles scope={{kind: 'computer', id: agent.id, name: machine.name}} windowId={`guest:${machine.id}`} />
+							</Suspense>
+						) : undefined,
+					apps: live ? (
+						<Row icon="store" color="var(--accent)" label="App Store" sub={`Installs on ${machine.name}`} onClick={() => (haptic(6), onOpenStore ? onOpenStore() : openStore({id: machine.id, kind: 'guest', name: machine.name}))} />
+					) : undefined,
+					storage: <Row icon="disk" color="var(--teal)" label="Storage" sub={storageSub} onClick={() => (haptic(8), canStorage ? setStorage(true) : setStorageNote(true))} />,
+					backups: onBackups ? <Row icon="history" color="var(--green)" label="Backups" sub="Back up this virtual machine" onClick={() => (haptic(8), onBackups())} /> : undefined,
+					manage: agent ? <ConnectorControls a={agent} onTerminal={openTerminal} /> : undefined,
+				})
 			) : (
-				<div className="glass empty">
-					<b>Empty folder</b>
-				</div>
+				<>
+					<SheetGroup title="Storage">
+						<Row icon="disk" color="var(--teal)" label="Storage" sub={storageSub} onClick={() => (haptic(8), canStorage ? setStorage(true) : setStorageNote(true))} />
+						<Row icon="history" color="var(--green)" label="Backups" sub="Back up this virtual machine" onClick={onBackups ? () => (haptic(8), onBackups()) : undefined} />
+					</SheetGroup>
+					{live && agent && agentMay(agent, 'files') && (
+						<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
+							<MachineFiles scope={{kind: 'computer', id: agent.id, name: machine.name}} windowId={`guest:${machine.id}`} />
+						</Suspense>
+					)}
+					{live && (
+						<SheetGroup title="Apps">
+							<Row icon="store" color="var(--accent)" label="App Store" sub={`Installs on ${machine.name}`} onClick={() => (haptic(6), onOpenStore ? onOpenStore() : openStore({id: machine.id, kind: 'guest', name: machine.name}))} />
+						</SheetGroup>
+					)}
+					{agent && <ConnectorControls a={agent} onTerminal={openTerminal} />}
+				</>
 			)}
-			<SheetGroup title="Apps">
-				<Row
-					icon="store"
-					color="var(--accent)"
-					label="App Store"
-					sub={`Installs on ${machine.name}`}
-					onClick={() => (haptic(6), onOpenStore ? onOpenStore() : openStore({id: machine.id, kind: 'guest', name: machine.name}))}
-				/>
-			</SheetGroup>
-			{agent && <ConnectorControls a={agent} onTerminal={openTerminal} />}
 			{storageNote && (
 				<Sheet open onClose={() => setStorageNote(false)} label="Storage">
 					<SheetHeader title="Storage" subtitle={machine.name} onClose={() => setStorageNote(false)} />
