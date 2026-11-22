@@ -174,6 +174,33 @@ export function decodeTextFile(bytes: Uint8Array): TextFileInfo {
   return { text, editable, bom, eol };
 }
 
+/** Next edited cell. Tab wraps to the next row. Shift+Tab moves left. Stays put at the ends. */
+export function nextGridCell(
+  row: number,
+  col: number,
+  cols: number,
+  rowCount: number,
+  key: string,
+  shiftKey: boolean,
+): [number, number] | null {
+  if (cols < 1 || rowCount < 1) return null;
+  if (key === "Tab") {
+    if (shiftKey) {
+      if (col > 0) return [row, col - 1];
+      if (row > 0) return [row - 1, cols - 1];
+      return [row, col];
+    }
+    if (col + 1 < cols) return [row, col + 1];
+    if (row + 1 < rowCount) return [row + 1, 0];
+    return [row, col];
+  }
+  if (key === "Enter") {
+    if (row + 1 < rowCount) return [row + 1, col];
+    return [row, col];
+  }
+  return null;
+}
+
 /** Put back the file's line ending and, when it had one, the UTF-8 BOM. */
 export function encodeTextFile(draft: string, opts: { bom: boolean; eol: "\n" | "\r\n" }): Uint8Array<ArrayBuffer> {
   const body = draft.replace(/\n/g, opts.eol);

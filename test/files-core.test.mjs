@@ -127,15 +127,15 @@ describe('files: #488 Unicode NFC normalization in search', () => {
 		const f = createFiles({home: h, dataDir: d})
 		const run = (name, input) => f.procedures[name].run(input)
 
-		const byNfc = await run('files.search', {query: 'caf\u00e9'})
+		const byNfc = (await run('files.search', {query: 'caf\u00e9'})).files
 		assert.equal(byNfc.length, 1)
 		assert.equal(byNfc[0].name.normalize('NFC'), 'caf\u00e9.txt')
 
-		const byUpperNfc = await run('files.search', {query: 'CAF\u00c9'})
+		const byUpperNfc = (await run('files.search', {query: 'CAF\u00c9'})).files
 		assert.equal(byUpperNfc.length, 1)
 		assert.equal(byUpperNfc[0].name.normalize('NFC'), 'caf\u00e9.txt')
 
-		const byNfd = await run('files.search', {query: 're\u0301sume\u0301'})
+		const byNfd = (await run('files.search', {query: 're\u0301sume\u0301'})).files
 		assert.equal(byNfd.length, 1)
 		assert.equal(byNfd[0].name.normalize('NFC'), 'r\u00e9sum\u00e9.txt')
 	})

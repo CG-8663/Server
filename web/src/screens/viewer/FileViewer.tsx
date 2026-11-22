@@ -7,7 +7,7 @@ import { mutate, type FileEntry } from "../../api";
 import { useDialogFocus } from "../../focus";
 import { Icon, type IconName } from "../../icons";
 import { bytes, haptic, usePortalRoot, useToast } from "../../ui";
-import { ZIP_ENTRY_LIMIT, decodeTextFile, encodeTextFile, handleDocumentLinkClick, renderMarkdownHtml, shouldIgnoreViewerKey, zipTruncatedNote } from "./helpers";
+import { ZIP_ENTRY_LIMIT, decodeTextFile, encodeTextFile, handleDocumentLinkClick, nextGridCell, renderMarkdownHtml, shouldIgnoreViewerKey, zipTruncatedNote } from "./helpers";
 import type { Sheet, Shape, ZipEntry } from "./office";
 
 const enc = encodeURIComponent;
@@ -370,6 +370,12 @@ function ImageView(b: BodyProps) {
     const k = ns / z.s;
     set(ns, px - (px - z.x) * k, py - (py - z.y) * k);
   };
+  const zRef = useRef(z);
+  zRef.current = z;
+  const setRef = useRef(set);
+  setRef.current = set;
+  const zoomAtRef = useRef(zoomAt);
+  zoomAtRef.current = zoomAt;
   useEffect(() => {
     setTools({
       node: (
@@ -383,7 +389,20 @@ function ImageView(b: BodyProps) {
         </>
       ),
     });
-  }, [z.s]);
+  }, [z.s, z.x, z.y]);
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const cur = zRef.current;
+      if (!e.ctrlKey && !e.metaKey && cur.s === 1) return;
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) zoomAtRef.current(Math.exp(-e.deltaY / 200), e.clientX, e.clientY);
+      else setRef.current(cur.s, cur.x - e.deltaX, cur.y - e.deltaY);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [src, failed]);
   if (failed) return <Failed {...b} error="This picture can’t be shown in the browser. Download it to open it on your device." />;
   if (!src) return <Loading />;
   return (
@@ -391,12 +410,6 @@ function ImageView(b: BodyProps) {
       ref={box}
       className="fv-stage"
       style={{ touchAction: z.s > 1 ? "none" : "pan-y" }}
-      onWheel={(e) => {
-        if (!e.ctrlKey && !e.metaKey && z.s === 1) return;
-        e.preventDefault();
-        if (e.ctrlKey || e.metaKey) zoomAt(Math.exp(-e.deltaY / 200), e.clientX, e.clientY);
-        else set(z.s, z.x - e.deltaX, z.y - e.deltaY);
-      }}
       onDoubleClick={(e) => (z.s > 1 ? set(1, 0, 0) : zoomAt(2.5, e.clientX, e.clientY))}
       onPointerDown={(e) => {
         pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -774,19 +787,38 @@ function Grid({ rows, editable, onEdit, header }: { rows: string[][]; editable?:
                 const editing = cell?.[0] === ri && cell?.[1] === ci;
                 const v = r[ci] ?? "";
                 return (
-                  <td key={ci} className={editing ? "editing" : /^-?[\d.,]+%?$/.test(v) ? "num" : undefined} onClick={() => editable && setCell([ri, ci])}>
+                  <td
+                    key={ci}
+                    tabIndex={editable ? 0 : undefined}
+                    className={editing ? "editing" : /^-?[\d.,]+%?$/.test(v) ? "num" : undefined}
+                    onClick={() => editable && setCell([ri, ci])}
+                    onKeyDown={(e) => {
+                      if (!editable || editing) return;
+                      if (e.key === "Enter" || e.key === "F2") {
+                        e.preventDefault();
+                        setCell([ri, ci]);
+                      }
+                    }}
+                  >
                     {editing ? (
                       <input
                         autoFocus
                         defaultValue={v}
-                        onBlur={(e) => (onEdit?.(ri, ci, e.target.value), setCell(null))}
+                        onBlur={(e) => {
+                          onEdit?.(ri, ci, e.target.value);
+                          setCell((cur) => (cur && cur[0] === ri && cur[1] === ci ? null : cur));
+                        }}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === "Tab") {
-                            e.preventDefault();
-                            onEdit?.(ri, ci, (e.target as HTMLInputElement).value);
-                            setCell(e.key === "Tab" ? [ri, ci + 1] : [ri + 1, ci]);
+                          if (e.key === "Escape") {
+                            setCell(null);
+                            return;
                           }
-                          if (e.key === "Escape") setCell(null);
+                          const shownRows = Math.min(rows.length, LIMIT);
+                          const next = nextGridCell(ri, ci, cols, shownRows, e.key, e.shiftKey);
+                          if (!next) return;
+                          e.preventDefault();
+                          onEdit?.(ri, ci, (e.target as HTMLInputElement).value);
+                          setCell(next);
                         }}
                       />
                     ) : (

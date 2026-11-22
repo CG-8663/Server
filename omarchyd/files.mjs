@@ -23,6 +23,49 @@ const MIME = {
 	ttf: 'font/ttf', otf: 'font/otf', woff: 'font/woff', woff2: 'font/woff2',
 }
 const typeFor = (name) => MIME[extname(name).slice(1).toLowerCase()] ?? 'application/octet-stream'
+const SEARCH_BUDGET_MS = 8000
+const RECENTS_BUDGET_MS = 30000
+const RECENT_LIMIT = 30
+
+// Freedesktop Trash DeletionDate is local YYYY-MM-DDThh:mm:ss, with no zone suffix.
+export function deletionDateStamp(date = new Date()) {
+	const p = (n) => String(n).padStart(2, '0')
+	return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}T${p(date.getHours())}:${p(date.getMinutes())}:${p(date.getSeconds())}`
+}
+
+// Keep-both inserts " (n)" before a real extension. Folders have none. A suffix counts only when
+// it is 1–8 letters or digits and contains a letter, so "v1.2" and "Dr. Smith" stay intact and
+// "archive.tar.gz" still keeps ".gz".
+export function keepBothParts(name, directory = false) {
+	const text = typeof name === 'string' ? name : String(name ?? '')
+	if (directory) return {stem: text, ext: ''}
+	const dot = text.lastIndexOf('.')
+	if (dot <= 0) return {stem: text, ext: ''}
+	const suffix = text.slice(dot + 1)
+	if (!/^[A-Za-z0-9]{1,8}$/.test(suffix) || !/[A-Za-z]/.test(suffix)) return {stem: text, ext: ''}
+	return {stem: text.slice(0, dot), ext: text.slice(dot)}
+}
+
+export function keepBothCandidate(name, n, directory = false) {
+	if (n <= 1) return name
+	const {stem, ext} = keepBothParts(name, directory)
+	return `${stem} (${n})${ext}`
+}
+
+export function uploadStatusForFsError(error) {
+	const code = error?.code
+	if (code === 'ENOSPC' || code === 'EDQUOT') return {status: 507, error: 'Not enough free space'}
+	if (code === 'EACCES') return {status: 403, error: 'Permission denied'}
+	if (code === 'EROFS') return {status: 403, error: 'Read-only'}
+	if (code === 'ENOENT') return {status: 404, error: 'Folder not found'}
+	return null
+}
+
+function nameProblem(n) {
+	if (typeof n !== 'string' || n.length === 0 || Buffer.byteLength(n) > 255 || n.includes('/') || n.includes('\0') || n === '.' || n === '..') return '[invalid-name]'
+	if (n.startsWith('.')) return '[hidden-name]'
+	return null
+}
 // Shown inline when viewed; everything else is sent as a download.
 const INLINE = /^(image\/(jpeg|png|gif|webp|avif|bmp)|video\/(mp4|webm|quicktime)|audio\/|application\/pdf|text\/plain)/
 const STAT_CONCURRENCY = 16
@@ -224,12 +267,10 @@ export function createFiles({home, dataDir, io} = {}) {
 		return {...(await entry(path, real, st)), files, hasMore: cap != null && countable > cap, totalFiles}
 	}
 
-	// A free name next to the original: "Report (2).pdf".
-	async function freeName(dir, name) {
-		const ext = extname(name)
-		const stem = ext ? name.slice(0, -ext.length) : name
+	// A free name next to the original: "Report (2).pdf", or "Photos 2024.05 (2)" for a folder.
+	async function freeName(dir, name, directory = false) {
 		for (let n = 1; ; n++) {
-			const candidate = join(dir, n === 1 ? name : `${stem} (${n})${ext}`)
+			const candidate = join(dir, keepBothCandidate(name, n, directory))
 			try {
 				await lstat(candidate)
 			} catch {
@@ -237,13 +278,17 @@ export function createFiles({home, dataDir, io} = {}) {
 			}
 		}
 	}
-	const validName = (n) => typeof n === 'string' && n.length > 0 && Buffer.byteLength(n) <= 255 && !n.includes('/') && !n.includes('\0') && n !== '.' && n !== '..'
+	const isDirPath = (real) => stat(real).then((s) => s.isDirectory(), () => false)
+	const assertVisibleName = (n) => {
+		const problem = nameProblem(n)
+		if (problem) throw new RpcError('BAD_REQUEST', problem)
+	}
 	// Storage registers this so a renamed, moved, or trashed folder takes its network share with it.
 	// Copy leaves the share on the original. `to` is null when the folder was trashed.
 	let follow = async () => {}
 
 	async function createDirectory({path}) {
-		if (!validName(basename(path))) throw new RpcError('BAD_REQUEST', '[invalid-name]')
+		assertVisibleName(basename(path))
 		const {real} = await resolve(path, {mustExist: false})
 		await mkdirOp(real).catch((e) => {
 			if (e.code === 'EEXIST') throw new RpcError('CONFLICT', '[already-exists]')
@@ -252,7 +297,7 @@ export function createFiles({home, dataDir, io} = {}) {
 		return path
 	}
 	async function renameItem({path, newName}) {
-		if (!validName(newName)) throw new RpcError('BAD_REQUEST', '[invalid-name]')
+		assertVisibleName(newName)
 		const {real, base} = await resolve(path)
 		if (real === base) throw new RpcError('BAD_REQUEST', '[cannot-rename]')
 		const target = join(dirname(real), newName)
@@ -260,6 +305,7 @@ export function createFiles({home, dataDir, io} = {}) {
 		const fromVirtual = await toVirtual(real)
 		await rename(real, target)
 		const next = await toVirtual(target)
+		await retargetFavorites(fromVirtual, next)
 		await follow(fromVirtual, next)
 		return next
 	}
@@ -275,6 +321,8 @@ export function createFiles({home, dataDir, io} = {}) {
 		if (dest === real || dest.startsWith(real + sep) || destReal === sourceReal || destReal.startsWith(sourceReal + sep)) {
 			throw new RpcError('BAD_REQUEST', '[subdir-of-self]')
 		}
+		const fromVirtual = await toVirtual(real)
+		const directory = await isDirPath(real)
 		let target = join(dest, basename(real))
 		// Only replace of this same file returns early. A directory symlink to the parent still
 		// names that file once both paths are real; a hard link in another folder does not.
@@ -295,7 +343,7 @@ export function createFiles({home, dataDir, io} = {}) {
 					throw new RpcError('BAD_REQUEST', '[subdir-of-self]')
 				}
 				await rm(target, {recursive: true, force: true})
-			} else target = await freeName(dest, basename(real))
+			} else target = await freeName(dest, basename(real), directory)
 		}
 		if (copy) await cp(real, target, {recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true})
 		else
@@ -305,7 +353,10 @@ export function createFiles({home, dataDir, io} = {}) {
 				await rm(real, {recursive: true, force: true})
 			})
 		const next = await toVirtual(target)
-		if (!copy) await follow(await toVirtual(real), next)
+		if (!copy) {
+			await retargetFavorites(fromVirtual, next)
+			await follow(fromVirtual, next)
+		}
 		return next
 	}
 
@@ -315,8 +366,8 @@ export function createFiles({home, dataDir, io} = {}) {
 		if (top !== 'Home' || path === '/Home') throw new RpcError('BAD_REQUEST', '[cannot-trash]')
 		await mkdirOp(trashFiles, {recursive: true})
 		await mkdirOp(trashInfo, {recursive: true})
-		const target = await freeName(trashFiles, basename(real))
-		const info = `[Trash Info]\nPath=${encodeURI(real)}\nDeletionDate=${new Date().toISOString().slice(0, 19)}\n`
+		const target = await freeName(trashFiles, basename(real), await isDirPath(real))
+		const info = `[Trash Info]\nPath=${encodeURI(real)}\nDeletionDate=${deletionDateStamp()}\n`
 		await writeFile(join(trashInfo, trashInfoName(basename(target))), info)
 		await rename(real, target).catch(async (e) => {
 			if (e.code !== 'EXDEV') throw e
@@ -355,7 +406,7 @@ export function createFiles({home, dataDir, io} = {}) {
 		while (near !== h && !(await lstat(near).then(() => true, () => false))) near = dirname(near)
 		if (!inside(await realpath(near).catch(() => ''))) dest = join(h, basename(real))
 		await mkdirOp(dirname(dest), {recursive: true})
-		if (await lstat(dest).then(() => true, () => false)) dest = await freeName(dirname(dest), basename(dest))
+		if (await lstat(dest).then(() => true, () => false)) dest = await freeName(dirname(dest), basename(dest), await isDirPath(real))
 		await rename(real, dest)
 		if (ownInfo) await rm(infoFile, {force: true})
 		return toVirtual(dest)
@@ -373,31 +424,55 @@ export function createFiles({home, dataDir, io} = {}) {
 		return true
 	}
 
-	// Walk Home (skipping hidden folders) for search and recents, with a hard cap.
-	async function walk(visit, {limit = 20000} = {}) {
-		const h = await roots()
-		const queue = [h]
-		let seen = 0
-		while (queue.length && seen < limit) {
+	// Walk a folder (skipping hidden names). Stop when the visitor says so, or when the time budget runs out.
+	// There is no entry-count cap: a large Home must still be searchable past the first 20,000 names.
+	async function walk(visit, {root, deadline} = {}) {
+		const start = root ?? (await roots())
+		const queue = [start]
+		while (queue.length) {
+			if (deadline && Date.now() >= deadline) return {complete: false}
 			const dir = queue.shift()
 			const items = await readdir(dir, {withFileTypes: true, encoding: 'buffer'}).catch(() => [])
-			for (const d of items) {
+			for (let i = 0; i < items.length; i++) {
+				if (deadline && Date.now() >= deadline) return {complete: false}
+				const d = items[i]
 				const name = shownName(d.name)
 				if (!visible(name) || name === 'node_modules') continue
-				seen++
 				const r = childPath(dir, d.name)
 				if (d.isDirectory()) queue.push(r)
-				if (d.isDirectory() || d.isFile()) await visit(r, d)
+				if (d.isDirectory() || d.isFile()) {
+					const stop = await visit(r, d)
+					if (stop === false) return {complete: !(i < items.length - 1 || queue.length > 0)}
+				}
 			}
 		}
+		return {complete: true}
 	}
-	async function search({query}) {
+	async function search({query, path, maxResults} = {}) {
 		const q = String(query ?? '').trim().normalize('NFC').toLowerCase()
-		if (!q) return []
+		if (!q) return {files: [], truncated: false}
+		const max = Number.isInteger(maxResults) && maxResults > 0 ? Math.min(maxResults, 500) : 100
+		let root = null
+		if (typeof path === 'string' && path.length) {
+			const {real} = await resolve(path)
+			const st = await stat(real)
+			if (!st.isDirectory()) {
+				const name = basename(path)
+				if (!name.normalize('NFC').toLowerCase().includes(q)) return {files: [], truncated: false}
+				return {files: [await entry(path, real, st)], truncated: false}
+			}
+			root = real
+		}
 		const out = []
-		await walk(async (r, d) => {
-			if (out.length < 50 && shownName(d.name).normalize('NFC').toLowerCase().includes(q)) out.push(r)
-		})
+		const deadline = Date.now() + SEARCH_BUDGET_MS
+		const walked = await walk(
+			async (r, d) => {
+				if (!shownName(d.name).normalize('NFC').toLowerCase().includes(q)) return
+				out.push(r)
+				if (out.length >= max) return false
+			},
+			{root, deadline},
+		)
 		const rows = await Promise.all(
 			out.map(async (r) => {
 				try {
@@ -410,17 +485,43 @@ export function createFiles({home, dataDir, io} = {}) {
 				}
 			}),
 		)
-		return rows.filter(Boolean)
+		return {files: rows.filter(Boolean), truncated: !walked.complete}
 	}
+	function considerRecent(top, row) {
+		if (top.length < RECENT_LIMIT) {
+			top.push(row)
+			return
+		}
+		let min = 0
+		for (let i = 1; i < top.length; i++) if (top[i].s.mtimeMs < top[min].s.mtimeMs) min = i
+		if (row.s.mtimeMs > top[min].s.mtimeMs) top[min] = row
+	}
+	// Recents keeps a bounded top while it walks. Stats for one directory run together so a Home
+	// with tens of thousands of files is not cut off after the first 20,000 entries.
 	async function recents() {
-		const found = []
-		await walk(async (r, d) => {
-			if (!d.isFile()) return
-			const s = await stat(r).catch(() => null)
-			if (s) found.push({r, s})
-		})
-		found.sort((a, b) => b.s.mtimeMs - a.s.mtimeMs)
-		return Promise.all(found.slice(0, 30).map(async ({r, s}) => entry(await toVirtual(r), r, s)))
+		const top = []
+		const deadline = Date.now() + RECENTS_BUDGET_MS
+		const queue = [await roots()]
+		while (queue.length) {
+			if (Date.now() >= deadline) break
+			const dir = queue.shift()
+			const items = await readdir(dir, {withFileTypes: true, encoding: 'buffer'}).catch(() => [])
+			const files = []
+			for (const d of items) {
+				const name = shownName(d.name)
+				if (!visible(name) || name === 'node_modules') continue
+				const r = childPath(dir, d.name)
+				if (d.isDirectory()) queue.push(r)
+				else if (d.isFile()) files.push(r)
+			}
+			const stats = await mapPool(files, STAT_CONCURRENCY, async (r) => {
+				const s = await stat(r).catch(() => null)
+				return s ? {r, s} : null
+			})
+			for (const row of stats) if (row) considerRecent(top, row)
+		}
+		top.sort((a, b) => b.s.mtimeMs - a.s.mtimeMs)
+		return Promise.all(top.map(async ({r, s}) => entry(await toVirtual(r), r, s)))
 	}
 
 	const validFavorites = (value) => Array.isArray(value) && value.every((p) => typeof p === 'string')
@@ -434,11 +535,40 @@ export function createFiles({home, dataDir, io} = {}) {
 		favoritesDamagedLogged = false
 		return {list: res.status === 'ok' ? res.value : [], damaged: false}
 	}
+	// Rename and move rewrite favorite paths (including everything inside a renamed folder).
+	// A damaged favorites file is never rewritten. Only a missing file means favorites were never set up.
+	async function retargetFavorites(fromVirtual, toVirtual) {
+		if (typeof fromVirtual !== 'string' || typeof toVirtual !== 'string' || fromVirtual === toVirtual) return
+		await lock('favorites', async () => {
+			const {list, damaged} = await readFavoritesState()
+			if (damaged) return
+			let changed = false
+			const next = list.map((p) => {
+				if (p === fromVirtual || p.startsWith(`${fromVirtual}/`)) {
+					changed = true
+					return toVirtual + p.slice(fromVirtual.length)
+				}
+				return p
+			})
+			if (changed) await writeAtomic(favoritesFile, JSON.stringify(next))
+		})
+	}
 	async function favorites() {
-		const keep = []
-		const {list} = await readFavoritesState()
-		for (const p of list) if (await resolve(p).then(() => true, () => false)) keep.push(p)
-		return keep
+		return lock('favorites', async () => {
+			const {list, damaged} = await readFavoritesState()
+			if (damaged) return []
+			const keep = []
+			for (const p of list) {
+				try {
+					await resolve(p)
+					keep.push(p)
+				} catch (error) {
+					if (!(error instanceof RpcError) || error.code !== 'NOT_FOUND') keep.push(p)
+				}
+			}
+			if (keep.length !== list.length) await writeAtomic(favoritesFile, JSON.stringify(keep))
+			return keep
+		})
 	}
 	async function setFavorite(path, on) {
 		await resolve(path)
@@ -523,10 +653,8 @@ export function createFiles({home, dataDir, io} = {}) {
 				const cur = await lstat(real).catch(() => null)
 				throw new RpcError('CONFLICT', cur?.isDirectory() ? '[is-a-directory]' : '[already-exists]')
 			}
-			const ext = extname(name)
-			const stem = ext ? name.slice(0, -ext.length) : name
 			for (let n = 1; ; n++) {
-				const candidate = join(dir, n === 1 ? name : `${stem} (${n})${ext}`)
+				const candidate = join(dir, keepBothCandidate(name, n, false))
 				if (await linkOrRename(tmp, candidate)) return candidate
 			}
 		})
@@ -534,26 +662,29 @@ export function createFiles({home, dataDir, io} = {}) {
 	async function upload(req, res, url) {
 		const path = url.searchParams.get('path')
 		const collision = url.searchParams.get('collision') ?? 'keep-both'
+		const openOut = typeof io?.createWriteStream === 'function' ? io.createWriteStream : createWriteStream
 		let real
 		try {
-			if (!validName(basename(path ?? ''))) throw new RpcError('BAD_REQUEST', '[invalid-name]')
+			assertVisibleName(basename(path ?? ''))
 			;({real} = await resolve(path, {mustExist: false}))
 		} catch (e) {
 			return endJson(res, e instanceof RpcError && e.code === 'NOT_FOUND' ? 404 : 400, {error: e.message})
 		}
 		const exists = await lstat(real).then((s) => s, () => null)
-		if (exists?.isDirectory()) return endJson(res, 409, {error: '[is-a-directory]'})
+		if (exists?.isDirectory() && collision === 'replace') return endJson(res, 409, {error: '[is-a-directory]'})
 		if (exists && collision === 'error') return endJson(res, 409, {error: '[already-exists]'})
 		// Write to a temporary file first, then claim the final name atomically so overlapping
 		// uploads never overwrite each other.
 		const tmp = join(dirname(real), `.upload.${randomBytes(6).toString('hex')}`)
 		let target
 		try {
-			await pipeline(req, createWriteStream(tmp, {flags: 'wx', mode: 0o644}))
+			await pipeline(req, openOut(tmp, {flags: 'wx', mode: 0o644}))
 			target = await claimUpload(tmp, real, collision)
 		} catch (e) {
 			await rm(tmp, {force: true}).catch(() => {})
 			if (e instanceof RpcError && e.code === 'CONFLICT') return endJson(res, 409, {error: e.message})
+			const mapped = uploadStatusForFsError(e)
+			if (mapped) return endJson(res, mapped.status, {error: mapped.error})
 			return endJson(res, 500, {error: 'Upload failed'})
 		}
 		return endJson(res, 200, {path: await toVirtual(target)})
@@ -573,7 +704,7 @@ export function createFiles({home, dataDir, io} = {}) {
 	// A new file in a folder the person can already use. The bytes land in a temporary name, then
 	// the same claim an upload uses. keep-both is the default, so a paste does not replace a file.
 	async function saveNew(dirVirtual, name, source, collision = 'keep-both') {
-		if (!validName(name)) throw new RpcError('BAD_REQUEST', '[invalid-name]')
+		assertVisibleName(name)
 		const {real: dir} = await resolve(dirVirtual)
 		const st = await stat(dir)
 		if (!st.isDirectory()) throw new RpcError('BAD_REQUEST', '[not-a-directory]')
