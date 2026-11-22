@@ -23,7 +23,7 @@ EOF
 
 cat >/etc/profile.d/zz-omarchy-server-firstboot.sh <<'EOF'
 # Omarchy Server first-boot setup (removes itself when done).
-if [ "$(tty)" = /dev/tty1 ] && [ -f /var/lib/omarchy-server/firstboot ] && [ "$(cat /var/lib/omarchy-server/firstboot)" = "$USER" ]; then
+if [ -z "${OMARCHY_SERVER_FIRSTBOOT_SKIP:-}" ] && [ "$(tty)" = /dev/tty1 ] && [ -f /var/lib/omarchy-server/firstboot ] && [ "$(cat /var/lib/omarchy-server/firstboot)" = "$USER" ]; then
 	/usr/local/bin/omarchy-server-firstboot
 fi
 EOF
@@ -63,7 +63,7 @@ if ! curl -fsSL "$SERVER_INSTALL" | bash; then
 	printf "    curl -fsSL %s | bash\n\n" "$SERVER_INSTALL"
 	if [ -t 0 ]; then
 		read -rp "  Press Enter for a command line " _
-		exec bash -l
+		exec env OMARCHY_SERVER_FIRSTBOOT_SKIP=1 bash -l
 	fi
 	exit 1
 fi
