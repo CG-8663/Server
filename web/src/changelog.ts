@@ -4,6 +4,23 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.56',
+		date: '2026-11-21',
+		title: 'Clip books, published apps, and a desktop that stays put',
+		added: [
+			'Each signed-in person has a private clip book. A file on this server or another computer stays a reference until you paste it. A file on a virtual machine stays on that computer. Factory reset clears every clip book.',
+			'A studio on this server can publish a local app. Other apps call it with a token, and the web page stays behind sign-in.',
+		],
+		fixed: [
+			'A published app does not start unless its own port stays on localhost.',
+			'Copying a folder into a shortcut inside it is refused. Restoring from Trash keeps characters such as & in the name. Saving a text file keeps its line endings and a byte-order mark. A file that is not valid text can be viewed but not edited.',
+			'Home folders can be shared on the network. A folder that failed to load does not also say it is empty, and an upload you cannot write shows that error once.',
+			'An app whose page is down is shown as stopped. Uninstall waits until an install of that app finishes. Updating a stopped app leaves it stopped. An app that depends on itself is marked unsupported.',
+			'A low port set by the app is not opened unless you allow system ports. The server uses a 172.16 address on the local network. A store that cannot be checked says which store failed.',
+			'The wallpaper you chose shows after sign-in. Icons from a larger screen stay on screen. Clicking a stopped machine once does not start it twice. The assistant does not open again when the desktop is rebuilt.',
+		],
+	},
+	{
 		version: '0.9.55',
 		date: '2026-11-21',
 		title: 'Files, the desktop, and machines stay accurate',
