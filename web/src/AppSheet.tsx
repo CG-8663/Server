@@ -8,6 +8,7 @@ import {appUrl, useAction, useBootstrap} from './data'
 import {useDesktop} from './desktop/Desktop'
 import {Icon, type IconName} from './icons'
 import {AppIcon, KV, Sheet, SheetHeader, StatusPill, appStatus, haptic, isAppBusy, useConfirm, useToast} from './ui'
+import {nearBottom} from './logFollow'
 import {DevicesPanel} from './usb'
 
 type Props = {app: UserApp | null; update?: {version: string}; onClose: () => void; onOpenApp?: (app: UserApp) => void; onTerminal?: (app: {id: string; name?: string; icon?: string}) => void}
@@ -233,8 +234,9 @@ function LogsSheet({appId, name, icon, onClose}: {appId: string; name: string; i
 		refetchInterval: 5000,
 	})
 	const [el, setEl] = useState<HTMLPreElement | null>(null)
+	const stick = useRef(true)
 	useEffect(() => {
-		if (el) el.scrollTop = el.scrollHeight
+		if (el && stick.current) el.scrollTop = el.scrollHeight
 	}, [el, logs.data])
 	return (
 		<Sheet open onClose={onClose} label={`${name} logs`} tall>
@@ -248,7 +250,13 @@ function LogsSheet({appId, name, icon, onClose}: {appId: string; name: string; i
 				}
 				onClose={onClose}
 			/>
-			<pre className="logs" ref={setEl}>
+			<pre
+				className="logs"
+				ref={setEl}
+				onScroll={(e) => {
+					stick.current = nearBottom(e.currentTarget)
+				}}
+			>
 				{logs.isLoading ? 'Loading…' : logs.error ? (logs.error as Error).message : logs.data?.trim() || 'No log output yet.'}
 			</pre>
 		</Sheet>

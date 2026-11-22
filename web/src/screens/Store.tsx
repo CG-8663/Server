@@ -12,6 +12,7 @@ import {Icon, hasIcon} from '../icons'
 import {AppIcon, Sheet, SheetHeader, StatusPill, appStatus, bytes, haptic, isAppBusy, useToast} from '../ui'
 import {SearchField} from './Apps'
 import {remainingSuggestedStores, type StoreRepo} from '../storeSuggestions'
+import {categoryOf, effectiveCategory, joinedFields, nextStartingToast, rankedCategories, searchNeedle, validCommunityStoreUrl} from '../storeBrowse'
 
 type StoreApp = RegistryApp & {compatible?: boolean; repo?: string; unsupported?: string}
 
@@ -72,11 +73,9 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 		for (const repo of registry.data ?? []) for (const app of repo.apps) if (!seen.has(app.id)) seen.set(app.id, {...app, repo: repo.meta.name})
 		return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
 	}, [registry.data])
-	const categories = useMemo(() => {
-		const counts = new Map<string, number>()
-		for (const a of all) if (a.category) counts.set(a.category, (counts.get(a.category) ?? 0) + 1)
-		return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([c]) => c)
-	}, [all])
+	const categories = useMemo(() => rankedCategories(all), [all])
+	const active = effectiveCategory(category, categories, [PLUGINS])
+	const needle = searchNeedle(q)
 	const featured = useMemo(() => {
 		const withShots = all.filter((a) => a.shots || (a.gallery?.length ?? 0) > 0)
 		const picked = FEATURED.map((id) => withShots.find((a) => a.id === id)).filter(Boolean) as StoreApp[]
@@ -84,10 +83,10 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 	}, [all])
 	const installed = useMemo(() => new Map((apps.data ?? []).map((a) => [a.id, a])), [apps.data])
 
-	const browsing = !q && category === 'all'
+	const browsing = !needle && active === 'all'
 	const shown = all
-		.filter((a) => (category === 'all' ? true : a.category === category))
-		.filter((a) => !q || `${a.name} ${a.tagline} ${a.developer}`.toLowerCase().includes(q.toLowerCase()))
+		.filter((a) => (active === 'all' || active === PLUGINS ? true : categoryOf(a.category) === active))
+		.filter((a) => !needle || joinedFields([a.name, a.tagline, a.developer]).toLowerCase().includes(needle))
 
 	const pick = (app: StoreApp, install = false) => {
 		haptic(6)
@@ -120,8 +119,8 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 					<button
 						key={c}
 						role="tab"
-						aria-selected={category === c}
-						className={`chip${category === c ? ' on' : ''}`}
+						aria-selected={active === c}
+						className={`chip${active === c ? ' on' : ''}`}
 						onClick={() => {
 							haptic(5)
 							setCategory(c)
@@ -138,8 +137,8 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 					{problem}
 				</div>
 			)}
-			{category === PLUGINS && <PluginBrowser q={q} />}
-			{category !== PLUGINS && registry.isLoading && (
+			{active === PLUGINS && <PluginBrowser q={q.trim()} />}
+			{active !== PLUGINS && registry.isLoading && (
 				<>
 					<div className="skeleton" style={{height: 220, borderRadius: 26, marginBottom: 20}} />
 					{Array.from({length: 4}, (_, i) => (
@@ -156,11 +155,11 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 				</div>
 			)}
 
-			{category === PLUGINS
+			{active === PLUGINS
 				? null
 				: browsing
 				? categories.slice(0, 8).map((c) => {
-						const items = all.filter((a) => a.category === c).slice(0, 9)
+						const items = all.filter((a) => categoryOf(a.category) === c).slice(0, 9)
 						return (
 							<section key={c}>
 								<div className="section-head">
@@ -250,7 +249,7 @@ function CommunityStores({owner, onClose}: {owner: boolean; onClose: () => void}
 	})
 	const community = repos.data ?? []
 	const suggestions = remainingSuggestedStores(SUGGESTED_STORES, repos.data ?? [])
-	const valid = /^https:\/\/[\w.-]+\/[\w.\-/]+$/.test(url.trim())
+	const valid = validCommunityStoreUrl(url)
 	return (
 		<Sheet open onClose={onClose} label="Community app stores">
 			<SheetHeader
@@ -502,7 +501,16 @@ function StoreSheet({
 											if (desk) desk.launch(live)
 											else if (liveUrl) {
 												toast(`Opening ${live.name ?? app.name}…`)
-												openApp(live, liveUrl, {onWaiting: (sec) => sec % 10 === 0 && toast(`${live.name ?? app.name} is still starting (${sec}s)…`)}).then(
+												openApp(live, liveUrl, {
+													onWaiting: (() => {
+														let lastShown = 0
+														return (sec: number) => {
+															const next = nextStartingToast(sec, lastShown)
+															lastShown = next.lastShown
+															if (next.show) toast(`${live.name ?? app.name} is still starting (${sec}s)…`)
+														}
+													})(),
+												}).then(
 													(r) => !r.opened && toast(explainProbe(live.name ?? app.name, r.probe) ?? `${live.name ?? app.name} didn’t answer in time.`, true),
 												)
 											}

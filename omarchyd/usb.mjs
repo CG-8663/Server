@@ -126,7 +126,7 @@ export async function listHostUsb({
 	}))
 }
 
-const USB_SERIAL = /^[A-Za-z0-9._-]{1,128}$/
+const USB_SERIAL = /^[A-Za-z0-9._:-]{1,128}$/
 const xml = (s) => String(s).replace(/[<>&'"]/g, (c) => ({'<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;'})[c])
 
 export function hostdevXml({vendorId, productId, serial}) {
@@ -155,9 +155,25 @@ export function parseUsbLive(xmlText, devices = []) {
 }
 
 const SERIAL_PATH = /^\/dev\/(serial\/by-id\/usb-[A-Za-z0-9._+-]+|ttyUSB[0-9]+|ttyACM[0-9]+)$/
+const TTY_NODE = /^\/dev\/tty(?:USB|ACM)[0-9]+$/
+// udev by-id names may contain ":" "=" "@" "#". Those must not be written as HOST:CONTAINER.
+const BY_ID_PATH = /^\/dev\/serial\/by-id\/usb-[^\s]+$/
+
+function usbDeviceBind(device) {
+	const path = typeof device?.path === 'string' ? device.path : ''
+	const node = typeof device?.node === 'string' ? device.node : ''
+	if (SERIAL_PATH.test(path)) return `${path}:${path}`
+	if (!BY_ID_PATH.test(path)) return null
+	if (TTY_NODE.test(node)) return `${node}:${node}`
+	return {source: path, target: path, permissions: 'rwm'}
+}
 
 export function usbComposeOverlay(serviceNames, devices) {
-	const binds = (devices ?? []).map((d) => d.path).filter((p) => SERIAL_PATH.test(p)).map((p) => `${p}:${p}`)
+	const binds = []
+	for (const device of devices ?? []) {
+		const bind = usbDeviceBind(device)
+		if (bind) binds.push(bind)
+	}
 	if (!binds.length) return ''
 	const services = Object.fromEntries(serviceNames.map((name) => [name, {devices: binds}]))
 	return YAML.stringify({services})
@@ -187,13 +203,13 @@ export function createUsb({enumerate = listHostUsb, guests = {bindings: () => []
 		const devices = []
 		for (const h of host) {
 			seen.add(h.id)
-			devices.push(decorate(h, byDevice.get(h.id)))
+			devices.push(decorate({...h, present: true}, byDevice.get(h.id)))
 		}
 		for (const g of bindings) {
 			for (const d of g.devices ?? []) {
 				if (seen.has(d.id)) continue
 				seen.add(d.id)
-				devices.push(decorate({id: d.id, name: d.name ?? d.id, vendorId: d.vendorId ?? '', productId: d.productId ?? '', serial: d.serial ?? null, path: null, node: null}, g))
+				devices.push(decorate({id: d.id, name: d.name ?? d.id, vendorId: d.vendorId ?? '', productId: d.productId ?? '', serial: d.serial ?? null, path: null, node: null, present: false}, g))
 			}
 		}
 		return {devices}

@@ -78,7 +78,7 @@ const SMB_INCLUDE = '/etc/samba/omarchy-server-shares.conf'
 const SMB_MARK = '# Managed by Omarchy Server'
 const UDEV_SLEEP = '/etc/udev/rules.d/69-omarchy-server-sleep.rules'
 const UDEV_USB = '/etc/udev/rules.d/69-omarchy-server-usb.rules'
-const USB_SERIAL = /^[A-Za-z0-9._-]{1,128}$/
+const USB_SERIAL = /^[A-Za-z0-9._:-]{1,128}$/
 // One-time sign-in to the Omarchy desktop (the same drop-in Omarchy's own first boot writes, removed again
 // as soon as the session starts).
 const SDDM_ONCE = '/etc/sddm.conf.d/zz-omarchy-server-sign-in.conf'
