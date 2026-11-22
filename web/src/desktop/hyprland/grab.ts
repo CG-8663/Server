@@ -70,6 +70,28 @@ export function onCaptureModeChange(state: GrabState, next: CaptureMode): GrabSt
 	return {...state, mode: next}
 }
 
+// Scroll Lock and Super+F12 only flip flags. A lock taken with the browser still has to be released.
+export function grabToggleReleasesKeyboardLock(prev: GrabState, next: GrabState): boolean {
+	return prev.method === 'keyboard-lock' && !next.keysLocked
+}
+
+export function releaseKeyboardLock(): Promise<void> {
+	try {
+		keyboardLockApi()?.unlock()
+	} catch {
+		/* already unlocked */
+	}
+	try {
+		const leaving = document.exitFullscreen()
+		return Promise.resolve(leaving).catch(() => {
+			/* already out */
+		})
+	} catch {
+		/* already out */
+		return Promise.resolve()
+	}
+}
+
 export function chipIntent(state: GrabState): 'toggle' | 'request-keyboard-lock' | 'unlock-keyboard-lock' {
 	if (state.mode !== 'keyboard-lock') return 'toggle'
 	return state.keysLocked ? 'unlock-keyboard-lock' : 'request-keyboard-lock'
