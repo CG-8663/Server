@@ -24,7 +24,7 @@ test('swarmGaugeItems: CPU, memory and root storage; extra mounts are not rings'
 		['CPU', 'Memory', 'Storage'],
 	)
 	assert.equal(items[0].p, 18)
-	assert.equal(items[0].sub, '16 threads')
+	assert.equal(items[0].sub, '18%')
 	assert.equal(items[0].ready, true)
 	assert.equal(Math.round(items[2].p), 72)
 	assert.equal(extraDisks(metrics().disks).map((d) => d.mount).join(), '/home')
@@ -86,18 +86,18 @@ test('swarmGaugeItems: two battery packs are still one Battery ring', () => {
 	)
 	const bat = items.find((g) => g.k === 'Battery')
 	assert.equal(bat.p, 60)
-	assert.equal(bat.sub, '6h 0m')
+	assert.equal(bat.sub, '60%')
 	assert.equal(bat.color, batteryColor(60))
 	assert.equal(items.filter((g) => g.k.startsWith('Battery')).length, 1)
 })
 
-test('swarmGaugeItems: charging subtitle; missing pack percent is not ready', () => {
+test('swarmGaugeItems: battery subtitle is the percent; missing pack percent is not ready', () => {
 	const charging = swarmGaugeItems(
 		metrics({
 			batteries: [{id: 'BAT0', index: 0, name: 'Internal', percent: 64, status: 'charging', secondsRemaining: 600, power: 10, energyNow: 1, energyFull: 2}],
 		}),
 	).find((g) => g.k === 'Battery')
-	assert.equal(charging.sub, 'Charging')
+	assert.equal(charging.sub, '64%')
 	const missing = swarmGaugeItems(
 		metrics({
 			batteries: [{id: 'BAT0', index: 0, name: 'Internal', percent: null, status: 'unknown', secondsRemaining: null, power: null, energyNow: null, energyFull: null}],

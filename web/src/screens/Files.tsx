@@ -36,7 +36,7 @@ import { useDesktop } from "../desktop/Desktop";
 import { AgentFiles, type Agent } from "../swarm/Swarm";
 import { openTerminalWith } from "../terminalEvent";
 import { actionsForItems, asFileSearch, batchToast, copyTextOrToast, FILES_LIST_PAGE, filesListMoreLeft, filesPathToStore, nice, offersDownload, readStoredFilesPath, searchMatchNote, selectionAfterQuery, viewerAfterPathChange, type BatchKind } from "./filesRules";
-import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, type FavoriteItem, favoritePath, fileKindLabel, filterUnsyncedPhotos, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
+import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, type FavoriteItem, favoritePath, fileKindLabel, filterUnsyncedPhotos, folderPickerRoots, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
 
 const FileViewer = lazy(() =>
   import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
@@ -2213,7 +2213,10 @@ function FolderPicker({
   const failed = here ? computerList.error : listing.error;
   const blocked = exclude.some((p) => dir === p || dir.startsWith(`${p}/`));
   const upTo = here ? filesParent(dir) : dir.split("/").filter(Boolean).length > 1 ? parentOf(dir) : null;
-  const roots = [{path: "/Home", name: "Home"}, ...places];
+  const roots = [
+    ...folderPickerRoots().map((path) => ({path, name: titleOf(path)})),
+    ...places.filter((place) => isServedFilePlace(place.path)),
+  ];
   return (
     <Sheet
       open
