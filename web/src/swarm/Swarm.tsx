@@ -374,17 +374,19 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage, onCreateVm}: 
 				</Group>
 			)}
 
-			<div className="section-head" style={{margin: '20px 4px 8px'}}>
-				<h2 style={{fontSize: 16}}>Files</h2>
-			</div>
-			{!a.online ? (
-				<p className="reason">{a.name} is offline.</p>
-			) : !may(a, 'files') ? (
-				<p className="reason">{a.name} hasn’t granted Files.</p>
-			) : (
-				<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
-					<MachineFiles scope={{kind: 'computer', id: a.id, name: a.name}} windowId={`machine:${a.id}`} />
-				</Suspense>
+			{may(a, 'files') && (
+				<>
+					<div className="section-head" style={{margin: '20px 4px 8px'}}>
+						<h2 style={{fontSize: 16}}>Files</h2>
+					</div>
+					{!a.online ? (
+						<p className="reason">{a.name} is offline.</p>
+					) : (
+						<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
+							<MachineFiles scope={{kind: 'computer', id: a.id, name: a.name}} windowId={`machine:${a.id}`} />
+						</Suspense>
+					)}
+				</>
 			)}
 			<Group title="Virtual machines">
 				{a.online ? (

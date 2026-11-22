@@ -169,6 +169,23 @@ export function computerSample(row: {id: string; name: string; online: boolean; 
 	}
 }
 
+export type GaugeKind = 'CPU' | 'Memory' | 'Storage' | 'GPU' | 'Battery'
+
+/** One machine's share of the gauge that was opened. Null means that machine has no reading. */
+export function samplePercent(sample: FleetSample, kind: GaugeKind, gpuId?: string): number | null {
+	if (kind === 'CPU') return sample.cpu
+	if (kind === 'Memory') return sample.memUsed != null && sample.memTotal ? pct(sample.memUsed, sample.memTotal) : null
+	if (kind === 'Storage') return sample.diskUsed != null && sample.diskTotal ? pct(sample.diskUsed, sample.diskTotal) : null
+	if (kind === 'Battery') return sample.battery
+	if (gpuId) {
+		const one = sample.gpus.find((g) => g.id === gpuId)
+		if (one) return one.used
+	}
+	const known = sample.gpus.map((g) => g.used).filter((n): n is number => n != null)
+	if (!known.length) return null
+	return known.reduce((sum, n) => sum + n, 0) / known.length
+}
+
 export function serverSample(row: {
 	id?: string
 	name: string

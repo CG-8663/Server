@@ -4,9 +4,9 @@ import {diskPct, type UserApp} from '../api'
 import {batteryColor, batteryGaugeItem, combineBatteries} from '../battery'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useApps, useBattery, useBootstrap, useCpu, useDisk, useGpus, useMachines, useMemory, useTemp, useUptime, useUser} from '../data'
-import {computerSample, fleetRings, serverSample, type FleetRings} from '../fleet/aggregate'
+import {computerSample, fleetRings, samplePercent, serverSample, type FleetRings, type GaugeKind} from '../fleet/aggregate'
 import {BatteryRing} from '../fleet/BatteryRing'
-import {fleetList, guestFleetInput} from '../fleet/list'
+import {fleetList, guestFleetInput, type FleetMember} from '../fleet/list'
 import {openFleetMember} from '../fleet/openMember'
 import {usePins} from '../fleet/PinButton'
 import {pinKey, type DashboardPin} from '../fleet/pins'
@@ -26,7 +26,7 @@ type GaugeItem = {
 	battery?: FleetRings['battery']
 }
 
-export function Gauges({onClick, fleet}: {onClick?: () => void; fleet?: FleetRings | null}) {
+export function Gauges({onOpen, fleet}: {onOpen?: (gauge: {title: string; kind: GaugeKind; gpuId?: string}) => void; fleet?: FleetRings | null}) {
 	const cpu = useCpu()
 	const mem = useMemory()
 	const disk = useDisk()
@@ -68,9 +68,15 @@ export function Gauges({onClick, fleet}: {onClick?: () => void; fleet?: FleetRin
 				...batteryGaugeItem(battery.data?.batteries ?? []),
 			]
 	return (
-		<button className="glass gauges press" data-n={items.length} onClick={onClick} aria-label="System usage, open details">
+		<div className="glass gauges" data-n={items.length} role="group" aria-label="System usage">
 			{items.map((g) => (
-				<div className="gauge" key={g.key ?? g.k}>
+				<button
+					type="button"
+					className="gauge press"
+					key={g.key ?? g.k}
+					aria-label={`${g.k}, open machines`}
+					onClick={() => onOpen?.({title: g.k, kind: g.k === 'Memory' || g.k === 'Storage' || g.k === 'Battery' ? g.k : g.k.startsWith('GPU') ? 'GPU' : 'CPU', gpuId: g.key})}
+				>
 					{g.battery ? (
 						<BatteryRing groups={g.battery.groups} lowest={g.battery.lowest} color={g.color} />
 					) : (
@@ -83,13 +89,19 @@ export function Gauges({onClick, fleet}: {onClick?: () => void; fleet?: FleetRin
 					)}
 					<span className="k">{g.k}</span>
 					<span className="sub">{g.sub}</span>
-				</div>
+				</button>
 			))}
-		</button>
+		</div>
 	)
 }
 
-export function Home({onOpenApp, go}: {onOpenApp: (app: UserApp) => void; go: (tab: 'apps' | 'more' | 'store') => void; onTerminal?: () => void; onAssistant?: () => void}) {
+function machineIcon(member: FleetMember): IconName {
+	if (member.kind === 'guest') return 'machine'
+	if (member.kind === 'server') return 'server'
+	return 'devices'
+}
+
+export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 'apps' | 'more' | 'store') => void; onTerminal?: () => void; onAssistant?: () => void}) {
 	const user = useUser()
 	const apps = useApps()
 	const boot = useBootstrap()
@@ -105,7 +117,7 @@ export function Home({onOpenApp, go}: {onOpenApp: (app: UserApp) => void; go: (t
 	const temp = useTemp()
 	const uptime = useUptime()
 	const {pins} = usePins()
-	const [listOpen, setListOpen] = useState(false)
+	const [gauge, setGauge] = useState<{title: string; kind: GaugeKind; gpuId?: string} | null>(null)
 	const list = apps.data ?? []
 	const running = list.filter((a) => appStatus(a.state).kind === 'running').length
 	const problems = list.filter((a) => a.error || a.state === 'unknown')
@@ -176,7 +188,7 @@ export function Home({onOpenApp, go}: {onOpenApp: (app: UserApp) => void; go: (t
 			</header>
 
 			<div className="home-meters">
-				<Gauges fleet={rings} onClick={() => (multi ? setListOpen(true) : go('more'))} />
+				<Gauges fleet={rings} onOpen={setGauge} />
 				<div className="facts">
 					{rings?.temp ? (
 						<span className="fact">
@@ -255,24 +267,35 @@ export function Home({onOpenApp, go}: {onOpenApp: (app: UserApp) => void; go: (t
 					)}
 				</>
 			)}
-			{listOpen && (
-				<Sheet open onClose={() => setListOpen(false)} label="Computers" tall>
-					<SheetHeader title="Computers" subtitle="Online computers in these rings" onClose={() => setListOpen(false)} />
-					<div className="glass group" style={{marginTop: 12}}>
-						{samples
-							.filter((s) => s.online)
-							.map((s) => (
+			{gauge && (
+				<Sheet open onClose={() => setGauge(null)} label={gauge.title} tall>
+					<SheetHeader title={gauge.title} onClose={() => setGauge(null)} />
+					<div className="glass group gauge-machines" style={{marginTop: 12, '--inset': '62px'} as CSSProperties}>
+						{members.map((member) => {
+							const sample = samples.find((s) => s.id === member.id)
+							const value = sample ? samplePercent(sample, gauge.kind, gauge.gpuId) : null
+							const color = value == null ? 'var(--muted)' : gauge.kind === 'Battery' ? batteryColor(value) : levelColor(value)
+							return (
 								<Row
-									key={s.id}
-									icon="server"
-									label={s.name}
-									sub={[s.cpu != null ? `CPU ${Math.round(s.cpu)}%` : '', s.memUsed != null && s.memTotal ? `Memory ${Math.round(pct(s.memUsed, s.memTotal))}%` : ''].filter(Boolean).join(' · ') || 'Online'}
+									key={member.id}
+									icon={machineIcon(member)}
+									label={member.name}
+									sub={member.meta}
+									trailing={
+										<Ring value={value ?? 0} size={52} color={color} label={`${gauge.title} on ${member.name}`}>
+											<span className="pct">
+												{value == null ? '–' : Math.round(value)}
+												{value != null && <small>%</small>}
+											</span>
+										</Ring>
+									}
 									onClick={() => {
-										setListOpen(false)
-										openFleetMember({kind: s.id === 'server' ? 'server' : 'computer', id: s.id})
+										setGauge(null)
+										openFleetMember({kind: member.kind, id: member.id})
 									}}
 								/>
-							))}
+							)
+						})}
 					</div>
 				</Sheet>
 			)}

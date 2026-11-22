@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
-import {batteryGroups, batterySweep, computerSample, fleetRings, serverSample} from '../web/src/fleet/aggregate.ts'
+import {batteryGroups, batterySweep, computerSample, fleetRings, samplePercent, serverSample} from '../web/src/fleet/aggregate.ts'
 import {computerParent, computerPlacePath, filePlaces, filesParent, parseComputerPlace, scopeRoot, SERVER_FILES, withinScope} from '../web/src/fleet/filePlaces.ts'
 import {fittingCrumbCount} from '../web/src/fleet/fittingCrumbs.ts'
 import {groupApps} from '../web/src/fleet/groupApps.ts'
@@ -113,14 +113,20 @@ test('pins round-trip and apps stay in arrival order', () => {
 })
 
 test('file places keep granted online computers and skip the rest', () => {
-	const {places, note} = filePlaces([
+	const {places} = filePlaces([
 		{id: 'kitchen', name: 'Kitchen', online: true, filesGranted: true},
 		{id: 'loft', name: 'Loft', online: true, filesGranted: false},
 		{id: 'garage', name: 'Garage', online: false, filesGranted: true},
 	])
 	assert.deepEqual(places, [{id: 'kitchen', name: 'Kitchen', path: '::computer/kitchen'}])
-	assert.match(note ?? '', /Loft hasn’t granted Files/)
-	assert.match(note ?? '', /Garage is offline/)
+	const den = serverSample({name: 'Den', cores: 4, cpu: 10, memUsed: 1, memTotal: 4, diskUsed: 2, diskTotal: 8, temp: null, gpus: [{id: 'g0', used: 40}], battery: 55})
+	assert.equal(samplePercent(den, 'CPU'), 10)
+	assert.equal(samplePercent(den, 'Memory'), 25)
+	assert.equal(samplePercent(den, 'Storage'), 25)
+	assert.equal(samplePercent(den, 'GPU'), 40)
+	assert.equal(samplePercent(den, 'GPU', 'missing'), 40)
+	assert.equal(samplePercent(den, 'Battery'), 55)
+	assert.equal(samplePercent({...den, cpu: null, gpus: [], battery: null}, 'GPU'), null)
 	assert.deepEqual(parseComputerPlace('::computer/kitchen/Photos/2024'), {id: 'kitchen', rel: 'Photos/2024'})
 	assert.equal(parseComputerPlace('::computer/kitchen/../secret'), null)
 	assert.equal(parseComputerPlace('::computer/..'), null)

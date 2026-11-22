@@ -85,10 +85,7 @@ export function computerParent(path: string): string | null {
 	return computerPlacePath(here.id, parts.join('/'))
 }
 
-export function filePlaces(computers: readonly ComputerFileInput[]): {places: {id: string; name: string; path: string}[]; note: string | null} {
-	const skipped = computers
-		.filter((row) => !row.online || !row.filesGranted)
-		.sort((a, b) => a.name.localeCompare(b.name))
+export function filePlaces(computers: readonly ComputerFileInput[]): {places: {id: string; name: string; path: string}[]} {
 	const places = computers
 		.filter((row) => row.online && row.filesGranted)
 		.sort((a, b) => a.name.localeCompare(b.name))
@@ -96,10 +93,5 @@ export function filePlaces(computers: readonly ComputerFileInput[]): {places: {i
 			const path = computerPlacePath(row.id)
 			return path ? [{id: row.id, name: row.name, path}] : []
 		})
-	const note = skipped.length
-		? skipped
-				.map((row) => (row.online ? `${row.name} hasn’t granted Files.` : `${row.name} is offline.`))
-				.join(' ')
-		: null
-	return {places, note}
+	return {places}
 }

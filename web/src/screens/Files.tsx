@@ -1032,7 +1032,6 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
       {machineRoot && (
         <>
           <NuEntries items={rootItems} grid={grid} />
-          {computerFiles.note && <p className="reason">{computerFiles.note}</p>}
           <div className="nu-status">
             {rootItems.length} item{rootItems.length === 1 ? "" : "s"}
           </div>
