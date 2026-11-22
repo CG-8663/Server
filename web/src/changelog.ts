@@ -4,6 +4,19 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.58',
+		date: '2026-11-22',
+		title: 'A stronger swarm',
+		added: [
+			'Swarm computers can update their connector from this server, one at a time or all at once, and you can change what a computer allows without removing it.',
+			'Terminals on swarm computers keep running when you close them, and pick up where you left off. New session starts fresh.',
+			'Each computer shows an hour or a day of CPU, memory, disk and network history, GPU memory and temperature, and fleet alerts for full disks, heat and waiting updates.',
+			'Swarm computers can be suspended, shut down, and woken with Wake-on-LAN.',
+			'New, off by default: Services, to see and start, stop or restart a computer’s user services and containers, and Files, to browse its home folder and copy files to and from this server. Keys, keyrings and browser profiles stay private.',
+		],
+		fixed: ['Connectors on Python 3.13 and newer connect to this server again.'],
+	},
+	{
 		version: '0.9.57',
 		date: '2026-11-22',
 		title: 'The store, files, and the desktop tell the truth',
