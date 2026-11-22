@@ -20,7 +20,7 @@ import {hasOpenDialog, pickFocusTarget, useDialogFocus, useInert, useMenuFocus} 
 import {ScreenErrorBoundary} from '../screenBoundary'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, resetDeskConfig, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
-import {desktopIconKeysApply, iconSelectionClearsOnFocus} from './iconKeys'
+import {desktopIconKeyOpens, desktopIconKeysApply, iconSelectionClearsOnFocus} from './iconKeys'
 import {iconsInView} from './iconsInView'
 import {desktopMachineStatus, machineOpenAction} from './machineOpen'
 import {startAlreadyPending} from './startPending'
@@ -29,13 +29,17 @@ import {nextStarting, type StartingWatch} from './startingWatch'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
 import {Cheatsheet} from './hyprland/Cheatsheet'
 import {injectConsoleKey, keysymFromEvent, lastMinimizedOn, releaseConsoleSuper, topVisibleWindow} from './hyprland/consoleBridge'
-import {CAPTURE_KEY, ONBOARDING_KEY, canUseKeyboardLock, chipIntent, keyboardLockApi, onCaptureModeChange, onFullscreenChange, resolveMode, toggleLock, type GrabState} from './hyprland/grab'
+import {CAPTURE_KEY, ONBOARDING_KEY, canUseKeyboardLock, chipIntent, grabToggleReleasesKeyboardLock, keyboardLockApi, onCaptureModeChange, onFullscreenChange, releaseKeyboardLock, resolveMode, toggleLock, type GrabState} from './hyprland/grab'
 import {isSuper, resolveHyprKey, type Action} from './hyprland/keymap'
 import {Launcher} from './hyprland/Launcher'
 import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, moveWorkspace, reconcile, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
 import {loadWallpaper} from './wallpaperLoader'
+import {overviewEnterOpensApp} from './overviewEnter'
+import {rememberSettingsPage, settingsPayloadFor, settingsRemountKey} from './settingsPage'
 import {clampDragY, clampWindowRect} from './windowGeometry'
+import {nextMaximizeSnap} from './windowSnap'
+import {bindWindowScrollReset} from './winScroll'
 import {startMinuteClock} from './clock'
 
 const HINT_KEY = 'omarchy-server:desk-hint-closed'
@@ -62,7 +66,7 @@ function WinFallback() {
 
 // ---- model ---------------------------------------------------------------------------------
 type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app'
-type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; term?: {id: string; name?: string; icon?: string}; input?: string}
+type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; page?: string; pageNonce?: number; term?: {id: string; name?: string; icon?: string}; input?: string}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
 type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number; workspace?: number; float?: boolean; minAt?: number}
@@ -516,11 +520,21 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			setOverview(null)
 			setMenu(null)
 			setTopMenu(null)
-			const key = keyOf(kind, payload)
+			const settingsPayload = kind === 'settings' && payload?.page ? settingsPayloadFor(payload.page, Date.now()) : null
+			if (settingsPayload) {
+				try {
+					rememberSettingsPage(sessionStorage, settingsPayload.page)
+				} catch {
+					/* private mode */
+				}
+			}
+			const storedPayload = settingsPayload ?? payload
+			const key = keyOf(kind, storedPayload)
 			const multi = kind === 'files' || kind === 'terminal'
 			const existing = winsRef.current.filter((w) => w.key === key).sort((a, b) => b.z - a.z)[0]
 			if (existing && !(multi && opts?.newWindow)) {
 				if (kind === 'personalize' && payload?.tab) update(existing.id, {payload})
+				if (settingsPayload) update(existing.id, {payload: settingsPayload})
 				if (opener && !winElsRef.current.get(existing.id)?.contains(opener)) {
 					winOpenersRef.current.set(existing.id, opener)
 				}
@@ -538,7 +552,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			zTop.current += 1
 			const id = Math.random().toString(36).slice(2, 10)
 			const workspace = hyprWsRef.current
-			const win: Win = {id, kind, key, payload, x: Math.max(a.x + 8, x), y: Math.max(a.y + 8, y), w, h, z: zTop.current, min: false, snap: null, born: Date.now(), workspace, float: false}
+			const win: Win = {id, kind, key, payload: storedPayload, x: Math.max(a.x + 8, x), y: Math.max(a.y + 8, y), w, h, z: zTop.current, min: false, snap: null, born: Date.now(), workspace, float: false}
 			if (cfg.shell === 'hyprland') {
 				const focused = topTileOn(workspace)
 				setTrees((ts) => ({...ts, [workspace]: insertTile(ts[workspace] ?? null, focused?.id ?? firstLeaf(ts[workspace] ?? null), id, usable(), GAP, hiddenIds(workspace))}))
@@ -769,7 +783,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					e.preventDefault()
 					e.stopPropagation()
 					releaseLastConsole()
-					setGrab((s) => toggleLock(s, e.code === 'F12' ? 'f12' : 'scroll'))
+					setGrab((s) => {
+						const next = toggleLock(s, e.code === 'F12' ? 'f12' : 'scroll')
+						if (grabToggleReleasesKeyboardLock(s, next)) void releaseKeyboardLock()
+						return next
+					})
 					return
 				}
 				if (res?.kind === 'console-forward' && top) {
@@ -946,6 +964,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			],
 		})
 
+	useEffect(() => bindWindowScrollReset(window, document), [])
 	useEffect(() => {
 		const onFs = () => {
 			const fs = !!document.fullscreenElement
@@ -1032,16 +1051,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			return
 		}
 		if (intent === 'unlock-keyboard-lock') {
-			try {
-				kb?.unlock()
-			} catch {
-				/* already unlocked */
-			}
-			try {
-				await document.exitFullscreen()
-			} catch {
-				/* already out */
-			}
+			await releaseKeyboardLock()
 			setGrab((s) => toggleLock(s, 'chip'))
 			return
 		}
@@ -1445,7 +1455,7 @@ function Dock(p: {
 	const hidden = p.cfg.dock.autohide && !hover && !p.forceShow && !drag
 	return (
 		<>
-			{p.cfg.dock.autohide && <div className={`dock-hotzone hz-${pos}`} onPointerEnter={() => setHover(true)} />}
+			{p.cfg.dock.autohide && <div className={`dock-hotzone hz-${pos}`} onPointerEnter={() => setHover(true)} onPointerLeave={() => setHover(false)} />}
 			<nav
 				ref={ref}
 				className={`desk-dock${hidden ? ' hidden' : ''}${magnifyOn ? ' magnify' : ''}`}
@@ -1709,11 +1719,10 @@ function DesktopIcons(p: {
 						onPointerDown={startMove(i.key)}
 						onDoubleClick={() => p.onOpen(i.key)}
 						onKeyDown={(e) => {
-							if (e.key === 'Enter') {
-								e.preventDefault()
-								e.stopPropagation()
-								p.onOpen(i.key)
-							}
+							if (!desktopIconKeyOpens(e.key)) return
+							e.preventDefault()
+							e.stopPropagation()
+							p.onOpen(i.key)
 						}}
 						onContextMenu={(e) => {
 							e.preventDefault()
@@ -2077,7 +2086,7 @@ function Overview({
 						placeholder="Type to search"
 						aria-label="Search apps"
 						onKeyDown={(e) => {
-							if (e.key === 'Enter' && items[0]) onOpen(items[0].key)
+							if (overviewEnterOpensApp(e.key, showApps, items.length)) onOpen(items[0].key)
 						}}
 					/>
 				</div>
@@ -2191,7 +2200,7 @@ function WindowFrame({
 	const url = app ? appUrl(app, boot.server!.host) : null
 	const {openTab} = useAppTab()
 
-	const toggleMax = () => onUpdate(win.id, {snap: win.snap ? null : 'max'})
+	const toggleMax = () => onUpdate(win.id, {snap: nextMaximizeSnap(win.snap)})
 
 	// Move: drag the title bar. Snap to the top edge to maximize, to a side to tile half the screen.
 	const startMove = (e: React.PointerEvent) => {
@@ -2711,6 +2720,11 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 const WindowContent = memo(
 	function WindowContent({win, prefs, setPrefs, onSignedOut, owner}: {win: Win; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; owner: boolean}) {
 		const desk = useDesktop()!
+		const scrollRef = useRef<HTMLDivElement>(null)
+		const settingsKey = win.kind === 'settings' ? settingsRemountKey(win.payload) : ''
+		useEffect(() => {
+			if (scrollRef.current) scrollRef.current.scrollTop = 0
+		}, [settingsKey])
 		const close = () => desk.close(win.id)
 		const body = (() => {
 			switch (win.kind) {
@@ -2725,7 +2739,7 @@ const WindowContent = memo(
 				case 'system':
 					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} onClips={() => desk.open('clips')} />
 				case 'settings':
-					return <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={close} />
+					return <Settings key={settingsRemountKey(win.payload)} prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={close} />
 				case 'personalize':
 					return <Personalize tab={win.payload?.tab} prefs={prefs} setPrefs={setPrefs} />
 				case 'assistant':
@@ -2733,8 +2747,7 @@ const WindowContent = memo(
 						<Assistant
 							active={!win.min}
 							onSettings={() => {
-								sessionStorage.setItem('omarchy-server:settings-page', 'assistant')
-								desk.open('settings')
+								desk.open('settings', {page: 'assistant'})
 							}}
 							prefs={prefs}
 							setPrefs={setPrefs}
@@ -2757,12 +2770,19 @@ const WindowContent = memo(
 		)
 		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'machines' || win.kind === 'assistant') return content
 		return (
-			<div className="win-scroll">
+			<div className="win-scroll" ref={scrollRef}>
 				<main className="screen win-screen">{content}</main>
 			</div>
 		)
 	},
-	(a, b) => a.win.id === b.win.id && a.win.kind === b.win.kind && a.win.payload?.tab === b.win.payload?.tab && a.prefs === b.prefs && a.owner === b.owner,
+	(a, b) =>
+		a.win.id === b.win.id &&
+		a.win.kind === b.win.kind &&
+		a.win.payload?.tab === b.win.payload?.tab &&
+		a.win.payload?.page === b.win.payload?.page &&
+		a.win.payload?.pageNonce === b.win.payload?.pageNonce &&
+		a.prefs === b.prefs &&
+		a.owner === b.owner,
 )
 
 function AppsWindow() {

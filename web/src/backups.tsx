@@ -6,7 +6,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query} from './api'
 import {queryProblem, useBrowserOnline} from './connection'
 import {Icon} from './icons'
-import {Field, Group, Row, Segmented, Sheet, SheetHeader, Switch, haptic, useConfirm, useToast} from './ui'
+import {Field, Group, Row, Segmented, Sheet, SheetHeader, Switch, bytes, haptic, useConfirm, useToast} from './ui'
 
 type Nas = {host: string; port?: number; share: string; folder: string; username: string; domain?: string; hasPassword?: boolean}
 type Schedule = {frequency: 'off' | 'daily' | 'weekly'; hour: number; weekday: number}
@@ -49,16 +49,6 @@ type Found = {host: string; name: string; address?: string}
 type Share = {name: string; comment: string}
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-const bytes = (n: number) => {
-	if (n < 1024) return `${n} B`
-	const u = ['KB', 'MB', 'GB', 'TB']
-	let i = -1
-	do {
-		n /= 1024
-		i++
-	} while (n >= 1024 && i < u.length - 1)
-	return `${n.toFixed(n < 10 ? 1 : 0)} ${u[i]}`
-}
 const ago = (t: number) => {
 	const s = Math.max(0, (Date.now() - t) / 1000)
 	if (s < 90) return 'just now'
@@ -435,7 +425,7 @@ function HistoryRow({r, timeZone}: {r: Run; timeZone?: string}) {
 		: tone === 'warn'
 			? gap
 			: tone === 'ok'
-				? `${bytes(r.added)} new${r.nas?.uploaded ? ` · ${r.nas.uploaded} file${r.nas.uploaded === 1 ? '' : 's'} to the NAS` : ''}`
+				? `${bytes(r.added, 1, 1024)} new${r.nas?.uploaded ? ` · ${r.nas.uploaded} file${r.nas.uploaded === 1 ? '' : 's'} to the NAS` : ''}`
 				: (r.error ?? 'Failed')
 	return (
 		<>
@@ -455,7 +445,7 @@ function HistoryRow({r, timeZone}: {r: Run; timeZone?: string}) {
 						<span className="main">
 							<span>
 								{i.name}
-								{i.ok ? ` · ${bytes(i.added ?? 0)} new${itemGap ? ` · ${itemGap}` : i.warning ? ` · ${i.warning}` : ''}` : ` · ${i.error}`}
+								{i.ok ? ` · ${bytes(i.added ?? 0, 1, 1024)} new${itemGap ? ` · ${itemGap}` : i.warning ? ` · ${i.warning}` : ''}` : ` · ${i.error}`}
 							</span>
 						</span>
 					</div>
@@ -656,7 +646,7 @@ function RestoreSheet({name, list, timeZone, onClose, onRestore}: {appId: string
 							<span>
 								{i === 0 ? 'Latest · ' : ''}
 								{ago(sn.time)}
-								{sn.size ? ` · ${bytes(sn.size)}` : ''}
+								{sn.size ? ` · ${bytes(sn.size, 1, 1024)}` : ''}
 							</span>
 						</span>
 						<button className="btn small" onClick={() => onRestore(sn)}>
@@ -889,7 +879,7 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 											<b style={{fontWeight: 550}}>{formatBackupStamp(sn.time, timeZone)}</b>
 											<span>
 												{i === 0 ? 'Latest · ' : ''}
-												{sn.size ? bytes(sn.size) : ago(sn.time)}
+												{sn.size ? bytes(sn.size, 1, 1024) : ago(sn.time)}
 											</span>
 										</span>
 										<button

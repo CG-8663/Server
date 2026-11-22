@@ -1,7 +1,7 @@
 // Omarchy plugins, inside the App Store: verified plugins from the Omarchy plugin registry
 // (plugins.omarchy.org), installed at the exact version the registry checked (omarchyd/omarchy-plugins.mjs).
-import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {useEffect, useState} from 'react'
+import {useMutation, useQueries, useQueryClient} from '@tanstack/react-query'
+import {useState} from 'react'
 
 import {mutate, query} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
@@ -35,16 +35,21 @@ export function PluginBrowser({q}: {q: string}) {
 	const owner = useUser().data?.role !== 'member'
 	const [category, setCategory] = useState('')
 	const [sort, setSort] = useState<'stars' | 'new'>('stars')
-	const [limit, setLimit] = useState(30)
-	useEffect(() => setLimit(30), [q, category, sort])
-	const key = ['omarchy.plugins', q, category, sort, limit]
-	const page = useQuery({
-		queryKey: key,
-		queryFn: () => query<Page>('omarchy.plugins', {q, category, sort, limit}),
-		placeholderData: (prev) => prev,
-		// Watch installs and removals as they happen.
-		refetchInterval: (qq) => (qq.state.data?.plugins.some((p) => p.job && p.job.state !== 'error') ? 2000 : false),
+	const filterKey = `${q}\0${category}\0${sort}`
+	const [pageState, setPageState] = useState({filterKey, pages: 1})
+	if (pageState.filterKey !== filterKey) setPageState({filterKey, pages: 1})
+	const pages = pageState.pages
+	const queries = useQueries({
+		queries: Array.from({length: pages}, (_, i) => ({
+			queryKey: ['omarchy.plugins', q, category, sort, i],
+			queryFn: () => query<Page>('omarchy.plugins', {q, category, sort, limit: 30, offset: i * 30}),
+			placeholderData: (prev: Page | undefined) => prev,
+			// Watch installs and removals as they happen.
+			refetchInterval: (qq: {state: {data?: Page}}) => (qq.state.data?.plugins.some((p) => p.job && p.job.state !== 'error') ? 2000 : false),
+		})),
 	})
+	const page = queries[0]
+	const plugins = queries.flatMap((qq) => qq.data?.plugins ?? [])
 	const act = useMutation({
 		mutationFn: (a: {path: string; id: string; done: string}) => mutate(a.path, {id: a.id}).then(() => a.done),
 		onSuccess: (done) => (toast(done), qc.invalidateQueries({queryKey: ['omarchy.plugins']})),
@@ -64,9 +69,9 @@ export function PluginBrowser({q}: {q: string}) {
 		if (await confirm({title: `Remove ${p.name}?`, body: 'It’s turned off and removed from your Omarchy desktop.', confirm: 'Remove', icon: 'trash'}))
 			act.mutate({path: 'omarchy.removePlugin', id: p.id, done: `Removing ${p.name}…`})
 	}
-	const data = page.data
+	const data = page?.data
 	const browserOnline = useBrowserOnline()
-	const problem = queryProblem(page, browserOnline)
+	const problem = page ? queryProblem(page, browserOnline) : null
 	return (
 		<section className="plugins">
 			<div className="glass card" style={{borderRadius: 18, margin: '4px 0 14px', display: 'flex', gap: 12, alignItems: 'flex-start'}}>
@@ -106,9 +111,9 @@ export function PluginBrowser({q}: {q: string}) {
 					{problem}
 				</div>
 			)}
-			{page.isLoading && Array.from({length: 4}, (_, i) => <div key={i} className="skeleton" style={{height: 96, margin: '10px 0', borderRadius: 18}} />)}
+			{page?.isLoading && Array.from({length: 4}, (_, i) => <div key={i} className="skeleton" style={{height: 96, margin: '10px 0', borderRadius: 18}} />)}
 			<div className="plugin-grid">
-				{data?.plugins.map((p) => {
+				{plugins.map((p) => {
 					const busy = p.job && p.job.state !== 'error'
 					return (
 						<article key={p.id} className="plugin-card glass">
@@ -137,7 +142,7 @@ export function PluginBrowser({q}: {q: string}) {
 											<Icon name="check" size={15} /> Installed · Remove
 										</button>
 									) : (
-										<button className="btn small primary" disabled={!owner || !data.available || act.isPending} onClick={() => install(p)} title={owner ? undefined : 'Only the server’s owner can install plugins'}>
+										<button className="btn small primary" disabled={!owner || !data?.available || act.isPending} onClick={() => install(p)} title={owner ? undefined : 'Only the server’s owner can install plugins'}>
 											Install
 										</button>
 									)}
@@ -150,7 +155,7 @@ export function PluginBrowser({q}: {q: string}) {
 					)
 				})}
 			</div>
-			{data && data.plugins.length === 0 && !page.isLoading && (
+			{data && plugins.length === 0 && !page?.isLoading && (
 				<div className="glass empty">
 					<span className="big">
 						<Icon name="search" size={30} />
@@ -159,9 +164,9 @@ export function PluginBrowser({q}: {q: string}) {
 					<span>Try a different search or category.</span>
 				</div>
 			)}
-			{data && data.total > data.plugins.length && (
-				<button className="btn" style={{width: '100%', marginTop: 12}} disabled={page.isFetching} onClick={() => setLimit((l) => l + 30)}>
-					{page.isFetching ? <span className="spinner" /> : null} Show more ({data.total - data.plugins.length} more)
+			{data && data.total > plugins.length && (
+				<button className="btn" style={{width: '100%', marginTop: 12}} disabled={queries.some((qq) => qq.isFetching)} onClick={() => setPageState({filterKey, pages: pages + 1})}>
+					{queries.some((qq) => qq.isFetching) ? <span className="spinner" /> : null} Show more ({data.total - plugins.length} more)
 				</button>
 			)}
 		</section>

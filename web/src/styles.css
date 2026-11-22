@@ -8768,3 +8768,26 @@ select.field {
 	margin-top: 1px;
 	accent-color: var(--accent);
 }
+
+/* Port forwarding: the “Forward a port” form. */
+.pf-add {
+	display: flex;
+	flex-direction: column;
+	padding: 14px;
+	gap: 12px;
+}
+.pf-fields {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) minmax(0, 1fr);
+	gap: 10px;
+	align-items: end;
+}
+.pf-presets,
+.pf-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+.pf-arrow {
+	padding-bottom: 10px;
+}

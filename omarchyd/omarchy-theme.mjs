@@ -13,19 +13,21 @@ const EXTRA = require('./omarchy-extra-themes.json')
 
 const TYPES = {'.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg'}
 const idOf = (path) => createHash('sha256').update(path).digest('hex').slice(0, 16)
-const HEX = /^#?([0-9a-f]{6})$/i
 const SLUG = /^[a-z0-9_][a-z0-9._+-]{0,80}$/
 
 // "tokyo-night" -> "Tokyo Night" (as omarchy-theme-list shows it)
 export const themeLabel = (name) => String(name).replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+const extraName = new Map(EXTRA.themes.map((t) => [t.slug, t.name]))
+// Community themes keep the name from the extra-themes list; themeLabel is only for anything else.
+export const themeDisplayName = (slug) => extraName.get(slug) ?? themeLabel(slug)
 
 // Colours from a theme folder: colors.toml (current Omarchy) or alacritty.toml (older themes).
 export function parseThemeColors(text) {
 	const out = {}
 	const pick = (key, section) => {
 		const scope = section ? (new RegExp(`\\[${section.replace('.', '\\.')}\\]([\\s\\S]*?)(?:\\n\\[|$)`).exec(text)?.[1] ?? '') : text
-		const m = new RegExp(`^\\s*${key}\\s*=\\s*["']?(#?[0-9a-fA-F]{6})["']?`, 'm').exec(scope)
-		return m && HEX.test(m[1]) ? `#${HEX.exec(m[1])[1].toLowerCase()}` : null
+		const m = new RegExp(`^\\s*${key}\\s*=\\s*["']?(?:#|0[xX])?([0-9a-fA-F]{6})["']?`, 'm').exec(scope)
+		return m ? `#${m[1].toLowerCase()}` : null
 	}
 	out.background = pick('background', 'colors.primary') ?? pick('background') ?? pick('color0')
 	out.foreground = pick('foreground', 'colors.primary') ?? pick('foreground') ?? pick('color7')
@@ -146,7 +148,7 @@ export function createOmarchyTheme({home, run = null, env = process.env, systemS
 		const installed = []
 		for (const [slug, {dir, user}] of [...dirs].sort(([a], [b]) => a.localeCompare(b))) {
 			const preview = (await exists(join(dir, 'preview.png'))) || (await images(join(dir, 'backgrounds'))).length > 0
-			installed.push({slug, name: themeLabel(slug), user, current: slug === current, colors: await colorsIn(dir), preview, ...(jobs.has(slug) ? {job: jobs.get(slug)} : {})})
+			installed.push({slug, name: themeDisplayName(slug), user, current: slug === current, colors: await colorsIn(dir), preview, ...(jobs.has(slug) ? {job: jobs.get(slug)} : {})})
 		}
 		const more = EXTRA.themes
 			.filter((t) => !dirs.has(t.slug))
