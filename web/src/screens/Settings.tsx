@@ -4,7 +4,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {logout, mutate, query, type ActiveSession, type AssistantApi, type AssistantCheck, type AssistantEffort, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
 import {resetAssistantTurn} from '../assistantTurn'
-import {resetDeskConfig} from '../desktop/config'
+import {patchDeskConfig, resetDeskConfig} from '../desktop/config'
 import {useBootstrap, useUser} from '../data'
 import {checkLiveText} from '../focus'
 import {Icon, type IconName} from '../icons'
@@ -180,7 +180,13 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					</button>
 					<h1 className="title">Themes</h1>
 				</div>
-				<OmarchyThemes owner={owner} />
+				<OmarchyThemes
+					owner={owner}
+					onSwitched={() => {
+						setPrefs({...prefs, theme: 'omarchy', solidColor: null})
+						patchDeskConfig({style: 'graphite', preset: null, wallpaper: 'omarchy'})
+					}}
+				/>
 			</div>
 		)
 	if (page === 'appearance')

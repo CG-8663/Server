@@ -8537,6 +8537,18 @@ html.page-locked .auth {
 .shell-hypr .desk-dock {
 	display: none;
 }
+.shell-hypr .win,
+.shell-hypr .win-bar,
+.shell-hypr .top-pop,
+.shell-hypr .ctx-menu {
+	border-radius: 0;
+	backdrop-filter: none;
+	-webkit-backdrop-filter: none;
+}
+.shell-hypr .desk-top {
+	backdrop-filter: none;
+	-webkit-backdrop-filter: none;
+}
 /* Desktop & Dock's section tabs: in a narrow window (a tile), keep each label inside its own tab. */
 .personalize > .segmented button {
 	min-width: 0;

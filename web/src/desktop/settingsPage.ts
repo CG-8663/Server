@@ -1,5 +1,8 @@
 export const SETTINGS_PAGE_STORAGE_KEY = 'omarchy-server:settings-page'
 export const APPEARANCE_FOCUS_KEY = 'omarchy-server:appearance-focus'
+// Set just before leaving the phone layout so the desktop, once it mounts, shows the shell
+// that was just chosen. 'appearance' also reopens Appearance. 'retile' only retile the windows.
+export const SHOW_SHELL_KEY = 'omarchy-server:show-shell'
 
 export function settingsPayloadFor(page: string, nonce: number): {page: string; pageNonce: number} {
 	return {page, pageNonce: nonce}

@@ -37,7 +37,7 @@ import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as inser
 import {Onboarding} from './hyprland/Onboarding'
 import {loadWallpaper} from './wallpaperLoader'
 import {overviewEnterOpensApp} from './overviewEnter'
-import {rememberAppearanceFocus, rememberSettingsPage, settingsPayloadFor, settingsRemountKey} from './settingsPage'
+import {SHOW_SHELL_KEY, rememberAppearanceFocus, rememberSettingsPage, settingsPayloadFor, settingsRemountKey} from './settingsPage'
 import {clampDragY, clampWindowRect} from './windowGeometry'
 import {nextMaximizeSnap} from './windowSnap'
 import {bindWindowScrollReset} from './winScroll'
@@ -314,6 +314,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	startingRef.current = starting
 	const startingFlightRef = useRef(new Set<string>())
 	const hypr = cfg.shell === 'hyprland'
+	const [shellGen, setShellGen] = useState(0)
 	const [hyprWs, setHyprWs] = useState(() => loadLayout().workspace)
 	const [trees, setTrees] = useState<Record<number, Node | null>>(() => loadLayout().trees)
 	const [grab, setGrab] = useState<GrabState>(() => {
@@ -354,6 +355,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const runHyprRef = useRef<(act: Action) => void>(() => {})
 	const hyprRef = useRef(hypr)
 	hyprRef.current = hypr
+	const hyprPrev = useRef(hypr)
 	// The focused tile on a workspace: the top tiled window there (what a new window splits).
 	const topTileOn = (ws: number, except?: string) =>
 		winsRef.current.filter((x) => x.id !== except && !x.min && !x.float && (x.workspace ?? 1) === ws).sort((a, b) => b.z - a.z)[0]
@@ -935,17 +937,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			? omarchyBackgroundUrl(prefs.omarchyBackground, omarchy.data?.current)
 			: cfg.wallpaper === 'photo'
 				? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(user.data?.wallpaper))
-				: null
+				: cfg.wallpaper === 'server'
+					? wallpaperUrl(user.data?.wallpaper)
+					: null
 	const deskStyle: Record<string, string> = {'--dock-thick': `${thick}px`, '--dock-icon': `${cfg.dock.iconSize}px`}
-	const omarchyAccent = cfg.wallpaper === 'omarchy' ? omarchy.data?.colors?.accent : null
-	if (cfg.accent === 'wallpaper' && omarchyAccent) {
-		Object.assign(deskStyle, {'--accent': omarchyAccent, '--accent-text': omarchyAccent, '--on-accent': omarchy.data?.colors?.background ?? '#111'})
-	} else if (cfg.accent === 'wallpaper' && wp) {
-		const [h, s] = wp.hsl.split(' ').map((v) => parseFloat(v))
-		Object.assign(deskStyle, {'--accent': `hsl(${h} ${s}% 52%)`, '--accent-text': `hsl(${h} ${Math.min(s + 10, 95)}% 68%)`, '--on-accent': '#fff'})
-	} else if (cfg.accent !== 'app' && cfg.accent !== 'wallpaper') {
-		Object.assign(deskStyle, {'--accent': `var(--${cfg.accent})`, '--accent-text': `var(--${cfg.accent})`, '--on-accent': '#111'})
-	}
+	const solid = prefs.solidColor ?? solidOf(cfg.wallpaper)
 
 	const arrangeIcons = () =>
 		setCfg((c) => {
@@ -1026,13 +1022,42 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		window.addEventListener('omarchy:key-capture', on)
 		return () => window.removeEventListener('omarchy:key-capture', on)
 	}, [])
+	const shellShown = useRef(false)
 	useEffect(() => {
-		if (!hypr) return
-		setWins((ws) => ws.map((w) => (w.workspace ? w : {...w, workspace: 1})))
+		if (shellShown.current) return
+		let flag: string | null = null
+		try {
+			flag = sessionStorage.getItem(SHOW_SHELL_KEY)
+			if (flag) sessionStorage.removeItem(SHOW_SHELL_KEY)
+		} catch {
+			return
+		}
+		if (!flag) return
+		shellShown.current = true
+		setShellGen((n) => n + 1)
+		if (flag === 'appearance') {
+			try {
+				rememberAppearanceFocus(sessionStorage, 'layout')
+			} catch {
+				/* private */
+			}
+			open('settings', {page: 'appearance'})
+		}
+	}, [open])
+	useEffect(() => {
+		if (!hypr) {
+			hyprPrev.current = false
+			return
+		}
+		const entered = !hyprPrev.current
+		hyprPrev.current = true
+		const force = entered || shellGen > 0
+		const source = winsRef.current.map((w) => ({...w, workspace: w.workspace ?? 1, ...(force ? {snap: null, float: false} : {})}))
+		if (force || source.some((w) => !winsRef.current.find((o) => o.id === w.id && o.workspace))) setWins(source)
 		setTrees((ts) => {
 			const groups: Record<number, string[]> = {}
-			for (const w of [...winsRef.current].sort((a, b) => a.z - b.z)) {
-				if (w.float) continue
+			for (const w of [...source].sort((a, b) => a.z - b.z)) {
+				if (w.min || w.float) continue
 				const n = w.workspace ?? 1
 				;(groups[n] ??= []).push(w.id)
 			}
@@ -1040,7 +1065,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			for (let n = 1; n <= 9; n++) next[n] = reconcile(ts[n], groups[n] ?? [], usable())
 			return next
 		})
-	}, [hypr])
+	}, [hypr, shellGen])
 	useEffect(() => {
 		const top = topVisibleWindow(wins, hyprWs, hypr)
 		const id = top?.kind === 'console' ? top.id : null
@@ -1099,7 +1124,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				className={`desk style-${cfg.style} dock-${cfg.dock.position}${cfg.dock.floating ? ' dock-floating' : ''}${cfg.dock.autohide ? ' dock-autohide' : ''} dock-hover-${cfg.dock.hover}${dragging ? ' dragging' : ''}${overview ? ` overview-on ov-${overview}` : ''}${hypr ? ' shell-hypr' : ''}${grab.keysLocked ? ' keys-locked' : ''}`}
 				style={deskStyle as CSSProperties}
 			>
-				{solidOf(cfg.wallpaper) ? <div className="desk-wall" aria-hidden="true" style={{background: solidOf(cfg.wallpaper)!}} /> : wallUrl && <Wall url={wallUrl} />}
+				{solid ? <div className="desk-wall" aria-hidden="true" style={{background: solid}} /> : wallUrl && <Wall url={wallUrl} />}
 				{/* The assistant's floating character: opens (or brings forward) the Assistant window. */}
 				{!overview && !wins.some((w) => w.kind === 'assistant' && !w.min) && <AssistantCharacterWidget onOpen={() => open('assistant')} />}
 				<TopBar

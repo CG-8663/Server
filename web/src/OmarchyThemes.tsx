@@ -15,7 +15,7 @@ type Themes = {available: boolean; current: string | null; installed: Installed[
 
 // Settings → Appearance → Omarchy → Themes: this server's themes. They drive the app's colours
 // and wallpaper. Another computer's theme is changed from that computer, through the connector.
-export function OmarchyThemes({owner}: {owner: boolean}) {
+export function OmarchyThemes({owner, onSwitched}: {owner: boolean; onSwitched?: () => void}) {
 	const qc = useQueryClient()
 	const toast = useToast()
 	const confirm = useConfirm()
@@ -82,6 +82,7 @@ export function OmarchyThemes({owner}: {owner: boolean}) {
 								className="omt-pick"
 								disabled={!owner || !data.available || t.current || !!busy}
 								onClick={() => {
+									onSwitched?.()
 									const call = themeAction({kind: 'server', slug: t.slug})
 									if ('path' in call) act(call.path, t.slug)
 								}}

@@ -1,5 +1,5 @@
-// Appearance for the app and for this device's desktop: one page, so phone-or-desktop and
-// Ubuntu-or-Hyprland sit together, and the dock is not a second theme picker.
+// Appearance for the app and for this device's desktop. Theme, picture, and accent are each
+// chosen once. Phone-or-desktop and Ubuntu-or-Hyprland sit in Layout.
 import {useEffect, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {useUser} from '../data'
@@ -8,29 +8,34 @@ import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {applyPrefsUpdate, prefsAfterPhotoUpload} from '../photoPrefs'
 import {Appearance} from '../screens/More'
 import {Row, Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, setLayoutPref, useLayout, useOmarchyThemes, useToast, wallpaperUrl, type LayoutPref, type Prefs} from '../ui'
-import {takeAppearanceFocus} from './settingsPage'
-import {STYLES, solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
+import {SHOW_SHELL_KEY, takeAppearanceFocus} from './settingsPage'
+import {solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskShell, type DeskStyle, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
 import {CAPTURE_KEY, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
 import {SnippetBlock} from './hyprland/Snippet'
 import {DESKTOP_KEY, useDesktop, useItems, type ItemInfo} from './Desktop'
 
 const FOCUS: Record<string, string> = {layout: 'appearance-layout', dock: 'appearance-dock', desktop: 'appearance-desktop', themes: 'appearance-themes', background: 'appearance-background'}
-const PANEL_ACCENTS: {id: DeskAccent; label: string; swatch: string}[] = [
-	{id: 'app', label: 'App theme', swatch: 'var(--accent)'},
-	{id: 'wallpaper', label: 'From wallpaper', swatch: 'conic-gradient(#f97316,#eab308,#22c55e,#06b6d4,#8b5cf6,#ec4899,#f97316)'},
-	{id: 'blue', label: 'Blue', swatch: 'var(--blue)'},
-	{id: 'mauve', label: 'Mauve', swatch: 'var(--mauve)'},
-	{id: 'teal', label: 'Teal', swatch: 'var(--teal)'},
-	{id: 'green', label: 'Green', swatch: 'var(--green)'},
-	{id: 'peach', label: 'Peach', swatch: 'var(--peach)'},
-	{id: 'pink', label: 'Pink', swatch: 'var(--pink)'},
-]
+// One render choice. The theme card sets the app colours and the desktop panels together.
+const STYLE_FOR: Record<string, DeskStyle> = {
+	horizon: 'glass',
+	custom: 'glass',
+	mocha: 'graphite',
+	tokyo: 'glass',
+	gruvbox: 'yaru',
+	latte: 'daylight',
+	omarchy: 'graphite',
+}
 
 export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThemes}: {tab?: string; prefs: Prefs; setPrefs: (p: Prefs) => void; embedded?: boolean; onOpenThemes?: () => void}) {
 	const user = useUser()
 	const root = useRef<HTMLDivElement>(null)
 	const omarchyTheme = useOmarchyThemes(!!onOpenThemes)
 	const [cfg, setCfg] = useDeskConfig()
+	useEffect(() => {
+		const style = STYLE_FOR[prefs.theme]
+		if (!style || cfg.style === style) return
+		setCfg((c) => ({...c, preset: null, style}))
+	}, [prefs.theme, cfg.style, setCfg])
 	useEffect(() => {
 		let focus = initial ?? ''
 		try {
@@ -50,20 +55,34 @@ export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThem
 					Appearance
 				</h1>
 			)}
-			<Appearance prefs={prefs} setPrefs={setPrefs} wallpaper={user.data?.wallpaper} />
-			{onOpenThemes && (
-				<section>
-					<div className="section-head">
-						<h2>Omarchy</h2>
-					</div>
-					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
-						<Row icon="palette" color="var(--blue)" label="Themes" value={omarchyTheme.data?.label ?? undefined} onClick={onOpenThemes} />
-					</div>
-					<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
-						Your Omarchy desktop’s themes. Switch the whole desktop, or get more from the Omarchy manual.
-					</p>
-				</section>
-			)}
+			<div id="appearance-themes">
+				<Section title="Theme" note="How the app and the panels are drawn. Saved to your account, so it follows you to every phone you sign in on.">
+					<Appearance
+						prefs={prefs}
+						setPrefs={setPrefs}
+						wallpaper={user.data?.wallpaper}
+						onTheme={(id) => {
+							if (id !== 'custom') return
+							setCfg((c) => ({...c, preset: null, wallpaper: 'photo'}))
+						}}
+					/>
+					{onOpenThemes && (
+						<>
+							<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+								<Row icon="palette" color="var(--blue)" label="Omarchy theme" value={omarchyTheme.data?.label ?? undefined} onClick={onOpenThemes} />
+							</div>
+							<p className="footer-note pz-note">
+								{prefs.theme === 'omarchy'
+									? 'The app is using this Omarchy theme.'
+									: 'The one place to choose this server’s Omarchy theme. Choosing one makes the app use it.'}
+							</p>
+						</>
+					)}
+				</Section>
+			</div>
+			<div id="appearance-background">
+				<Background cfg={cfg} setCfg={setCfg} prefs={prefs} setPrefs={setPrefs} />
+			</div>
 			<div id="appearance-layout">
 				<LayoutSettings cfg={cfg} setCfg={setCfg} />
 			</div>
@@ -72,12 +91,6 @@ export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThem
 			</div>
 			<div id="appearance-desktop">
 				<DesktopSettings cfg={cfg} setCfg={setCfg} />
-			</div>
-			<div id="appearance-themes">
-				<Themes cfg={cfg} setCfg={setCfg} />
-			</div>
-			<div id="appearance-background">
-				<Background desktopPictures cfg={cfg} setCfg={setCfg} prefs={prefs} setPrefs={setPrefs} />
 			</div>
 		</div>
 	)
@@ -154,7 +167,16 @@ function LayoutSettings({cfg, setCfg}: P) {
 								{id: 'gnome', label: 'Ubuntu'},
 								{id: 'hyprland', label: 'Hyprland'},
 							]}
-							onChange={(v) => setCfg((c) => ({...c, shell: v}))}
+							onChange={(v) => {
+								setCfg((c) => ({...c, shell: v}))
+								if (layout.desktop) return
+								try {
+									sessionStorage.setItem(SHOW_SHELL_KEY, 'appearance')
+								} catch {
+									/* private */
+								}
+								setLayoutPref('desktop')
+							}}
 						/>
 					</div>
 				</div>
@@ -202,47 +224,17 @@ function LayoutSettings({cfg, setCfg}: P) {
 	)
 }
 
-function Themes({cfg, setCfg}: P) {
-	return (
-		<>
-			<Section title="Panels" note="The top bar and the dock on this device. App theme uses the accent in the theme above.">
-				<div className="pz-grid styles">
-					{STYLES.map((s) => (
-						<button key={s.id} className={`pz-card style-card${cfg.style === s.id ? ' on' : ''}`} onClick={() => setCfg((c) => ({...c, preset: null, style: s.id}))}>
-							<span className={`pz-thumb style-swatch style-${s.id}`} style={{backgroundImage: `url(${wallpaperSrc(WALLPAPERS.find((w) => w.id === cfg.wallpaper)?.id ?? 'valley', true)})`}}>
-								<i className="tt-bar" />
-								<i className="tt-dock" />
-								{cfg.style === s.id && <Icon name="check" size={16} stroke={3} className="pz-check" />}
-							</span>
-							<b>{s.name}</b>
-							<small>{s.note}</small>
-						</button>
-					))}
-				</div>
-			</Section>
-			<Section title="Panel accent">
-				<div className="pz-accents">
-					{PANEL_ACCENTS.map((a) => (
-						<button key={a.id} className={`pz-accent${cfg.accent === a.id ? ' on' : ''}`} onClick={() => setCfg((c) => ({...c, preset: null, accent: a.id}))} aria-pressed={cfg.accent === a.id}>
-							<i style={{background: a.swatch}} />
-							{a.label}
-						</button>
-					))}
-				</div>
-			</Section>
-		</>
-	)
-}
-
-function Background({cfg, setCfg, prefs, setPrefs, desktopPictures = false}: P & {prefs: Prefs; setPrefs: (p: Prefs) => void; desktopPictures?: boolean}) {
+function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs: (p: Prefs) => void}) {
 	const user = useUser()
 	const toast = useToast()
 	const fileRef = useRef<HTMLInputElement>(null)
 	const [uploading, setUploading] = useState(false)
 	const photo = customBackgroundUrl(prefs.backgroundVersion)
 	const serverWall = wallpaperUrl(user.data?.wallpaper)
+	const solid = prefs.solidColor ?? solidOf(cfg.wallpaper)
 	const pick = (id: DeskConfig['wallpaper']) => {
 		haptic(6)
+		if (prefs.solidColor) setPrefs({...prefs, solidColor: null})
 		setCfg((c) => ({...c, preset: null, wallpaper: id}))
 	}
 	const upload = async (file?: File | null) => {
@@ -264,60 +256,60 @@ function Background({cfg, setCfg, prefs, setPrefs, desktopPictures = false}: P &
 			if (fileRef.current) fileRef.current.value = ''
 		}
 	}
+	const on = (id: string) => !solid && cfg.wallpaper === id
 	return (
-		<>
-			{!desktopPictures && (
-				<Section title="Omarchy" note="Backgrounds from your Omarchy desktop’s themes. “Same as desktop” follows whatever the desktop shows.">
-					<OmarchyBackgrounds
-						selected={cfg.wallpaper === 'omarchy' ? (prefs.omarchyBackground ?? null) : undefined}
-						onChoose={(id) => {
-							setPrefs({...prefs, omarchyBackground: id})
-							setCfg((c) => ({...c, preset: null, wallpaper: 'omarchy'}))
-						}}
-					/>
-				</Section>
-			)}
-						<Section title={desktopPictures ? 'Desktop pictures' : 'Wallpapers'} note={desktopPictures ? 'Pictures behind the windows on this device. The theme above is the app.' : 'High-resolution photos from the elementary OS collection (CC0, Unsplash and Pexels licences; credits in wallpapers/CREDITS.md).'}>
-				<div className="pz-grid walls">
-					{WALLPAPERS.map((w) => (
-						<button key={w.id} className={`pz-card wall-card${cfg.wallpaper === w.id ? ' on' : ''}`} onClick={() => pick(w.id)} title={`${w.name} · ${w.by}`}>
-							<span className="pz-thumb" style={{backgroundImage: `url(${wallpaperSrc(w.id, true)})`}}>
-								{cfg.wallpaper === w.id && <Icon name="check" size={16} stroke={3} className="pz-check" />}
-							</span>
-							<b>{w.name}</b>
-						</button>
-					))}
-				</div>
-			</Section>
-			{!desktopPictures && (
-				<Section title="Solid colour" note="A plain colour instead of a picture.">
-					<SolidColors value={solidOf(cfg.wallpaper)} onChange={(c) => (haptic(6), setCfg((x) => ({...x, preset: null, wallpaper: (c ? `color:${c}` : 'omarchy') as DeskConfig['wallpaper']})))} />
-				</Section>
-			)}
-			<Section title="Your own">
-				<div className="pz-grid walls">
-					<button className={`pz-card wall-card${cfg.wallpaper === 'server' ? ' on' : ''}`} onClick={() => pick('server')}>
-						<span className="pz-thumb" style={{backgroundImage: serverWall ? `url(${serverWall})` : undefined}}>
-							{cfg.wallpaper === 'server' && <Icon name="check" size={16} stroke={3} className="pz-check" />}
+		<Section title="Background" note="Pictures and solid colours behind the app and the desktop. Omarchy pictures are the ones from the Omarchy theme. The other photos are from the elementary OS collection (CC0, Unsplash and Pexels; credits in wallpapers/CREDITS.md).">
+			<OmarchyBackgrounds
+				bare
+				selected={on('omarchy') ? (prefs.omarchyBackground ?? null) : undefined}
+				onChoose={(id) => {
+					setPrefs({...prefs, omarchyBackground: id, solidColor: null})
+					setCfg((c) => ({...c, preset: null, wallpaper: 'omarchy'}))
+				}}
+			/>
+			<div className="pz-grid walls">
+				{WALLPAPERS.map((w) => (
+					<button key={w.id} className={`pz-card wall-card${on(w.id) ? ' on' : ''}`} onClick={() => pick(w.id)} title={`${w.name} · ${w.by}`}>
+						<span className="pz-thumb" style={{backgroundImage: `url(${wallpaperSrc(w.id, true)})`}}>
+							{on(w.id) && <Icon name="check" size={16} stroke={3} className="pz-check" />}
 						</span>
-						<b>Server wallpaper</b>
+						<b>{w.name}</b>
 					</button>
-					{photo && (
-						<button className={`pz-card wall-card${cfg.wallpaper === 'photo' ? ' on' : ''}`} onClick={() => pick('photo')}>
-							<span className="pz-thumb" style={{backgroundImage: `url(${photo})`}}>
-								{cfg.wallpaper === 'photo' && <Icon name="check" size={16} stroke={3} className="pz-check" />}
-							</span>
-							<b>Your photo</b>
-						</button>
-					)}
-					<button className="pz-card wall-card add" onClick={() => fileRef.current?.click()} disabled={uploading}>
-						<span className="pz-thumb add-thumb">{uploading ? <span className="spinner" /> : <Icon name="upload" size={26} />}</span>
-						<b>{photo ? 'Replace photo…' : 'Upload a photo…'}</b>
+				))}
+				<button className={`pz-card wall-card${on('server') ? ' on' : ''}`} onClick={() => pick('server')}>
+					<span className="pz-thumb" style={{backgroundImage: serverWall ? `url(${serverWall})` : undefined}}>
+						{on('server') && <Icon name="check" size={16} stroke={3} className="pz-check" />}
+					</span>
+					<b>Server wallpaper</b>
+				</button>
+				{photo && (
+					<button className={`pz-card wall-card${on('photo') ? ' on' : ''}`} onClick={() => pick('photo')}>
+						<span className="pz-thumb" style={{backgroundImage: `url(${photo})`}}>
+							{on('photo') && <Icon name="check" size={16} stroke={3} className="pz-check" />}
+						</span>
+						<b>Your photo</b>
 					</button>
-					<input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => upload(e.target.files?.[0])} />
-				</div>
-			</Section>
-		</>
+				)}
+				<button className="pz-card wall-card add" onClick={() => fileRef.current?.click()} disabled={uploading}>
+					<span className="pz-thumb add-thumb">{uploading ? <span className="spinner" /> : <Icon name="upload" size={26} />}</span>
+					<b>{photo ? 'Replace photo…' : 'Upload a photo…'}</b>
+				</button>
+				<input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => upload(e.target.files?.[0])} />
+			</div>
+			<SolidColors
+				value={solid}
+				onChange={(c) => {
+					haptic(6)
+					if (!c) {
+						setPrefs({...prefs, solidColor: null})
+						setCfg((x) => ({...x, preset: null, wallpaper: solidOf(x.wallpaper) ? 'omarchy' : x.wallpaper}))
+						return
+					}
+					setPrefs({...prefs, solidColor: c})
+					setCfg((x) => ({...x, preset: null, wallpaper: `color:${c}` as DeskConfig['wallpaper']}))
+				}}
+			/>
+		</Section>
 	)
 }
 

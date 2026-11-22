@@ -5,7 +5,7 @@ import {haptic, omarchyBackgroundUrl, useOmarchyThemes} from './ui'
 
 // The Omarchy desktop's backgrounds, theme by theme, to pick from. `selected`: an id, null for
 // "same as the desktop", undefined when none of these is in use.
-export function OmarchyBackgrounds({selected, onChoose}: {selected: string | null | undefined; onChoose: (id: string | null) => void}) {
+export function OmarchyBackgrounds({selected, onChoose, bare = false}: {selected: string | null | undefined; onChoose: (id: string | null) => void; bare?: boolean}) {
 	const themes = useOmarchyThemes()
 	const [open, setOpen] = useState<string | null>(null)
 	const groups = themes.data?.groups ?? []
@@ -16,21 +16,23 @@ export function OmarchyBackgrounds({selected, onChoose}: {selected: string | nul
 	if (themes.isLoading) return <div className="omb-note"><span className="spinner" /> Looking for Omarchy’s backgrounds…</div>
 	if (!themes.data || !groups.length)
 		return <div className="omb-note">No Omarchy backgrounds found on this server. The Omarchy theme uses its colours without a picture.</div>
-	const shownTheme = open ?? themes.data.theme ?? groups[0].theme
+	const shownTheme = bare ? (themes.data.theme ?? groups[0].theme) : (open ?? themes.data.theme ?? groups[0].theme)
 	const group = groups.find((g) => g.theme === shownTheme) ?? groups[0]
 	return (
 		<div className="omb">
-			<div className="omb-head">
-				<b>Omarchy backgrounds</b>
-				<select value={group.theme} onChange={(e) => setOpen(e.target.value)} aria-label="Omarchy theme">
-					{groups.map((g) => (
-						<option key={g.theme} value={g.theme}>
-							{g.label}
-							{g.theme === themes.data!.theme ? ' (current)' : ''}
-						</option>
-					))}
-				</select>
-			</div>
+			{!bare && (
+				<div className="omb-head">
+					<b>Omarchy backgrounds</b>
+					<select value={group.theme} onChange={(e) => setOpen(e.target.value)} aria-label="Omarchy theme">
+						{groups.map((g) => (
+							<option key={g.theme} value={g.theme}>
+								{g.label}
+								{g.theme === themes.data!.theme ? ' (current)' : ''}
+							</option>
+						))}
+					</select>
+				</div>
+			)}
 			<div className="omb-grid" role="radiogroup" aria-label="Background">
 				<button role="radio" aria-checked={selected === null} className={`omb-tile${selected === null ? ' on' : ''}`} onClick={() => choose(null)} title="Follows the Omarchy desktop">
 					<img src={omarchyBackgroundUrl(null, themes.data.current)} alt="" loading="lazy" decoding="async" />

@@ -6,11 +6,10 @@ import {resetAssistantTurn} from '../assistantTurn'
 import {resetDeskConfig} from '../desktop/config'
 import {useBootstrap, useUser} from '../data'
 import {Icon} from '../icons'
-import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {applyPrefsUpdate, prefsAfterPhotoUpload, prefsChoosingYourPhoto} from '../photoPrefs'
-import {ACCENTS, Card, KV, Row, SolidColors, THEMES, VersionTag, customBackgroundUrl, haptic, omarchyBackgroundUrl, preparePhoto, useConfirm, useOmarchyThemes, useToast, type Prefs} from '../ui'
+import {ACCENTS, Card, KV, Row, THEMES, VersionTag, customBackgroundUrl, haptic, omarchyBackgroundUrl, preparePhoto, useConfirm, useOmarchyThemes, useToast, type Prefs, type ThemeId} from '../ui'
 
-export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs: (p: Prefs) => void; wallpaper?: Wallpaper | null}) {
+export function Appearance({prefs, setPrefs, wallpaper, onTheme}: {prefs: Prefs; setPrefs: (p: Prefs) => void; wallpaper?: Wallpaper | null; onTheme?: (id: ThemeId) => void}) {
 	const toast = useToast()
 	const fileRef = useRef<HTMLInputElement>(null)
 	const [uploading, setUploading] = useState(false)
@@ -30,6 +29,7 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 			const body = await res.json().catch(() => null)
 			if (!res.ok) throw new Error(body?.error?.message ?? 'Upload failed')
 			applyPrefsUpdate(setPrefs, (latest) => prefsAfterPhotoUpload(latest, {hsl, backgroundVersion: body.prefs.backgroundVersion ?? null}, {setThemeCustom: true}))
+			onTheme?.('custom')
 			toast('Background saved')
 		} catch (e) {
 			toast((e as Error).message, true)
@@ -38,40 +38,32 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 			if (fileRef.current) fileRef.current.value = ''
 		}
 	}
-	const removePhoto = async () => {
-		const res = await fetch('/api/background', {method: 'DELETE', credentials: 'same-origin', headers: {'x-omarchy-server': '1'}}).catch(() => null)
-		if (!res?.ok) return toast('Couldn’t remove the photo', true)
-		setPrefs({...prefs, theme: prefs.theme === 'custom' ? 'horizon' : prefs.theme, customBrandHsl: null, backgroundVersion: null})
-		toast('Photo removed')
-	}
-
 	return (
 		<Card>
 			<input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => upload(e.target.files?.[0])} />
 			<div className="themes" role="radiogroup" aria-label="Theme">
-				{THEMES.map((t) => {
+				{THEMES.filter((t) => t.id !== 'omarchy').map((t) => {
 					const on = prefs.theme === t.id
 					const isWall = t.id === 'horizon'
 					const isPhoto = t.id === 'custom'
-					const isOmarchy = t.id === 'omarchy'
-					const bg = isOmarchy
-						? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.5)), url(${omarchyBackgroundUrl(prefs.omarchyBackground, desktopBg)}) center/cover, ${t.bg}`
-						: isWall && wp ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${wp}) center/cover` : isPhoto && photo ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${photo}) center/cover` : isPhoto ? 'linear-gradient(140deg, #2a2a33, #15151a)' : t.bg
+					const bg = isWall && wp ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${wp}) center/cover` : isPhoto && photo ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${photo}) center/cover` : isPhoto ? 'linear-gradient(140deg, #2a2a33, #15151a)' : t.bg
 					return (
 						<button
 							key={t.id}
 							role="radio"
 							aria-checked={on}
 							className={`theme-card${on ? ' on' : ''}`}
-							style={{background: bg, color: t.fg, minHeight: isWall || isPhoto || isOmarchy ? 104 : undefined}}
+							style={{background: bg, color: t.fg, minHeight: isWall || isPhoto ? 104 : undefined}}
 							onClick={() => {
 								haptic(6)
 								if (isPhoto && !photo) return fileRef.current?.click()
 								if (isPhoto) {
 									applyPrefsUpdate(setPrefs, (latest) => prefsChoosingYourPhoto(latest))
+									onTheme?.('custom')
 									return
 								}
 								setPrefs({...prefs, theme: t.id})
+								onTheme?.(t.id)
 							}}
 						>
 							<span className="label">{t.name}</span>
@@ -101,31 +93,8 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 				})}
 			</div>
 			<div className="section-head" style={{margin: '18px 0 6px'}}>
-				<h2>Wallpaper</h2>
+				<h2>Accent</h2>
 			</div>
-			<OmarchyBackgrounds
-				selected={prefs.theme === 'omarchy' || prefs.theme === 'horizon' ? (prefs.omarchyBackground ?? null) : undefined}
-				onChoose={(id) =>
-					// A wallpaper needs a theme that shows one: Horizon keeps its look, anything else becomes Omarchy.
-					setPrefs({...prefs, theme: prefs.theme === 'horizon' ? 'horizon' : 'omarchy', omarchyBackground: id, solidColor: null})
-				}
-			/>
-			<div className="section-head" style={{margin: '18px 0 6px'}}>
-				<h2>Solid colour</h2>
-			</div>
-			<SolidColors value={prefs.solidColor ?? null} onChange={(c) => (haptic(6), setPrefs({...prefs, solidColor: c}))} />
-						{photo && (
-				<div className="photo-actions">
-					<button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading}>
-						{uploading ? <span className="spinner" /> : <Icon name="photo-up" size={18} />}
-						{uploading ? 'Uploading…' : 'Change photo'}
-					</button>
-					<button className="btn danger" onClick={removePhoto} disabled={uploading}>
-						<Icon name="trash" size={18} />
-						Remove
-					</button>
-				</div>
-			)}
 			<div className="accents" role="radiogroup" aria-label="Accent color">
 				{ACCENTS.map((a) => (
 					<button
@@ -144,9 +113,6 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 					</button>
 				))}
 			</div>
-			<p className="footer-note" style={{textAlign: 'left', margin: '14px 2px 0'}}>
-				Saved to your account, so it follows you to every phone you sign in on.
-			</p>
 		</Card>
 	)
 }
