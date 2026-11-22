@@ -24,6 +24,8 @@ test('a by-id path with a colon is passed through without the short host:contain
 
 	assert.equal(usbComposeOverlay(['web'], [{path: '/etc/passwd'}]).trim(), '')
 	assert.equal(usbComposeOverlay(['web'], [{path: '/dev/sda1'}]).trim(), '')
+	assert.equal(usbComposeOverlay(['web'], [{path: '/dev/serial/by-id/usb-../../etc/passwd'}]).trim(), '')
+	assert.equal(usbComposeOverlay(['web'], [{path: '/dev/serial/by-id/usb-name with space'}]).trim(), '')
 	const ok = YAML.parse(usbComposeOverlay(['web'], [{path: '/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0'}]))
 	assert.deepEqual(ok.services.web.devices, ['/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0:/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0'])
 })

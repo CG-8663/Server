@@ -157,7 +157,8 @@ export function parseUsbLive(xmlText, devices = []) {
 const SERIAL_PATH = /^\/dev\/(serial\/by-id\/usb-[A-Za-z0-9._+-]+|ttyUSB[0-9]+|ttyACM[0-9]+)$/
 const TTY_NODE = /^\/dev\/tty(?:USB|ACM)[0-9]+$/
 // udev by-id names may contain ":" "=" "@" "#". Those must not be written as HOST:CONTAINER.
-const BY_ID_PATH = /^\/dev\/serial\/by-id\/usb-[^\s]+$/
+// The name stays one path segment, so a bind cannot climb out of by-id.
+const BY_ID_PATH = /^\/dev\/serial\/by-id\/usb-[A-Za-z0-9._+:@=#-]+$/
 
 function usbDeviceBind(device) {
 	const path = typeof device?.path === 'string' ? device.path : ''
