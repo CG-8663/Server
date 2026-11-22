@@ -1,7 +1,9 @@
-// Files places for joined computers. The path is not a server folder: files.list must not see it.
-// Offline computers, and computers that have not granted Files, are left out.
+// Files places for running machines. The path is not a server folder: files.list must not see it.
+// Offline computers and stopped virtual machines are left out. A computer that has not granted
+// Files is still listed; its folder stays empty. A virtual machine has no file listing.
 
 export const COMPUTER_PLACE = '::computer/'
+export const GUEST_PLACE = '::guest/'
 
 /** This server's own places (Home, Photos, Trash). Not a filesystem path. */
 export const SERVER_FILES = '::server'
@@ -11,6 +13,21 @@ export type ComputerFileInput = {
 	name: string
 	online: boolean
 	filesGranted: boolean
+}
+
+export type GuestFileInput = {
+	id: string
+	name: string
+	state: string
+}
+
+export type FilePlace = {
+	id: string
+	name: string
+	path: string
+	kind: 'computer' | 'guest'
+	/** False when this machine is listed but its files cannot be read from here. */
+	browsable: boolean
 }
 
 function safeComputerId(id: string): boolean {
@@ -26,6 +43,18 @@ export function computerPlacePath(id: string, rel = ''): string | null {
 	const clean = rel.replace(/^\/+|\/+$/g, '')
 	if (clean && !safeRel(clean)) return null
 	return clean ? `${COMPUTER_PLACE}${id}/${clean}` : `${COMPUTER_PLACE}${id}`
+}
+
+export function guestPlacePath(id: string): string | null {
+	if (!safeComputerId(id)) return null
+	return `${GUEST_PLACE}${id}`
+}
+
+export function parseGuestPlace(path: string): {id: string} | null {
+	if (!path.startsWith(GUEST_PLACE)) return null
+	const id = path.slice(GUEST_PLACE.length)
+	if (!id || id.includes('/') || !safeComputerId(id)) return null
+	return {id}
 }
 
 export function parseComputerPlace(path: string): {id: string; rel: string} | null {
@@ -44,6 +73,7 @@ export function parseComputerPlace(path: string): {id: string; rel: string} | nu
  * A computer's own root returns to the machine list.
  */
 export function filesParent(path: string): string | null {
+	if (parseGuestPlace(path)) return null
 	if (parseComputerPlace(path)) return computerParent(path)
 	if (path === SERVER_FILES) return null
 	if (path.startsWith('::')) return SERVER_FILES
@@ -67,7 +97,7 @@ export function withinScope(scope: FilesScope | undefined, path: string | null):
 	const root = scopeRoot(scope)
 	if (!root) return path
 	if (scope.kind === 'server') {
-		if (path == null || parseComputerPlace(path)) return root
+		if (path == null || parseComputerPlace(path) || parseGuestPlace(path)) return root
 		return path
 	}
 	const here = path ? parseComputerPlace(path) : null
@@ -85,13 +115,15 @@ export function computerParent(path: string): string | null {
 	return computerPlacePath(here.id, parts.join('/'))
 }
 
-export function filePlaces(computers: readonly ComputerFileInput[]): {places: {id: string; name: string; path: string}[]} {
-	const places = computers
-		.filter((row) => row.online && row.filesGranted)
-		.sort((a, b) => a.name.localeCompare(b.name))
-		.flatMap((row) => {
-			const path = computerPlacePath(row.id)
-			return path ? [{id: row.id, name: row.name, path}] : []
-		})
+export function filePlaces(computers: readonly ComputerFileInput[], guests: readonly GuestFileInput[] = []): {places: FilePlace[]} {
+	const computerPlaces: FilePlace[] = computers.filter((row) => row.online).flatMap((row) => {
+		const path = computerPlacePath(row.id)
+		return path ? [{id: row.id, name: row.name, path, kind: 'computer', browsable: row.filesGranted}] : []
+	})
+	const guestPlaces: FilePlace[] = guests.filter((row) => row.state === 'running').flatMap((row) => {
+		const path = guestPlacePath(row.id)
+		return path ? [{id: row.id, name: row.name, path, kind: 'guest', browsable: false}] : []
+	})
+	const places = [...computerPlaces, ...guestPlaces].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
 	return {places}
 }

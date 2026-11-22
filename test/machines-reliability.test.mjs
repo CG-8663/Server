@@ -217,6 +217,54 @@ test('#663: Start and pending Restart redefine the domain so missing definitions
 	assert.equal(definedFor.filter((n) => n === `omarchy-${errId}`).length, errBefore + 1)
 })
 
+test('a failed VM start returns the engine error instead of Internal error', async (t) => {
+	const id = 'b1b2c3d4'
+	const env = await makeEnv(t, {
+		run: async (cmd, args) => {
+			if (cmd !== 'virsh') return ''
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (a[0] === 'list') return ' Id   Name   State\n------------------\n'
+			if (a[0] === 'define') return ''
+			if (a[0] === 'start') throw new Error('virsh start: error: Failed to start domain: cannot find firmware')
+			return ''
+		},
+	})
+	const vmDir = join(env.dataDir, 'machines', 'vms', id)
+	await mkdir(vmDir, {recursive: true})
+	await writeFile(join(vmDir, 'disk.qcow2'), 'd0')
+	await writeFile(join(env.dataDir, 'machines', 'machines.json'), JSON.stringify({machines: [makeMachineRecord(env.dataDir, {id})]}))
+	const m = env.open()
+	await m.ready
+	await assert.rejects(() => m.procedures['machines.start'].run({id}), (err) => {
+		assert.ok(err instanceof RpcError)
+		assert.equal(err.message.includes('Internal error'), false)
+		assert.match(err.message, /couldn’t start/)
+		assert.match(err.message, /cannot find firmware/)
+		return true
+	})
+})
+
+test('starting a domain that is already active counts as started', async (t) => {
+	const id = 'c1c2c3c4'
+	const env = await makeEnv(t, {
+		run: async (cmd, args) => {
+			if (cmd !== 'virsh') return ''
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (a[0] === 'list') return ' Id   Name   State\n------------------\n'
+			if (a[0] === 'define') return ''
+			if (a[0] === 'start') throw new Error('virsh start: error: Domain is already active')
+			return ''
+		},
+	})
+	const vmDir = join(env.dataDir, 'machines', 'vms', id)
+	await mkdir(vmDir, {recursive: true})
+	await writeFile(join(vmDir, 'disk.qcow2'), 'd0')
+	await writeFile(join(env.dataDir, 'machines', 'machines.json'), JSON.stringify({machines: [makeMachineRecord(env.dataDir, {id})]}))
+	const m = env.open()
+	await m.ready
+	assert.equal(await m.procedures['machines.start'].run({id}), true)
+})
+
 
 
 

@@ -3189,27 +3189,69 @@ html.screen-locked .auth {
 	padding: 0;
 	list-style: none;
 }
-.nu-recent-body button {
-	width: 100%;
+.nu-recent-row {
 	display: flex;
-	flex-direction: column;
-	align-items: flex-start;
-	gap: 2px;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 6px;
+	border-radius: 10px;
+}
+.nu-recent-row:hover,
+.nu-recent-row:focus-within {
+	background: var(--glass-2);
+}
+.nu-recent-meta {
+	flex: 1 1 140px;
+	min-width: 0;
+}
+.nu-recent-meta b,
+.nu-name-text {
+	display: block;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.nu-recent-meta span {
+	color: var(--muted);
+	font-size: 13px;
+}
+.nu-recent-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+.nu-recent-actions button {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 	border: 0;
 	background: transparent;
 	color: inherit;
 	font: inherit;
-	text-align: left;
-	padding: 8px 6px;
-	border-radius: 10px;
-}
-.nu-recent-body button span {
-	color: var(--muted);
 	font-size: 13px;
+	font-weight: 650;
+	padding: 6px 8px;
+	border-radius: 8px;
 }
-.nu-recent-body button:hover,
-.nu-recent-body button:focus-visible {
-	background: var(--glass-2);
+.nu-recent-actions button:hover,
+.nu-recent-actions button:focus-visible {
+	background: var(--glass);
+}
+.nu-name {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+.nu-fav {
+	flex: none;
+	display: inline-flex;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	padding: 2px;
 }
 .nu-embedded .nu-side {
 	display: none;
@@ -3383,13 +3425,15 @@ html.screen-locked .auth {
 	height: 48px;
 }
 .nu-cell .nu-label {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
 	font-size: 12.5px;
 	font-weight: 650;
 	text-align: center;
 	max-width: 100%;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	min-width: 0;
 }
 .nu-status {
 	margin-top: 8px;
@@ -3472,6 +3516,7 @@ html.screen-locked .auth {
 	gap: 14px 10px;
 }
 .file-tile {
+	position: relative;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
@@ -3479,12 +3524,22 @@ html.screen-locked .auth {
 	border: 0;
 	background: none;
 	color: var(--fg);
+	font: inherit;
+	cursor: pointer;
 	padding: 4px;
 	border-radius: 16px;
 	user-select: none;
 	-webkit-user-select: none;
 	-webkit-touch-callout: none;
 	min-width: 0;
+}
+.file-tile .tile-fav {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	z-index: 1;
+	background: var(--bg);
+	border-radius: 50%;
 }
 .file-tile .tile-art {
 	position: relative;

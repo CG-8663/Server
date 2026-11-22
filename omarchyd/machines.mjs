@@ -419,11 +419,21 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 `
 	}
 	async function define(m) {
-		const file = join(vmsDir, m.id, 'domain.xml')
+		const dir = join(vmsDir, m.id)
+		await mkdir(dir, {recursive: true, mode: 0o700})
+		const file = join(dir, 'domain.xml')
 		const kvm = await access(kvmDevice, constants.R_OK | constants.W_OK).then(() => true, () => false)
 		await writeFile(file, domainXml(m, kvm), {mode: 0o600})
 		await virsh('define', file)
 	}
+	// libvirt and qemu throw plain errors. The RPC layer would otherwise hide them as "Internal error".
+	function engineFailure(error, name, action) {
+		if (error instanceof RpcError) return error
+		const detail = String(error?.message ?? error).replace(/\s+/g, ' ').trim().slice(-300)
+		console.error(`[omarchyd] ${action} ${name}:`, error)
+		return new RpcError('BAD_GATEWAY', `${name} couldn’t ${action}: ${detail}`)
+	}
+	const alreadyActive = (error) => /already (?:running|active)/i.test(String(error?.message ?? error))
 
 	const hashPassword = async (password) => {
 		const hash = (await run('openssl', ['passwd', '-6', '-stdin'], {input: `${password}\n`})).trim()
@@ -676,13 +686,26 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const own = `${join(vmsDir, m.id)}/`
 			const ownDisks = (m.layout?.disks ?? []).every((d) => d.device !== 'disk' || !d.file || d.file.startsWith(own))
 			if (pending !== 'starting' || !ownDisks || !(await exists(join(vmsDir, m.id, 'disk.qcow2')))) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish setting up. Delete it and create it again.`)
-			await define(m)
+			try {
+				await define(m)
+			} catch (error) {
+				throw engineFailure(error, m.name, 'start')
+			}
 			defined = true
 			delete m.state
 			delete m.errorMessage
 			await save()
 		}
+		const action = pending === 'stopping' && verb(domain(m.id))[0] === 'destroy' ? 'stop' : {starting: 'start', stopping: 'shut down', restarting: 'restart', pausing: 'pause', resuming: 'resume', hibernating: 'hibernate'}[pending] ?? pending
 		const t = beginTask(m, pending === 'stopping' && verb(domain(m.id))[0] === 'destroy' ? 'stop' : VERBS[pending] ?? pending)
+		const boot = async (name) => {
+			try {
+				await virsh('start', name)
+			} catch (error) {
+				// The list can still say stopped after libvirt has already started the domain.
+				if (!alreadyActive(error)) throw error
+			}
+		}
 		busy.set(m.id, {state: pending === 'pausing' || pending === 'resuming' || pending === 'hibernating' ? 'stopping' : pending})
 		try {
 			if (pending === 'restarting' && m.pending) {
@@ -694,10 +717,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					await new Promise((r) => setTimeout(r, 1000))
 				}
 				await define(m)
-				await virsh('start', domain(m.id))
+				await boot(domain(m.id))
 			} else {
 				if (pending === 'starting' && !defined) await define(m)
-				await virsh(...verb(domain(m.id)))
+				if (pending === 'starting') await boot(domain(m.id))
+				else await virsh(...verb(domain(m.id)))
 			}
 			if (pending === 'starting' || pending === 'restarting') {
 				delete m.pending
@@ -710,7 +734,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			endTask(m, t)
 		} catch (error) {
 			endTask(m, t, error)
-			throw error
+			throw engineFailure(error, m.name, action)
 		} finally {
 			await save().catch(() => {})
 			// Shown a little longer so the next list reads libvirt's settled state; other actions may go ahead.

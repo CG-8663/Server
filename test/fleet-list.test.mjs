@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
 import {batteryGroups, batterySweep, computerSample, fleetRings, samplePercent, serverSample} from '../web/src/fleet/aggregate.ts'
-import {computerParent, computerPlacePath, filePlaces, filesParent, parseComputerPlace, scopeRoot, SERVER_FILES, withinScope} from '../web/src/fleet/filePlaces.ts'
+import {computerParent, computerPlacePath, filePlaces, filesParent, guestPlacePath, parseComputerPlace, parseGuestPlace, scopeRoot, SERVER_FILES, withinScope} from '../web/src/fleet/filePlaces.ts'
 import {fittingCrumbCount} from '../web/src/fleet/fittingCrumbs.ts'
 import {groupApps} from '../web/src/fleet/groupApps.ts'
 import {computerFleetInput, fleetAbility, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../web/src/fleet/list.ts'
@@ -112,13 +112,23 @@ test('pins round-trip and apps stay in arrival order', () => {
 	assert.equal(groups[1].instances.length, 1)
 })
 
-test('file places keep granted online computers and skip the rest', () => {
-	const {places} = filePlaces([
-		{id: 'kitchen', name: 'Kitchen', online: true, filesGranted: true},
-		{id: 'loft', name: 'Loft', online: true, filesGranted: false},
-		{id: 'garage', name: 'Garage', online: false, filesGranted: true},
+test('file places list every running machine', () => {
+	const {places} = filePlaces(
+		[
+			{id: 'kitchen', name: 'Kitchen', online: true, filesGranted: true},
+			{id: 'loft', name: 'Loft', online: true, filesGranted: false},
+			{id: 'garage', name: 'Garage', online: false, filesGranted: true},
+		],
+		[
+			{id: 'vm1', name: 'Ubuntu', state: 'running'},
+			{id: 'vm2', name: 'Stopped', state: 'stopped'},
+		],
+	)
+	assert.deepEqual(places, [
+		{id: 'kitchen', name: 'Kitchen', path: '::computer/kitchen', kind: 'computer', browsable: true},
+		{id: 'loft', name: 'Loft', path: '::computer/loft', kind: 'computer', browsable: false},
+		{id: 'vm1', name: 'Ubuntu', path: '::guest/vm1', kind: 'guest', browsable: false},
 	])
-	assert.deepEqual(places, [{id: 'kitchen', name: 'Kitchen', path: '::computer/kitchen'}])
 	const den = serverSample({name: 'Den', cores: 4, cpu: 10, memUsed: 1, memTotal: 4, diskUsed: 2, diskTotal: 8, temp: null, gpus: [{id: 'g0', used: 40}], battery: 55})
 	assert.equal(samplePercent(den, 'CPU'), 10)
 	assert.equal(samplePercent(den, 'Memory'), 25)
@@ -147,12 +157,19 @@ test('file places keep granted online computers and skip the rest', () => {
 	assert.equal(filesParent('::recents'), SERVER_FILES)
 	assert.equal(filesParent('::computer/kitchen'), null)
 	assert.equal(filesParent('::computer/kitchen/Photos'), '::computer/kitchen')
+	assert.equal(filesParent('::guest/vm1'), null)
+	assert.deepEqual(parseGuestPlace('::guest/vm1'), {id: 'vm1'})
+	assert.equal(parseGuestPlace('::guest/vm1/disk'), null)
+	assert.equal(parseGuestPlace('::guest/..'), null)
+	assert.equal(guestPlacePath('..'), null)
+	assert.equal(guestPlacePath(''), null)
 	const server = {kind: 'server'}
 	const kitchen = {kind: 'computer', id: 'kitchen', name: 'Kitchen'}
 	assert.equal(scopeRoot(server), SERVER_FILES)
 	assert.equal(scopeRoot(kitchen), '::computer/kitchen')
 	assert.equal(withinScope(server, null), SERVER_FILES)
 	assert.equal(withinScope(server, '::computer/kitchen'), SERVER_FILES)
+	assert.equal(withinScope(server, '::guest/vm1'), SERVER_FILES)
 	assert.equal(withinScope(server, '/Home/Photos'), '/Home/Photos')
 	assert.equal(withinScope(kitchen, '/Home'), '::computer/kitchen')
 	assert.equal(withinScope(kitchen, '::computer/loft'), '::computer/kitchen')

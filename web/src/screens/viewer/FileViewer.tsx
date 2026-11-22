@@ -137,6 +137,8 @@ export type ViewerProps = {
   onInfo: (f: FileEntry) => void;
   onDownload: (f: FileEntry) => void;
   onChanged: () => void;
+  onFavorite?: (f: FileEntry) => void;
+  isFavorite?: (f: FileEntry) => boolean;
 };
 type Tools = { node: ReactNode; ownsArrows?: boolean; dirty?: boolean };
 
@@ -212,6 +214,17 @@ export function FileViewer(p: ViewerProps) {
           </span>
         </span>
         <span className="fv-tools">{tools.node}</span>
+        {p.onFavorite && (p.isFavorite?.(f) || f.operations.includes("favorite")) && (
+          <button
+            className="icon-btn"
+            aria-pressed={!!p.isFavorite?.(f)}
+            aria-label={p.isFavorite?.(f) ? `Unfavorite ${f.name}` : `Favorite ${f.name}`}
+            title={p.isFavorite?.(f) ? "Unfavorite" : "Favorite"}
+            onClick={() => p.onFavorite?.(f)}
+          >
+            <Icon name={p.isFavorite?.(f) ? "star-filled" : "star"} size={20} />
+          </button>
+        )}
         <button className="icon-btn" onClick={() => p.onDownload(f)} aria-label="Download" title="Download">
           <Icon name="download" size={20} />
         </button>

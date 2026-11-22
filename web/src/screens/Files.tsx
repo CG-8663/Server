@@ -23,10 +23,10 @@ import {
   type SmbShare,
   diskPct,
 } from "../api";
-import { useBootstrap, useDisk, useUser } from "../data";
+import { useBootstrap, useDisk, useMachines, useUser } from "../data";
 import { ComputerFolder } from "../fleet/ComputerFolder";
 import { FittingCrumbs } from "../fleet/FittingCrumbs";
-import { computerPlacePath, filePlaces, filesParent, parseComputerPlace, scopeRoot, SERVER_FILES, withinScope, type FilesScope } from "../fleet/filePlaces";
+import { computerPlacePath, filePlaces, filesParent, parseComputerPlace, parseGuestPlace, scopeRoot, SERVER_FILES, withinScope, type FilesScope } from "../fleet/filePlaces";
 import { NuEntries, type NuItem } from "../fleet/NuEntries";
 import { queryProblem, useBrowserOnline } from "../connection";
 import { Icon, type IconName } from "../icons";
@@ -63,6 +63,50 @@ const parentOf = (p: string) => p.slice(0, p.lastIndexOf("/")) || "/";
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const ext = (name: string) =>
   name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
+
+function Shelf({title, empty, rows}: {title: string; empty: string; rows: {key: string; name: string; sub: string; favorite: boolean; onOpenLocation: () => void; onOpen?: () => void; onFavorite: () => void}[]}) {
+  return (
+    <details className="nu-recent">
+      <summary>
+        <Icon name="chevron" size={16} className="chev" />
+        {title}
+      </summary>
+      <div className="nu-recent-body">
+        {rows.length === 0 ? (
+          <p className="quiet">{empty}</p>
+        ) : (
+          <ul>
+            {rows.map((row) => (
+              <li key={row.key}>
+                <div className="nu-recent-row">
+                  <div className="nu-recent-meta">
+                    <b>{row.name}</b>
+                    <span>{row.sub}</span>
+                  </div>
+                  <div className="nu-recent-actions">
+                    <button type="button" aria-pressed={row.favorite} aria-label={row.favorite ? `Unfavorite ${row.name}` : `Favorite ${row.name}`} onClick={row.onFavorite}>
+                      <Icon name={row.favorite ? "star-filled" : "star"} size={16} />
+                    </button>
+                    <button type="button" onClick={row.onOpenLocation}>
+                      <Icon name="folder" size={16} />
+                      Open Location
+                    </button>
+                    {row.onOpen && (
+                      <button type="button" onClick={row.onOpen}>
+                        <Icon name="file" size={16} />
+                        Open
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </details>
+  );
+}
 
 type Kind =
   | "folder"
@@ -453,13 +497,14 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   const recents = useQuery({
     queryKey: ["files.recents"],
     queryFn: () => query<FileEntry[]>("files.recents"),
-    enabled: !scope,
+    enabled: !scope || scope.kind === "server",
   });
   const favorites = useQuery({
     queryKey: ["files.favorites"],
     queryFn: () => query<FavoriteItem[]>("files.favorites"),
   });
   const owner = user.data != null && user.data.role !== "member";
+  const machines = useMachines();
   const swarm = useQuery({
     queryKey: ["swarm.list"],
     queryFn: () => query<{ id: string; name: string; online: boolean; allowed?: { files?: boolean }; on?: { files?: boolean } }[]>("swarm.list"),
@@ -473,6 +518,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
       online: a.online,
       filesGranted: !!(a.allowed?.files && a.on?.files),
     })),
+    (machines.data ?? []).filter((m) => m.id !== "desktop").map((m) => ({id: m.id, name: m.name, state: m.state})),
   );
   const shares = useQuery({
     queryKey: ["files.shares"],
@@ -595,7 +641,15 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     { path: "/Trash", label: "Trash", icon: "trash", color: "#71717a" },
   ];
   const computerHere = path ? parseComputerPlace(path) : null;
+  const guestHere = path ? parseGuestPlace(path) : null;
   const computerName = computerHere ? (swarm.data?.find((a) => a.id === computerHere.id)?.name ?? "Computer") : "";
+  const guestName = guestHere ? (machines.data?.find((m) => m.id === guestHere.id)?.name ?? "Virtual machine") : "";
+  const computerKnown = computerHere ? swarm.data?.find((a) => a.id === computerHere.id) : undefined;
+  const computerBrowsable = !computerHere
+    ? false
+    : computerKnown
+      ? !!(computerKnown.online && computerKnown.allowed?.files && computerKnown.on?.files)
+      : !swarm.isFetched;
 
   // Items shown in the current view.
   const items: FileEntry[] =
@@ -737,9 +791,11 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   const heading =
     path === null
       ? "Files"
-      : computerHere
-        ? computerHere.rel.split("/").filter(Boolean).pop() || computerName
-        : path === SERVER_FILES
+      : guestHere
+        ? guestName
+        : computerHere
+          ? computerHere.rel.split("/").filter(Boolean).pop() || computerName
+          : path === SERVER_FILES
           ? serverName
           : path === "::recents"
             ? "Recents"
@@ -774,13 +830,14 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   else if (scope?.kind === "server") pushServer(path);
   else {
     crumbs.push({name: "Files", path: null});
-    if (path && computerHere) pushComputer(computerHere.id, computerName, computerHere.rel);
+    if (path && guestHere) crumbs.push({name: guestName, path});
+    else if (path && computerHere) pushComputer(computerHere.id, computerName, computerHere.rel);
     else if (path) pushServer(path);
   }
   const parentPath = path ? withinScope(scope, filesParent(path)) : null;
   const canBack = nav.index > 0 || (!!path && parentPath !== path);
   const canForward = nav.index < nav.entries.length - 1;
-  const onServer = !!path && !computerHere;
+  const onServer = !!path && !computerHere && !guestHere;
   const machineRoot = path === null && q.trim().length < 2;
   const serverPlacesView = path === SERVER_FILES && q.trim().length < 2;
   const setFileMode = (next: boolean) => {
@@ -790,8 +847,43 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   };
   const rootItems: NuItem[] = [
     {key: "server", name: serverName, modified: "Entrypoint", icon: "server", onOpen: () => go(SERVER_FILES)},
-    ...computerFiles.places.map((p) => ({key: p.id, name: p.name, icon: "devices" as const, onOpen: () => go(p.path)})),
+    ...computerFiles.places.map((p) => ({key: `${p.kind}:${p.id}`, name: p.name, icon: p.kind === "guest" ? ("machine" as const) : ("devices" as const), onOpen: () => go(p.path)})),
   ];
+  const placeLabel = (filePath: string) => {
+    const computer = parseComputerPlace(filePath);
+    if (computer) return swarm.data?.find((a) => a.id === computer.id)?.name ?? "Computer";
+    const guest = parseGuestPlace(filePath);
+    if (guest) return machines.data?.find((m) => m.id === guest.id)?.name ?? "Virtual machine";
+    return serverName;
+  };
+  const openLocation = (filePath: string) => {
+    if (parseComputerPlace(filePath) || parseGuestPlace(filePath)) return go(filesParent(filePath));
+    go(folderOf(filePath));
+  };
+  const openShown = (f: FileEntry) => {
+    if (f.path.startsWith("::")) return;
+    if (isDir(f)) return go(f.path);
+    if (offersFile(f) && !f.path.startsWith("/Trash/")) return viewFile(f);
+    setOpen(f);
+  };
+  const shelfRow = (f: FileEntry) => ({
+    key: f.path,
+    name: f.name,
+    sub: `${f.size != null ? bytes(f.size) : "–"} · ${placeLabel(f.path)}`,
+    favorite: favSet.has(f.path),
+    onOpenLocation: () => openLocation(f.path),
+    onOpen: f.path.startsWith("::") ? undefined : () => openShown(f),
+    onFavorite: () => toggleFavorite(f.path),
+  });
+  const recentRows = (!scope || scope.kind === "server" ? recents.data ?? [] : []).map(shelfRow);
+  const favoriteRows = (favorites.data ?? [])
+    .map((item) => (typeof item === "string" ? ({name: baseName(item) || item, path: item, type: "directory", modified: 0, operations: ["favorite"]} as FileEntry) : item))
+    .filter((f) => {
+      if (scope?.kind === "computer") return f.path.startsWith(`::computer/${scope.id}/`);
+      if (scope?.kind === "server") return !f.path.startsWith("::");
+      return true;
+    })
+    .map(shelfRow);
   const placeItems: NuItem[] = places
     .filter((p) => isServedFilePlace(p.path))
     .map((p) => ({
@@ -879,6 +971,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
       activate={onRowActivate}
       onMore={onRowMore}
       onDownload={onRowDownload}
+      onFavorite={(f) => toggleFavorite(f.path)}
       onLong={onRowLong}
       onMenu={onRowMenu}
     />
@@ -993,10 +1086,10 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
           </button>
           {computerFiles.places.map((p) => (
             <button
-              key={p.id}
+              key={`${p.kind}:${p.id}`}
               type="button"
               className="nu-place"
-              aria-current={computerHere?.id === p.id ? "page" : undefined}
+              aria-current={p.kind === "guest" ? (guestHere?.id === p.id ? "page" : undefined) : computerHere?.id === p.id ? "page" : undefined}
               onClick={() => go(p.path)}
             >
               <span className="dot" />
@@ -1005,30 +1098,8 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
           ))}
         </aside>}
         <div className="nu-main">
-      {!scope && (
-        <details className="nu-recent">
-          <summary>
-            <Icon name="chevron" size={16} className="chev" />
-            Recent
-          </summary>
-          <div className="nu-recent-body">
-            {(recents.data?.length ?? 0) === 0 ? (
-              <p className="quiet">No recent files.</p>
-            ) : (
-              <ul>
-                {recents.data!.map((f) => (
-                  <li key={f.path}>
-                    <button type="button" onClick={() => go(folderOf(f.path))}>
-                      <b>{f.name}</b>
-                      <span>{serverName}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </details>
-      )}
+      <Shelf title="Favorites" empty={favorites.isLoading ? "Loading…" : "No favorites yet."} rows={favoriteRows} />
+      <Shelf title="Recent" empty={recents.isLoading ? "Loading…" : "No recent files."} rows={recentRows} />
       {machineRoot && (
         <>
           <NuEntries items={rootItems} grid={grid} />
@@ -1115,11 +1186,31 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
         </>
       )}
 
-      {computerHere && (
+      {guestHere && (
+        <div className="glass empty">
+          <b>Empty folder</b>
+        </div>
+      )}
+
+      {computerHere && !computerBrowsable && (
+        <div className="glass empty">
+          <b>Empty folder</b>
+        </div>
+      )}
+
+      {computerHere && computerBrowsable && (
         <ComputerFolder
           id={computerHere.id}
           rel={computerHere.rel}
           grid={grid}
+          favoriteOf={(rel) => {
+            const next = computerPlacePath(computerHere.id, rel)
+            return !!next && favSet.has(next)
+          }}
+          onToggleFavorite={(rel) => {
+            const next = computerPlacePath(computerHere.id, rel)
+            if (next) toggleFavorite(next)
+          }}
           onOpen={(rel) => {
             const next = computerPlacePath(computerHere.id, rel)
             if (next) go(next)
@@ -1127,7 +1218,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
         />
       )}
 
-      {(path !== null || q) && !computerHere && !serverPlacesView && (
+      {(path !== null || q) && !computerHere && !guestHere && !serverPlacesView && (
         <>
           {inTrash && (listing.data?.files.length ?? 0) > 0 && !selecting && (
             <button
@@ -1325,6 +1416,8 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
             onClose={() => setViewing(null)}
             onInfo={(f) => setOpen(f)}
             onDownload={(f) => download([f.path])}
+            isFavorite={(f) => favSet.has(f.path)}
+            onFavorite={(f) => toggleFavorite(f.path)}
             onChanged={() => {
               qc.invalidateQueries({ queryKey: ["files.list"] });
               qc.invalidateQueries({ queryKey: ["files.recents"] });
@@ -1492,6 +1585,7 @@ const FileRow = memo(function FileRow({
   activate,
   onMore,
   onDownload,
+  onFavorite,
   onLong,
   onMenu,
 }: {
@@ -1506,6 +1600,7 @@ const FileRow = memo(function FileRow({
   activate: (f: FileEntry) => void;
   onMore: (f: FileEntry) => void;
   onDownload: (f: FileEntry) => void;
+  onFavorite: (f: FileEntry) => void;
   onLong: (f: FileEntry) => void;
   onMenu: (f: FileEntry) => void;
 }) {
@@ -1515,16 +1610,41 @@ const FileRow = memo(function FileRow({
       ? `Folder · ${ago(f.modified)}`
       : "Folder"
     : `${bytes(f.size)} · ${ago(f.modified)}`;
+  const canFavorite = !selecting && !inTrash && !f.path.startsWith("/Trash/") && (f.operations.includes("favorite") || favorite);
+  const favoriteBtn = canFavorite ? (
+    <button
+      type="button"
+      className="icon-btn tile-fav"
+      aria-pressed={favorite}
+      aria-label={favorite ? `Unfavorite ${f.name}` : `Favorite ${f.name}`}
+      title={favorite ? "Unfavorite" : "Favorite"}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onFavorite(f);
+      }}
+    >
+      <Icon name={favorite ? "star-filled" : "star"} size={16} />
+    </button>
+  ) : null;
   if (grid)
     return (
-      <button className={`file-tile${selected ? " sel" : ""}`} onClick={() => activate(f)} {...press(f)}>
+      <div
+        className={`file-tile${selected ? " sel" : ""}`}
+        role="button"
+        tabIndex={0}
+        onClick={() => activate(f)}
+        onKeyDown={(e) => shouldActivateRowOnKey(e) && activate(f)}
+        {...press(f)}
+      >
         <span className="tile-art">
           <FileIcon f={f} size={isDir(f) ? 64 : 92} />
           {selecting && <Icon name={selected ? "checked" : "unchecked"} size={22} className="tile-check" />}
+          {favoriteBtn}
         </span>
         <span className="name">{f.name}</span>
         <span className="sub">{isDir(f) ? "Folder" : bytes(f.size)}</span>
-      </button>
+      </div>
     );
   return (
     <div
@@ -1557,6 +1677,22 @@ const FileRow = memo(function FileRow({
           }}
         >
           <Icon name="download" size={18} />
+        </button>
+      )}
+      {!selecting && !inTrash && !f.path.startsWith("/Trash/") && (f.operations.includes("favorite") || favorite) && (
+        <button
+          className="icon-btn"
+          style={{ alignSelf: "center", background: "transparent" }}
+          aria-pressed={favorite}
+          aria-label={favorite ? `Unfavorite ${f.name}` : `Favorite ${f.name}`}
+          title={favorite ? "Unfavorite" : "Favorite"}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onFavorite(f);
+          }}
+        >
+          <Icon name={favorite ? "star-filled" : "star"} size={18} />
         </button>
       )}
       {!selecting && (

@@ -559,6 +559,11 @@ export function createFiles({home, dataDir, io} = {}) {
 			if (damaged) return []
 			const keep = []
 			for (const p of list) {
+				// A joined computer's place is not a path on this server. Keep it without resolve().
+				if (computerFavoritePath(p)) {
+					keep.push(p)
+					continue
+				}
 				try {
 					await resolve(p)
 					keep.push(p)
@@ -570,8 +575,22 @@ export function createFiles({home, dataDir, io} = {}) {
 			return keep
 		})
 	}
+	// A joined computer's file is not a path on this server. Store the place, and never resolve it here.
+	function computerFavoritePath(path) {
+		if (typeof path !== 'string' || path.length > 1024 || path.includes('\0') || !path.startsWith('::computer/')) return null
+		const rest = path.slice('::computer/'.length)
+		const slash = rest.indexOf('/')
+		if (slash <= 0) return null
+		const id = rest.slice(0, slash)
+		const rel = rest.slice(slash + 1)
+		if (!id || id === '.' || id === '..' || id.includes('\\') || id.includes('/')) return null
+		if (!rel || rel.split('/').some((part) => !part || part === '.' || part === '..' || part.includes('\\'))) return null
+		return {id, rel}
+	}
 	async function setFavorite(path, on) {
-		await resolve(path)
+		if (typeof path === 'string' && path.startsWith('::')) {
+			if (!computerFavoritePath(path)) throw new RpcError('BAD_REQUEST', 'Choose a file')
+		} else await resolve(path)
 		return lock('favorites', async () => {
 			const {list, damaged} = await readFavoritesState()
 			if (damaged) throw new RpcError('PRECONDITION_FAILED', 'favorites.json is damaged and was left unchanged. Repair or remove it before saving.')
@@ -735,6 +754,10 @@ export function createFiles({home, dataDir, io} = {}) {
 					const paths = await favorites()
 					return (
 						await mapPool(paths, STAT_CONCURRENCY, async (p) => {
+							const remote = computerFavoritePath(p)
+							if (remote) {
+								return {name: basename(remote.rel), path: p, type: 'application/octet-stream', modified: 0, operations: ['favorite']}
+							}
 							try {
 								const {real} = await resolve(p)
 								return await entry(p, real)
