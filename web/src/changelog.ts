@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.59',
+		date: '2026-11-22',
+		title: 'A welcome, and one place for how things look',
+		added: ['The first time you sign in on a device, a short setup walks you through picking a layout and a theme and shows where things are. Skip it any time.'],
+		fixed: [
+			'Layouts and themes live together in Appearance. Layout comes first, with pictures of each choice. On the desktop, right-click the background and choose Appearance….',
+			'On an iPhone home-screen app, the strip under the bottom bar is gone, and the bar is no longer cut off.',
+		],
+	},
+	{
 		version: '0.9.58',
 		date: '2026-11-22',
 		title: 'A stronger swarm',
