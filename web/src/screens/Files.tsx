@@ -29,6 +29,7 @@ import { Icon, type IconName } from "../icons";
 import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, scrollPhoneToTop, useConfirm, usePortalRoot, useToast } from "../ui";
 import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
+import { AgentFiles, type Agent } from "../swarm/Swarm";
 import { openTerminalWith } from "../terminalEvent";
 import { actionsForItems, asFileSearch, batchToast, copyTextOrToast, FILES_LIST_PAGE, filesListMoreLeft, filesPathToStore, nice, offersDownload, readStoredFilesPath, searchMatchNote, selectionAfterQuery, viewerAfterPathChange, type BatchKind } from "./filesRules";
 import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, type FavoriteItem, favoritePath, fileKindLabel, filterUnsyncedPhotos, folderPickerRoots, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
@@ -945,6 +946,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
               </span>
             </Card>
           )}
+          {owner && <ComputersSection />}
           {(shares.data?.length ?? 0) > 0 && (
             <section>
               <div className="section-head">
@@ -2267,5 +2269,65 @@ export function ShareSheet({
         </>
       )}
     </Sheet>
+  );
+}
+
+// Files on the other computers in your swarm (owner only), opened in the same browser the
+// computer's own sheet uses. A computer shows here when it's in the swarm; it opens when it's
+// online and Files is switched on for it (Machines › the computer).
+function ComputersSection() {
+  const swarm = useQuery({
+    queryKey: ["swarm.list"],
+    queryFn: () => query<Agent[]>("swarm.list"),
+    staleTime: 15_000,
+  });
+  const [open, setOpen] = useState<Agent | null>(null);
+  const toast = useToast();
+  const list = swarm.data ?? [];
+  if (!list.length) return null;
+  return (
+    <section>
+      <div className="section-head">
+        <h2>Computers</h2>
+      </div>
+      <div className="glass group" style={{ "--inset": "74px" } as CSSProperties}>
+        {list.map((a) => {
+          const filesOn = !!(a.allowed.files && a.on.files);
+          const ready = a.online && filesOn;
+          const note = !a.online
+            ? "Offline"
+            : !a.allowed.files
+              ? "Files isn’t allowed on this computer"
+              : !a.on.files
+                ? "Files is switched off · Machines › " + a.name
+                : a.info?.hostname
+                  ? `Home folder · ${a.info.hostname}`
+                  : "Home folder";
+          return (
+            <button
+              key={a.id}
+              className="row"
+              aria-disabled={!ready}
+              style={ready ? undefined : { opacity: 0.6 }}
+              onClick={() => {
+                haptic(6);
+                if (ready) setOpen(a);
+                else toast(!a.online ? `${a.name} is offline` : `Switch Files on for ${a.name} in Machines first`);
+              }}
+            >
+              <span className="file-icon" style={{ width: 44, height: 44, "--c": a.online ? "#22c55e" : "#8e8e93" } as CSSProperties}>
+                <Icon name="machine" size={23} />
+              </span>
+              <span className="main">
+                <b>{a.name}</b>
+                <span>{note}</span>
+              </span>
+              <Icon name="chevron" size={18} className="chev" />
+            </button>
+          );
+        })}
+      </div>
+      {open && <AgentFiles a={open} onClose={() => setOpen(null)} />}
+    </section>
   );
 }

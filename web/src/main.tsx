@@ -4,12 +4,11 @@ import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
 
 import {App} from './App'
 import {ApiError} from './api'
-import {Providers, applyPrefs, readPrefs, watchKeyboardViewport, watchStandaloneGap} from './ui'
+import {Providers, applyPrefs, readPrefs, watchKeyboardViewport} from './ui'
 import './styles.css'
 
 applyPrefs(readPrefs())
 watchKeyboardViewport()
-watchStandaloneGap()
 
 const noRetry = (error: unknown) =>
 	error instanceof ApiError &&

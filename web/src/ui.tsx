@@ -1177,8 +1177,14 @@ export function scrollPhoneToTop(behavior: ScrollBehavior = 'auto') {
 // After the on-screen keyboard closes, iOS Safari can keep the shrunken viewport, so fixed
 // elements (the dock, the backdrop) sit too high and leave a strip at the bottom until the page
 // scrolls. A one-pixel scroll and back makes it measure again, even on screens that don't scroll.
+// A home-screen web app on iOS has no browser bars to put back. Opening the page's own scrolling and
+// scrolling it by a pixel there is what leaves iOS laying the app out short, with an undrawn strip
+// under the bottom bar that only reinstalling cleared. So it only runs in the browser.
+export const iosHomeScreenApp = () =>
+	(/iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) &&
+	((navigator as Navigator & {standalone?: boolean}).standalone === true || matchMedia('(display-mode: standalone)').matches)
 export function nudgeViewport() {
-	if (document.documentElement.classList.contains('desk-mode')) return
+	if (document.documentElement.classList.contains('desk-mode') || iosHomeScreenApp()) return
 	const root = document.documentElement
 	const scroller = phoneScroller()
 	const yWin = window.scrollY
@@ -1237,52 +1243,3 @@ export function watchKeyboardViewport() {
 	})
 }
 
-// ---- iOS home-screen app: bottom gap ------------------------------------------------------------
-// In a standalone web app iOS 26 sometimes lays the page out shorter than the screen (often after the
-// keyboard has been up, sometimes at launch), and draws nothing in the strip below: a dark bar under
-// the dock. A hidden marker pinned to bottom: 0 shows where iOS thinks the bottom is.
-// When it's short, hiding and showing the whole app in one reflow makes WebKit measure the screen
-// again, which closes the gap. If it stays short, nothing is pushed into the strip iOS isn't drawing
-// (that only cut the dock off); --ios-gap stays 0 and the dock sits whole above it.
-export function watchStandaloneGap() {
-	const ios = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-	const standalone = (navigator as Navigator & {standalone?: boolean}).standalone === true || matchMedia('(display-mode: standalone)').matches
-	if (!ios || !standalone) return
-	const probe = document.createElement('div')
-	probe.setAttribute('aria-hidden', 'true')
-	probe.style.cssText = 'position:fixed;left:0;bottom:0;width:1px;height:1px;visibility:hidden;pointer-events:none'
-	document.body.appendChild(probe)
-	const root = document.documentElement
-	root.style.setProperty('--ios-gap', '0px')
-	let lastHeal = 0
-	const gapNow = () => {
-		const vv = window.visualViewport
-		const keyboard = !!vv && window.innerHeight - vv.height > 80
-		if (keyboard || root.classList.contains('desk-mode')) return 0
-		const portrait = window.innerHeight >= window.innerWidth
-		const screenH = portrait ? Math.max(screen.height, screen.width) : Math.min(screen.height, screen.width)
-		const gap = Math.round(screenH - probe.getBoundingClientRect().bottom)
-		return gap > 4 && gap <= 120 ? gap : 0
-	}
-	const heal = () => {
-		const app = document.getElementById('root')
-		if (!app || Date.now() - lastHeal < 1500) return
-		lastHeal = Date.now()
-		// Keep every scrolled area where it was across the flip.
-		const scrolled = [...document.querySelectorAll<HTMLElement>('*')].filter((el) => el.scrollTop > 0).map((el) => [el, el.scrollTop] as const)
-		app.style.display = 'none'
-		void app.offsetHeight
-		app.style.display = ''
-		for (const [el, top] of scrolled) el.scrollTop = top
-	}
-	const measure = () => {
-		if (gapNow()) heal()
-	}
-	measure()
-	for (const ms of [100, 300, 700, 1500, 3000]) window.setTimeout(measure, ms)
-	window.addEventListener('resize', measure)
-	window.addEventListener('orientationchange', () => window.setTimeout(measure, 300))
-	window.visualViewport?.addEventListener('resize', () => window.setTimeout(measure, 50))
-	document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && window.setTimeout(measure, 100))
-	document.addEventListener('focusout', () => [150, 450, 900].forEach((ms) => window.setTimeout(measure, ms)))
-}

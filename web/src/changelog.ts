@@ -4,6 +4,13 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.60',
+		date: '2026-11-22',
+		title: 'Files on every computer, and the iPhone bar',
+		added: ['Files lists the computers in your swarm. Open one to browse its home folder, upload, download, or copy a file to this server. A computer needs Files switched on in Machines.'],
+		fixed: ['On an iPhone home-screen app, Omarchy Server no longer adjusts the page after the keyboard closes. That adjustment could leave a dark strip under the bottom bar until the app was reinstalled.'],
+	},
+	{
 		version: '0.9.59',
 		date: '2026-11-22',
 		title: 'A welcome, and one place for how things look',
