@@ -803,6 +803,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		backup,
 		procedures: {
 			'swarm.list': {kind: 'query', run: list},
+			'swarm.files.list': {kind: 'query', run: (input) => listFiles(input?.id, input?.path ?? '')},
 			'swarm.pair': {kind: 'mutation', run: pair},
 			'swarm.remove': {kind: 'mutation', run: remove},
 			'swarm.rename': {kind: 'mutation', run: rename},

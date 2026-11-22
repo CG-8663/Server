@@ -1,9 +1,12 @@
-import {useMemo, useState} from 'react'
+import {useMemo, useState, type CSSProperties} from 'react'
 
 import type {UserApp} from '../api'
 import {appVersionLine, joinedFields, searchNeedle} from '../storeBrowse'
 import {queryProblem, useBrowserOnline} from '../connection'
-import {useAction, useApps, useUpdates} from '../data'
+import {useAction, useApps, useBootstrap, useUpdates} from '../data'
+import {groupApps} from '../fleet/groupApps'
+import {machineCountLabel} from '../fleet/installTargets'
+import {PinButton} from '../fleet/PinButton'
 import {Icon} from '../icons'
 import {AppIcon, Segmented, StatusPill, StoreIcon, TerminalIcon, appStatus, haptic, isAppBusy, useConfirm} from '../ui'
 
@@ -33,6 +36,9 @@ export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp
 	const confirm = useConfirm()
 	const [q, setQ] = useState('')
 	const [filter, setFilter] = useState<Filter>('all')
+	const [openId, setOpenId] = useState<string | null>(null)
+	const boot = useBootstrap()
+	const serverName = boot.server?.device || boot.server?.name || 'This server'
 	const updateMap = useMemo(() => new Map((updates.data ?? []).map((u) => [u.id, u.version])), [updates.data])
 	const list = apps.data ?? []
 
@@ -50,6 +56,7 @@ export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp
 		if (filter === 'updates') return updateMap.has(a.id)
 		return true
 	})
+	const groups = groupApps(shown.map((app) => ({appId: app.id, name: app.name ?? app.id, computerId: 'server', computerName: serverName})))
 
 	const updateAll = async () => {
 		const targets = list.filter((a) => updateMap.has(a.id))
@@ -136,30 +143,58 @@ export function Apps({onOpenApp, onTerminal, onStore}: {onOpenApp: (app: UserApp
 					{needle && <span>No apps match “{q.trim()}”.</span>}
 				</div>
 			) : (
-				<div className="glass group" style={{'--inset': '74px'} as React.CSSProperties}>
-					{shown.map((app) => {
+				<div className="glass group" style={{'--inset': '74px'} as CSSProperties}>
+					{groups.map((group) => {
+						const app = list.find((a) => a.id === group.appId)
+						if (!app) return null
 						const status = appStatus(app.state, updateMap.has(app.id))
 						const busy = isAppBusy(app.state)
+						const count = machineCountLabel(group.instances.length)
+						const many = group.instances.length > 1
 						return (
-							<button
-								key={app.id}
-								className="row"
-								onClick={() => {
-									haptic(6)
-									onOpenApp(app)
-								}}
-							>
-								<AppIcon src={app.icon} name={app.name ?? app.id} size={46} dim={app.state === 'stopped'} progress={busy ? (app.progress || 'spin') : undefined} />
-								<span className="main">
-									<b>{app.name ?? app.id}</b>
-									<span>
-										{app.error
-											? app.error
-											: appVersionLine(app, updateMap.has(app.id) ? updateMap.get(app.id) : undefined)}
+							<div key={group.appId} className="row" style={{position: 'relative'}}>
+								<button
+									type="button"
+									onClick={() => {
+										haptic(6)
+										if (many) setOpenId((id) => (id === group.appId ? null : group.appId))
+										else onOpenApp(app)
+									}}
+									style={{flex: 1, display: 'flex', alignItems: 'center', gap: 13, minWidth: 0, border: 0, background: 'none', padding: 0, color: 'inherit', textAlign: 'left'}}
+								>
+									<AppIcon src={app.icon} name={app.name ?? app.id} size={46} dim={app.state === 'stopped'} progress={busy ? app.progress || 'spin' : undefined} />
+									<span className="main">
+										<b>
+											{app.name ?? app.id}
+											{count && (
+												<span className="muted" style={{marginLeft: 6, fontSize: 12, fontWeight: 650}} aria-label={`On ${count} machines`}>
+													{count}
+												</span>
+											)}
+										</b>
+										<span>{app.error ? app.error : appVersionLine(app, updateMap.has(app.id) ? updateMap.get(app.id) : undefined)}</span>
 									</span>
-								</span>
-								<StatusPill {...status} />
-							</button>
+									<StatusPill {...status} />
+								</button>
+								<PinButton pin={{kind: 'app', id: app.id, computer: 'server'}} name={app.name ?? app.id} mini />
+								{many && openId === group.appId && (
+									<div className="fleet-menu glass" role="menu" aria-label={group.name}>
+										{group.instances.map((inst) => (
+											<button
+												key={inst.computerId}
+												type="button"
+												role="menuitem"
+												onClick={() => {
+													setOpenId(null)
+													if (inst.computerId === 'server') onOpenApp(app)
+												}}
+											>
+												{inst.computerName}
+											</button>
+										))}
+									</div>
+								)}
+							</div>
 						)
 					})}
 				</div>

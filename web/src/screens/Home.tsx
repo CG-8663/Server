@@ -1,55 +1,86 @@
-import {useMemo} from 'react'
+import {useMemo, useState, type CSSProperties} from 'react'
 
 import {diskPct, type UserApp} from '../api'
+import {batteryColor, batteryGaugeItem, combineBatteries} from '../battery'
 import {queryProblem, useBrowserOnline} from '../connection'
-import {useApps, useBattery, useCpu, useDisk, useGpus, useMemory, useRecent, useTemp, useUpdates, useUptime, useUser} from '../data'
-import {batteryGaugeItem} from '../battery'
+import {useApps, useBattery, useBootstrap, useCpu, useDisk, useGpus, useMachines, useMemory, useTemp, useUptime, useUser} from '../data'
+import {computerSample, fleetRings, serverSample, type FleetRings} from '../fleet/aggregate'
+import {BatteryRing} from '../fleet/BatteryRing'
+import {fleetList, guestFleetInput} from '../fleet/list'
+import {openFleetMember} from '../fleet/openMember'
+import {usePins} from '../fleet/PinButton'
+import {pinKey, type DashboardPin} from '../fleet/pins'
 import {gpuGaugeItems} from '../gauges'
-import {Icon} from '../icons'
-import {lookName, useAssistantLook} from '../character/AssistantCharacter'
-import {AppIcon, AssistantIcon, Ring, StoreIcon, TerminalIcon, appStatus, bytes, duration, greeting, haptic, isAppBusy, levelColor, pct, today} from '../ui'
+import {Icon, type IconName} from '../icons'
+import {useSwarm} from '../swarm/Swarm'
+import {AppIcon, Ring, Row, Sheet, SheetHeader, appStatus, bytes, duration, greeting, haptic, levelColor, pct, today} from '../ui'
 
-export function Gauges({onClick}: {onClick?: () => void}) {
+type GaugeItem = {
+	k: string
+	key?: string
+	icon: IconName
+	p: number
+	sub: string
+	ready: boolean
+	color?: string
+	battery?: FleetRings['battery']
+}
+
+export function Gauges({onClick, fleet}: {onClick?: () => void; fleet?: FleetRings | null}) {
 	const cpu = useCpu()
 	const mem = useMemory()
 	const disk = useDisk()
 	const gpus = useGpus()
 	const battery = useBattery()
-	const items = [
-		{
-			k: 'CPU',
-			icon: 'cpu' as const,
-			p: cpu.data?.totalUsed ?? 0,
-			sub: cpu.data ? `${cpu.data.threads} threads` : '–',
-			ready: !!cpu.data,
-		},
-		{
-			k: 'Memory',
-			icon: 'memory' as const,
-			p: mem.data ? pct(mem.data.totalUsed, mem.data.size) : 0,
-			sub: mem.data ? `${bytes(mem.data.totalUsed, 1, 1024)} of ${bytes(mem.data.size, 0, 1024)}` : '–',
-			ready: !!mem.data,
-		},
-		{
-			k: 'Storage',
-			icon: 'disk' as const,
-			p: disk.data ? diskPct(disk.data) : 0,
-			sub: disk.data ? `${bytes(disk.data.available, 0)} free` : '–',
-			ready: !!disk.data,
-		},
-		...gpuGaugeItems(gpus.data?.gpus ?? []),
-		...batteryGaugeItem(battery.data?.batteries ?? []),
-	]
+	const items: GaugeItem[] = fleet
+		? [
+				{k: 'CPU', icon: 'cpu', p: fleet.cpu.percent, sub: fleet.cpu.busiest ?? '–', ready: fleet.cpu.ready},
+				{k: 'Memory', icon: 'memory', p: fleet.memory.percent, sub: fleet.memory.busiest ?? '–', ready: fleet.memory.ready},
+				{k: 'Storage', icon: 'disk', p: fleet.storage.percent, sub: fleet.storage.busiest ?? '–', ready: fleet.storage.ready},
+				...(fleet.gpu ? [{k: 'GPU', icon: 'gpu' as const, p: fleet.gpu.percent, sub: fleet.gpu.busiest ?? '–', ready: fleet.gpu.ready}] : []),
+				...(fleet.battery
+					? [{k: 'Battery', icon: 'battery' as const, p: fleet.battery.lowest.percent, sub: fleet.battery.lowest.name, ready: true, color: batteryColor(fleet.battery.lowest.percent), battery: fleet.battery}]
+					: []),
+			]
+		: [
+				{
+					k: 'CPU',
+					icon: 'cpu' as const,
+					p: cpu.data?.totalUsed ?? 0,
+					sub: cpu.data ? `${cpu.data.threads} threads` : '–',
+					ready: !!cpu.data,
+				},
+				{
+					k: 'Memory',
+					icon: 'memory' as const,
+					p: mem.data ? pct(mem.data.totalUsed, mem.data.size) : 0,
+					sub: mem.data ? `${bytes(mem.data.totalUsed, 1, 1024)} of ${bytes(mem.data.size, 0, 1024)}` : '–',
+					ready: !!mem.data,
+				},
+				{
+					k: 'Storage',
+					icon: 'disk' as const,
+					p: disk.data ? diskPct(disk.data) : 0,
+					sub: disk.data ? `${bytes(disk.data.available, 0)} free` : '–',
+					ready: !!disk.data,
+				},
+				...gpuGaugeItems(gpus.data?.gpus ?? []),
+				...batteryGaugeItem(battery.data?.batteries ?? []),
+			]
 	return (
 		<button className="glass gauges press" data-n={items.length} onClick={onClick} aria-label="System usage, open details">
 			{items.map((g) => (
-				<div className="gauge" key={'key' in g ? g.key : g.k}>
-					<Ring value={g.p} color={'color' in g ? g.color : levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
-						<span className="pct">
-							{g.ready ? Math.round(g.p) : '–'}
-							<small>%</small>
-						</span>
-					</Ring>
+				<div className="gauge" key={g.key ?? g.k}>
+					{g.battery ? (
+						<BatteryRing groups={g.battery.groups} lowest={g.battery.lowest} color={g.color} />
+					) : (
+						<Ring value={g.p} color={g.color ?? levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
+							<span className="pct">
+								{g.ready ? Math.round(g.p) : '–'}
+								<small>%</small>
+							</span>
+						</Ring>
+					)}
 					<span className="k">{g.k}</span>
 					<span className="sub">{g.sub}</span>
 				</div>
@@ -58,23 +89,58 @@ export function Gauges({onClick}: {onClick?: () => void}) {
 	)
 }
 
-export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app: UserApp) => void; go: (tab: 'apps' | 'more' | 'store') => void; onTerminal?: () => void; onAssistant?: () => void}) {
-	const {look} = useAssistantLook()
+export function Home({onOpenApp, go}: {onOpenApp: (app: UserApp) => void; go: (tab: 'apps' | 'more' | 'store') => void; onTerminal?: () => void; onAssistant?: () => void}) {
 	const user = useUser()
 	const apps = useApps()
+	const boot = useBootstrap()
+	const machines = useMachines()
+	const swarm = useSwarm()
+	const cpu = useCpu()
+	const mem = useMemory()
+	const disk = useDisk()
+	const gpus = useGpus()
+	const battery = useBattery()
 	const browserOnline = useBrowserOnline()
 	const problem = queryProblem(apps, browserOnline)
-	const updates = useUpdates()
-	const recent = useRecent()
 	const temp = useTemp()
 	const uptime = useUptime()
-	const updateIds = useMemo(() => new Set((updates.data ?? []).map((u) => u.id)), [updates.data])
+	const {pins} = usePins()
+	const [listOpen, setListOpen] = useState(false)
 	const list = apps.data ?? []
-	const byId = useMemo(() => new Map(list.map((a) => [a.id, a])), [list])
 	const running = list.filter((a) => appStatus(a.state).kind === 'running').length
 	const problems = list.filter((a) => a.error || a.state === 'unknown')
-	const updating = (updates.data ?? []).map((u) => byId.get(u.id)).filter(Boolean) as UserApp[]
-	const recentApps = (recent.data ?? []).map((id) => byId.get(id)).filter(Boolean).slice(0, 6) as UserApp[]
+	const serverName = boot.server?.device || boot.server?.name || 'This server'
+	const samples = useMemo(
+		() => [
+			serverSample({
+				name: serverName,
+				cores: cpu.data?.threads ?? 0,
+				cpu: cpu.data ? cpu.data.totalUsed : null,
+				memUsed: mem.data?.totalUsed ?? null,
+				memTotal: mem.data?.size ?? null,
+				diskUsed: disk.data?.totalUsed ?? null,
+				diskTotal: disk.data ? disk.data.totalUsed + disk.data.available : null,
+				temp: temp.data?.temperature ?? null,
+				gpus: (gpus.data?.gpus ?? []).map((g) => ({id: g.id, used: g.used})),
+				battery: combineBatteries(battery.data?.batteries ?? [])?.percent ?? null,
+			}),
+			...(swarm.data ?? []).map(computerSample),
+		],
+		[serverName, cpu.data, mem.data, disk.data, temp.data, gpus.data, battery.data, swarm.data],
+	)
+	const multi = samples.filter((s) => s.online).length >= 2
+	const rings = multi ? fleetRings(samples) : null
+	const members = useMemo(
+		() =>
+			fleetList({
+				server: {name: serverName},
+				computers: (swarm.data ?? []).map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
+				guests: (machines.data ?? []).map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state})),
+			}),
+		[serverName, swarm.data, machines.data],
+	)
+	const machinePins = pins.filter((p) => p.kind === 'machine' || p.kind === 'vm')
+	const appPins = pins.filter((p) => p.kind === 'app')
 
 	const summary = apps.isLoading
 		? 'Checking on your apps…'
@@ -86,9 +152,16 @@ export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app:
 					? 'Everything is running smoothly.'
 					: 'Your server is ready for its first app.'
 
-	const open = (app: UserApp) => {
+	const openPin = (pin: DashboardPin) => {
 		haptic(6)
-		onOpenApp(app)
+		if (pin.kind === 'app') {
+			const app = list.find((a) => a.id === pin.id)
+			if (app) onOpenApp(app)
+			return
+		}
+		const member = members.find((m) => m.id === pin.id && (pin.kind === 'vm' ? m.kind === 'guest' : m.kind !== 'guest'))
+		if (!member) return
+		openFleetMember({kind: member.kind, id: member.id})
 	}
 
 	return (
@@ -103,13 +176,20 @@ export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app:
 			</header>
 
 			<div>
-				<Gauges onClick={() => go('more')} />
+				<Gauges fleet={rings} onClick={() => (multi ? setListOpen(true) : go('more'))} />
 				<div className="facts">
-					{temp.data?.temperature != null && (
+					{rings?.temp ? (
 						<span className="fact">
 							<Icon name="thermo" size={15} />
-							{Math.round(temp.data.temperature)}°C
+							{Math.round(rings.temp.celsius)}°C · {rings.temp.name}
 						</span>
+					) : (
+						temp.data?.temperature != null && (
+							<span className="fact">
+								<Icon name="thermo" size={15} />
+								{Math.round(temp.data.temperature)}°C
+							</span>
+						)
 					)}
 					<span className="fact">
 						<Icon name="clock" size={15} />
@@ -122,122 +202,80 @@ export function Home({onOpenApp, go, onTerminal, onAssistant}: {onOpenApp: (app:
 				</div>
 			</div>
 
-			{updating.length > 0 && (
-				<button className="glass callout press" onClick={() => go('apps')}>
-					<span className="ico">
-						<Icon name="update" size={22} />
-					</span>
-					<span className="txt">
-						<b>
-							{updating.length} update{updating.length > 1 ? 's' : ''} available
-						</b>
-						<span>{updating.map((a) => a.name).join(', ')}</span>
-					</span>
-					<span className="icons">
-						{updating.slice(0, 3).map((a) => (
-							<AppIcon key={a.id} src={a.icon} name={a.name} size={28} />
-						))}
-					</span>
-					<Icon name="chevron" size={18} className="muted" />
-				</button>
-			)}
-
-			{recentApps.length > 0 && (
-				<section>
-					<div className="section-head">
-						<h2>Jump back in</h2>
-					</div>
-					<div className="recent">
-						{recentApps.map((a) => (
-							<button key={a.id} className="glass recent-card press" onClick={() => open(a)}>
-								<AppIcon src={a.icon} name={a.name} size={40} />
-								<span style={{minWidth: 0, flex: 1}}>
-									<b className="rc-name">{a.name}</b>
-									<span className="rc-open">
-										Open <Icon name="arrow" size={13} stroke={2.2} />
-									</span>
-								</span>
-							</button>
-						))}
-					</div>
-				</section>
-			)}
-
-			<section>
-				<div className="section-head">
-					<h2>Apps</h2>
-					<button className="link-btn" onClick={() => go('apps')}>
-						Manage
-					</button>
+			{machinePins.length === 0 && appPins.length === 0 ? (
+				<div className="glass empty">
+					<b>Nothing is pinned</b>
+					<span>Pin a machine, a guest, or an app and it stays on this page.</span>
 				</div>
-				{apps.isLoading ? (
-					<div className="app-grid">
-						{Array.from({length: 8}, (_, i) => (
-							<div key={i} style={{display: 'grid', justifyItems: 'center', gap: 8}}>
-								<div className="skeleton" style={{width: 60, height: 60, borderRadius: 14}} />
-								<div className="skeleton" style={{width: 48, height: 10}} />
+			) : (
+				<>
+					{machinePins.length > 0 && (
+						<section>
+							<div className="section-head">
+								<h2>Pinned machines</h2>
 							</div>
-						))}
+							<div className="glass group">
+								{machinePins.map((pin) => {
+									const member = members.find((m) => m.id === pin.id)
+									const host = member?.hostId ? (members.find((m) => m.id === member.hostId)?.name ?? serverName) : ''
+									return (
+										<button key={pinKey(pin)} type="button" className="row" onClick={() => openPin(pin)}>
+											<span className="main">
+												<b>{member?.name ?? pin.id}</b>
+												<span>{pin.kind === 'vm' ? `Pinned virtual machine${host ? ` · ${host}` : ''}${member ? ` · ${member.online ? 'running' : 'stopped'}` : ''}` : 'Pinned machine'}</span>
+											</span>
+											<span className="muted">Pinned</span>
+										</button>
+									)
+								})}
+							</div>
+						</section>
+					)}
+					{appPins.length > 0 && (
+						<section>
+							<div className="section-head">
+								<h2>Pinned applications</h2>
+							</div>
+							<div className="glass group" style={{'--inset': '74px'} as CSSProperties}>
+								{appPins.map((pin) => {
+									const app = list.find((a) => a.id === pin.id)
+									const where = pin.computer === 'server' || pin.computer === '' ? serverName : (members.find((m) => m.id === pin.computer)?.name ?? pin.computer)
+									return (
+										<button key={pinKey(pin)} type="button" className="row" onClick={() => openPin(pin)}>
+											<AppIcon src={app?.icon} name={app?.name ?? pin.id} size={46} />
+											<span className="main">
+												<b>{app?.name ?? pin.id}</b>
+												<span>Pinned application · {where}</span>
+											</span>
+										</button>
+									)
+								})}
+							</div>
+						</section>
+					)}
+				</>
+			)}
+			{listOpen && (
+				<Sheet open onClose={() => setListOpen(false)} label="Computers" tall>
+					<SheetHeader title="Computers" subtitle="Online computers in these rings" onClose={() => setListOpen(false)} />
+					<div className="glass group" style={{marginTop: 12}}>
+						{samples
+							.filter((s) => s.online)
+							.map((s) => (
+								<Row
+									key={s.id}
+									icon="server"
+									label={s.name}
+									sub={[s.cpu != null ? `CPU ${Math.round(s.cpu)}%` : '', s.memUsed != null && s.memTotal ? `Memory ${Math.round(pct(s.memUsed, s.memTotal))}%` : ''].filter(Boolean).join(' · ') || 'Online'}
+									onClick={() => {
+										setListOpen(false)
+										openFleetMember({kind: s.id === 'server' ? 'server' : 'computer', id: s.id})
+									}}
+								/>
+							))}
 					</div>
-				) : (
-					<>
-						<div className="app-grid">
-							<button className="app-tile" onClick={() => go('store')} aria-label="App Store">
-								<StoreIcon size={60} />
-								<span className="name">App Store</span>
-							</button>
-							<button className="app-tile" onClick={() => onAssistant?.()} aria-label={`Open ${lookName(look)}, the assistant`}>
-								<AssistantIcon size={60} />
-								<span className="name">{lookName(look)}</span>
-							</button>
-							{onTerminal && (
-								<button className="app-tile" onClick={() => onTerminal()} aria-label="Terminal">
-									<TerminalIcon size={60} />
-									<span className="name">Terminal</span>
-								</button>
-							)}
-							{list.map((app) => {
-								const s = appStatus(app.state, updateIds.has(app.id))
-								const busy = isAppBusy(app.state)
-								return (
-									<button key={app.id} className="app-tile" onClick={() => open(app)} aria-label={`${app.name ?? app.id}, ${s.label}`}>
-										<AppIcon
-											src={app.icon}
-											name={app.name ?? app.id}
-											size={60}
-											dim={app.state === 'stopped'}
-											badge={s.kind === 'update' || s.kind === 'error' ? s.kind : undefined}
-											progress={busy ? (app.progress ? app.progress : 'spin') : undefined}
-										/>
-										<span className="name">{app.name ?? app.id}</span>
-									</button>
-								)
-							})}
-						</div>
-						{problem && !apps.data ? (
-							<div className="error" role="alert" style={{marginTop: 14}}>
-								<Icon name="alert" size={18} />
-								{problem}
-							</div>
-						) : (
-							!problem &&
-							apps.isSuccess &&
-							list.length === 0 && (
-								<div className="glass empty">
-									<span className="big">
-										<Icon name="store" size={30} />
-									</span>
-									<b>No apps yet</b>
-									<span>Install your first app from the App Store.</span>
-									<button className="btn primary small" onClick={() => go('store')}>
-										Browse apps
-									</button>
-								</div>
-							)
-						)}
-					</>
-				)}
-			</section>
+				</Sheet>
+			)}
 		</div>
 	)
 }

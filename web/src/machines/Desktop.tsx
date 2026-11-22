@@ -7,6 +7,8 @@ import {useMachines, useUser} from '../data'
 import {useDesktop} from '../desktop/Desktop'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
+import {fleetList} from '../fleet/list'
+import {openStore} from '../fleet/openStore'
 import {LocalSwarm, useSwarm} from '../swarm/Swarm'
 import {bytes, duration, haptic, useConfirm} from '../ui'
 import {mib, useAllTasks, useBackups, useMachineAction, useMachineDetails, useNode, when} from './api'
@@ -30,7 +32,7 @@ import {
 
 const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
 
-type Sel = {kind: 'node'} | {kind: 'vm'; id: string} | {kind: 'swarm'}
+type Sel = {kind: 'node'} | {kind: 'vm'; id: string} | {kind: 'computer'; id: string}
 
 export function MachinesDesktop() {
 	const machines = useMachines()
@@ -47,6 +49,15 @@ export function MachinesDesktop() {
 	const host = node.data?.hostname ?? 'server'
 	const swarm = useSwarm()
 	const swarmList = swarm.data ?? []
+	const computers = fleetList({
+		server: {name: host},
+		computers: swarmList.map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
+		guests: [],
+	}).filter((m) => m.kind === 'computer')
+	const computer = sel.kind === 'computer' ? (swarmList.find((a) => a.id === sel.id) ?? null) : null
+	useEffect(() => {
+		if (sel.kind === 'computer' && swarm.isSuccess && !computer) setSel({kind: 'node'})
+	}, [sel, computer, swarm.isSuccess])
 	return (
 		<div className="pve">
 			<header className="pve-top">
@@ -84,21 +95,22 @@ export function MachinesDesktop() {
 						</button>
 					))}
 					{machines.isLoading && <div className="pve-tree-note">Loading…</div>}
-					<button type="button" className={`pve-node${sel.kind === 'swarm' ? ' on' : ''}`} onClick={() => setSel({kind: 'swarm'})}>
-						<Icon name="devices" size={15} />
-						<span>Local swarm</span>
-						{swarmList.length > 0 && (
-							<span className="muted" style={{marginLeft: 'auto', fontSize: 12}}>
-								{swarmList.filter((a) => a.online).length}/{swarmList.length}
-							</span>
-						)}
-					</button>
+					{computers.map((c) => (
+						<button type="button" key={c.id} className={`pve-node${sel.kind === 'computer' && sel.id === c.id ? ' on' : ''}`} onClick={() => setSel({kind: 'computer', id: c.id})}>
+							<Icon name="devices" size={15} />
+							<span>{c.name}</span>
+							{!c.online && (
+								<span className="muted" style={{marginLeft: 'auto', fontSize: 12}}>
+									offline
+								</span>
+							)}
+						</button>
+					))}
 				</aside>
 				<section className="pve-content">
-					{sel.kind === 'swarm' ? (
+					{sel.kind === 'computer' && computer ? (
 						<div className="pve-swarm">
-							<h3 style={{margin: '0 0 10px'}}>Local swarm</h3>
-							<LocalSwarm heading={false} />
+							<LocalSwarm heading={false} onlyId={computer.id} />
 						</div>
 					) : sel.kind === 'node' || !selected ? (
 						<NodeView onSelect={(id) => setSel({kind: 'vm', id})} onCreate={() => setCreating(true)} />
@@ -332,6 +344,9 @@ function VmView({m, host, panel, setPanel, onGone}: {m: Machine; host: string; p
 					</span>
 					<button type="button" className="btn small" disabled={m.state !== 'running'} onClick={() => desk?.openConsole(m.id)}>
 						<Icon name="terminal" size={14} /> Console
+					</button>
+					<button type="button" className="btn small" title={`Installs on ${m.name}`} onClick={() => (haptic(6), openStore({id: m.id, kind: 'guest', name: m.name}))}>
+						<Icon name="store" size={14} /> App Store
 					</button>
 					<span className="pve-split">
 						<button type="button" className="btn small" aria-haspopup="menu" onClick={() => setMenu(menu === 'more' ? null : 'more')}>

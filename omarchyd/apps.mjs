@@ -33,6 +33,7 @@ import {RpcError, handleRpc, sendError} from './rpc.mjs'
 import {SYSTEM_PERMISSIONS} from './system-apps.mjs'
 import {dualProtocolServer, tlsContext, wantsUpgrade} from './tls.mjs'
 import {linkProxy} from './proxy-link.mjs'
+import {refuseForeignInstall} from './install-target.mjs'
 import {usbComposeOverlay} from './usb.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
@@ -2203,6 +2204,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 
 	async function install(input) {
+		const elsewhere = refuseForeignInstall(input?.target)
+		if (elsewhere) throw new RpcError('PRECONDITION_FAILED', elsewhere)
 		const id = String(input?.appId ?? '')
 		// Marked before the first await so uninstall cannot pass the busy check while prechecks run.
 		const held = new Map()

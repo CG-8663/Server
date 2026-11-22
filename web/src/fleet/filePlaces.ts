@@ -1,0 +1,65 @@
+// Files places for joined computers. The path is not a server folder: files.list must not see it.
+// Offline computers, and computers that have not granted Files, are left out.
+
+export const COMPUTER_PLACE = '::computer/'
+
+export type ComputerFileInput = {
+	id: string
+	name: string
+	online: boolean
+	filesGranted: boolean
+}
+
+function safeComputerId(id: string): boolean {
+	return !!id && id !== '.' && id !== '..' && !id.includes('/') && !id.includes('\\')
+}
+
+function safeRel(rel: string): boolean {
+	return !rel.split('/').some((part) => part === '..' || part === '.' || part.includes('\\'))
+}
+
+export function computerPlacePath(id: string, rel = ''): string | null {
+	if (!safeComputerId(id)) return null
+	const clean = rel.replace(/^\/+|\/+$/g, '')
+	if (clean && !safeRel(clean)) return null
+	return clean ? `${COMPUTER_PLACE}${id}/${clean}` : `${COMPUTER_PLACE}${id}`
+}
+
+export function parseComputerPlace(path: string): {id: string; rel: string} | null {
+	if (!path.startsWith(COMPUTER_PLACE)) return null
+	const rest = path.slice(COMPUTER_PLACE.length)
+	const slash = rest.indexOf('/')
+	const id = slash < 0 ? rest : rest.slice(0, slash)
+	const rel = slash < 0 ? '' : rest.slice(slash + 1)
+	if (!safeComputerId(id) || !safeRel(rel)) return null
+	return {id, rel}
+}
+
+/** Parent path inside a computer place. Null means the Files root (the place list). */
+export function computerParent(path: string): string | null {
+	const here = parseComputerPlace(path)
+	if (!here) return null
+	if (!here.rel) return null
+	const parts = here.rel.split('/').filter(Boolean)
+	parts.pop()
+	return computerPlacePath(here.id, parts.join('/'))
+}
+
+export function filePlaces(computers: readonly ComputerFileInput[]): {places: {id: string; name: string; path: string}[]; note: string | null} {
+	const skipped = computers
+		.filter((row) => !row.online || !row.filesGranted)
+		.sort((a, b) => a.name.localeCompare(b.name))
+	const places = computers
+		.filter((row) => row.online && row.filesGranted)
+		.sort((a, b) => a.name.localeCompare(b.name))
+		.flatMap((row) => {
+			const path = computerPlacePath(row.id)
+			return path ? [{id: row.id, name: row.name, path}] : []
+		})
+	const note = skipped.length
+		? skipped
+				.map((row) => (row.online ? `${row.name} hasn’t granted Files.` : `${row.name} is offline.`))
+				.join(' ')
+		: null
+	return {places, note}
+}

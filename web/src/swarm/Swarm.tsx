@@ -2,7 +2,7 @@
 // Watch them, open a terminal or their desktop, and manage them (Omarchy plugins and themes, updates,
 // restart), each only as far as that computer allowed when it joined.
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {lazy, memo, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode} from 'react'
+import {lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {mutate, query} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
@@ -10,7 +10,10 @@ import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
 import {newlyJoined} from './join'
-import {sameThemePicker} from './themePicker'
+import {PinButton} from '../fleet/PinButton'
+import {openStore} from '../fleet/openStore'
+import {ThemePicker} from '../theme/ThemePicker'
+import {themeAction} from '../theme/themeAction'
 import {storageRowSub} from './storageHint'
 import {StoragePage} from '../screens/Storage'
 import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, levelColor, useConfirm, useToast} from '../ui'
@@ -87,19 +90,83 @@ function useSwarmAction() {
 }
 
 // The section in Machines (phone) and the Local swarm view in the desktop's Machines window.
-export function LocalSwarm({heading = true}: {heading?: boolean}) {
+export function LocalSwarm({
+	heading = true,
+	hideList = false,
+	onlyId,
+	selectedId: selectedProp,
+	onSelect,
+	adding: addingProp,
+	onAdding,
+}: {
+	heading?: boolean
+	/** The phone fleet list owns the rows. Sheets still open for the selected computer. */
+	hideList?: boolean
+	onlyId?: string
+	selectedId?: string | null
+	onSelect?: (id: string | null) => void
+	adding?: boolean
+	onAdding?: (open: boolean) => void
+} = {}) {
 	const swarm = useSwarm()
 	const browserOnline = useBrowserOnline()
 	const problem = queryProblem(swarm, browserOnline)
-	const list = swarm.data ?? []
-	const [selectedId, setSelectedId] = useState<string | null>(null)
-	const [adding, setAdding] = useState(false)
+	const list = (swarm.data ?? []).filter((a) => !onlyId || a.id === onlyId)
+	const [innerSel, setInnerSel] = useState<string | null>(null)
+	const [innerAdd, setInnerAdd] = useState(false)
+	const selectedId = selectedProp !== undefined ? selectedProp : innerSel
+	const setSelectedId = (id: string | null) => {
+		onSelect?.(id)
+		if (selectedProp === undefined) setInnerSel(id)
+	}
+	const adding = addingProp !== undefined ? addingProp : innerAdd
+	const setAdding = (open: boolean) => {
+		onAdding?.(open)
+		if (addingProp === undefined) setInnerAdd(open)
+	}
 	const [terminal, setTerminal] = useState<{agent: Agent; input?: string} | null>(null)
 	const [screen, setScreen] = useState<Agent | null>(null)
 	const [storage, setStorage] = useState<Agent | null>(null)
-	const selected = list.find((a) => a.id === selectedId) ?? null
+	const selected = (swarm.data ?? []).find((a) => a.id === selectedId) ?? null
 	const online = list.filter((a) => a.online).length
 	if (storage) return <StoragePage onBack={() => setStorage(null)} target={{agentId: storage.id, name: storage.name}} />
+	const sheets = (
+		<>
+			{selected && !terminal && !screen && (
+				<AgentSheet
+					a={selected}
+					onClose={() => setSelectedId(null)}
+					onTerminal={(input) => setTerminal({agent: selected, input})}
+					onDesktop={() => setScreen(selected)}
+					onStorage={() => setStorage(selected)}
+				/>
+			)}
+			{adding && <AddComputer before={(swarm.data ?? []).map((a) => a.id)} onClose={() => setAdding(false)} onJoined={(id) => (setAdding(false), setSelectedId(id))} />}
+			{terminal && (
+				<Suspense
+					fallback={
+						<main className="screen center">
+							<span className="spinner" aria-label="Loading" />
+						</main>
+					}
+				>
+					<TerminalScreen agent={{id: terminal.agent.id, name: terminal.agent.name}} input={terminal.input} onClose={() => setTerminal(null)} />
+				</Suspense>
+			)}
+			{screen && (
+				<Suspense
+					fallback={
+						<main className="screen center">
+							<span className="spinner" aria-label="Loading" />
+						</main>
+					}
+				>
+					<Console machine={{id: `agent-${screen.id}`, name: screen.name, state: 'running'}} onClose={() => setScreen(null)} />
+				</Suspense>
+			)}
+		</>
+	)
+	if (hideList) return sheets
 	return (
 		<section className="swarm">
 			{heading && (
@@ -141,38 +208,7 @@ export function LocalSwarm({heading = true}: {heading?: boolean}) {
 					</button>
 				</div>
 			)}
-			{selected && !terminal && !screen && (
-				<AgentSheet
-					a={selected}
-					onClose={() => setSelectedId(null)}
-					onTerminal={(input) => setTerminal({agent: selected, input})}
-					onDesktop={() => setScreen(selected)}
-					onStorage={() => setStorage(selected)}
-				/>
-			)}
-			{adding && <AddComputer before={list.map((a) => a.id)} onClose={() => setAdding(false)} onJoined={(id) => (setAdding(false), setSelectedId(id))} />}
-			{terminal && (
-				<Suspense
-					fallback={
-						<main className="screen center">
-							<span className="spinner" aria-label="Loading" />
-						</main>
-					}
-				>
-					<TerminalScreen agent={{id: terminal.agent.id, name: terminal.agent.name}} input={terminal.input} onClose={() => setTerminal(null)} />
-				</Suspense>
-			)}
-			{screen && (
-				<Suspense
-					fallback={
-						<main className="screen center">
-							<span className="spinner" aria-label="Loading" />
-						</main>
-					}
-				>
-					<Console machine={{id: `agent-${screen.id}`, name: screen.name, state: 'running'}} onClose={() => setScreen(null)} />
-				</Suspense>
-			)}
+			{sheets}
 		</section>
 	)
 }
@@ -207,11 +243,12 @@ function SwarmGauges({metrics}: {metrics: NonNullable<Agent['metrics']>}) {
 	)
 }
 
-function AgentCard({a, onClick}: {a: Agent; onClick: () => void}) {
+export function AgentCard({a, onClick, footer}: {a: Agent; onClick: () => void; footer?: ReactNode}) {
 	const os = look(a)
 	const m = a.metrics
 	return (
-		<button className="glass vm-card press" onClick={onClick}>
+		<div className="glass vm-card press">
+			<button type="button" onClick={onClick} style={{display: 'flex', flexDirection: 'column', gap: 14, width: '100%', border: 0, background: 'none', padding: 0, color: 'inherit', textAlign: 'left', cursor: 'pointer'}}>
 			<span className="top">
 				<span className="vm-os" style={{background: os.bg, filter: a.online ? undefined : 'grayscale(.7) brightness(.85)'}}>
 					<Icon name={os.icon} size={26} />
@@ -246,7 +283,9 @@ function AgentCard({a, onClick}: {a: Agent; onClick: () => void}) {
 					)}
 				</span>
 			)}
-		</button>
+			</button>
+			{footer}
+		</div>
 	)
 }
 
@@ -290,6 +329,9 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 				}
 				onClose={onClose}
 			/>
+			<div style={{display: 'flex', justifyContent: 'flex-end', marginTop: 8}}>
+				<PinButton pin={{kind: 'machine', id: a.id, computer: ''}} name={a.name} />
+			</div>
 			<div className="primary-row">
 				<button className="btn primary" disabled={offline || !may(a, 'terminal')} onClick={() => (haptic(8), onTerminal())}>
 					<Icon name="terminal" size={20} /> Terminal
@@ -321,6 +363,9 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 				</Group>
 			)}
 
+			<Group title="Apps">
+				<Row icon="store" color="var(--accent)" label="App Store" sub="Installs on this computer" onClick={() => (haptic(6), onClose(), openStore({id: a.id, kind: 'computer', name: a.name}))} />
+			</Group>
 			{may(a, 'manage') && (
 				<Group title="Manage">
 					{a.info?.updateCommand && (
@@ -335,7 +380,10 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 					)}
 					{a.info?.omarchy && (
 						<>
-							<Row icon="palette" color="#a855f7" label="Theme" trailing={<ThemePicker themes={a.info?.themes ?? []} theme={a.info?.theme ?? ''} disabled={!manage || act.isPending} onPick={(theme) => action({name: 'theme-set', theme}, `Setting ${theme} on ${a.name}…`)} />} />
+							<Row icon="palette" color="#a855f7" label="Theme" trailing={<ThemePicker themes={a.info?.themes ?? []} theme={a.info?.theme ?? ''} disabled={!manage || act.isPending} onPick={(theme) => {
+								const call = themeAction({kind: 'computer', id: a.id, theme})
+								if ('path' in call) act.mutate({path: call.path, input: call.input, done: `Setting ${theme} on ${a.name}…`})
+							}} />} />
 							<Row icon="puzzle" color="var(--accent)" label="Omarchy plugins" sub={`${a.info.plugins?.length ?? 0} installed`} onClick={manage ? () => setPlugins(true) : undefined} />
 						</>
 					)}
@@ -411,19 +459,6 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 		</Sheet>
 	)
 }
-
-const ThemePicker = memo(function ThemePicker({themes, theme, disabled, onPick}: {themes: string[]; theme: string; disabled: boolean; onPick: (theme: string) => void}) {
-	const current = themes.find((t) => t.toLowerCase().replace(/\s+/g, '-') === theme.toLowerCase()) ?? theme
-	if (!themes.length) return <span className="muted">{current || '–'}</span>
-	return (
-		<select aria-label="Theme" value={current} disabled={disabled} onChange={(e) => e.target.value && onPick(e.target.value)} style={{maxWidth: 170}}>
-			{!themes.includes(current) && <option value="">{current || 'Choose…'}</option>}
-			{themes.map((t) => (
-				<option key={t}>{t}</option>
-			))}
-		</select>
-	)
-}, (p, n) => sameThemePicker(p, n))
 
 type Plugin = {id: string; name: string; description?: string; author?: string}
 function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {

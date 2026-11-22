@@ -12,6 +12,7 @@ import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory
 import {useServerReachable} from '../connection'
 import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
+import {OPEN_STORE, type StoreBinding} from '../fleet/openStore'
 import {OPEN_TERMINAL} from '../terminalEvent'
 import {osLook} from '../osLook'
 import {closeAssistantView, keepAssistantWindow, openAssistantView, resetAssistantTurn} from '../assistantTurn'
@@ -66,7 +67,7 @@ function WinFallback() {
 
 // ---- model ---------------------------------------------------------------------------------
 type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app'
-type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; page?: string; pageNonce?: number; term?: {id: string; name?: string; icon?: string}; input?: string}
+type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; page?: string; pageNonce?: number; term?: {id: string; name?: string; icon?: string}; input?: string; store?: StoreBinding}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
 type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number; workspace?: number; float?: boolean; minAt?: number}
@@ -534,6 +535,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			const existing = winsRef.current.filter((w) => w.key === key).sort((a, b) => b.z - a.z)[0]
 			if (existing && !(multi && opts?.newWindow)) {
 				if (kind === 'personalize' && payload?.tab) update(existing.id, {payload})
+				if (kind === 'store') update(existing.id, {payload: storedPayload})
 				if (settingsPayload) update(existing.id, {payload: settingsPayload})
 				if (opener && !winElsRef.current.get(existing.id)?.contains(opener)) {
 					winOpenersRef.current.set(existing.id, opener)
@@ -676,6 +678,16 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		window.addEventListener(OPEN_TERMINAL, onOpen)
 		return () => window.removeEventListener(OPEN_TERMINAL, onOpen)
 	}, [api])
+	useEffect(() => {
+		const onOpen = (e: Event) => {
+			const bound = (e as CustomEvent<StoreBinding>).detail
+			if (!bound || (bound.kind !== 'server' && bound.kind !== 'computer' && bound.kind !== 'guest')) return
+			if (!bound.id || !bound.name) return
+			open('store', {store: bound})
+		}
+		window.addEventListener(OPEN_STORE, onOpen)
+		return () => window.removeEventListener(OPEN_STORE, onOpen)
+	}, [open])
 
 	// Clicking into an app's iframe doesn't reach our handlers; notice the focus moving to it.
 	useEffect(() => {
@@ -2733,7 +2745,7 @@ const WindowContent = memo(
 				case 'apps':
 					return <AppsWindow />
 				case 'store':
-					return <Store onOpenInstalled={(a) => desk.launch(a)} />
+					return <Store bound={win.payload?.store ?? null} onOpenInstalled={(a) => desk.launch(a)} />
 				case 'machines':
 					return <MachinesDesktop />
 				case 'system':

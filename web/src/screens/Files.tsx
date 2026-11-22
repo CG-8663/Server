@@ -24,6 +24,8 @@ import {
   diskPct,
 } from "../api";
 import { useBootstrap, useDisk, useUser } from "../data";
+import { ComputerFolder } from "../fleet/ComputerFolder";
+import { computerParent, computerPlacePath, filePlaces, parseComputerPlace } from "../fleet/filePlaces";
 import { queryProblem, useBrowserOnline } from "../connection";
 import { Icon, type IconName } from "../icons";
 import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, scrollPhoneToTop, useConfirm, usePortalRoot, useToast } from "../ui";
@@ -448,6 +450,20 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
     queryFn: () => query<FavoriteItem[]>("files.favorites"),
   });
   const owner = user.data != null && user.data.role !== "member";
+  const swarm = useQuery({
+    queryKey: ["swarm.list"],
+    queryFn: () => query<{ id: string; name: string; online: boolean; allowed?: { files?: boolean }; on?: { files?: boolean } }[]>("swarm.list"),
+    enabled: owner,
+    refetchInterval: 3000,
+  });
+  const computerFiles = filePlaces(
+    (swarm.data ?? []).map((a) => ({
+      id: a.id,
+      name: a.name,
+      online: a.online,
+      filesGranted: !!(a.allowed?.files && a.on?.files),
+    })),
+  );
   const shares = useQuery({
     queryKey: ["files.shares"],
     queryFn: () => query<SmbShare[]>("files.shares"),
@@ -480,6 +496,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
   };
   const up = () => {
     if (!path) return;
+    if (parseComputerPlace(path)) return go(computerParent(path));
     if (
       path.startsWith("::") ||
       Object.hasOwn(PLACE_NAMES, path) ||
@@ -543,7 +560,10 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
     { path: "/External", label: "Drives", icon: "usb", color: "#14b8a6" },
     { path: "/Network", label: "Network", icon: "server", color: "#0ea5e9" },
     { path: "/Trash", label: "Trash", icon: "trash", color: "#71717a" },
+    ...computerFiles.places.map((p) => ({ path: p.path, label: p.name, icon: "devices" as const, color: "#0d9488" })),
   ];
+  const computerHere = path ? parseComputerPlace(path) : null;
+  const computerName = computerHere ? (swarm.data?.find((a) => a.id === computerHere.id)?.name ?? "Computer") : "";
 
   // Items shown in the current view.
   const items: FileEntry[] =
@@ -692,12 +712,41 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
         <h1 className="title" style={{ margin: 0 }}>
           {path === null
             ? "Files"
-            : path === "::recents"
-              ? "Recents"
-              : path === "::favorites"
-                ? "Favorites"
-                : titleOf(path)}
+            : computerHere
+              ? computerHere.rel.split("/").filter(Boolean).pop() || computerName
+              : path === "::recents"
+                ? "Recents"
+                : path === "::favorites"
+                  ? "Favorites"
+                  : titleOf(path)}
         </h1>
+        {computerHere && computerHere.rel && (
+          <div className="crumbs">
+            <button type="button" onClick={() => {
+              const next = computerPlacePath(computerHere.id)
+              if (next) go(next)
+            }}>
+              {computerName}
+              <Icon name="chevron" size={12} />
+            </button>
+            {computerHere.rel
+              .split("/")
+              .filter(Boolean)
+              .slice(0, -1)
+              .map((seg, i, arr) => {
+                const rel = arr.slice(0, i + 1).join("/");
+                return (
+                  <button key={rel} type="button" onClick={() => {
+                    const next = computerPlacePath(computerHere.id, rel)
+                    if (next) go(next)
+                  }}>
+                    {seg}
+                    {i < arr.length - 1 && <Icon name="chevron" size={12} />}
+                  </button>
+                );
+              })}
+          </div>
+        )}
         {path && !path.startsWith("::") && path.split("/").length > 2 && (
           <div className="crumbs">
             {path
@@ -918,6 +967,11 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
               </button>
             ))}
           </div>
+          {computerFiles.note && (
+            <p className="muted" style={{ fontSize: 13, margin: "8px 4px 0" }}>
+              {computerFiles.note}
+            </p>
+          )}
           {disk.data && (
             <Card className="storage-card">
               <CardHead
@@ -1005,7 +1059,18 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
         </>
       )}
 
-      {(path !== null || q) && (
+      {computerHere && (
+        <ComputerFolder
+          id={computerHere.id}
+          rel={computerHere.rel}
+          onOpen={(rel) => {
+            const next = computerPlacePath(computerHere.id, rel)
+            if (next) go(next)
+          }}
+        />
+      )}
+
+      {(path !== null || q) && !computerHere && (
         <>
           {inTrash && (listing.data?.files.length ?? 0) > 0 && !selecting && (
             <button

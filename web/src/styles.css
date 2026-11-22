@@ -8791,3 +8791,52 @@ select.field {
 .pf-arrow {
 	padding-bottom: 10px;
 }
+
+/* Fleet battery arcs start at 12 o'clock, so they must not use the single-value ring rotation. */
+.bat-ring svg {
+	transform: none;
+}
+.bat-tip {
+	position: absolute;
+	z-index: 3;
+	transform: translate(8px, -50%);
+	display: grid;
+	gap: 2px;
+	padding: 6px 8px;
+	border-radius: 10px;
+	background: var(--glass-solid, var(--bg));
+	border: 1px solid var(--line);
+	font-size: 12px;
+	font-weight: 650;
+	white-space: nowrap;
+	pointer-events: none;
+}
+.bat-tip.is-left {
+	transform: translate(calc(-100% - 8px), -50%);
+}
+.fleet-menu {
+	position: absolute;
+	z-index: 4;
+	right: 12px;
+	top: calc(100% - 8px);
+	min-width: 180px;
+	padding: 6px;
+	display: grid;
+	gap: 2px;
+}
+.fleet-menu[hidden] {
+	display: none !important;
+}
+.fleet-menu button {
+	border: 0;
+	background: transparent;
+	color: inherit;
+	text-align: left;
+	padding: 8px 10px;
+	border-radius: 10px;
+	font: inherit;
+	cursor: pointer;
+}
+.fleet-menu button:hover {
+	background: var(--glass-2);
+}
