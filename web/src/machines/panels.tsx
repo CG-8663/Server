@@ -1,5 +1,5 @@
-// The settings of one machine, Proxmox-style, shared by the desktop (Machines window) and the touch
-// layout (the machine sheet). Each panel edits in place: tap/click a row to change it.
+// The settings of one machine. The machine page shows each panel in a tab, on the phone and on the
+// desktop. Each panel edits in place: tap or click a row to change it.
 import {useEffect, useMemo, useState, type ReactNode} from 'react'
 
 import {useQuery} from '@tanstack/react-query'
@@ -937,13 +937,12 @@ export function BackupsPanel({d}: {d: MachineDetails}) {
 }
 
 // ---- task history -----------------------------------------------------------------------------
-export function TaskTable({tasks, showMachine}: {tasks: Task[]; showMachine?: boolean}) {
+export function TaskTable({tasks}: {tasks: Task[]}) {
 	return (
-		<div className={`mx-table tasks${showMachine ? ' with-machine' : ''}`} role="table">
+		<div className="mx-table tasks" role="table">
 			<div className="mx-tr head" role="row">
 				<span>Start time</span>
 				<span>End time</span>
-				{showMachine && <span>Machine</span>}
 				<span>Description</span>
 				<span>Status</span>
 			</div>
@@ -952,7 +951,6 @@ export function TaskTable({tasks, showMachine}: {tasks: Task[]; showMachine?: bo
 				<div className={`mx-tr st-${t.status}`} role="row" key={`${t.machineId ?? ''}${t.id}`}>
 					<span>{when(t.startedAt)}</span>
 					<span>{t.endedAt ? when(t.endedAt) : ''}</span>
-					{showMachine && <span>{t.vmid ? `${t.vmid} (${t.machineName})` : t.machineName}</span>}
 					<span>
 						{TASK_LABEL[t.type] ?? t.type}
 						{t.detail ? ` · ${t.detail}` : ''}

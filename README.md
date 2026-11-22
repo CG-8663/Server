@@ -105,7 +105,7 @@ where you left off; add `--purge` to delete those too.
 - **One tap:** Ubuntu, Debian, Fedora, Arch and Alpine (server or desktop), Omarchy, Windows 10/11 from
   your own ISO, or any ISO in Files. Images are checked against their publisher's checksums, and
   cloud-init sets up your account.
-- **Proxmox-style controls** on the desktop, and every setting on a phone: CPU (sockets, cores, type),
+- **The same controls on the phone and the desktop:** CPU (sockets, cores, type),
   memory, disks, network, boot order, firmware, snapshots, backups (live), clone, restore, pause,
   hibernate, start with the server, task history, live usage graphs and a monitor.
 - The screen in your browser with keyboard, mouse and touch controls, clipboard paste, and

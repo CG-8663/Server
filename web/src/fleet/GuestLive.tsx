@@ -27,7 +27,7 @@ const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((1
  */
 export type GuestSections = {files?: ReactNode; apps?: ReactNode; storage?: ReactNode; backups?: ReactNode; manage?: ReactNode}
 
-export function GuestLive({machine, onOpenStore, onOpenDesktop, onBackups, tabs}: {machine: Machine; onOpenStore?: () => void; onOpenDesktop?: () => void; onBackups?: () => void; tabs?: (sections: GuestSections) => ReactNode}) {
+export function GuestLive({machine, onOpenStore, onOpenDesktop, onBackups, tabs}: {machine: Machine; onOpenStore?: () => void; onOpenDesktop?: () => void; onBackups?: () => void; tabs: (sections: GuestSections) => ReactNode}) {
 	const swarm = useSwarm()
 	const agent = guestAgent(swarm.data ?? [], machine.id)
 	const [install, setInstall] = useState(false)
@@ -56,11 +56,6 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onBackups, tabs}
 	return (
 		<>
 			<MachineActions terminal={live && !!agent && agentMay(agent, 'terminal')} desktop={hostScreen || connectorDesktop} onTerminal={() => openTerminal()} onDesktop={() => (onOpenDesktop && machine.state === 'running' ? onOpenDesktop() : setDesktop(true))} />
-			{!onOpenDesktop && agent?.online && agentMay(agent, 'desktop') && agent.info?.desktop && !agent.info.desktop.ok && (
-				<p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>
-					{agent.info.desktop.why}
-				</p>
-			)}
 			{swarm.isFetched && !agent && linux && (
 				<div className="actions">
 					<button type="button" className="btn primary" onClick={() => (haptic(6), setInstall(true))}>
@@ -84,40 +79,20 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onBackups, tabs}
 				{typeof metrics?.temp === 'number' && <Row icon="thermo" color="#ef5350" label="Temperature" trailing={<b>{Math.round(metrics.temp)}°C</b>} />}
 				{metrics?.uptime !== undefined && <Row icon="clock" color="#8e8e93" label="Up for" trailing={<b>{duration(metrics.uptime)}</b>} />}
 			</SheetGroup>
-			{tabs ? (
-				tabs({
-					files:
-						live && agent && agentMay(agent, 'files') ? (
-							<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
-								<MachineFiles scope={{kind: 'computer', id: agent.id, name: machine.name}} windowId={`guest:${machine.id}`} />
-							</Suspense>
-						) : undefined,
-					apps: live ? (
-						<Row icon="store" color="var(--accent)" label="App Store" sub={`Installs on ${machine.name}`} onClick={() => (haptic(6), onOpenStore ? onOpenStore() : openStore({id: machine.id, kind: 'guest', name: machine.name}))} />
-					) : undefined,
-					storage: <Row icon="disk" color="var(--teal)" label="Storage" sub={storageSub} onClick={() => (haptic(8), canStorage ? setStorage(true) : setStorageNote(true))} />,
-					backups: onBackups ? <Row icon="history" color="var(--green)" label="Backups" sub="Back up this virtual machine" onClick={() => (haptic(8), onBackups())} /> : undefined,
-					manage: agent ? <ConnectorControls a={agent} onTerminal={openTerminal} /> : undefined,
-				})
-			) : (
-				<>
-					<SheetGroup title="Storage">
-						<Row icon="disk" color="var(--teal)" label="Storage" sub={storageSub} onClick={() => (haptic(8), canStorage ? setStorage(true) : setStorageNote(true))} />
-						<Row icon="history" color="var(--green)" label="Backups" sub="Back up this virtual machine" onClick={onBackups ? () => (haptic(8), onBackups()) : undefined} />
-					</SheetGroup>
-					{live && agent && agentMay(agent, 'files') && (
+			{tabs({
+				files:
+					live && agent && agentMay(agent, 'files') ? (
 						<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
 							<MachineFiles scope={{kind: 'computer', id: agent.id, name: machine.name}} windowId={`guest:${machine.id}`} />
 						</Suspense>
-					)}
-					{live && (
-						<SheetGroup title="Apps">
-							<Row icon="store" color="var(--accent)" label="App Store" sub={`Installs on ${machine.name}`} onClick={() => (haptic(6), onOpenStore ? onOpenStore() : openStore({id: machine.id, kind: 'guest', name: machine.name}))} />
-						</SheetGroup>
-					)}
-					{agent && <ConnectorControls a={agent} onTerminal={openTerminal} />}
-				</>
-			)}
+					) : undefined,
+				apps: live ? (
+					<Row icon="store" color="var(--accent)" label="App Store" sub={`Installs on ${machine.name}`} onClick={() => (haptic(6), onOpenStore ? onOpenStore() : openStore({id: machine.id, kind: 'guest', name: machine.name}))} />
+				) : undefined,
+				storage: <Row icon="disk" color="var(--teal)" label="Storage" sub={storageSub} onClick={() => (haptic(8), canStorage ? setStorage(true) : setStorageNote(true))} />,
+				backups: onBackups ? <Row icon="history" color="var(--green)" label="Backups" sub="Back up this virtual machine" onClick={() => (haptic(8), onBackups())} /> : undefined,
+				manage: agent ? <ConnectorControls a={agent} onTerminal={openTerminal} /> : undefined,
+			})}
 			{storageNote && (
 				<Sheet open onClose={() => setStorageNote(false)} label="Storage">
 					<SheetHeader title="Storage" subtitle={machine.name} onClose={() => setStorageNote(false)} />
