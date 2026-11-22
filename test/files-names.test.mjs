@@ -189,7 +189,7 @@ describe('files: special files and names', () => {
 		await writeFile(join(dir, 'caf-ok.txt'), 'ok')
 		const raw = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x2e, 0x74, 0x78, 0x74])
 		await writeFile(Buffer.concat([Buffer.from(dir + '/'), raw]), 'latin1')
-		const found = await call('files.search', {query: 'caf'})
+		const found = (await call('files.search', {query: 'caf'})).files
 		assert.ok(Array.isArray(found))
 		assert.ok(found.some((f) => f.name === 'caf-ok.txt'))
 	})
@@ -245,8 +245,9 @@ describe('files: special files and names', () => {
 			assert.equal(screen(e.message), 'There isn’t enough free space')
 			return true
 		})
+		const rulesSrc = await readFile(new URL('../web/src/screens/filesRules.ts', import.meta.url), 'utf8')
 		for (const sentence of ['You don’t have permission to change that folder', 'That folder is read-only', 'is a file, not a folder', 'There isn’t enough free space']) {
-			assert.equal(screenSrc.includes(sentence), true, sentence)
+			assert.equal(screenSrc.includes(sentence) || rulesSrc.includes(sentence), true, sentence)
 		}
 	})
 

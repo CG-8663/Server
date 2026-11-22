@@ -2729,7 +2729,7 @@ const WindowContent = memo(
 		const body = (() => {
 			switch (win.kind) {
 				case 'files':
-					return <Files initialPath={win.payload?.path} />
+					return <Files windowId={win.id} initialPath={win.payload?.path} />
 				case 'apps':
 					return <AppsWindow />
 				case 'store':

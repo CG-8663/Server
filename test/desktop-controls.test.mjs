@@ -227,7 +227,7 @@ test('the running desktop wires these decisions', () => {
 	assert.match(desktop, /rememberSettingsPage\(sessionStorage, settingsPayload\.page\)/)
 	assert.match(desktop, /bindWindowScrollReset\(window, document\)/)
 	assert.match(desktop, /desk\.open\('settings', \{page: 'assistant'\}\)/)
-	assert.match(desktop, /return <Files initialPath=\{win\.payload\?\.path\} \/>/)
+	assert.match(desktop, /return <Files windowId=\{win\.id\} initialPath=\{win\.payload\?\.path\} \/>/)
 	const launcher = read('../web/src/desktop/hyprland/Launcher.tsx')
 	assert.match(launcher, /launcherRowMatches\(r\.label, q\)/)
 	const ui = read('../web/src/ui.tsx')
