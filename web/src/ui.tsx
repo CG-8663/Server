@@ -9,6 +9,7 @@ export {detectDesktop}
 import {fieldAria, liveRegionText, useDialogFocus} from './focus'
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
+import {wallpaperBlocked} from './desktop/wallpaperGate'
 import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
@@ -1042,7 +1043,7 @@ export const wallpaperUrl = (w?: Wallpaper | null) => (w?.id ? `/api/wallpaper/$
 
 export const customBackgroundUrl = (version?: number | null) => (version ? `/api/background?v=${version}` : null)
 
-export function Backdrop({wallpaper, prefs}: {wallpaper?: Wallpaper | null; prefs: Prefs}) {
+export function Backdrop({wallpaper, prefs, signedIn = false}: {wallpaper?: Wallpaper | null; prefs: Prefs; signedIn?: boolean}) {
 	const desktopBg = useOmarchyThemes(prefs.theme === 'omarchy' || prefs.theme === 'horizon').data?.current
 	const url =
 		prefs.theme === 'horizon'
@@ -1053,18 +1054,28 @@ export function Backdrop({wallpaper, prefs}: {wallpaper?: Wallpaper | null; pref
 					? omarchyBackgroundUrl(prefs.omarchyBackground, desktopBg)
 					: null
 	const [ready, setReady] = useState<string | null>(null)
-	const [failed, setFailed] = useState<string | null>(null)
+	const [failed, setFailed] = useState<{url: string; session: boolean} | null>(null)
 	useEffect(() => {
+		setFailed(null)
 		if (!url) return
+		let cancel = false
 		const img = new Image()
-		img.onload = () => setReady(url)
-		img.onerror = () => setFailed(url)
+		img.onload = () => {
+			if (!cancel) setReady(url)
+		}
+		img.onerror = () => {
+			if (!cancel) setFailed({url, session: signedIn})
+		}
 		img.src = url
-	}, [url])
+		return () => {
+			cancel = true
+		}
+	}, [url, signedIn])
+	const blocked = wallpaperBlocked(failed?.url ?? null, failed?.session ?? false, url, signedIn)
 	if (prefs.solidColor) return <div className="backdrop" aria-hidden="true" style={{background: prefs.solidColor}} />
 	return (
 		<div className="backdrop" aria-hidden="true">
-			{url && failed !== url ? (
+			{url && !blocked ? (
 				<>
 					<div className={`wall${ready === url ? ' ready' : ''}`} style={{backgroundImage: `url(${url})`}} />
 					<div className="shade" />

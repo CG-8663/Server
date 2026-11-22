@@ -19,7 +19,7 @@ import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, scrollPhoneToTop, use
 import {WhatsNewOnUpdate} from './WhatsNew'
 import {LayoutChooser} from './LayoutChooser'
 import {InstallerPrompt} from './InstallerPrompt'
-import {consumeReopenAssistant} from './assistant'
+import {consumeReopenAssistant, reopenOnMount} from './assistant'
 import {closeAssistantView, openAssistantView, resetAssistantTurn, useAssistantTurn} from './assistantTurn'
 import {AssistantLookContext, cleanLook, DEFAULT_LOOK, type AssistantLook} from './character/AssistantCharacter'
 import {AssistantCharacterWidget} from './character/widgets'
@@ -82,9 +82,18 @@ export function App() {
 	const layout = useLayout()
 	// The first time anyone signs in on this device: Desktop or Phone & tablet (then What's New).
 	const [askLayout, setAskLayout] = useState(() => !layoutAsked())
-	const reopenAssistantRef = useRef<boolean | null>(null)
-	if (reopenAssistantRef.current === null) reopenAssistantRef.current = consumeReopenAssistant()
-	const reopenAssistant = reopenAssistantRef.current
+	// Consumed once per page load. Cleared after the first signed-in Shell or Desktop has seen it,
+	// so a later remount (wallpaper, theme, restart) does not open the assistant again.
+	const reopenWantedRef = useRef<boolean | null>(null)
+	if (reopenWantedRef.current === null) reopenWantedRef.current = consumeReopenAssistant()
+	const [reopenGiven, setReopenGiven] = useState(false)
+	const reopenAssistant = reopenOnMount(reopenWantedRef.current, reopenGiven)
+	const showShell = !!boot.data?.configured && !!boot.data?.server?.reachable && !!boot.data?.session
+
+	useEffect(() => {
+		if (!showShell || !reopenAssistant) return
+		setReopenGiven(true)
+	}, [showShell, reopenAssistant])
 
 	useEffect(() => {
 		const onOut = () => {
@@ -133,7 +142,7 @@ export function App() {
 
 	return (
 		<>
-			<Backdrop wallpaper={wallpaper} prefs={prefs} />
+			<Backdrop wallpaper={wallpaper} prefs={prefs} signedIn={!!boot.data?.session} />
 			{content}
 		</>
 	)
