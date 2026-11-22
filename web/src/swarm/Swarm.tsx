@@ -243,12 +243,11 @@ function SwarmGauges({metrics}: {metrics: NonNullable<Agent['metrics']>}) {
 	)
 }
 
-export function AgentCard({a, onClick, footer}: {a: Agent; onClick: () => void; footer?: ReactNode}) {
+export function AgentCard({a, onClick, footer, extra, className}: {a: Agent; onClick: () => void; footer?: ReactNode; extra?: ReactNode; className?: string}) {
 	const os = look(a)
 	const m = a.metrics
 	return (
-		<div className="glass vm-card press">
-			<button type="button" onClick={onClick} style={{display: 'flex', flexDirection: 'column', gap: 14, width: '100%', border: 0, background: 'none', padding: 0, color: 'inherit', textAlign: 'left', cursor: 'pointer'}}>
+		<div className={`glass vm-card${className ? ` ${className}` : ''}`}>
 			<span className="top">
 				<span className="vm-os" style={{background: os.bg, filter: a.online ? undefined : 'grayscale(.7) brightness(.85)'}}>
 					<Icon name={os.icon} size={26} />
@@ -261,6 +260,9 @@ export function AgentCard({a, onClick, footer}: {a: Agent; onClick: () => void; 
 					</span>
 				</span>
 				<StatusPill kind={a.online ? 'running' : 'stopped'} label={a.online ? 'Online' : 'Offline'} />
+				<button type="button" className="btn small" onClick={onClick}>
+					Open
+				</button>
 			</span>
 			{a.online && m && (
 				<span className="specs">
@@ -283,8 +285,8 @@ export function AgentCard({a, onClick, footer}: {a: Agent; onClick: () => void; 
 					)}
 				</span>
 			)}
-			</button>
 			{footer}
+			{extra}
 		</div>
 	)
 }

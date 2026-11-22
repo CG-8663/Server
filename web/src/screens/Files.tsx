@@ -25,7 +25,8 @@ import {
 } from "../api";
 import { useBootstrap, useDisk, useUser } from "../data";
 import { ComputerFolder } from "../fleet/ComputerFolder";
-import { computerParent, computerPlacePath, filePlaces, parseComputerPlace } from "../fleet/filePlaces";
+import { computerPlacePath, filePlaces, filesParent, parseComputerPlace, SERVER_FILES } from "../fleet/filePlaces";
+import { NuEntries, type NuItem } from "../fleet/NuEntries";
 import { queryProblem, useBrowserOnline } from "../connection";
 import { Icon, type IconName } from "../icons";
 import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, scrollPhoneToTop, useConfirm, usePortalRoot, useToast } from "../ui";
@@ -373,9 +374,11 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
   const confirm = useConfirm();
   const act = useFileAction();
   const disk = useDisk();
-  const [path, setPath] = useState<string | null>(() =>
-    readStoredFilesPath(windowId, initialPath, (key) => sessionStorage.getItem(key)),
-  );
+  const [nav, setNav] = useState(() => {
+    const start = readStoredFilesPath(windowId, initialPath, (key) => sessionStorage.getItem(key));
+    return {entries: [start] as (string | null)[], index: 0};
+  });
+  const path = nav.entries[nav.index] ?? null;
   const [listLimit, setListLimit] = useState(FILES_LIST_PAGE);
   const [sort, setSort] = useState<"name" | "modified" | "size">("name");
   const [grid, setGrid] = useState(
@@ -443,7 +446,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
   const recents = useQuery({
     queryKey: ["files.recents"],
     queryFn: () => query<FileEntry[]>("files.recents"),
-    enabled: path === null || path === "::recents",
+    enabled: path === SERVER_FILES || path === "::recents",
   });
   const favorites = useQuery({
     queryKey: ["files.favorites"],
@@ -488,29 +491,49 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
     [shares.data],
   );
 
-  const go = (p: string | null) => {
+  const go = (p: string | null, how: "push" | "replace" = "push") => {
     haptic(5);
     setQ("");
-    setPath(p);
     scrollPhoneToTop();
+    setNav((n) => {
+      if (how === "replace") {
+        const entries = n.entries.slice(0, n.index);
+        entries.push(p);
+        return {entries, index: entries.length - 1};
+      }
+      const base = n.entries.slice(0, n.index + 1);
+      if (base[base.length - 1] === p) return n;
+      return {entries: [...base, p], index: base.length};
+    });
   };
   const up = () => {
     if (!path) return;
-    if (parseComputerPlace(path)) return go(computerParent(path));
-    if (
-      path.startsWith("::") ||
-      Object.hasOwn(PLACE_NAMES, path) ||
-      path.split("/").length <= 2
-    )
-      return go(null);
-    go(parentOf(path));
+    // No history yet, so Back walks up. Replacing keeps the next Back moving upward.
+    go(filesParent(path), "replace");
+  };
+  const back = () => {
+    if (nav.index > 0) {
+      haptic(5);
+      setQ("");
+      scrollPhoneToTop();
+      setNav((n) => ({...n, index: n.index > 0 ? n.index - 1 : 0}));
+      return;
+    }
+    up();
+  };
+  const forward = () => {
+    if (nav.index >= nav.entries.length - 1) return;
+    haptic(5);
+    setQ("");
+    scrollPhoneToTop();
+    setNav((n) => ({...n, index: Math.min(n.entries.length - 1, n.index + 1)}));
   };
   const inTrash = !!path && (path === "/Trash" || path.startsWith("/Trash/"));
   const selecting = selected.size > 0;
   // Where uploads go: the folder you're in (if Omarchy Server says it's writable), or Home from the start page.
   const writableHere =
     !!path && !path.startsWith("::") && !inTrash && listing.data?.operations?.includes("writable") !== false && !listing.error;
-  const uploadDir = path === null ? "/Home" : writableHere ? path : null;
+  const uploadDir = path === SERVER_FILES ? "/Home" : writableHere ? path : null;
   const canUpload = !!uploadDir;
   const finePointer = typeof matchMedia !== "undefined" && matchMedia("(pointer: fine)").matches;
   // iPhone/iPad Safari can't pick a whole folder; computers can.
@@ -560,7 +583,6 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
     { path: "/External", label: "Drives", icon: "usb", color: "#14b8a6" },
     { path: "/Network", label: "Network", icon: "server", color: "#0ea5e9" },
     { path: "/Trash", label: "Trash", icon: "trash", color: "#71717a" },
-    ...computerFiles.places.map((p) => ({ path: p.path, label: p.name, icon: "devices" as const, color: "#0d9488" })),
   ];
   const computerHere = path ? parseComputerPlace(path) : null;
   const computerName = computerHere ? (swarm.data?.find((a) => a.id === computerHere.id)?.name ?? "Computer") : "";
@@ -701,119 +723,124 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
   };
   const used = disk.data ? diskPct(disk.data) / 100 : 0;
 
-  const Header = (
-    <div className="files-head">
-      {path !== null ? (
-        <button className="round-btn" aria-label="Back" onClick={up}>
-          <Icon name="back" size={20} />
-        </button>
-      ) : null}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <h1 className="title" style={{ margin: 0 }}>
-          {path === null
-            ? "Files"
-            : computerHere
-              ? computerHere.rel.split("/").filter(Boolean).pop() || computerName
-              : path === "::recents"
-                ? "Recents"
-                : path === "::favorites"
-                  ? "Favorites"
-                  : titleOf(path)}
-        </h1>
-        {computerHere && computerHere.rel && (
-          <div className="crumbs">
-            <button type="button" onClick={() => {
-              const next = computerPlacePath(computerHere.id)
-              if (next) go(next)
-            }}>
-              {computerName}
-              <Icon name="chevron" size={12} />
-            </button>
-            {computerHere.rel
-              .split("/")
-              .filter(Boolean)
-              .slice(0, -1)
-              .map((seg, i, arr) => {
-                const rel = arr.slice(0, i + 1).join("/");
-                return (
-                  <button key={rel} type="button" onClick={() => {
-                    const next = computerPlacePath(computerHere.id, rel)
-                    if (next) go(next)
-                  }}>
-                    {seg}
-                    {i < arr.length - 1 && <Icon name="chevron" size={12} />}
-                  </button>
-                );
-              })}
-          </div>
-        )}
-        {path && !path.startsWith("::") && path.split("/").length > 2 && (
-          <div className="crumbs">
-            {path
-              .split("/")
-              .filter(Boolean)
-              .slice(0, -1)
-              .map((seg, i, arr) => {
-                const p = `/${path
-                  .split("/")
-                  .filter(Boolean)
-                  .slice(0, i + 1)
-                  .join("/")}`;
-                return (
-                  <button key={p} onClick={() => go(p)}>
-                    {titleOf(p)}
-                    {i < arr.length - 1 && <Icon name="chevron" size={12} />}
-                  </button>
-                );
-              })}
-          </div>
-        )}
-      </div>
+  const serverName = boot.server?.device || boot.server?.name || "This server";
+  const heading =
+    path === null
+      ? "Files"
+      : computerHere
+        ? computerHere.rel.split("/").filter(Boolean).pop() || computerName
+        : path === SERVER_FILES
+          ? serverName
+          : path === "::recents"
+            ? "Recents"
+            : path === "::favorites"
+              ? "Favorites"
+              : titleOf(path);
+  const crumbs: {name: string; path: string | null}[] = [{name: "Files", path: null}];
+  if (path && computerHere) {
+    const root = computerPlacePath(computerHere.id);
+    if (root) crumbs.push({name: computerName, path: root});
+    const parts = computerHere.rel.split("/").filter(Boolean);
+    for (let i = 0; i < parts.length; i++) {
+      const rel = parts.slice(0, i + 1).join("/");
+      const next = computerPlacePath(computerHere.id, rel);
+      if (next) crumbs.push({name: parts[i], path: next});
+    }
+  } else if (path) {
+    crumbs.push({name: serverName, path: SERVER_FILES});
+    if (path === "::recents" || path === "::favorites") crumbs.push({name: heading, path});
+    else if (path !== SERVER_FILES && !path.startsWith("::")) {
+      const parts = path.split("/").filter(Boolean);
+      for (let i = 0; i < parts.length; i++) {
+        const p = `/${parts.slice(0, i + 1).join("/")}`;
+        crumbs.push({name: titleOf(p), path: p});
+      }
+    }
+  }
+  const canBack = nav.index > 0 || path !== null;
+  const canForward = nav.index < nav.entries.length - 1;
+  const onServer = !!path && !computerHere;
+  const machineRoot = path === null && q.trim().length < 2;
+  const serverPlacesView = path === SERVER_FILES && q.trim().length < 2;
+  const setFileMode = (next: boolean) => {
+    haptic(5);
+    localStorage.setItem("omarchy-server:files-grid", next ? "1" : "0");
+    setGrid(next);
+  };
+  const rootItems: NuItem[] = [
+    {key: "server", name: serverName, modified: "Entrypoint", icon: "server", onOpen: () => go(SERVER_FILES)},
+    ...computerFiles.places.map((p) => ({key: p.id, name: p.name, icon: "devices" as const, onOpen: () => go(p.path)})),
+  ];
+  const placeItems: NuItem[] = places
+    .filter((p) => isServedFilePlace(p.path))
+    .map((p) => ({
+      key: p.path,
+      name: p.label,
+      icon: p.icon,
+      onOpen: () =>
+        p.path === PHOTOS
+          ? mutate("files.createDirectory", {path: PHOTOS})
+              .catch(() => {})
+              .finally(() => go(PHOTOS))
+          : go(p.path),
+    }));
+  const bar = (
+    <div className="nu-bar">
+      <h1 className="sr-only">{heading}</h1>
+      <button type="button" className="nu-nav" aria-label="Back" onClick={back} disabled={!canBack}>
+        <Icon name="back" size={16} />
+      </button>
+      <button type="button" className="nu-nav" aria-label="Forward" onClick={forward} disabled={!canForward}>
+        <Icon name="chevron" size={16} />
+      </button>
+      <nav className="nu-path" aria-label="Breadcrumbs">
+        <ol>
+          {crumbs.map((crumb, i) => {
+            const current = i === crumbs.length - 1;
+            return (
+              <li key={`${crumb.path ?? "files"}-${i}`}>
+                <button type="button" aria-current={current ? "page" : undefined} onClick={() => go(crumb.path)}>
+                  {crumb.name}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      </nav>
       {owner && path && path.startsWith("/Home/") && (
         <button
-          className="round-btn"
+          className="nu-nav"
           aria-label="Share this folder on your home LAN"
           title="Share on your home LAN"
           aria-pressed={shareMap.has(path)}
-          onClick={() => (haptic(5), setShareFor({ path, name: titleOf(path) }))}
+          onClick={() => (haptic(5), setShareFor({path, name: titleOf(path)}))}
         >
-          <Icon name="folder-share" size={19} />
+          <Icon name="folder-share" size={16} />
         </button>
       )}
       {path && !path.startsWith("::") && (
-        <>
-          <button
-            className="round-btn"
-            aria-label={grid ? "List view" : "Grid view"}
-            onClick={() => {
-              haptic(5);
-              setGrid((g) => {
-                localStorage.setItem("omarchy-server:files-grid", g ? "0" : "1");
-                return !g;
-              });
-            }}
-          >
-            <Icon name={grid ? "list" : "grid"} size={19} />
-          </button>
-          <button
-            className="round-btn"
-            aria-label={`Sort by ${sort === "name" ? "date" : sort === "modified" ? "size" : "name"}`}
-            onClick={() => {
-              haptic(5);
-              const next =
-                sort === "name"
-                  ? "modified"
-                  : sort === "modified"
-                    ? "size"
-                    : "name";
-              setSort(next);
-              toast(`Sorted by ${next === "modified" ? "date" : next}`);
-            }}
-          >
-            <Icon name="sort" size={19} />
-          </button>
-        </>
+        <button
+          type="button"
+          className="nu-nav"
+          aria-label={`Sort by ${sort === "name" ? "date" : sort === "modified" ? "size" : "name"}`}
+          onClick={() => {
+            haptic(5);
+            const next = sort === "name" ? "modified" : sort === "modified" ? "size" : "name";
+            setSort(next);
+            toast(`Sorted by ${next === "modified" ? "date" : next}`);
+          }}
+        >
+          <Icon name="sort" size={16} />
+        </button>
       )}
+      <div className="nu-modes" role="group" aria-label="View">
+        <button type="button" aria-label="List" aria-pressed={!grid} onClick={() => setFileMode(false)}>
+          <Icon name="list" size={16} />
+        </button>
+        <button type="button" aria-label="Grid" aria-pressed={grid} onClick={() => setFileMode(true)}>
+          <Icon name="grid" size={16} />
+        </button>
+      </div>
     </div>
   );
 
@@ -871,7 +898,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
   };
 
   return (
-    <div className="stagger files-root" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+    <div className="stagger files-root nu" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <input
         ref={fileInput}
         type="file"
@@ -911,7 +938,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
           (e.target.value = "")
         )}
       />
-      {Header}
+      {bar}
       <SearchField
         value={q}
         onChange={setQ}
@@ -927,7 +954,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
           )}
           <button className={`btn${path === PHOTOS ? "" : " primary"}`} onClick={() => fileInput.current?.click()}>
             <Icon name="upload" size={18} />
-            {path === null ? "Upload to Home" : "Upload"}
+            {path === SERVER_FILES ? "Upload to Home" : "Upload"}
           </button>
           {canPickFolder && (
             <button className="btn" onClick={pickFolder}>
@@ -935,7 +962,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
               Upload folder
             </button>
           )}
-          {path !== null && (
+          {path && !path.startsWith("::") && (
             <button className="btn" onClick={() => setPrompt({ kind: "folder" })}>
               <Icon name="folder-plus" size={18} />
               New folder
@@ -945,33 +972,44 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
         </div>
       )}
 
-      {path === null && !q && (
+      <div className="nu-body">
+        <aside className="nu-side" aria-label="Places">
+          <h3>Places</h3>
+          <button type="button" className="nu-place" aria-current={path === null ? "page" : undefined} onClick={() => go(null)}>
+            <span className="dot" />
+            Files
+          </button>
+          <button type="button" className="nu-place" aria-current={onServer ? "page" : undefined} onClick={() => go(SERVER_FILES)}>
+            <span className="dot" />
+            {serverName}
+          </button>
+          {computerFiles.places.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              className="nu-place"
+              aria-current={computerHere?.id === p.id ? "page" : undefined}
+              onClick={() => go(p.path)}
+            >
+              <span className="dot" />
+              {p.name}
+            </button>
+          ))}
+        </aside>
+        <div className="nu-main">
+      {machineRoot && (
         <>
-          <div className="places">
-            {places.filter((p) => isServedFilePlace(p.path)).map((p) => (
-              <button
-                key={p.path}
-                className="glass place press"
-                onClick={() =>
-                  p.path === PHOTOS
-                    ? mutate("files.createDirectory", { path: PHOTOS })
-                        .catch(() => {})
-                        .finally(() => go(PHOTOS))
-                    : go(p.path)
-                }
-              >
-                <span className="place-ico" style={{ background: p.color }}>
-                  <Icon name={p.icon} size={21} />
-                </span>
-                <b>{p.label}</b>
-              </button>
-            ))}
+          <NuEntries items={rootItems} grid={grid} />
+          {computerFiles.note && <p className="reason">{computerFiles.note}</p>}
+          <div className="nu-status">
+            {rootItems.length} item{rootItems.length === 1 ? "" : "s"}
           </div>
-          {computerFiles.note && (
-            <p className="muted" style={{ fontSize: 13, margin: "8px 4px 0" }}>
-              {computerFiles.note}
-            </p>
-          )}
+        </>
+      )}
+
+      {serverPlacesView && (
+        <>
+          <NuEntries items={placeItems} grid={grid} />
           {disk.data && (
             <Card className="storage-card">
               <CardHead
@@ -1056,6 +1094,9 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
               </div>
             </section>
           )}
+          <div className="nu-status">
+            {placeItems.length} item{placeItems.length === 1 ? "" : "s"}
+          </div>
         </>
       )}
 
@@ -1063,6 +1104,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
         <ComputerFolder
           id={computerHere.id}
           rel={computerHere.rel}
+          grid={grid}
           onOpen={(rel) => {
             const next = computerPlacePath(computerHere.id, rel)
             if (next) go(next)
@@ -1070,7 +1112,7 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
         />
       )}
 
-      {(path !== null || q) && !computerHere && (
+      {(path !== null || q) && !computerHere && !serverPlacesView && (
         <>
           {inTrash && (listing.data?.files.length ?? 0) > 0 && !selecting && (
             <button
@@ -1166,6 +1208,8 @@ export function Files({ initialPath, windowId }: { initialPath?: string; windowI
           ) : null}
         </>
       )}
+        </div>
+      </div>
 
       {createPortal(
         <>

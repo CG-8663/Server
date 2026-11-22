@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
 import {batteryGroups, batterySweep, computerSample, fleetRings, serverSample} from '../web/src/fleet/aggregate.ts'
-import {computerParent, computerPlacePath, filePlaces, parseComputerPlace} from '../web/src/fleet/filePlaces.ts'
+import {computerParent, computerPlacePath, filePlaces, filesParent, parseComputerPlace, SERVER_FILES} from '../web/src/fleet/filePlaces.ts'
 import {groupApps} from '../web/src/fleet/groupApps.ts'
 import {computerFleetInput, fleetAbility, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../web/src/fleet/list.ts'
 import {hasPin, loadPins, togglePin} from '../web/src/fleet/pins.ts'
@@ -129,4 +129,11 @@ test('file places keep granted online computers and skip the rest', () => {
 	assert.equal(computerParent(computerPlacePath('kitchen', 'Photos/2024')), '::computer/kitchen/Photos')
 	assert.equal(computerParent('::computer/kitchen'), null)
 	assert.equal(computerPlacePath('kitchen').startsWith('/'), false)
+	assert.equal(parseComputerPlace(SERVER_FILES), null)
+	assert.equal(filesParent(SERVER_FILES), null)
+	assert.equal(filesParent('/Home'), SERVER_FILES)
+	assert.equal(filesParent('/Home/Photos'), '/Home')
+	assert.equal(filesParent('::recents'), SERVER_FILES)
+	assert.equal(filesParent('::computer/kitchen'), null)
+	assert.equal(filesParent('::computer/kitchen/Photos'), '::computer/kitchen')
 })

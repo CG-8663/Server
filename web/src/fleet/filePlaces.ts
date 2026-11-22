@@ -3,6 +3,9 @@
 
 export const COMPUTER_PLACE = '::computer/'
 
+/** This server's own places (Home, Photos, Trash). Not a filesystem path. */
+export const SERVER_FILES = '::server'
+
 export type ComputerFileInput = {
 	id: string
 	name: string
@@ -33,6 +36,21 @@ export function parseComputerPlace(path: string): {id: string; rel: string} | nu
 	const rel = slash < 0 ? '' : rest.slice(slash + 1)
 	if (!safeComputerId(id) || !safeRel(rel)) return null
 	return {id, rel}
+}
+
+/**
+ * Parent in the Files manager.
+ * Null is the machine list. A shallow server folder returns to this server's places.
+ * A computer's own root returns to the machine list.
+ */
+export function filesParent(path: string): string | null {
+	if (parseComputerPlace(path)) return computerParent(path)
+	if (path === SERVER_FILES) return null
+	if (path.startsWith('::')) return SERVER_FILES
+	const parts = path.split('/').filter(Boolean)
+	if (parts.length <= 1) return SERVER_FILES
+	parts.pop()
+	return `/${parts.join('/')}`
 }
 
 /** Parent path inside a computer place. Null means the Files root (the place list). */

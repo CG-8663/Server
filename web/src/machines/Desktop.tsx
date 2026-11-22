@@ -3,11 +3,13 @@
 import {lazy, Suspense, useEffect, useRef, useState} from 'react'
 
 import {SERVER_DESKTOP, type Machine} from '../api'
-import {useMachines, useUser} from '../data'
+import {useApps, useMachines, useUser} from '../data'
 import {useDesktop} from '../desktop/Desktop'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
-import {fleetList} from '../fleet/list'
+import {Disc} from '../fleet/Disc'
+import {fleetAbility, fleetList, SERVER_FLEET_ID} from '../fleet/list'
+import {MachineGlance} from '../fleet/MachineGlance'
 import {openStore} from '../fleet/openStore'
 import {LocalSwarm, useSwarm} from '../swarm/Swarm'
 import {bytes, duration, haptic, useConfirm} from '../ui'
@@ -38,7 +40,10 @@ export function MachinesDesktop() {
 	const machines = useMachines()
 	const list = [...(machines.data ?? [])].sort((a, b) => (a.vmid ?? 0) - (b.vmid ?? 0))
 	const [sel, setSel] = useState<Sel>({kind: 'node'})
+	const [openId, setOpenId] = useState<string | null>(null)
 	const [panel, setPanel] = useState<PanelId>('summary')
+	const desk = useDesktop()
+	const apps = useApps()
 	const [creating, setCreating] = useState(false)
 	const [tasksOpen, setTasksOpen] = useState(true)
 	const node = useNode()
@@ -49,11 +54,15 @@ export function MachinesDesktop() {
 	const host = node.data?.hostname ?? 'server'
 	const swarm = useSwarm()
 	const swarmList = swarm.data ?? []
-	const computers = fleetList({
+	const fleet = fleetList({
 		server: {name: host},
 		computers: swarmList.map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
 		guests: [],
-	}).filter((m) => m.kind === 'computer')
+	})
+	const hostMember = fleet.find((m) => m.kind === 'server')
+	const computers = fleet.filter((m) => m.kind === 'computer')
+	const hostOpen = openId === SERVER_FLEET_ID
+	const toggleOpen = (id: string) => setOpenId(openId === id ? null : id)
 	const computer = sel.kind === 'computer' ? (swarmList.find((a) => a.id === sel.id) ?? null) : null
 	useEffect(() => {
 		if (sel.kind === 'computer' && swarm.isSuccess && !computer) setSel({kind: 'node'})
@@ -74,38 +83,78 @@ export function MachinesDesktop() {
 					<div className="pve-tree-root">
 						<Icon name="all" size={15} /> Datacenter
 					</div>
-					<button type="button" className={`pve-node${sel.kind === 'node' ? ' on' : ''}`} onClick={() => setSel({kind: 'node'})}>
-						<Icon name="server" size={15} />
-						<span>{host}</span>
-					</button>
-					{list.map((m) => (
-						<button
-							type="button"
-							key={m.id}
-							className={`pve-leaf${sel.kind === 'vm' && sel.id === m.id ? ' on' : ''}`}
-							onClick={() => {
-								setSel({kind: 'vm', id: m.id})
-								if (panel === 'console' && m.state !== 'running') setPanel('summary')
-							}}
-						>
-							<i className={`pve-dot st-${m.state}`} />
-							<span className="mono">{m.vmid ?? '–'}</span>
-							<span className="pve-leaf-name">{m.name}</span>
-							{m.pending && <Icon name="info" size={13} className="pve-pending" />}
+					<div className={`pve-node-row${hostOpen ? ' is-open' : ''}`}>
+						<button type="button" className={`pve-node${sel.kind === 'node' ? ' on' : ''}`} onClick={() => setSel({kind: 'node'})}>
+							<Icon name="server" size={15} />
+							<span>{host}</span>
 						</button>
-					))}
+						<Disc open={hostOpen} name={host} controls="glance-server" onClick={() => toggleOpen(SERVER_FLEET_ID)} />
+					</div>
+					{hostOpen && hostMember && (
+						<div className="pve-glance" id="glance-server">
+							<MachineGlance
+								name={host}
+								apps={fleetAbility(hostMember, 'apps').granted ? (apps.data ?? []) : null}
+								appsReason={fleetAbility(hostMember, 'apps').reason}
+								vms={null}
+								vmsReason=""
+								showVms={false}
+								onOpenApp={(app) => desk?.launch(app)}
+							/>
+						</div>
+					)}
+					{hostOpen &&
+						list.map((m) => (
+							<button
+								type="button"
+								key={m.id}
+								className={`pve-leaf${sel.kind === 'vm' && sel.id === m.id ? ' on' : ''}`}
+								onClick={() => {
+									setSel({kind: 'vm', id: m.id})
+									if (panel === 'console' && m.state !== 'running') setPanel('summary')
+								}}
+							>
+								<i className={`pve-dot st-${m.state}`} />
+								<span className="mono">{m.vmid ?? '–'}</span>
+								<span className="pve-leaf-name">{m.name}</span>
+								{m.pending && <Icon name="info" size={13} className="pve-pending" />}
+							</button>
+						))}
 					{machines.isLoading && <div className="pve-tree-note">Loading…</div>}
-					{computers.map((c) => (
-						<button type="button" key={c.id} className={`pve-node${sel.kind === 'computer' && sel.id === c.id ? ' on' : ''}`} onClick={() => setSel({kind: 'computer', id: c.id})}>
-							<Icon name="devices" size={15} />
-							<span>{c.name}</span>
-							{!c.online && (
-								<span className="muted" style={{marginLeft: 'auto', fontSize: 12}}>
-									offline
-								</span>
-							)}
-						</button>
-					))}
+					{computers.map((c) => {
+						const open = openId === c.id
+						const appsAbility = fleetAbility(c, 'apps')
+						const vmsAbility = fleetAbility(c, 'vms')
+						return (
+							<div key={c.id}>
+								<div className={`pve-node-row${open ? ' is-open' : ''}`}>
+									<button type="button" className={`pve-node${sel.kind === 'computer' && sel.id === c.id ? ' on' : ''}`} onClick={() => setSel({kind: 'computer', id: c.id})}>
+										<Icon name="devices" size={15} />
+										<span>{c.name}</span>
+										{!c.online && (
+											<span className="muted" style={{marginLeft: 'auto', fontSize: 12}}>
+												offline
+											</span>
+										)}
+									</button>
+									<Disc open={open} name={c.name} controls={`glance-${c.id}`} onClick={() => toggleOpen(c.id)} />
+								</div>
+								{open && (
+									<div className="pve-glance" id={`glance-${c.id}`}>
+										<MachineGlance
+											name={c.name}
+											apps={appsAbility.granted ? [] : null}
+											appsReason={appsAbility.reason}
+											vms={vmsAbility.granted ? [] : null}
+											vmsReason={vmsAbility.reason}
+											onOpenApp={(app) => desk?.launch(app)}
+											onOpenVm={(id) => setSel({kind: 'vm', id})}
+										/>
+									</div>
+								)}
+							</div>
+						)
+					})}
 				</aside>
 				<section className="pve-content">
 					{sel.kind === 'computer' && computer ? (

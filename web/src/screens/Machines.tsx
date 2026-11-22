@@ -1,28 +1,28 @@
 import {lazy, Suspense, useEffect, useMemo, useState} from 'react'
 
-import {SERVER_DESKTOP, type Machine} from '../api'
+import {SERVER_DESKTOP, type Machine, type UserApp} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useDesktop} from '../desktop/Desktop'
-import {useBootstrap, useMachines, useUser} from '../data'
+import {useApps, useBootstrap, useMachines, useUser} from '../data'
 import {useMachineDetails} from '../machines/api'
 import {PortForwarding} from '../machines/PortForwarding'
 import {BackupsPanel, CloudInitPanel, HardwarePanel, HistoryPanel, MonitorPanel, OptionsPanel, PANELS, SnapshotsPanel, SummaryPanel, usePowerActions, type PanelId} from '../machines/panels'
 import {DevicesPanel} from '../usb'
 import {Icon} from '../icons'
 import {osLook} from '../osLook'
-import {fleetList, guestFleetInput, SERVER_FLEET_ID} from '../fleet/list'
+import {Disc} from '../fleet/Disc'
+import {MachineGlance} from '../fleet/MachineGlance'
+import {fleetAbility, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../fleet/list'
 import {OPEN_FLEET, takePendingFleet, type FleetOpen} from '../fleet/openMember'
 import {openStore} from '../fleet/openStore'
 import {PinButton} from '../fleet/PinButton'
 import {AgentCard, LocalSwarm, useSwarm} from '../swarm/Swarm'
-import {Row, Sheet, SheetHeader, StatChip, StatusPill, haptic, machineStatus} from '../ui'
+import {Row, Sheet, SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
 
-const openButtonStyle = {display: 'flex', flexDirection: 'column', gap: 14, width: '100%', border: 0, background: 'none', padding: 0, color: 'inherit', textAlign: 'left', cursor: 'pointer'} as const
-
-export function Machines() {
+export function Machines({onOpenApp}: {onOpenApp?: (app: UserApp) => void} = {}) {
 	const desk = useDesktop()
 	const boot = useBootstrap()
 	const machines = useMachines()
@@ -37,6 +37,8 @@ export function Machines() {
 	const [consoleId, setConsoleId] = useState<string | null>(null)
 	const [creating, setCreating] = useState(false)
 	const [adding, setAdding] = useState(false)
+	const [expanded, setExpanded] = useState<string | null>(null)
+	const apps = useApps()
 	const list = machines.data ?? []
 	const serverName = boot.server?.device || boot.server?.name || 'This server'
 	const members = useMemo(
@@ -67,6 +69,27 @@ export function Machines() {
 		window.addEventListener(OPEN_FLEET, onOpen)
 		return () => window.removeEventListener(OPEN_FLEET, onOpen)
 	}, [])
+	const openApp = (app: UserApp) => {
+		haptic(6)
+		if (desk) desk.launch(app)
+		else onOpenApp?.(app)
+	}
+	const glanceFor = (memberId: string, memberName: string, kind: 'server' | 'computer') => {
+		const member = members.find((row) => row.id === memberId)
+		const appsAbility = member ? fleetAbility(member, 'apps') : {granted: false, reason: ''}
+		const vmsAbility = member ? fleetAbility(member, 'vms') : {granted: false, reason: ''}
+		return (
+			<MachineGlance
+				name={memberName}
+				apps={appsAbility.granted ? (kind === 'server' ? (apps.data ?? []) : []) : null}
+				appsReason={appsAbility.reason}
+				vms={vmsAbility.granted ? (kind === 'server' ? list : []) : null}
+				vmsReason={vmsAbility.reason}
+				onOpenApp={openApp}
+				onOpenVm={(id) => (haptic(6), setSelectedId(id))}
+			/>
+		)
+	}
 	const openDesktop = () => {
 		haptic(8)
 		setServerOpen(false)
@@ -101,93 +124,53 @@ export function Machines() {
 				</div>
 			)}
 			{machines.isLoading && Array.from({length: 2}, (_, i) => <div key={i} className="skeleton" style={{height: 130, borderRadius: 26, marginBottom: 12}} />)}
-			{members.map((member) => {
+			{members.filter((member) => member.kind !== 'guest').map((member) => {
+				const open = expanded === member.id
+				const toggle = () => setExpanded(open ? null : member.id)
 				if (member.kind === 'server') {
 					return (
-						<div key={member.id} className="glass vm-card press">
-							<button type="button" style={openButtonStyle} onClick={() => (haptic(6), setServerOpen(true))}>
-								<span className="top">
-									<span className="vm-os" style={{background: 'linear-gradient(140deg,#2b2b2b,#0b0b0b)'}}>
-										<Icon name="server" size={26} />
-									</span>
-									<span className="main" style={{flex: 1, minWidth: 0}}>
-										<b style={{display: 'block', fontSize: 16.5, fontWeight: 650}}>{member.name}</b>
-										<span style={{display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 2}}>{member.meta}</span>
-									</span>
-									<StatusPill kind="running" label="Online" />
-								</span>
-							</button>
-							<div style={{display: 'flex', justifyContent: 'flex-end'}}>
-								<PinButton pin={{kind: 'machine', id: SERVER_FLEET_ID, computer: ''}} name={member.name} />
-							</div>
-						</div>
-					)
-				}
-				if (member.kind === 'computer') {
-					const agent = agents.get(member.id)
-					if (!agent) return null
-					return (
-						<AgentCard
-							key={member.id}
-							a={agent}
-							onClick={() => (haptic(6), setComputerId(agent.id))}
-							footer={
-								<div style={{display: 'flex', justifyContent: 'flex-end'}}>
-									<PinButton pin={{kind: 'machine', id: agent.id, computer: ''}} name={agent.name} />
-								</div>
-							}
-						/>
-					)
-				}
-				const m = list.find((row) => row.id === member.id)
-				if (!m) return null
-				const os = osLook(m.osId)
-				return (
-					<div key={m.id} className="glass vm-card press">
-						<button type="button" style={openButtonStyle} onClick={() => (haptic(6), setSelectedId(m.id))}>
+						<article key={member.id} className={`glass vm-card mrow${open ? ' is-open' : ''}`}>
 							<span className="top">
-								<span className="vm-os" style={{background: os.bg, filter: m.state === 'running' ? undefined : 'saturate(.7) brightness(.9)'}}>
-									<Icon name={os.icon} size={26} />
+								<span className="vm-os" style={{background: 'linear-gradient(140deg,#2b2b2b,#0b0b0b)'}}>
+									<Icon name="server" size={26} />
 								</span>
 								<span className="main" style={{flex: 1, minWidth: 0}}>
-									<b style={{display: 'block', fontSize: 16.5, fontWeight: 650}}>{m.name}</b>
-									<span style={{display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 2}}>
-										{m.vmid !== undefined ? `${m.vmid} · ` : ''}
-										{os.name}
-										{' · Virtual machine'}
-										{m.pending ? ' · changes pending' : ''}
-									</span>
+									<b style={{display: 'block', fontSize: 16.5, fontWeight: 650}}>{member.name}</b>
+									<span style={{display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 2}}>{member.meta}</span>
 								</span>
-								<StatusPill {...machineStatus(m.state)} />
+								<StatusPill kind="running" label="Online" />
+								<button type="button" className="btn small" onClick={() => (haptic(6), setServerOpen(true))}>
+									Open
+								</button>
 							</span>
-							{m.state === 'installing' && m.installProgress !== undefined ? (
-								<span className="progress" aria-label={`Installing ${m.installProgress}%`}>
-									<i style={{width: `${m.installProgress}%`}} />
-								</span>
-							) : (
-								<span className="specs">
-									{m.cores ? (
-										<StatChip icon="cpu" label="CPU">
-											{m.cores} cores
-										</StatChip>
-									) : null}
-									{m.memoryGb ? (
-										<StatChip icon="memory" label="Memory">
-											{m.memoryGb} GB
-										</StatChip>
-									) : null}
-									{m.diskSizeGb ? (
-										<StatChip icon="disk" label="Disk">
-											{m.diskSizeGb} GB
-										</StatChip>
-									) : null}
-								</span>
+							<div className="mrow-foot">
+								<PinButton pin={{kind: 'machine', id: SERVER_FLEET_ID, computer: ''}} name={member.name} />
+								<Disc open={open} name={member.name} controls={`glance-${member.id}`} onClick={toggle} />
+							</div>
+							{open && (
+								<div className="mrow-body" id={`glance-${member.id}`}>
+									{glanceFor(member.id, member.name, 'server')}
+								</div>
 							)}
-						</button>
-						<div style={{display: 'flex', justifyContent: 'flex-end'}}>
-							<PinButton pin={{kind: 'vm', id: m.id, computer: SERVER_FLEET_ID}} name={m.name} />
-						</div>
-					</div>
+						</article>
+					)
+				}
+				const agent = agents.get(member.id)
+				if (!agent) return null
+				return (
+					<AgentCard
+						key={member.id}
+						className={`mrow${open ? ' is-open' : ''}`}
+						a={agent}
+						onClick={() => (haptic(6), setComputerId(agent.id))}
+						footer={
+							<div className="mrow-foot">
+								<PinButton pin={{kind: 'machine', id: agent.id, computer: ''}} name={agent.name} />
+								<Disc open={open} name={agent.name} controls={`glance-${member.id}`} onClick={toggle} />
+							</div>
+						}
+						extra={open ? <div className="mrow-body" id={`glance-${member.id}`}>{glanceFor(member.id, member.name, 'computer')}</div> : null}
+					/>
 				)
 			})}
 			{selected && !consoleMachine && (
