@@ -966,7 +966,7 @@ function AgentServices({a, onClose}: {a: Agent; onClose: () => void}) {
 
 type RemoteFile = {name: string; path: string; isDir: boolean; size: number; modified: number}
 
-function AgentFiles({a, onClose}: {a: Agent; onClose: () => void}) {
+export function AgentFiles({a, onClose}: {a: Agent; onClose: () => void}) {
 	const [path, setPath] = useState('/Home')
 	const [busy, setBusy] = useState(false)
 	const fileInput = useRef<HTMLInputElement>(null)
