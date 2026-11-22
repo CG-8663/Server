@@ -1110,7 +1110,7 @@ export function StoreIcon({size = 56}: {size?: number}) {
 
 // ---- layout: phone or desktop (detection in layout.ts) ---------------------------------------
 // Stored per device (a phone and a PC signed into the same account want different layouts). Each
-// device is asked once, at its first sign-in (LayoutChooser); Automatic is still there.
+// device is asked once, at its first sign-in (the welcome setup); Automatic is still there.
 //
 // Automatic: the desktop on a big enough screen that has a mouse or trackpad anywhere (a touchscreen
 // PC or a touch laptop still counts), never on a phone. It changes only on a clear change of size
@@ -1238,11 +1238,12 @@ export function watchKeyboardViewport() {
 }
 
 // ---- iOS home-screen app: bottom gap ------------------------------------------------------------
-// In a standalone web app with a translucent status bar, iOS 26 sometimes lays out fixed elements as
-// if the screen were a status bar shorter, leaving a strip under the dock until something scrolls.
-// A hidden marker pinned to bottom: 0 shows where iOS thinks the bottom is; the difference from the
-// real screen height goes into --ios-gap, which bottom-anchored elements add back. When iOS gets it
-// right the gap is 0 and nothing moves.
+// In a standalone web app iOS 26 sometimes lays the page out shorter than the screen (often after the
+// keyboard has been up, sometimes at launch), and draws nothing in the strip below: a dark bar under
+// the dock. A hidden marker pinned to bottom: 0 shows where iOS thinks the bottom is.
+// When it's short, hiding and showing the whole app in one reflow makes WebKit measure the screen
+// again, which closes the gap. If it stays short, nothing is pushed into the strip iOS isn't drawing
+// (that only cut the dock off); --ios-gap stays 0 and the dock sits whole above it.
 export function watchStandaloneGap() {
 	const ios = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
 	const standalone = (navigator as Navigator & {standalone?: boolean}).standalone === true || matchMedia('(display-mode: standalone)').matches
@@ -1252,26 +1253,36 @@ export function watchStandaloneGap() {
 	probe.style.cssText = 'position:fixed;left:0;bottom:0;width:1px;height:1px;visibility:hidden;pointer-events:none'
 	document.body.appendChild(probe)
 	const root = document.documentElement
-	let last = -1
-	const measure = () => {
+	root.style.setProperty('--ios-gap', '0px')
+	let lastHeal = 0
+	const gapNow = () => {
 		const vv = window.visualViewport
 		const keyboard = !!vv && window.innerHeight - vv.height > 80
+		if (keyboard || root.classList.contains('desk-mode')) return 0
 		const portrait = window.innerHeight >= window.innerWidth
 		const screenH = portrait ? Math.max(screen.height, screen.width) : Math.min(screen.height, screen.width)
-		const gap = keyboard || root.classList.contains('desk-mode') ? 0 : Math.round(screenH - probe.getBoundingClientRect().bottom)
-		const value = gap > 0 && gap <= 120 ? gap : 0
-		if (value !== last) {
-			last = value
-			root.style.setProperty('--ios-gap', `${value}px`)
-		}
+		const gap = Math.round(screenH - probe.getBoundingClientRect().bottom)
+		return gap > 4 && gap <= 120 ? gap : 0
+	}
+	const heal = () => {
+		const app = document.getElementById('root')
+		if (!app || Date.now() - lastHeal < 1500) return
+		lastHeal = Date.now()
+		// Keep every scrolled area where it was across the flip.
+		const scrolled = [...document.querySelectorAll<HTMLElement>('*')].filter((el) => el.scrollTop > 0).map((el) => [el, el.scrollTop] as const)
+		app.style.display = 'none'
+		void app.offsetHeight
+		app.style.display = ''
+		for (const [el, top] of scrolled) el.scrollTop = top
+	}
+	const measure = () => {
+		if (gapNow()) heal()
 	}
 	measure()
 	for (const ms of [100, 300, 700, 1500, 3000]) window.setTimeout(measure, ms)
 	window.addEventListener('resize', measure)
 	window.addEventListener('orientationchange', () => window.setTimeout(measure, 300))
 	window.visualViewport?.addEventListener('resize', () => window.setTimeout(measure, 50))
-	window.addEventListener('scroll', measure, {passive: true})
-	document.addEventListener('scroll', measure, {passive: true, capture: true})
 	document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && window.setTimeout(measure, 100))
-	document.addEventListener('focusout', () => [120, 450, 900].forEach((ms) => window.setTimeout(measure, ms)))
+	document.addEventListener('focusout', () => [150, 450, 900].forEach((ms) => window.setTimeout(measure, ms)))
 }

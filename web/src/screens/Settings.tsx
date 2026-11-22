@@ -8,7 +8,7 @@ import {resetDeskConfig} from '../desktop/config'
 import {useBootstrap, useUser} from '../data'
 import {checkLiveText} from '../focus'
 import {Icon, type IconName} from '../icons'
-import {Card, Field, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
+import {Card, Field, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type Prefs} from '../ui'
 import {Appearance} from './More'
 import {AssistantAppearanceSettings} from '../character/widgets'
 import {OmarchyThemes} from '../OmarchyThemes'
@@ -16,6 +16,7 @@ import {StoragePage} from './Storage'
 import {BackupsPage} from '../backups'
 import {UnraidPage} from '../unraid'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
+import {ScreenLayoutCards} from '../LayoutPicker'
 import {clearTotpSetupQuery} from './twoFactorQuery'
 import {PASSWORD_SHEET_SUBTITLE} from './settingsHelpers'
 
@@ -195,37 +196,31 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					</button>
 					<h1 className="title">Appearance</h1>
 				</div>
-				<Appearance prefs={prefs} setPrefs={setPrefs} wallpaper={user.data?.wallpaper} />
+				{/* Layout first: it changes the whole screen. Themes and the wallpaper come after. */}
 				<section>
 					<div className="section-head">
-						<h2>Omarchy</h2>
+						<h2>Layout</h2>
+					</div>
+					<ScreenLayoutCards value={layout.pref} detected={layout.detected} onPick={setLayoutPref} />
+					<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
+						Saved on this device only.
+					</p>
+				</section>
+				<section>
+					<div className="section-head">
+						<h2>Theme</h2>
+					</div>
+					<Appearance prefs={prefs} setPrefs={setPrefs} wallpaper={user.data?.wallpaper} />
+				</section>
+				<section>
+					<div className="section-head">
+						<h2>Omarchy desktop themes</h2>
 					</div>
 					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 						<Row icon="palette" color="var(--blue)" label="Themes" value={omarchyTheme.data?.label ?? undefined} onClick={() => openPage('omarchy-themes')} />
 					</div>
 					<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
 						Your Omarchy desktop’s themes. Switch the whole desktop, or get more from the Omarchy manual.
-					</p>
-				</section>
-				<section>
-					<div className="section-head">
-						<h2>Layout</h2>
-					</div>
-					<Segmented<LayoutPref>
-						label="Layout"
-						value={layout.pref}
-						options={[
-							{id: 'auto', label: 'Automatic'},
-							{id: 'desktop', label: 'Desktop'},
-							{id: 'phone', label: 'Phone'},
-						]}
-						onChange={(v) => {
-							haptic(6)
-							setLayoutPref(v)
-						}}
-					/>
-					<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
-						Desktop gives you windows, a dock and Activities, like Ubuntu. Automatic uses it on a big screen with a mouse or trackpad (on this screen: {layout.detected ? 'Desktop' : 'Phone'}). Saved on this device only.
 					</p>
 				</section>
 			</div>

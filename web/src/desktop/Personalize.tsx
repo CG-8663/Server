@@ -1,12 +1,14 @@
-// "Desktop & Dock": desktop themes, wallpapers, dock layout and desktop icons. Desktop only,
-// saved per device; your phone's appearance (Settings → Appearance) isn't changed.
+// "Appearance" on the desktop: the layout first (it changes the whole screen), then themes,
+// wallpapers, the dock and desktop icons. Saved per device; your phone's own appearance
+// (Settings → Appearance there) isn't changed.
 import {useEffect, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {applyPrefsUpdate, prefsAfterPhotoUpload} from '../photoPrefs'
-import {Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, useToast, wallpaperUrl, type Prefs} from '../ui'
+import {DesktopStyleCards, ScreenLayoutCards} from '../LayoutPicker'
+import {Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, setLayoutPref, useLayout, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {PRESETS, STYLES, solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
 import {CAPTURE_KEY, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
 import {SnippetBlock} from './hyprland/Snippet'
@@ -25,7 +27,7 @@ const ACCENT_CHOICES: {id: DeskAccent; label: string; swatch: string}[] = [
 ]
 
 export function Personalize({tab: initial, prefs, setPrefs}: {tab?: string; prefs: Prefs; setPrefs: (p: Prefs) => void}) {
-	const [tab, setTab] = useState<Tab>(((['themes', 'background', 'dock', 'desktop', 'layout'] as string[]).includes(initial ?? '') ? initial : 'themes') as Tab)
+	const [tab, setTab] = useState<Tab>(((['themes', 'background', 'dock', 'desktop', 'layout'] as string[]).includes(initial ?? '') ? initial : 'layout') as Tab)
 	useEffect(() => {
 		if (initial && (['themes', 'background', 'dock', 'desktop', 'layout'] as string[]).includes(initial)) setTab(initial as Tab)
 	}, [initial])
@@ -33,17 +35,17 @@ export function Personalize({tab: initial, prefs, setPrefs}: {tab?: string; pref
 	return (
 		<div className="personalize">
 			<h1 className="title" style={{margin: '4px 0 14px'}}>
-				Desktop &amp; Dock
+				Appearance
 			</h1>
 			<Segmented<Tab>
 				label="Section"
 				value={tab}
 				options={[
+					{id: 'layout', label: 'Layout'},
 					{id: 'themes', label: 'Themes'},
 					{id: 'background', label: 'Background'},
 					{id: 'dock', label: 'Dock'},
 					{id: 'desktop', label: 'Desktop icons'},
-					{id: 'layout', label: 'Layout'},
 				]}
 				onChange={setTab}
 			/>
@@ -73,6 +75,7 @@ function Section({title, note, children}: {title: string; note?: ReactNode; chil
 
 function LayoutSettings({cfg, setCfg}: P) {
 	const toast = useToast()
+	const screen = useLayout()
 	const secure = typeof window !== 'undefined' && window.isSecureContext
 	const hasLock = typeof navigator !== 'undefined' && !!keyboardLockApi()
 	const [mode, setMode] = useState<CaptureMode>(() => {
@@ -96,23 +99,11 @@ function LayoutSettings({cfg, setCfg}: P) {
 	}
 	return (
 		<>
-			<Section title="Desktop layout" note="Ubuntu is the floating desktop with a dock. Hyprland tiles windows, with workspaces 1–9 and Omarchy Super shortcuts.">
-				<div className="glass group pz-rows">
-					<div className="row static">
-						<span className="main">
-							<b>Layout</b>
-						</span>
-						<Segmented<DeskShell>
-							label="Layout"
-							value={cfg.shell ?? 'gnome'}
-							options={[
-								{id: 'gnome', label: 'Ubuntu'},
-								{id: 'hyprland', label: 'Hyprland'},
-							]}
-							onChange={(v) => setCfg((c) => ({...c, shell: v}))}
-						/>
-					</div>
-				</div>
+			<Section title="Screen layout" note="Phone & tablet switches this device to the touch layout. Saved on this device only.">
+				<ScreenLayoutCards value={screen.pref} detected={screen.detected} onPick={setLayoutPref} />
+			</Section>
+			<Section title="Desktop style">
+				<DesktopStyleCards<DeskShell> value={cfg.shell ?? 'gnome'} floating="gnome" tiling="hyprland" onPick={(v) => setCfg((c) => ({...c, shell: v}))} />
 			</Section>
 			{/* Key capture and the snippet only matter in the Hyprland layout (Ubuntu keeps Super for Activities). */}
 			{cfg.shell === 'hyprland' && (
