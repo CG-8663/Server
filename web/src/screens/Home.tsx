@@ -175,7 +175,7 @@ export function Home({onOpenApp, go}: {onOpenApp: (app: UserApp) => void; go: (t
 				<p>{summary}</p>
 			</header>
 
-			<div>
+			<div className="home-meters">
 				<Gauges fleet={rings} onClick={() => (multi ? setListOpen(true) : go('more'))} />
 				<div className="facts">
 					{rings?.temp ? (
