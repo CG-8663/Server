@@ -1,8 +1,9 @@
 import {useMemo, useState} from 'react'
 import {useQuery} from '@tanstack/react-query'
 
-import {query, type MachineCapabilities, type OsImage} from './api'
+import {query, type MachineCapabilities, type MemoryUsage, type OsImage} from './api'
 import {useAction, useCpu, useMachines, useMemory, useUser} from './data'
+import {defaultCores, defaultMemoryGb, diskRange, hostMaxMemoryGb, machineUsernameHint, machineUsernameOk, nextDiskGb} from './machineForm'
 import {Icon} from './icons'
 import {osLook} from './osLook'
 import {Field, Sheet, SheetHeader, bytes, haptic} from './ui'
@@ -37,21 +38,22 @@ const SPECS: Record<string, Spec> = {
 }
 const specFor = (os: OsImage) => SPECS[`${os.familyId}:${os.variantName}`] ?? SPECS[os.familyId] ?? FALLBACK
 
-function Stepper({label, value, unit, min, max, step = 1, onChange}: {label: string; value: number; unit: string; min: number; max: number; step?: number; onChange: (v: number) => void}) {
+function Stepper({label, value, unit, min, max, step = 1, next, onChange}: {label: string; value: number; unit: string; min: number; max: number; step?: number; next?: (value: number, direction: -1 | 1) => number; onChange: (v: number) => void}) {
 	const set = (v: number) => {
 		haptic(4)
 		onChange(Math.min(max, Math.max(min, v)))
 	}
+	const go = (direction: -1 | 1) => set(next ? next(value, direction) : value + direction * step)
 	return (
 		<div className="stepper row static">
 			<span className="k">{label}</span>
-			<button className="step-btn" aria-label={`Less ${label}`} onClick={() => set(value - step)} disabled={value <= min}>
+			<button className="step-btn" aria-label={`Less ${label}`} onClick={() => go(-1)} disabled={value <= min}>
 				−
 			</button>
 			<span className="step-val num">
 				{value} <small>{unit}</small>
 			</span>
-			<button className="step-btn" aria-label={`More ${label}`} onClick={() => set(value + step)} disabled={value >= max}>
+			<button className="step-btn" aria-label={`More ${label}`} onClick={() => go(1)} disabled={value >= max}>
 				+
 			</button>
 		</div>
@@ -176,23 +178,34 @@ export function CreateMachine({open, onClose}: {open: boolean; onClose: () => vo
 function Configure({os, hostArch, onBack, onDone}: {os: OsImage; hostArch: string; onBack: () => void; onDone: () => void}) {
 	const cpu = useCpu()
 	const mem = useMemory()
+	// useState keeps its first value, so wait until CPU and memory have loaded.
+	if (cpu.isPending || mem.isPending) {
+		return (
+			<div style={{overflowY: 'auto', flex: 1, margin: '0 -20px', padding: '8px 20px'}}>
+				<div className="skeleton" style={{height: 64, margin: '8px 0'}} />
+				<div className="skeleton" style={{height: 160, margin: '8px 0'}} />
+			</div>
+		)
+	}
+	return <ConfigureForm os={os} hostArch={hostArch} onBack={onBack} onDone={onDone} threads={cpu.data?.threads ?? 4} memory={mem.data ?? null} />
+}
+
+function ConfigureForm({os, hostArch, onBack, onDone, threads, memory}: {os: OsImage; hostArch: string; onBack: () => void; onDone: () => void; threads: number; memory: MemoryUsage | null}) {
 	const user = useUser()
 	const machines = useMachines()
 	const action = useAction()
 	const profile = specFor(os)
-	const threads = cpu.data?.threads ?? 4
-	const totalGb = mem.data ? Math.floor(mem.data.size / 1024 ** 3) : 8
-	// Leave the host the larger of 2 GB or what it is using now.
-	const maxMemoryGb = Math.max(1, Math.floor((mem.data ? mem.data.size - Math.max(2e9, mem.data.totalUsed) : 6e9) / 1024 ** 3)) || totalGb
+	const maxMemoryGb = hostMaxMemoryGb(memory)
+	const disk = diskRange(os, profile.minDiskSizeGb)
 	const baseName = `${os.name}${os.variantName ? ` ${os.variantName}` : ''}`
 	const taken = new Set((machines.data ?? []).map((m) => m.name.toLowerCase()))
 	let suggestion = baseName
 	for (let n = 2; taken.has(suggestion.toLowerCase()); n++) suggestion = `${baseName} ${n}`
 
 	const [name, setName] = useState(suggestion)
-	const [cores, setCores] = useState(Math.min(Math.max(profile.cores, profile.minCores), Math.max(1, Math.floor(threads / 2)), threads))
-	const [memoryGb, setMemoryGb] = useState(Math.min(Math.max(profile.memoryGb, profile.minMemoryGb), maxMemoryGb))
-	const [diskSizeGb, setDisk] = useState(profile.diskSizeGb)
+	const [cores, setCores] = useState(defaultCores(profile, threads))
+	const [memoryGb, setMemoryGb] = useState(defaultMemoryGb(profile, memory))
+	const [diskSizeGb, setDisk] = useState(Math.min(disk.max, Math.max(disk.min, profile.diskSizeGb)))
 	const [username, setUsername] = useState((user.data?.name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20))
 	const [password, setPassword] = useState('')
 	const [licenseKey, setLicenseKey] = useState('')
@@ -200,7 +213,7 @@ function Configure({os, hostArch, onBack, onDone}: {os: OsImage; hostArch: strin
 
 	const needsPassword = os.requiresCredentials && !os.manualSetup
 	const windows = os.platform === 'windows'
-	const usernameOk = !os.requiresCredentials || (username.trim() !== '' && (!windows || /^[a-z0-9][a-z0-9_.-]{0,19}$/i.test(username.trim())))
+	const usernameOk = !os.requiresCredentials || machineUsernameOk(username, windows)
 	const licenseOk = !os.requiresLicenseKey || /^[A-Z0-9]{5}(?:-[A-Z0-9]{5}){4}$/i.test(licenseKey.trim())
 	const nameTaken = taken.has(name.trim().toLowerCase())
 	const canCreate = !!name.trim() && !nameTaken && usernameOk && (!needsPassword || password !== '') && licenseOk && !action.isPending
@@ -259,13 +272,13 @@ function Configure({os, hostArch, onBack, onDone}: {os: OsImage; hostArch: strin
 					label="Name"
 					value={name}
 					onChange={(e) => setName(e.target.value)}
-					maxLength={100}
+					maxLength={64}
 					error={nameTaken ? 'You already have a machine with this name.' : undefined}
 				/>
 				<div className="glass group" style={{borderRadius: 18, marginBottom: 16, '--inset': '16px'} as React.CSSProperties}>
 					<Stepper label="CPU cores" value={cores} unit={cores === 1 ? 'core' : 'cores'} min={Math.min(profile.minCores, threads)} max={threads} onChange={setCores} />
 					<Stepper label="Memory" value={memoryGb} unit="GB" min={Math.min(profile.minMemoryGb, maxMemoryGb)} max={Math.max(maxMemoryGb, 1)} onChange={setMemoryGb} />
-					<Stepper label="Disk" value={diskSizeGb} unit="GB" min={profile.minDiskSizeGb} max={10_000} step={diskSizeGb >= 100 ? 20 : 5} onChange={setDisk} />
+					<Stepper label="Disk" value={diskSizeGb} unit="GB" min={disk.min} max={disk.max} next={(v, d) => nextDiskGb(v, d, disk)} onChange={setDisk} />
 				</div>
 				{os.requiresCredentials && (
 					<>
@@ -277,7 +290,7 @@ function Configure({os, hostArch, onBack, onDone}: {os: OsImage; hostArch: strin
 							spellCheck={false}
 							value={username}
 							onChange={(e) => setUsername(e.target.value)}
-							error={!usernameOk && username !== '' ? 'Letters, numbers, dots, dashes; up to 20 characters.' : undefined}
+							error={!usernameOk && username !== '' ? machineUsernameHint(windows) : undefined}
 						/>
 						{needsPassword && (
 							<Field

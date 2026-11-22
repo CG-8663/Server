@@ -8,6 +8,10 @@ export function desktopIconKeysApply(active: Focusable): boolean {
 	return !!active.closest('.desk-surface')
 }
 
+export function desktopIconKeyOpens(key: string): boolean {
+	return key === 'Enter' || key === ' '
+}
+
 export function iconSelectionClearsOnFocus(target: Focusable): boolean {
 	if (!target || typeof target.closest !== 'function') return false
 	return !!target.closest('.win') && !target.closest('.desk-surface')

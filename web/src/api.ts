@@ -218,7 +218,11 @@ export const getBootstrap = (options?: RequestOptions) => request<Bootstrap>('/a
 export const setup = (url: string) => post<{ok: true; url: string; version: string}>('/api/setup', {url})
 export const login = (body: {username: string; password: string; totpToken?: string}, options?: RequestOptions) =>
 	post<{ok: true; accountId: string}>('/api/auth/login', body, options)
-export const logout = () => post('/api/auth/logout')
+export const logout = () =>
+	post('/api/auth/logout').then((body) => {
+		if (typeof window !== 'undefined') window.dispatchEvent(new Event('touch:signed-out'))
+		return body
+	})
 
 // ---- omarchyd shapes ---------------------------------------------------------
 
