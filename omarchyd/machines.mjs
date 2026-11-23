@@ -135,8 +135,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (loaded) {
 			// A create that was interrupted by a restart can't resume: show it as failed.
 			// Machines from before 0.6.1 asked for a virtio display, which QEMU on Arch only has with an
-			// extra package: use the built-in standard VGA instead.
-			for (const m of machines) if (m.layout?.video === 'virtio') m.layout.video = 'vga'
+			// extra package: use the built-in standard VGA instead. Only while this server's QEMU lacks it:
+			// where it has virtio-vga, a machine set to VirtIO in the Hardware sheet keeps it.
+			if (!(await availableVideo()).includes('virtio')) for (const m of machines) if (m.layout?.video === 'virtio') m.layout.video = 'vga'
 			for (const m of machines) if (m.state === 'installing') Object.assign(m, {state: 'error', errorMessage: 'Setup was interrupted. Delete this machine and create it again.'})
 			for (const m of machines) normalize(m)
 			const interruptedAt = Date.now()

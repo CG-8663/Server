@@ -1400,3 +1400,25 @@ test('an imported raw disk is defined as qcow2 only when the copy is qcow2', asy
 		await rm(root, {recursive: true, force: true})
 	}
 })
+
+test('a machine set to the VirtIO display keeps it across a restart when this server has virtio-vga', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-video-'))
+	try {
+		const dataDir = join(root, 'data')
+		await mkdir(join(dataDir, 'machines'), {recursive: true})
+		const stateFile = join(dataDir, 'machines', 'machines.json')
+		const entry = (id, video) => ({id, vmid: 100, name: id, osId: 'x', cores: 1, memoryGb: 1, diskSizeGb: 10, portForwards: [], createdAt: 1, layout: {firmware: 'efi', machineType: 'q35', nic: 'virtio', video, disks: []}})
+		await writeFile(stateFile, JSON.stringify({machines: [entry('abcdef01', 'virtio')]}))
+		const open = (devices) => createMachines({dataDir, run: async (cmd) => (cmd === 'qemu-system-x86_64' ? devices : ''), kvmDevice: join(root, 'kvm')})
+		const videoAfterRestart = async (devices) => {
+			const machines = open(devices)
+			await machines.ready
+			return JSON.parse(await readFile(stateFile, 'utf8')).machines[0].layout.video
+		}
+		assert.equal(await videoAfterRestart('name "virtio-vga", bus PCI'), 'virtio', 'virtio-vga is available: the owner’s choice stays')
+		assert.equal(await videoAfterRestart('name "virtio-vga", bus PCI'), 'virtio', 'and stays on every later start')
+		assert.equal(await videoAfterRestart(''), 'vga', 'without virtio-vga the old display is still replaced')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
