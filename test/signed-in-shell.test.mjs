@@ -40,11 +40,14 @@ test('desktop and System sign-out keep bootstrap and surface a failed logout', a
 		assert.match(src, /qc\.removeQueries\(\{predicate: \(q\) => queryClearsOnSignOut\(q\.queryKey\)\}\)/)
 		assert.match(src, /toast\(\(e as Error\)\.message, true\)/)
 		assert.doesNotMatch(src, /qc\.clear\(\)/)
-		assert.doesNotMatch(src, /logout\(\)\.catch/)
 	}
+	assert.doesNotMatch(desktop, /logout\(\)\.catch/)
+	assert.match(more, /const finishSignOut = async \(\) => \{[\s\S]*?await logout\(\)[\s\S]*?return[\s\S]*?queryClearsOnSignOut/)
 	assert.match(more, /const finishSignOut = async \(\) => \{[\s\S]*?await logout\(\)/)
 	assert.match(more, /onClick=\{signOut\}/)
-	assert.match(more, /onDone=\{finishSignOut\}/)
+	assert.match(more, /The reset already ended the session/)
+	assert.match(more, /await logout\(\)\.catch\(\(\) => \{\}\)/)
+	assert.doesNotMatch(more, /onDone=\{finishSignOut\}/)
 })
 
 test('the apps window says the app session lasts 30 days', async () => {

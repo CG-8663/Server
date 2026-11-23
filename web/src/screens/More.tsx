@@ -197,7 +197,18 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 					<Row icon="open" color="var(--blue)" label="Open this server" href={boot.server?.url} />
 					<Row icon="restart" color="var(--peach)" label="Restart server" onClick={() => power('restart')} />
 					<Row icon="power" color="var(--red)" label="Shut down server" onClick={() => power('shutdown')} />
-					{owner && <FactoryReset onDone={finishSignOut} />}
+					{owner && (
+						<FactoryReset
+							onDone={async () => {
+								// The reset already ended the session. Logout may answer 401; still leave the signed-in page.
+								await logout().catch(() => {})
+								qc.removeQueries({predicate: (q) => queryClearsOnSignOut(q.queryKey)})
+								resetDeskConfig()
+								resetAssistantTurn()
+								onSignedOut()
+							}}
+						/>
+					)}
 					<Row icon="signout" color="#8e8e93" label="Sign out of this device" onClick={signOut} />
 				</div>
 			</section>
