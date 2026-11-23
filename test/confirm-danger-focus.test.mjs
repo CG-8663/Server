@@ -27,3 +27,10 @@ test('initial focus prefers the data-autofocus element over the first focusable 
 	}
 	assert.equal(getInitialFocusTarget(container, null), cancel)
 })
+
+test('plugin removal confirms are marked danger: true so Cancel receives initial focus', () => {
+	const plugins = readFileSync(new URL('../web/src/screens/Plugins.tsx', import.meta.url), 'utf8')
+	const swarm = readFileSync(new URL('../web/src/swarm/Swarm.tsx', import.meta.url), 'utf8')
+	assert.match(plugins, /confirm\(\{title: `Remove \$\{p\.name\}\?`[^\n]*danger:\s*true/)
+	assert.match(swarm, /confirm\(\{title: `Remove \$\{id\}\?`[^\n]*danger:\s*true/)
+})
