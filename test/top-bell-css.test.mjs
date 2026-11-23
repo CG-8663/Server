@@ -1,4 +1,4 @@
-// Ensure the top bar notifications bell rule beats generic .desk-top button styles in web/src/styles.css.
+// Ensure the top bar notifications bell rule beats generic .desk-top button styles (including :hover and .on) in web/src/styles.css.
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {describe, test} from 'node:test'
@@ -66,24 +66,26 @@ function parseRules(css) {
 }
 
 // Matches a selector against <div class="desk ..."><header class="desk-top"><div class="top-right"><button class="...">
-// Supports :where(...) (0 specificity) and > combinators so scoped bar trigger rules are evaluated, not skipped.
-function matchChain(selector, chain) {
-	if (/[:\[+~]/.test(selector)) return null
+// Supports :where(...) (0 specificity), > combinators, and :hover pseudo-class so hover-only mutations are caught too.
+function matchPart(part, node, pseudoStates) {
+	const m = part.match(/^(?:([a-zA-Z0-9_-]+))?((?:\.[a-zA-Z0-9_-]+)*)((?::[a-zA-Z0-9_-]+)*)$/)
+	if (!m) return null
+	const [, elTag, clsStr, pseudoStr] = m
+	if (elTag && elTag !== node.tag) return null
+	const cls = clsStr ? clsStr.slice(1).split('.') : []
+	if (!cls.every((c) => node.classes.has(c))) return null
+	const pseudos = pseudoStr ? pseudoStr.slice(1).split(':') : []
+	if (!pseudos.every((p) => pseudoStates.has(p))) return null
+	return [0, cls.length + pseudos.length, elTag ? 1 : 0]
+}
+
+function matchChain(selector, chain, pseudoStates) {
+	if (/[\[\+~]/.test(selector)) return null
 	const tokens = selector
 		.trim()
 		.replace(/\s*>\s*/g, ' > ')
 		.split(/\s+/)
 		.filter(Boolean)
-	const matchPart = (part, node) => {
-		const m = part.match(/^(?:([a-zA-Z0-9_-]+))?((?:\.[a-zA-Z0-9_-]+)*)$/)
-		if (!m) return null
-		const [, elTag, clsStr] = m
-		if (elTag && elTag !== node.tag) return null
-		const cls = clsStr ? clsStr.slice(1).split('.') : []
-		if (!cls.every((c) => node.classes.has(c))) return null
-		return [0, cls.length, elTag ? 1 : 0]
-	}
-	// Walk right-to-left over compound parts and optional '>' combinators.
 	const items = []
 	for (let i = 0; i < tokens.length; i++) {
 		if (tokens[i] === '>') {
@@ -93,7 +95,7 @@ function matchChain(selector, chain) {
 		}
 	}
 	if (!items.length) return null
-	const lastSpec = matchPart(items[items.length - 1].part, chain[chain.length - 1])
+	const lastSpec = matchPart(items[items.length - 1].part, chain[chain.length - 1], pseudoStates)
 	if (!lastSpec) return null
 	let spec = [...lastSpec]
 	let nodeIdx = chain.length - 1
@@ -102,14 +104,14 @@ function matchChain(selector, chain) {
 		if (child) {
 			nodeIdx -= 1
 			if (nodeIdx < 0) return null
-			const s = matchPart(part, chain[nodeIdx])
+			const s = matchPart(part, chain[nodeIdx], new Set())
 			if (!s) return null
 			spec = [spec[0] + s[0], spec[1] + s[1], spec[2] + s[2]]
 		} else {
 			let found = -1
 			let foundSpec = null
 			for (let n = nodeIdx - 1; n >= 0; n--) {
-				const s = matchPart(part, chain[n])
+				const s = matchPart(part, chain[n], new Set())
 				if (s) {
 					found = n
 					foundSpec = s
@@ -124,7 +126,7 @@ function matchChain(selector, chain) {
 	return spec
 }
 
-function matchBellSelector(selector, buttonClasses, rootClasses = new Set()) {
+function matchBellSelector(selector, buttonClasses, rootClasses = new Set(), pseudoStates = new Set()) {
 	const chain = [
 		{tag: 'div', classes: rootClasses},
 		{tag: 'header', classes: new Set(['desk-top'])},
@@ -134,15 +136,18 @@ function matchBellSelector(selector, buttonClasses, rootClasses = new Set()) {
 	const wm = selector.match(/^(.*?):where\(([^()]+)\)(.*)$/)
 	if (wm) {
 		const [, pre, inner, post] = wm
-		if (post.trim()) return null
-		const prefixSpec = pre.trim() ? matchChain(pre.trim(), chain.slice(0, 1)) : [0, 0, 0]
+		const prefixSpec = pre.trim() ? matchChain(pre.trim(), chain.slice(0, 1), new Set()) : [0, 0, 0]
 		if (pre.trim() && !prefixSpec) return null
+		const postSpec = post.trim() ? matchPart(post.trim(), chain[chain.length - 1], pseudoStates) : [0, 0, 0]
+		if (post.trim() && !postSpec) return null
 		for (const branch of splitTopLevelCommas(inner)) {
-			if (matchChain(branch, chain)) return prefixSpec
+			if (matchChain(branch, chain, new Set())) {
+				return [prefixSpec[0] + postSpec[0], prefixSpec[1] + postSpec[1], prefixSpec[2] + postSpec[2]]
+			}
 		}
 		return null
 	}
-	return matchChain(selector, chain)
+	return matchChain(selector, chain, pseudoStates)
 }
 
 function cmpSpec(a, b) {
@@ -150,11 +155,11 @@ function cmpSpec(a, b) {
 	return 0
 }
 
-function computeBellStyles(buttonClasses, rootClasses = new Set()) {
+function computeBellStyles(buttonClasses, rootClasses = new Set(), pseudoStates = new Set()) {
 	const rules = parseRules(CSS)
 	const resolved = {}
 	for (const r of rules) {
-		const spec = matchBellSelector(r.selector, buttonClasses, rootClasses)
+		const spec = matchBellSelector(r.selector, buttonClasses, rootClasses, pseudoStates)
 		if (!spec) continue
 		for (const [prop, value] of Object.entries(r.decls)) {
 			const prev = resolved[prop]
@@ -178,11 +183,15 @@ describe('desktop top bar bell styles', () => {
 		assert.equal(lit.color, 'var(--accent-text)')
 	})
 
-	test('.style-daylight .desk-top .top-bell uses dark ink while preserving .lit accent color and 30px width', () => {
+	test('.style-daylight .desk-top .top-bell uses dark ink, keeps 30px width, and gets dark hover/on tint', () => {
 		const daylight = new Set(['style-daylight'])
 		const bell = computeBellStyles(new Set(['top-bell']), daylight)
 		assert.equal(bell.color, 'rgba(0, 0, 0, 0.62)')
 		assert.equal(bell.width, '30px')
+
+		const hovered = computeBellStyles(new Set(['top-bell']), daylight, new Set(['hover']))
+		assert.equal(hovered.width, '30px')
+		assert.equal(hovered.background, 'rgba(0, 0, 0, 0.08)')
 
 		const lit = computeBellStyles(new Set(['top-bell', 'lit']), daylight)
 		assert.equal(lit.color, 'var(--accent-text)')

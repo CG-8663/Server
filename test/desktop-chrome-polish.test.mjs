@@ -45,9 +45,11 @@ test('offline banner sits above dock and below top bar, context menu sits above 
 	assert.match(CSS, /@media \(max-width: 600px\) \{\n\t\.clock-pop \{[^}]*grid-template-columns:\s*1fr;/)
 })
 
-test('desktop-mode body sheets centre with compact desktop confirm row, no swipe-drag jump, and toasts clear the top bar', () => {
+test('desktop-mode body sheets centre with compact desktop confirm row, Cancel-first at narrow widths, legible danger fill, and toasts clear the top bar', () => {
 	assert.match(CSS, /html\.desk-mode > body > \.sheet \{/)
 	assert.match(CSS, /html\.desk-mode > body > \.sheet \.confirm-actions \{[^}]*flex-direction:\s*row-reverse;/)
+	assert.match(CSS, /@media \(max-width: 420px\) \{\n\thtml\.desk-mode > body > \.sheet \.confirm-actions \{[^}]*flex-direction:\s*column-reverse;/)
+	assert.match(CSS, /\.btn\.danger\.solid \{[^}]*color-mix\(in srgb, var\(--red\) 60%, #240004\)/)
 	assert.match(CSS, /html\.desk-mode \.toast \{[^}]*top:\s*calc\(var\(--top-h, 34px\) \+ 12px\);/)
 	assert.match(UI, /className="stack confirm-actions"/)
 	assert.match(UI, /if \(document\.documentElement\.classList\.contains\('desk-mode'\)\) return/)

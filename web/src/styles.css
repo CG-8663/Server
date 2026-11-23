@@ -1344,7 +1344,7 @@ h1.title {
 	color: var(--red);
 }
 .btn.danger.solid {
-	background: color-mix(in srgb, var(--red) 72%, #3a0006);
+	background: color-mix(in srgb, var(--red) 60%, #240004);
 	color: #fff;
 }
 .btn.block {
@@ -4700,7 +4700,7 @@ html.desk-mode > body > .sheet .confirm-actions .btn.block {
 }
 @media (max-width: 420px) {
 	html.desk-mode > body > .sheet .confirm-actions {
-		flex-direction: column;
+		flex-direction: column-reverse;
 	}
 	html.desk-mode > body > .sheet .confirm-actions .btn.block {
 		width: 100%;
