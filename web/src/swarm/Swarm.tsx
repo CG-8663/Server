@@ -644,7 +644,7 @@ export function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 									className="btn small"
 									disabled={act.isPending}
 									onClick={async () => {
-										if (await confirm({title: `Remove ${id}?`, body: `It’s turned off and removed from ${a.name}.`, confirm: 'Remove', icon: 'trash'}))
+										if (await confirm({title: `Remove ${id}?`, body: `It’s turned off and removed from ${a.name}.`, confirm: 'Remove', danger: true, icon: 'trash'}))
 											act.mutate({path: 'swarm.action', input: {id: a.id, name: 'plugin-remove', pluginId: id}, done: `Removed from ${a.name}`})
 									}}
 								>

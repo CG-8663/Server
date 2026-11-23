@@ -66,7 +66,7 @@ export function PluginBrowser({q}: {q: string}) {
 		if (ok) act.mutate({path: 'omarchy.installPlugin', id: p.id, done: `Installing ${p.name}…`})
 	}
 	const remove = async (p: Plugin) => {
-		if (await confirm({title: `Remove ${p.name}?`, body: 'It’s turned off and removed from your Omarchy desktop.', confirm: 'Remove', icon: 'trash'}))
+		if (await confirm({title: `Remove ${p.name}?`, body: 'It’s turned off and removed from your Omarchy desktop.', confirm: 'Remove', danger: true, icon: 'trash'}))
 			act.mutate({path: 'omarchy.removePlugin', id: p.id, done: `Removing ${p.name}…`})
 	}
 	const data = page?.data

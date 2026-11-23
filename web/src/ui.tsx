@@ -716,7 +716,8 @@ export function Providers({children}: {children: ReactNode}) {
 								<button className={`btn block ${pending.danger ? 'danger solid' : 'primary'}`} onClick={() => finish(true)}>
 									{pending.confirm}
 								</button>
-								<button className="btn block ghost" onClick={() => finish(false)}>
+								{/* Destructive confirms start on Cancel, so a stray Enter can't delete or uninstall. */}
+								<button className="btn block ghost" data-autofocus={pending.danger || undefined} onClick={() => finish(false)}>
 									Cancel
 								</button>
 							</div>
