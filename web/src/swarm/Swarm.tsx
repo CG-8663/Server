@@ -22,6 +22,7 @@ import {ThemePicker} from '../theme/ThemePicker'
 import {themeAction} from '../theme/themeAction'
 import {storageRowSub} from './storageHint'
 import {StoragePanel} from '../screens/Storage'
+import {useDesktop} from '../desktop/Desktop'
 import {ComputerBackups} from '../backups'
 import {Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, useConfirm, useToast} from '../ui'
 
@@ -152,6 +153,7 @@ export function LocalSwarm({
 	}
 	const [terminal, setTerminal] = useState<{agent: Agent; input?: string} | null>(null)
 	const [screen, setScreen] = useState<Agent | null>(null)
+	const desk = useDesktop()
 	const selected = (swarm.data ?? []).find((a) => a.id === selectedId && !isGuestAgent(a)) ?? null
 	const online = list.filter((a) => a.online).length
 	const outdated = list.filter((a) => a.online && may(a, 'manage') && a.updateAvailable)
@@ -166,7 +168,11 @@ export function LocalSwarm({
 					bare={bare}
 					onClose={() => setSelectedId(null)}
 					onTerminal={(input) => setTerminal({agent: selected, input})}
-					onDesktop={() => setScreen(selected)}
+					onDesktop={() => {
+						// The same viewer as a virtual machine's: a window on the desktop, full screen on a phone.
+						if (desk) desk.openConsole(`agent-${selected.id}`, selected.name)
+						else setScreen(selected)
+					}}
 				/>
 			)}
 			{adding && <AddComputer before={(swarm.data ?? []).map((a) => a.id)} onClose={() => setAdding(false)} onJoined={(id) => (setAdding(false), setSelectedId(id))} />}

@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.69',
+		date: '2026-11-22',
+		title: 'One desktop viewer, and drives you can browse',
+		added: [
+			'Files › Drives shows the drives you mount in Storage: open, upload, download, copy, move and trash inside them like Home. The free space in Files and on Home counts them, and pools, as well as the main drive.',
+		],
+		fixed: [
+			'A connected computer’s desktop opens in the same viewer as a virtual machine’s: a window of its own on the desktop layout, full screen on a phone.',
+		],
+	},
+	{
 		version: '0.9.68',
 		date: '2026-11-22',
 		title: 'Storage in Settings, and remote desktops that show up',

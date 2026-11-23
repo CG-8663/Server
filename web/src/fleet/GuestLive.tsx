@@ -1,3 +1,4 @@
+import {useDesktop} from '../desktop/Desktop'
 import {lazy, Suspense, useState, type ReactNode} from 'react'
 
 import type {Machine} from '../api'
@@ -32,6 +33,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 	const [install, setInstall] = useState(false)
 	const [terminal, setTerminal] = useState<{input?: string} | null>(null)
 	const [desktop, setDesktop] = useState(false)
+	const desk = useDesktop()
 	const [storageNote, setStorageNote] = useState(false)
 	const live = machine.state === 'running' && !!agent?.online
 	const metrics = agent?.online ? agent.metrics : null
@@ -52,7 +54,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 	const connectorDesktop = live && !!agent && agentMay(agent, 'desktop') && agent.info?.desktop?.ok !== false
 	return (
 		<>
-			<MachineActions terminal={live && !!agent && agentMay(agent, 'terminal')} desktop={hostScreen || connectorDesktop} onTerminal={() => openTerminal()} onDesktop={() => (onOpenDesktop && machine.state === 'running' ? onOpenDesktop() : setDesktop(true))} />
+			<MachineActions terminal={live && !!agent && agentMay(agent, 'terminal')} desktop={hostScreen || connectorDesktop} onTerminal={() => openTerminal()} onDesktop={() => (onOpenDesktop && machine.state === 'running' ? onOpenDesktop() : desk && agent ? desk.openConsole(`agent-${agent.id}`, machine.name) : setDesktop(true))} />
 			{swarm.isFetched && !agent && linux && (
 				<div className="actions">
 					<button type="button" className="btn primary" onClick={() => (haptic(6), setInstall(true))}>

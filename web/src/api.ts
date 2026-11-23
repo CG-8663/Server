@@ -286,6 +286,8 @@ export type DiskUsage = {
 	/** True until the first measurement of apps, machines and files is done. */
 	measuring?: boolean
 	/** The drive the system is on. notInUse: space the drive has that the filesystem doesn't use yet. */
+	/** Other drives Files shows: the ones mounted in Storage (Files › Drives) and pools in Home. */
+	drives?: {name: string; folder: string; size: number; used: number; available: number}[]
 	drive?: {name: string; size: number; notInUse: number; steps: ('partition' | 'partition-not-last' | 'encryption' | 'filesystem')[]; partition: string | null; partitionNumber: number | null; encrypted: string | null; filesystem: string | null} | null
 }
 export type Temperature = {temperature: number | null; warning: string; reason?: 'virtual' | 'no-sensor'}
@@ -322,6 +324,13 @@ export type SystemStats = {
 	uptime: number
 }
 /** Share of the space you can use that's in use (like df: space kept back for the system isn't counted). */
+/** The server's space across its main drive and the other drives it has mounted. */
+export const diskAll = (d: DiskUsage) => {
+	const extra = d.drives ?? []
+	const used = d.totalUsed + extra.reduce((n, x) => n + x.used, 0)
+	const total = d.totalUsed + d.available + extra.reduce((n, x) => n + x.size, 0)
+	return {used, total, available: d.available + extra.reduce((n, x) => n + x.available, 0)}
+}
 export const diskPct = (d: DiskUsage) => (d.totalUsed + d.available > 0 ? (100 * d.totalUsed) / (d.totalUsed + d.available) : 0)
 
 export type RegistryApp = {

@@ -318,16 +318,16 @@ export function uploadRelBlocked(rel: string | undefined, failed: readonly strin
 	return failed.some((dir) => rel === dir || rel.startsWith(`${dir}/`))
 }
 
-const UNSERVED_FILE_ROOTS = new Set(['/Apps', '/External', '/Network'])
+const UNSERVED_FILE_ROOTS = new Set(['/Apps', '/Network'])
 
-/** App data, Drives, and Network are not served by resolve() yet. */
+/** App data and Network are not served by resolve() yet. Drives (/External) is: the drives mounted in Storage. */
 export function isServedFilePlace(path: string): boolean {
 	return !UNSERVED_FILE_ROOTS.has(path)
 }
 
-/** Move/Copy chips. Drives and Network stay off until those roots exist. */
+/** Move/Copy chips: Home, and the mounted drives. */
 export function folderPickerRoots(): string[] {
-	return ['/Home']
+	return ['/Home', '/External']
 }
 
 /** Search runs only once the trimmed query is at least two characters. */
