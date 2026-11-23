@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {describe, test} from 'node:test'
 
-import {shouldLauncherCaptureEnter, shouldYieldLauncherKey} from '../web/src/desktop/hyprland/launcherScroll.ts'
+import {focusedLauncherIndex, shouldLauncherCaptureEnter, shouldYieldLauncherKey} from '../web/src/desktop/hyprland/launcherScroll.ts'
 
 const LAUNCHER = readFileSync(new URL('../web/src/desktop/hyprland/Launcher.tsx', import.meta.url), 'utf8')
 const CSS = readFileSync(new URL('../web/src/styles.css', import.meta.url), 'utf8')
@@ -33,14 +33,25 @@ describe('launcher keyboard ownership when a context menu is open', () => {
 		assert.ok(guardIdx > 0 && escIdx > guardIdx, 'shouldYieldLauncherKey must run before Escape/Arrow/Enter')
 	})
 
-	test('Launcher captures Enter only on the Filter input and moves DOM focus when arrowing inside the list', () => {
+	test('Launcher captures Enter only on the Filter input, derives arrow stepping from the focused row, and suppresses scroll-induced hover theft', () => {
 		const filterInput = {tagName: 'INPUT'}
 		const rowBtn = {tagName: 'BUTTON'}
 		assert.equal(shouldLauncherCaptureEnter(filterInput, filterInput, filterInput), true)
 		assert.equal(shouldLauncherCaptureEnter(filterInput, rowBtn, rowBtn), false)
+		const fakeList = {
+			children: [
+				{contains: (el) => el === 'btn0'},
+				{contains: (el) => el === 'btn1'},
+				{contains: (el) => el === 'btn2'},
+			],
+		}
+		assert.equal(focusedLauncherIndex(fakeList, 'btn2'), 2)
+		assert.equal(focusedLauncherIndex(fakeList, filterInput), -1)
 		assert.match(LAUNCHER, /shouldLauncherCaptureEnter\(input\.current, document\.activeElement, e\.target\)/)
+		assert.match(LAUNCHER, /focusedLauncherIndex\(list\.current, document\.activeElement\)/)
+		assert.match(LAUNCHER, /ignoreHover\.current = true/)
+		assert.match(LAUNCHER, /onMouseEnter=\{\(\) => \{\s*if \(!ignoreHover\.current\) setSel\(i\)/)
 		assert.match(LAUNCHER, /onFocus=\{\(\) => setSel\(i\)\}/)
-		assert.match(LAUNCHER, /list\.current\?\.contains\(document\.activeElement\)/)
 	})
 
 	test('context menu and its scrim stack above .hypr-overlay so pointer events reach menu items', () => {

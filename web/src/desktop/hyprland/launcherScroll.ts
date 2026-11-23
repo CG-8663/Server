@@ -38,3 +38,15 @@ export function shouldLauncherCaptureEnter(input: unknown, activeElement: unknow
 	if (!input) return false
 	return target === input || activeElement === input
 }
+
+// Resolve the 0-based row index containing activeElement when focus is inside the launcher list, or -1 otherwise.
+export function focusedLauncherIndex<T>(
+	list: {children: ArrayLike<{contains?: (node: T) => boolean}>} | null | undefined,
+	activeElement: T,
+): number {
+	if (!list || !activeElement) return -1
+	for (let i = 0; i < list.children.length; i++) {
+		if (list.children[i]?.contains?.(activeElement)) return i
+	}
+	return -1
+}
