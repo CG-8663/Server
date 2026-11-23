@@ -27,13 +27,13 @@ export function Launcher({onClose, onOpen, items}: {onClose: () => void; onOpen:
 				e.preventDefault()
 				onClose()
 			}
-			if (e.key === 'ArrowDown') {
+			if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
 				e.preventDefault()
-				setSel((s) => stepLauncherSelection(s, 'ArrowDown', rows.length))
-			}
-			if (e.key === 'ArrowUp') {
-				e.preventDefault()
-				setSel((s) => stepLauncherSelection(s, 'ArrowUp', rows.length))
+				const next = stepLauncherSelection(sel, e.key, rows.length)
+				setSel(next)
+				if (list.current?.contains(document.activeElement)) {
+					list.current.children[next]?.querySelector<HTMLElement>('button')?.focus()
+				}
 			}
 			if (e.key === 'Enter' && rows[sel] && shouldLauncherCaptureEnter(input.current, document.activeElement, e.target)) {
 				e.preventDefault()

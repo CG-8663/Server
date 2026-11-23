@@ -33,13 +33,20 @@ describe('launcher keyboard ownership when a context menu is open', () => {
 		assert.ok(guardIdx > 0 && escIdx > guardIdx, 'shouldYieldLauncherKey must run before Escape/Arrow/Enter')
 	})
 
-	test('Launcher captures Enter only on the Filter input so focused row buttons activate themselves', () => {
+	test('Launcher captures Enter only on the Filter input and moves DOM focus when arrowing inside the list', () => {
 		const filterInput = {tagName: 'INPUT'}
 		const rowBtn = {tagName: 'BUTTON'}
 		assert.equal(shouldLauncherCaptureEnter(filterInput, filterInput, filterInput), true)
 		assert.equal(shouldLauncherCaptureEnter(filterInput, rowBtn, rowBtn), false)
 		assert.match(LAUNCHER, /shouldLauncherCaptureEnter\(input\.current, document\.activeElement, e\.target\)/)
 		assert.match(LAUNCHER, /onFocus=\{\(\) => setSel\(i\)\}/)
+		assert.match(LAUNCHER, /list\.current\?\.contains\(document\.activeElement\)/)
+	})
+
+	test('context menu and its scrim stack above .hypr-overlay so pointer events reach menu items', () => {
+		const z = (sel) => Number(CSS.match(new RegExp(`\\n${sel.replace(/\./g, '\\.')} \\{[^}]*?z-index: (\\d+)`))?.[1])
+		assert.ok(z('.menu-scrim') > z('.hypr-overlay'), '.menu-scrim must sit above .hypr-overlay')
+		assert.ok(z('.ctx-menu') > z('.menu-scrim'), '.ctx-menu must sit above .menu-scrim')
 	})
 })
 
