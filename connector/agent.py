@@ -24,14 +24,14 @@ Standard library only, so it runs on any distribution with Python 3.8+.
 import ast
 import base64
 import bz2
+import ctypes
+import getpass
 import http.client
 import http.server
-import fcntl
 import hashlib
 import json
 import os
-import pty
-import pwd
+import platform
 import re
 import select
 import shutil
@@ -42,12 +42,20 @@ import stat
 import struct
 import subprocess
 import sys
-import termios
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+# Windows has no pty, pwd, fcntl or termios: the connector runs there with its own shell and readings.
+try:
+    import fcntl
+    import pty
+    import pwd
+    import termios
+except ImportError:
+    fcntl = pty = pwd = termios = None
 
 VERSION = "1"
 ABILITY_NAMES = ("terminal", "desktop", "manage", "storage", "backup", "services", "files")
@@ -55,11 +63,15 @@ ABILITY_NAMES = ("terminal", "desktop", "manage", "storage", "backup", "services
 # read loop stays free to take acks, so a large file cannot stall the terminal or the desktop.
 FILE_CHUNK = 64 * 1024
 FILE_WINDOW = 4
-CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "omarchy-connector")
+IS_WINDOWS = sys.platform == "win32"
+if IS_WINDOWS:
+    CONFIG_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "omarchy-connector")
+else:
+    CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "omarchy-connector")
 CONFIG = os.path.join(CONFIG_DIR, "config.json")
 CA_FILE = os.path.join(CONFIG_DIR, "server-ca.crt")
-RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-DATA_DIR = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "omarchy-connector")
+RUNTIME = CONFIG_DIR if IS_WINDOWS else (os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+DATA_DIR = CONFIG_DIR if IS_WINDOWS else os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "omarchy-connector")
 
 # restic, the backup engine: this computer's own if it's new enough, otherwise its official build,
 # downloaded once and checked against these SHA-256s (from restic's SHA256SUMS for 0.18.1).
@@ -216,6 +228,8 @@ def read(path, default=""):
 
 
 def os_release():
+    if IS_WINDOWS:
+        return {"PRETTY_NAME": f"Windows {platform.release()}".strip(), "NAME": "Windows", "ID": "windows"}
     out = {}
     for line in read("/etc/os-release").splitlines():
         if "=" in line:
@@ -225,6 +239,8 @@ def os_release():
 
 
 def package_manager():
+    if IS_WINDOWS:
+        return "winget" if shutil.which("winget") else ""
     for name in ("apt", "dnf", "pacman", "zypper"):
         if shutil.which(name if name != "apt" else "apt-get"):
             return name
@@ -234,7 +250,7 @@ def package_manager():
 def update_command(pkg, omarchy):
     if omarchy:
         return "omarchy update"
-    return {"apt": "sudo apt update && sudo apt upgrade", "dnf": "sudo dnf upgrade --refresh", "pacman": "sudo pacman -Syu", "zypper": "sudo zypper update"}.get(pkg, "")
+    return {"apt": "sudo apt update && sudo apt upgrade", "dnf": "sudo dnf upgrade --refresh", "pacman": "sudo pacman -Syu", "zypper": "sudo zypper update", "winget": "winget upgrade --all"}.get(pkg, "")
 
 
 def omarchy_facts():
@@ -277,6 +293,8 @@ def _file_sha256(path):
 
 def lan_macs(list_dir=os.listdir, read_file=read, root="/sys/class/net"):
     """Non-virtual network adapter MAC addresses for Wake-on-LAN."""
+    if IS_WINDOWS and list_dir is os.listdir and read_file is read:
+        return _windows_macs()
     try:
         names = sorted(list_dir(root))
     except OSError:
@@ -295,6 +313,108 @@ def lan_macs(list_dir=os.listdir, read_file=read, root="/sys/class/net"):
     return out[:8]
 
 
+# ---- Windows readings (by kdegeek, #868): Win32 calls through ctypes, standard library only. ----
+_WIN_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_win_cpu_last = None
+
+
+def _windows_macs():
+    try:
+        out = subprocess.run(["getmac", "/fo", "csv", "/nh"], capture_output=True, text=True, timeout=5, creationflags=_WIN_NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    seen, macs = set(), []
+    for line in out.splitlines():
+        m = re.search(r"([0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})", line)
+        if not m:
+            continue
+        mac = m.group(1).replace("-", ":").lower()
+        if mac != "00:00:00:00:00:00" and mac not in seen:
+            seen.add(mac)
+            macs.append(mac)
+    return macs[:8]
+
+
+def _windows_meminfo():
+    class _MemStatus(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    try:
+        st = _MemStatus()
+        st.dwLength = ctypes.sizeof(_MemStatus)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            total, ptotal = int(st.ullTotalPhys), int(st.ullTotalPageFile)
+            return {"total": total, "used": max(0, total - int(st.ullAvailPhys))}, {"total": ptotal, "used": max(0, ptotal - int(st.ullAvailPageFile))}
+    except Exception:  # noqa: BLE001 - not on Windows, or the call failed
+        pass
+    return {"total": 0, "used": 0}, {"total": 0, "used": 0}
+
+
+def _windows_disks():
+    rows = []
+    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+        root = f"{letter}:\\"
+        if not os.path.exists(root):
+            continue
+        try:
+            u = shutil.disk_usage(root)
+            if u.total > 0:
+                rows.append({"mount": f"{letter}:", "total": int(u.total), "used": int(u.used)})
+        except OSError:
+            continue
+    return rows[:12]
+
+
+def _windows_uptime():
+    try:
+        ctypes.windll.kernel32.GetTickCount64.restype = ctypes.c_ulonglong
+        return float(ctypes.windll.kernel32.GetTickCount64()) / 1000.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _windows_cpu_percent():
+    global _win_cpu_last
+
+    class _FileTime(ctypes.Structure):
+        _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
+
+    try:
+        idle_t, kern_t, user_t = _FileTime(), _FileTime(), _FileTime()
+        if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle_t), ctypes.byref(kern_t), ctypes.byref(user_t)):
+            return None
+
+        def to_int(ft):
+            return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+
+        idle, total = to_int(idle_t), to_int(kern_t) + to_int(user_t)
+        prev, _win_cpu_last = _win_cpu_last, (idle, total)
+        if not prev or total <= prev[1]:
+            return None
+        return round(max(0.0, min(100.0, 100.0 * (1.0 - (idle - prev[0]) / (total - prev[1])))), 1)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _user_name():
+    if pwd is not None:
+        return pwd.getpwuid(os.getuid()).pw_name
+    try:
+        return getpass.getuser()
+    except (OSError, ImportError, KeyError):
+        return os.environ.get("USERNAME", "")
+
+
 def info():
     rel = os_release()
     pkg = package_manager()
@@ -303,9 +423,9 @@ def info():
         "hostname": socket.gethostname(),
         "os": rel.get("PRETTY_NAME") or rel.get("NAME") or "Linux",
         "osId": rel.get("ID", ""),
-        "kernel": os.uname().release,
-        "arch": os.uname().machine,
-        "user": pwd.getpwuid(os.getuid()).pw_name,
+        "kernel": os.uname().release if hasattr(os, "uname") else platform.release(),
+        "arch": os.uname().machine if hasattr(os, "uname") else platform.machine(),
+        "user": _user_name(),
         "version": VERSION,
         "agentSha": _file_sha256(__file__),
         "helperSha": _file_sha256(HELPER),
@@ -322,6 +442,8 @@ _cpu_last = None
 
 def cpu_percent():
     global _cpu_last
+    if IS_WINDOWS:
+        return _windows_cpu_percent()
     parts = read("/proc/stat").split("\n", 1)[0].split()[1:]
     vals = [int(x) for x in parts] if parts else []
     if len(vals) < 4:
@@ -335,6 +457,8 @@ def cpu_percent():
 
 
 def meminfo():
+    if IS_WINDOWS:
+        return _windows_meminfo()
     m = {}
     for line in read("/proc/meminfo").splitlines():
         k, _, rest = line.partition(":")
@@ -377,6 +501,8 @@ def _begin_stat(mount):
 
 
 def disks():
+    if IS_WINDOWS:
+        return _windows_disks()
     out, seen, mounts = [], set(), []
     for line in read("/proc/mounts").splitlines():
         p = line.split()
@@ -800,7 +926,7 @@ def default_reads():
         "temp": temperature,
         "battery": batteries,
         "disk": disks,
-        "uptime": lambda: float(read("/proc/uptime", "0").split()[0] or 0),
+        "uptime": _windows_uptime if IS_WINDOWS else (lambda: float(read("/proc/uptime", "0").split()[0] or 0)),
     }
 
 
@@ -865,7 +991,7 @@ class Sampler:
                 disk_rows = None
         if take_disk and disk_rows is not None:
             self._snap["disks"] = disk_rows
-        self._take("cpu", lambda v: self._snap.update(cpu=v, cores=os.cpu_count(), load=list(os.getloadavg())), t)
+        self._take("cpu", lambda v: self._snap.update(cpu=v, cores=os.cpu_count(), load=list(os.getloadavg()) if hasattr(os, "getloadavg") else []), t)
         def mem(v):
             if isinstance(v, tuple):
                 self._snap["mem"], self._snap["swap"] = v
@@ -1037,6 +1163,8 @@ def _xauthority():
 
 
 def desktop_kind():
+    if IS_WINDOWS:
+        return {"kind": "none", "ok": False, "why": "Sharing a Windows computer’s screen isn’t available yet."}
     wl = _wayland_display()
     wlroots = _hypr_signature() or any(f.startswith("sway-ipc.") for f in (os.listdir(RUNTIME) if os.path.isdir(RUNTIME) else []))
     if wl and wlroots:
@@ -1517,6 +1645,201 @@ class ShellSession:
             pass
 
 
+class WinShellSession:
+    """Windows' version of ShellSession: PowerShell in a Windows pseudo console (ConPTY, Windows 10
+    1809 and later), so typing, colours and resizing behave like a real terminal. Like ShellSession
+    it keeps running when the browser leaves and replays what was on screen when it comes back."""
+
+    def __init__(self, name, cols, rows, argv=None):
+        from ctypes import wintypes
+
+        self.name = name
+        self.alive = True
+        self.tmux = False
+        self.fd = -1
+        self.pid = 0
+        self.cols = min(500, max(10, int(cols or 80)))
+        self.rows = min(300, max(4, int(rows or 24)))
+        self.scrollback = bytearray()
+        self._lock = threading.Lock()
+        self.attached = None
+        self._pending = bytearray()
+        self._write_cv = threading.Condition()
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._k32 = k32
+        if not hasattr(k32, "CreatePseudoConsole"):
+            raise RuntimeError("The terminal needs Windows 10 (version 1809) or later.")
+
+        class COORD(ctypes.Structure):
+            _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+        class STARTUPINFOW(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR), ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR),
+                        ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD), ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD),
+                        ("dwXCountChars", wintypes.DWORD), ("dwYCountChars", wintypes.DWORD), ("dwFillAttribute", wintypes.DWORD),
+                        ("dwFlags", wintypes.DWORD), ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD), ("lpReserved2", ctypes.c_void_p),
+                        ("hStdInput", wintypes.HANDLE), ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE)]
+
+        class STARTUPINFOEXW(ctypes.Structure):
+            _fields_ = [("StartupInfo", STARTUPINFOW), ("lpAttributeList", ctypes.c_void_p)]
+
+        class PROCESS_INFORMATION(ctypes.Structure):
+            _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE), ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD)]
+
+        self._COORD = COORD
+        k32.CreatePipe.argtypes = [ctypes.POINTER(wintypes.HANDLE), ctypes.POINTER(wintypes.HANDLE), ctypes.c_void_p, wintypes.DWORD]
+        k32.CreatePseudoConsole.argtypes = [COORD, wintypes.HANDLE, wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+        k32.CreatePseudoConsole.restype = ctypes.c_long
+        k32.ResizePseudoConsole.argtypes = [ctypes.c_void_p, COORD]
+        k32.ResizePseudoConsole.restype = ctypes.c_long
+        k32.ClosePseudoConsole.argtypes = [ctypes.c_void_p]
+        k32.ClosePseudoConsole.restype = None
+        k32.InitializeProcThreadAttributeList.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t)]
+        k32.UpdateProcThreadAttribute.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
+        k32.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
+        k32.CreateProcessW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_void_p, ctypes.c_void_p]
+        k32.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        k32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        in_read, in_write, out_read, out_write = wintypes.HANDLE(), wintypes.HANDLE(), wintypes.HANDLE(), wintypes.HANDLE()
+        if not k32.CreatePipe(ctypes.byref(in_read), ctypes.byref(in_write), None, 0) or not k32.CreatePipe(ctypes.byref(out_read), ctypes.byref(out_write), None, 0):
+            raise RuntimeError("Couldn’t start a terminal on this computer")
+        self._hpc = ctypes.c_void_p()
+        hr = k32.CreatePseudoConsole(COORD(self.cols, self.rows), in_read, out_write, 0, ctypes.byref(self._hpc))
+        # The console has its own copies of these ends now.
+        k32.CloseHandle(in_read)
+        k32.CloseHandle(out_write)
+        if hr != 0:
+            k32.CloseHandle(in_write)
+            k32.CloseHandle(out_read)
+            raise RuntimeError("Couldn’t start a terminal on this computer")
+        self._in, self._out = in_write, out_read
+
+        size = ctypes.c_size_t()
+        k32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
+        attrs = ctypes.create_string_buffer(size.value)
+        si = STARTUPINFOEXW()
+        si.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
+        # No handles of the connector's own: the shell's only input and output are the console.
+        si.StartupInfo.dwFlags = 0x00000100  # STARTF_USESTDHANDLES
+        si.lpAttributeList = ctypes.cast(attrs, ctypes.c_void_p)
+        pi = PROCESS_INFORMATION()
+        try:
+            if not k32.InitializeProcThreadAttributeList(attrs, 1, 0, ctypes.byref(size)):
+                raise RuntimeError("Couldn’t start a terminal on this computer")
+            # PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: the value is the console handle itself.
+            if not k32.UpdateProcThreadAttribute(attrs, 0, 0x00020016, self._hpc, ctypes.sizeof(ctypes.c_void_p), None, None):
+                raise RuntimeError("Couldn’t start a terminal on this computer")
+            shell = shutil.which("pwsh.exe") or shutil.which("powershell.exe") or os.environ.get("COMSPEC") or "cmd.exe"
+            cmdline = ctypes.create_unicode_buffer(subprocess.list2cmdline([shell, "-NoLogo"] if "powershell" in shell.lower() or "pwsh" in shell.lower() else [shell]))
+            # EXTENDED_STARTUPINFO_PRESENT
+            if not k32.CreateProcessW(None, cmdline, None, None, False, 0x00080000, None, os.path.expanduser("~"), ctypes.byref(si), ctypes.byref(pi)):
+                raise RuntimeError(f"Couldn’t start {os.path.basename(shell)}")
+        except Exception:
+            self._close_console()
+            raise
+        finally:
+            k32.DeleteProcThreadAttributeList(attrs)
+        k32.CloseHandle(pi.hThread)
+        self._proc = pi.hProcess
+        self.pid = int(pi.dwProcessId)
+        threading.Thread(target=self._pump, daemon=True).start()
+        threading.Thread(target=self._write_loop, daemon=True).start()
+        threading.Thread(target=self._wait, daemon=True).start()
+
+    def _close_console(self):
+        hpc, self._hpc = getattr(self, "_hpc", None), None
+        if hpc:
+            # Ends the console and everything attached to it; the output pipe then ends too.
+            self._k32.ClosePseudoConsole(hpc)
+
+    def resize(self, cols, rows):
+        try:
+            c = min(500, max(10, int(cols or 80)))
+            r = min(300, max(4, int(rows or 24)))
+            self.cols, self.rows = c, r
+            if self._hpc:
+                self._k32.ResizePseudoConsole(self._hpc, self._COORD(c, r))
+        except (OSError, ValueError, TypeError):
+            pass
+
+    attach = ShellSession.attach
+    detach = ShellSession.detach
+    _finish = ShellSession._finish
+
+    def write(self, data):
+        if not data or not self.alive:
+            return False
+        overflow = False
+        with self._write_cv:
+            if self.alive:
+                if len(self._pending) + len(data) > SHELL_IN_MAX:
+                    overflow = True
+                else:
+                    self._pending += data
+                    self._write_cv.notify()
+        if overflow:
+            self.kill("The terminal stopped reading")
+            return False
+        return True
+
+    def _write_loop(self):
+        from ctypes import wintypes
+
+        while True:
+            with self._write_cv:
+                while self.alive and not self._pending:
+                    self._write_cv.wait()
+                if not self.alive:
+                    return
+                chunk, self._pending = bytes(self._pending), bytearray()
+            done = wintypes.DWORD()
+            buf = ctypes.create_string_buffer(chunk, len(chunk))
+            if not self._k32.WriteFile(self._in, buf, len(chunk), ctypes.byref(done), None):
+                return
+
+    def _pump(self):
+        from ctypes import wintypes
+
+        buf = ctypes.create_string_buffer(65536)
+        got = wintypes.DWORD()
+        try:
+            while self.alive:
+                if not self._k32.ReadFile(self._out, buf, 65536, ctypes.byref(got), None) or got.value == 0:
+                    break
+                data = buf.raw[: got.value]
+                with self._lock:
+                    self.scrollback += data
+                    _trim_scrollback(self.scrollback)
+                    target = self.attached
+                if target is not None and not target.closed:
+                    target.out(data)
+        finally:
+            self._finish("Shell ended")
+            self._close_console()
+            for h in (self._in, self._out):
+                self._k32.CloseHandle(h)
+
+    def _wait(self):
+        # The console keeps its output pipe open after the shell exits: close it so _pump ends.
+        self._k32.WaitForSingleObject(self._proc, 0xFFFFFFFF)
+        self._k32.CloseHandle(self._proc)
+        self._proc = None
+        self._close_console()
+
+    def kill(self, reason="Shell ended", end_shell=True):
+        self._finish(reason)
+        with self._write_cv:
+            self._write_cv.notify_all()
+        proc = self._proc
+        if proc:
+            self._k32.TerminateProcess(proc, 1)
+        self._close_console()
+
+
 class ShellChannel(Channel):
     """Channel adapter attached to a persistent ShellSession (close detaches without SIGHUP)."""
 
@@ -1568,7 +1891,7 @@ def open_shell_session(conn, ch, cols, rows, name="main", fresh=False):
             # A tmux session still running from before the connector restarted is picked up again.
             kept = tmux_has(sname)
             argv = tmux_attach_argv(sname, cols, rows)
-            session = ShellSession(sname, cols, rows, argv)
+            session = (WinShellSession if IS_WINDOWS else ShellSession)(sname, cols, rows, argv)
             _shell_sessions[sname] = session
             resumed = bool(argv) and kept
         else:
@@ -1657,7 +1980,14 @@ def _roots(home, config, data):
 
 def _under(path, root):
     path = os.path.realpath(path)
+    if IS_WINDOWS:  # paths aren't case-sensitive there
+        path, root = os.path.normcase(path), os.path.normcase(root)
     return path == root or path.startswith(root + os.sep)
+
+
+def _close_fd(fd):
+    if fd is not None and fd >= 0:
+        os.close(fd)
 
 
 def _blocked(path, config, data):
@@ -1721,6 +2051,22 @@ def resolve_home(rel, want, home=None, config=None, data=None):
                 raise RuntimeError(f"“{part[:60]}” isn’t a folder")
         if not _under(cur, home) or _blocked(cur, config, data):
             raise RuntimeError("That path isn’t in your home folder")
+        if IS_WINDOWS:
+            # No O_DIRECTORY, O_NOFOLLOW or /proc there: the walk above already checked each step.
+            # A folder has no descriptor (-1); a file is opened for reading.
+            real = os.path.realpath(cur)
+            if not _under(real, home) or _blocked(real, config, data):
+                raise RuntimeError("That path isn’t in your home folder")
+            st = os.stat(real)
+            if stat.S_ISDIR(st.st_mode):
+                if want == "file":
+                    raise RuntimeError("That isn’t a file")
+                return -1, st, real, (parts[-1] if parts else "")
+            if want == "dir":
+                raise RuntimeError("That isn’t a folder")
+            if not stat.S_ISREG(st.st_mode):
+                raise RuntimeError("That isn’t a file")
+            return os.open(real, os.O_RDONLY | getattr(os, "O_BINARY", 0)), st, real, (parts[-1] if parts else "")
         # O_NONBLOCK so a fifo swapped in after the stat cannot stall this thread.
         if want == "dir" or (want == "any" and os.path.isdir(cur) and not os.path.islink(cur)):
             fd = os.open(cur, os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK)
@@ -1756,7 +2102,7 @@ def resolve_home(rel, want, home=None, config=None, data=None):
 def files_stat(args, home=None, config=None, data=None):
     rel = (args or {}).get("path")
     fd, st, _real, name = resolve_home(rel, "any", home, config, data)
-    os.close(fd)
+    _close_fd(fd)
     return {"name": name, "size": st.st_size if stat.S_ISREG(st.st_mode) else 0, "mtime": int(st.st_mtime * 1000), "dir": stat.S_ISDIR(st.st_mode)}
 
 
@@ -1764,7 +2110,7 @@ def clip_files_list(args, home=None, config=None, data=None):
     rel = (args or {}).get("path") or ""
     home_r, config_r, data_r = _roots(home, config, data)
     fd, _st, real, _name = resolve_home(rel, "dir", home, config, data)
-    os.close(fd)
+    _close_fd(fd)
     entries, truncated = [], False
     try:
         names = sorted(os.listdir(real), key=str.lower)
@@ -1795,6 +2141,8 @@ def prepare_write(rel, size, home=None, config=None, data=None):
         raise RuntimeError("That file’s size isn’t usable")
     parts = split_home_path(rel)
     parent, name = "/".join(parts[:-1]), parts[-1]
+    if IS_WINDOWS:
+        raise RuntimeError("Uploading to a Windows computer isn’t available yet")
     dirfd, _st, _real, _name = resolve_home(parent, "dir", home, config, data)
     tmp = ".incoming." + base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
     fd = None
@@ -2081,6 +2429,9 @@ def theme_set(args):
 
 
 def reboot(_args):
+    if IS_WINDOWS:
+        run(["shutdown", "/r", "/t", "0"], timeout=30, creationflags=_WIN_NO_WINDOW)
+        return True
     run(["systemctl", "reboot"], timeout=30)
     return True
 
@@ -2122,16 +2473,28 @@ def app_install(args):
 
 
 def shutdown(_args):
+    if IS_WINDOWS:
+        run(["shutdown", "/s", "/t", "0"], timeout=30, creationflags=_WIN_NO_WINDOW)
+        return True
     run(["systemctl", "poweroff"], timeout=30)
     return True
 
 
 def suspend(_args):
+    if IS_WINDOWS:
+        run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], timeout=30, creationflags=_WIN_NO_WINDOW)
+        return True
     run(["systemctl", "suspend"], timeout=30)
     return True
 
 
 def _exit_for_restart():
+    # systemd starts the connector again. Windows' scheduled task doesn't, so start the new one first.
+    if IS_WINDOWS:
+        try:
+            subprocess.Popen([sys.executable, os.path.abspath(__file__)], cwd=CONFIG_DIR, creationflags=_WIN_NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0), close_fds=True)
+        except OSError:
+            pass
     os._exit(0)
 
 
@@ -2189,6 +2552,21 @@ def update_self(args, cfg, cafile=None, target_path=None, on_restart=None, fetch
     t.daemon = True
     t.start()
     return {"sha256": actual, "restarting": True}
+
+
+# What a Windows computer can do so far: its terminal, its files (reading, moving, deleting) and
+# power. The rest (screen, disks, backups, services) needs Linux.
+WINDOWS_ABILITIES = ("terminal", "files", "manage")
+
+
+def supported_abilities(abilities, windows=None):
+    windows = IS_WINDOWS if windows is None else windows
+    abilities = dict(abilities or {})
+    if windows:
+        for k in ABILITY_NAMES:
+            if k not in WINDOWS_ABILITIES:
+                abilities[k] = False
+    return abilities
 
 
 ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "theme-set": theme_set, "reboot": reboot, "shutdown": shutdown, "suspend": suspend}
@@ -2692,11 +3070,11 @@ def files_transfer(args, copy, home=None, config=None, data=None):
     src = (args or {}).get("from")
     dest = (args or {}).get("to") or ""
     fd, st, real, name = resolve_home(src, "any", home, config, data)
-    os.close(fd)
+    _close_fd(fd)
     if not name or os.path.islink(real):
         raise RuntimeError("That path isn’t in your home folder")
     dfd, _dst, dreal, _dname = resolve_home(dest, "dir", home, config, data)
-    os.close(dfd)
+    _close_fd(dfd)
     home_r, config_r, data_r = _roots(home, config, data)
     is_dir = stat.S_ISDIR(st.st_mode)
     target = _free_target(dreal, name, is_dir)
@@ -2727,7 +3105,7 @@ def files_transfer(args, copy, home=None, config=None, data=None):
 
 def files_delete(args, home=None, config=None, data=None):
     fd, st, real, name = resolve_home((args or {}).get("path"), "any", home, config, data)
-    os.close(fd)
+    _close_fd(fd)
     if not name or os.path.islink(real):
         raise RuntimeError("That path isn’t in your home folder")
     if stat.S_ISDIR(st.st_mode):
@@ -3157,7 +3535,7 @@ class Connection:
     def __init__(self, cfg):
         self.cfg = cfg
         self.connected_at = None
-        self.allowed = cfg.get("abilities", {})
+        self.allowed = supported_abilities(cfg.get("abilities", {}))
         self.channels = {}
         self._ch_lock = threading.Lock()
         self._ch_token = {}
@@ -3279,8 +3657,9 @@ class Connection:
                 self._open_vnc(ch)
                 return
             try:
-                if msg.get("session"):
-                    self.channels[ch] = open_shell_session(self, ch, msg.get("cols"), msg.get("rows"), name=msg.get("session"), fresh=bool(msg.get("fresh")))
+                # Windows' shell is always the persistent one: there's no pty for a throwaway one.
+                if msg.get("session") or IS_WINDOWS:
+                    self.channels[ch] = open_shell_session(self, ch, msg.get("cols"), msg.get("rows"), name=msg.get("session") or "main", fresh=bool(msg.get("fresh")))
                 else:
                     self.channels[ch] = Shell(self, ch, msg.get("cols"), msg.get("rows"))
             except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
@@ -3386,7 +3765,10 @@ def forget():
     try:
         # --now so systemd stops the unit instead of restarting it (Restart=always) every 5 seconds;
         # --no-block so this process isn't waiting on its own stop.
-        subprocess.run(["systemctl", "--user", "disable", "--now", "--no-block", "omarchy-connector.service"], capture_output=True, timeout=30)
+        if IS_WINDOWS:
+            subprocess.run(["schtasks", "/Delete", "/TN", "OmarchyConnector", "/F"], capture_output=True, timeout=30, creationflags=_WIN_NO_WINDOW)
+        else:
+            subprocess.run(["systemctl", "--user", "disable", "--now", "--no-block", "omarchy-connector.service"], capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         pass  # not run by systemd (or no systemd): stopping is enough
     _backup_password_dir(True)
@@ -3443,7 +3825,7 @@ def main(argv=None):
             print("Use: agent.py enroll SERVER TOKEN [ABILITIES]", file=sys.stderr)
             raise SystemExit(2)
         server, token = args[1], args[2]
-        abilities = {k: k in args[3].split(",") for k in ABILITY_NAMES} if len(args) > 3 else {}
+        abilities = supported_abilities({k: k in args[3].split(",") for k in ABILITY_NAMES} if len(args) > 3 else {})
         r = enroll(server, token, abilities)
         os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
         cfg = {"server": server, "id": r["id"], "key": r["key"], "abilities": abilities}

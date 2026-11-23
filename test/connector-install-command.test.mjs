@@ -7,7 +7,7 @@ import {test} from 'node:test'
 
 import {createApp} from '../server/app.mjs'
 import {createStore} from '../server/store.mjs'
-import {connectorInstallCommand} from '../web/src/swarm/installCommand.ts'
+import {connectorInstallCommand, connectorInstallCommandWindows} from '../web/src/swarm/installCommand.ts'
 
 const ca = 'a'.repeat(64)
 const token = 'b'.repeat(32)
@@ -51,6 +51,7 @@ test('the server hands the guest the connector files without a sign-in', async (
 	await mkdir(connectorDir)
 	await writeFile(join(connectorDir, 'install.sh'), '#!/bin/bash\necho guest-install\n')
 	await writeFile(join(connectorDir, 'agent.py'), 'print("agent")\n')
+	await writeFile(join(connectorDir, 'install.ps1'), 'Write-Host windows-install\n')
 	const store = await createStore(dir)
 	const app = createApp({store, connectorDir, relayHost: '127.0.0.1'})
 	const server = await new Promise((resolve) => {
@@ -65,6 +66,9 @@ test('the server hands the guest the connector files without a sign-in', async (
 		const agent = await fetch(`${base}/api/connector/agent.py`)
 		assert.equal(agent.status, 200)
 		assert.match(await agent.text(), /agent/)
+		const ps = await fetch(`${base}/api/connector/install.ps1`)
+		assert.equal(ps.status, 200)
+		assert.match(await ps.text(), /windows-install/)
 		assert.equal((await fetch(`${base}/api/connector/helper.py`)).status, 404)
 		assert.equal((await fetch(`${base}/api/connector/..%2Finstall.sh`)).status, 404)
 	} finally {
@@ -79,4 +83,24 @@ test('the installer fetches connector files from this server with its own certif
 	assert.match(script, /--cacert "\$CONF\/server-ca\.crt"/)
 	assert.match(script, /fetch_connector "\$\(connector_url agent\.py\)"/)
 	assert.match(script, /fetch_connector "\$\(connector_url helper\.py\)"/)
+})
+
+test('Windows: a PowerShell command from GitHub, or from this server with the certificate pinned by the installer', async () => {
+	const server = 'https://10.1.2.3:7780'
+	const gh = connectorInstallCommandWindows({source: 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/', server, ca, token, allow: 'terminal,files'})
+	assert.equal(
+		gh.command,
+		`$s = irm 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/connector/install.ps1'; & ([scriptblock]::Create($s)) -Server '${server}' -Ca '${ca}' -Token '${token}' -Allow 'terminal,files' -Source 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server'`,
+	)
+	assert.equal(gh.command.includes('SkipCertificateCheck'), false)
+	assert.match(gh.uninstall, / -Uninstall$/)
+	const local = connectorInstallCommandWindows({source: '/home/joseph/code/omarchy-server', server, ca, token, allow: ''})
+	assert.match(local.command, /irm -SkipCertificateCheck 'https:\/\/10\.1\.2\.3:7780\/api\/connector\/install\.ps1'/)
+	assert.match(local.command, /-Source 'https:\/\/10\.1\.2\.3:7780\/api\/connector'$/)
+	// The installer checks the certificate's fingerprint, and fetches the connector from this server
+	// only through that certificate.
+	const ps1 = await readFile(new URL('../connector/install.ps1', import.meta.url), 'utf8')
+	assert.match(ps1, /fingerprint mismatch/)
+	assert.match(ps1, /OmarchyPinnedFetch\]::Get\(\$AgentUrl, \$DerBytes\)/)
+	assert.match(ps1, /root\.Thumbprint == ca\.Thumbprint/)
 })

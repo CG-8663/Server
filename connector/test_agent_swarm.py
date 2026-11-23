@@ -300,3 +300,49 @@ class ServicesAndFilesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WindowsConnectorTests(unittest.TestCase):
+    def test_windows_keeps_only_terminal_files_and_power(self):
+        got = agent.supported_abilities({k: True for k in agent.ABILITY_NAMES}, windows=True)
+        self.assertEqual({k for k, v in got.items() if v}, {"terminal", "files", "manage"})
+        self.assertTrue(agent.supported_abilities({"desktop": True}, windows=False)["desktop"])
+
+    def test_loads_and_reads_as_windows(self):
+        # Load the connector as Windows would (no pty, pwd, fcntl or termios) and use it.
+        home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(home, "Docs"))
+        with open(os.path.join(home, "Docs", "a.txt"), "w") as f:
+            f.write("hi\n")
+        script = f"""
+import sys, os, json
+import http.server, http.client, shutil, subprocess, ssl, socket, select, signal, urllib.request, ctypes, getpass, platform
+for m in ("fcntl", "pty", "pwd", "termios"):
+    sys.modules[m] = None
+real, sys.platform = sys.platform, "win32"
+os.environ["LOCALAPPDATA"] = {home!r} + "/AppData/Local"
+sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+import agent
+sys.platform = real
+assert agent.IS_WINDOWS and agent.pty is None
+assert agent.CONFIG_DIR.endswith("AppData/Local/omarchy-connector")
+i = agent.info()
+assert i["osId"] == "windows" and i["desktop"]["ok"] is False
+agent.metrics(agent.package_manager())
+assert agent.clip_files_list({{"path": "Docs"}}, home={home!r})["entries"][0]["name"] == "a.txt"
+assert agent.files_stat({{"path": "Docs/a.txt"}}, home={home!r})["size"] == 3
+for bad in ("../", "Docs/../../x"):
+    try:
+        agent.clip_files_list({{"path": bad}}, home={home!r})
+        raise SystemExit("escaped " + bad)
+    except RuntimeError:
+        pass
+try:
+    agent.prepare_write("Docs/b.txt", 3, home={home!r})
+    raise SystemExit("upload should be refused")
+except RuntimeError:
+    pass
+print("ok")
+"""
+        r = subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.stdout.strip(), "ok", r.stderr)
