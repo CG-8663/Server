@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.68',
+		date: '2026-11-22',
+		title: 'Storage in Settings, and remote desktops that show up',
+		added: ['Settings › Storage is back: drives, pools, drive health and sleep for the host server, as well as under Machines.'],
+		fixed: [
+			'A connected computer’s Desktop works soon after you sign in to it. The connector usually starts before anyone signs in, and the server kept that answer for up to five minutes; now a sign-in is reported within about ten seconds.',
+		],
+	},
+	{
 		version: '0.9.67',
 		date: '2026-11-22',
 		title: 'Windows computers',
