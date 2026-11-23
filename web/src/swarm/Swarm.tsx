@@ -10,7 +10,7 @@ import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
 import {isGuestAgent} from './guestLink'
-import {connectorInstallCommand} from './installCommand'
+import {connectorInstallCommand, connectorInstallCommandWindows} from './installCommand'
 import {newlyJoined} from './join'
 import {GaugeCluster} from '../fleet/serverGauges'
 import {MachineActions} from '../fleet/machineActions'
@@ -80,6 +80,9 @@ export type Agent = {
 type Pairing = {token: string; ca: string; expiresAt: number; abilities: Abilities; source: string; port: number; addresses: {address: string; tailscale: boolean}[]}
 type SwarmAlert = {id: string; agentId: string; name: string; kind: string; severity: 'info' | 'warning' | 'critical'; message: string}
 type HistoryPoint = {at: number; cpu: number | null; memPct: number | null; diskPct: number | null; gpuPct: number | null; temp: number | null; netRx: number | null; netTx: number | null}
+
+// What a Windows computer's connector can do (connector/agent.py WINDOWS_ABILITIES).
+export const WINDOWS_ABILITIES: Ability[] = ['terminal', 'files', 'manage']
 
 export const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = {
 	terminal: {label: 'Terminal', icon: 'terminal', what: 'A shell on it, as the person who installed the connector'},
@@ -688,13 +691,18 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 	// a terminal, and a desktop. Backups stay off: a guest does not back up through this yet.
 	const [allow, setAllow] = useState<Abilities>(guest ? {terminal: true, desktop: true, manage: true, storage: false, backup: false, services: false, files: true} : {terminal: true, desktop: true, manage: true, storage: false, backup: true, services: false, files: false})
 	const [pairing, setPairing] = useState<Pairing | null>(null)
+	// A Windows computer can have its terminal, files and power; the rest needs Linux.
+	const [os, setOs] = useState<'linux' | 'windows'>('linux')
+	const windows = !guest && os === 'windows'
+	const shown = (Object.keys(ABILITY) as Ability[]).filter((k) => !windows || WINDOWS_ABILITIES.includes(k))
+	const asked = windows ? (Object.fromEntries((Object.keys(allow) as Ability[]).map((k) => [k, allow[k] && WINDOWS_ABILITIES.includes(k)])) as Abilities) : allow
 	const [host, setHost] = useState('')
 	const [copied, setCopied] = useState('')
 	const [now, setNow] = useState(Date.now())
 	const toast = useToast()
 	const swarm = useSwarm()
 	const pair = useMutation({
-		mutationFn: () => mutate<Pairing>('swarm.pair', guest ? {...allow, machineId: guest.id} : allow),
+		mutationFn: () => mutate<Pairing>('swarm.pair', guest ? {...allow, machineId: guest.id} : asked),
 		onSuccess: (p) => {
 			setPairing(p)
 			const here = location.hostname
@@ -711,12 +719,12 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 	// The new computer, once it shows up. beforeIds is frozen at open so a live swarm.list cannot hide it.
 	const joined = guest ? (swarm.data ?? []).find((a) => a.guestOf === guest.id && !beforeIds.includes(a.id)) : newlyJoined(swarm.data ?? [], beforeIds)
 	const left = pairing ? Math.max(0, Math.round((pairing.expiresAt - now) / 1000)) : 0
-	const list = (Object.keys(allow) as Ability[]).filter((k) => allow[k]).join(',')
+	const list = (Object.keys(asked) as Ability[]).filter((k) => asked[k]).join(',')
 	const install = useMemo(() => {
 		if (!pairing) return null
 		const server = `https://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${pairing.port}`
-		return connectorInstallCommand({source: pairing.source, server, ca: pairing.ca, token: pairing.token, allow: list})
-	}, [pairing, host, list])
+		return (windows ? connectorInstallCommandWindows : connectorInstallCommand)({source: pairing.source, server, ca: pairing.ca, token: pairing.token, allow: list})
+	}, [pairing, host, list, windows])
 	const command = install?.command ?? ''
 	const uninstall = install?.uninstall ?? ''
 	const copy = async (text: string, what: string) => {
@@ -736,17 +744,31 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 			<SheetHeader
 				icon={<Icon name="devices" size={30} />}
 				title={guest ? 'Install connector' : 'Add a computer'}
-				subtitle={guest ? `Linux with systemd, inside ${guest.name}. Not Windows or Home Assistant.` : 'Any Linux computer with systemd. Not Windows or macOS.'}
+				subtitle={guest ? `Linux with systemd, inside ${guest.name}. Not Windows or Home Assistant.` : 'A Linux computer with systemd, or Windows 10 or later. Not macOS.'}
 				onClose={onClose}
 			/>
 			{!pairing ? (
 				<>
+					{!guest && (
+						<div className="chips" role="radiogroup" aria-label="Operating system" style={{margin: '0 4px 12px'}}>
+							{(['linux', 'windows'] as const).map((o) => (
+								<button key={o} type="button" role="radio" aria-checked={os === o} className={`chip${os === o ? ' on' : ''}`} onClick={() => (haptic(5), setOs(o))}>
+									{o === 'linux' ? 'Linux' : 'Windows'}
+								</button>
+							))}
+						</div>
+					)}
+					{windows && (
+						<p className="muted" style={{fontSize: 13.5, margin: '0 4px 12px'}}>
+							On Windows the connector gives you the terminal (PowerShell), files and power. Sharing the screen, disks, backups and services need Linux. It needs Python 3.8 or later.
+						</p>
+					)}
 					<p className="muted" style={{fontSize: 14, margin: '0 4px 12px'}}>
 						Choose what this server may do on the new computer. The connector there enforces it too, and you can switch these off later (but not on again without adding it again).
 					</p>
 					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 						<Row icon="sparkle" color="#2fbf71" label="Watch" sub="Always: CPU, memory, disks, temperature, updates waiting" />
-						{(Object.keys(ABILITY) as Ability[]).map((k) => (
+						{shown.map((k) => (
 							<Row key={k} icon={ABILITY[k].icon} label={ABILITY[k].label} sub={ABILITY[k].what} trailing={<Switch on={allow[k]} label={ABILITY[k].label} onChange={(v) => setAllow({...allow, [k]: v})} />} />
 						))}
 					</div>
@@ -769,8 +791,8 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 				<>
 					<ol className="swarm-steps">
 						<li>
-							<b>{guest ? 'On this virtual machine, open a terminal' : 'On the other computer, open a terminal'}</b>
-							<span>{guest ? 'Signed in as the person who uses it, not root. The guest has to reach this server on the network.' : 'Signed in as the person who uses it, not root. It needs to reach this server on your network (or your tailnet).'}</span>
+							<b>{guest ? 'On this virtual machine, open a terminal' : windows ? 'On the Windows computer, open PowerShell' : 'On the other computer, open a terminal'}</b>
+							<span>{guest ? 'Signed in as the person who uses it, not root. The guest has to reach this server on the network.' : windows ? 'Signed in as the person who uses it; no Administrator needed. It needs Python 3.8 or later (winget install Python.Python.3.12) and to reach this server on your network (or your tailnet).' : 'Signed in as the person who uses it, not root. It needs to reach this server on your network (or your tailnet).'}</span>
 						</li>
 						{hosts.length > 1 && (
 							<li>

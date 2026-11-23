@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.67',
+		date: '2026-11-22',
+		title: 'Windows computers',
+		added: [
+			'Add a Windows computer (Windows 10 or later, with Python 3.8+) from Machines › Add a computer › Windows: paste one PowerShell command, no Administrator needed. It brings its terminal (PowerShell, kept running between visits), its files (open, download, move, delete) and power (restart, shut down, sleep), with CPU, memory and disks. Sharing the screen, uploads, disks, backups and services still need Linux. Based on kdegeek’s Windows connector.',
+		],
+	},
+	{
 		version: '0.9.66',
 		date: '2026-11-22',
 		title: 'Virtual machine controls are back',

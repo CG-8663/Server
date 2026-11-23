@@ -22,7 +22,7 @@ import {linkProxy} from '../omarchyd/proxy-link.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.66'
+export const VERSION = '0.9.67'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -456,6 +456,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		['install.sh', 'text/plain; charset=utf-8'],
 		['agent.py', 'text/plain; charset=utf-8'],
 		['helper.py', 'text/plain; charset=utf-8'],
+		['install.ps1', 'text/plain; charset=utf-8'],
 	])
 	app.get('/api/connector/:name', async (req, res) => {
 		const type = connectorFiles.get(req.params.name)
