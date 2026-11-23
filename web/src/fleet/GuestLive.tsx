@@ -26,7 +26,7 @@ const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((1
  */
 export type GuestSections = {files?: ReactNode; apps?: ReactNode; storage?: ReactNode; backups?: ReactNode; manage?: ReactNode}
 
-export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, onBackups, tabs}: {machine: Machine; onOpenStore?: () => void; onOpenDesktop?: () => void; onOpenStorage: (target: {agentId: string; name: string}) => void; onBackups?: () => void; tabs: (sections: GuestSections) => ReactNode}) {
+export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, onBackups, onOpenTerminal, tabs}: {machine: Machine; onOpenStore?: () => void; onOpenDesktop?: () => void; onOpenStorage: (target: {agentId: string; name: string}) => void; onBackups?: () => void; onOpenTerminal?: (agent: {id: string; name: string}, input?: string) => void; tabs: (sections: GuestSections) => ReactNode}) {
 	const swarm = useSwarm()
 	const agent = guestAgent(swarm.data ?? [], machine.id)
 	const [install, setInstall] = useState(false)
@@ -47,7 +47,13 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 			: !agent.online
 				? 'Offline.'
 				: storageRowSub(agent.allowed.storage, agent.on.storage)
-	const openTerminal = (input?: string) => setTerminal({input})
+	const openTerminal = (input?: string) => {
+		if (onOpenTerminal && agent) {
+			onOpenTerminal({id: agent.id, name: machine.name}, input)
+			return
+		}
+		setTerminal({input})
+	}
 	const hostScreen = !!onOpenDesktop && machine.state === 'running'
 	const connectorDesktop = live && !!agent && agentMay(agent, 'desktop') && agent.info?.desktop?.ok !== false
 	return (
@@ -111,7 +117,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 					onJoined={() => setInstall(false)}
 				/>
 			)}
-			{terminal && agent && (
+			{terminal && !onOpenTerminal && agent && (
 				<Suspense fallback={null}>
 					<TerminalScreen agent={{id: agent.id, name: machine.name}} input={terminal.input} onClose={() => setTerminal(null)} />
 				</Suspense>

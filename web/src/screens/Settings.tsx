@@ -167,7 +167,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					owner={owner}
 					onSwitched={() => {
 						setPrefs({...prefs, theme: 'omarchy', solidColor: null})
-						patchDeskConfig({style: 'graphite', preset: null, wallpaper: 'omarchy'})
+						patchDeskConfig({preset: null, wallpaper: 'omarchy'})
 					}}
 				/>
 			</div>

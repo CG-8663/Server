@@ -74,16 +74,16 @@ export function ScreenLayoutCards({value, detected, onPick, label = 'Screen layo
 	)
 }
 
-/** The desktop's own style: floating windows (Ubuntu) or tiles (Hyprland). */
+/** Shape is corners and, on the desktop, how windows are arranged. Round floats. Square tiles. */
 export function DesktopStyleCards<T extends string>({value, onPick, floating, tiling}: {value: T; onPick: (v: T) => void; floating: T; tiling: T}) {
 	const pick = (v: T) => {
 		haptic(6)
 		onPick(v)
 	}
 	return (
-		<div className="lp-cards lp-cards-2" role="radiogroup" aria-label="Desktop style">
-			<Card on={value === floating} art={<ArtDesktop />} title="Ubuntu" body="Floating windows with a dock and Activities." onClick={() => pick(floating)} />
-			<Card on={value === tiling} art={<ArtHyprland />} title="Hyprland" body="Tiled windows, workspaces 1–9 and Omarchy’s Super shortcuts." onClick={() => pick(tiling)} />
+		<div className="lp-cards lp-cards-2" role="radiogroup" aria-label="Shape">
+			<Card on={value === floating} art={<ArtDesktop />} title="Round" body="Rounded corners. Floating windows, a dock, and Activities." onClick={() => pick(floating)} />
+			<Card on={value === tiling} art={<ArtHyprland />} title="Square" body="Square corners. Tiled windows, workspaces 1–9, and Omarchy’s Super shortcuts." onClick={() => pick(tiling)} />
 		</div>
 	)
 }

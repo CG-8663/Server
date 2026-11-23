@@ -2818,7 +2818,7 @@ const WindowContent = memo(
 				case 'store':
 					return <Store bound={win.payload?.store ?? null} onOpenInstalled={(a) => desk.launch(a)} />
 				case 'machines':
-					return <Machines onOpenApp={(a) => desk.launch(a)} onTerminal={() => desk.openTerminal()} />
+					return <Machines windowId={win.id} onOpenApp={(a) => desk.launch(a)} onTerminal={() => desk.openTerminal()} />
 				case 'system':
 					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} onClips={() => desk.open('clips')} />
 				case 'settings':

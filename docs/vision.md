@@ -92,7 +92,7 @@ Until those exist, the product still tells the truth about health, access, and w
 ## What stays true
 
 - The person runs this on hardware they control. The browser is the client.
-- Phone and desktop are two layouts of one product. Ubuntu windows and Hyprland tiles are two shells of the desktop layout.
+- Phone and desktop are two layouts of one product. Round and Square are the two shapes. Round floats windows on the desktop. Square tiles them. Theme is colour.
 - Sign-in, TLS, and the grants on a connector stay in force. A clearer screen does not drop them.
 - Numbers, file lists, and permissions come from the machine. The interface does not fill a gap with a made-up value.
 

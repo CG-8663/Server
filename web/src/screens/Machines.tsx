@@ -27,8 +27,9 @@ import {SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
+const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 
-export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) => void; onTerminal?: () => void} = {}) {
+export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: UserApp) => void; onTerminal?: () => void; windowId?: string} = {}) {
 	const desk = useDesktop()
 	const boot = useBootstrap()
 	const machines = useMachines()
@@ -110,6 +111,17 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 		if (desk) desk.openConsole('desktop')
 		else setConsoleId('desktop')
 	}
+	// The machine page is a sheet on the phone and a pane in the Machines window on the desktop.
+	// Leave it open and the terminal paints behind it. Close it, then open the terminal.
+	const openServerTerminal = () => {
+		setServerOpen(false)
+		if (desk) {
+			desk.openTerminal()
+			if (windowId) desk.close(windowId)
+			return
+		}
+		onTerminal?.()
+	}
 	const wide = desk != null
 	const detail = (
 		<>
@@ -134,7 +146,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 					vms={list}
 					onClose={() => setServerOpen(false)}
 					onDesktop={openDesktop}
-					onTerminal={desk ? () => desk.openTerminal() : onTerminal}
+					onTerminal={openServerTerminal}
 					onOpenVm={(id) => openMember('guest', id)}
 					onCreateVm={() => setCreateHost({id: SERVER_FLEET_ID, name: serverName})}
 				/>
@@ -313,6 +325,7 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 	// A machine that isn't running opens on Power, where Start is.
 	const [tab, setTab] = useState(m.state === 'running' ? 'files' : 'power')
 	const [storage, setStorage] = useState<{agentId: string; name: string} | null>(null)
+	const [guestTerm, setGuestTerm] = useState<{id: string; name: string; input?: string} | null>(null)
 	const hostTabs = PANELS.filter((p) => p.id !== 'console' && p.id !== 'backups' && (p.id !== 'cloudinit' || d?.cloudInit))
 	const panel = (id: PanelId) => {
 		if (!d) return <div className="skeleton" style={{height: 160, borderRadius: 20}} />
@@ -369,6 +382,14 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 		</>
 	)
 
+	if (guestTerm) {
+		return (
+			<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
+				<TerminalScreen agent={{id: guestTerm.id, name: guestTerm.name}} input={guestTerm.input} onClose={() => setGuestTerm(null)} />
+			</Suspense>
+		)
+	}
+
 	if (storage) return <StoragePanel bare={bare} target={storage} onClose={() => setStorage(null)} />
 
 	return (
@@ -397,7 +418,7 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 					{/^\[[\w-]+\]$/.test(m.errorMessage) ? m.errorMessage.slice(1, -1).replace(/-/g, ' ') : m.errorMessage}
 				</div>
 			)}
-			<GuestLive machine={m} onOpenStore={() => (onClose(), openStore({id: m.id, kind: 'guest', name: m.name}))} onOpenDesktop={onConsole} onOpenStorage={setStorage} onBackups={() => setTab('backups')} tabs={(sections) => {
+			<GuestLive machine={m} onOpenStore={() => (onClose(), openStore({id: m.id, kind: 'guest', name: m.name}))} onOpenDesktop={onConsole} onOpenStorage={setStorage} onBackups={() => setTab('backups')} onOpenTerminal={(agent, input) => setGuestTerm({id: agent.id, name: agent.name, input})} tabs={(sections) => {
 				const rows: MachineTab[] = [
 					...(sections.files ? [{id: 'files', label: 'Files', body: sections.files}] : []),
 					...(sections.apps ? [{id: 'apps', label: 'Apps', body: sections.apps}] : []),
