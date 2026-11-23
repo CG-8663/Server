@@ -23,6 +23,7 @@ import {
 	IconBell,
 	IconBattery,
 	IconBolt,
+	IconBox,
 	IconBrandApple,
 	IconBrandDebian,
 	IconBrandUbuntu,
@@ -238,6 +239,7 @@ const icons = {
 	folder: IconFolder,
 	shield: IconShieldCheck,
 	server: IconServer2,
+	vm: IconBox,
 	category: IconCategory,
 	// app store categories
 	files: IconFolder,

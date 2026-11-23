@@ -408,6 +408,7 @@ export function useScreenLock(ref: RefObject<HTMLElement>, guardTouch = true, en
 // ---- bottom sheet -----------------------------------------------------------
 export function Sheet({open, onClose, label, children, tall}: {open: boolean; onClose: () => void; label: string; children: ReactNode; tall?: boolean}) {
 	const ref = useRef<HTMLDivElement>(null)
+	const scrollRef = useRef<HTMLDivElement>(null)
 	const portalRoot = usePortalRoot()
 	const start = useRef<{y: number; t: number} | null>(null)
 	const [drag, setDrag] = useState(0)
@@ -417,11 +418,13 @@ export function Sheet({open, onClose, label, children, tall}: {open: boolean; on
 		return lockPageScroll()
 	}, [open])
 	if (!open) return null
-	// Swipe down to dismiss when the sheet is scrolled to the top (the close button is the accessible path).
+	// Drag the handle or the header down to dismiss, and only when the page is already at the top.
+	// A drag that starts on the page itself scrolls that page. The close button is the accessible path.
 	const onTouchStart = (e: React.TouchEvent) => {
-		if ((ref.current?.scrollTop ?? 0) > 0) return
+		if ((scrollRef.current?.scrollTop ?? 0) > 0) return
 		const target = e.target as HTMLElement
 		if (target.closest('.logs, .gallery, input, textarea')) return
+		if (!target.closest('.sheet-chrome, .sheet-head')) return
 		start.current = {y: e.touches[0].clientY, t: Date.now()}
 	}
 	const onTouchMove = (e: React.TouchEvent) => {
@@ -455,8 +458,12 @@ export function Sheet({open, onClose, label, children, tall}: {open: boolean; on
 				onTouchMove={onTouchMove}
 				onTouchEnd={onTouchEnd}
 			>
-				<span className="grabber" />
-				{children}
+				<div className="sheet-chrome">
+					<span className="grabber" />
+				</div>
+				<div className="sheet-scroll" ref={scrollRef}>
+					{children}
+				</div>
 			</div>
 		</>,
 		portalRoot,

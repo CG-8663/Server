@@ -5,14 +5,20 @@ export function WorkspacePills({
 	occupied,
 	minimized,
 	onSwitch,
+	onMenu,
 }: {
 	current: number
 	occupied: Set<number>
 	minimized: Set<number>
 	onSwitch: (n: number) => void
+	onMenu: () => void
 }) {
 	return (
-		<div className="hypr-ws" role="tablist" aria-label="Workspaces">
+		<div className="hypr-ws">
+			<button type="button" className="hypr-menu" aria-label="Launcher" title="Launcher" onClick={onMenu}>
+				<Icon name="show-apps" size={16} />
+			</button>
+			<div className="hypr-pills" role="tablist" aria-label="Workspaces">
 			{Array.from({length: 9}, (_, i) => i + 1).map((n) => {
 				const on = n === current
 				const has = occupied.has(n)
@@ -30,6 +36,7 @@ export function WorkspacePills({
 					</button>
 				)
 			})}
+			</div>
 		</div>
 	)
 }
