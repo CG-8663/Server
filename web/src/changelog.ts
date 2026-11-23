@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.70',
+		date: '2026-11-22',
+		title: 'Seeing a connected computer’s desktop',
+		fixed: [
+			'A connected computer running Omarchy shows its desktop. Its screen sharing (wayvnc) wouldn’t start while MODC’s own, or any other, was already running on that desktop; each now has its own control socket. Let the computer update its connector, and this server update, for it to take effect.',
+			'When a desktop can’t be shown, the viewer says why and offers Try again, instead of “Reconnecting…” forever. A desktop that was working and drops still reconnects by itself.',
+		],
+	},
+	{
 		version: '0.9.69',
 		date: '2026-11-22',
 		title: 'One desktop viewer, and drives you can browse',

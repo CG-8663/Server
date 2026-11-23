@@ -66,3 +66,48 @@ class DesktopSessionReported(unittest.TestCase):
         with mock.patch.object(agent, "info", return_value={}), mock.patch.object(agent, "desktop_kind", side_effect=AssertionError("not checked")):
             conn._report_step(sampler, 400.0, 412.0)
         self.assertEqual(sent, [])
+
+
+class ScreenSharingStarts(unittest.TestCase):
+    # wayvnc won't start while another one holds its default control socket (MODC's own desktop
+    # sharing on the same desktop). The connector gives it its own, and says why when it fails.
+    def _fake(self, d, body):
+        path = os.path.join(d, "wayvnc")
+        with open(path, "w") as f:
+            f.write("#!/usr/bin/env python3\nimport sys, socket, time\nargs = sys.argv[1:]\n" + body)
+        os.chmod(path, 0o755)
+
+    def _start(self, d):
+        runtime = os.path.join(d, "run")
+        os.makedirs(runtime)
+        sock = os.path.join(runtime, "omarchy-connector", "vnc.sock")
+        env = dict(os.environ, PATH=d + os.pathsep + os.environ.get("PATH", ""))
+        with mock.patch.dict(os.environ, env), mock.patch.object(agent, "RUNTIME", runtime), mock.patch.object(agent, "VNC_SOCK", sock), \
+                mock.patch.object(agent, "desktop_kind", return_value={"kind": "wlroots", "ok": True, "why": ""}), \
+                mock.patch.object(agent, "_wayland_display", return_value="wayland-1"), mock.patch.object(agent, "_hypr_signature", return_value=None):
+            try:
+                agent.vnc_start()
+                return sock
+            finally:
+                p, agent._vnc["proc"] = agent._vnc["proc"], None
+                agent._vnc["users"] = 0
+                if p:
+                    p.kill()
+
+    def test_starts_with_its_own_control_socket(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self._fake(d, (
+                "if '-S' not in args:\n"
+                "    print('ERROR: Another wayvnc process is already running.', file=sys.stderr); sys.exit(1)\n"
+                "s = socket.socket(socket.AF_UNIX); s.bind(args[-1]); s.listen(1); time.sleep(30)\n"
+            ))
+            sock = self._start(d)
+            self.assertTrue(sock.endswith("vnc.sock"))
+
+    def test_says_why_it_stopped(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self._fake(d, "print('ERROR: Failed to connect to the Wayland display', file=sys.stderr)\nprint(\"Use the '-S' option\", file=sys.stderr)\nsys.exit(1)\n")
+            with self.assertRaisesRegex(RuntimeError, "wayvnc.*Failed to connect to the Wayland display"):
+                self._start(d)

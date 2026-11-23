@@ -9,6 +9,12 @@ export function consoleDisconnectAction({disposed, superseded}: {disposed: boole
 	return 'reconnect'
 }
 
+/** Why a screen never appeared: what the server or computer said, or a plain fallback. */
+export function consoleFailureMessage(reason: string): string {
+	const said = reason.trim()
+	return said || 'The screen didn’t come up. The computer may be asleep, signed out of its desktop, or its screen sharing isn’t running.'
+}
+
 // Map browser wheel deltas to VNC mouse wheel button masks.
 export function wheelButtons(deltaX: number, deltaY: number): number[] {
 	const out: number[] = []

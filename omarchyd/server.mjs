@@ -37,7 +37,7 @@ import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.69'
+export const OMARCHYD_VERSION = '0.9.70'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -618,8 +618,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		}
 		return false
 	}
-	// Move an older install's desktop share from 127.0.0.1:5900 to the private socket, so updating is
-	// enough (no need to run the installer again).
+	// Move an older install's desktop share from 127.0.0.1:5900 to the private socket, and give it
+	// its own control socket (-S): wayvnc refuses to start while another one, such as a connected
+	// computer's on this same desktop, holds the default. Updating is enough (no installer run).
 	const DESKTOP_UNIT = `[Unit]
 Description=MODC: share this Omarchy desktop with the web app (private socket)
 PartOf=graphical-session.target
@@ -628,7 +629,7 @@ After=graphical-session.target
 [Service]
 ExecStartPre=/usr/bin/mkdir -p -m 0700 %t/omarchy-server
 ExecStartPre=/usr/bin/rm -f %t/omarchy-server/desktop-vnc.sock
-ExecStart=/usr/bin/wayvnc --max-fps=30 --unix-socket %t/omarchy-server/desktop-vnc.sock
+ExecStart=/usr/bin/wayvnc --max-fps=30 -S %t/omarchy-server/wayvncctl --unix-socket %t/omarchy-server/desktop-vnc.sock
 Restart=on-failure
 RestartSec=3
 
@@ -639,7 +640,7 @@ WantedBy=graphical-session.target
 		if (machineOptions.run) return
 		const unit = join(process.env.XDG_CONFIG_HOME || join(home, '.config'), 'systemd/user/omarchy-server-desktop.service')
 		const text = await readFile(unit, 'utf8').catch(() => null)
-		if (text === null || text.includes('--unix-socket')) return
+		if (text === null || text.includes('omarchy-server/wayvncctl')) return
 		await writeFile(unit, DESKTOP_UNIT)
 		await sh('systemctl', ['--user', 'daemon-reload'])
 		if ((await sh('systemctl', ['--user', 'is-active', 'omarchy-server-desktop.service'])).ok) await sh('systemctl', ['--user', 'restart', 'omarchy-server-desktop.service'])
@@ -720,7 +721,7 @@ WantedBy=graphical-session.target
 		if (!socket) throw new RpcError('PRECONDITION_FAILED', 'DESKTOP_SIGNED_OUT: The Omarchy desktop is at its sign-in screen, so there’s no screen to show yet.')
 		await mkdir(dirname(desktopVncSocket), {recursive: true, mode: 0o700})
 		await rm(desktopVncSocket, {force: true})
-		await sh('systemd-run', ['--user', '--collect', '--unit=omarchy-server-desktop-now', `--setenv=WAYLAND_DISPLAY=${socket}`, `--setenv=XDG_RUNTIME_DIR=${runtime}`, ...(hypr ? [`--setenv=HYPRLAND_INSTANCE_SIGNATURE=${hypr}`] : []), '/usr/bin/wayvnc', '--max-fps=30', '--unix-socket', desktopVncSocket])
+		await sh('systemd-run', ['--user', '--collect', '--unit=omarchy-server-desktop-now', `--setenv=WAYLAND_DISPLAY=${socket}`, `--setenv=XDG_RUNTIME_DIR=${runtime}`, ...(hypr ? [`--setenv=HYPRLAND_INSTANCE_SIGNATURE=${hypr}`] : []), '/usr/bin/wayvnc', '--max-fps=30', '-S', join(dirname(desktopVncSocket), 'wayvncctl'), '--unix-socket', desktopVncSocket])
 		if (await waitFor(desktopVncPort, 5)) return true
 		const log = await sh('journalctl', ['--user', '-u', 'omarchy-server-desktop.service', '-u', 'omarchy-server-desktop-now.service', '-n', '3', '--no-pager', '-o', 'cat'])
 		const last = log.out.trim().split('\n').filter(Boolean).pop()
