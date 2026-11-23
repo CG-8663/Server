@@ -4,6 +4,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query} from '../api'
 import {Icon} from '../icons'
 import {Field, Row, Segmented, Sheet, SheetHeader, useConfirm, useToast} from '../ui'
+import {TailscaleSheet} from './Tailscale'
 
 function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false} = {}) {
 	return useQuery({queryKey: [path, input], queryFn: () => query<T>(path, input), retry: false, staleTime: 15_000, ...opts})
@@ -190,16 +191,21 @@ export function ServerNetwork() {
 	const ips = useQ<string[]>('system.getIpAddresses')
 	const wifiSupported = useQ<boolean>('wifi.supported')
 	const wifi = useQ<{status: 'connected' | 'disconnected'; ssid?: string}>('wifi.connected', undefined, {enabled: !!wifiSupported.data})
-	const [sheet, setSheet] = useState<null | 'hostname' | 'wifi'>(null)
+	const tailscale = useQ<{available: boolean; backendState: string; self: {ips: string[]} | null}>('tailscale.status', undefined, {refetchInterval: 30_000})
+	const ts = tailscale.data
+	const tsValue = tailscale.isError ? 'Unavailable' : !ts ? '' : !ts.available ? 'Not running' : ts.backendState === 'Running' ? (ts.self?.ips.find((ip) => ip.includes('.')) ?? ts.self?.ips[0] ?? 'Connected') : ts.backendState === 'NeedsLogin' ? 'Sign in' : ts.backendState
+	const [sheet, setSheet] = useState<null | 'hostname' | 'wifi' | 'tailscale'>(null)
 	return (
 		<>
 			<div className="glass group">
 				<Row icon="network" color="var(--teal)" label="Device name" value={hostname.data ? `${hostname.data}.local` : ''} onClick={() => setSheet('hostname')} />
 				<Row icon="networking" color="var(--blue)" label="IP address" value={(ips.data ?? []).join(', ') || '–'} />
 				{wifiSupported.data && <Row icon="wifi" color="var(--blue)" label="Wi-Fi" value={wifi.data?.status === 'connected' ? wifi.data.ssid : 'Off'} onClick={() => setSheet('wifi')} />}
+				<Row icon="networking" color="var(--purple, #8b5cf6)" label="Tailscale" value={tsValue} onClick={() => setSheet('tailscale')} />
 			</div>
 			<HostnameSheet open={sheet === 'hostname'} current={hostname.data ?? ''} onClose={() => setSheet(null)} />
 			{sheet === 'wifi' && <WifiSheet onClose={() => setSheet(null)} connected={wifi.data?.status === 'connected' ? wifi.data.ssid : undefined} />}
+			{sheet === 'tailscale' && <TailscaleSheet onClose={() => setSheet(null)} />}
 		</>
 	)
 }
