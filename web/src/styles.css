@@ -6654,7 +6654,8 @@ html:not(.desk-mode) .upload-panel {
 [data-theme='omarchy'] h1,
 [data-theme='omarchy'] h2,
 [data-theme='omarchy'] .title { letter-spacing: -0.03em; }
-[data-theme='omarchy'] .win-bar { background: color-mix(in srgb, var(--bg-solid) 96%, var(--fg) 4%); }
+[data-theme='omarchy'] .desk .win-bar { background: color-mix(in srgb, var(--bg-solid) 96%, var(--fg) 4%); }
+[data-theme='omarchy'] .desk .win:not(.active) .win-bar { background: var(--bg-solid); }
 /* Phone console: sized to the visible area by script while the keyboard is up. */
 .console:not(.desk-ui):not(.embedded) { bottom: 0; }
 .console:not(.desk-ui):not(.embedded) .console-input { bottom: auto; top: 0; }
