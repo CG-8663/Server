@@ -30,6 +30,7 @@ import {createTerminalSessions} from './terminal.mjs'
 import {createUpdater} from './updater.mjs'
 import {createSystemApps} from './system-apps.mjs'
 import {createTailscale} from './tailscale.mjs'
+import {createOidc} from './oidc.mjs'
 import {authorityInfo, readPolicy, rotateAuthority, tlsContext, writePolicy} from './tls.mjs'
 import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
@@ -38,7 +39,7 @@ import {WebSocketServer} from 'ws'
 
 export const OMARCHYD_VERSION = '0.9.63'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
 	const storeDir = localGitDir('OMARCHY_SERVER_APP_STORE', process.env.OMARCHY_SERVER_APP_STORE)
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
@@ -110,6 +111,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	// Move from Unraid: its shares, containers and VMs, brought over SSH.
 	const unraid = createUnraid({dataDir, files, apps, machines, storage, ...unraidOptions})
 	const tailscale = createTailscale({...tailscaleOptions})
+	const oidc = createOidc({dataDir, accounts, ...oidcOptions})
 	const usb = createUsb({
 		enumerate: () => listHostUsb(usbOptions),
 		guests: {
@@ -303,6 +305,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 					for (const agent of agents) await connector.procedures['swarm.remove'].run({id: agent.id}).catch((e) => console.error('[omarchyd] reset swarm', e.message))
 					await backups.clearSettings().catch((e) => console.error('[omarchyd] reset backups', e.message))
 					await storage.clearShares().catch((e) => console.error('[omarchyd] reset shares', e.message))
+					await oidc.reset().catch((e) => console.error('[omarchyd] reset oidc', e.message))
 					if (appsRemain || machinesRemain) return
 					await accounts.reset()
 					console.log('[omarchyd] factory reset done')
@@ -452,6 +455,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		...Object.fromEntries(Object.entries(backups.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage backups'), p.run(input))}])),
 		...Object.fromEntries(Object.entries(unraid.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'move from Unraid'), p.run(input))}])),
 		...Object.fromEntries(Object.entries(tailscale.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage Tailscale'), p.run(input))}])),
+		...Object.fromEntries(Object.entries(oidc.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage single sign-on'), p.run(input))}])),
 		...Object.fromEntries(
 			Object.entries(updater.procedures).map(([name, p]) =>
 				name === 'system.update' || name === 'system.setReleaseChannel' ? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'update this server'), p.run(input))}] : [name, p],
@@ -738,6 +742,7 @@ WantedBy=graphical-session.target
 	const server = http.createServer(async (req, res) => {
 		const url = new URL(req.url ?? '/', 'http://localhost')
 		try {
+			if (await oidc.handleHttp(req, res, url)) return
 			if (url.pathname === '/assistant/stream' && req.method === 'POST') {
 				const auth = accounts.authenticate(req)
 				if (!auth) return sendError(res, new RpcError('UNAUTHORIZED', 'Invalid token'))

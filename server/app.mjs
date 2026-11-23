@@ -287,6 +287,14 @@ export const ALLOWED = {
 	'tailscale.login': 'mutation',
 	'tailscale.logout': 'mutation',
 	'tailscale.ping': 'mutation',
+	// This server as an OpenID Connect provider. Owner only, checked in omarchyd.
+	'oidc.status': 'query',
+	'oidc.setConfig': 'mutation',
+	'oidc.clients': 'query',
+	'oidc.createClient': 'mutation',
+	'oidc.updateClient': 'mutation',
+	'oidc.rotateSecret': 'mutation',
+	'oidc.deleteClient': 'mutation',
 	// Settings: advanced (omarchyd itself re-checks the password for factory reset)
 	'system.logs': 'query',
 	'system.factoryReset': 'mutation',
@@ -497,6 +505,68 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		})
 		next()
 	})
+
+	// OpenID Connect. Public discovery, keys, token, and userinfo. The sign-in form carries its own CSRF cookie, never this server's session cookie.
+	const proxyOidc = (req, res) => {
+		const backend = getClient()
+		const isAuthorize = req.path === '/oidc/authorize'
+		if (!backend) {
+			if (isAuthorize) return res.status(503).type('text/html').send('<!doctype html><meta charset="utf-8"><p>This server isn’t ready right now. Try again shortly.</p>')
+			return res.status(503).json({error: 'server_unavailable'})
+		}
+		let target
+		try {
+			target = new URL(req.originalUrl, backend.baseUrl)
+		} catch {
+			return res.status(400).end()
+		}
+		if (target.origin !== new URL(backend.baseUrl).origin) return res.status(400).end()
+		const trustedProxy = isLoopback(String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, ''))
+		const forwardedHost = trustedProxy ? String(req.headers['x-forwarded-host'] ?? '').split(',')[0].trim() : ''
+		const headers = {
+			'x-forwarded-host': forwardedHost || String(req.headers.host ?? ''),
+			'x-forwarded-proto': req.protocol === 'https' ? 'https' : 'http',
+		}
+		for (const h of ['authorization', 'content-type', 'content-length', 'accept']) {
+			if (req.headers[h]) headers[h] = req.headers[h]
+		}
+		if (isAuthorize && req.headers.cookie) {
+			const oidcCsrf = parseCookies(req.headers.cookie).OMARCHY_OIDC_CSRF
+			if (oidcCsrf) headers.cookie = `OMARCHY_OIDC_CSRF=${encodeURIComponent(oidcCsrf)}`
+		}
+		const up = http.request(target, {method: req.method, headers}, (ur) => {
+			const out = {}
+			for (const h of ['content-type', 'content-length', 'location', 'set-cookie', 'cache-control', 'pragma', 'www-authenticate', 'access-control-allow-origin', 'access-control-allow-methods', 'access-control-allow-headers', 'content-security-policy', 'x-content-type-options', 'referrer-policy']) {
+				if (ur.headers[h] !== undefined) out[h] = ur.headers[h]
+			}
+			if (out['content-security-policy']) res.removeHeader('Content-Security-Policy')
+			res.writeHead(ur.statusCode ?? 502, out)
+			ur.pipe(res)
+		})
+		up.setTimeout(isAuthorize ? 45_000 : 15_000, () => up.destroy())
+		linkProxy(req, res, up)
+		up.on('error', () => {
+			if (res.headersSent) return
+			if (isAuthorize) {
+				res.writeHead(502, {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'})
+				return res.end('<!doctype html><meta charset="utf-8"><body style="font:15px system-ui;background:#0f1117;color:#eef2ff;display:grid;place-items:center;min-height:100vh;margin:0"><p>Sign-in timed out or the server is busy. Wait a moment and try again.</p></body>')
+			}
+			res.writeHead(502, {'content-type': 'application/json; charset=utf-8'})
+			res.end(JSON.stringify({error: 'server_error'}))
+		})
+		req.pipe(up)
+	}
+	app.get('/.well-known/openid-configuration', proxyOidc)
+	app.options('/.well-known/openid-configuration', proxyOidc)
+	app.get('/oidc/jwks.json', proxyOidc)
+	app.options('/oidc/jwks.json', proxyOidc)
+	app.get('/oidc/authorize', proxyOidc)
+	app.post('/oidc/authorize', proxyOidc)
+	app.post('/oidc/token', proxyOidc)
+	app.options('/oidc/token', proxyOidc)
+	app.get('/oidc/userinfo', proxyOidc)
+	app.post('/oidc/userinfo', proxyOidc)
+	app.options('/oidc/userinfo', proxyOidc)
 
 	// The connector on another computer trading its one-time pairing code for its own key
 	// (omarchyd checks the code; nothing else is reachable without a key).
