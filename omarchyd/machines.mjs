@@ -718,7 +718,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				if (!alreadyActive(error)) throw error
 			}
 		}
-		busy.set(m.id, {state: pending === 'pausing' || pending === 'resuming' || pending === 'hibernating' ? 'stopping' : pending})
+		busy.set(m.id, {state: pending === 'hibernating' ? 'stopping' : pending})
 		try {
 			if (pending === 'restarting' && m.pending) {
 				// Changed hardware only applies when QEMU starts again: shut down fully, then start.
@@ -750,8 +750,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		} finally {
 			await save().catch(() => {})
 			// Shown a little longer so the next list reads libvirt's settled state; other actions may go ahead.
+			// Pause and Resume are done when virsh returns, so the list reads libvirt's state at once.
 			const entry = {...busy.get(m.id), settling: true}
-			busy.set(m.id, entry)
+			if (pending === 'pausing' || pending === 'resuming') busy.delete(m.id)
+			else busy.set(m.id, entry)
 			setTimeout(() => busy.get(m.id) === entry && busy.delete(m.id), pending === 'stopping' ? 0 : 1500)
 		}
 		return true

@@ -371,7 +371,7 @@ export type Machine = {
 	memoryMb?: number
 	diskSizeGb?: number
 	ipAddress?: string
-	state: 'installing' | 'stopped' | 'starting' | 'running' | 'stopping' | 'restarting' | 'suspended' | 'hibernated' | 'error'
+	state: 'installing' | 'stopped' | 'starting' | 'running' | 'stopping' | 'restarting' | 'pausing' | 'resuming' | 'suspended' | 'hibernated' | 'error'
 	pending?: boolean
 	protected?: boolean
 	onBoot?: boolean
