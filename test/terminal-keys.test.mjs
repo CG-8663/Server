@@ -50,4 +50,10 @@ describe('terminal key modifiers', () => {
 		const src = await readFile(new URL('../web/src/Terminal.tsx', import.meta.url), 'utf8')
 		assert.match(src, /applyTerminalModifiers\(/)
 	})
+
+	test('Option types characters: macOptionIsMeta is off because the on-screen alt key sends Meta', async () => {
+		const src = await readFile(new URL('../web/src/Terminal.tsx', import.meta.url), 'utf8')
+		assert.match(src, /macOptionIsMeta:\s*false/)
+		assert.doesNotMatch(src, /macOptionIsMeta:\s*true/)
+	})
 })

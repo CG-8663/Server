@@ -16,7 +16,8 @@ import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 import {mutate, type Machine} from './api'
 import {clipImage, clipText} from './clips'
 import {consoleShouldTakeFocus} from './consoleFocus'
-import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, handleConsoleWheel, keysymOfChar, mouseButtonFromEvent, PASTE_STEP_MS, pasteKeySequence, pasteKeySteps, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
+import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, effectiveConsoleScale, handleConsoleWheel, keysymOfChar, mouseButtonFromEvent, PASTE_STEP_MS, pasteKeySequence, pasteKeySteps, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, shouldSendConsoleInput, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
+import {overlayBackUsesHistory, popstateClosesOverlay} from './overlayHistory'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -96,7 +97,38 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	// (like any desktop VNC client) and the console gets a desktop toolbar instead of touch controls.
 	const deskUi = !!embedded && typeof matchMedia !== 'undefined' && matchMedia('(pointer: fine)').matches
 	const [scale, setScaleState] = useState<Scale>(readScale)
-	const [canResize, setCanResize] = useState(false)
+	// null until a connected desktop reports whether it can change resolution. false is known-no.
+	const [canResize, setCanResize] = useState<boolean | null>(null)
+	const canResizeRef = useRef(canResize)
+	canResizeRef.current = canResize
+	const toldFitted = useRef(false)
+	const shownScale = effectiveConsoleScale(scale, canResize)
+	// Phone layout only. An embedded desktop window must not push its own history entry.
+	const onCloseRef = useRef(onClose)
+	onCloseRef.current = onClose
+	const overlayClosed = useRef(false)
+	useEffect(() => {
+		if (embedded) return
+		overlayClosed.current = false
+		const id = 'console'
+		history.pushState({omarchyOverlay: id}, '', location.href)
+		const onPop = (e: PopStateEvent) => {
+			if (!popstateClosesOverlay(e.state, id)) return
+			overlayClosed.current = true
+			onCloseRef.current()
+		}
+		window.addEventListener('popstate', onPop)
+		return () => window.removeEventListener('popstate', onPop)
+	}, [embedded])
+	const back = () => {
+		if (embedded) {
+			onClose()
+			return
+		}
+		haptic(6)
+		if (overlayBackUsesHistory(overlayClosed.current, history.state, 'console')) history.back()
+		else onClose()
+	}
 	const [res, setRes] = useState<{w: number; h: number} | null>(null)
 	const [fullscreen, setFullscreen] = useState(false)
 	const [barShown, setBarShown] = useState(true)
@@ -168,7 +200,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			if (deskUi) {
 				r.focusOnClick = true
 				;(r as any).showDotCursor = true
-				applyScale(r, readScale())
+				applyScale(r, effectiveConsoleScale(readScale(), canResizeRef.current))
 			}
 			// The machine copied something: put it on this computer's clipboard too (browsers allow
 			// that on https:// while this page has focus).
@@ -187,7 +219,9 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				if (deskUi) {
 					window.setTimeout(() => {
 						if (disposed || rfbRef.current !== r) return
-						setCanResize(readConsoleMetrics(r as any).canResize)
+						const metrics = readConsoleMetrics(r as any)
+						setCanResize(metrics.canResize)
+						applyScale(r, effectiveConsoleScale(readScale(), metrics.canResize))
 						const host = rootRef.current?.closest('.win') ?? rootRef.current
 						if (consoleShouldTakeFocus({firstConnect: connectCount === 1, activeElement: document.activeElement, windowEl: host})) r.focus()
 					}, 600)
@@ -249,17 +283,35 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			/* not saved */
 		}
 		const r = rfbRef.current
+		const next = effectiveConsoleScale(sc, canResize)
 		if (r) {
-			applyScale(r, sc)
+			applyScale(r, next)
 			r.focus()
 		}
-		if (sc === 'remote' && !canResize) toast('This machine can’t change its resolution from here; showing it fitted instead.')
+		if (sc === 'remote' && canResize === false) noteFitted()
 	}
+	// One toast per time we have to show Fit in place of a saved or chosen Resize VM.
+	const noteFitted = () => {
+		if (toldFitted.current) return
+		toldFitted.current = true
+		toast('This machine can’t change its resolution from here; showing it fitted instead.')
+	}
+	// Saved Resize VM is fitted once the machine is known not to resize. The saved choice stays remote.
+	useEffect(() => {
+		if (!deskUi) return
+		const r = rfbRef.current
+		if (r) applyScale(r, shownScale)
+		if (scale === 'remote' && canResize === false) noteFitted()
+		else toldFitted.current = false
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [deskUi, shownScale, scale, canResize])
 	// Resolution readout and late resize-capability detection (noVNC has no public resize event).
 	useEffect(() => {
 		if (!deskUi) return
 		const t = window.setInterval(() => {
-			const next = readConsoleMetrics(rfbRef.current as any)
+			const rfb = rfbRef.current
+			if (!rfb) return
+			const next = readConsoleMetrics(rfb as any)
 			setRes((cur) => (next.res && (cur?.w !== next.res.w || cur?.h !== next.res.h) ? next.res : cur))
 			setCanResize((cur) => (cur === next.canResize ? cur : next.canResize))
 		}, 1000)
@@ -1072,15 +1124,21 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		}
 		sendChar(rfb, ch)
 	}
-	const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
-		const el = e.currentTarget
+	const sendTyped = (el: HTMLTextAreaElement) => {
 		const value = el.value
 		el.value = ''
-		if (value.length > 1) {
-			typeText(value)
-			return
-		}
-		if (value) typeChar(value)
+		if (value.length > 1) typeText(value)
+		else if (value) typeChar(value)
+	}
+	const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
+		const native = e.nativeEvent
+		const isComposing = native instanceof InputEvent && native.isComposing
+		if (!shouldSendConsoleInput({type: 'input', isComposing})) return
+		sendTyped(e.currentTarget)
+	}
+	const onCompositionEnd = (e: React.CompositionEvent<HTMLTextAreaElement>) => {
+		if (!shouldSendConsoleInput({type: 'compositionend', isComposing: true})) return
+		sendTyped(e.currentTarget)
 	}
 	// Paste: on HTTPS a tap reads the clipboard; anywhere, press and hold the key for iOS's own Paste.
 	const pasteText = (text: string) => {
@@ -1146,20 +1204,20 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 						{res && <span className="ct-res">{res.w} × {res.h}</span>}
 					</span>
 					<div className="ct-scale" role="radiogroup" aria-label="Display">
-						<button role="radio" aria-checked={scale === 'fit'} className={scale === 'fit' ? 'on' : ''} onClick={() => setScale('fit')} title="Scale the picture to fit the window">
+						<button role="radio" aria-checked={shownScale === 'fit'} className={shownScale === 'fit' ? 'on' : ''} onClick={() => setScale('fit')} title="Scale the picture to fit the window">
 							<Icon name="win-max" size={14} />
 							Fit
 						</button>
-						<button role="radio" aria-checked={scale === 'actual'} className={scale === 'actual' ? 'on' : ''} onClick={() => setScale('actual')} title="Show every pixel at 100%, with scrollbars">
+						<button role="radio" aria-checked={shownScale === 'actual'} className={shownScale === 'actual' ? 'on' : ''} onClick={() => setScale('actual')} title="Show every pixel at 100%, with scrollbars">
 							100%
 						</button>
 						<button
 							role="radio"
-							aria-checked={scale === 'remote'}
-							className={scale === 'remote' ? 'on' : ''}
+							aria-checked={shownScale === 'remote'}
+							className={shownScale === 'remote' ? 'on' : ''}
 							onClick={() => setScale('remote')}
 							disabled={live && !canResize}
-							title={canResize || !live ? 'Change the machine’s resolution to match this window' : 'This machine doesn’t support changing its resolution remotely'}
+							title={canResize !== false || !live ? 'Change the machine’s resolution to match this window' : 'This machine doesn’t support changing its resolution remotely'}
 						>
 							Resize VM
 						</button>
@@ -1279,7 +1337,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				</header>
 			) : (
 			<header className="console-bar">
-				<button className="round-btn" aria-label="Close console" onClick={onClose}>
+				<button className="round-btn" aria-label="Close console" onClick={back}>
 					<Icon name="back" size={20} />
 				</button>
 				<div className="console-title">
@@ -1452,6 +1510,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				autoComplete="off"
 				spellCheck={false}
 				onInput={onInput}
+				onCompositionEnd={onCompositionEnd}
 				onKeyDown={onKeyDown}
 				onFocus={() => setKeyboardOpen(true)}
 				onBlur={() => setKeyboardOpen(false)}

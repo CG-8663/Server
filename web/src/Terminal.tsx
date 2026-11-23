@@ -10,7 +10,8 @@ import '@xterm/xterm/css/xterm.css'
 import {clipText} from './clips'
 import {BootstrapContext} from './data'
 import {Icon} from './icons'
-import {terminalPasteDecision} from './terminalPaste'
+import {overlayBackUsesHistory, popstateClosesOverlay} from './overlayHistory'
+import {pasteInto, terminalPasteDecision} from './terminalPaste'
 import {SEQ, applyTerminalModifiers} from './terminalKeys'
 import {AppIcon, haptic, useConfirm, usePortalRoot, useScreenLock, useToast} from './ui'
 
@@ -81,6 +82,15 @@ export function TerminalScreen({
 	const [kbd, setKbd] = useState(false)
 	const [pasteBox, setPasteBox] = useState(false)
 	const [pasteText, setPasteText] = useState('')
+	const pasteField = useRef<HTMLTextAreaElement>(null)
+	const pasteCaret = useRef<number | null>(null)
+	useEffect(() => {
+		const el = pasteField.current
+		const caret = pasteCaret.current
+		if (!el || caret == null) return
+		pasteCaret.current = null
+		el.selectionStart = el.selectionEnd = caret
+	}, [pasteText])
 	const mods = useRef({ctrl: false, alt: false})
 	// Your shell keeps running when you close this; reopening resumes it. `fresh` asks for a new one.
 	const [resumed, setResumed] = useState(false)
@@ -92,6 +102,32 @@ export function TerminalScreen({
 	const toast = useToast()
 	useVisualViewport(root, !embedded)
 	useScreenLock(root, true, !embedded)
+	// Phone layout only. An embedded desktop window must not push its own history entry.
+	const onCloseRef = useRef(onClose)
+	onCloseRef.current = onClose
+	const overlayClosed = useRef(false)
+	useEffect(() => {
+		if (embedded) return
+		overlayClosed.current = false
+		const id = 'terminal'
+		history.pushState({omarchyOverlay: id}, '', location.href)
+		const onPop = (e: PopStateEvent) => {
+			if (!popstateClosesOverlay(e.state, id)) return
+			overlayClosed.current = true
+			onCloseRef.current()
+		}
+		window.addEventListener('popstate', onPop)
+		return () => window.removeEventListener('popstate', onPop)
+	}, [embedded])
+	const back = () => {
+		if (embedded) {
+			onClose()
+			return
+		}
+		haptic(6)
+		if (overlayBackUsesHistory(overlayClosed.current, history.state, 'terminal')) history.back()
+		else onClose()
+	}
 
 	useEffect(() => {
 		const el = host.current
@@ -104,7 +140,7 @@ export function TerminalScreen({
 			cursorBlink: true,
 			scrollback: 5000,
 			allowProposedApi: false,
-			macOptionIsMeta: true,
+			macOptionIsMeta: false,
 			theme: {
 				background: '#0b0b0e',
 				foreground: '#e6e6ea',
@@ -542,7 +578,7 @@ export function TerminalScreen({
 	return createPortal(
 		<div ref={root} className={`console terminal${embedded ? ' embedded' : ''}`} role="dialog" aria-modal={!embedded} aria-label={`${title} terminal, on ${machineName}`}>
 			<header className="console-bar">
-				<button className="round-btn" aria-label="Close terminal" onClick={onClose}>
+				<button className="round-btn" aria-label="Close terminal" onClick={back}>
 					<Icon name="back" size={20} />
 				</button>
 				{app ? (
@@ -587,15 +623,19 @@ export function TerminalScreen({
 							<span>Long-press in the box, tap Paste, then Send.</span>
 						</div>
 						<textarea
+							ref={pasteField}
 							autoFocus
 							value={pasteText}
 							onChange={(e) => setPasteText(e.target.value)}
 							onPaste={(e) => {
 								const t = e.clipboardData.getData('text')
-								if (t) {
-									e.preventDefault()
-									setPasteText((v) => v + t)
-								}
+								if (!t) return
+								e.preventDefault()
+								const el = e.currentTarget
+								const start = el.selectionStart ?? el.value.length
+								const end = el.selectionEnd ?? el.value.length
+								pasteCaret.current = Math.min(start, end) + t.length
+								setPasteText(pasteInto(el.value, start, end, t))
 							}}
 							placeholder="Paste here"
 							autoCapitalize="off"

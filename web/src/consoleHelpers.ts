@@ -69,6 +69,20 @@ export function bindConsoleWheel(
 	return () => el.removeEventListener('wheel', onWheel)
 }
 
+export type ConsoleScale = 'fit' | 'actual' | 'remote'
+
+// Saved Resize VM stays selected until we know the machine cannot resize. Then the picture is fitted.
+export function effectiveConsoleScale(saved: ConsoleScale, canResize: boolean | null): ConsoleScale {
+	if (saved === 'remote' && canResize === false) return 'fit'
+	return saved
+}
+
+// Phone typing: an input event mid-IME is not committed text. compositionend is.
+export function shouldSendConsoleInput(event: {type: 'input' | 'compositionend'; isComposing: boolean}): boolean {
+	if (event.type === 'compositionend') return true
+	return !event.isComposing
+}
+
 // Read the current framebuffer size and whether the remote desktop supports resizing.
 export function readConsoleMetrics(rfb: {_fbWidth?: number; _fbHeight?: number; _supportsSetDesktopSize?: boolean} | null | undefined) {
 	const res = rfb?._fbWidth && rfb?._fbHeight ? {w: rfb._fbWidth, h: rfb._fbHeight} : null
