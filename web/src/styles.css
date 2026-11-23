@@ -158,6 +158,8 @@
 	--dock-h: 70px;
 	--safe-b: env(safe-area-inset-bottom, 0px);
 	--safe-t: env(safe-area-inset-top, 0px);
+	--safe-l: env(safe-area-inset-left, 0px);
+	--safe-r: env(safe-area-inset-right, 0px);
 	--r-lg: 26px;
 	--r-md: 18px;
 }
@@ -293,15 +295,22 @@ img {
 /* ---- Shell ------------------------------------------------------------- */
 .shell {
 	height: 100%;
-	max-width: 640px;
-	margin: 0 auto;
-	padding: calc(var(--safe-t) + 12px) 16px calc(var(--dock-h) + var(--safe-b) + 44px);
+	width: 100%;
+	margin: 0;
+	padding: calc(var(--safe-t) + 12px) 0 calc(var(--dock-h) + var(--safe-b) + 44px);
 	overflow-x: hidden;
 	overflow-y: auto;
 	overscroll-behavior-y: contain;
 	-webkit-overflow-scrolling: touch;
 	position: relative;
 	z-index: 1;
+}
+.shell-col {
+	width: 100%;
+	max-width: 640px;
+	margin: 0 auto;
+	padding: 0 16px;
+	min-width: 0;
 }
 .screen {
 	animation: screen-in 0.42s var(--spring) both;
@@ -1159,7 +1168,7 @@ h1.title {
 	position: fixed;
 	inset: 0;
 	background: rgba(0, 0, 0, 0.42);
-	z-index: 40;
+	z-index: 51;
 	animation: fade 0.3s var(--ease);
 	border: 0;
 	padding: 0;
@@ -1181,7 +1190,7 @@ h1.title {
 	max-height: 92dvh;
 	overflow-y: auto;
 	overscroll-behavior: contain;
-	z-index: 41;
+	z-index: 52;
 	background: var(--sheet);
 	backdrop-filter: blur(40px) saturate(1.8);
 	-webkit-backdrop-filter: blur(40px) saturate(1.8);
@@ -1189,7 +1198,7 @@ h1.title {
 	border: 1px solid var(--line);
 	border-bottom: 0;
 	box-shadow: 0 -24px 70px rgba(0, 0, 0, 0.5);
-	padding: 8px 20px calc(var(--safe-b) + 24px);
+	padding: 8px calc(20px + var(--safe-r)) calc(var(--safe-b) + 24px) calc(20px + var(--safe-l));
 	animation: rise 0.5s var(--spring);
 	transition: transform 0.35s var(--spring);
 }
@@ -2028,6 +2037,8 @@ h1.title {
 	color: #fff;
 	display: flex;
 	flex-direction: column;
+	padding-left: var(--safe-l);
+	padding-right: var(--safe-r);
 	animation: fade 0.25s var(--ease);
 }
 .console-bar {
@@ -2982,6 +2993,9 @@ html.screen-locked .auth {
 	text-align: left;
 	min-width: 0;
 }
+.system-tile > span {
+	min-width: 0;
+}
 .system-tile b {
 	display: block;
 	font-size: 15px;
@@ -2991,7 +3005,7 @@ html.screen-locked .auth {
 .system-tile small {
 	display: block;
 	font-size: 12.5px;
-	color: var(--fg-3);
+	color: var(--muted);
 	margin-top: 3px;
 	white-space: nowrap;
 	overflow: hidden;
@@ -3043,8 +3057,18 @@ html.screen-locked .auth {
 	white-space: nowrap;
 }
 .crumbs button svg {
-	color: var(--fg-3);
+	color: var(--muted);
 	margin: 0 2px;
+}
+@media (pointer: coarse) {
+	.crumbs {
+		margin-top: -6px;
+		margin-bottom: -6px;
+	}
+	.crumbs button,
+	.nu-path button {
+		min-height: 32px;
+	}
 }
 .places {
 	display: grid;
@@ -3513,7 +3537,7 @@ html.screen-locked .auth {
 	background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 .file-row .check {
-	color: var(--fg-3);
+	color: var(--muted);
 	flex: none;
 }
 .file-row .check.on {
@@ -3591,7 +3615,7 @@ html.screen-locked .auth {
 }
 .file-tile .sub {
 	font-size: 11.5px;
-	color: var(--fg-3);
+	color: var(--muted);
 }
 .fab {
 	position: fixed;
@@ -3814,7 +3838,7 @@ html.screen-locked .auth {
 	justify-content: space-between;
 	margin-top: 8px;
 	font-size: 13px;
-	color: var(--fg-3);
+	color: var(--muted);
 }
 .hero-nums b {
 	color: var(--fg);
@@ -4430,6 +4454,8 @@ html.desk-mode body {
 	--dock-h: 0px;
 	--safe-b: 0px;
 	--safe-t: 0px;
+	--safe-l: 0px;
+	--safe-r: 0px;
 	position: relative;
 	flex: 1;
 	min-height: 0;
@@ -6175,6 +6201,8 @@ html:not(.desk-mode) .upload-panel {
 	z-index: 35;
 	display: flex;
 	flex-direction: column;
+	padding-left: var(--safe-l);
+	padding-right: var(--safe-r);
 	background: rgba(8, 8, 12, 0.94);
 	backdrop-filter: blur(30px) saturate(1.4);
 	-webkit-backdrop-filter: blur(30px) saturate(1.4);
@@ -8266,7 +8294,7 @@ html.page-locked .auth {
 	z-index: 50;
 	display: flex;
 	flex-direction: column;
-	padding: calc(var(--safe-t) + 10px) 12px calc(var(--safe-b) + 12px);
+	padding: calc(var(--safe-t) + 10px) calc(12px + var(--safe-r)) calc(var(--safe-b) + 12px) calc(12px + var(--safe-l));
 	background: color-mix(in srgb, var(--bg) 55%, transparent);
 	backdrop-filter: blur(10px);
 	-webkit-backdrop-filter: blur(10px);

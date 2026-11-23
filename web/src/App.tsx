@@ -17,6 +17,7 @@ import {Home} from './screens/Home'
 import {Desktop} from './desktop/Desktop'
 import {resetDeskConfig} from './desktop/config'
 import {ScreenErrorBoundary} from './screenBoundary'
+import {inAppBackTarget, markInAppHistory, readInAppHistoryFlag} from './inAppHistory'
 import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, scrollPhoneToTop, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
 import {WelcomeForUser} from './Welcome'
@@ -192,6 +193,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 		const onOpen = (e: Event) => {
 			setStoreBound((e as CustomEvent<StoreBinding>).detail ?? null)
 			setTab('store')
+			markInAppHistory((key, value) => sessionStorage.setItem(key, value))
 			history.pushState(null, '', '#/store')
 			scrollPhoneToTop()
 		}
@@ -201,6 +203,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	useEffect(() => {
 		const onOpen = () => {
 			setTab('machines')
+			markInAppHistory((key, value) => sessionStorage.setItem(key, value))
 			history.pushState(null, '', '#/machines')
 			scrollPhoneToTop()
 		}
@@ -214,10 +217,17 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 		haptic(5)
 		if (t === tab) scrollPhoneToTop('smooth')
 		else {
+			markInAppHistory((key, value) => sessionStorage.setItem(key, value))
 			history.pushState(null, '', `#/${t}`)
 			setTab(t)
 			scrollPhoneToTop()
 		}
+	}
+	// A direct open of #/settings (or store, or clips) has no in-app entry to pop.
+	const backInApp = () => {
+		const flag = readInAppHistoryFlag((key) => sessionStorage.getItem(key))
+		if (inAppBackTarget(flag) === 'back') history.back()
+		else go('home')
 	}
 
 	const app = apps.data?.find((a) => a.id === appId) ?? null
@@ -231,6 +241,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	return (
 		<>
 			<div className="shell">
+				<div className="shell-col">
 				<header className="topbar">
 					<span className="device">
 						<span className={`dot ${online ? 'live' : 'down'}`} />
@@ -281,14 +292,15 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						)}
 						{tab === 'apps' && <Apps onOpenApp={(a) => setAppId(a.id)} onStore={() => go('store')} />}
 						{tab === 'files' && <Files />}
-						{tab === 'store' && <Store bound={storeBound} onOpenInstalled={(a) => setAppId(a.id)} onBack={() => history.back()} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
+						{tab === 'store' && <Store bound={storeBound} onOpenInstalled={(a) => setAppId(a.id)} onBack={backInApp} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
 						{tab === 'machines' && <Machines onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} />}
 						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} onClips={() => go('clips')} />}
-						{tab === 'clips' && <Clips onBack={() => history.back()} />}
-						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={() => history.back()} />}
+						{tab === 'clips' && <Clips onBack={backInApp} />}
+						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={backInApp} />}
 					</main>
 				</Suspense>
 				</ScreenErrorBoundary>
+				</div>
 			</div>
 			<nav className="dock" aria-label="Main">
 				<span className="indicator" style={{transform: `translateX(${Math.max(index, 0) * 100}%)`, opacity: index < 0 ? 0 : 1}} aria-hidden="true" />

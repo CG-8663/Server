@@ -330,4 +330,14 @@ export function folderPickerRoots(): string[] {
 	return ['/Home']
 }
 
+/** Search runs only once the trimmed query is at least two characters. */
+export function filesSearching(q: string): boolean {
+	return q.trim().length >= 2
+}
+
+/** Empty writable folders point at Upload. There is no + button. */
+export function emptyFolderUploadHint(canUpload: boolean): string | null {
+	return canUpload ? 'Use Upload to add files.' : null
+}
+
 export type {FileEntry}
