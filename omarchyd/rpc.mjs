@@ -54,7 +54,9 @@ export async function handleRpc(req, res, url, procedures, authenticate) {
 			ctx.auth = authenticate(req)
 			if (!ctx.auth) throw new RpcError('UNAUTHORIZED', 'Invalid token')
 		}
-		const data = await proc.run(input, ctx)
+		// An empty body and JSON null are "no fields", not a crash when a handler reads input.name.
+		// Arrays, strings, and numbers stay as sent; a TypeError from those is still a server error.
+		const data = await proc.run(input === undefined || input === null ? {} : input, ctx)
 		sendJson(res, 200, {result: {data: data ?? null}})
 	} catch (error) {
 		sendError(res, error)

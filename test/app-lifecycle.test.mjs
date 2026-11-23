@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {mkdir, mkdtemp, realpath, rm, writeFile} from 'node:fs/promises'
 import net from 'node:net'
@@ -10,7 +11,7 @@ import {openAccounts} from '../omarchyd/accounts.mjs'
 import {createApps} from '../omarchyd/apps.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
-const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'}).toString()
+const git = (cwd, ...args) => execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', ...args]), {cwd, stdio: 'pipe'}).toString()
 
 function portAvailable(port) {
 	return new Promise((resolve) => {

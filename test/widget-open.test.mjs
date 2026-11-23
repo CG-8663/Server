@@ -107,7 +107,7 @@ async function writeWaybar(box, text) {
 	return file
 }
 
-async function installOpenStubs(box, {running = true, xdg = 'ok'} = {}) {
+async function installOpenStubs(box, {running = true, xdg = 'ok', ip = 'route'} = {}) {
 	const active = running ? 'exit 0' : 'exit 3'
 	await writeFile(
 		join(box.bin, 'systemctl'),
@@ -120,7 +120,19 @@ exit 0
 `,
 	)
 	await chmod(join(box.bin, 'systemctl'), 0o755)
-	await writeFile(join(box.bin, 'ip'), '#!/bin/sh\necho "1.1.1.1 via 192.0.2.1 dev eth0 src 192.0.2.10"\n')
+	const ipBody = ip === 'addr'
+		? `case "$*" in
+  "-4 route get 1.1.1.1") exit 0 ;;
+  "-4 -o addr show scope global")
+    echo "2: eth0    inet 198.51.100.8/24 brd 198.51.100.255 scope global eth0"
+    echo "3: eth1    inet 203.0.113.9/24 brd 203.0.113.255 scope global eth1"
+    ;;
+esac
+`
+		: ip === 'none'
+			? 'exit 0\n'
+			: 'echo "1.1.1.1 via 192.0.2.1 dev eth0 src 192.0.2.10"\n'
+	await writeFile(join(box.bin, 'ip'), `#!/bin/sh\n${ipBody}`)
 	await chmod(join(box.bin, 'ip'), 0o755)
 	if (xdg === 'missing') return
 	const exitCode = xdg === 'fail' ? 1 : 0
@@ -261,4 +273,41 @@ test('#615: open prints the address when xdg-open is missing, fails, or has no d
 	const customRun = run(custom, ['open'])
 	assert.equal(customRun.status, 1, customRun.stdout + customRun.stderr)
 	assert.match(customRun.stdout, /Open http:\/\/192\.0\.2\.10:7791 \(or http:\/\/localhost:7791 on this machine\)/)
+})
+
+test('address falls back to the first global IPv4, and is left out when there is none', async () => {
+	const fallback = await sandbox('open-fallback')
+	await installOpenStubs(fallback, {running: true, xdg: 'missing', ip: 'addr'})
+	const open = run(fallback, ['open'])
+	assert.equal(open.status, 1, open.stdout + open.stderr)
+	assert.match(open.stdout, /Open http:\/\/198\.51\.100\.8:7780 \(or http:\/\/localhost:7780 on this machine\)/)
+	assert.doesNotMatch(open.stdout, /203\.0\.113\.9/)
+
+	const status = run(fallback, ['status'])
+	assert.match(status.stdout, /Open http:\/\/198\.51\.100\.8:7780 \(or http:\/\/localhost:7780 on this machine\)/)
+
+	const bar = run(fallback, ['waybar'])
+	assert.equal(bar.status, 0, bar.stdout + bar.stderr)
+	const tip = JSON.parse(bar.stdout)
+	assert.match(tip.tooltip, /http:\/\/198\.51\.100\.8:7780/)
+	assert.doesNotMatch(tip.tooltip, /203\.0\.113\.9/)
+
+	const started = run(fallback, ['start'])
+	assert.equal(started.status, 0, started.stdout + started.stderr)
+	assert.match(started.stdout, /Running at http:\/\/198\.51\.100\.8:7780/)
+
+	const none = await sandbox('open-no-addr')
+	await installOpenStubs(none, {running: true, xdg: 'missing', ip: 'none'})
+	for (const args of [['open'], ['status'], ['waybar'], ['start']]) {
+		const result = run(none, args)
+		const text = `${result.stdout}${result.stderr}`
+		assert.doesNotMatch(text, /http:\/\/:/, args.join(' '))
+		assert.doesNotMatch(text, /http:\/\/:7780/, args.join(' '))
+	}
+	const opened = run(none, ['open'])
+	assert.match(opened.stdout, /Open http:\/\/localhost:7780 on this machine/)
+	const waybar = JSON.parse(run(none, ['waybar']).stdout)
+	assert.equal(waybar.class, 'running')
+	assert.doesNotMatch(waybar.tooltip, /http:\/\//)
+	assert.match(run(none, ['start']).stdout, /^Running$/m)
 })

@@ -1,6 +1,7 @@
 // Install, list, update, and store-refresh failures that used to leave a dead app looking
 // running, a removed listing file in charge, or a failed “check for new apps” looking fine.
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {mkdtemp, mkdir, readFile, rm, stat, writeFile} from 'node:fs/promises'
 import http from 'node:http'
@@ -12,7 +13,7 @@ import {test} from 'node:test'
 import {createApps, pickServerIp} from '../omarchyd/apps.mjs'
 import {RpcError} from '../omarchyd/rpc.mjs'
 
-const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'}).toString()
+const git = (cwd, ...args) => execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', ...args]), {cwd, stdio: 'pipe'}).toString()
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 const there = (p) => stat(p).then(() => true, () => false)
 

@@ -287,7 +287,9 @@ export function createFiles({home, dataDir, io} = {}) {
 	// Copy leaves the share on the original. `to` is null when the folder was trashed.
 	let follow = async () => {}
 
-	async function createDirectory({path}) {
+	async function createDirectory(input) {
+		const path = input && typeof input === 'object' ? input.path : undefined
+		if (typeof path !== 'string') throw new RpcError('BAD_REQUEST', 'Path must be a string')
 		assertVisibleName(basename(path))
 		const {real} = await resolve(path, {mustExist: false})
 		await mkdirOp(real).catch((e) => {

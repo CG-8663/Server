@@ -2,6 +2,8 @@ import {defineConfig} from 'vite'
 import react from '@vitejs/plugin-react'
 import {cpSync, readFileSync} from 'node:fs'
 
+import {apiProxy} from './vite.api-proxy.mjs'
+
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
 
 // The PDF viewer (pdf.js) loads its character maps and standard fonts on demand from /pdfjs/.
@@ -19,5 +21,5 @@ export default defineConfig({
 	// The version this bundle was built as, so a page left open can tell when the server has moved on.
 	define: {__TOUCH_BUILD__: JSON.stringify(pkg.version)},
 	build: {outDir: '../dist', emptyOutDir: true, sourcemap: false},
-	server: {port: 5173, proxy: {'/api': 'http://127.0.0.1:7780'}},
+	server: {port: 5173, proxy: {'/api': apiProxy}},
 })

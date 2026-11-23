@@ -2,6 +2,7 @@
 // own data: the container user has to own it, or an app that runs as user 1000 (Jellyfin) cannot
 // write its config and never starts.
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
@@ -14,7 +15,7 @@ import {startOmarchyd} from '../omarchyd/server.mjs'
 describe('app data under a hidden home folder', () => {
 	let root, home, data, d, auth, calls
 	const every = []
-	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
+	const git = (args, cwd) => execFileSync('git', gitArgv(args), {cwd, stdio: 'pipe'}).toString()
 	const run = async (cmd, args, opts = {}) => {
 		if (cmd === 'git') return git(args, opts.cwd)
 		if (cmd === 'docker-compose') {

@@ -1,6 +1,7 @@
 // Bind sources in a listing's compose file: classified after the same expansion Compose uses,
 // then resolved (so `..` and `${HOME}` can't slip past the "own folder" prefix check).
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises'
 import net from 'node:net'
@@ -195,7 +196,7 @@ test('install does not ask for userns_mode and does not write it into the runnin
 	await writeFile(join(store, 'omarchy-app-store.yml'), 'id: demo\nname: Demo\n')
 	await writeFile(join(store, 'boxed/omarchy-app.yml'), `manifestVersion: 1\nid: boxed\nname: Boxed\nversion: "1"\nport: ${port}\nweb:\n  service: web\n  port: 80\n`)
 	await writeFile(join(store, 'boxed/docker-compose.yml'), 'services:\n  web:\n    image: x\n    userns_mode: keep-id\n')
-	const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'})
+	const git = (cwd, ...args) => execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', ...args]), {cwd, stdio: 'pipe'})
 	git(store, 'init', '-q', '-b', 'main')
 	git(store, 'add', '.')
 	git(store, 'commit', '-qm', 'store')

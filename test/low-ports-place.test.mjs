@@ -1,5 +1,6 @@
 // Install-time floor: placeApp must lower it to the host port Compose will bind.
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
@@ -20,7 +21,7 @@ test('placeApp asks for the port Compose binds, not an unused ${PORT:-default}',
 	process.env.DOCKER_HOST = `unix://${sock}`
 	const lows = []
 	const up = new Set()
-	const git = (args) => execFileSync('git', args, {stdio: 'pipe'}).toString()
+	const git = (args) => execFileSync('git', gitArgv(args), {stdio: 'pipe'}).toString()
 	const run = async (cmd, args) => {
 		if (cmd === 'git') return git(args)
 		if (cmd === 'docker-compose') {

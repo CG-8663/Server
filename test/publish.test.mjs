@@ -1,6 +1,7 @@
 // Publishing an app built on this server: a local store (not a git clone), a runtime image, and a
 // token that can publish and unpublish but not touch the rest of the server.
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFile, execFileSync} from 'node:child_process'
 import {readFileSync} from 'node:fs'
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises'
@@ -252,7 +253,7 @@ test('a studio publishes through its socket, and that socket does nothing else',
 		await writeFile(join(store, 'studio/docker-compose.yml'), 'services:\n  web:\n    image: example/studio:1\n    volumes:\n      - ${DOCUMENTS_DIR}:/work\n')
 		execFileSync('git', ['init', '-q', '-b', 'main'], {cwd: store})
 		execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], {cwd: store})
-		execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'store'], {cwd: store})
+		execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'store']), {cwd: store})
 		await fx.apps.procedures['appStore.addRepository'].run({url: `file://${store}`})
 		await assert.rejects(fx.apps.procedures['apps.install'].run({appId: 'studio'}), /publish/)
 		await fx.apps.procedures['apps.install'].run({appId: 'studio', grant: ['publish']})

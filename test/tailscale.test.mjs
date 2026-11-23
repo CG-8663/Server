@@ -2,6 +2,7 @@
 // Real omarchyd; stand-ins for the root helper, Tailscale's local API (a unix socket) and the
 // `tailscale` program (its `web` page and `version`).
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import http from 'node:http'
@@ -143,7 +144,7 @@ describe('Tailscale on the system', () => {
 		await mkdir(join(store, 'tailscale'), {recursive: true})
 		await writeFile(join(store, 'tailscale', 'omarchy-app.yml'), 'manifestVersion: 1\nid: tailscale\nname: Container Tailscale\nport: 8241\nweb:\n  service: web\n  port: 8240\n')
 		await writeFile(join(store, 'tailscale', 'docker-compose.yml'), 'services:\n  web:\n    image: x\n    network_mode: host\n')
-		for (const args of [['init', '-q', '-b', 'main'], ['add', '.'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 's']]) execFileSync('git', args, {cwd: store, stdio: 'pipe'})
+		for (const args of [['init', '-q', '-b', 'main'], ['add', '.'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 's']]) execFileSync('git', gitArgv(args), {cwd: store, stdio: 'pipe'})
 		await boot()
 		await call('appStore.addRepository', {url: `file://${store}`})
 	})

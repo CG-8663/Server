@@ -15,7 +15,32 @@ PORT=${PORT:-7780}
 WAYBAR="${XDG_CONFIG_HOME:-$HOME/.config}/waybar/config.jsonc"
 MARK='omarchy-server widget'
 
-ip_addr() { ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}'; }
+# The route lookup is empty when this computer has no default route. Use the first global IPv4 then.
+ip_addr() {
+	local addr
+	addr=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}')
+	if [ -z "$addr" ]; then
+		addr=$(ip -4 -o addr show scope global 2>/dev/null | awk 'NR == 1 { split($4, a, "/"); print a[1]; exit }')
+	fi
+	printf '%s\n' "$addr"
+}
+# http://ADDRESS:PORT, or nothing. Callers must not print "http://:PORT".
+lan_url() {
+	local addr
+	addr=$(ip_addr)
+	if [ -n "$addr" ]; then
+		printf 'http://%s:%s\n' "$addr" "$PORT"
+	fi
+}
+print_open_line() {
+	local lan
+	lan=$(lan_url)
+	if [ -n "$lan" ]; then
+		printf '\nOpen %s (or http://localhost:%s on this machine)\n' "$lan" "$PORT"
+	else
+		printf '\nOpen http://localhost:%s on this machine\n' "$PORT"
+	fi
+}
 running() { systemctl --user is-active --quiet omarchyd.service 2>/dev/null && systemctl --user is-active --quiet omarchy-server-web.service 2>/dev/null; }
 any_running() { systemctl --user is-active --quiet omarchyd.service 2>/dev/null || systemctl --user is-active --quiet omarchy-server-web.service 2>/dev/null; }
 notify() { command -v notify-send >/dev/null 2>&1 && notify-send -a "MODC" "MODC" "$1"; printf '%s\n' "$1"; }
@@ -255,7 +280,7 @@ case "$cmd" in
 	status)
 		no_extra_args status "$@"
 		for u in "${UNITS[@]}" "$DESKTOP_UNIT"; do printf '%-34s %s\n' "$u" "$(systemctl --user is-active "$u" 2>/dev/null)"; done
-		running && printf '\nOpen http://%s:%s (or http://localhost:%s on this machine)\n' "$(ip_addr)" "$PORT" "$PORT"
+		running && print_open_line
 		;;
 	open)
 		no_extra_args open "$@"
@@ -272,7 +297,7 @@ case "$cmd" in
 			fi
 		fi
 		if [ "$opened" = 0 ] || [ "$up" = 0 ]; then
-			printf '\nOpen http://%s:%s (or http://localhost:%s on this machine)\n' "$(ip_addr)" "$PORT" "$PORT"
+			print_open_line
 		fi
 		[ "$opened" = 1 ] || exit 1
 		;;
@@ -284,7 +309,12 @@ case "$cmd" in
 		systemctl --user is-active --quiet graphical-session.target 2>/dev/null && systemctl --user "$cmd" "$DESKTOP_UNIT" 2>/dev/null
 		sleep 1
 		if [ "$fail" = 0 ] && running; then
-			notify "Running at http://$(ip_addr):$PORT"
+			lan=$(lan_url)
+			if [ -n "$lan" ]; then
+				notify "Running at $lan"
+			else
+				notify "Running"
+			fi
 		else
 			notify "Didn't start. See: omarchy-server logs"
 			exit 1
@@ -350,7 +380,12 @@ case "$cmd" in
 		no_extra_args waybar "$@"
 		# One line of JSON for Waybar's custom module.
 		if running; then
-			printf '{"text":"󰒋","class":"running","tooltip":"MODC is running\\nhttp://%s:%s\\n\\nClick: open · Right-click: restart"}\n' "$(ip_addr)" "$PORT"
+			lan=$(lan_url)
+			if [ -n "$lan" ]; then
+				printf '{"text":"󰒋","class":"running","tooltip":"MODC is running\\n%s\\n\\nClick: open · Right-click: restart"}\n' "$lan"
+			else
+				printf '{"text":"󰒋","class":"running","tooltip":"MODC is running\\n\\nClick: open · Right-click: restart"}\n'
+			fi
 		else
 			printf '{"text":"󰒋 off","class":"stopped","tooltip":"MODC is stopped\\n\\nRight-click: start it"}\n'
 		fi

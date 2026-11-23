@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {EventEmitter} from 'node:events'
 import {execFileSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
@@ -11,7 +12,7 @@ import {test} from 'node:test'
 import {appPermissions, createApps, missingVars, parseDotEnv} from '../omarchyd/apps.mjs'
 import {createSystemApps} from '../omarchyd/system-apps.mjs'
 
-const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'}).toString()
+const git = (cwd, ...args) => execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', ...args]), {cwd, stdio: 'pipe'}).toString()
 
 function loopback(id) {
 	return 20_000 + (parseInt(createHash('sha256').update(id).digest('hex').slice(0, 4), 16) % 9000)

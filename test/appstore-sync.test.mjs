@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
 import {mkdir, mkdtemp, readdir, realpath, rm, writeFile} from 'node:fs/promises'
@@ -8,7 +9,7 @@ import {test} from 'node:test'
 
 import {createApps} from '../omarchyd/apps.mjs'
 
-const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'}).toString()
+const git = (cwd, ...args) => execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', ...args]), {cwd, stdio: 'pipe'}).toString()
 
 async function makeStore(root, name, apps) {
 	const origin = join(root, `${name}.git`)

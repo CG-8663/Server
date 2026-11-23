@@ -1,6 +1,7 @@
 // Compact app-store index: the browse list is light, a single-app query has the rest, and
 // updates() reads the registry once for every installed app.
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises'
 import os from 'node:os'
@@ -9,7 +10,7 @@ import {after, test} from 'node:test'
 
 import {createApps} from '../omarchyd/apps.mjs'
 
-const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'}).toString()
+const git = (cwd, ...args) => execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', ...args]), {cwd, stdio: 'pipe'}).toString()
 
 async function addApp(work, id, {version = '1.0', extraYml = '', compose = 'services:\n  web:\n    image: nginx\n    volumes:\n      - ${APP_DATA_DIR}/data:/data\n'} = {}) {
 	await mkdir(join(work, id), {recursive: true})

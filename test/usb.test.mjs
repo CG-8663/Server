@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {access, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, symlink, writeFile} from 'node:fs/promises'
 import net from 'node:net'
@@ -528,7 +529,7 @@ test('parseUsbLive matches vendor and product only inside one hostdev', () => {
 
 describe('app USB compose', () => {
 	let root, data, d, auth, calls
-	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
+	const git = (args, cwd) => execFileSync('git', gitArgv(args), {cwd, stdio: 'pipe'}).toString()
 	before(async () => {
 		root = await mkdtemp(join(os.tmpdir(), 'usb-app-'))
 		data = join(root, 'data')
@@ -705,7 +706,7 @@ async function withUsbOverlay(serviceName) {
 	await writeFile(join(store, 'omarchy-app-store.yml'), 'id: demo\nname: Demo\n')
 	await writeFile(join(store, 'demo/omarchy-app.yml'), `manifestVersion: 1\nid: demo\nname: Demo\nversion: "1.0"\nport: ${port}\nweb:\n  service: ${serviceName}\n  port: 80\n`)
 	await writeFile(join(store, 'demo/docker-compose.yml'), `services:\n  ${serviceName}:\n    image: x\n`)
-	const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'})
+	const git = (cwd, ...args) => execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', ...args]), {cwd, stdio: 'pipe'})
 	git(store, 'init', '-q', '-b', 'main')
 	git(store, 'add', '.')
 	git(store, 'commit', '-qm', 'store')
