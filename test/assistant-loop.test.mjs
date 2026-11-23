@@ -233,7 +233,15 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 		'machines_capabilities',
 		'usb_list',
 		'swarm_list',
+		'swarm_alerts',
+		'swarm_history',
+		'swarm_storage_status',
 		'swarm_storage_disks',
+		'swarm_storage_pools',
+		'swarm_services_list',
+		'swarm_service_logs',
+		'swarm_files_list',
+		'swarm_backups_status',
 		'omarchy_plugins',
 		'omarchy_listBackgrounds',
 		'appearance_list',
@@ -248,6 +256,17 @@ test('read tools are the curated list and members do not get swarm_list', () => 
 	})
 	assert.equal(READ_TOOLS.find((t) => t.name === 'swarm_list').ownerOnly, true)
 	assert.equal(READ_TOOLS.find((t) => t.name === 'swarm_list').rpc, 'swarm.list')
+	assert.equal(READ_TOOLS.find((t) => t.name === 'swarm_alerts').rpc, 'swarm.alerts')
+	assert.equal(READ_TOOLS.find((t) => t.name === 'swarm_alerts').ownerOnly, true)
+	assert.equal(READ_TOOLS.find((t) => t.name === 'swarm_history').parameters.properties.range.enum.join(','), '1h,24h')
+	assert.equal(READ_TOOLS.find((t) => t.name === 'swarm_service_logs').rpc, 'swarm.services.logs')
+	assert.equal(READ_TOOLS.find((t) => t.name === 'swarm_service_logs').parameters.properties.kind.enum.join(','), 'user,system,container')
+	assert.equal(READ_TOOLS.find((t) => t.name === 'swarm_files_list').rpc, 'swarm.files.list')
+	assert.equal(READ_TOOLS.find((t) => t.name === 'swarm_backups_status').rpc, 'backups.computers')
+	assert.equal(toolsFor('member').some((t) => t.name === 'swarm_alerts' || t.name === 'swarm_files_list' || t.name === 'swarm_backups_status'), false)
+	assert.equal(toolsFor('owner').some((t) => t.name === 'swarm_alerts'), true)
+	assert.match(SYSTEM_PROMPT, /swarm_alerts/)
+	assert.match(SYSTEM_PROMPT, /swarm_backups_status/)
 	const disks = READ_TOOLS.find((t) => t.name === 'swarm_storage_disks')
 	assert.equal(disks.ownerOnly, true)
 	assert.equal(disks.rpc, 'swarm.storage.disks')

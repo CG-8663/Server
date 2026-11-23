@@ -8,7 +8,7 @@ import {backoffMs, retryableStreamError, retryingFetch, sleepFor} from './retry.
 import {needsSummary, pickCut, summaryNote, summaryOf, unsummarized, writeSummary} from './summary.mjs'
 import {appearanceCatalog, coerceDeskShell, declaredArgs, filterAppStore, isWriteTool, lookupTool, openAiTools, writeTool} from './tools.mjs'
 
-export const SYSTEM_PROMPT = 'You are the My Own Data Center assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Ubuntu vs Hyprland layout on this server: desktop_setLayout. App chrome (Appearance, glass): appearance_list. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
+export const SYSTEM_PROMPT = 'You are the My Own Data Center assistant on this machine and its Local swarm. You do not write programs or propose shell commands. Use only the given tools. Lookups run immediately. Writes become Approve cards the person must approve. Fleet health, history, storage, services, files, and computer backups are lookups: swarm_alerts, swarm_history, swarm_storage_status, swarm_storage_pools, swarm_services_list, swarm_service_logs, swarm_files_list, swarm_backups_status. Ubuntu vs Hyprland layout on this server: desktop_setLayout. App chrome (Appearance, glass): appearance_list. Theme colours only: omarchy_setTheme. Wallpaper or theme plus wallpaper: only omarchy_setBackground with the theme slug. Do not call both. Stay on this host.'
 
 const LIMIT = 'I hit the lookup limit for this turn.'
 const KEY_REJECTED = 'That API key was rejected. Replace it in Settings → Assistant.'
