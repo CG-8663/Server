@@ -22,12 +22,18 @@ test('reduced-motion resets hover lift on .show-apps as well as .dock-art', () =
 	assert.match(CSS, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.dock-hover-lift \.dock-item:hover \.show-apps/)
 })
 
-test('dock tooltip portals inside .desk, clamps to viewport, clears magnified icons, and responds to keyboard focus', () => {
+test('dock tooltip portals inside .desk, clamps/bounds width, reveals auto-hidden dock on focus, and uses mouse-only hover', () => {
 	const tipFn = TSX.slice(TSX.indexOf('function useTooltip('), TSX.indexOf('// ---- dock'))
 	assert.match(tipFn, /closest\('\.desk'\)/, 'tooltip must portal into .desk so .style-daylight matches')
 	assert.match(tipFn, /node\.style\.translate/, 'tooltip must clamp on both axes via translate')
 	assert.match(tipFn, /clearTimeout\(t\.current\)/, 'tooltip must clean up pending timeout')
+	assert.match(tipFn, /addEventListener\('resize', refresh\)/, 'tooltip must remeasure on viewport resize')
+	assert.match(tipFn, /addEventListener\('transitionend', onTransition\)/, 'tooltip must remeasure after dock reveal transition')
 	const dockFn = TSX.slice(TSX.indexOf('function Dock('), TSX.indexOf('// ---- desktop icons'))
+	assert.match(dockFn, /!focusWithin/, 'auto-hidden dock must reveal while focus is inside it')
+	assert.match(dockFn, /pointerType === 'mouse'/, 'touch taps must not leave sticky hover tooltips')
 	assert.match(dockFn, /matches\(':focus-visible'\)/, 'dock items must show tooltips on keyboard focus')
-	assert.match(dockFn, /Math\.max\(d\.right,\s*cx \+ reach\)/, 'tooltip must anchor off dock edge and clear grown icon')
+	assert.match(dockFn, /Math\.max\(d\.right,\s*art\.right\)/, 'tooltip must measure rendered artwork instead of assuming full magnification')
+	assert.match(CSS, /\.dock-tip \{[^}]*max-width:\s*min\(320px,\s*calc\(100vw - 16px\)\);/)
+	assert.match(CSS, /\.dock-tip \{[^}]*text-overflow:\s*ellipsis;/)
 })
