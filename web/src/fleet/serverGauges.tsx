@@ -5,7 +5,8 @@ import {BatteryRing} from './BatteryRing'
 import type {FleetRings, GaugeKind} from './aggregate'
 import {Icon, type IconName} from '../icons'
 import {swarmGaugeItems, type SwarmMetrics} from '../swarm/gauges'
-import {Ring, StatChip, levelColor} from '../ui'
+import {Ring, levelColor} from '../ui'
+import {LiveStats} from './StatRegion'
 
 export type GaugeModel = {
 	k: string
@@ -53,27 +54,10 @@ export function useServerGaugeMetrics(): {metrics: SwarmMetrics; temp: number | 
 	}
 }
 
-/** The same spec chips a joined computer shows on its card. */
+/** This server's readings on its card. The account's stat view decides the drawing. */
 export function ServerSpecs() {
 	const {metrics, temp} = useServerGaugeMetrics()
-	const items = swarmGaugeItems(metrics)
-	if (!items.length && temp == null) return null
-	return (
-		<span className="specs">
-			{items.map((g) =>
-				g.ready ? (
-					<StatChip key={'key' in g && g.key ? g.key : g.k} icon={g.icon} label={g.k}>
-						{Math.round(g.p)}%
-					</StatChip>
-				) : null,
-			)}
-			{temp != null && (
-				<StatChip icon="thermo" label="Temperature">
-					{Math.round(temp)}°C
-				</StatChip>
-			)}
-		</span>
-	)
+	return <LiveStats metrics={metrics} temp={temp} />
 }
 
 function gaugeFace(g: GaugeModel): ReactNode {
@@ -89,8 +73,8 @@ function gaugeFace(g: GaugeModel): ReactNode {
 }
 
 /**
- * One gauge row for Home and for a machine.
- * The click is part of the component. A machine page leaves it off, so the line stays the measure.
+ * Home's aggregate gauges. Each gauge opens its detail.
+ * A machine's own readings use StatRegion instead, so this row is not part of the stat-view cycle.
  */
 export function GaugeCluster({
 	metrics,
@@ -158,6 +142,6 @@ export function GaugeCluster({
 }
 
 export function ServerRings() {
-	const {metrics} = useServerGaugeMetrics()
-	return <GaugeCluster metrics={metrics} />
+	const {metrics, temp} = useServerGaugeMetrics()
+	return <LiveStats metrics={metrics} temp={temp} />
 }

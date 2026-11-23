@@ -9895,11 +9895,50 @@ button.mm-squares {
 .mm-square span {
 	font-size: 11px;
 }
-.mm-dials {
+/* The stats region is one button. Home's aggregate gauges are not this control. */
+.stat-region {
+	display: block;
+	width: 100%;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
 	cursor: pointer;
 }
-.mm-dials .gauges {
+.stat-region.stat-line {
+	min-height: 44px;
+}
+/* On a card, the one-line button shares its row with the updates chip. Blocks and gauges take the row. */
+.specs > .stat-region.stat-line {
+	width: auto;
+	flex: 1 1 auto;
+}
+.specs > .stat-region.stat-blocks,
+.specs > .stat-region.stat-gauges {
+	flex: 1 0 100%;
+}
+.stat-region .specs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	align-items: center;
+	width: 100%;
+	min-height: 44px;
+}
+.stat-region .gauges {
 	margin-top: 0;
+}
+.stat-region .ring .pct.compact {
+	font-size: 15px;
+}
+.mm-panel .stat-region.stat-gauges {
+	margin-top: 0;
+}
+.stat-region.stat-gauges {
+	margin-top: 16px;
 }
 .mm-noread,
 .mm-empty {

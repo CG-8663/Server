@@ -9,7 +9,7 @@ import {guestAgent, hostGuestMetrics, linuxConnectorOs} from '../swarm/guestLink
 import {storageRowSub} from '../swarm/storageHint'
 import {AddComputer, ConnectorControls, agentMay, useSwarm} from '../swarm/Swarm'
 import {Row, Sheet, SheetHeader, bytes, duration, haptic} from '../ui'
-import {GaugeCluster} from './serverGauges'
+import {LiveStats} from './StatRegion'
 import {MachineActions} from './machineActions'
 import {openStore} from './openStore'
 import {SheetGroup} from './sheetGroup'
@@ -69,7 +69,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 				</div>
 			)}
 			{swarm.isFetched && !agent && !linux && <p className="quiet">The connector runs on Linux with systemd. It can’t be installed on this guest.</p>}
-			{metrics ? <GaugeCluster metrics={metrics} /> : host ? <GaugeCluster metrics={host} /> : null}
+			{(metrics || host || machine.diskSizeGb) && <LiveStats metrics={metrics ?? host} temp={typeof metrics?.temp === 'number' ? metrics.temp : null} diskSizeGb={machine.diskSizeGb ?? null} />}
 			<SheetGroup title="Now">
 				<Row
 					icon="disk"

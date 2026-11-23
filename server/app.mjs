@@ -1111,7 +1111,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	api.post('/prefs', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook} = req.body ?? {}
+		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView} = req.body ?? {}
 		const patch = {}
 		// How the assistant looks for this account (character, name, motion). Appearance only: it never
 		// reaches the assistant itself. Checked field by field; anything else is dropped.
@@ -1141,6 +1141,11 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad colour'}})
 			}
 			patch.customBrandHsl = customBrandHsl
+		}
+		// How this account draws machine stats. Home's aggregate gauges do not read it.
+		if (statView !== undefined) {
+			if (statView !== null && statView !== 'line' && statView !== 'blocks' && statView !== 'gauges') return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown stat view'}})
+			patch.statView = statView
 		}
 		res.json({prefs: await savePrefs(session.accountId, patch)})
 	}))

@@ -24,7 +24,6 @@ import {
 	managerHealth,
 	managerPower,
 	managerRows,
-	managerStats,
 	mergeMotion,
 	reachLabel,
 	seenFact,
@@ -34,10 +33,11 @@ import {
 	type ManagerHealth,
 	type ManagerKind,
 	type ManagerPower,
-	type ManagerStat,
 	type MotionPhase,
 } from './machineManagerLogic'
-import {GaugeCluster, useServerGaugeMetrics, type GaugeModel} from './serverGauges'
+import {StatRegion} from './StatRegion'
+import {statReadings, type StatReading} from './statView'
+import {useServerGaugeMetrics} from './serverGauges'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
@@ -163,56 +163,7 @@ function snaps(metrics: SwarmMetrics | null | undefined) {
 	return swarmGaugeItems(metrics).map((g) => ({name: g.k, percent: g.p, ready: g.ready}))
 }
 
-function dialItems(metrics: SwarmMetrics | null | undefined): GaugeModel[] {
-	return swarmGaugeItems(metrics).map((g) => ({
-		k: g.k,
-		icon: g.icon,
-		p: g.p,
-		sub: g.sub,
-		ready: g.ready,
-		key: 'key' in g ? g.key : undefined,
-		color: 'color' in g ? g.color : undefined,
-	}))
-}
 
-function Squares({stats, dials, onOpen}: {stats: readonly ManagerStat[]; dials: boolean; onOpen: () => void}) {
-	const canDial = stats.some((s) => s.dial)
-	const body = stats.map((s) => (
-		<span className="mm-square" key={s.id}>
-			<Icon name={s.icon} size={16} />
-			<b>{s.text}</b>
-			<span>{s.label}</span>
-		</span>
-	))
-	if (!stats.length) return <p className="quiet mm-noread">No readings yet.</p>
-	if (!canDial) return <div className="mm-squares">{body}</div>
-	return (
-		<button type="button" className="mm-squares" aria-expanded={dials} aria-label="Show gauges" onClick={onOpen}>
-			{body}
-		</button>
-	)
-}
-
-function Dials({metrics, onClose}: {metrics: SwarmMetrics | null | undefined; onClose: () => void}) {
-	return (
-		<div
-			className="mm-dials"
-			role="button"
-			tabIndex={0}
-			aria-expanded
-			aria-label="Hide gauges"
-			onClick={onClose}
-			onKeyDown={(e) => {
-				if (e.key === 'Enter' || e.key === ' ') {
-					e.preventDefault()
-					onClose()
-				}
-			}}
-		>
-			<GaugeCluster items={dialItems(metrics)} />
-		</div>
-	)
-}
 
 function ActionRow({
 	kind,
@@ -306,20 +257,9 @@ function RowFrame({
 	)
 }
 
-function Readings({stats, metrics, dials, setDials}: {stats: readonly ManagerStat[]; metrics: SwarmMetrics | null | undefined; dials: boolean; setDials: (on: boolean) => void}) {
-	const canDial = stats.some((s) => s.dial)
-	return (
-		<>
-			<Ease open={!dials || !canDial}>
-				<Squares stats={stats} dials={dials} onOpen={() => setDials(true)} />
-			</Ease>
-			{canDial && (
-				<Ease open={dials}>
-					<Dials metrics={metrics} onClose={() => setDials(false)} />
-				</Ease>
-			)}
-		</>
-	)
+function Readings({readings}: {readings: readonly StatReading[]}) {
+	if (!readings.length) return <p className="quiet mm-noread">No readings yet.</p>
+	return <StatRegion readings={readings} />
 }
 
 function ServerRow({
@@ -328,8 +268,6 @@ function ServerRow({
 	owner,
 	serverTerminal,
 	open,
-	dials,
-	setDials,
 	onToggle,
 	onManage,
 	onTerminal,
@@ -340,20 +278,18 @@ function ServerRow({
 	owner: boolean
 	serverTerminal: boolean
 	open: boolean
-	dials: boolean
-	setDials: (on: boolean) => void
 	onToggle: () => void
 	onManage: () => void
 	onTerminal: () => void
 	onDesktop: () => void
 }) {
 	const {metrics, temp, uptime} = useServerGaugeMetrics()
-	const stats = managerStats({gauges: swarmGaugeItems(metrics), temp, diskSizeGb: null})
+	const readings = statReadings({gauges: swarmGaugeItems(metrics), temp, diskSizeGb: null})
 	const seen = seenFact(member.online, uptime, null, Date.now())
 	return (
 		<RowFrame open={open} name={member.name} icon="server" iconBg="linear-gradient(140deg,#2b2b2b,#0b0b0b)" reach={reachLabel('server', member.online)} health={healthPill(health)} onToggle={onToggle}>
 			<div className="mm-panel">
-				<Readings stats={stats} metrics={metrics} dials={dials} setDials={setDials} />
+				<Readings readings={readings} />
 				<ActionRow
 					kind="server"
 					access={managerAccess({kind: 'server', linkOnline: member.online, owner, serverTerminal, terminalGranted: false, desktopGranted: false, desktopOk: false, guestRunning: false})}
@@ -381,8 +317,6 @@ function ComputerRow({
 	agent,
 	health,
 	open,
-	dials,
-	setDials,
 	onToggle,
 	onManage,
 	onTerminal,
@@ -392,8 +326,6 @@ function ComputerRow({
 	agent: Agent
 	health: ManagerHealth
 	open: boolean
-	dials: boolean
-	setDials: (on: boolean) => void
 	onToggle: () => void
 	onManage: () => void
 	onTerminal: () => void
@@ -402,7 +334,7 @@ function ComputerRow({
 	const confirm = useConfirm()
 	const act = useSwarmAction()
 	const metrics = agent.metrics
-	const stats = managerStats({gauges: swarmGaugeItems(metrics), temp: metrics?.temp ?? null, diskSizeGb: null})
+	const readings = statReadings({gauges: swarmGaugeItems(metrics), temp: metrics?.temp ?? null, diskSizeGb: null})
 	const seen = seenFact(agent.online, metrics?.uptime, agent.lastSeen, Date.now())
 	const powers = managerPower({kind: 'computer', online: agent.online, manage: agentMay(agent, 'manage')})
 	const run = (id: ManagerPower) => {
@@ -417,7 +349,7 @@ function ComputerRow({
 	return (
 		<RowFrame open={open} name={member.name} icon="machine" iconBg="linear-gradient(140deg,#3a3a3c,#1c1c1e)" reach={reachLabel('computer', agent.online)} health={healthPill(health)} onToggle={onToggle}>
 			<div className="mm-panel">
-				<Readings stats={stats} metrics={metrics} dials={dials} setDials={setDials} />
+				<Readings readings={readings} />
 				<ActionRow
 					kind="computer"
 					access={managerAccess({
@@ -454,8 +386,6 @@ function GuestRow({
 	agents,
 	health,
 	open,
-	dials,
-	setDials,
 	onToggle,
 	onManage,
 	onTerminal,
@@ -465,8 +395,6 @@ function GuestRow({
 	agents: readonly Agent[]
 	health: ManagerHealth
 	open: boolean
-	dials: boolean
-	setDials: (on: boolean) => void
 	onToggle: () => void
 	onManage: () => void
 	onTerminal: (agent: Agent) => void
@@ -477,7 +405,7 @@ function GuestRow({
 	const statsQ = useStats(machine.id, open && machine.state === 'running' && !connectorOnline)
 	const host = !connectorOnline && machine.state === 'running' ? hostGuestMetrics(statsQ.data?.last, machine.memoryMb ?? (machine.memoryGb ? machine.memoryGb * 1024 : 0), machine.cores ?? 0) : null
 	const metrics = connectorOnline ? agent?.metrics : host
-	const stats = managerStats({gauges: swarmGaugeItems(metrics), temp: connectorOnline ? (agent?.metrics?.temp ?? null) : null, diskSizeGb: machine.diskSizeGb ?? null})
+	const readings = statReadings({gauges: swarmGaugeItems(metrics), temp: connectorOnline ? (agent?.metrics?.temp ?? null) : null, diskSizeGb: machine.diskSizeGb ?? null})
 	const seen = seenFact(machine.state === 'running', connectorOnline ? agent?.metrics?.uptime : undefined, agent?.lastSeen, Date.now())
 	const power = usePowerActions({id: machine.id, name: machine.name, state: machine.state, protected: machine.protected})!
 	const busy = managerBusy('guest', machine.state, !!(power.pending || machine.pending))
@@ -493,7 +421,7 @@ function GuestRow({
 	return (
 		<RowFrame open={open} name={machine.name} icon="vm" iconBg="linear-gradient(140deg,#3a3a3c,#1c1c1e)" reach={reachLabel('guest', machine.state === 'running', machine.state)} health={healthPill(health)} onToggle={onToggle}>
 			<div className="mm-panel">
-				<Readings stats={stats} metrics={metrics} dials={dials} setDials={setDials} />
+				<Readings readings={readings} />
 				<ActionRow
 					kind="guest"
 					access={managerAccess({
@@ -578,7 +506,6 @@ export function MachineManager({
 		}
 	}
 	const [openId, setOpenId] = useState<string | null>(null)
-	const [dials, setDials] = useState(false)
 	const [addOpen, setAddOpen] = useState(false)
 	const [term, setTerm] = useState<{id: string; name: string} | null>(null)
 	const [screen, setScreen] = useState<{id: string; name: string} | null>(null)
@@ -593,7 +520,6 @@ export function MachineManager({
 	const alerts = alertsQ.data ?? []
 	useEffect(() => {
 		setOpenId(null)
-		setDials(false)
 	}, [queryText, filter])
 	useEffect(() => {
 		if (!addOpen) return
@@ -654,14 +580,10 @@ export function MachineManager({
 	const rowKey = rowIds.join('\0')
 	useEffect(() => {
 		const matched = rowKey ? rowKey.split('\0') : []
-		if (openId && !matched.includes(openId)) {
-			setOpenId(null)
-			setDials(false)
-		}
+		if (openId && !matched.includes(openId)) setOpenId(null)
 	}, [rowKey, openId])
 	const toggle = (id: string) => {
 		haptic(6)
-		setDials(false)
 		setOpenId((cur) => (cur === id ? null : id))
 	}
 	return (
@@ -762,8 +684,6 @@ export function MachineManager({
 									owner={owner}
 									serverTerminal={serverTerminal}
 									open={open}
-									dials={dials}
-									setDials={setDials}
 									onToggle={() => toggle(member.id)}
 									onManage={() => onManage('server', member.id)}
 									onTerminal={onServerTerminal}
@@ -781,8 +701,6 @@ export function MachineManager({
 									agent={agent}
 									health={member.health}
 									open={open}
-									dials={dials}
-									setDials={setDials}
 									onToggle={() => toggle(member.id)}
 									onManage={() => onManage('computer', member.id)}
 									onTerminal={() => setTerm({id: agent.id, name: agent.name})}
@@ -800,8 +718,6 @@ export function MachineManager({
 								agents={agents}
 								health={member.health}
 								open={open}
-								dials={dials}
-								setDials={setDials}
 								onToggle={() => toggle(member.id)}
 								onManage={() => onManage('guest', member.id)}
 								onTerminal={(agent) => setTerm({id: agent.id, name: machine.name})}
