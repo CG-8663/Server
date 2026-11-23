@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {spawn} from 'node:child_process'
 import {readFileSync} from 'node:fs'
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises'
+import {randomBytes} from 'node:crypto'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
@@ -625,6 +626,53 @@ test('factory reset removes this server’s appearance only after the backend ac
 		assert.equal(await readFile(join(touch.dir, 'keep.txt'), 'utf8'), 'keep')
 	} finally {
 		await touch.close()
+		await fake.close()
+	}
+})
+
+test('#566 closing a console tab while it is still connecting does not leave the connection to omarchyd open', async () => {
+	const fake = await startFakeserverd()
+	const target = new URL(fake.url)
+	// A slow link to omarchyd: the console handshake is held back, everything else passes straight through.
+	const consoleLinks = new Set()
+	const links = new Set()
+	const proxy = net.createServer((client) => {
+		const up = net.connect(Number(target.port), target.hostname)
+		links.add(client).add(up)
+		let first = true
+		client.on('data', (chunk) => {
+			if (!first) return void up.write(chunk)
+			first = false
+			if (!chunk.toString('latin1').startsWith('GET /machines/console')) return void up.write(chunk)
+			consoleLinks.add(up)
+			up.once('close', () => consoleLinks.delete(up))
+			setTimeout(() => up.write(chunk), 600)
+		})
+		up.on('data', (chunk) => client.write(chunk))
+		client.on('close', () => up.destroy())
+		up.on('close', () => client.destroy())
+		client.on('error', () => {})
+		up.on('error', () => {})
+	})
+	await new Promise((r) => proxy.listen(0, '127.0.0.1', r))
+	const touch = await withServer({backendUrl: `http://127.0.0.1:${proxy.address().port}`})
+	try {
+		const signed = await login(touch.base)
+		assert.equal(signed.status, 200)
+		const port = new URL(touch.base).port
+		for (let round = 0; round < 3; round++) {
+			const sock = net.connect(Number(port), '127.0.0.1')
+			sock.on('error', () => {})
+			sock.write(`GET /api/console?machineId=vm1 HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nOrigin: http://127.0.0.1:${port}\r\nCookie: ${signed.cookie}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\nSec-WebSocket-Protocol: binary\r\n\r\n`)
+			await new Promise((r) => setTimeout(r, 200))
+			sock.destroy()
+		}
+		await new Promise((r) => setTimeout(r, 2000))
+		assert.equal(consoleLinks.size, 0, `${consoleLinks.size} connections to omarchyd left open`)
+	} finally {
+		for (const l of links) l.destroy()
+		await touch.close()
+		proxy.close()
 		await fake.close()
 	}
 })
