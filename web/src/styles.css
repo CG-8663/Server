@@ -9170,6 +9170,11 @@ select.field {
 .welcome-tour li > span:last-child > span { color: var(--muted); font-size: 13.5px; line-height: 1.4; }
 .welcome-ico { flex: 0 0 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-text, var(--accent)); }
 .welcome-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
+.welcome-choices { display: grid; gap: 10px; margin-top: 4px; }
+.welcome-choice { display: flex; gap: 12px; align-items: flex-start; text-align: left; padding: 14px; border-radius: 16px; border: 1px solid var(--line, rgba(255,255,255,.12)); background: color-mix(in srgb, var(--fg) 4%, transparent); color: inherit; font: inherit; cursor: pointer; }
+.welcome-choice:hover, .welcome-choice:focus-visible { border-color: var(--accent); }
+.welcome-choice > span:last-child { display: flex; flex-direction: column; gap: 2px; }
+.welcome-choice > span:last-child > span { color: var(--muted); font-size: 13.5px; line-height: 1.4; }
 
 /* "Submit an app" in the App Store */
 .submit-app { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border-radius: 18px; margin-top: 18px; }
@@ -9177,3 +9182,152 @@ select.field {
 .submit-app .main .muted { font-size: 13px; line-height: 1.4; }
 .submit-app-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .submit-app.compact { margin: 26px 0 8px; }
+/* Machines: the server, its virtual machines, and connected computers, each in its own section. */
+.machines-section {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+	margin: 22px 4px 10px;
+}
+.machines-section h2 {
+	font-size: 17px;
+}
+.machines-section .quiet {
+	font-size: 13px;
+}
+.machines-empty {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 14px 16px;
+	border-radius: 20px;
+	margin-bottom: 12px;
+}
+.machines-empty p {
+	margin: 0;
+}
+
+/* Files: folders that open in place, as a tree (computers, VMs, and folders in the list view). */
+.ftree-section {
+	margin-top: 18px;
+}
+.ftree {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.ftree-root {
+	padding: 6px;
+	border-radius: 18px;
+}
+.ftree-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	min-height: 40px;
+	padding: 6px 8px 6px calc(8px + var(--depth, 0) * 18px);
+	border: 0;
+	border-radius: 10px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 14.5px;
+	text-align: left;
+	cursor: pointer;
+}
+.ftree-row:hover,
+.ftree-row:focus-within {
+	background: var(--glass-2);
+}
+.ftree-folder {
+	padding: 0 4px 0 calc(var(--depth, 0) * 18px);
+}
+.ftree-toggle {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 40px;
+	padding: 6px 8px;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+.ftree-chev {
+	flex: none;
+	width: 14px;
+	color: var(--muted);
+}
+@media (prefers-reduced-motion: no-preference) {
+	.ftree-chev {
+		transition: transform 0.18s ease;
+	}
+}
+.ftree-folder.open .ftree-chev {
+	transform: rotate(90deg);
+}
+.ftree-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.ftree-size {
+	flex: none;
+	color: var(--muted);
+	font-size: 12.5px;
+}
+.ftree-go {
+	flex: none;
+	display: grid;
+	place-items: center;
+	width: 34px;
+	height: 34px;
+	border: 0;
+	border-radius: 9px;
+	background: transparent;
+	color: var(--muted);
+	cursor: pointer;
+}
+.ftree-go:hover,
+.ftree-go:focus-visible {
+	background: var(--glass);
+	color: var(--fg);
+}
+.ftree-off {
+	cursor: default;
+	opacity: 0.6;
+}
+.ftree-more {
+	color: var(--accent-text, var(--accent));
+}
+.ftree-note {
+	padding: 8px 8px 8px calc(30px + var(--depth, 0) * 18px);
+	color: var(--muted);
+	font-size: 13.5px;
+}
+.file-tree-row > .ftree {
+	padding: 2px 6px 6px;
+}
+.file-tree-chev {
+	flex: none;
+	color: var(--muted);
+	margin-right: -4px;
+}
+@media (prefers-reduced-motion: no-preference) {
+	.file-tree-chev {
+		transition: transform 0.18s ease;
+	}
+}
+.file-tree-row.open .file-tree-chev {
+	transform: rotate(90deg);
+}

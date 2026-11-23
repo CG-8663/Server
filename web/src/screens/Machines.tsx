@@ -60,6 +60,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 	const selected = list.find((m) => m.id === selectedId) ?? null
 	const consoleMachine = consoleId === 'desktop' ? SERVER_DESKTOP : (list.find((m) => m.id === consoleId) ?? null)
 	const online = members.filter((m) => m.online).length
+	const computers = members.filter((m) => m.kind === 'computer')
 	const agentById = new Map(agents.filter((a) => !isGuestAgent(a)).map((a) => [a.id, a]))
 	useEffect(() => {
 		const apply = (member: FleetOpen | null | undefined) => {
@@ -167,7 +168,41 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 				</div>
 			)}
 			{machines.isLoading && Array.from({length: 2}, (_, i) => <div key={i} className="skeleton" style={{height: 130, borderRadius: 26, marginBottom: 12}} />)}
-			{members.filter((member) => member.kind !== 'guest').map((member) => {
+			{members.filter((member) => member.kind === 'server').map((member) => renderMember(member))}
+			{!machines.isLoading && (
+				<>
+					<div className="section-head machines-section">
+						<h2>Virtual machines</h2>
+						<span className="quiet">{list.length ? `${list.filter((m) => m.state === 'running').length} of ${list.length} running` : 'On this server'}</span>
+					</div>
+					{list.length === 0 ? (
+						<div className="glass machines-empty">
+							<p className="quiet">No virtual machines on {serverName} yet.</p>
+							<button type="button" className="btn small" onClick={() => (haptic(6), setCreateHost({id: SERVER_FLEET_ID, name: serverName}))}>
+								<Icon name="plus" size={15} /> Create a virtual machine
+							</button>
+						</div>
+					) : (
+						list.map((m) => <VmCard key={m.id} m={m} onOpen={() => (haptic(6), openMember('guest', m.id))} />)
+					)}
+				</>
+			)}
+			{(owner || computers.length > 0) && (
+				<div className="section-head machines-section">
+					<h2>Connected computers</h2>
+					<span className="quiet">{computers.length ? `${computers.filter((m) => m.online).length} of ${computers.length} online` : 'Other computers joined to this server'}</span>
+				</div>
+			)}
+			{owner && computers.length === 0 && !swarm.isLoading && (
+				<div className="glass machines-empty">
+					<p className="quiet">No computers connected yet. Add one to manage it from here.</p>
+				</div>
+			)}
+			{computers.map((member) => renderMember(member))}
+		</>
+	)
+
+	function renderMember(member: (typeof members)[number]) {
 				const open = expanded === member.id
 				const toggle = () => setExpanded(open ? null : member.id)
 				if (member.kind === 'server') {
@@ -216,9 +251,7 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 						extra={open ? <div className="mrow-body" id={`glance-${member.id}`}>{glanceFor(member.id, member.name, 'computer')}</div> : null}
 					/>
 				)
-			})}
-		</>
-	)
+	}
 
 	return (
 		<div className={wide ? 'machines-frame' : 'stagger'}>
@@ -365,5 +398,29 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 				return <MachineTabs label={`${m.name} sections`} tabs={rows} tab={tab} onTab={setTab} />
 			}} />
 		</MachineShell>
+	)
+}
+
+// A virtual machine on this server, in its own section of the Machines list.
+function VmCard({m, onOpen}: {m: Machine; onOpen: () => void}) {
+	const os = osLook(m.osId)
+	const memory = m.memoryGb ?? (m.memoryMb ? Math.round(m.memoryMb / 1024) : undefined)
+	const meta = [os.name, m.cores ? `${m.cores} CPU` : '', memory ? `${memory} GB` : '', m.state === 'running' && m.ipAddress ? m.ipAddress : ''].filter(Boolean).join(' · ')
+	return (
+		<article className="glass vm-card mrow">
+			<span className="top">
+				<span className="vm-os" style={{background: os.bg}}>
+					<Icon name={os.icon} size={26} />
+				</span>
+				<span className="main" style={{flex: 1, minWidth: 0}}>
+					<b style={{display: 'block', fontSize: 16.5, fontWeight: 650}}>{m.name}</b>
+					<span style={{display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 4}}>{meta || 'Virtual machine'}</span>
+				</span>
+				<StatusPill {...machineStatus(m.state)} />
+				<button type="button" className="btn small" onClick={onOpen}>
+					Open
+				</button>
+			</span>
+		</article>
 	)
 }

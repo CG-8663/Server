@@ -26,3 +26,9 @@ export function takeAppearanceFocus(storage: {getItem: (key: string) => string |
 	if (value) storage.removeItem(APPEARANCE_FOCUS_KEY)
 	return value
 }
+
+// Open Settings at a page from anywhere (the first-run setup, say), in either layout.
+export const OPEN_SETTINGS = 'omarchy-open-settings'
+export function openSettingsPage(page: string): void {
+	window.dispatchEvent(new CustomEvent<string>(OPEN_SETTINGS, {detail: page}))
+}

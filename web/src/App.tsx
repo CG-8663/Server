@@ -16,6 +16,7 @@ import {Connect, Login} from './screens/Auth'
 import {Home} from './screens/Home'
 import {Desktop} from './desktop/Desktop'
 import {resetDeskConfig} from './desktop/config'
+import {OPEN_SETTINGS, rememberSettingsPage} from './desktop/settingsPage'
 import {ScreenErrorBoundary} from './screenBoundary'
 import {inAppBackTarget, markInAppHistory, readInAppHistoryFlag} from './inAppHistory'
 import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, scrollPhoneToTop, useLayout, usePrefs, type Prefs} from './ui'
@@ -199,6 +200,17 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 		}
 		window.addEventListener(OPEN_STORE, onOpen)
 		return () => window.removeEventListener(OPEN_STORE, onOpen)
+	}, [])
+	useEffect(() => {
+		const onOpen = (e: Event) => {
+			rememberSettingsPage(sessionStorage, String((e as CustomEvent<string>).detail || 'main'))
+			setTab('settings')
+			markInAppHistory((key, value) => sessionStorage.setItem(key, value))
+			history.pushState(null, '', '#/settings')
+			scrollPhoneToTop()
+		}
+		window.addEventListener(OPEN_SETTINGS, onOpen)
+		return () => window.removeEventListener(OPEN_SETTINGS, onOpen)
 	}, [])
 	useEffect(() => {
 		const onOpen = () => {

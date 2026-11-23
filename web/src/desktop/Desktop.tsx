@@ -39,7 +39,7 @@ import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as inser
 import {Onboarding} from './hyprland/Onboarding'
 import {loadWallpaper} from './wallpaperLoader'
 import {overviewEnterOpensApp} from './overviewEnter'
-import {SHOW_SHELL_KEY, rememberAppearanceFocus, rememberSettingsPage, settingsPayloadFor, settingsRemountKey} from './settingsPage'
+import {OPEN_SETTINGS, SHOW_SHELL_KEY, rememberAppearanceFocus, rememberSettingsPage, settingsPayloadFor, settingsRemountKey} from './settingsPage'
 import {clampDragY, clampWindowRect} from './windowGeometry'
 import {nextMaximizeSnap} from './windowSnap'
 import {bindWindowScrollReset} from './winScroll'
@@ -700,6 +700,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		}
 		window.addEventListener(OPEN_STORE, onOpen)
 		return () => window.removeEventListener(OPEN_STORE, onOpen)
+	}, [open])
+	useEffect(() => {
+		const onOpen = (e: Event) => open('settings', {page: String((e as CustomEvent<string>).detail || 'main')})
+		window.addEventListener(OPEN_SETTINGS, onOpen)
+		return () => window.removeEventListener(OPEN_SETTINGS, onOpen)
 	}, [open])
 
 	// Clicking into an app's iframe doesn't reach our handlers; notice the focus moving to it.
