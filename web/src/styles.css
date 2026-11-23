@@ -2047,6 +2047,7 @@ h1.title {
 	gap: 12px;
 	padding: calc(var(--safe-t) + 8px) 12px 8px;
 	background: #111114;
+	color: #fff;
 	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 .console-bar .round-btn {
@@ -2858,6 +2859,7 @@ h1.title {
 .term-paste-card {
 	width: min(100%, 480px);
 	background: #17171c;
+	color: #fff;
 	border: 1px solid rgba(255, 255, 255, 0.1);
 	border-radius: 20px;
 	padding: 14px;
@@ -2895,6 +2897,11 @@ h1.title {
 	grid-template-columns: 1fr 1.6fr;
 	gap: 8px;
 	margin-top: 10px;
+}
+.term-paste-actions .btn:not(.primary) {
+	background: rgba(255, 255, 255, 0.09);
+	border-color: rgba(255, 255, 255, 0.14);
+	color: #fff;
 }
 html.screen-locked,
 html.screen-locked body {
@@ -4189,7 +4196,7 @@ html.desk-mode body {
 }
 .cal-day.today {
 	background: var(--accent);
-	color: #fff;
+	color: var(--on-accent, #fff);
 	font-weight: 700;
 }
 .sys-pop {
@@ -6207,6 +6214,15 @@ html:not(.desk-mode) .upload-panel {
 	backdrop-filter: blur(30px) saturate(1.4);
 	-webkit-backdrop-filter: blur(30px) saturate(1.4);
 	animation: fv-in 0.22s ease-out;
+	/* Always a dark media/document canvas: pin dark tokens so light themes stay legible. */
+	--fg: #fff;
+	--fg-2: rgba(255, 255, 255, 0.86);
+	--muted: rgba(255, 255, 255, 0.58);
+	--line: rgba(255, 255, 255, 0.12);
+	--line-2: rgba(255, 255, 255, 0.2);
+	--glass: rgba(255, 255, 255, 0.08);
+	--glass-2: rgba(255, 255, 255, 0.14);
+	color-scheme: dark;
 	color: var(--fg);
 }
 @keyframes fv-in {
@@ -6638,8 +6654,7 @@ html:not(.desk-mode) .upload-panel {
 [data-theme='omarchy'] h1,
 [data-theme='omarchy'] h2,
 [data-theme='omarchy'] .title { letter-spacing: -0.03em; }
-[data-theme='omarchy'] .win { background: #1a1b26 !important; }
-[data-theme='omarchy'] .win-bar { background: #16161e; }
+[data-theme='omarchy'] .win-bar { background: color-mix(in srgb, var(--bg-solid) 96%, var(--fg) 4%); }
 /* Phone console: sized to the visible area by script while the keyboard is up. */
 .console:not(.desk-ui):not(.embedded) { bottom: 0; }
 .console:not(.desk-ui):not(.embedded) .console-input { bottom: auto; top: 0; }
@@ -7994,7 +8009,7 @@ html.page-locked .auth {
 }
 .swarm-steps .chip.on {
 	background: var(--accent);
-	color: #fff;
+	color: var(--on-accent, #fff);
 }
 
 /* ---- Hyprland shell ---- */
@@ -8832,11 +8847,11 @@ html:not(.desk-mode) body:has(.ac-widget) .shell { padding-bottom: calc(var(--do
 	margin-left: 4px;
 	border: 0;
 	border-radius: 50%;
-	background: color-mix(in srgb, var(--fg) 12%, transparent);
-	color: var(--fg);
+	background: rgba(255, 255, 255, 0.14);
+	color: #fff;
 	cursor: pointer;
 }
-.desk-hint-close:hover { background: color-mix(in srgb, var(--fg) 22%, transparent); }
+.desk-hint-close:hover { background: rgba(255, 255, 255, 0.24); }
 
 /* ---- first sign-in on a device: Desktop or Phone & tablet ---- */
 .layout-chooser {
