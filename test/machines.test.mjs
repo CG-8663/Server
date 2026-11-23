@@ -394,6 +394,13 @@ describe('omarchyd machines', () => {
 		await until(async () => (await q('machines.list')).find((x) => x.id === id).state === 'running')
 	})
 
+	test('drives: the IDE bus is refused on a q35 machine before anything is saved', async () => {
+		const before = (await q('machines.details', {id})).hardware.disks.map((x) => [x.id, x.bus])
+		await assert.rejects(call('machines.addDisk', {id, sizeGb: 1, bus: 'ide'}), /IDE is only available on the i440fx/)
+		await assert.rejects(call('machines.updateDisk', {id, diskId: 'disk0', bus: 'ide'}), /IDE is only available on the i440fx/)
+		assert.deepEqual((await q('machines.details', {id})).hardware.disks.map((x) => [x.id, x.bus]), before)
+	})
+
 	test('options: notes, protection, guest agent, boot menu', async () => {
 		await call('machines.updateOptions', {id, notes: 'Web <server>', protection: true, agent: true, bootMenu: true, onBoot: true, startupOrder: 2, startupDelay: 10})
 		assert.match(seen.xml, /<description>Web &lt;server&gt;<\/description>/)
