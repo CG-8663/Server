@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useRef, useState, type ReactNode} from 'react'
 
-import {launcherRowMatches, scrollSelectedRow, stepLauncherSelection} from './launcherScroll'
+import {launcherRowMatches, scrollSelectedRow, shouldYieldLauncherKey, stepLauncherSelection} from './launcherScroll'
 
 export type LaunchItem = {key: string; label: string; icon: (size: number) => ReactNode}
 
@@ -22,6 +22,7 @@ export function Launcher({onClose, onOpen, items}: {onClose: () => void; onOpen:
 	}, [sel, rows.length])
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
+			if (shouldYieldLauncherKey(document, e.target)) return
 			if (e.key === 'Escape') {
 				e.preventDefault()
 				onClose()

@@ -20,3 +20,15 @@ export function scrollSelectedRow(list: ScrollableList, index: number, count: nu
 	row.scrollIntoView({block: 'nearest'})
 	return true
 }
+
+// Yield capture-phase launcher keys (ArrowUp/ArrowDown/Enter/Escape) whenever a context menu is open
+// above the launcher, so the topmost menu owns keyboard navigation and dismissal.
+export function shouldYieldLauncherKey(
+	doc: {querySelector?: (sel: string) => unknown; activeElement?: {closest?: (sel: string) => unknown} | null} | null | undefined,
+	target: EventTarget | null | undefined,
+): boolean {
+	const t = target as {closest?: (sel: string) => unknown} | null | undefined
+	if (t?.closest?.('.ctx-menu')) return true
+	if (doc?.activeElement?.closest?.('.ctx-menu')) return true
+	return Boolean(doc?.querySelector?.('.ctx-menu'))
+}
