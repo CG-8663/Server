@@ -23,3 +23,9 @@ test('the top-bar scrim stacks with the bar, above the dock', () => {
 	assert.equal(z('.menu-scrim.top-scrim'), z('.desk-top'))
 	assert.ok(z('.menu-scrim.top-scrim') > z('.desk-dock'), 'scrim must cover the dock')
 })
+
+test('pointerdown outside the popover and its switching triggers dismisses the menu (including blank header and Activities)', () => {
+	const fn = TSX.slice(TSX.indexOf('function TopBar('), TSX.indexOf('function MiniCalendar('))
+	assert.match(fn, /addEventListener\('pointerdown', onDown, true\)/)
+	assert.match(fn, /closest\('\.top-pop, \.top-clock, \.top-bell, \.top-sys, \.menu-scrim'\)/)
+})
