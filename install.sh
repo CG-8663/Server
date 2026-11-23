@@ -430,7 +430,7 @@ After=graphical-session.target
 [Service]
 ExecStartPre=/usr/bin/mkdir -p -m 0700 %t/omarchy-server
 ExecStartPre=/usr/bin/rm -f %t/omarchy-server/desktop-vnc.sock
-ExecStart=/usr/bin/wayvnc --max-fps=30 --unix-socket %t/omarchy-server/desktop-vnc.sock
+ExecStart=/usr/bin/wayvnc --max-fps=30 -S %t/omarchy-server/wayvncctl --unix-socket %t/omarchy-server/desktop-vnc.sock
 Restart=on-failure
 RestartSec=3
 

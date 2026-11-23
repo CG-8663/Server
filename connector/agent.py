@@ -1198,20 +1198,26 @@ def vnc_start():
             sig = _hypr_signature()
             if sig:
                 env["HYPRLAND_INSTANCE_SIGNATURE"] = sig
-            cmd = ["wayvnc", "--max-fps=30", "--unix-socket", VNC_SOCK]
+            # Its own control socket (-S): wayvnc won't start while another one holds the default,
+            # and MODC's own desktop sharing (or the person's) may be running on this desktop too.
+            cmd = ["wayvnc", "--max-fps=30", "-S", os.path.join(os.path.dirname(VNC_SOCK), "wayvncctl"), "--unix-socket", VNC_SOCK]
         else:
             env["DISPLAY"] = _x_display()
             auth = _xauthority()
             cmd = ["x11vnc", "-display", env["DISPLAY"], "-unixsock", VNC_SOCK, "-rfbport", "0", "-forever", "-shared", "-nopw", "-quiet", "-noxdamage"]
             if auth:
                 cmd[3:3] = ["-auth", auth]
-        _vnc["proc"] = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        # What it says when it fails is kept (a small file), so the person reads why.
+        errlog = os.path.join(os.path.dirname(VNC_SOCK), "screen-sharing.log")
+        with open(errlog, "wb") as err:
+            _vnc["proc"] = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=err, start_new_session=True)
         for _ in range(50):
             if os.path.exists(VNC_SOCK):
                 break
             if _vnc["proc"].poll() is not None:
                 _vnc["proc"] = None
-                raise RuntimeError("The screen sharing program stopped straight away.")
+                said = _last_error_line(errlog)
+                raise RuntimeError(f"The screen sharing program ({cmd[0]}) stopped straight away" + (f": {said}" if said else "."))
             time.sleep(0.1)
         else:
             # Still running but no socket: stop it, so a retry doesn't leave another one behind.
@@ -1222,6 +1228,21 @@ def vnc_start():
                 pass
             raise RuntimeError("The screen sharing program didn’t start.")
         _vnc["users"] = 1
+
+
+def _last_error_line(path):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 4096))
+            lines = [l.strip() for l in f.read().decode("utf-8", "replace").splitlines() if l.strip()]
+    except OSError:
+        return ""
+    # wayvnc ends with a hint ("Use the '-S' option…"); the line before says what went wrong.
+    for line in reversed(lines):
+        if "error" in line.lower() or "failed" in line.lower() or "another" in line.lower():
+            return re.sub(r"^.*?(?:ERROR|Error|error):?\s*", "", line)[:160]
+    return lines[-1][:160] if lines else ""
 
 
 def vnc_release():

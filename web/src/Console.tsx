@@ -16,7 +16,7 @@ import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 import {mutate, type Machine} from './api'
 import {clipImage, clipText} from './clips'
 import {consoleShouldTakeFocus} from './consoleFocus'
-import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, effectiveConsoleScale, handleConsoleWheel, keysymOfChar, mouseButtonFromEvent, PASTE_STEP_MS, pasteKeySequence, pasteKeySteps, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, shouldSendConsoleInput, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
+import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, consoleFailureMessage, effectiveConsoleScale, handleConsoleWheel, keysymOfChar, mouseButtonFromEvent, PASTE_STEP_MS, pasteKeySequence, pasteKeySteps, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, shouldSendConsoleInput, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
 import {overlayBackUsesHistory, popstateClosesOverlay} from './overlayHistory'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
@@ -170,6 +170,10 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		let rfb: InstanceType<RFBClass> | undefined
 		let socket: WebSocket | undefined
 		let connects = 0
+		// Tries in a row that never showed the screen. A computer that refuses (its screen sharing
+		// won't start, say) says why; that's shown instead of reconnecting forever.
+		let failedStarts = 0
+		let everShown = false // once it has worked, a drop (a restart, Wi-Fi) just reconnects
 
 		const connect = async () => {
 			if (disposed || !canvasHost.current) return
@@ -186,9 +190,14 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				return
 			}
 			let closeCode: number | undefined
+			let closeReason = ''
+			let shown = false
 			const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
 			socket = new WebSocket(`${scheme}//${location.host}/api/console?machineId=${encodeURIComponent(machine.id)}`, ['binary'])
-			socket.addEventListener('close', (e) => (closeCode = e.code))
+			socket.addEventListener('close', (e) => {
+				closeCode = e.code
+				closeReason = e.reason || ''
+			})
 			canvasHost.current.replaceChildren()
 			const r = new RFB(canvasHost.current, socket, {shared: true})
 			rfb = r
@@ -212,6 +221,9 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				clipText(text, 'desktop').catch((err: Error) => toast(err.message, true))
 			})
 			r.addEventListener('connect', () => {
+				shown = true
+				everShown = true
+				failedStarts = 0
 				connects += 1
 				const connectCount = connects
 				setState('connected')
@@ -248,6 +260,14 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				})
 				if (action === 'ignore') return
 				if (action === 'superseded') return setState('superseded')
+				if (!shown && !everShown) {
+					failedStarts += 1
+					if (closeReason || failedStarts >= 3) {
+						setMessage(consoleFailureMessage(closeReason))
+						setState('error')
+						return
+					}
+				}
 				setState('lost')
 				window.clearTimeout(retry)
 				retry = window.setTimeout(connect, 1500)
