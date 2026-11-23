@@ -31,9 +31,34 @@ export const READ_TOOLS = [
 	tool('machines_capabilities', 'machines.capabilities', 'What this server can give a virtual machine'),
 	tool('usb_list', 'usb.list', 'USB serial and Zigbee sticks plugged into this server, and which app or virtual machine holds each one'),
 	tool('swarm_list', 'swarm.list', 'Computers in the Local swarm', {}, true),
+	tool('swarm_alerts', 'swarm.alerts', 'Active health alerts across computers in the Local swarm (offline nodes, high disk usage, high temperature, waiting updates, outdated connectors)', {}, true),
+	tool('swarm_history', 'swarm.history', 'Recent CPU, memory, disk, GPU and temperature history for one Local swarm computer', {
+		id: {type: 'string', description: 'Computer id from swarm_list'},
+		range: {type: 'string', enum: ['1h', '24h'], description: 'Time window: 1h or 24h'},
+	}, true),
+	tool('swarm_storage_status', 'swarm.storage.status', 'Whether storage helper and ZFS are available on a Local swarm computer', {
+		id: {type: 'string', description: 'Computer id from swarm_list'},
+	}, true),
 	tool('swarm_storage_disks', 'swarm.storage.disks', 'Live disks on a Local swarm computer, including unmounted extra drives. Use this for mount state; swarm_list metrics only show mounted filesystems.', {
 		id: {type: 'string', description: 'Computer id from swarm_list'},
 	}, true),
+	tool('swarm_storage_pools', 'swarm.storage.pools', 'Storage pools (Btrfs/ZFS) on a Local swarm computer', {
+		id: {type: 'string', description: 'Computer id from swarm_list'},
+	}, true),
+	tool('swarm_services_list', 'swarm.services.list', 'User systemd services, failed system units, and containers on a Local swarm computer', {
+		id: {type: 'string', description: 'Computer id from swarm_list'},
+	}, true),
+	tool('swarm_service_logs', 'swarm.services.logs', 'Recent logs for a service or container on a Local swarm computer', {
+		id: {type: 'string', description: 'Computer id from swarm_list'},
+		kind: {type: 'string', enum: ['user', 'system', 'container']},
+		name: {type: 'string', description: 'Unit or container name'},
+		lines: {type: 'integer', description: 'Number of lines (10-1000)'},
+	}, true),
+	tool('swarm_files_list', 'swarm.files.list', 'List files and folders inside /Home or /Pools on a Local swarm computer', {
+		id: {type: 'string', description: 'Computer id from swarm_list'},
+		path: {type: 'string', description: 'Virtual path such as /Home or /Pools'},
+	}, true),
+	tool('swarm_backups_status', 'backups.computers', 'Backup schedule and status for Local swarm computers', {}, true),
 	tool('omarchy_plugins', 'omarchy.plugins', 'Omarchy plugins that can be installed', {
 		q: {type: 'string'},
 		limit: {type: 'integer'},
