@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.71',
+		date: '2026-11-23',
+		title: 'Machines on the desktop, and one store at a time',
+		added: [
+			'The App Store lists your stores above the search: pick one to see only its apps (with its own search), or All stores. Stores › View apps does the same.',
+			'On the desktop layout, Machines looks like a desktop app: a toolbar with Add a computer and New virtual machine, labelled sections, and one line per virtual machine with its controls. Double-click a machine to open it. The phone layout is unchanged.',
+		],
+		fixed: ['A running virtual machine with changes waiting for a reboot showed “Working…” instead of its controls. It now offers Reboot to apply.'],
+	},
+	{
 		version: '0.9.70',
 		date: '2026-11-22',
 		title: 'Seeing a connected computer’s desktop',

@@ -357,7 +357,7 @@ export type RegistryApp = {
 	releaseNotes?: string
 	installSize?: number
 }
-export type Registry = {meta: {id: string; name: string}; apps: RegistryApp[]}[]
+export type Registry = {url?: string; meta: {id: string; name: string}; apps: RegistryApp[]}[]
 
 export type PortForward = {id: string; protocol: 'tcp' | 'udp'; hostPort: number; guestPort: number; pending?: boolean}
 

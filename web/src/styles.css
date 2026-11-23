@@ -9382,3 +9382,135 @@ select.field {
 .storage-drive .muted {
 	font-size: 12.5px;
 }
+
+/* Machines on the desktop layout: a toolbar and compact rows, like a desktop app, instead of the
+   phone screen made bigger. The phone layout is unchanged. */
+.mdesk-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+	padding: 2px 2px 12px;
+	margin-bottom: 4px;
+	border-bottom: 1px solid var(--line);
+}
+.mdesk-title {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	min-width: 0;
+}
+.mdesk-title h1 {
+	margin: 0;
+	font-size: 20px;
+	font-weight: 700;
+}
+.mdesk-title span {
+	color: var(--muted);
+	font-size: 13px;
+}
+.mdesk-actions {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.machines-frame .machines-section {
+	margin: 18px 2px 8px;
+}
+.machines-frame .machines-section h2 {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+.machines-frame .vm-card {
+	padding: 12px 14px;
+	border-radius: 14px;
+	margin-bottom: 8px;
+}
+.machines-frame .vm-os {
+	width: 40px;
+	height: 40px;
+	border-radius: 11px;
+}
+.machines-frame .vm-card .main b {
+	font-size: 15px !important;
+}
+.machines-frame .machines-empty {
+	padding: 12px 14px;
+	border-radius: 14px;
+}
+/* A virtual machine is one line: icon, name, its controls, status, Open. */
+.machines-frame .vm-row {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 12px;
+}
+.machines-frame .vm-row > .top {
+	display: contents;
+}
+.machines-frame .vm-row .main {
+	order: 0;
+	flex: 1 1 200px;
+}
+.machines-frame .vm-row .vm-controls {
+	order: 1;
+	margin: 0;
+	gap: 6px;
+	justify-content: flex-end;
+}
+@container machines (max-width: 640px) {
+	.machines-frame .vm-row {
+		flex-wrap: wrap;
+	}
+}
+.machines-frame .vm-row > .top > :nth-child(n + 3) {
+	order: 2;
+}
+.machines-frame .vm-row:hover {
+	border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+/* The Machines window uses its whole width (other windows keep a reading width). */
+.win-screen:has(> .machines-frame) {
+	max-width: none;
+}
+.machines-frame .machines-split {
+	grid-template-columns: minmax(300px, 420px) minmax(0, 1fr);
+}
+/* In the split, the list is a narrow column: a VM's name keeps its line, its buttons go under it. */
+.machines-list {
+	container-type: inline-size;
+	container-name: mlist;
+}
+@container mlist (max-width: 560px) {
+	.machines-frame .vm-row {
+		flex-wrap: wrap;
+	}
+	.machines-frame .vm-row .main {
+		flex: 1 1 calc(100% - 200px);
+	}
+	.machines-frame .vm-row .vm-controls {
+		order: 3;
+		flex-basis: 100%;
+		justify-content: flex-start;
+	}
+	.mdesk-actions .btn {
+		padding-inline: 10px;
+	}
+}
+
+/* App Store: pick a store to see only its apps. */
+.store-picker {
+	margin-bottom: 10px;
+}
+.store-picker .store-count {
+	margin-left: 2px;
+	padding: 0 7px;
+	border-radius: 999px;
+	font-size: 11.5px;
+	font-weight: 700;
+	background: color-mix(in srgb, currentColor 14%, transparent);
+}

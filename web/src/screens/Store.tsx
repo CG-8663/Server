@@ -61,6 +61,8 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 	const [category, setCategory] = useState('all')
 	const [selected, setSelected] = useState<{app: StoreApp; install?: boolean} | null>(null)
 	const [stores, setStores] = useState(false)
+	// Which store's apps are shown: all of them together, or one store on its own.
+	const [storeKey, setStoreKey] = useState('all')
 	const qc = useQueryClient()
 	const toast = useToast()
 	// Stores are checked for new apps every hour; this checks now.
@@ -70,11 +72,20 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 		onError: (e) => toast((e as Error).message, true),
 	})
 
+	const storeList = useMemo(() => (registry.data ?? []).map((r) => ({key: r.url ?? r.meta.id, name: r.meta.name, count: r.apps.length})), [registry.data])
+	const oneStore = storeKey === 'all' ? null : (storeList.find((st) => st.key === storeKey) ?? null)
 	const all = useMemo(() => {
 		const seen = new Map<string, StoreApp>()
-		for (const repo of registry.data ?? []) for (const app of repo.apps) if (!seen.has(app.id)) seen.set(app.id, {...app, repo: repo.meta.name})
+		for (const repo of registry.data ?? []) {
+			if (storeKey !== 'all' && (repo.url ?? repo.meta.id) !== storeKey) continue
+			for (const app of repo.apps) if (!seen.has(app.id)) seen.set(app.id, {...app, repo: repo.meta.name})
+		}
 		return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
-	}, [registry.data])
+	}, [registry.data, storeKey])
+	// A store that's gone (removed) falls back to all of them.
+	useEffect(() => {
+		if (storeKey !== 'all' && registry.data && !storeList.some((st) => st.key === storeKey)) setStoreKey('all')
+	}, [storeKey, storeList, registry.data])
 	const categories = useMemo(() => rankedCategories(all), [all])
 	const active = effectiveCategory(category, categories, [PLUGINS])
 	const needle = searchNeedle(q)
@@ -106,7 +117,7 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 				)}
 				<div>
 					<h1 className="title">App Store</h1>
-					<p className="subtitle">{bound ? `Installs on ${bound.name}` : registry.isLoading ? 'Loading the catalog…' : problem && !registry.data ? 'Can’t reach your server' : `${all.length} apps for your server`}</p>
+					<p className="subtitle">{bound ? `Installs on ${bound.name}` : registry.isLoading ? 'Loading the catalog…' : problem && !registry.data ? 'Can’t reach your server' : oneStore ? `${all.length} apps in ${oneStore.name}` : `${all.length} apps from ${storeList.length} store${storeList.length === 1 ? '' : 's'}`}</p>
 				</div>
 				<button className="btn small stores-btn" style={{marginLeft: 'auto'}} aria-label="Check for new apps" title="Check for new apps" disabled={refresh.isPending} onClick={() => (haptic(5), refresh.mutate())}>
 					{refresh.isPending ? <span className="spinner" /> : <Icon name="restart" size={17} />}
@@ -116,9 +127,30 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 					Stores
 				</button>
 			</div>
-			<SearchField value={q} onChange={setQ} placeholder="Search apps" />
+			{storeList.length > 1 && (
+				<div className="chips store-picker" role="tablist" aria-label="App stores">
+					{[{key: 'all', name: 'All stores', count: null as number | null}, ...storeList].map((st) => (
+						<button
+							key={st.key}
+							role="tab"
+							aria-selected={storeKey === st.key}
+							className={`chip${storeKey === st.key ? ' on' : ''}`}
+							onClick={() => {
+								haptic(5)
+								setStoreKey(st.key)
+								setCategory('all')
+							}}
+						>
+							<Icon name="store" size={16} />
+							{st.name}
+							{st.count != null && <span className="store-count">{st.count}</span>}
+						</button>
+					))}
+				</div>
+			)}
+			<SearchField value={q} onChange={setQ} placeholder={oneStore ? `Search ${oneStore.name}` : 'Search apps'} />
 			<div className="chips" role="tablist" aria-label="Categories">
-				{['all', PLUGINS, ...categories].map((c) => (
+				{['all', ...(oneStore ? [] : [PLUGINS]), ...categories].map((c) => (
 					<button
 						key={c}
 						role="tab"
@@ -201,7 +233,17 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 
 			{browsing && !registry.isLoading && <SubmitApp compact />}
 
-			{stores && <CommunityStores owner={owner} onClose={() => setStores(false)} />}
+			{stores && (
+				<CommunityStores
+					owner={owner}
+					onClose={() => setStores(false)}
+					onView={(key) => {
+						setStoreKey(key)
+						setCategory('all')
+						setStores(false)
+					}}
+				/>
+			)}
 
 			{selected && (
 				<StoreSheet
@@ -262,7 +304,7 @@ function SubmitApp({compact = false}: {compact?: boolean}) {
 		</div>
 	)
 }
-function CommunityStores({owner, onClose}: {owner: boolean; onClose: () => void}) {
+function CommunityStores({owner, onClose, onView}: {owner: boolean; onClose: () => void; onView: (key: string) => void}) {
 	const qc = useQueryClient()
 	const toast = useToast()
 	const repos = useQuery({queryKey: ['appStore.repositories'], queryFn: () => query<StoreRepo[]>('appStore.repositories')})
@@ -329,6 +371,9 @@ function CommunityStores({owner, onClose}: {owner: boolean; onClose: () => void}
 										<b>{r.meta.name}</b>
 										<span className="mono muted" style={{fontSize: 12, wordBreak: 'break-all'}}>{r.url}</span>
 									</span>
+									<button className="btn small" onClick={() => (haptic(5), onView(r.url))} aria-label={`View ${r.meta.name}’s apps`}>
+										View apps
+									</button>
 									{owner && (removing === r.url ? (
 										<button className="btn small danger" disabled={remove.isPending} onClick={() => remove.mutate(r.url)}>
 											{remove.isPending ? 'Removing…' : 'Remove'}
