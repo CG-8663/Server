@@ -37,7 +37,7 @@ import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.72'
+export const OMARCHYD_VERSION = '0.9.73'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -835,11 +835,11 @@ WantedBy=graphical-session.target
 				const result = await connector.writeRemoteFile(id, remotePath, Buffer.concat(chunks))
 				return sendJson(res, 200, result)
 			}
-			const fileKind = /^\/api\/files\/(view|download|upload)$/.exec(url.pathname)?.[1]
-			if (fileKind === 'upload' && req.method === 'POST') {
+			const fileKind = /^\/api\/files\/(view|download|upload|upload-chunk)$/.exec(url.pathname)?.[1]
+			if ((fileKind === 'upload' || fileKind === 'upload-chunk') && req.method === 'POST') {
 				const auth = accounts.authenticate(req)
 				if (!auth || auth.kind !== 'browser') return sendJson(res, 401, {error: 'unauthorized'})
-				return await files.upload(req, res, url)
+				return await (fileKind === 'upload' ? files.upload(req, res, url) : files.uploadChunk(req, res, url))
 			}
 			if ((fileKind === 'view' || fileKind === 'download') && req.method === 'GET') {
 				if (!accounts.checkUrlToken(url.searchParams.get('token'), req)) return sendJson(res, 401, {error: 'unauthorized'})

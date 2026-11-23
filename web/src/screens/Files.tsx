@@ -299,13 +299,81 @@ type Upload = {
 // An upload item: a file plus, for folder uploads, its path inside the dropped/picked folder.
 export type UploadItem = { file: File; rel?: string };
 
+// Big files go up in pieces, so no single request is large: a Cloudflare Tunnel refuses one over
+// 100 MB (and other proxies have limits of their own), and a dropped connection costs one piece,
+// not the whole file. See uploadChunk in omarchyd/files.mjs.
+const UPLOAD_CHUNK = 8 * 1024 * 1024;
+
+type ChunkReply = { status: number; body: { received?: number; path?: string; error?: { code?: string; message?: string } } | null };
+function sendChunk(url: string, piece: Blob, onProgress: (loaded: number) => void): Promise<ChunkReply | null> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("x-omarchy-server", "1");
+    xhr.setRequestHeader("content-type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => onProgress(e.loaded);
+    xhr.onload = () => {
+      let body = null;
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        /* not JSON */
+      }
+      resolve({ status: xhr.status, body });
+    };
+    // No answer at all (the connection dropped): tried again.
+    xhr.onerror = () => resolve(null);
+    xhr.ontimeout = () => resolve(null);
+    xhr.timeout = 10 * 60 * 1000;
+    xhr.send(piece);
+  });
+}
+
+async function uploadInPieces(file: File, target: string, onProgress: (loaded: number) => void): Promise<void> {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  const id = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  const total = file.size;
+  let offset = 0;
+  let failures = 0;
+  let resumes = 0;
+  for (;;) {
+    const piece = file.slice(offset, Math.min(offset + UPLOAD_CHUNK, total));
+    const url = `/api/files/upload-chunk?path=${enc(target)}&collision=keep-both&id=${id}&offset=${offset}&total=${total}`;
+    const start = offset;
+    const r = await sendChunk(url, piece, (loaded) => onProgress(start + loaded));
+    if (r && r.status >= 200 && r.status < 300) {
+      offset = r.body?.received ?? offset + piece.size;
+      failures = 0;
+      onProgress(offset);
+      if (r.body?.path || offset >= total) return;
+      continue;
+    }
+    // The server has a different amount than this piece assumed: carry on from what it has.
+    if (r?.status === 409 && typeof r.body?.received === "number" && resumes < 20) {
+      offset = r.body.received;
+      resumes += 1;
+      continue;
+    }
+    // A real answer that isn't worth repeating (no space, not allowed, a name clash).
+    if (r && r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) {
+      throw new Error(r.body?.error?.message ?? `Upload failed (${r.status})`);
+    }
+    if (r?.status === 507) throw new Error(r.body?.error?.message ?? "Not enough free space on your server");
+    failures += 1;
+    if (failures > 5) throw new Error(r ? (r.body?.error?.message ?? `Upload failed (${r.status})`) : "Connection lost");
+    await new Promise((res) => setTimeout(res, 1000 * failures));
+  }
+}
+
 function uploadOne(
   item: UploadItem,
   dir: string,
   onProgress: (loaded: number) => void,
 ): Promise<void> {
+  const target = `${dir}/${item.rel ?? item.file.name}`;
+  if (item.file.size > UPLOAD_CHUNK) return uploadInPieces(item.file, target, onProgress);
   return new Promise((resolve, reject) => {
-    const target = `${dir}/${item.rel ?? item.file.name}`;
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `/api/files/upload?path=${enc(target)}&collision=keep-both`);
     xhr.setRequestHeader("x-omarchy-server", "1");

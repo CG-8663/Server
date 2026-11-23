@@ -22,7 +22,7 @@ import {linkProxy} from '../omarchyd/proxy-link.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.72'
+export const VERSION = '0.9.73'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -1371,16 +1371,25 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	api.get('/files/view', fileGet('view'))
 	api.get('/files/thumbnail/:name', fileGet('thumbnail'))
 
-	api.post('/files/upload', async (req, res) => {
+	// Whole files, and big ones in pieces (upload-chunk: see omarchyd/files.mjs uploadChunk).
+	const relayUpload = (kind) => async (req, res) => {
 		try {
 			if (!store.getSession(req.sid)) return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Signed out'}})
 			const path = req.query.path
 			if (typeof path !== 'string' || !path.startsWith('/')) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'path is required'}})
 			const collision = ['error', 'keep-both', 'replace'].includes(req.query.collision) ? req.query.collision : 'keep-both'
 			const auth = await browserAuth(req.sid)
-			const url = new URL(`${getClient().baseUrl}/api/files/upload`)
+			const url = new URL(`${getClient().baseUrl}/api/files/${kind}`)
 			url.searchParams.set('path', path)
 			url.searchParams.set('collision', collision)
+			if (kind === 'upload-chunk') {
+				const {id, offset, total} = req.query
+				const ok = typeof id === 'string' && /^[a-f0-9]{16,64}$/.test(id) && [offset, total].every((v) => typeof v === 'string' && /^\d{1,16}$/.test(v))
+				if (!ok) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Missing upload details'}})
+				url.searchParams.set('id', id)
+				url.searchParams.set('offset', offset)
+				url.searchParams.set('total', total)
+			}
 			const {Readable} = await import('node:stream')
 			const upstream = await fetchImpl(url, {
 				method: 'POST',
@@ -1406,14 +1415,19 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				return res.status(409).json({error: {code: 'CONSOLE_SESSION_REQUIRED', message: 'Sign out and back in to use this'}})
 			}
 			if (!upstream.ok) {
+				// A piece out of order says how much arrived, so the browser carries on from there.
+				if (kind === 'upload-chunk' && upstream.status === 409 && body.error === '[wrong-offset]') return res.status(409).json({error: {code: 'WRONG_OFFSET', message: 'Resuming'}, received: body.received ?? 0})
 				const message = upstream.status === 507 ? 'Not enough free space on your server' : upstream.status === 409 ? 'A file with that name already exists' : (body.error ?? `Upload failed (HTTP ${upstream.status})`)
-				return res.status(upstream.status).json({error: {code: 'UPLOAD_FAILED', message}})
+				return res.status(upstream.status).json({error: {code: 'UPLOAD_FAILED', message}, ...(typeof body.received === 'number' ? {received: body.received} : {})})
 			}
+			if (kind === 'upload-chunk') return res.json({ok: true, received: body.received ?? 0, ...(body.path ? {path: body.path} : {})})
 			res.json({ok: true, path: body.path ?? path})
 		} catch (error) {
 			sendError(res, error)
 		}
-	})
+	}
+	api.post('/files/upload', relayUpload('upload'))
+	api.post('/files/upload-chunk', relayUpload('upload-chunk'))
 
 	// Clip book bytes. Text and screenshots are larger than the JSON body limit, so they travel as
 	// a raw body the same way an upload does. A 401 from omarchyd means the browser session is stale:

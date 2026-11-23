@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.73',
+		date: '2026-11-23',
+		title: 'Big uploads through a tunnel',
+		fixed: [
+			'Uploading a big file in Files no longer stalls when you reach your server through a Cloudflare Tunnel (or another proxy that limits one request; Cloudflare allows 100 MB). Files over 8 MB go up in 8 MB pieces, and a piece that drops is sent again and carries on where it stopped. The file only appears once all of it has arrived.',
+		],
+	},
+	{
 		version: '0.9.72',
 		date: '2026-11-23',
 		title: 'My Own Data Center on GitHub',
