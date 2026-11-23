@@ -4,6 +4,18 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.63',
+		date: '2026-11-22',
+		title: 'Sign-out, the terminal, and the phone',
+		fixed: [
+			'Signing out returns to the signed-out page, and only after sign-out succeeds.',
+			'Opening Terminal again focuses the shell you already have.',
+			'Pasting into the terminal inserts at the cursor. Option keys type the character. On a phone, Back closes a full-screen terminal or console.',
+			'The phone layout scrolls across the width of the screen. A confirmation sits above the terminal. Files search waits until two characters are typed.',
+			'A request with no body is answered, instead of failing as an internal error. When this computer has no address, that address is left out. A pool on another computer is described as ~/Pools on that computer.',
+		],
+	},
+	{
 		version: '0.9.62',
 		date: '2026-11-22',
 		title: 'Try an app before it’s approved',
