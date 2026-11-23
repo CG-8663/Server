@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.65',
+		date: '2026-11-22',
+		title: 'Machines in sections, folders as trees',
+		added: [
+			'Machines is in sections: this server, its virtual machines, and connected computers, each with its own count. Virtual machines are listed again instead of only inside the server’s card.',
+			'First-run setup asks whether to set up your assistant now or later. Now opens Settings › Assistant.',
+			'In Files, folders open in place as a tree, like Favorites and Recent. The arrow on a folder goes into it. Connected computers and the virtual machines running on this server are trees too, in place of the Computers list.',
+		],
+	},
+	{
 		version: '0.9.64',
 		date: '2026-11-22',
 		title: 'Terminals that stay put, and the new icon',

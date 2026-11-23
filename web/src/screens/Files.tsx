@@ -33,8 +33,8 @@ import { Icon, type IconName } from "../icons";
 import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, scrollPhoneToTop, useConfirm, usePortalRoot, useToast } from "../ui";
 import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
-import { AgentFiles, type Agent } from "../swarm/Swarm";
 import { openTerminalWith } from "../terminalEvent";
+import { MachineTrees, TreeChildren, type TreeActions, type TreeMachine } from "../fleet/FileTree";
 import { actionsForItems, asFileSearch, batchToast, copyTextOrToast, FILES_LIST_PAGE, filesListMoreLeft, filesPathToStore, nice, offersDownload, readStoredFilesPath, searchMatchNote, selectionAfterQuery, viewerAfterPathChange, type BatchKind } from "./filesRules";
 import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, emptyFolderUploadHint, type FavoriteItem, favoritePath, fileKindLabel, filesSearching, filterUnsyncedPhotos, folderPickerRoots, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
 
@@ -478,6 +478,17 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   const onRowMore = useCallback((f: FileEntry) => rowApi.current.more(f), []);
   const onRowMenu = useCallback((f: FileEntry) => rowApi.current.menu(f), []);
   const onRowLong = useCallback((f: FileEntry) => rowApi.current.long(f), []);
+  const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set());
+  const toggleFolder = useCallback((f: FileEntry) => {
+    haptic(5);
+    setOpenFolders((cur) => {
+      const next = new Set(cur);
+      if (next.has(f.path)) next.delete(f.path);
+      else next.add(f.path);
+      return next;
+    });
+  }, []);
+  const onRowEnter = useCallback((f: FileEntry) => rowApi.current.activate(f), []);
   const refresh = () => {
     for (const key of UPLOAD_REFRESH_KEYS) qc.invalidateQueries({ queryKey: [...key] });
     qc.invalidateQueries({ queryKey: ["files.search"] });
@@ -489,6 +500,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     if (stored.value === null) sessionStorage.removeItem(stored.key);
     else sessionStorage.setItem(stored.key, stored.value);
     setSelected(new Set());
+    setOpenFolders(new Set());
     setListLimit(FILES_LIST_PAGE);
   }, [path, storageId]);
   // A new search hides the previous rows, so a selection from that folder must not stay live.
@@ -903,8 +915,51 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   };
   const rootItems: NuItem[] = [
     {key: "server", name: serverName, modified: "Entrypoint", icon: "server", onOpen: () => go(SERVER_FILES)},
-    ...computerFiles.places.map((p) => ({key: `${p.kind}:${p.id}`, name: p.name, icon: p.kind === "guest" ? ("machine" as const) : ("devices" as const), onOpen: () => go(p.path)})),
+    ...(owner ? [] : computerFiles.places.map((p) => ({key: `${p.kind}:${p.id}`, name: p.name, icon: p.kind === "guest" ? ("machine" as const) : ("devices" as const), onOpen: () => go(p.path)}))),
   ];
+  // Connected computers and the virtual machines running on this server, each a tree of its files.
+  const agentsAll = swarm.data ?? [];
+  const treeMachines: TreeMachine[] = [
+    ...agentsAll
+      .filter((a) => !a.guestOf)
+      .map((a) => {
+        const filesOn = !!(a.allowed?.files && a.on?.files);
+        return {
+          key: `computer:${a.id}`,
+          name: a.name,
+          kind: "computer" as const,
+          agentId: a.id,
+          ready: a.online && filesOn,
+          note: !a.online ? "Offline" : !a.allowed?.files ? "Files isn’t allowed" : !a.on?.files ? "Files is off · Machines" : "Home folder",
+        };
+      }),
+    ...(machines.data ?? [])
+      .filter((m) => m.id !== "desktop" && m.state === "running")
+      .map((m) => {
+        const agent = agentsAll.find((a) => a.guestOf === m.id);
+        const filesOn = !!(agent?.allowed?.files && agent?.on?.files);
+        return {
+          key: `vm:${m.id}`,
+          name: m.name,
+          kind: "vm" as const,
+          agentId: agent?.id,
+          ready: !!agent?.online && filesOn,
+          note: !agent ? "Install the connector to browse" : !agent.online ? "Connector offline" : !filesOn ? "Files is off · Machines" : "Virtual machine",
+        };
+      }),
+  ];
+  const treeActions: TreeActions = {
+    onOpenFolder: (source, p) => {
+      if (source.kind === "server") return go(p);
+      const next = computerPlacePath(source.id, p);
+      if (next) go(next);
+    },
+    onOpenFile: (source, node) => {
+      if (source.kind === "server") return node.entry ? openShown(node.entry) : undefined;
+      const next = computerPlacePath(source.id, node.path.split("/").slice(0, -1).join("/"));
+      if (next) go(next);
+    },
+  };
   const placeLabel = (filePath: string) => {
     const computer = parseComputerPlace(filePath);
     if (computer) return computerLabel(computer.id);
@@ -1013,7 +1068,31 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     setSelected((s) => new Set(s).add(f.path));
   };
   const showParent = searching;
-  const renderRow = (f: FileEntry) => (
+  // In the list view a folder opens in place, as a tree; its arrow (or the sidebar) goes into it.
+  const treeRows = !grid && !selecting && !searching && !inTrash && !!path && !path.startsWith("::");
+  const renderRow = (f: FileEntry) =>
+    treeRows && isDir(f) ? (
+      <div key={f.path} className={`file-tree-row${openFolders.has(f.path) ? " open" : ""}`}>
+        <FileRow
+          f={f}
+          grid={false}
+          selected={false}
+          selecting={false}
+          favorite={favSet.has(f.path)}
+          shared={shareMap.has(f.path)}
+          inTrash={false}
+          showParent={showParent}
+          activate={toggleFolder}
+          onMore={onRowMore}
+          onDownload={onRowDownload}
+          onFavorite={(f) => toggleFavorite(f.path)}
+          onLong={onRowLong}
+          onMenu={onRowMenu}
+          onEnter={onRowEnter}
+        />
+        {openFolders.has(f.path) && <TreeChildren source={{ kind: "server" }} path={f.path} depth={1} actions={treeActions} />}
+      </div>
+    ) : (
     <FileRow
       key={f.path}
       f={f}
@@ -1162,6 +1241,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
           <div className="nu-status">
             {rootItems.length} item{rootItems.length === 1 ? "" : "s"}
           </div>
+          {owner && <MachineTrees machines={treeMachines} actions={treeActions} />}
         </>
       )}
 
@@ -1195,7 +1275,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
               </span>
             </Card>
           )}
-          {owner && <ComputersSection />}
+          {owner && <MachineTrees machines={treeMachines} actions={treeActions} />}
           {(shares.data?.length ?? 0) > 0 && (
             <section>
               <div className="section-head">
@@ -1664,7 +1744,9 @@ const FileRow = memo(function FileRow({
   onFavorite,
   onLong,
   onMenu,
+  onEnter,
 }: {
+  onEnter?: (f: FileEntry) => void;
   f: FileEntry;
   grid: boolean;
   selected: boolean;
@@ -1733,6 +1815,7 @@ const FileRow = memo(function FileRow({
     >
       {selecting && <Icon name={selected ? "checked" : "unchecked"} size={24} className={`check${selected ? " on" : ""}`} />}
       <FileIcon f={f} />
+      {onEnter && <Icon name="chevron" size={16} className="file-tree-chev" />}
       <span className="main">
         <b>
           {f.name}
@@ -1782,6 +1865,21 @@ const FileRow = memo(function FileRow({
           }}
         >
           <Icon name="dots" size={18} />
+        </button>
+      )}
+      {onEnter && (
+        <button
+          className="icon-btn"
+          style={{ alignSelf: "center", background: "transparent" }}
+          aria-label={`Go into ${f.name}`}
+          title="Go into folder"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onEnter(f);
+          }}
+        >
+          <Icon name="back" size={18} style={{ transform: "rotate(180deg)" }} />
         </button>
       )}
     </div>
@@ -2627,62 +2725,3 @@ export function ShareSheet({
   );
 }
 
-// Files on the other computers in your swarm (owner only), opened in the same browser the
-// computer's own sheet uses. A computer shows here when it's in the swarm; it opens when it's
-// online and Files is switched on for it (Machines › the computer).
-function ComputersSection() {
-  const swarm = useQuery({
-    queryKey: ["swarm.list"],
-    queryFn: () => query<Agent[]>("swarm.list"),
-    staleTime: 15_000,
-  });
-  const [open, setOpen] = useState<Agent | null>(null);
-  const toast = useToast();
-  const list = swarm.data ?? [];
-  if (!list.length) return null;
-  return (
-    <section>
-      <div className="section-head">
-        <h2>Computers</h2>
-      </div>
-      <div className="glass group" style={{ "--inset": "74px" } as CSSProperties}>
-        {list.map((a) => {
-          const filesOn = !!(a.allowed.files && a.on.files);
-          const ready = a.online && filesOn;
-          const note = !a.online
-            ? "Offline"
-            : !a.allowed.files
-              ? "Files isn’t allowed on this computer"
-              : !a.on.files
-                ? "Files is switched off · Machines › " + a.name
-                : a.info?.hostname
-                  ? `Home folder · ${a.info.hostname}`
-                  : "Home folder";
-          return (
-            <button
-              key={a.id}
-              className="row"
-              aria-disabled={!ready}
-              style={ready ? undefined : { opacity: 0.6 }}
-              onClick={() => {
-                haptic(6);
-                if (ready) setOpen(a);
-                else toast(!a.online ? `${a.name} is offline` : `Switch Files on for ${a.name} in Machines first`);
-              }}
-            >
-              <span className="file-icon" style={{ width: 44, height: 44, "--c": a.online ? "#22c55e" : "#8e8e93" } as CSSProperties}>
-                <Icon name="machine" size={23} />
-              </span>
-              <span className="main">
-                <b>{a.name}</b>
-                <span>{note}</span>
-              </span>
-              <Icon name="chevron" size={18} className="chev" />
-            </button>
-          );
-        })}
-      </div>
-      {open && <AgentFiles a={open} onClose={() => setOpen(null)} />}
-    </section>
-  );
-}

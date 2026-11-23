@@ -6,13 +6,14 @@
 import {useState} from 'react'
 import {createPortal} from 'react-dom'
 
+import {openSettingsPage} from './desktop/settingsPage'
 import {useUser} from './data'
 import {Icon, type IconName} from './icons'
 import {ScreenLayoutCards} from './LayoutPicker'
 import {detectDesktop, haptic, setLayoutPref, THEMES, type LayoutPref, type Prefs} from './ui'
 
-type Step = 'hello' | 'layout' | 'theme' | 'tour'
-const STEPS: Step[] = ['hello', 'layout', 'theme', 'tour']
+type Step = 'hello' | 'layout' | 'theme' | 'assistant' | 'tour'
+const STEPS: Step[] = ['hello', 'layout', 'theme', 'assistant', 'tour']
 
 const PICKABLE_THEMES = THEMES.filter((t) => t.id !== 'custom')
 
@@ -45,6 +46,12 @@ export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; 
 		// Skipping still counts as set up: the layout stays Automatic.
 		if (layout === null) setLayoutPref('auto')
 		onDone()
+	}
+	// Set up the assistant now: setup ends here and Settings opens at Assistant.
+	const assistantNow = () => {
+		haptic(6)
+		finish()
+		openSettingsPage('assistant')
 	}
 	const first = name?.trim().split(/\s+/)[0]
 
@@ -103,6 +110,33 @@ export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; 
 									</span>
 								</button>
 							))}
+						</div>
+					</>
+				)}
+
+				{step === 'assistant' && (
+					<>
+						<h2 id="welcome-title">Set up your assistant?</h2>
+						<p>The assistant answers questions about your server and can do things for you. It always asks before changing anything. It needs an AI provider: sign in with ChatGPT, or add an API key.</p>
+						<div className="welcome-choices">
+							<button type="button" className="welcome-choice" onClick={assistantNow}>
+								<span className="welcome-ico">
+									<Icon name="sparkle" size={20} />
+								</span>
+								<span>
+									<b>Set it up now</b>
+									<span>Opens Settings › Assistant to connect a provider.</span>
+								</span>
+							</button>
+							<button type="button" className="welcome-choice" onClick={next}>
+								<span className="welcome-ico">
+									<Icon name="clock" size={20} />
+								</span>
+								<span>
+									<b>Later, myself</b>
+									<span>Whenever you’re ready, in Settings › Assistant.</span>
+								</span>
+							</button>
 						</div>
 					</>
 				)}
