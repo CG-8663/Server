@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.66',
+		date: '2026-11-22',
+		title: 'Virtual machine controls are back',
+		fixed: [
+			'Each virtual machine in Machines has its controls on its row again: Start or Resume when it’s off, and Console, Shut down, Reboot and Pause when it’s running. Opening a machine that isn’t running goes straight to Power.',
+			'In Files, the machine you’re browsing from is called Host server.',
+		],
+	},
+	{
 		version: '0.9.65',
 		date: '2026-11-22',
 		title: 'Machines in sections, folders as trees',
