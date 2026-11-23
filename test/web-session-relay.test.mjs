@@ -628,3 +628,42 @@ test('factory reset removes this server’s appearance only after the backend ac
 		await fake.close()
 	}
 })
+
+test('the browser session behind Files and consoles is renewed by ordinary use, and a failed renewal is not recorded', async () => {
+	const stale = Date.now() - 2 * 86_400_000
+	const sidOf = (cookie) => cookie.split('=')[1]
+	const backdate = async (touch, cookie) => {
+		const sid = sidOf(cookie)
+		await touch.store.updateSession(sid, {console: {...touch.store.getSession(sid).console, renewedAt: stale}})
+		return sid
+	}
+	// A request that never touches Files or a console still renews it.
+	const fake = await startFakeserverd()
+	const touch = await withServer({backendUrl: fake.url})
+	try {
+		const signed = await login(touch.base)
+		assert.equal(signed.status, 200)
+		const sid = await backdate(touch, signed.cookie)
+		const before = fake.calls.filter((c) => c.path === 'user.renewToken').length
+		await fetch(`${touch.base}/api/prefs`, {headers: {cookie: signed.cookie}})
+		for (let i = 0; i < 100 && touch.store.getSession(sid).console.renewedAt === stale; i++) await new Promise((r) => setTimeout(r, 20))
+		assert.equal(fake.calls.filter((c) => c.path === 'user.renewToken').length, before + 1)
+		assert.ok(touch.store.getSession(sid).console.renewedAt > stale)
+	} finally {
+		await touch.close()
+		await fake.close()
+	}
+	// omarchyd refusing the renewal: nothing was renewed, so renewedAt stays put and it is tried again.
+	const refusing = await startFakeserverd()
+	const down = await withServer({backendUrl: refusing.url})
+	try {
+		const signed = await login(down.base)
+		const sid = await backdate(down, signed.cookie)
+		await refusing.close()
+		await fetch(`${down.base}/api/prefs`, {headers: {cookie: signed.cookie}})
+		await new Promise((r) => setTimeout(r, 300))
+		assert.equal(down.store.getSession(sid).console.renewedAt, stale)
+	} finally {
+		await down.close()
+	}
+})
