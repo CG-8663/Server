@@ -8,15 +8,18 @@ export function formatRunningSince(
 		const s = Math.max(0, (now - startedAt) / 1000)
 		let duration: string
 		if (s < 60) duration = 'less than a minute'
-		else if (s < 3600) {
-			const n = Math.max(1, Math.round(s / 60))
-			duration = n === 1 ? '1 minute' : `${n} minutes`
-		} else if (s < 86400) {
-			const n = Math.max(1, Math.round(s / 3600))
-			duration = n === 1 ? '1 hour' : `${n} hours`
-		} else {
-			const n = Math.max(1, Math.round(s / 86400))
-			duration = n === 1 ? '1 day' : `${n} days`
+		else {
+			// Round to the current unit first, then promote 60 minutes to 1 hour and 24 hours to 1 day.
+			const minutes = Math.max(1, Math.round(s / 60))
+			if (minutes < 60) duration = minutes === 1 ? '1 minute' : `${minutes} minutes`
+			else {
+				const hours = Math.max(1, Math.round(minutes / 60))
+				if (hours < 24) duration = hours === 1 ? '1 hour' : `${hours} hours`
+				else {
+					const days = Math.max(1, Math.round(hours / 24))
+					duration = days === 1 ? '1 day' : `${days} days`
+				}
+			}
 		}
 		const when = new Intl.DateTimeFormat(locale, {
 			day: 'numeric',

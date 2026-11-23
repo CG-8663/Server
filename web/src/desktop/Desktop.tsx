@@ -19,12 +19,14 @@ import {closeAssistantView, keepAssistantWindow, openAssistantView, resetAssista
 import {AssistantCharacterWidget} from '../character/widgets'
 import {hasOpenDialog, pickFocusTarget, useDialogFocus, useInert, useMenuFocus} from '../focus'
 import {ScreenErrorBoundary} from '../screenBoundary'
+import {queryClearsOnSignOut} from '../signOutQueries'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, resetDeskConfig, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {desktopIconKeyOpens, desktopIconKeysApply, iconSelectionClearsOnFocus} from './iconKeys'
 import {iconsInView} from './iconsInView'
 import {desktopMachineStatus, machineOpenAction} from './machineOpen'
 import {startAlreadyPending} from './startPending'
+import {extraWindowAction} from './extraWindow'
 import {ignoreRepeatedDesktopShortcut} from './shortcutRepeat'
 import {nextStarting, type StartingWatch} from './startingWatch'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
@@ -626,10 +628,17 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			open,
 			launch,
 			openConsole,
-			openTerminal: (term, input) => open('terminal', term || input ? {...(term ? {term} : {}), ...(input ? {input} : {})} : undefined, {newWindow: true}),
+			openTerminal: (term, input) => {
+				const action = extraWindowAction('terminal', winsRef.current.some((w) => w.kind === 'terminal'))
+				open('terminal', term || input ? {...(term ? {term} : {}), ...(input ? {input} : {})} : undefined, {newWindow: action === 'open'})
+			},
 			close,
 			openItem: (key) => {
-				if (isSys(key)) return key === 'terminal' ? open('terminal', undefined, {newWindow: !winsRef.current.some((w) => w.kind === 'terminal')}) : open(key)
+				if (isSys(key)) {
+					if (key !== 'terminal') return open(key)
+					const action = extraWindowAction('terminal', winsRef.current.some((w) => w.kind === 'terminal'))
+					return open('terminal', undefined, {newWindow: action === 'open'})
+				}
 				if (key.startsWith('folder:')) return open('files', {path: key.slice(7)}, {newWindow: true})
 				if (key.startsWith('app:')) {
 					const a = appList.find((x) => x.id === key.slice(4))
@@ -878,7 +887,16 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		const mine = winsOf(key)
 		const items: MenuItem[] = [{label: mine.length && where === 'dock' && !key.startsWith('folder:') ? 'Show' : 'Open', icon: 'open', onClick: () => (mine.length && where === 'dock' ? dockClick(key) : api.openItem(key))}]
 		if (key.startsWith('folder:/Home/') && owner) items.push({label: 'Share on your home LAN…', icon: 'folder-share', onClick: () => setShareFor({path: key.slice(7), name: it.label})})
-		if (key === 'files' || key === 'terminal') items.push({label: 'New window', icon: 'plus', onClick: () => (key === 'terminal' ? api.openTerminal() : open('files', undefined, {newWindow: true}))})
+		if (key === 'files' || key === 'terminal')
+			items.push({
+				label: 'New window',
+				icon: 'plus',
+				onClick: () => {
+					if (key === 'terminal') return api.openTerminal()
+					const action = extraWindowAction('files', winsRef.current.some((w) => w.kind === 'files'))
+					open('files', undefined, {newWindow: action === 'open'})
+				},
+			})
 		if (app && appUrl(app, boot.server!.host)) items.push({label: 'Open in a browser tab', icon: 'open', onClick: () => appTab.openTab(app)})
 		if (machine && machine.state === 'running')
 			items.push({
@@ -923,8 +941,13 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const signOut = async () => {
 		setTopMenu(null)
 		if (!(await confirm({title: 'Sign out?', body: 'This browser is signed out and removed from your server’s devices.', confirm: 'Sign out', icon: 'signout'}))) return
-		await logout().catch(() => {})
-		qc.clear()
+		try {
+			await logout()
+		} catch (e) {
+			toast((e as Error).message, true)
+			return
+		}
+		qc.removeQueries({predicate: (q) => queryClearsOnSignOut(q.queryKey)})
 		resetDeskConfig()
 		resetAssistantTurn()
 		onSignedOut()
@@ -2536,7 +2559,7 @@ function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetr
 
 // An Omarchy Server app in a window. Omarchy Server asks each browser to sign in before it opens apps, and its
 // sign-in page refuses to load inside another page, so that one step happens in a normal tab.
-// The session it creates covers all of this browser's apps (7 days); the window then loads.
+// The session it creates covers all of this browser's apps (30 days); the window then loads.
 export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null; onClose: () => void}) {
 	const {openTab: openAppTab} = useAppTab()
 	const openTab = (a?: UserApp) => a && openAppTab(a)
@@ -2690,7 +2713,7 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 				<span>
 					{waiting
 						? `Sign in in the tab that opened. ${name} then loads here by itself; you can close that tab.`
-						: 'This server asks each browser to sign in once before it opens your apps. Its sign-in page can’t be shown inside a window, so it opens in a new tab. Afterwards every app opens here for the next 7 days.'}
+						: 'This server asks each browser to sign in once before it opens your apps. Its sign-in page can’t be shown inside a window, so it opens in a new tab. Afterwards every app opens here for the next 30 days.'}
 				</span>
 				<div className="app-gate-actions">
 					<button
