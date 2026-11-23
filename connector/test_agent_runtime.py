@@ -39,3 +39,30 @@ class ReportHelloInterval(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DesktopSessionReported(unittest.TestCase):
+    # Signing in to the desktop after the connector started is reported within seconds.
+    def test_hello_when_the_desktop_appears(self):
+        conn = agent.Connection({"abilities": {"desktop": True}})
+        sent = []
+        conn.send = sent.append
+        sampler = mock.Mock()
+        sampler.active.return_value = False
+        states = iter([{"kind": "none", "ok": False}] * 3 + [{"kind": "wlroots", "ok": True}] * 10)
+        with mock.patch.object(agent, "info", return_value={"hostname": "box"}), mock.patch.object(agent, "desktop_kind", side_effect=lambda: next(states)):
+            last = conn._report_step(sampler, 0.0, 400.0)  # the regular hello
+            for t in (412.0, 424.0, 436.0, 448.0):
+                last = conn._report_step(sampler, last, t)
+        hellos = [m for m in sent if m.get("op") == "hello"]
+        self.assertEqual(len(hellos), 2)
+
+    def test_nothing_extra_without_the_desktop_ability(self):
+        conn = agent.Connection({"abilities": {}})
+        sent = []
+        conn.send = sent.append
+        sampler = mock.Mock()
+        sampler.active.return_value = False
+        with mock.patch.object(agent, "info", return_value={}), mock.patch.object(agent, "desktop_kind", side_effect=AssertionError("not checked")):
+            conn._report_step(sampler, 400.0, 412.0)
+        self.assertEqual(sent, [])

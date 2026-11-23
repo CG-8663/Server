@@ -3152,6 +3152,7 @@ BACKUP_ACTIONS = {"backup-folders": lambda conn, cid, args, cfg: backup_folders(
 
 # ---------------------------------------------------------------------------------------------
 REPORT_INTERVAL = 3
+DESKTOP_CHECK_INTERVAL = 10.0
 HELLO_INTERVAL = 300
 
 
@@ -3588,10 +3589,21 @@ class Connection:
         # Facts change now and then (plugins, theme, a desktop session starting).
         if now - last_hello >= HELLO_INTERVAL:
             self.send({"op": "hello", "info": info(), "abilities": self.allowed})
+            self._desk_seen, self._desk_at = desktop_kind(), now
             return now
+        # Someone signing in to (or out of) the desktop is told straight away, not up to five
+        # minutes later: the server only offers the desktop when the computer says it's there.
+        if self.allowed.get("desktop") and now - getattr(self, "_desk_at", 0.0) >= DESKTOP_CHECK_INTERVAL:
+            desk = desktop_kind()
+            seen = getattr(self, "_desk_seen", None)
+            self._desk_seen, self._desk_at = desk, now
+            if seen is not None and desk != seen:
+                self.send({"op": "hello", "info": info(), "abilities": self.allowed})
+                return now
         return last_hello
 
     def run(self):
+        self._desk_seen = None
         url = self.cfg["server"].replace("https://", "wss://", 1).rstrip("/") + "/connector/ws"
         self.ws = WS(url, {"Authorization": f"Bearer {self.cfg['id']}:{self.cfg['key']}", "User-Agent": f"omarchy-connector/{VERSION}"}, CA_FILE)
         self.connected_at = time.monotonic()

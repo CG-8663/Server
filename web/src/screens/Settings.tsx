@@ -10,6 +10,7 @@ import {Icon, type IconName} from '../icons'
 import {Card, Field, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, useConfirm, useToast, type Prefs} from '../ui'
 import {Personalize} from '../desktop/Personalize'
 import {AssistantAppearanceSettings} from '../character/widgets'
+import {StoragePage} from './Storage'
 import {OmarchyThemes} from '../OmarchyThemes'
 import {UnraidPage} from '../unraid'
 import {OidcSheet} from './Oidc'
@@ -94,10 +95,10 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const save = useSave()
 	const [sheet, setSheet] = useState<SheetId>(null)
 	const inWindow = useContext(InWindow)
-	type Page = 'main' | 'appearance' | 'unraid' | 'omarchy-themes' | 'assistant'
+	type Page = 'main' | 'appearance' | 'storage' | 'unraid' | 'omarchy-themes' | 'assistant'
 	const [page, setPage] = useState<Page>(() => {
 		const saved = sessionStorage.getItem('omarchy-server:settings-page')
-		return saved === 'appearance' || saved === 'unraid' || saved === 'omarchy-themes' || saved === 'assistant' ? saved : 'main'
+		return saved === 'appearance' || saved === 'storage' || saved === 'unraid' || saved === 'omarchy-themes' || saved === 'assistant' ? saved : 'main'
 	})
 	const openPage = (p: Page) => {
 		haptic(5)
@@ -154,6 +155,8 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	}
 	if (page === 'unraid' && owner) return <UnraidPage onBack={() => openPage('main')} />
 	if (page === 'assistant') return <AssistantPage onBack={() => openPage('main')} />
+	// Drives, pools, drive health and sleep on the host server (also under Machines › the server).
+	if (page === 'storage' && owner) return <StoragePage onBack={() => openPage('main')} target="host" />
 	if (page === 'omarchy-themes')
 		return (
 			<div className="stagger">
@@ -221,6 +224,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				<div className="section-head" style={{marginTop: 18}} />
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					<Row icon="palette" color="var(--pink, #ec4899)" label="Appearance" onClick={() => openPage('appearance')} />
+					{owner && <Row icon="disk" color="var(--teal)" label="Storage" sub="Drives, pools, drive health and sleep" onClick={() => openPage('storage')} />}
 					{owner && <Row icon="move" color="var(--orange, #f59e0b)" label="Move from Unraid" onClick={() => openPage('unraid')} />}
 				</div>
 			</div>
