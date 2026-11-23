@@ -12,6 +12,7 @@ import {Personalize} from '../desktop/Personalize'
 import {AssistantAppearanceSettings} from '../character/widgets'
 import {OmarchyThemes} from '../OmarchyThemes'
 import {UnraidPage} from '../unraid'
+import {OidcSheet} from './Oidc'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 import {clearTotpSetupQuery} from './twoFactorQuery'
 import {PASSWORD_SHEET_SUBTITLE} from './settingsHelpers'
@@ -84,7 +85,7 @@ function describeSession(s: ActiveSession) {
 	return {icon: 'browser' as IconName, name: `${browser}${os ? ` on ${os}` : ''}`, detail: ''}
 }
 
-type SheetId = null | 'name' | 'password' | '2fa'
+type SheetId = null | 'name' | 'password' | '2fa' | 'oidc'
 
 export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; setPrefs: (p: Prefs) => void; onBack: () => void; onSignedOut: () => void}) {
 	const boot = useBootstrap()
@@ -109,6 +110,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const owner = user.data?.role !== 'member'
 
 	const twoFactor = useQ<boolean>('user.is2faEnabled')
+	const oidc = useQ<{clientCount: number}>('oidc.status', undefined, {enabled: owner})
 	const sessions = useQ<ActiveSession[]>('user.listSessions')
 	const check = useQ<{available: boolean; version: string; name: string; releaseNotes?: string}>('system.checkUpdate', undefined, {enabled: owner})
 	const [updating, setUpdating] = useState(false)
@@ -211,6 +213,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					<Row icon="user" color="var(--blue)" label="Name" value={user.data?.name} onClick={() => setSheet('name')} />
 					<Row icon="key" color="#8e8e93" label="Password" onClick={() => setSheet('password')} />
 					<Row icon="shield" color="var(--green)" label="Two-factor authentication" value={twoFactor.data === undefined ? '' : twoFactor.data ? 'On' : 'Off'} onClick={() => setSheet('2fa')} />
+					{owner && <Row icon="link" color="var(--blue)" label="Sign-in for apps" value={oidc.data ? `${oidc.data.clientCount} ${oidc.data.clientCount === 1 ? 'app' : 'apps'}` : ''} onClick={() => setSheet('oidc')} />}
 				</div>
 			</div>
 
@@ -345,6 +348,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 			<NameSheet open={sheet === 'name'} current={user.data?.name ?? ''} onClose={close} />
 			<PasswordSheet open={sheet === 'password'} onClose={close} />
 			<TwoFactorSheet open={sheet === '2fa'} enabled={!!twoFactor.data} onClose={close} />
+			{sheet === 'oidc' && <OidcSheet onClose={close} />}
 		</div>
 	)
 }
