@@ -478,7 +478,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const key = `${real}:${st.mtimeMs}`
 		if (!labels.has(key)) {
 			const out = await run('xorriso', ['-indev', real, '-pvd_info'], {timeout: 30_000}).catch(() => '')
-			labels.set(key, /Volume Id\s*:\s*(\S+)/i.exec(out)?.[1] ?? '')
+			labels.set(key, (/Volume Id\s*:\s*(.+?)\s*$/im.exec(out)?.[1] ?? '').replace(/^'(.*)'$/, '$1'))
 		}
 		return {label: labels.get(key), size: st.size}
 	}
@@ -898,6 +898,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 
 	// Live usage: sampled often for the last reading; the hour chart keeps a coarser series.
 	const series = new Map() // id -> [{t, cpu, memMb, netIn, netOut, diskRead, diskWrite}]
+	const seriesAt = new Map() // id -> monotonic time of the newest stored point
 	const lastPoint = new Map()
 	const lastRaw = new Map() // id -> {t, cpuNs, rx, tx, rd, wr}
 	// libvirt states that still have counters. "shut off" and friends do not.
@@ -914,6 +915,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			// Counters are read when virsh starts. The rate is divided by the time since the
 			// previous start, not by how long virsh took to return.
 			const now = Date.now()
+			const mono = performance.now()
 			let text = ''
 			try {
 				text = await virsh('domstats', '--list-running', '--cpu-total', '--balloon', '--interface', '--block')
@@ -930,10 +932,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					if (mm) kv[mm[1]] = Number(mm[2])
 				}
 				const sum = (re) => Object.entries(kv).reduce((a, [k, v]) => (re.test(k) ? a + v : a), 0)
-				const raw = {t: now, cpuNs: kv['cpu.time'] ?? 0, rx: sum(/^net\.\d+\.rx\.bytes$/), tx: sum(/^net\.\d+\.tx\.bytes$/), rd: sum(/^block\.\d+\.rd\.bytes$/), wr: sum(/^block\.\d+\.wr\.bytes$/)}
+				const raw = {t: mono, cpuNs: kv['cpu.time'] ?? 0, rx: sum(/^net\.\d+\.rx\.bytes$/), tx: sum(/^net\.\d+\.tx\.bytes$/), rd: sum(/^block\.\d+\.rd\.bytes$/), wr: sum(/^block\.\d+\.wr\.bytes$/)}
 				const prev = lastRaw.get(m.id)
 				lastRaw.set(m.id, raw)
-				if (!prev || raw.cpuNs < prev.cpuNs) continue
+				if (!prev || raw.cpuNs < prev.cpuNs || raw.t <= prev.t) continue
 				const secs = (raw.t - prev.t) / 1000
 				const vcpus = (m.sockets ?? 1) * m.cores
 				const point = {
@@ -948,8 +950,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				}
 				lastPoint.set(m.id, point)
 				const list = series.get(m.id) ?? []
-				const kept = list.at(-1)
-				if (!kept || now - kept.t >= seriesIntervalMs) {
+				const keptAt = seriesAt.get(m.id)
+				if (keptAt === undefined || !list.length || mono - keptAt >= seriesIntervalMs) {
+					seriesAt.set(m.id, mono)
 					list.push(point)
 					if (list.length > 360) list.splice(0, list.length - 360)
 					series.set(m.id, list)
@@ -1018,6 +1021,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const fs = await statfs(base).catch(() => null)
 		const cpus = os.cpus()
 		const versions = await run('virsh', ['-c', LIBVIRT, 'version']).catch(() => '')
+		const states = await domainStates()
 		return {
 			hostname: os.hostname(),
 			cpuModel: cpus[0]?.model?.trim() ?? '',
@@ -1035,7 +1039,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			nicModels: NICS,
 			diskBuses: BUSES,
 			diskCaches: CACHES,
-			counts: {total: machines.length, running: [...(await domainStates()).values()].filter((s) => s === 'running').length},
+			counts: {total: machines.length, running: machines.filter((m) => states.get(domain(m.id)) === 'running').length},
 		}
 	}
 
@@ -1663,7 +1667,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		}
 	}
 	// A new machine from copied disks and settings (used by restore and clone).
-	async function adopt(source, {name, copyDisk, keepIds}) {
+	async function adopt(source, {name, copyDisk, keepIds, sourceTask}) {
 		let id
 		do id = randomBytes(4).toString('hex')
 		while (machines.some((x) => x.id === id))
@@ -1742,9 +1746,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				await define(m)
 				delete m.state
 				endTask(m, t)
+				if (sourceTask) endTask(sourceTask.m, sourceTask.t)
 			} catch (error) {
 				Object.assign(m, {state: 'error', errorMessage: error.message})
 				endTask(m, t, error)
+				if (sourceTask) endTask(sourceTask.m, sourceTask.t, error)
 			} finally {
 				busy.delete(id)
 				if (sourceHold && busy.get(liveSource.id) === sourceHold) busy.delete(liveSource.id)
@@ -1796,9 +1802,16 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await requireStopped(m, 'clone it')
 		const name = input.name ? String(input.name).trim() : uniqueName(`${m.name} copy`)
 		if (!name || name.length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
-		const out = await adopt(m, {name, keepIds: false, copyDisk: (d, dst) => run('qemu-img', ['convert', '-O', 'qcow2', d.file, dst], {timeout: 6 * 60 * 60_000})})
-		await task(m, 'clone', name, async () => true)
-		return out
+		// The source's history entry stays running until the copy ends, then follows its result.
+		const sourceTask = beginTask(m, 'clone', name)
+		await save().catch(() => {})
+		try {
+			return await adopt(m, {name, keepIds: false, sourceTask: {m, t: sourceTask}, copyDisk: (d, dst) => run('qemu-img', ['convert', '-O', 'qcow2', d.file, dst], {timeout: 6 * 60 * 60_000})})
+		} catch (error) {
+			endTask(m, sourceTask, error)
+			await save().catch(() => {})
+			throw error
+		}
 	}
 
 	// QEMU's own monitor (HMP), for the commands Proxmox's Monitor tab offers ("info status"…).
