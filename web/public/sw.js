@@ -1,5 +1,5 @@
 // Offline shell only. API calls are never cached: they always go to your server.
-const CACHE = 'omarchy-server-v2'
+const CACHE = 'omarchy-server-v3'
 
 // A failed navigation must not replace the offline shell. A cache-first /assets/ URL must not
 // keep index.html (text/html) under a script or stylesheet name.

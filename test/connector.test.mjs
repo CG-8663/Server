@@ -55,7 +55,7 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 	// The backup test (opt in, like test/backups.test.mjs): a real restic and an SMB share.
 	const backupIt = process.env.OMARCHY_BACKUP_IT === '1' && process.env.OMARCHY_BACKUP_RESTIC
 	const resticDir = backupIt ? join(os.tmpdir(), `restic-bin-${process.pid}`) : null
-	const agentEnv = () => ({...process.env, ...(resticDir ? {PATH: `${resticDir}:${process.env.PATH}`} : {}), HOME: agentHome, XDG_CONFIG_HOME: join(agentHome, '.config'), XDG_DATA_HOME: join(agentHome, '.local/share'), XDG_RUNTIME_DIR: join(agentHome, 'run')})
+	const agentEnv = () => ({...process.env, ...(resticDir ? {PATH: `${resticDir}:${process.env.PATH}`} : {}), HOME: agentHome, XDG_CONFIG_HOME: join(agentHome, '.config'), XDG_DATA_HOME: join(agentHome, '.local/share'), XDG_RUNTIME_DIR: join(agentHome, 'run'), OMARCHY_CONNECTOR_TMUX_SOCKET: `omarchy-ctest-${process.pid}`})
 	// Async: the servers under test run in this process, so a blocking call would stall them.
 	const runAgent = async (args) => {
 		try {
@@ -119,6 +119,11 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		auth = {authorization: `Bearer ${login.result.data.accessToken}`}
 	})
 	after(async () => {
+		try {
+			execFileSync('tmux', ['-L', `omarchy-ctest-${process.pid}`, 'kill-server'], {stdio: 'ignore'})
+		} catch {
+			// no tmux, or nothing running
+		}
 		if (resticDir) await rm(resticDir, {recursive: true, force: true})
 		agentProc?.kill()
 		await d?.close()
@@ -185,6 +190,28 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		ws.send('stty size\n')
 		await until(async () => /44 140/.test(out))
 		ws.close()
+	})
+
+	test('a computer’s terminal is still there after you leave and come back', async () => {
+		const [a] = await q('swarm.list')
+		const first = await browserWs('terminal', {agentId: a.id, cols: '100', rows: '30'})
+		let out1 = ''
+		first.on('message', (d) => (out1 += String(d)))
+		await new Promise((r, j) => (first.once('open', r), first.once('error', j)))
+		first.send('export KEPT=still-$((20+3)); echo set-$KEPT\n')
+		await until(async () => out1.includes('set-still-23'))
+		first.close()
+		await new Promise((r) => setTimeout(r, 500))
+		// Back again: the same shell, with what was on screen.
+		const again = await browserWs('terminal', {agentId: a.id, cols: '100', rows: '30'})
+		let out2 = ''
+		again.on('message', (d) => (out2 += String(d)))
+		await new Promise((r, j) => (again.once('open', r), again.once('error', j)))
+		await until(async () => out2.includes('set-still-23'))
+		again.send('echo got-$KEPT\n')
+		await until(async () => out2.includes('got-still-23'))
+		assert.match(out2, /"resumed":true/)
+		again.close()
 	})
 
 	test('what wasn’t allowed stays off: the desktop here, and the server can’t switch it on', async () => {

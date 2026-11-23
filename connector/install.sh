@@ -99,12 +99,14 @@ case "$SERVER" in https://*) ;; *) die "The server address must start with https
 [[ "$ALLOW" =~ ^[a-z,]*$ ]] || die "Bad --allow list"
 has() { [[ ",$ALLOW," == *",$1,"* ]]; }
 
-# 1. What this computer needs: Python 3, git (for plugins) and screen sharing (for the desktop).
+# 1. What this computer needs: Python 3, git (for plugins), tmux (for the terminal) and screen sharing (for the desktop).
 pm=""
 for p in apt-get dnf pacman zypper; do command -v "$p" >/dev/null && { pm="$p"; break; }; done
 pkgs=()
 command -v python3 >/dev/null || case "$pm" in pacman) pkgs+=(python) ;; *) pkgs+=(python3) ;; esac
 has manage && ! command -v git >/dev/null && pkgs+=(git)
+# tmux keeps the terminal running through connector restarts and updates (it works without, too).
+has terminal && ! command -v tmux >/dev/null && pkgs+=(tmux)
 if has desktop; then
 	command -v x11vnc >/dev/null || pkgs+=(x11vnc)
 	command -v wayvnc >/dev/null || pkgs+=(wayvnc)

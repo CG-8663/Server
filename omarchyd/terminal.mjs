@@ -4,10 +4,13 @@
 //
 // Shells persist: closing the terminal (or losing the connection, or switching devices) leaves the
 // shell running, and opening it again picks up where you left off, with what was on screen. A shell
-// ends when you `exit` it, ask for a new one, or omarchyd itself stops (a restart or an update).
+// ends when you `exit` it or ask for a new one. With tmux installed, your shell also outlives
+// omarchyd itself (a restart or an update): it runs in a tmux session of its own, started outside
+// omarchyd's service, and the terminal attaches to it. Without tmux, it ends when omarchyd stops.
 import {execFile, spawn} from 'node:child_process'
-import {readdir, readFile, readlink} from 'node:fs/promises'
+import {mkdir, readdir, readFile, readlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
+import {dirname} from 'node:path'
 
 const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
 
@@ -19,6 +22,56 @@ export function openShell({cols, rows, command = null, cwd = os.homedir(), env =
 		cwd,
 		env: {...env, HOME: home, TERM: 'xterm-256color', COLORTERM: 'truecolor', LANG: env.LANG || 'C.UTF-8'},
 	})
+}
+
+// ---- tmux: shells that outlive omarchyd -------------------------------------------------------
+// Its own server (-L omarchy) and settings, so your own tmux setup is untouched. No status bar, the
+// normal screen (so the terminal's own scrollback keeps working), and the latest device's size.
+export const TMUX_CONF = `# Omarchy Server's terminal sessions. Written by omarchyd; changes here are replaced.
+set -g status off
+set -g history-limit 50000
+set -g default-terminal "screen-256color"
+set -s escape-time 0
+set -g mouse off
+set -g set-clipboard on
+set -g window-size latest
+set -g aggressive-resize on
+set -ga terminal-overrides ',xterm*:smcup@:rmcup@'
+`
+const TMUX_NAME = /^[A-Za-z0-9._-]{1,40}$/
+
+export function createTmux({conf, socket = 'omarchy', exec = execFile} = {}) {
+	const run = (cmd, args, timeout = 10_000) =>
+		new Promise((resolve) => exec(cmd, args, {timeout}, (error, stdout) => resolve({ok: !error, stdout: String(stdout ?? '')})))
+	const base = () => ['-L', socket, '-f', conf]
+	let ready = null
+	const available = () =>
+		(ready ??= (async () => {
+			if (!(await run('tmux', ['-V'])).ok) return false
+			await mkdir(dirname(conf), {recursive: true}).catch(() => {})
+			await writeFile(conf, TMUX_CONF, {mode: 0o600}).catch(() => {})
+			return true
+		})())
+	const has = async (name) => (await run('tmux', [...base(), 'has-session', '-t', `=${name}`])).ok
+	return {
+		available,
+		has,
+		/** The argv that attaches to session `name`, starting it first (outside omarchyd's service) if needed; null without tmux. */
+		async attachCommand(name, cols, rows) {
+			if (!TMUX_NAME.test(name) || !(await available())) return null
+			if (!(await has(name))) {
+				const create = [...base(), 'new-session', '-d', '-s', name, '-x', String(cols), '-y', String(rows)]
+				// Its own scope, so stopping or restarting omarchyd doesn't stop it. Without a user
+				// systemd it still runs, and lasts as long as omarchyd does.
+				const scoped = await run('systemd-run', ['--user', '--scope', '--quiet', '--collect', '--', 'tmux', ...create], 20_000)
+				if (!scoped.ok && !(await has(name)) && !(await run('tmux', create)).ok) return null
+			}
+			return ['tmux', ...base(), 'attach-session', '-t', `=${name}`]
+		},
+		async kill(name) {
+			if (TMUX_NAME.test(name) && (await available())) await run('tmux', [...base(), 'kill-session', '-t', `=${name}`])
+		},
+	}
 }
 
 // The pty `script` made for the shell: the terminal device its child reads from (/dev/pts/N).
@@ -215,7 +268,7 @@ export function createReplayHistory(keep = KEEP) {
 }
 
 // Persistent shells, one per person and place (your own shell, or one per app).
-export function createTerminalSessions({exec = execFile} = {}) {
+export function createTerminalSessions({exec = execFile, tmux = null} = {}) {
 	const sessions = new Map() // `${userId}:${appId || ''}` -> session
 
 	// Resize to the latest size asked for, one at a time (a window being dragged asks many times).
@@ -295,8 +348,24 @@ export function createTerminalSessions({exec = execFile} = {}) {
 			end(key, s)
 			s = null
 		}
-		const resumed = !!s
-		if (!s) s = start(key, {cols, rows, shell})
+		let resumed = !!s
+		if (!s) {
+			// Your own shell (not an app's) lives in tmux when it's there, so it outlives omarchyd.
+			// (Only the server's owner has a shell here, so one session.)
+			if (tmux && !shell.command && !appId) {
+				if (fresh) await tmux.kill('main')
+				const kept = await tmux.has('main').catch(() => false)
+				const command = await tmux.attachCommand('main', cols, rows).catch(() => null)
+				if (command) {
+					shell = {...shell, command}
+					resumed = kept
+				}
+			}
+			// Another device may have opened it while this one waited on tmux.
+			s = sessions.get(key)
+			if (s && s.child.exitCode === null) resumed = true
+			else s = start(key, {cols, rows, shell})
+		}
 		const session = s
 		session.used = Date.now()
 		// Control messages are text frames; the shell's output is always binary.

@@ -1277,11 +1277,80 @@ def _trim_scrollback(buf, limit=SHELL_SCROLLBACK_MAX):
         del buf[:i]
 
 
-class ShellSession:
-    """A persistent PTY session that survives browser disconnect and replays scrollback on reattach."""
+# ---- tmux: shells that outlive the connector (restarts, self-updates) ----
+# Its own server (-L omarchy) and settings, so the computer's own tmux setup is untouched.
+TMUX_CONF = """# Omarchy Server's terminal sessions. Written by the connector; changes here are replaced.
+set -g status off
+set -g history-limit 50000
+set -g default-terminal "screen-256color"
+set -s escape-time 0
+set -g mouse off
+set -g set-clipboard on
+set -g window-size latest
+set -g aggressive-resize on
+set -ga terminal-overrides ',xterm*:smcup@:rmcup@'
+"""
+TMUX_SOCKET = os.environ.get("OMARCHY_CONNECTOR_TMUX_SOCKET") or "omarchy"
+_tmux_ready = None
 
-    def __init__(self, name, cols, rows):
+
+def _tmux_base():
+    return ["tmux", "-L", TMUX_SOCKET, "-f", os.path.join(CONFIG_DIR, "tmux.conf")]
+
+
+def _tmux_run(args, timeout=10):
+    try:
+        return subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def tmux_available():
+    global _tmux_ready
+    if _tmux_ready is None:
+        if os.environ.get("OMARCHY_CONNECTOR_NO_TMUX") or not shutil.which("tmux"):
+            _tmux_ready = False
+        else:
+            try:
+                os.makedirs(CONFIG_DIR, exist_ok=True)
+                with open(os.path.join(CONFIG_DIR, "tmux.conf"), "w", encoding="utf-8") as f:
+                    f.write(TMUX_CONF)
+            except OSError:
+                pass
+            _tmux_ready = True
+    return _tmux_ready
+
+
+def tmux_has(name):
+    return tmux_available() and _tmux_run(_tmux_base() + ["has-session", "-t", f"={name}"])
+
+
+def tmux_attach_argv(name, cols, rows):
+    """The argv that attaches to tmux session `name`, starting it (outside the connector's service) if needed; None without tmux."""
+    if not SESSION_NAME.match(name or "") or not tmux_available():
+        return None
+    if not tmux_has(name):
+        create = _tmux_base() + ["new-session", "-d", "-s", name, "-x", str(cols), "-y", str(rows)]
+        # Its own scope, so restarting or updating the connector doesn't stop it.
+        scoped = shutil.which("systemd-run") and _tmux_run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "--"] + create, 20)
+        if not scoped and not tmux_has(name) and not _tmux_run(create):
+            return None
+    return _tmux_base() + ["attach-session", "-t", f"={name}"]
+
+
+def tmux_kill(name):
+    if SESSION_NAME.match(name or "") and tmux_available():
+        _tmux_run(_tmux_base() + ["kill-session", "-t", f"={name}"])
+
+
+class ShellSession:
+    """A persistent PTY session that survives browser disconnect and replays scrollback on reattach.
+    With tmux installed the shell itself runs in a tmux session, so it also survives the connector
+    restarting or updating; this PTY is then just attached to it."""
+
+    def __init__(self, name, cols, rows, argv=None):
         self.name = name
+        self.tmux = bool(argv)
         self.alive = True
         self.cols = min(500, max(10, int(cols or 80)))
         self.rows = min(300, max(4, int(rows or 24)))
@@ -1297,6 +1366,8 @@ class ShellSession:
                 signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
                 os.chdir(me.pw_dir)
                 env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", HOME=me.pw_dir, SHELL=shell, USER=me.pw_name, LANG=os.environ.get("LANG") or "C.UTF-8")
+                if argv:
+                    os.execvpe(argv[0], argv, env)
                 os.execvpe(shell, [shell, "-l"], env)
             except BaseException:  # noqa: BLE001
                 pass
@@ -1350,7 +1421,7 @@ class ShellSession:
                     self._pending += data
                     self._write_cv.notify()
         if overflow:
-            self.kill("The terminal stopped reading")
+            self.kill("The terminal stopped reading", end_shell=False)
             return False
         return True
 
@@ -1435,8 +1506,11 @@ class ShellSession:
         except OSError:
             pass
 
-    def kill(self, reason="Shell ended"):
+    def kill(self, reason="Shell ended", end_shell=True):
         self._finish(reason)
+        # Ending it on purpose ends the tmux session too; letting go (overflow) leaves it running.
+        if self.tmux and end_shell:
+            tmux_kill(self.name)
         try:
             os.kill(self.pid, signal.SIGHUP)
         except OSError:
@@ -1489,14 +1563,19 @@ def open_shell_session(conn, ch, cols, rows, name="main", fresh=False):
         if existing is None:
             if len(_shell_sessions) >= MAX_SHELL_SESSIONS:
                 raise RuntimeError(f"At most {MAX_SHELL_SESSIONS} terminal sessions can run at once")
-            session = ShellSession(sname, cols, rows)
+            if old is not None or fresh:
+                tmux_kill(sname)
+            # A tmux session still running from before the connector restarted is picked up again.
+            kept = tmux_has(sname)
+            argv = tmux_attach_argv(sname, cols, rows)
+            session = ShellSession(sname, cols, rows, argv)
             _shell_sessions[sname] = session
-            resumed = False
+            resumed = bool(argv) and kept
         else:
             session = existing
             resumed = True
     if old is not None:
-        old.kill("Started a new session")
+        old.kill("Started a new session", end_shell=False)
     channel = ShellChannel(conn, ch, session)
     session.attach(channel, cols, rows, resumed)
     return channel
