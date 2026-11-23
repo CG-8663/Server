@@ -4,6 +4,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {logout, mutate, query, type Wallpaper} from '../api'
 import {resetAssistantTurn} from '../assistantTurn'
 import {resetDeskConfig} from '../desktop/config'
+import {queryClearsOnSignOut} from '../signOutQueries'
 import {useBootstrap, useUser} from '../data'
 import {Icon} from '../icons'
 import {applyPrefsUpdate, prefsAfterPhotoUpload, prefsChoosingYourPhoto} from '../photoPrefs'
@@ -151,14 +152,22 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 			toast((e as Error).message, true)
 		}
 	}
-	const signOut = async () => {
-		const ok = await confirm({title: 'Sign out?', body: 'This phone is signed out and removed from your server’s devices.', confirm: 'Sign out', icon: 'signout'})
-		if (!ok) return
-		await logout().catch(() => {})
-		qc.clear()
+	const finishSignOut = async () => {
+		try {
+			await logout()
+		} catch (e) {
+			toast((e as Error).message, true)
+			return
+		}
+		qc.removeQueries({predicate: (q) => queryClearsOnSignOut(q.queryKey)})
 		resetDeskConfig()
 		resetAssistantTurn()
 		onSignedOut()
+	}
+	const signOut = async () => {
+		const ok = await confirm({title: 'Sign out?', body: 'This phone is signed out and removed from your server’s devices.', confirm: 'Sign out', icon: 'signout'})
+		if (!ok) return
+		await finishSignOut()
 	}
 
 	return (
@@ -191,8 +200,9 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 					{owner && (
 						<FactoryReset
 							onDone={async () => {
+								// The reset already ended the session. Logout may answer 401; still leave the signed-in page.
 								await logout().catch(() => {})
-								qc.clear()
+								qc.removeQueries({predicate: (q) => queryClearsOnSignOut(q.queryKey)})
 								resetDeskConfig()
 								resetAssistantTurn()
 								onSignedOut()

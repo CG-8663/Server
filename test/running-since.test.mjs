@@ -15,8 +15,13 @@ test('formatRunningSince: hours, the wall-clock start, and the git revision', ()
 })
 
 test('formatRunningSince: minutes, a single hour, and a single day', () => {
+	assert.equal(formatRunningSince(since, {now: since + 60_000, ...opts}), 'Running 1 minute (since 16 Nov 2026, 20:18).')
 	assert.equal(formatRunningSince(since, {now: since + 12 * 60_000, ...opts}), 'Running 12 minutes (since 16 Nov 2026, 20:18).')
+	assert.equal(formatRunningSince(since, {now: since + 3569_000, ...opts}), 'Running 59 minutes (since 16 Nov 2026, 20:18).')
+	assert.equal(formatRunningSince(since, {now: since + 3570_000, ...opts}), 'Running 1 hour (since 16 Nov 2026, 20:18).')
+	assert.equal(formatRunningSince(since, {now: since + 3599_000, ...opts}), 'Running 1 hour (since 16 Nov 2026, 20:18).')
 	assert.equal(formatRunningSince(since, {now: since + 3600_000, ...opts}), 'Running 1 hour (since 16 Nov 2026, 20:18).')
+	assert.equal(formatRunningSince(since, {now: since + 86399_000, ...opts}), 'Running 1 day (since 16 Nov 2026, 20:18).')
 	assert.equal(formatRunningSince(since, {now: since + 86400_000, ...opts}), 'Running 1 day (since 16 Nov 2026, 20:18).')
 })
 
