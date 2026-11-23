@@ -155,8 +155,17 @@ test('#260: start and restart exit 1 when services fail or are inactive', async 
 	for (const cmd of ['start', 'restart']) {
 		const r = runCli(okBox, [cmd])
 		assert.equal(r.status, 0, `${cmd} should exit 0 when services are active`)
-		assert.match(r.stdout, /Running at http:\/\//)
+		assert.match(r.stdout, /^Running$/m)
+		assert.doesNotMatch(r.stdout, /http:\/\/:/)
 	}
+
+	const addressed = await makeSandbox('start-address', {
+		systemctl: 'echo "systemctl $*" >>"$FAKE_LOG"\nexit 0',
+		ip: 'echo "1.1.1.1 via 192.0.2.1 dev eth0 src 192.0.2.10"',
+	})
+	const up = runCli(addressed, ['start'])
+	assert.equal(up.status, 0, up.stdout + up.stderr)
+	assert.match(up.stdout, /Running at http:\/\/192\.0\.2\.10:7780/)
 })
 
 test('#619: stop exits 1 unless systemctl succeeds and both services are inactive', async () => {

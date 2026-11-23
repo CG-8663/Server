@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {mkdir, mkdtemp, realpath, rm, writeFile} from 'node:fs/promises'
 import net from 'node:net'
@@ -21,7 +22,7 @@ async function pickPort(start = 30000 + Math.floor(Math.random() * 2000)) {
 	throw new Error('no free port found')
 }
 
-const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'}).toString()
+const git = (cwd, ...args) => execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', ...args]), {cwd, stdio: 'pipe'}).toString()
 
 async function initStore(root, name, entries) {
 	const origin = join(root, `${name}.git`)

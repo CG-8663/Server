@@ -1,6 +1,7 @@
 // Folders an app lets you place yourself (its listing's `folders:`), and the proof header its
 // sign-in gateway adds (x-omarchy-gateway) for apps that leave sign-in to Omarchy Server.
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
@@ -26,7 +27,7 @@ test('folder declarations: only sensible ids and names; FOLDER_ variables count 
 
 describe('placing an app’s folders', () => {
 	let root, home, data, d, auth, appPort, calls, upstream, store
-	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
+	const git = (args, cwd) => execFileSync('git', gitArgv(args), {cwd, stdio: 'pipe'}).toString()
 	const run = async (cmd, args, opts = {}) => {
 		if (cmd === 'git') return git(args, opts.cwd)
 		if (cmd === 'docker-compose') {

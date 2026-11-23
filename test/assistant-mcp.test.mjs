@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises'
@@ -80,7 +81,7 @@ test('install keeps mcp on the app, publishes it on loopback, and mcpTargets ski
 	const opened = []
 	const prevDocker = process.env.DOCKER_HOST
 	process.env.DOCKER_HOST = `unix://${sock}`
-	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'})
+	const git = (args, cwd) => execFileSync('git', gitArgv(args), {cwd, stdio: 'pipe'})
 	const run = async (cmd, args) => {
 		if (cmd === 'git') return git(args, undefined).toString()
 		if (cmd === 'docker-compose') {
@@ -181,7 +182,7 @@ test('a system app does not take an installed app’s mcp loopback port', async 
 	const up = new Set()
 	const prevDocker = process.env.DOCKER_HOST
 	process.env.DOCKER_HOST = `unix://${sock}`
-	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'})
+	const git = (args, cwd) => execFileSync('git', gitArgv(args), {cwd, stdio: 'pipe'})
 	const run = async (cmd, args) => {
 		if (cmd === 'git') return execFileSync('git', args, {stdio: 'pipe'}).toString()
 		if (cmd === 'docker-compose') {

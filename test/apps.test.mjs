@@ -1,6 +1,7 @@
 // omarchyd apps: a real git store (file://), compose preparation, install/uninstall through a
 // simulated docker-compose, and the sign-in gateway in front of the app (HTTP and WebSocket).
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
@@ -38,7 +39,7 @@ describe('omarchyd apps', () => {
 	const calls = []
 	const up = new Set()
 	const networks = new Set()
-	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
+	const git = (args, cwd) => execFileSync('git', gitArgv(args), {cwd, stdio: 'pipe'}).toString()
 	const run = async (cmd, args, opts = {}) => {
 		if (cmd === 'git') return git(args, opts.cwd)
 		if (cmd === 'docker-compose') {
@@ -702,7 +703,7 @@ describe('omarchyd apps', () => {
 })
 
 test('retry after a failed dependency ignores error-state ports and keeps both records', async () => {
-	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
+	const git = (args, cwd) => execFileSync('git', gitArgv(args), {cwd, stdio: 'pipe'}).toString()
 	const root = await mkdtemp(join(os.tmpdir(), 'retry-dep-'))
 	const prev = process.env.DOCKER_HOST
 	const sock = join(root, 'podman.sock')

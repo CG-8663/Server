@@ -28,6 +28,8 @@ import {
 	type Task,
 } from './api'
 import {backupListView} from './backupList'
+import {formatServerDiskGb} from './formatServerDisk'
+import {cpuStatusText, pointsInLastHour} from './statsWindow'
 
 export type PanelId = 'summary' | 'console' | 'hardware' | 'cloudinit' | 'options' | 'network' | 'usb' | 'snapshots' | 'backups' | 'history' | 'monitor'
 export const PANELS: {id: PanelId; label: string; icon: IconName}[] = [
@@ -107,7 +109,8 @@ const stopped = (d: MachineDetails) => d.state === 'stopped' || d.state === 'hib
 
 // ---- summary ----------------------------------------------------------------------------------
 // A small line chart of the last hour, like Proxmox's RRD graphs.
-export function Chart({title, points, series, max, format}: {title: string; points: StatPoint[]; series: {key: keyof StatPoint; label: string; color: string}[]; max?: number; format: (n: number) => string}) {
+export function Chart({title, points: rawPoints, series, max, format}: {title: string; points: StatPoint[]; series: {key: keyof StatPoint; label: string; color: string}[]; max?: number; format: (n: number) => string}) {
+	const points = pointsInLastHour(rawPoints)
 	const W = 320
 	const H = 90
 	const top = Math.max(max ?? 0, ...points.flatMap((p) => series.map((s) => Number(p[s.key]) || 0)), 1)
@@ -173,7 +176,7 @@ export function SummaryPanel({d}: {d: MachineDetails}) {
 						<dt>ID</dt>
 						<dd>{d.vmid}</dd>
 						<dt>CPU usage</dt>
-						<dd>{last ? `${last.cpu}% of ${d.hardware.sockets * d.hardware.cores} CPU${d.hardware.sockets * d.hardware.cores > 1 ? 's' : ''}` : '–'}</dd>
+						<dd>{cpuStatusText(d.state === 'running', last, d.hardware.sockets * d.hardware.cores)}</dd>
 						<dt>Memory</dt>
 						<dd>{last ? `${mib(last.memMb)} of ${mib(d.hardware.memoryMb)}` : mib(d.hardware.memoryMb)}</dd>
 						<dt>Boot disk</dt>
@@ -462,7 +465,7 @@ function AddDisk({d, onDone}: {d: MachineDetails; onDone: () => void}) {
 	return (
 		<div className="mx-edit standalone">
 			<div className="mx-grid2">
-				<Field label="Size (GB)" hint={node.data?.storage ? `${node.data.storage.freeGb} GB free on the server` : undefined}>
+				<Field label="Size (GB)" hint={node.data?.storage ? `${formatServerDiskGb(node.data.storage.freeGb)} free on the server` : undefined}>
 					<input className="field" inputMode="numeric" value={size} onChange={(e) => setSize(e.target.value.replace(/\D/g, '').slice(0, 4))} />
 				</Field>
 				<Field label="Bus">

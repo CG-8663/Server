@@ -1,12 +1,13 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {mkdtemp, mkdir, writeFile, rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {createApps} from '../omarchyd/apps.mjs'
 
-const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'}).toString()
+const git = (cwd, ...args) => execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', ...args]), {cwd, stdio: 'pipe'}).toString()
 async function addApp(work, id) {
 	await mkdir(join(work, id), {recursive: true})
 	await writeFile(join(work, id, 'omarchy-app.yml'), `manifestVersion: 1\nid: ${id}\nname: ${id}\ntagline: t\ncategory: files\nport: 9${id.length}00\nweb:\n  service: web\n  port: 80\n`)

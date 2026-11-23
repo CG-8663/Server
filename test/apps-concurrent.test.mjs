@@ -1,5 +1,6 @@
 // Concurrent app installs, updates, and store additions must serialize safely without leaving duplicate or broken state.
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFile, execFileSync} from 'node:child_process'
 import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import net from 'node:net'
@@ -12,7 +13,7 @@ import {RpcError} from '../omarchyd/rpc.mjs'
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 const gitSync = (cwd, ...args) =>
-	execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {cwd, stdio: 'pipe'}).toString()
+	execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', ...args]), {cwd, stdio: 'pipe'}).toString()
 
 function gitAsync(args, cwd, delayMs = 0) {
 	return new Promise((resolve, reject) => {

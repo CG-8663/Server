@@ -1,5 +1,6 @@
 // Compose numbers, nested defaults, symlinked home, update ports, a failed update, and Tailscale uninstall.
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {EventEmitter} from 'node:events'
 import {mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile} from 'node:fs/promises'
@@ -63,7 +64,7 @@ test('expandVars expands a nested default and keeps the plain forms', () => {
 })
 
 function git(args, cwd) {
-	return execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
+	return execFileSync('git', gitArgv(args), {cwd, stdio: 'pipe'}).toString()
 }
 
 function engineRun({pullFail, calls, up, root}) {

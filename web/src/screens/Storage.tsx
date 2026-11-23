@@ -12,6 +12,7 @@ import {mutate, query} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {Icon} from '../icons'
 import {poolCheckText, storageDrivesView, storageStatusMessage} from '../storageList'
+import {ZFS_INSTALL_COMMAND, poolCreatedToast, poolImportedToast} from './storageCopy'
 import {canFormat, canMount, canUnmount, formatConfirmToken, formatPhraseMatches, type FormatKind} from '../storageTools'
 import {MachineShell} from '../fleet/MachineTabs'
 import {Card, Field, KV, Segmented, Sheet, SheetHeader, bytes, haptic, useConfirm, useToast} from '../ui'
@@ -347,12 +348,12 @@ export function StoragePage({onBack, target = 'host'}: {onBack: () => void; targ
 			<DriveSheet d={drive} onClose={() => setDrive(null)} onChanged={refresh} rpc={rpc} args={args} />
 			{ready && !status.data?.zfsAvailable && !swarm && (
 				<p className="footer-note storage-note" style={{marginTop: -8}}>
-					ZFS isn’t installed. To add it, run the installer with <code>--zfs</code> on the server.
+					ZFS isn’t installed. To add it, run <code>{ZFS_INSTALL_COMMAND}</code> on the server.
 				</p>
 			)}
-			{creating && <NewPool drives={blank} zfs={!!status.data?.zfsAvailable} taken={pools.map((p) => p.name)} onClose={() => setCreating(false)} onDone={refresh} rpc={rpc} args={args} />}
+			{creating && <NewPool drives={blank} zfs={!!status.data?.zfsAvailable} taken={pools.map((p) => p.name)} swarm={swarm} onClose={() => setCreating(false)} onDone={refresh} rpc={rpc} args={args} />}
 			{adding && <AddDrive pool={adding} drives={blank} onClose={() => setAdding(null)} onDone={refresh} rpc={rpc} args={args} />}
-			{importing && <ImportPool fs={importing} taken={pools.map((p) => p.name)} onClose={() => setImporting(null)} onDone={refresh} rpc={rpc} args={args} />}
+			{importing && <ImportPool fs={importing} taken={pools.map((p) => p.name)} swarm={swarm} onClose={() => setImporting(null)} onDone={refresh} rpc={rpc} args={args} />}
 		</div>
 	)
 }
@@ -550,7 +551,7 @@ function FormatDialog({d, busy, onClose, onConfirm}: {d: Drive; busy: boolean; o
 	)
 }
 
-function NewPool({drives, zfs, taken, onClose, onDone, rpc, args}: {drives: Drive[]; zfs: boolean; taken: string[]; onClose: () => void; onDone: () => void} & StorageCall) {
+function NewPool({drives, zfs, taken, swarm, onClose, onDone, rpc, args}: {drives: Drive[]; zfs: boolean; taken: string[]; swarm: boolean; onClose: () => void; onDone: () => void} & StorageCall) {
 	const toast = useToast()
 	const confirm = useConfirm()
 	const [name, setName] = useState(taken.includes('storage') ? '' : 'storage')
@@ -584,7 +585,7 @@ function NewPool({drives, zfs, taken, onClose, onDone, rpc, args}: {drives: Driv
 		setBusy(true)
 		try {
 			await mutate(rpc('createPool'), args({name, fs: fsKind, profile: effective, devices: sel.map((d) => d.path)}))
-			toast(`Pool ${name} is ready in Files → Home → Pools`)
+			toast(poolCreatedToast(name, swarm))
 			onDone()
 			onClose()
 		} catch (e) {
@@ -681,7 +682,7 @@ function AddDrive({pool, drives, onClose, onDone, rpc, args}: {pool: Pool; drive
 	)
 }
 
-function ImportPool({fs, taken, onClose, onDone, rpc, args}: {fs: Importable; taken: string[]; onClose: () => void; onDone: () => void} & StorageCall) {
+function ImportPool({fs, taken, swarm, onClose, onDone, rpc, args}: {fs: Importable; taken: string[]; swarm: boolean; onClose: () => void; onDone: () => void} & StorageCall) {
 	const toast = useToast()
 	const suggestion = (fs.label ?? 'imported').toLowerCase().replace(/^omarchy-/, '').replace(/[^a-z0-9-]/g, '-').replace(/^[^a-z]+/, '').slice(0, 32) || 'imported'
 	const [name, setName] = useState(taken.includes(suggestion) ? '' : suggestion)
@@ -691,7 +692,7 @@ function ImportPool({fs, taken, onClose, onDone, rpc, args}: {fs: Importable; ta
 		setBusy(true)
 		try {
 			await mutate(rpc('importPool'), args({name, uuid: fs.uuid}))
-			toast(`Imported. It’s in Files → Home → Pools → ${name}`)
+			toast(poolImportedToast(name, swarm))
 			onDone()
 			onClose()
 		} catch (e) {

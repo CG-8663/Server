@@ -1,6 +1,7 @@
 // Isolation env: OMARCHY_SERVER_SOURCE and OMARCHY_SERVER_APP_STORE. Unset means GitHub.
 // A set value that is not an absolute git directory is an error, not a silent fallback.
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFileSync} from 'node:child_process'
 import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
@@ -32,7 +33,7 @@ let root
 before(async () => (root = await mkdtemp(join(os.tmpdir(), 'omarchyd-local-'))))
 after(() => rm(root, {recursive: true, force: true}))
 
-const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
+const git = (args, cwd) => execFileSync('git', gitArgv(args), {cwd, stdio: 'pipe'}).toString()
 
 async function initGit(dir) {
 	await mkdir(dir, {recursive: true})

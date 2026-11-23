@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {gitArgv} from './git-nosign.mjs'
 import {execFile} from 'node:child_process'
 import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import os from 'node:os'
@@ -7,7 +8,7 @@ import {test} from 'node:test'
 import {promisify} from 'node:util'
 
 const run = promisify(execFile)
-const git = (cwd, ...args) => run('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args])
+const git = (cwd, ...args) => run('git', gitArgv(['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args]))
 
 // The installer's GitHub in-place update (not the local-clone HEAD path).
 async function updateLines() {
