@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useRef, useState, type ReactNode} from 'react'
 
-import {launcherRowMatches, scrollSelectedRow, shouldYieldLauncherKey, stepLauncherSelection} from './launcherScroll'
+import {launcherRowMatches, scrollSelectedRow, shouldLauncherCaptureEnter, shouldYieldLauncherKey, stepLauncherSelection} from './launcherScroll'
 
 export type LaunchItem = {key: string; label: string; icon: (size: number) => ReactNode}
 
@@ -35,7 +35,7 @@ export function Launcher({onClose, onOpen, items}: {onClose: () => void; onOpen:
 				e.preventDefault()
 				setSel((s) => stepLauncherSelection(s, 'ArrowUp', rows.length))
 			}
-			if (e.key === 'Enter' && rows[sel]) {
+			if (e.key === 'Enter' && rows[sel] && shouldLauncherCaptureEnter(input.current, document.activeElement, e.target)) {
 				e.preventDefault()
 				pick(rows[sel].key)
 			}
@@ -50,7 +50,7 @@ export function Launcher({onClose, onOpen, items}: {onClose: () => void; onOpen:
 				<ul ref={list}>
 					{rows.map((r, i) => (
 						<li key={r.key}>
-							<button className={i === sel ? 'on' : ''} onClick={() => pick(r.key)} onMouseEnter={() => setSel(i)}>
+							<button className={i === sel ? 'on' : ''} onClick={() => pick(r.key)} onMouseEnter={() => setSel(i)} onFocus={() => setSel(i)}>
 								<span className="hypr-launch-ico">{r.icon(22)}</span>
 								{r.label}
 							</button>

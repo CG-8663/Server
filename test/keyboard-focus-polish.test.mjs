@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {describe, test} from 'node:test'
 
-import {shouldYieldLauncherKey} from '../web/src/desktop/hyprland/launcherScroll.ts'
+import {shouldLauncherCaptureEnter, shouldYieldLauncherKey} from '../web/src/desktop/hyprland/launcherScroll.ts'
 
 const LAUNCHER = readFileSync(new URL('../web/src/desktop/hyprland/Launcher.tsx', import.meta.url), 'utf8')
 const CSS = readFileSync(new URL('../web/src/styles.css', import.meta.url), 'utf8')
@@ -31,6 +31,15 @@ describe('launcher keyboard ownership when a context menu is open', () => {
 		const guardIdx = fn.indexOf('shouldYieldLauncherKey(document, e.target)')
 		const escIdx = fn.indexOf("e.key === 'Escape'")
 		assert.ok(guardIdx > 0 && escIdx > guardIdx, 'shouldYieldLauncherKey must run before Escape/Arrow/Enter')
+	})
+
+	test('Launcher captures Enter only on the Filter input so focused row buttons activate themselves', () => {
+		const filterInput = {tagName: 'INPUT'}
+		const rowBtn = {tagName: 'BUTTON'}
+		assert.equal(shouldLauncherCaptureEnter(filterInput, filterInput, filterInput), true)
+		assert.equal(shouldLauncherCaptureEnter(filterInput, rowBtn, rowBtn), false)
+		assert.match(LAUNCHER, /shouldLauncherCaptureEnter\(input\.current, document\.activeElement, e\.target\)/)
+		assert.match(LAUNCHER, /onFocus=\{\(\) => setSel\(i\)\}/)
 	})
 })
 

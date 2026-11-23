@@ -32,3 +32,9 @@ export function shouldYieldLauncherKey(
 	if (doc?.activeElement?.closest?.('.ctx-menu')) return true
 	return Boolean(doc?.querySelector?.('.ctx-menu'))
 }
+
+// Handle capture-phase Enter only when the Filter input owns focus; focused list buttons activate natively.
+export function shouldLauncherCaptureEnter(input: unknown, activeElement: unknown, target: EventTarget | null | undefined): boolean {
+	if (!input) return false
+	return target === input || activeElement === input
+}
