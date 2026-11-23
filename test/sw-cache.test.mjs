@@ -90,7 +90,7 @@ test('activate deletes unreferenced /assets/ and keeps referenced assets and pre
 	}
 	sandbox.caches = {
 		async keys() {
-			return ['omarchy-server-v2', 'omarchy-server-v1']
+			return ['omarchy-server-v3', 'omarchy-server-v2']
 		},
 		async delete(name) {
 			deletedNames.push(name)
@@ -106,7 +106,7 @@ test('activate deletes unreferenced /assets/ and keeps referenced assets and pre
 	let done
 	listeners.activate({waitUntil(p) { done = p }})
 	await done
-	assert.deepEqual(deletedNames, ['omarchy-server-v1'])
+	assert.deepEqual(deletedNames, ['omarchy-server-v2'])
 	assert.equal(stored.has('http://localhost/assets/drop.js'), false)
 	assert.equal(stored.has('http://localhost/assets/keep.js'), true)
 	assert.equal(stored.has('http://localhost/'), true)

@@ -4,6 +4,18 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.64',
+		date: '2026-11-22',
+		title: 'Terminals that stay put, and the new icon',
+		added: [
+			'Your terminal keeps running through restarts and updates, on this server and on every connected computer and virtual machine. Leave, switch devices, come back: it’s the same shell. New session still starts a clean one. This uses tmux, which is installed for you (with no tmux, the terminal works as before).',
+			'The new MODC logo is the app icon and favicon.',
+		],
+		fixed: [
+			'On iPhone, the app added to the Home Screen fills the screen again, with no band under the dock. Remove it from the Home Screen and add it again once for this to take effect.',
+		],
+	},
+	{
 		version: '0.9.63',
 		date: '2026-11-22',
 		title: 'Sign-out, the terminal, and the phone',

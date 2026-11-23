@@ -2,6 +2,8 @@ import hashlib
 import os
 import tempfile
 import threading
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -125,6 +127,9 @@ class TelemetryPowerAndSessionsTests(unittest.TestCase):
         conn.ws = FakeWS()
         sent = []
         conn.send = sent.append
+        saved = agent._tmux_ready
+        agent._tmux_ready = False  # the in-process path; tmux is covered below
+        self.addCleanup(setattr, agent, "_tmux_ready", saved)
         try:
             ch1 = agent.open_shell_session(conn, 1, 80, 24, name="test-resume", fresh=True)
             self.assertTrue(any(m.get("op") == "attached" and m.get("resumed") is False for m in sent))
@@ -144,6 +149,60 @@ class TelemetryPowerAndSessionsTests(unittest.TestCase):
             ch2.close()
         finally:
             agent.kill_shell_session("test-resume")
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux isn't installed")
+    def test_shell_outlives_the_connector_with_tmux(self):
+        import tempfile
+        import time
+
+        class FakeWS:
+            def __init__(self):
+                self.bin = bytearray()
+
+            def send_binary(self, payload):
+                self.bin += payload[4:]
+
+        def wait_for(needle):
+            deadline = time.time() + 8
+            while time.time() < deadline and needle not in conn.ws.bin:
+                time.sleep(0.05)
+            self.assertIn(needle, conn.ws.bin)
+
+        tmp = tempfile.mkdtemp()
+        socket_name = f"omarchy-test-{os.getpid()}"
+        patches = [mock.patch.object(agent, "TMUX_SOCKET", socket_name), mock.patch.object(agent, "CONFIG_DIR", tmp), mock.patch.object(agent, "_tmux_ready", None)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.addCleanup(lambda: subprocess.run(["tmux", "-L", socket_name, "kill-server"], stderr=subprocess.DEVNULL))
+        conn = agent.Connection.__new__(agent.Connection)
+        conn.allowed = {"terminal": True}
+        conn.ws = FakeWS()
+        sent = []
+        conn.send = sent.append
+        ch = agent.open_shell_session(conn, 1, 80, 24, name="tmux-keep", fresh=True)
+        self.assertTrue(agent._shell_sessions["tmux-keep"].tmux)
+        time.sleep(0.5)
+        ch.write(b"export KEPT=still-$((20+3)); echo set-$KEPT\r")
+        wait_for(b"set-still-23")
+        with open(os.path.join(tmp, "tmux.conf"), encoding="utf-8") as f:
+            self.assertIn("status off", f.read())
+        # The connector restarts: its own sessions go (the attached client ends), tmux's stays.
+        old = agent._shell_sessions.pop("tmux-keep")
+        old.kill("restart", end_shell=False)
+        time.sleep(0.5)
+        self.assertTrue(agent.tmux_has("tmux-keep"))
+        conn.ws = FakeWS()
+        sent.clear()
+        ch = agent.open_shell_session(conn, 2, 80, 24, name="tmux-keep")
+        self.assertTrue(any(m.get("op") == "attached" and m.get("resumed") is True for m in sent))
+        time.sleep(0.5)
+        ch.write(b"echo got-$KEPT\r")
+        wait_for(b"got-still-23")
+        # Ending it on purpose ends the tmux session too.
+        agent.kill_shell_session("tmux-keep")
+        time.sleep(0.3)
+        self.assertFalse(agent.tmux_has("tmux-keep"))
 
     def test_power_actions_registered(self):
         self.assertIn("shutdown", agent.ACTIONS)

@@ -111,9 +111,10 @@ arch=$(uname -m)
 
 # 1. Packages. Machines: QEMU + libvirt (per-user session), passt for their networking, xorriso
 #    (libisoburn) for cloud-init seeds. Apps: rootless Podman driven by docker-compose. NAS: Btrfs,
-#    drive health (smartmontools), drive sleep (hdparm) and network shares (samba).
+#    drive health (smartmontools), drive sleep (hdparm), network shares (samba), and tmux so the
+#    terminal outlives restarts and updates.
 need=()
-for pkg in nodejs npm git openssl wayvnc bubblewrap qemu-base libvirt passt libisoburn edk2-ovmf podman docker-compose btrfs-progs smartmontools hdparm samba rsync openssh; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
+for pkg in nodejs npm git openssl wayvnc bubblewrap qemu-base libvirt passt libisoburn edk2-ovmf podman docker-compose btrfs-progs smartmontools hdparm samba rsync openssh tmux; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
 # Arch doesn't support installing packages from a newer package list without updating the rest
 # ("partial upgrade"): a new package can need newer libraries than the ones installed. That's how
 # Samba ended up half-updated (samba 4.25 with its libraries, smbclient and libwbclient, at 4.24).
