@@ -6602,7 +6602,7 @@ html:not(.desk-mode) .upload-panel {
 .fv-paper .doc-title { font-size: 2.3em; font-weight: 600; margin: 0 0 0.4em; border-bottom: 1px solid #ddd; padding-bottom: 0.2em; }
 .fv-paper .doc-subtitle { color: #555; font-size: 1.2em; }
 
-/* ---- Omarchy theme: Tokyo Night, JetBrains Mono, square tiles, flat panels, a thin focus border ---- */
+/* ---- Omarchy theme: fallback colours until the desktop palette is known. Shape is separate. ---- */
 [data-theme='omarchy'] {
 	--bg: #1a1b26;
 	--bg-solid: #16161e;
@@ -6625,38 +6625,13 @@ html:not(.desk-mode) .upload-panel {
 	--teal: #7dcfff;
 	--peach: #ff9e64;
 	--pink: #bb9af7;
-	--shadow: none;
-	--icon-shadow: none;
-	--text-shadow: none;
 	--sans: var(--mono);
-	--r-lg: 0;
-	--r-md: 0;
 }
 [data-theme='omarchy'] body { font-size: 14px; font-feature-settings: normal; letter-spacing: -0.01em; }
-/* Hyprland-style: no rounding, no blur, solid panels. */
-[data-theme='omarchy'] *,
-[data-theme='omarchy'] *::before,
-[data-theme='omarchy'] *::after {
-	border-radius: 0 !important;
-	backdrop-filter: none !important;
-	-webkit-backdrop-filter: none !important;
-}
-/* Things that are dots by nature stay round. */
-[data-theme='omarchy'] :is(.dot, .state-dot, .pill i, .spinner, .avatar, .badge, .tap-ripple, .theme-card .dots i, .theme-card .tick,
-	.pz-accent i, .pz-check, .pick-check, .tile-check, .toast .ico, .accent-btn) {
-	border-radius: 50% !important;
-}
 [data-theme='omarchy'] .glass,
 [data-theme='omarchy'] .sheet,
 [data-theme='omarchy'] .win {
-	box-shadow: none !important;
 	border-color: var(--line-2);
-}
-/* The focused window and open sheets get the active border, like Hyprland. */
-[data-theme='omarchy'] .win.active,
-[data-theme='omarchy'] .sheet {
-	outline: 2px solid var(--blue);
-	outline-offset: -2px;
 }
 [data-theme='omarchy'] .backdrop .aurora { opacity: 0.12; filter: blur(60px); }
 [data-theme='omarchy'] .btn.primary { color: var(--on-accent); }
@@ -8235,6 +8210,32 @@ html.page-locked .auth {
 	flex-wrap: wrap;
 	gap: 8px;
 	margin-top: 10px;
+}
+/* Shape: Square. Corners, blur, and the flat panel belong here, not to a colour theme. */
+html[data-shape='square'] {
+	--r-lg: 0;
+	--r-md: 0;
+	--shadow: none;
+	--icon-shadow: none;
+	--text-shadow: none;
+}
+html[data-shape='square'] *,
+html[data-shape='square'] *::before,
+html[data-shape='square'] *::after {
+	border-radius: 0 !important;
+	backdrop-filter: none !important;
+	-webkit-backdrop-filter: none !important;
+}
+html[data-shape='square'] :is(.dot, .state-dot, .pill i, .spinner, .avatar, .badge, .tap-ripple, .theme-card .dots i, .theme-card .tick,
+	.pz-accent i, .pz-check, .pick-check, .tile-check, .toast .ico, .accent-btn) {
+	border-radius: 50% !important;
+}
+html[data-shape='square'] :is(.glass, .sheet, .win) {
+	box-shadow: none !important;
+}
+html[data-shape='square'] :is(.win.active, .sheet) {
+	outline: 2px solid var(--accent-text);
+	outline-offset: -2px;
 }
 .shell-hypr .desk-dock {
 	display: none;

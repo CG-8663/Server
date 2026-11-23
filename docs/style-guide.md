@@ -12,7 +12,7 @@ The phone layout is a stack of pages and sheets. The person moves forward into a
 
 The desktop layout shows those same screens in windows. The desktop has a Home window. The Machines window is the Machines screen, with the list and the open machine side by side when the window is wide enough. Phone and desktop are not on screen together. The person chooses Automatic, Phone, or Desktop. Automatic uses the desktop on a large screen with a pointer.
 
-Ubuntu is the windowed shell: floating windows, a dock, and icons on the desktop. Hyprland is the tiled shell: windows tile, workspaces remain, and the dock and desktop icons are hidden. Choosing Ubuntu or Hyprland changes that shell. On the phone, choosing either opens the desktop so the shell is visible. Phone or desktop stays its own control.
+Theme changes colours. Layout is phone, desktop, or automatic. Shape is Round or Square. Round uses rounded corners, and on the desktop it floats windows over a dock with icons on the desktop. Square uses square corners on every screen, and on the desktop it tiles windows, keeps workspaces, and hides the dock and desktop icons. Choosing a shape does not change the layout.
 
 A window frame belongs to the shell. The screen inside the frame is the same component the phone uses.
 
@@ -113,7 +113,7 @@ Open them from the machine. This server's drives and its backup store are the ow
 
 ### Settings
 
-The product: appearance, account, sign-in, and the application's update. Appearance is one theme, one background, and one accent, then phone or desktop, then Ubuntu or Hyprland. Dock and desktop icons stay with the desktop shell. A machine's disks and backups are not settings.
+The product: appearance, account, sign-in, and the application's update. Appearance is one theme, one background, and one accent, then phone or desktop, then Round or Square. Dock and desktop icons stay with the desktop shell. A machine's disks and backups are not settings.
 
 ### System
 
@@ -147,7 +147,7 @@ A short task over a page: add a computer, install a connector, confirm a destruc
 
 ### Window
 
-A page in a desktop frame. Ubuntu floats and snaps. Hyprland tiles. Resizing the frame does not change which component is inside it.
+A page in a desktop frame. Round floats and snaps. Square tiles. Resizing the frame does not change which component is inside it.
 
 ### Pop-up
 

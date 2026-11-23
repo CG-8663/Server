@@ -313,6 +313,7 @@ export function patchDeskConfig(patch: Partial<DeskConfig>) {
 
 export function useDeskConfig() {
 	const [cfg, setCfg] = useState<DeskConfig>(() => (current ??= loadConfig()))
+	if (typeof document !== 'undefined') document.documentElement.dataset.shape = cfg.shell === 'hyprland' ? 'square' : 'round'
 	useEffect(() => {
 		listeners.add(setCfg)
 		syncDeskConfig()

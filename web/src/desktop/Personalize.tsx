@@ -1,5 +1,5 @@
-// Appearance for the app and for this device's desktop. Theme, picture, and accent are each
-// chosen once. Phone-or-desktop and Ubuntu-or-Hyprland sit in Layout.
+// Appearance for the app and for this device's desktop. Theme is colour. Layout is phone or
+// desktop. Shape is round or square corners, and on the desktop how the windows are arranged.
 import {useEffect, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {useUser} from '../data'
@@ -8,35 +8,20 @@ import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {applyPrefsUpdate, prefsAfterPhotoUpload} from '../photoPrefs'
 import {Appearance} from '../screens/More'
 import {Row, Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, setLayoutPref, useLayout, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
-import {SHOW_SHELL_KEY, takeAppearanceFocus} from './settingsPage'
-import {solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskShell, type DeskStyle, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
+import {takeAppearanceFocus} from './settingsPage'
+import {solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
 import {DesktopStyleCards, ScreenLayoutCards} from '../LayoutPicker'
 import {CAPTURE_KEY, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
 import {SnippetBlock} from './hyprland/Snippet'
 import {DESKTOP_KEY, useDesktop, useItems, type ItemInfo} from './Desktop'
 
 const FOCUS: Record<string, string> = {layout: 'appearance-layout', dock: 'appearance-dock', desktop: 'appearance-desktop', themes: 'appearance-themes', background: 'appearance-background'}
-// One render choice. The theme card sets the app colours and the desktop panels together.
-const STYLE_FOR: Record<string, DeskStyle> = {
-	horizon: 'glass',
-	custom: 'glass',
-	mocha: 'graphite',
-	tokyo: 'glass',
-	gruvbox: 'yaru',
-	latte: 'daylight',
-	omarchy: 'graphite',
-}
 
 export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThemes}: {tab?: string; prefs: Prefs; setPrefs: (p: Prefs) => void; embedded?: boolean; onOpenThemes?: () => void}) {
 	const user = useUser()
 	const root = useRef<HTMLDivElement>(null)
 	const omarchyTheme = useOmarchyThemes(!!onOpenThemes)
 	const [cfg, setCfg] = useDeskConfig()
-	useEffect(() => {
-		const style = STYLE_FOR[prefs.theme]
-		if (!style || cfg.style === style) return
-		setCfg((c) => ({...c, preset: null, style}))
-	}, [prefs.theme, cfg.style, setCfg])
 	useEffect(() => {
 		let focus = initial ?? ''
 		try {
@@ -57,7 +42,7 @@ export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThem
 				</h1>
 			)}
 			<div id="appearance-themes">
-				<Section title="Theme" note="How the app and the panels are drawn. Saved to your account, so it follows you to every phone you sign in on.">
+				<Section title="Theme" note="Colours only. Saved to your account, so it follows you to every phone you sign in on.">
 					<Appearance
 						prefs={prefs}
 						setPrefs={setPrefs}
@@ -137,27 +122,18 @@ function LayoutSettings({cfg, setCfg}: P) {
 	}
 	return (
 		<>
-			<Section title="Layout" note="Phone or desktop is this screen. Automatic uses the desktop on a big screen with a pointer. Ubuntu floats windows over a dock. Hyprland tiles them, with workspaces 1–9 and Omarchy Super shortcuts.">
+			<Section title="Layout" note="Phone, desktop, or automatic. Automatic uses the desktop on a big screen with a pointer.">
 				<ScreenLayoutCards value={layout.pref} detected={layout.detected} onPick={setLayoutPref} />
 			</Section>
-			<Section title="Ubuntu or Hyprland">
+			<Section title="Shape" note="Round and Square change the corners on every screen. On the desktop, Round floats windows over a dock. Square tiles them, with workspaces 1–9 and Omarchy Super shortcuts.">
 				<DesktopStyleCards<DeskShell>
 					value={cfg.shell ?? 'gnome'}
 					floating="gnome"
 					tiling="hyprland"
-					onPick={(v) => {
-						setCfg((c) => ({...c, shell: v}))
-						if (layout.desktop) return
-						try {
-							sessionStorage.setItem(SHOW_SHELL_KEY, 'appearance')
-						} catch {
-							/* private */
-						}
-						setLayoutPref('desktop')
-					}}
+					onPick={(v) => setCfg((c) => ({...c, shell: v}))}
 				/>
 			</Section>
-			{/* Key capture and the snippet only matter in the Hyprland layout (Ubuntu keeps Super for Activities). */}
+			{/* Key capture and the snippet only matter for Square (Round keeps Super for Activities). */}
 			{cfg.shell === 'hyprland' && (
 			<>
 			<Section title="Key capture" note="On an Omarchy computer, Super is taken by the desktop until you pass it through. HTTP can use host passthrough. Fullscreen system keys need https:// in Chrome, Edge or Brave.">
@@ -293,7 +269,7 @@ function DockSettings({cfg, setCfg}: P) {
 	const {info, appList, machineList, owner} = useItems()
 	const d = cfg.dock
 	const set = (patch: Partial<DeskConfig['dock']>) => setCfg((c) => ({...c, dock: {...c.dock, ...patch}}))
-	const hyprNote = cfg.shell === 'hyprland' ? 'The dock is hidden in the Hyprland layout. These settings apply when you switch back to Ubuntu.' : undefined
+	const hyprNote = cfg.shell === 'hyprland' ? 'The dock is hidden while Shape is Square. These settings apply when you switch back to Round.' : undefined
 	const move = (k: string, dir: -1 | 1) => {
 		const items = [...d.items]
 		const i = items.indexOf(k)
@@ -424,7 +400,7 @@ function DesktopSettings({cfg, setCfg}: P) {
 		...(owner ? [DESKTOP_KEY] : []),
 		...machineList.filter((m) => m.state === 'running').map((m) => `machine:${m.id}`),
 	].filter((k) => !onDesk.has(k))
-	const hyprNote = cfg.shell === 'hyprland' ? 'Desktop icons are hidden in the Hyprland layout. These settings apply when you switch back to Ubuntu.' : undefined
+	const hyprNote = cfg.shell === 'hyprland' ? 'Desktop icons are hidden while Shape is Square. These settings apply when you switch back to Round.' : undefined
 	return (
 		<>
 			<Section

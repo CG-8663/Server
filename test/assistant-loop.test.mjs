@@ -363,9 +363,9 @@ test('appearance_list names where to change glass and lists the theme cards', ()
 	const cat = appearanceCatalog()
 	assert.match(cat.appearance.where, /Settings → Appearance/)
 	assert.equal(cat.themes.find((t) => t.id === 'omarchy').name, 'Omarchy')
-	assert.match(cat.themes.find((t) => t.id === 'omarchy').look, /square|solid|no blur/i)
+	assert.match(cat.themes.find((t) => t.id === 'omarchy').look, /colour|color|Omarchy/i)
 	for (const id of ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte']) {
-		assert.match(cat.themes.find((t) => t.id === id).look, /round|glass/i, id)
+		assert.match(cat.themes.find((t) => t.id === id).look, /palette|colour|color|wallpaper|photo/i, id)
 	}
 	assert.equal(cat.themes.find((t) => t.id === 'custom').name, 'Your photo')
 	assert.match(cat.panelStyle.where, /Settings → Appearance/)
@@ -403,7 +403,7 @@ test('desktop_setLayout is an Approve on this server, not a swarm theme RPC', as
 		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'switch to rounded corners', emit: (e) => events.push(e)})
 		const action = events.find((e) => e.event === 'action')?.data
 		assert.equal(action?.toolName, 'desktop_setLayout')
-		assert.match(action.title, /Ubuntu/i)
+		assert.match(action.title, /Round/i)
 		assert.equal(action.rpc?.input?.shell, 'gnome')
 		assert.equal(calls.some((c) => c.name === 'swarm.action' || c.name === 'omarchy.setTheme'), false)
 		const before = calls.length
