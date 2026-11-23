@@ -855,7 +855,8 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   };
   const used = disk.data ? diskPct(disk.data) / 100 : 0;
 
-  const serverName = boot.server?.device || "This server";
+  // The machine Files runs on is called the host server here, next to its computers and VMs.
+  const serverName = "Host server";
   const heading =
     path === null
       ? "Files"
@@ -914,7 +915,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     setGrid(next);
   };
   const rootItems: NuItem[] = [
-    {key: "server", name: serverName, modified: "Entrypoint", icon: "server", onOpen: () => go(SERVER_FILES)},
+    {key: "server", name: serverName, modified: boot.server?.device || "Entrypoint", icon: "server", onOpen: () => go(SERVER_FILES)},
     ...(owner ? [] : computerFiles.places.map((p) => ({key: `${p.kind}:${p.id}`, name: p.name, icon: p.kind === "guest" ? ("machine" as const) : ("devices" as const), onOpen: () => go(p.path)}))),
   ];
   // Connected computers and the virtual machines running on this server, each a tree of its files.

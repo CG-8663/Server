@@ -183,7 +183,18 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 							</button>
 						</div>
 					) : (
-						list.map((m) => <VmCard key={m.id} m={m} onOpen={() => (haptic(6), openMember('guest', m.id))} />)
+						list.map((m) => (
+							<VmCard
+								key={m.id}
+								m={m}
+								onOpen={() => (haptic(6), openMember('guest', m.id))}
+								onConsole={() => {
+									haptic(8)
+									if (desk) desk.openConsole(m.id)
+									else setConsoleId(m.id)
+								}}
+							/>
+						))
 					)}
 				</>
 			)}
@@ -299,7 +310,8 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 	const power = usePowerActions({id: m.id, name: m.name, state: m.state, protected: m.protected})!
 	const busy = status.kind === 'busy' || power.pending
 	const os = osLook(m.osId)
-	const [tab, setTab] = useState('files')
+	// A machine that isn't running opens on Power, where Start is.
+	const [tab, setTab] = useState(m.state === 'running' ? 'files' : 'power')
 	const [storage, setStorage] = useState<{agentId: string; name: string} | null>(null)
 	const hostTabs = PANELS.filter((p) => p.id !== 'console' && p.id !== 'backups' && (p.id !== 'cloudinit' || d?.cloudInit))
 	const panel = (id: PanelId) => {
@@ -402,8 +414,12 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 }
 
 // A virtual machine on this server, in its own section of the Machines list.
-function VmCard({m, onOpen}: {m: Machine; onOpen: () => void}) {
+// Start, stop and the rest are right on it; Open has everything else.
+function VmCard({m, onOpen, onConsole}: {m: Machine; onOpen: () => void; onConsole: () => void}) {
 	const os = osLook(m.osId)
+	const power = usePowerActions({id: m.id, name: m.name, state: m.state, protected: m.protected})!
+	const status = machineStatus(m.state)
+	const busy = status.kind === 'busy' || power.pending || !!m.pending
 	const memory = m.memoryGb ?? (m.memoryMb ? Math.round(m.memoryMb / 1024) : undefined)
 	const meta = [os.name, m.cores ? `${m.cores} CPU` : '', memory ? `${memory} GB` : '', m.state === 'running' && m.ipAddress ? m.ipAddress : ''].filter(Boolean).join(' · ')
 	return (
@@ -421,6 +437,41 @@ function VmCard({m, onOpen}: {m: Machine; onOpen: () => void}) {
 					Open
 				</button>
 			</span>
+			<div className="vm-controls" role="group" aria-label={`${m.name} power`}>
+				{busy ? (
+					<span className="vm-working">
+						<span className="spinner" /> Working…
+					</span>
+				) : power.paused ? (
+					<>
+						<button type="button" className="btn small primary" onClick={power.resume}>
+							<Icon name="play" size={16} /> Resume
+						</button>
+						<button type="button" className="btn small" onClick={power.stop}>
+							<Icon name="stop" size={16} /> Stop
+						</button>
+					</>
+				) : m.state === 'running' ? (
+					<>
+						<button type="button" className="btn small" onClick={onConsole}>
+							<Icon name="window" size={16} /> Console
+						</button>
+						<button type="button" className="btn small" onClick={power.shutdown}>
+							<Icon name="power" size={16} /> Shut down
+						</button>
+						<button type="button" className="btn small" onClick={power.reboot}>
+							<Icon name="restart" size={16} /> Reboot
+						</button>
+						<button type="button" className="btn small" onClick={power.pause}>
+							<Icon name="pulse" size={16} /> Pause
+						</button>
+					</>
+				) : power.canStart ? (
+					<button type="button" className="btn small primary" onClick={power.start}>
+						<Icon name="play" size={16} /> {m.state === 'hibernated' ? 'Resume' : 'Start'}
+					</button>
+				) : null}
+			</div>
 		</article>
 	)
 }

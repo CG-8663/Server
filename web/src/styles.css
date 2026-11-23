@@ -9331,3 +9331,21 @@ select.field {
 .file-tree-row.open .file-tree-chev {
 	transform: rotate(90deg);
 }
+
+/* Machines: power controls on each virtual machine's row. */
+.vm-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 12px;
+}
+.vm-controls:empty {
+	display: none;
+}
+.vm-working {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	color: var(--muted);
+	font-size: 13.5px;
+}
