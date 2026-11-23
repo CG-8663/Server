@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {test} from 'node:test'
 
-import {contrastRatio, parseRgbColor, pickOnAccent} from '../web/src/theme/contrast.ts'
+import {contrastRatio, darkenHslForWhite, hslToRgb, parseRgbColor, pickOnAccent} from '../web/src/theme/contrast.ts'
 
 const CSS = readFileSync(new URL('../web/src/styles.css', import.meta.url), 'utf8')
 const UI = readFileSync(new URL('../web/src/ui.tsx', import.meta.url), 'utf8')
@@ -31,10 +31,22 @@ test('pickOnAccent selects >= 4.5:1 foreground for Omarchy-light blue, Omarchy-d
 	// Omarchy-dark accent (#7aa2f7) prefers palette background (#1a1b26) when >= 4.5:1
 	assert.equal(pickOnAccent('#7aa2f7', '#111', '#1a1b26'), '#1a1b26')
 
+	// Handles #777777 where both #fff (4.48:1) and #111 (4.22:1) miss 4.5:1 → falls back to #000 (4.69:1)
+	const midGray = pickOnAccent('#777777', '#fff')
+	assert.equal(midGray, '#000')
+	assert.ok(contrastRatio(parseRgbColor('#777777'), parseRgbColor(midGray)) >= 4.5)
+
+	// Default wallpaper orange (24 90% 50%) darkens enough for white ink to reach >= 4.5:1
+	const orangeFill = darkenHslForWhite(24, 90, 50)
+	const orangeMatch = orangeFill.match(/^hsl\(24 90% (\d+(?:\.\d+)?)%\)$/)
+	assert.ok(orangeMatch, `unexpected orange fill: ${orangeFill}`)
+	assert.ok(contrastRatio(hslToRgb(24, 90, Number(orangeMatch[1])), [255, 255, 255]) >= 4.5)
+
 	// Handles color(srgb ...) computed output without misreading color space names
 	assert.equal(pickOnAccent('color(srgb 0.157 0.412 0.514)', '#111'), '#fff')
 
 	// Wired in applyPrefs
+	assert.match(UI, /darkenHslForWhite\(h, s, l\)/)
 	assert.match(UI, /resolveCssColor\(root, token\)/)
 	assert.match(UI, /pickOnAccent\(resolved, light \? '#fff' : '#111'\)/)
 })

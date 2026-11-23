@@ -13,7 +13,7 @@ import {solidOf, WALLPAPERS, useDeskConfig, wallpaperSrc} from './desktop/config
 import {wallpaperBlocked} from './desktop/wallpaperGate'
 import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
-import {pickOnAccent, resolveCssColor} from './theme/contrast'
+import {darkenHslForWhite, pickOnAccent, resolveCssColor} from './theme/contrast'
 import {initials as nameInitials} from './initials'
 import {paddingBottomPlus} from './scrollPad'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
@@ -881,7 +881,7 @@ export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 	} else if (p.accent === 'wallpaper') {
 		const source = p.theme === 'custom' ? (p.customBrandHsl ?? brandHsl) : brandHsl
 		const [h, s, l] = (source ?? FALLBACK_BRAND).split(' ').map((v) => parseFloat(v))
-		root.style.setProperty('--accent', `hsl(${h} ${s}% ${l}%)`)
+		root.style.setProperty('--accent', darkenHslForWhite(h, s, l))
 		root.style.setProperty('--accent-text', `hsl(${h} ${Math.min(s, 95)}% ${light ? Math.min(l, 42) : Math.max(l, 66)}%)`)
 		root.style.setProperty('--on-accent', '#fff')
 	} else {

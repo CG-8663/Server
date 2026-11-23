@@ -42,6 +42,36 @@ export function contrastRatio(a: Rgb, b: Rgb): number {
 
 const WHITE: Rgb = [255, 255, 255]
 const DARK: Rgb = [17, 17, 17]
+const BLACK: Rgb = [0, 0, 0]
+
+export function hslToRgb(h: number, sPct: number, lPct: number): Rgb {
+	const hNorm = (((h % 360) + 360) % 360) / 360
+	const s = Math.max(0, Math.min(100, sPct)) / 100
+	const l = Math.max(0, Math.min(100, lPct)) / 100
+	if (s === 0) {
+		const v = Math.round(l * 255)
+		return [v, v, v]
+	}
+	const q = l < 0.5 ? l * (1 + s) : l + s - l * s
+	const p = 2 * l - q
+	const hue = (t: number) => {
+		const u = t < 0 ? t + 1 : t > 1 ? t - 1 : t
+		if (u < 1 / 6) return p + (q - p) * 6 * u
+		if (u < 1 / 2) return q
+		if (u < 2 / 3) return p + (q - p) * (2 / 3 - u) * 6
+		return p
+	}
+	return [Math.round(hue(hNorm + 1 / 3) * 255), Math.round(hue(hNorm) * 255), Math.round(hue(hNorm - 1 / 3) * 255)]
+}
+
+// Darken an HSL fill only as much as needed so white text reaches WCAG AA (>= 4.5:1) while preserving hue.
+export function darkenHslForWhite(h: number, s: number, l: number, minRatio = 4.5): string {
+	let cur = Math.max(0, Math.min(100, l))
+	while (cur > 8 && contrastRatio(hslToRgb(h, s, cur), WHITE) < minRatio) {
+		cur = Math.max(8, cur - 1)
+	}
+	return `hsl(${h} ${s}% ${cur}%)`
+}
 
 export function pickOnAccent(fillCss: string | null | undefined, fallback: '#fff' | '#111' = '#fff', preferred?: string | null): string {
 	const fill = parseRgbColor(fillCss)
@@ -50,7 +80,11 @@ export function pickOnAccent(fillCss: string | null | undefined, fallback: '#fff
 		const pref = parseRgbColor(preferred)
 		if (pref && contrastRatio(fill, pref) >= 4.5) return preferred
 	}
-	return contrastRatio(fill, WHITE) >= contrastRatio(fill, DARK) ? '#fff' : '#111'
+	const w = contrastRatio(fill, WHITE)
+	const d = contrastRatio(fill, DARK)
+	if (Math.max(w, d) >= 4.5) return w >= d ? '#fff' : '#111'
+	const b = contrastRatio(fill, BLACK)
+	return b >= w ? '#000' : '#fff'
 }
 
 export function resolveCssColor(root: HTMLElement, cssValue: string): string | null {
