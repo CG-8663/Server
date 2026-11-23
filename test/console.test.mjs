@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {describe, test} from 'node:test'
 
-import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, handleConsoleWheel, mouseButtonFromEvent, PASTE_STEP_MS, pasteKeySequence, pasteKeySteps, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, wheelButtons} from '../web/src/consoleHelpers.ts'
+import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, effectiveConsoleScale, handleConsoleWheel, mouseButtonFromEvent, PASTE_STEP_MS, pasteKeySequence, pasteKeySteps, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, shouldSendConsoleInput, touchReleaseAction, wheelButtons} from '../web/src/consoleHelpers.ts'
 
 describe('console helpers', () => {
 	test('#120: reconnects on clean and unclean disconnects unless disposed or superseded', async () => {
@@ -272,5 +272,37 @@ describe('console helpers', () => {
 		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
 		assert.match(src, /mouseButtonFromEvent\(/)
 		assert.doesNotMatch(src, /e\.button === 2 \? BTN\.right : e\.button === 1 \? BTN\.middle : BTN\.left/)
+	})
+
+	test('phone typing waits for an IME to commit, then sends that text', async () => {
+		assert.equal(shouldSendConsoleInput({type: 'input', isComposing: true}), false)
+		assert.equal(shouldSendConsoleInput({type: 'input', isComposing: false}), true)
+		assert.equal(shouldSendConsoleInput({type: 'compositionend', isComposing: true}), true)
+		assert.equal(shouldSendConsoleInput({type: 'compositionend', isComposing: false}), true)
+
+		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
+		assert.match(src, /shouldSendConsoleInput\(/)
+		assert.match(src, /onCompositionEnd=/)
+		const field = src.slice(src.indexOf('className="console-input"'), src.indexOf('/>', src.indexOf('className="console-input"')))
+		assert.match(field, /onInput=\{onInput\}/)
+		assert.match(field, /onCompositionEnd=/)
+	})
+
+	test('saved Resize VM becomes Fit once the machine is known not to resize', async () => {
+		assert.equal(effectiveConsoleScale('remote', null), 'remote')
+		assert.equal(effectiveConsoleScale('remote', true), 'remote')
+		assert.equal(effectiveConsoleScale('remote', false), 'fit')
+		assert.equal(effectiveConsoleScale('actual', false), 'actual')
+		assert.equal(effectiveConsoleScale('fit', false), 'fit')
+		assert.equal(effectiveConsoleScale('fit', null), 'fit')
+
+		const src = await readFile(new URL('../web/src/Console.tsx', import.meta.url), 'utf8')
+		assert.match(src, /effectiveConsoleScale\(/)
+		assert.match(src, /const shownScale = effectiveConsoleScale\(scale, canResize\)/)
+		assert.match(src, /aria-checked=\{shownScale === 'fit'\}/)
+		assert.match(src, /aria-checked=\{shownScale === 'actual'\}/)
+		assert.match(src, /aria-checked=\{shownScale === 'remote'\}/)
+		assert.match(src, /applyScale\(r, shownScale\)/)
+		assert.match(src, /This machine can’t change its resolution from here; showing it fitted instead\./)
 	})
 })

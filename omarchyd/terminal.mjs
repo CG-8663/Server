@@ -317,6 +317,15 @@ export function createTerminalSessions({exec = execFile} = {}) {
 			if (session.resizing) return void (session.held ??= []).push(d)
 			if (session.child.stdin.writable) session.child.stdin.write(d)
 		})
+		// Closing the terminal only lets go of the shell; it keeps running.
+		// Before any resume await: a tab that closes while the shell resizes must leave,
+		// or it stays in session.sockets and keeps counting as attached.
+		const leave = () => {
+			session.sockets.delete(ws)
+			session.used = Date.now()
+		}
+		ws.on('close', leave)
+		ws.on('error', leave)
 		if (resumed) {
 			// What was on screen, at the size it was drawn, then this device's size (the terminal
 			// reflows, and full-screen programs redraw for it).
@@ -337,13 +346,9 @@ export function createTerminalSessions({exec = execFile} = {}) {
 			tell(ws, {type: 'session', resumed: false, cols, rows})
 			session.sockets.add(ws)
 		}
-		// Closing the terminal only lets go of the shell; it keeps running.
-		const leave = () => {
-			session.sockets.delete(ws)
-			session.used = Date.now()
-		}
-		ws.on('close', leave)
-		ws.on('error', leave)
+		// A close during the resume await is normally handled above. If the socket is
+		// already not open and that event was missed, drop it now.
+		if (ws.readyState !== ws.OPEN) leave()
 		return {resumed}
 	}
 
