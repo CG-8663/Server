@@ -17,6 +17,7 @@ import {OidcSheet} from './Oidc'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 import {clearTotpSetupQuery} from './twoFactorQuery'
 import {PASSWORD_SHEET_SUBTITLE} from './settingsHelpers'
+import {setPreRelease, usePreRelease} from '../prerelease'
 
 function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false; staleTime?: number; refetchOnWindowFocus?: boolean; refetchOnReconnect?: boolean} = {}) {
 	return useQuery({queryKey: [path, input], queryFn: () => query<T>(path, input), retry: false, staleTime: 15_000, ...opts})
@@ -109,6 +110,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	}
 	const close = () => setSheet(null)
 	const owner = user.data?.role !== 'member'
+	const preRelease = usePreRelease()
 
 	const twoFactor = useQ<boolean>('user.is2faEnabled')
 	const oidc = useQ<{clientCount: number}>('oidc.status', undefined, {enabled: owner})
@@ -228,6 +230,10 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					{owner && <Row icon="move" color="var(--orange, #f59e0b)" label="Move from Unraid" onClick={() => openPage('unraid')} />}
 				</div>
 			</div>
+
+			<Group title="Pre-release" footer="On this phone, Machines uses the new list while this is on. The desktop list stays as it is.">
+				<Row icon="bolt" color="var(--peach)" label="Enable pre-release features" trailing={<Switch on={preRelease} label="Enable pre-release features" onChange={setPreRelease} />} />
+			</Group>
 
 			<div>
 				<div className="section-head" style={{marginTop: 18}} />

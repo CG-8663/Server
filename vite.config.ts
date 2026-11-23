@@ -1,6 +1,6 @@
 import {defineConfig} from 'vite'
 import react from '@vitejs/plugin-react'
-import {cpSync, readFileSync} from 'node:fs'
+import {cpSync, readFileSync, realpathSync} from 'node:fs'
 
 import {apiProxy} from './vite.api-proxy.mjs'
 
@@ -21,5 +21,11 @@ export default defineConfig({
 	// The version this bundle was built as, so a page left open can tell when the server has moved on.
 	define: {__TOUCH_BUILD__: JSON.stringify(pkg.version)},
 	build: {outDir: '../dist', emptyOutDir: true, sourcemap: false},
-	server: {port: 5173, proxy: {'/api': apiProxy}},
+	// node_modules may be a symlink to another worktree. Vite serves the real path, which
+	// sits outside the project, so fonts and other package files 403 unless it is allowed.
+	server: {
+		port: 5173,
+		proxy: {'/api': apiProxy},
+		fs: {allow: [realpathSync('.'), realpathSync('node_modules')]},
+	},
 })
