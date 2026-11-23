@@ -1,6 +1,6 @@
 import {useMemo, useState, type CSSProperties} from 'react'
 
-import {diskPct, type UserApp} from '../api'
+import {diskAll, type UserApp} from '../api'
 import {batteryColor, batteryGaugeItem, combineBatteries} from '../battery'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useApps, useBattery, useBootstrap, useCpu, useDisk, useGpus, useMachines, useMemory, useTemp, useUptime, useUser} from '../data'
@@ -26,7 +26,8 @@ export function Gauges({onOpen, fleet}: {onOpen?: (gauge: {title: string; kind: 
 	const disk = useDisk()
 	const gpus = useGpus()
 	const battery = useBattery()
-	const diskTotal = disk.data ? disk.data.totalUsed + disk.data.available : 0
+	const space = disk.data ? diskAll(disk.data) : null
+	const diskTotal = space?.total ?? 0
 	const items: GaugeModel[] = fleet
 		? [
 				{k: 'CPU', icon: 'cpu', p: fleet.cpu.percent, sub: percentSub(fleet.cpu.percent, fleet.cpu.ready), ready: fleet.cpu.ready},
@@ -55,8 +56,8 @@ export function Gauges({onOpen, fleet}: {onOpen?: (gauge: {title: string; kind: 
 				{
 					k: 'Storage',
 					icon: 'disk' as const,
-					p: disk.data ? diskPct(disk.data) : 0,
-					sub: disk.data ? `${bytes(disk.data.totalUsed, 1)} of ${bytes(diskTotal, 0)}` : '–',
+					p: space && space.total > 0 ? (100 * space.used) / space.total : 0,
+					sub: space ? `${bytes(space.used, 1)} of ${bytes(diskTotal, 0)}` : '–',
 					ready: !!disk.data,
 				},
 				...gpuGaugeItems(gpus.data?.gpus ?? []).map((g) => ({...g, sub: percentSub(g.p, g.ready)})),
@@ -101,8 +102,8 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 				cpu: cpu.data ? cpu.data.totalUsed : null,
 				memUsed: mem.data?.totalUsed ?? null,
 				memTotal: mem.data?.size ?? null,
-				diskUsed: disk.data?.totalUsed ?? null,
-				diskTotal: disk.data ? disk.data.totalUsed + disk.data.available : null,
+				diskUsed: disk.data ? diskAll(disk.data).used : null,
+				diskTotal: disk.data ? diskAll(disk.data).total : null,
 				temp: temp.data?.temperature ?? null,
 				gpus: (gpus.data?.gpus ?? []).map((g) => ({id: g.id, used: g.used})),
 				battery: combineBatteries(battery.data?.batteries ?? [])?.percent ?? null,

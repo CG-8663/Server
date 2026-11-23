@@ -6,6 +6,7 @@ import {Readable} from 'node:stream'
 import {cp, link, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises'
 import {basename, dirname, extname, join, resolve as pathResolve, sep} from 'node:path'
 import {pipeline} from 'node:stream/promises'
+import os from 'node:os'
 import {createHash, randomBytes} from 'node:crypto'
 
 import {readJsonState, writeAtomic} from './atomic.mjs'
@@ -134,7 +135,9 @@ async function mapPool(items, n, fn) {
 	return out
 }
 
-export function createFiles({home, dataDir, io} = {}) {
+// /External is the drives you mount in Storage: they go under /run/media/<you>, and each one is a
+// folder here. A drive itself can't be moved, renamed or trashed (unmount it in Storage instead).
+export function createFiles({home, dataDir, io, drivesDir = join('/run/media', os.userInfo().username)} = {}) {
 	const mkdirOp = typeof io?.mkdir === 'function' ? io.mkdir : mkdir
 	const trashRoot = join(home, '.local/share/Trash')
 	const trashFiles = join(trashRoot, 'files')
@@ -163,7 +166,7 @@ export function createFiles({home, dataDir, io} = {}) {
 		const parts = virtual.split('/').filter(Boolean)
 		if (parts.some((p) => p === '..' || p === '.')) throw new RpcError('BAD_REQUEST', '[invalid-path]')
 		const [top, ...rest] = parts
-		const base = top === 'Home' ? await roots() : top === 'Trash' ? trashFiles : null
+		const base = top === 'Home' ? await roots() : top === 'Trash' ? trashFiles : top === 'External' ? drivesDir : null
 		if (!base) throw new RpcError('NOT_FOUND', '[does-not-exist]')
 		const real = join(base, ...rest)
 		// Follow symlinks for what exists, and make sure we're still inside the base.
@@ -173,6 +176,12 @@ export function createFiles({home, dataDir, io} = {}) {
 			resolved = await realpath(check)
 		} catch {
 			throw new RpcError('NOT_FOUND', '[does-not-exist]')
+		}
+		// Drives are what's mounted: nothing new is made beside them.
+		if (top === 'External' && !mustExist && rest.length === 1) throw new RpcError('BAD_REQUEST', '[cannot-create-here]')
+		if (top === 'External' && !(await lstat(drivesDir).then(() => true, () => false))) {
+			// Nothing mounted yet: an empty Drives, not an error.
+			if (rest.length) throw new RpcError('NOT_FOUND', '[does-not-exist]')
 		}
 		const baseReal = top === 'Home' ? base : await realpath(base).catch(() => base)
 		if (resolved !== baseReal && !resolved.startsWith(baseReal + sep)) throw new RpcError('FORBIDDEN', '[outside-home]')
@@ -192,6 +201,8 @@ export function createFiles({home, dataDir, io} = {}) {
 		if (text === t || text.startsWith(t + sep)) return `/Trash${text.slice(t.length)}`
 		if (text === trashFiles || text.startsWith(trashFiles + sep)) return `/Trash${text.slice(trashFiles.length)}`
 		if (text === h || text.startsWith(h + sep)) return `/Home${text.slice(h.length)}`
+		const d = (await cachedReal(drivesDir)) ?? drivesDir
+		if (text === d || text.startsWith(d + sep)) return `/External${text.slice(d.length)}`
 		return null
 	}
 
@@ -200,10 +211,18 @@ export function createFiles({home, dataDir, io} = {}) {
 		const dir = st.isDirectory()
 		const file = st.isFile()
 		const inTrash = virtual.startsWith('/Trash/')
-		const name = virtual === '/Home' ? 'Home' : virtual === '/Trash' ? 'Trash' : basename(virtual)
+		const name = virtual === '/Home' ? 'Home' : virtual === '/Trash' ? 'Trash' : virtual === '/External' ? 'Drives' : basename(virtual)
 		const type = dir ? 'directory' : typeFor(name)
-		const top = virtual === '/Home' || virtual === '/Trash'
-		const ops = top ? (virtual === '/Home' ? ['writable'] : []) : inTrash ? ['restore', 'delete'] : ['copy', 'move', 'rename', 'trash', 'favorite', 'writable']
+		const top = virtual === '/Home' || virtual === '/Trash' || virtual === '/External'
+		const ops = top
+			? virtual === '/Home'
+				? ['writable']
+				: []
+			: inTrash
+				? ['restore', 'delete']
+				: isDriveRoot(virtual)
+					? ['copy', 'favorite', 'writable']
+					: ['copy', 'move', 'rename', 'trash', 'favorite', 'writable']
 		// Home folders can be shared on the LAN. The client shows that only for the owner.
 		if (dir && virtual.startsWith('/Home/')) ops.push('share')
 		return {
@@ -216,6 +235,13 @@ export function createFiles({home, dataDir, io} = {}) {
 		}
 	}
 	const visible = (name) => !name.startsWith('.')
+	// A mounted drive's own folder (/External/<drive>).
+	function isDriveRoot(virtual) {
+		return /^\/External\/[^/]+$/.test(virtual)
+	}
+	const refuseDriveRoot = (virtual, code) => {
+		if (typeof virtual === 'string' && isDriveRoot(virtual.replace(/\/+$/, ''))) throw new RpcError('BAD_REQUEST', code)
+	}
 
 	async function list({path, sortBy = 'name', sortOrder = 'ascending', limit} = {}) {
 		if (path === '/Trash') {
@@ -224,6 +250,9 @@ export function createFiles({home, dataDir, io} = {}) {
 			while (near !== h && near !== dirname(near) && !(await lstat(near).then(() => true, () => false))) near = dirname(near)
 			const nearReal = await realpath(near).catch(() => '')
 			if (nearReal === h || nearReal.startsWith(h + sep)) await mkdirOp(trashFiles, {recursive: true})
+		}
+		if (path === '/External' && !(await lstat(drivesDir).then(() => true, () => false))) {
+			return {name: 'Drives', path, type: 'directory', modified: 0, operations: [], files: [], hasMore: false, totalFiles: 0}
 		}
 		const {real} = await resolve(path)
 		const st = await stat(real)
@@ -300,6 +329,7 @@ export function createFiles({home, dataDir, io} = {}) {
 	}
 	async function renameItem({path, newName}) {
 		assertVisibleName(newName)
+		refuseDriveRoot(path, '[drive-root]')
 		const {real, base} = await resolve(path)
 		if (real === base) throw new RpcError('BAD_REQUEST', '[cannot-rename]')
 		const target = join(dirname(real), newName)
@@ -312,6 +342,8 @@ export function createFiles({home, dataDir, io} = {}) {
 		return next
 	}
 	async function moveOrCopy({path, toDirectory, collision = 'keep-both'}, copy) {
+		if (!copy) refuseDriveRoot(path, '[drive-root]')
+		if (toDirectory === '/External') throw new RpcError('BAD_REQUEST', '[cannot-move]')
 		const {real, base} = await resolve(path)
 		if (real === base) throw new RpcError('BAD_REQUEST', '[cannot-move]')
 		const {real: dest} = await resolve(toDirectory)
@@ -365,7 +397,8 @@ export function createFiles({home, dataDir, io} = {}) {
 	// Trash the freedesktop way: the item in Trash/files, a .trashinfo with where it came from.
 	async function trash({path}) {
 		const {real, top} = await resolve(path)
-		if (top !== 'Home' || path === '/Home') throw new RpcError('BAD_REQUEST', '[cannot-trash]')
+		if ((top !== 'Home' && top !== 'External') || path === '/Home' || path === '/External') throw new RpcError('BAD_REQUEST', '[cannot-trash]')
+		refuseDriveRoot(path, '[drive-root]')
 		await mkdirOp(trashFiles, {recursive: true})
 		await mkdirOp(trashInfo, {recursive: true})
 		const target = await freeName(trashFiles, basename(real), await isDirPath(real))
@@ -726,6 +759,7 @@ export function createFiles({home, dataDir, io} = {}) {
 	// the same claim an upload uses. keep-both is the default, so a paste does not replace a file.
 	async function saveNew(dirVirtual, name, source, collision = 'keep-both') {
 		assertVisibleName(name)
+		if (dirVirtual === '/External') throw new RpcError('BAD_REQUEST', '[cannot-create-here]')
 		const {real: dir} = await resolve(dirVirtual)
 		const st = await stat(dir)
 		if (!st.isDirectory()) throw new RpcError('BAD_REQUEST', '[not-a-directory]')

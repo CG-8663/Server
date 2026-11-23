@@ -1,6 +1,6 @@
 // System facts, read straight from Linux: /proc, /sys and statfs. No root needed.
 import {execFile} from 'node:child_process'
-import {readFile, readdir, statfs} from 'node:fs/promises'
+import {readFile, readdir, stat, statfs} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 
@@ -177,7 +177,40 @@ export async function diskUsage(path, {dataDir} = {}) {
 		machines: breakdown.at && machines ? [{id: 'machines', name: 'Machines', used: Math.min(machines, used)}] : [],
 		measuring: !breakdown.at,
 		drive: await driveOf(path, size),
+		drives: await extraDrives(path),
 	}
+}
+
+// Drives mounted beside the main one that Files shows: the ones mounted in Storage
+// (/run/media/<you>/<name>, Files › Drives) and storage pools inside Home (~/Pools/<name>).
+// Each counted once, and never the drive Home is on.
+const unescapeMount = (p) => p.replace(/\\([0-7]{3})/g, (_m, o) => String.fromCharCode(parseInt(o, 8)))
+export async function extraDrives(home, {mountsText, user = os.userInfo().username, fsStat = statfs, pathStat = stat} = {}) {
+	const text = mountsText ?? (await read('/proc/self/mounts'))
+	const media = join('/run/media', user)
+	const homeDev = await pathStat(home).then((s) => s.dev, () => null)
+	const seen = new Set()
+	const out = []
+	for (const line of text.split('\n')) {
+		const mount = unescapeMount(line.split(' ')[1] ?? '')
+		const inMedia = mount.startsWith(media + '/') && !mount.slice(media.length + 1).includes('/')
+		const inHome = mount.startsWith(home + '/')
+		if (!inMedia && !inHome) continue
+		const st = await pathStat(mount).catch(() => null)
+		if (!st || st.dev === homeDev || seen.has(st.dev)) continue
+		seen.add(st.dev)
+		const f = await fsStat(mount).catch(() => null)
+		if (!f || !f.blocks) continue
+		const size = f.blocks * f.bsize
+		out.push({
+			name: mount.split('/').pop(),
+			folder: inMedia ? `/External/${mount.slice(media.length + 1)}` : `/Home${mount.slice(home.length)}`,
+			size,
+			used: size - f.bfree * f.bsize,
+			available: f.bavail * f.bsize,
+		})
+	}
+	return out
 }
 
 // Is this server a virtual machine? (They have no temperature sensors to read.)

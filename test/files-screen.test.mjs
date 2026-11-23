@@ -412,9 +412,9 @@ describe('files screen: folder empty state, upload errors, and unserved roots', 
 		assert.equal(helpers.isServedFilePlace('/Trash'), true)
 		assert.equal(helpers.isServedFilePlace('::recents'), true)
 		assert.equal(helpers.isServedFilePlace('/Apps'), false)
-		assert.equal(helpers.isServedFilePlace('/External'), false)
+		assert.equal(helpers.isServedFilePlace('/External'), true)
 		assert.equal(helpers.isServedFilePlace('/Network'), false)
-		assert.deepEqual(helpers.folderPickerRoots(), ['/Home'])
+		assert.deepEqual(helpers.folderPickerRoots(), ['/Home', '/External'])
 	})
 
 	test('Files.tsx filters places and picker chips through the helpers', async () => {

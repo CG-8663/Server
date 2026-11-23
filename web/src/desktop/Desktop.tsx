@@ -5,7 +5,7 @@ import {useAppTab} from '../appTab'
 import {createPortal} from 'react-dom'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {SERVER_DESKTOP, logout, mutate, type Bootstrap, type Machine, type UserApp} from '../api'
+import {SERVER_DESKTOP, logout, mutate, query, type Bootstrap, type Machine, type UserApp} from '../api'
 import {AppSheet} from '../AppSheet'
 import {askApp, explainProbe} from '../openApp'
 import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory, useNotifications, useUpdates, useUser} from '../data'
@@ -70,7 +70,7 @@ function WinFallback() {
 
 // ---- model ---------------------------------------------------------------------------------
 type Kind = 'home' | 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app'
-type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; page?: string; pageNonce?: number; term?: {id: string; name?: string; icon?: string}; input?: string; store?: StoreBinding}
+type Payload = {appId?: string; machineId?: string; name?: string; path?: string; tab?: string; page?: string; pageNonce?: number; term?: {id: string; name?: string; icon?: string}; input?: string; store?: StoreBinding}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
 type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number; workspace?: number; float?: boolean; minAt?: number}
@@ -232,7 +232,8 @@ export function useAppFrame(ids: string[]) {
 type DesktopApi = {
 	open: (kind: Kind, payload?: Payload, opts?: {newWindow?: boolean}) => void
 	launch: (app: UserApp) => void
-	openConsole: (machineId: string) => void
+	/** A machine's screen in a window: a virtual machine's id, 'desktop', or 'agent-<id>' for a connected computer. */
+	openConsole: (machineId: string, name?: string) => void
 	openTerminal: (app?: {id: string; name?: string; icon?: string}, input?: string) => void
 	openItem: (key: string) => void
 	close: (id: string) => void
@@ -623,7 +624,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			}
 			open('app', {appId: app.id})
 		}
-		const openConsole = (machineId: string) => open('console', {machineId})
+		const openConsole = (machineId: string, name?: string) => open('console', name ? {machineId, name} : {machineId})
 		return {
 			open,
 			launch,
@@ -2214,7 +2215,8 @@ function winTitle(w: Win, appList: UserApp[], machineList: Machine[]) {
 	}
 	if (w.kind === 'console') {
 		const m = machineList.find((x) => x.id === w.payload?.machineId)
-		return m ? `${m.name} — Console` : 'Console'
+		const name = m?.name ?? w.payload?.name
+		return name ? `${name} — Desktop` : 'Desktop'
 	}
 	if (w.kind === 'terminal' && w.payload?.term) return `Terminal — ${w.payload.term.name ?? w.payload.term.id}`
 	return SYS[w.kind].title
@@ -2885,7 +2887,21 @@ function AppsWindow() {
 
 function ConsoleWindow({machineId, windowId, onClose}: {machineId: string; windowId: string; onClose: () => void}) {
 	if (machineId === 'desktop') return <Console embedded machine={SERVER_DESKTOP} windowId={windowId} onClose={onClose} />
+	if (/^agent-[0-9a-f]{12}$/.test(machineId)) return <ComputerConsoleWindow machineId={machineId} windowId={windowId} onClose={onClose} />
 	return <MachineConsoleWindow machineId={machineId} windowId={windowId} onClose={onClose} />
+}
+// A connected computer's screen, in the same viewer as a virtual machine's.
+function ComputerConsoleWindow({machineId, windowId, onClose}: {machineId: string; windowId: string; onClose: () => void}) {
+	const swarm = useQuery({queryKey: ['swarm.list'], queryFn: () => query<{id: string; name: string}[]>('swarm.list'), refetchInterval: 3000})
+	const a = swarm.data?.find((x) => `agent-${x.id}` === machineId)
+	if (swarm.isLoading)
+		return (
+			<div className="win-empty">
+				<span className="spinner" />
+			</div>
+		)
+	if (!a) return <div className="win-empty">This computer isn’t connected to the server any more.</div>
+	return <Console embedded machine={{id: machineId, name: a.name, state: 'running'}} windowId={windowId} onClose={onClose} />
 }
 function MachineConsoleWindow({machineId, windowId, onClose}: {machineId: string; windowId: string; onClose: () => void}) {
 	const machines = useMachines()

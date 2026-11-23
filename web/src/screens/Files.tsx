@@ -21,7 +21,7 @@ import {
   type FileEntry,
   type Listing,
   type SmbShare,
-  diskPct,
+  diskAll,
 } from "../api";
 import { useBootstrap, useDisk, useMachines, useUser } from "../data";
 import { ComputerFolder } from "../fleet/ComputerFolder";
@@ -853,7 +853,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     setOpen(null);
     setShareFor({ path: f.path, name: f.name });
   };
-  const used = disk.data ? diskPct(disk.data) / 100 : 0;
+  const used = disk.data ? (diskAll(disk.data).total > 0 ? diskAll(disk.data).used / diskAll(disk.data).total : 0) : 0;
 
   // The machine Files runs on is called the host server here, next to its computers and VMs.
   const serverName = "Host server";
@@ -1255,8 +1255,8 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
                 title="Storage"
                 extra={
                   <>
-                    {bytes(disk.data.available, 0)} free of{" "}
-                    {bytes(disk.data.size, 0)}
+                    {bytes(diskAll(disk.data).available, 0)} free of{" "}
+                    {bytes(diskAll(disk.data).total, 0)}
                   </>
                 }
                 style={{ marginBottom: 10 }}
@@ -1274,6 +1274,15 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
                   }}
                 />
               </span>
+              {(disk.data.drives ?? []).map((d) => (
+                <button key={d.folder} type="button" className="storage-drive" onClick={() => go(d.folder)}>
+                  <Icon name="disk" size={16} />
+                  <span className="name">{d.name}</span>
+                  <span className="muted">
+                    {bytes(d.available, 0)} free of {bytes(d.size, 0)}
+                  </span>
+                </button>
+              ))}
             </Card>
           )}
           {owner && <MachineTrees machines={treeMachines} actions={treeActions} />}
