@@ -36,7 +36,7 @@ import { useDesktop } from "../desktop/Desktop";
 import { AgentFiles, type Agent } from "../swarm/Swarm";
 import { openTerminalWith } from "../terminalEvent";
 import { actionsForItems, asFileSearch, batchToast, copyTextOrToast, FILES_LIST_PAGE, filesListMoreLeft, filesPathToStore, nice, offersDownload, readStoredFilesPath, searchMatchNote, selectionAfterQuery, viewerAfterPathChange, type BatchKind } from "./filesRules";
-import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, type FavoriteItem, favoritePath, fileKindLabel, filterUnsyncedPhotos, folderPickerRoots, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
+import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, emptyFolderUploadHint, type FavoriteItem, favoritePath, fileKindLabel, filesSearching, filterUnsyncedPhotos, folderPickerRoots, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
 
 const FileViewer = lazy(() =>
   import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
@@ -446,6 +446,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     () => localStorage.getItem("omarchy-server:files-grid") === "1",
   );
   const [q, setQ] = useState("");
+  const searching = filesSearching(q);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [open, setOpen] = useState<FileEntry | null>(null);
   // The full-window viewer: the files you can step through, and where you started.
@@ -560,7 +561,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
         maxResults: 100,
         path: searchPath,
       }),
-    enabled: q.trim().length >= 2,
+    enabled: searching,
     staleTime: 10_000,
   });
   const found = asFileSearch(search.data);
@@ -617,6 +618,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     !!path && !path.startsWith("::") && !inTrash && listing.data?.operations?.includes("writable") !== false && !listing.error;
   const uploadDir = path === SERVER_FILES ? "/Home" : writableHere ? path : null;
   const canUpload = !!uploadDir;
+  const uploadHint = !searching && !inTrash && !!path && !path.startsWith("::") ? emptyFolderUploadHint(canUpload) : null;
   const finePointer = typeof matchMedia !== "undefined" && matchMedia("(pointer: fine)").matches;
   // iPhone/iPad Safari can't pick a whole folder; computers can.
   const canPickFolder = finePointer && ("showDirectoryPicker" in window || "webkitdirectory" in HTMLInputElement.prototype);
@@ -709,8 +711,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   });
 
   // Items shown in the current view.
-  const items: FileEntry[] =
-    q.trim().length >= 2
+  const items: FileEntry[] = searching
       ? found.files
       : path === "::recents"
         ? recentSource
@@ -726,9 +727,8 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
                 } : p) as FileEntry,
             )
           : (listing.data?.files ?? []);
-  const folderListing = !!path && !path.startsWith("::") && q.trim().length < 2;
-  const activeQ =
-    q.trim().length >= 2
+  const folderListing = !!path && !path.startsWith("::") && !searching;
+  const activeQ = searching
       ? search
       : path === "::recents"
         ? recentQuery
@@ -736,14 +736,13 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
           ? favorites
           : listing;
   const browserOnline = useBrowserOnline();
-  const fileProblem = path !== null || q ? queryProblem(activeQ, browserOnline) : null;
+  const fileProblem = path !== null || searching ? queryProblem(activeQ, browserOnline) : null;
   const showEmpty = showFolderEmpty({
     error: folderListing ? listing.error : activeQ.error,
     count: items.length,
     suppress: fileProblem != null && activeQ.data == null,
   });
-  const loading =
-    q.trim().length >= 2
+  const loading = searching
       ? search.isLoading
       : path === "::recents"
         ? recentQuery.isLoading
@@ -895,8 +894,8 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   const canBack = nav.index > 0 || (!!path && parentPath !== path);
   const canForward = nav.index < nav.entries.length - 1;
   const onServer = !!path && !computerHere && !guestHere;
-  const machineRoot = path === null && q.trim().length < 2;
-  const serverPlacesView = path === SERVER_FILES && q.trim().length < 2;
+  const machineRoot = path === null && !searching;
+  const serverPlacesView = path === SERVER_FILES && !searching;
   const setFileMode = (next: boolean) => {
     haptic(5);
     localStorage.setItem("omarchy-server:files-grid", next ? "1" : "0");
@@ -1013,7 +1012,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     haptic(15);
     setSelected((s) => new Set(s).add(f.path));
   };
-  const showParent = q.trim().length >= 2;
+  const showParent = searching;
   const renderRow = (f: FileEntry) => (
     <FileRow
       key={f.path}
@@ -1102,7 +1101,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
         onChange={setQ}
         placeholder={path === null ? "Search all files" : `Search files`}
       />
-      {canUpload && !q && !selecting && (
+      {canUpload && !searching && !selecting && (
         <div className="files-actions">
           {path === PHOTOS && (
             <button className="btn primary" onClick={() => photoInput.current?.click()} disabled={listing.isLoading}>
@@ -1292,7 +1291,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
         />
       )}
 
-      {(path !== null || q) && !computerHere && !guestHere && !serverPlacesView && (
+      {(path !== null || searching) && !computerHere && !guestHere && !serverPlacesView && (
         <>
           {inTrash && (listing.data?.files.length ?? 0) > 0 && !selecting && (
             <button
@@ -1336,7 +1335,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
               <span className="big">
                 <Icon
                   name={
-                    q
+                    searching
                       ? "search"
                       : inTrash
                         ? "trash"
@@ -1350,7 +1349,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
                 />
               </span>
               <b>
-                {q
+                {searching
                   ? "No matches"
                   : inTrash
                     ? "Trash is empty"
@@ -1360,11 +1359,9 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
                         ? "No favorites yet"
                         : "This folder is empty"}
               </b>
-              {!q && !inTrash && path && !path.startsWith("::") && (
-                <span>Tap + to upload photos or files.</span>
-              )}
+              {uploadHint && <span>{uploadHint}</span>}
             </div>
-          ) : items.length === 0 ? null : grid && !q ? (
+          ) : items.length === 0 ? null : grid && !searching ? (
             <div className="file-grid">
               {items.map((f) => renderRow(f))}
             </div>

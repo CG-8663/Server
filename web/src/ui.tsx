@@ -13,6 +13,8 @@ import {solidOf, WALLPAPERS, useDeskConfig, wallpaperSrc} from './desktop/config
 import {wallpaperBlocked} from './desktop/wallpaperGate'
 import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
+import {initials as nameInitials} from './initials'
+import {paddingBottomPlus} from './scrollPad'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
 
 // ---- portals --------------------------------------------------------------------------
@@ -36,8 +38,7 @@ export function duration(seconds: number | undefined) {
 export const pct = (used: number, total: number) => (total > 0 ? Math.min(100, Math.max(0, (used / total) * 100)) : 0)
 export const levelColor = (p: number) => (p >= 90 ? 'var(--red)' : p >= 75 ? 'var(--yellow)' : 'var(--green)')
 export function initials(name = '') {
-	const parts = name.trim().split(/\s+/)
-	return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase() || '•'
+	return nameInitials(name)
 }
 export function greeting() {
 	const h = new Date().getHours()
@@ -1203,13 +1204,14 @@ export function nudgeViewport() {
 	// html/body overflow:hidden clips a 1px document scroll; open it for one frame so iOS remeasures.
 	root.style.minHeight = 'calc(100% + 2px)'
 	root.style.overflow = 'auto'
-	if (scroller) scroller.style.paddingBottom = '2px'
+	// Add to the used padding. Replacing it with 2px drops the dock padding and jumps the page.
+	if (scroller) scroller.style.paddingBottom = paddingBottomPlus(getComputedStyle(scroller).paddingBottom)
 	if (scroller) scroller.scrollTop = y + 1
 	window.scrollTo(0, yWin + 1)
 	requestAnimationFrame(() => {
 		if (scroller) {
-			scroller.scrollTop = y
 			scroller.style.paddingBottom = prevPad
+			scroller.scrollTop = y
 		}
 		window.scrollTo(0, yWin)
 		root.style.minHeight = prevMin
