@@ -1383,41 +1383,56 @@ function ContextMenu({menu, onClose}: {menu: Menu; onClose: () => void}) {
 // ---- tooltips (rendered at the desktop root so nothing can clip them) ---------------------------------
 type TipSide = 'right' | 'left' | 'top' | 'bottom'
 type TipPoint = {x: number; y: number}
-function useTooltip(root: React.RefObject<HTMLElement>, layoutKey: string) {
+function useTooltip(root: React.RefObject<HTMLElement>, side: TipSide, measure: (item: HTMLElement) => TipPoint, layoutKey: string) {
 	const [tip, setTip] = useState<({label: string; side: TipSide} & TipPoint) | null>(null)
 	const t = useRef<number>()
 	const showing = useRef(false)
 	const el = useRef<HTMLDivElement>(null)
-	const anchorRef = useRef<{at: () => TipPoint; side: TipSide} | null>(null)
+	const anchorEl = useRef<HTMLElement | null>(null)
+	const live = useRef({side, measure})
+	live.current = {side, measure}
 	const open = Boolean(tip)
-	const refresh = useCallback(() => {
-		const a = anchorRef.current
-		if (!a) return
-		const next = a.at()
-		setTip((cur) => (cur && (cur.x !== next.x || cur.y !== next.y || cur.side !== a.side) ? {...cur, ...next, side: a.side} : cur))
+	const clamp = useCallback(() => {
+		const node = el.current
+		if (!node) return
+		node.style.translate = ''
+		const r = node.getBoundingClientRect()
+		const m = 8
+		const dx = r.left < m ? m - r.left : r.right > window.innerWidth - m ? window.innerWidth - m - r.right : 0
+		const dy = r.top < m ? m - r.top : r.bottom > window.innerHeight - m ? window.innerHeight - m - r.bottom : 0
+		if (dx || dy) node.style.translate = `${dx}px ${dy}px`
 	}, [])
-	// `at` is measured when the tip appears, after any hover scale or dock reveal has settled.
-	const show = (label: string, at: () => TipPoint, side: TipSide) => {
+	const refresh = useCallback(() => {
+		const item = anchorEl.current
+		if (!item || !item.isConnected) return
+		const {side: curSide, measure: curMeasure} = live.current
+		const next = curMeasure(item)
+		setTip((cur) => (cur && (cur.x !== next.x || cur.y !== next.y || cur.side !== curSide) ? {...cur, ...next, side: curSide} : cur))
+		clamp()
+	}, [clamp])
+	// Measured when the tip appears, after any hover scale or dock reveal has settled.
+	const show = (label: string, item: HTMLElement) => {
 		window.clearTimeout(t.current)
-		anchorRef.current = {at, side}
+		anchorEl.current = item
 		// The first tooltip waits a moment; moving along the dock then switches instantly.
 		t.current = window.setTimeout(
 			() => {
 				showing.current = true
-				const cur = anchorRef.current
-				setTip({label, ...(cur ? cur.at() : at()), side: cur ? cur.side : side})
+				const curItem = anchorEl.current ?? item
+				const {side: curSide, measure: curMeasure} = live.current
+				setTip({label, ...curMeasure(curItem), side: curSide})
 			},
 			showing.current ? 0 : 250,
 		)
 	}
 	const hide = () => {
 		window.clearTimeout(t.current)
-		anchorRef.current = null
+		anchorEl.current = null
 		setTip(null)
 		t.current = window.setTimeout(() => (showing.current = false), 300)
 	}
 	useEffect(() => () => window.clearTimeout(t.current), [])
-	// Remeasure when the viewport resizes, the dock scrolls/reconfigures, or an auto-hidden dock finishes revealing.
+	// Remeasure and re-clamp when viewport resizes, dock scrolls/moves/reconfigures, or auto-hidden dock reveals.
 	useEffect(() => {
 		if (!open) return
 		const dock = root.current
@@ -1434,18 +1449,11 @@ function useTooltip(root: React.RefObject<HTMLElement>, layoutKey: string) {
 			window.removeEventListener('scroll', refresh, true)
 			dock?.removeEventListener('transitionend', onTransition)
 		}
-	}, [open, layoutKey, refresh, root])
+	}, [open, layoutKey, side, refresh, root])
 	// Keep the tip on screen: a long label at the end of a full dock would otherwise run off the edge.
 	useLayoutEffect(() => {
-		const node = el.current
-		if (!node) return
-		node.style.translate = ''
-		const r = node.getBoundingClientRect()
-		const m = 8
-		const dx = r.left < m ? m - r.left : r.right > window.innerWidth - m ? window.innerWidth - m - r.right : 0
-		const dy = r.top < m ? m - r.top : r.bottom > window.innerHeight - m ? window.innerHeight - m - r.bottom : 0
-		if (dx || dy) node.style.translate = `${dx}px ${dy}px`
-	}, [tip, layoutKey])
+		clamp()
+	}, [tip, layoutKey, side, clamp])
 	// Inside .desk (not <body>) so the desktop style's tooltip colours apply.
 	const host = root.current?.closest('.desk') ?? document.body
 	const node = tip
@@ -1485,20 +1493,8 @@ function Dock(p: {
 	const suppressClick = useRef(false)
 	const size = p.cfg.dock.iconSize
 	const hidden = p.cfg.dock.autohide && !hover && !focusWithin && !p.forceShow && !drag
-	const tip = useTooltip(ref, `${pos}:${p.cfg.dock.floating}:${size}:${hidden}`)
-	// Bounce: an app that wasn't open bounces while it opens.
-	const [bouncing, setBouncing] = useState<string | null>(null)
-	const open = (k: string) => {
-		if (p.cfg.dock.bounce && !p.counts(k) && !reducedMotion()) {
-			setBouncing(k)
-			window.setTimeout(() => setBouncing((b) => (b === k ? null : b)), 1300)
-		}
-		p.onClick(k)
-	}
-	// Magnify: icons near the pointer grow (and push their neighbours apart), like macOS.
-	const magnifyOn = p.cfg.dock.hover === 'magnify' && !reducedMotion()
 	// Tooltips sit a fixed gap off the dock's edge (or the rendered artwork's edge if magnified past it).
-	const tipAt = (item: HTMLElement) => (): TipPoint => {
+	const tipAt = (item: HTMLElement): TipPoint => {
 		const gap = 10
 		const d = ref.current?.getBoundingClientRect() ?? item.getBoundingClientRect()
 		const r = item.getBoundingClientRect()
@@ -1510,16 +1506,27 @@ function Dock(p: {
 		if (side === 'bottom') return {x: cx, y: Math.max(d.bottom, art.bottom) + gap}
 		return {x: cx, y: Math.min(d.top, art.top) - gap}
 	}
+	const tip = useTooltip(ref, side, tipAt, `${pos}:${p.cfg.dock.floating}:${size}:${hidden}`)
+	// Bounce: an app that wasn't open bounces while it opens.
+	const [bouncing, setBouncing] = useState<string | null>(null)
+	const open = (k: string) => {
+		if (p.cfg.dock.bounce && !p.counts(k) && !reducedMotion()) {
+			setBouncing(k)
+			window.setTimeout(() => setBouncing((b) => (b === k ? null : b)), 1300)
+		}
+		p.onClick(k)
+	}
+	// Magnify: icons near the pointer grow (and push their neighbours apart), like macOS.
+	const magnifyOn = p.cfg.dock.hover === 'magnify' && !reducedMotion()
 	const tipProps = (label: string) => ({
 		onPointerEnter: (e: React.PointerEvent<HTMLElement>) => {
-			if (e.pointerType === 'mouse') tip.show(label, tipAt(e.currentTarget), side)
+			if (e.pointerType === 'mouse') tip.show(label, e.currentTarget)
 		},
 		onPointerLeave: (e: React.PointerEvent<HTMLElement>) => {
 			if (e.pointerType === 'mouse') tip.hide()
 		},
-		onPointerDown: () => tip.hide(),
 		// Keyboard focus gets the label too; a click that only moves focus doesn't.
-		onFocus: (e: React.FocusEvent<HTMLElement>) => e.currentTarget.matches(':focus-visible') && tip.show(label, tipAt(e.currentTarget), side),
+		onFocus: (e: React.FocusEvent<HTMLElement>) => e.currentTarget.matches(':focus-visible') && tip.show(label, e.currentTarget),
 		onBlur: tip.hide,
 	})
 	const frame = useRef(0)
@@ -1609,7 +1616,7 @@ function Dock(p: {
 				aria-label="Dock"
 				onFocus={() => setFocusWithin(true)}
 				onBlur={(e) => {
-					if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusWithin(false)
+					if (!(e.relatedTarget instanceof globalThis.Node) || !e.currentTarget.contains(e.relatedTarget)) setFocusWithin(false)
 				}}
 				onPointerEnter={() => setHover(true)}
 				onPointerMove={(e) => magnifyOn && !drag && e.pointerType === 'mouse' && magnifyAt(e.clientX, e.clientY)}
@@ -1636,7 +1643,10 @@ function Dock(p: {
 									data-key={k}
 									className={`dock-item${p.focusedKey === k ? ' focused' : ''}${count ? ' running' : ''}${drag?.key === k ? ' dragging' : ''}${bouncing === k ? ' bouncing' : ''}`}
 									aria-label={it.label}
-									onPointerDown={startDrag(k)}
+									onPointerDown={(e) => {
+										tip.hide()
+										startDrag(k)(e)
+									}}
 									onClick={() => !suppressClick.current && open(k)}
 									{...tipProps(it.label + (it.status === 'stopped' ? ' · stopped' : ''))}
 									onContextMenu={(e) => {
@@ -1664,6 +1674,7 @@ function Dock(p: {
 				<button
 					className={`dock-item show-apps-btn${p.showAppsOn ? ' focused' : ''}`}
 					aria-label="Show Applications"
+					onPointerDown={tip.hide}
 					onClick={p.onShowApps}
 					{...tipProps('Show Applications')}
 				>
