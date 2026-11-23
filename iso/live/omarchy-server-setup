@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs on the Omarchy Server installer's first console. Installs Arch Linux with archinstall (its
+# Runs on the My Own Data Center installer's first console. Installs Arch Linux with archinstall (its
 # guided screens, pre-filled), and leaves a first-boot step on the new system that installs Omarchy
 # Server and then Omarchy.
 set -u

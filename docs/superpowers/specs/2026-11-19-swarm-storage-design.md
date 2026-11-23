@@ -2,7 +2,7 @@
 
 Date: 2026-11-19
 Status: ready for review
-Repo: omarchy-server. Ship on `feat/swarm-storage` from `upstream/main`. Open a PR against TouchWorkStation/omarchy-server when the slices below are done. Do not add local clone-path wiring. Leave the version number and What's New to the maintainer.
+Repo: omarchy-server. Ship on `feat/swarm-storage` from `upstream/main`. Open a PR against MyOwnDataCenter/server when the slices below are done. Do not add local clone-path wiring. Leave the version number and What's New to the maintainer.
 
 ## 1. Goal
 

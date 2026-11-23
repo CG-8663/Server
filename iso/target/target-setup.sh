@@ -22,7 +22,7 @@ ExecStart=-/sbin/agetty -o '-p -f -- \\\\u' --noclear --autologin $owner %I \$TE
 EOF
 
 cat >/etc/profile.d/zz-omarchy-server-firstboot.sh <<'EOF'
-# Omarchy Server first-boot setup (removes itself when done).
+# My Own Data Center first-boot setup (removes itself when done).
 if [ -z "${OMARCHY_SERVER_FIRSTBOOT_SKIP:-}" ] && [ "$(tty)" = /dev/tty1 ] && [ -f /var/lib/omarchy-server/firstboot ] && [ "$(cat /var/lib/omarchy-server/firstboot)" = "$USER" ]; then
 	/usr/local/bin/omarchy-server-firstboot
 fi
@@ -30,11 +30,11 @@ EOF
 
 cat >/usr/local/bin/omarchy-server-firstboot <<'EOF'
 #!/usr/bin/env bash
-# First start of a new Omarchy Server: install Omarchy Server, then Omarchy.
+# First start of a new My Own Data Center: install My Own Data Center, then Omarchy.
 set -u
 set -o pipefail
 b='\033[1m'; r='\033[0m'; o='\033[38;5;208m'
-SERVER_INSTALL="${OMARCHY_SERVER_INSTALL_URL:-https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh}"
+SERVER_INSTALL="${OMARCHY_SERVER_INSTALL_URL:-https://raw.githubusercontent.com/MyOwnDataCenter/server/main/install.sh}"
 OMARCHY_INSTALL="${OMARCHY_INSTALL_URL:-https://omarchy.org/install}"
 
 finish_firstboot() {

@@ -13,7 +13,7 @@ after(() => rm(root, {recursive: true, force: true}))
 test('the Umbrel store is removed once; TouchWorkStation stays; installed apps are kept', async () => {
 	const data = join(root, 'data')
 	await mkdir(join(data, 'apps'), {recursive: true})
-	const tws = 'https://github.com/TouchWorkStation/app-store'
+	const tws = 'https://github.com/MyOwnDataCenter/app-store'
 	await writeFile(join(data, 'apps', 'apps.json'), JSON.stringify({defaultsAdded: true, stores: [{url: tws}, {url: 'https://github.com/getumbrel/umbrel-apps', name: 'Popular apps'}], apps: [{id: 'home-assistant', port: 8123, state: 'error'}]}))
 	const apps = createApps({dataDir: data, home: join(root, 'home'), run: async () => '', defaultStores: [{url: tws}]})
 	await apps.ready
@@ -27,7 +27,7 @@ test('the Umbrel store is removed once; TouchWorkStation stays; installed apps a
 test('the GitHub store is replaced by a local clone when that is the default', async () => {
 	const data = join(root, 'local-data')
 	await mkdir(join(data, 'apps'), {recursive: true})
-	const github = 'https://github.com/TouchWorkStation/app-store'
+	const github = 'https://github.com/MyOwnDataCenter/app-store'
 	const local = `file://${join(root, 'app-store')}`
 	await writeFile(join(data, 'apps', 'apps.json'), JSON.stringify({defaultsAdded: true, umbrelStoreRemoved: true, stores: [{url: github}], apps: [{id: 'jellyfin', store: github}]}))
 	const apps = createApps({dataDir: data, home: join(root, 'home'), run: async () => '', defaultStores: [{url: local}]})

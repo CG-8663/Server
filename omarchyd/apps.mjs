@@ -15,6 +15,7 @@
 // (HMAC-signed, HttpOnly). It gets one at sign-in, or by a one-time hand-over from the web app when it
 // first opens an app. Cookies belong to a host, not a port, so one sign-in covers every app.
 import {writeAtomic} from './atomic.mjs'
+import {movedGithubUrl} from './moved.mjs'
 import {execFile} from 'node:child_process'
 import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
 import {lstatSync, readlinkSync, realpathSync} from 'node:fs'
@@ -37,7 +38,7 @@ import {installTargetId} from './install-target.mjs'
 import {usbComposeOverlay} from './usb.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
-// Every cookie Omarchy Server itself sets (and any it may set later under these prefixes).
+// Every cookie My Own Data Center itself sets (and any it may set later under these prefixes).
 export const OWN_COOKIE = /^(omarchy_server_|OMARCHY_)/i
 const STORE_FILES = ['omarchy-app-store.yml', 'umbrel-app-store.yml']
 const APP_FILES = ['omarchy-app.yml', 'umbrel-app.yml']
@@ -70,15 +71,16 @@ function nextHostPort(start, avoid) {
 }
 const SESSION_DAYS = 30
 // Some stores keep icons and screenshots in a separate gallery site, by app id.
-// Stores every new Omarchy Server starts with (you can remove them under App Store → Stores). They're
-// downloaded from GitHub by your server; nothing from them is copied into Omarchy Server itself.
-// TouchWorkStation's own catalog: plain Docker Compose files from each project's official image, with
+// Stores every new My Own Data Center starts with (you can remove them under App Store → Stores). They're
+// downloaded from GitHub by your server; nothing from them is copied into My Own Data Center itself.
+// My Own Data Center's own catalog: plain Docker Compose files from each project's official image, with
 // original descriptions. Other stores (including Umbrel-format ones) can still be added by hand.
-export const DEFAULT_STORES = [{url: 'https://github.com/TouchWorkStation/app-store'}]
-export const isGithubAppStore = (url) => /github\.com\/touchworkstation\/app-store(\.git)?$/i.test(String(url ?? '').replace(/\/+$/, ''))
+export const DEFAULT_STORES = [{url: 'https://github.com/MyOwnDataCenter/app-store'}]
+// (Also the store's old address, from before the account moved.)
+export const isGithubAppStore = (url) => /github\.com\/(?:myowndatacenter|touchworkstation)\/app-store(\.git)?$/i.test(String(url ?? '').replace(/\/+$/, ''))
 const GALLERIES = {}
 // Variables omarchyd provides to every app (anything else a compose file needs without a default
-// means the app relies on something Omarchy Server doesn't offer yet).
+// means the app relies on something My Own Data Center doesn't offer yet).
 const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'APP_SEED_32', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'HOME', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID', 'DOCKER_SOCKET', 'APP_GATEWAY_KEY'])
 // Apps that talk to each other (an app and the apps it needs, or apps with fixed internal
 // addresses) share one container network, laid out the way their store expects (10.21.0.0/16).
@@ -176,7 +178,7 @@ export const PERMISSIONS = {
 	...SYSTEM_PERMISSIONS,
 }
 // Bind mounts no app may have, whatever it asks: your whole home folder, its hidden folders (SSH keys,
-// settings, Omarchy Server's own data and keys), and the system's own folders.
+// settings, My Own Data Center's own data and keys), and the system's own folders.
 // An app's own data is under ~/.local too. createBindSources still claims that one folder.
 const under = (p, base) => Boolean(base) && (p === base || p.startsWith(`${base}/`))
 const CLOCK_FILES = ['/etc/localtime', '/etc/timezone']
@@ -459,7 +461,7 @@ export function parseMcp(raw) {
 	return {service, port, path, transport}
 }
 export const folderVar = (id) => `FOLDER_${id.toUpperCase()}`
-// Where you may put an app's folder: under your home, not hidden, not one Omarchy Server never gives an app.
+// Where you may put an app's folder: under your home, not hidden, not one My Own Data Center never gives an app.
 export function folderAllowed(path, home) {
 	if (typeof path !== 'string' || !path.startsWith('/') || path.includes('\0')) return false
 	const p = resolve(path)
@@ -771,9 +773,9 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 			boundService = key
 		}
 	}
-	// TouchWorkStation listings are plain Docker Compose files: the listing names its web service and
+	// My Own Data Center listings are plain Docker Compose files: the listing names its web service and
 	// port (web: {service, port}). Any host port the file publishes for it (so it also runs on its own
-	// with `docker compose up`) gives way to Omarchy Server's private one behind the sign-in.
+	// with `docker compose up`) gives way to My Own Data Center's private one behind the sign-in.
 	if (!internalPort && web && services[web.service] && Number.isInteger(web.port)) {
 		const svc = byName[web.service]
 		webContainerPort = web.port
@@ -810,7 +812,7 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 //   starting      not answering yet, and it was started only a moment ago
 //   unreachable   its containers run, but nothing answers on its web port (see `result`/`error`)
 //   stopped       its containers aren't running
-//   gateway-down  the app answers, but Omarchy Server's own port for it isn't open
+//   gateway-down  the app answers, but My Own Data Center's own port for it isn't open
 //   no-web        it has no web page
 // `probe` is what asking the app gave: {result: 'answered' | 'refused' | 'timeout' | 'error' | 'no-web', status}.
 export function readinessOf({probe, container = 'running', runningForMs = Infinity, graceMs = 120_000, gatewayOpen = true}) {
@@ -960,7 +962,29 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			state.defaultsAdded = true
 			await save()
 		}
-		// Omarchy Server uses only the TouchWorkStation store: remove the Umbrel store servers were given
+		// The account that publishes the stores moved (TouchWorkStation → MyOwnDataCenter): follow it,
+		// once, before GitHub's redirect from the old name can go away. Installed apps follow their store.
+		if (!state.storesMoved) {
+			let moved = false
+			for (const s of [...state.stores]) {
+				const next = movedGithubUrl(s.url)
+				if (!next) continue
+				moved = true
+				const oldUrl = s.url
+				if (state.stores.some((x) => x !== s && x.url.toLowerCase() === next.toLowerCase())) state.stores = state.stores.filter((x) => x !== s)
+				else {
+					s.url = next
+					s.syncedAt = 0
+					delete s.meta
+				}
+				await rm(storeDir(oldUrl), {recursive: true, force: true}).catch(() => {})
+				for (const a of state.apps) if (a.store?.toLowerCase() === oldUrl.toLowerCase()) a.store = next
+			}
+			// Only written when something moved (nothing to do leaves the saved file as it was).
+			state.storesMoved = true
+			if (moved) await save()
+		}
+		// My Own Data Center uses only its own store: remove the Umbrel store servers were given
 		// before (once). Apps already installed from it keep running; they just get no updates from it.
 		if (!state.umbrelStoreRemoved) {
 			const old = state.stores.filter((x) => /github\.com\/getumbrel\/umbrel-apps(\.git)?$/i.test(x.url))
@@ -1101,9 +1125,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// ---- gateway --------------------------------------------------------------------------------
 	function forwardHeaders(req) {
 		const h = {...req.headers}
-		// Browsers send a server's cookies to every port on it, so Omarchy Server's own sign-in cookies
+		// Browsers send a server's cookies to every port on it, so My Own Data Center's own sign-in cookies
 		// (the web app's session, omarchyd's browser session, the app session) arrive here too. None of
-		// them is ever passed to an app: an app that saw them could act as you in Omarchy Server.
+		// them is ever passed to an app: an app that saw them could act as you in My Own Data Center.
 		const cookies = (h.cookie ?? '')
 			.split(';')
 			.map((c) => c.trim())
@@ -1119,9 +1143,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const h = req.headers.host ?? 'localhost'
 		return h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0]
 	}
-	// Apps open inside Omarchy Server's own page (desktop windows, the full-screen app view). Many
+	// Apps open inside My Own Data Center's own page (desktop windows, the full-screen app view). Many
 	// apps forbid being shown inside another page; for their responses through this gateway that is
-	// relaxed to exactly one embedder: the Omarchy Server web app on this same host. Nothing else changes.
+	// relaxed to exactly one embedder: the My Own Data Center web app on this same host. Nothing else changes.
 	const frameable = (headers, host) => {
 		const out = {...headers}
 		delete out['x-frame-options']
@@ -1144,7 +1168,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// The sign-in gateway in front of an app. Normally it owns the app's port and forwards to the
 	// app's private one (127.0.0.1:internalPort). Apps that hold their own port themselves (host
 	// network: Home Assistant, Plex, Pi-hole…) get a "view" gateway on a port of its own instead, so
-	// they can still be shown inside Omarchy Server; it passes requests on unchanged, without
+	// they can still be shown inside My Own Data Center; it passes requests on unchanged, without
 	// proxy headers (some apps, like Home Assistant, refuse requests that claim to come via a proxy).
 	const gatewayKey = (id, view) => (view ? `${id}:view` : id)
 	async function openGateway(app, {view = false} = {}) {
@@ -1574,14 +1598,14 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			// Community-store compose files reach shared folders through this root; it maps
 			// <root>/data/storage/downloads to your Downloads folder.
 			UMBREL_ROOT: join(base, 'shared-root'),
-			// TouchWorkStation listings: your own folders and this server's address, by name.
+			// My Own Data Center listings: your own folders and this server's address, by name.
 			...Object.fromEntries(Object.entries(USER_DIRS).map(([k, d]) => [k, join(home, d)])),
 			SERVER_IP: serverIp(),
 			DOCKER_SOCKET: engineEnv.DOCKER_HOST.replace(/^unix:\/\//, ''),
 			PUID: String(APP_UID),
 			PGID: String(APP_UID),
 			// Sent by its sign-in gateway with every request (x-omarchy-gateway), so an app that
-			// leaves sign-in to Omarchy Server can tell requests that came through it.
+			// leaves sign-in to My Own Data Center can tell requests that came through it.
 			APP_GATEWAY_KEY: deriveEntropy(`app-${app.id}-gateway`),
 			// Folders you placed when installing (its listing's `folders:`); otherwise inside the app.
 			...Object.fromEntries((app.folderIds ?? []).map((id) => [folderVar(id), app.folders?.[id] ?? join(dir, 'folders', id)])),
@@ -2941,7 +2965,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			for (const id of [...gateways.keys()]) closeGateway(id)
 		},
 		// For the Unraid importer: where its listings go, and installing one of them with the access its
-		// listing asks for (the owner reviewed each app before the import started). Folders Omarchy Server
+		// listing asks for (the owner reviewed each app before the import started). Folders My Own Data Center
 		// never gives an app stay refused.
 		importedStoreDir: storeDir(IMPORTED_STORE),
 		publishedStoreDir: storeDir(PUBLISHED_STORE),

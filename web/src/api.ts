@@ -1,4 +1,4 @@
-// Talks only to the Omarchy Server server (same origin). Shapes mirror omarchyd.
+// Talks only to the My Own Data Center server (same origin). Shapes mirror omarchyd.
 
 export const DEFAULT_TIMEOUT_MS = 20_000
 export const SLOW_TIMEOUT_MS = 10 * 60_000
@@ -246,7 +246,7 @@ export type AppState =
 	| 'not-installed'
 
 export type UserApp = {
-	/** Apps that hold their own port: where Omarchy Server shows them inside its page. */
+	/** Apps that hold their own port: where My Own Data Center shows them inside its page. */
 	viewPort?: number
 	id: string
 	name?: string

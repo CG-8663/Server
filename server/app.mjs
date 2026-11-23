@@ -1,5 +1,5 @@
 import http from 'node:http'
-// Omarchy Server server: a same-origin backend for the PWA.
+// My Own Data Center server: a same-origin backend for the PWA.
 //
 // Why it exists: omarchyd's browser login binds its token to an HttpOnly cookie on
 // omarchyd's own origin and sends no CORS headers, so a separately hosted page
@@ -22,7 +22,7 @@ import {linkProxy} from '../omarchyd/proxy-link.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.71'
+export const VERSION = '0.9.72'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -327,7 +327,7 @@ export const ALLOWED = {
 	'files.unmountExternalDevice': 'mutation',
 	'files.getThumbnail': 'mutation',
 	'files.unarchive': 'mutation',
-	// Storage: the same calls Omarchy Server's Storage Manager makes. hardware.raid.setup is
+	// Storage: the same calls My Own Data Center's Storage Manager makes. hardware.raid.setup is
 	// deliberately absent: omarchyd marks it dev-only, and on a running server it writes a RAID
 	// config the next boot mounts as the data drive, i.e. an empty pool in place of your data.
 	'hardware.internalStorage.getDevices': 'query',
@@ -652,7 +652,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		next()
 	})
 
-	// One sign-in for everything: the main sign-in also gets Omarchy Server's app session
+	// One sign-in for everything: the main sign-in also gets My Own Data Center's app session
 	// (OMARCHY_APP_SESSION). Handing it to this browser as a cookie means every app's gateway
 	// (each on its own port of this same host; cookies ignore ports) lets the browser straight in,
 	// whether the app opens here, in a window or in its own tab. Over HTTPS, apps go through the
@@ -755,7 +755,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				token = await accessTokenFor(req.sid, store.getSession(req.sid) ?? session, {force: true})
 			} catch (refreshError) {
 				if (refreshError instanceof BackendError && refreshError.code === 'UNAUTHORIZED') {
-					await store.deleteSession(req.sid) // session revoked in Omarchy Server Settings
+					await store.deleteSession(req.sid) // session revoked in My Own Data Center Settings
 				}
 				throw refreshError
 			}
@@ -847,7 +847,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		}
 	})
 
-	// The account's own Omarchy Server wallpaper, served from the user's server. Omarchy Server
+	// The account's own My Own Data Center wallpaper, served from the user's server. My Own Data Center
 	// ships an AVIF and a JPEG of each; the id is validated so only those can be read.
 	api.get('/wallpaper/:id', async (req, res) => {
 		const backend = getClient()
@@ -1032,7 +1032,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				client: nativeClient,
 			}
 		} catch (error) {
-			// Omarchy Server before 2.0 has no native login; its user.login returns a bearer JWT.
+			// My Own Data Center before 2.0 has no native login; its user.login returns a bearer JWT.
 			if (error instanceof BackendError && /incorrect password/i.test(error.message)) return res.status(401).json(WRONG)
 			if (!(error instanceof BackendError) || error.code !== 'NOT_FOUND') return sendError(res, error)
 			try {
@@ -1067,7 +1067,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				.catch(() => {})
 		}
 		if (session) {
-			// Revoke the Omarchy Server session too, so it disappears from Settings › Devices.
+			// Revoke the My Own Data Center session too, so it disappears from Settings › Devices.
 			await authedCall(req, 'user.logout', 'mutation').catch(() => {})
 			forgetUrlToken(req.sid)
 			await store.deleteSession(req.sid)
@@ -1077,7 +1077,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		res.json({ok: true})
 	})
 
-	// ---- Saved appearance (per Omarchy Server account, shared by all its phones) -------
+	// ---- Saved appearance (per My Own Data Center account, shared by all its phones) -------
 	const THEME_IDS = ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte', 'custom', 'omarchy']
 	const ACCENT_IDS = ['wallpaper', 'blue', 'mauve', 'teal', 'peach', 'green', 'pink']
 	const HSL = /^\d{1,3}(\.\d+)? \d{1,3}(\.\d+)?% \d{1,3}(\.\d+)?%$/
@@ -1242,8 +1242,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			: backend.mutation('user.login', credentials, {userAgent, withCookies: true}))
 		const cookie = cookies.filter((c) => /BROWSER_SESSION/.test(c)).join('; ')
 		if (typeof token !== 'string' || !cookie) return null
-		// The same login also returns Omarchy Server's app-gateway session (OMARCHY_APP_SESSION). Touch
-		// keeps it server-side so app windows open without Omarchy Server's separate app sign-in.
+		// The same login also returns My Own Data Center's app-gateway session (OMARCHY_APP_SESSION). Touch
+		// keeps it server-side so app windows open without My Own Data Center's separate app sign-in.
 		const appCookie = cookies.find((c) => /^OMARCHY_APP_SESSION=/.test(c)) ?? null
 		return {token, cookie, appCookie, renewedAt: Date.now(), appPassAt: Date.now()}
 	}
@@ -1522,11 +1522,11 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		}
 	})
 
-	// Desktop app windows: is this browser signed in to Omarchy Server's app gateway for this app?
-	// Omarchy Server protects every app with its own sign-in (port 2000, /app-auth), whose page refuses
+	// Desktop app windows: is this browser signed in to My Own Data Center's app gateway for this app?
+	// My Own Data Center protects every app with its own sign-in (port 2000, /app-auth), whose page refuses
 	// to be shown inside another site's frame. The resulting session cookie is per host, not per
-	// port, so the browser also sends it to Touch. We only ask Omarchy Server whether it is valid for
-	// the app (the same check Omarchy Server's own sign-in page makes) and answer yes/no. The cookie
+	// port, so the browser also sends it to Touch. We only ask My Own Data Center whether it is valid for
+	// the app (the same check My Own Data Center's own sign-in page makes) and answer yes/no. The cookie
 	// itself is never stored, logged or returned, and this can't sign anyone in.
 	const APP_COOKIES = ['OMARCHY_APP_SESSION', '__Host-OMARCHY_APP_SESSION_HTTPS']
 	api.get('/app-access', async (req, res) => {
@@ -1552,10 +1552,10 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	// Desktop: can each app be shown inside a window? Many apps (Forgejo, Nextcloud, Home
 	// Assistant…) forbid being embedded in another site (X-Frame-Options / CSP frame-ancestors),
 	// which browsers show as "refused to connect". We load each app's start page once, the way
-	// the browser would (through Omarchy Server's app gateway, with the browser's own app session,
+	// the browser would (through My Own Data Center's app gateway, with the browser's own app session,
 	// which the gateway strips before the app sees it), and read only those headers.
 	//   window: can be shown in a window · tab: must open in a browser tab
-	//   signin: Omarchy Server wants this browser to sign in first · unknown: couldn't tell
+	//   signin: My Own Data Center wants this browser to sign in first · unknown: couldn't tell
 	const appFrameCache = new Map() // `${appId}:${signedIn}` -> {verdict, at}
 	async function frameVerdict(app, serverHost, cookieHeader) {
 		if (!app?.port) return 'unknown'
@@ -1576,7 +1576,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			r.body?.cancel().catch(() => {})
 			if (r.status >= 300 && r.status < 400 && r.headers.get('location')) {
 				const next = new URL(r.headers.get('location'), url)
-				// Sent elsewhere (Omarchy Server's sign-in on port 2000, or an old login page): sign in first.
+				// Sent elsewhere (My Own Data Center's sign-in on port 2000, or an old login page): sign in first.
 				if (next.origin !== url.origin || next.pathname.startsWith('/app-auth')) return 'signin'
 				url = next
 				continue
@@ -1590,9 +1590,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		return 'unknown'
 	}
 	// App relay. An app that forbids embedding can still get a desktop window: Touch relays it
-	// on a port of its own and swaps the app's "nobody may embed me" header for "only Omarchy Server
-	// Touch may embed me". Everything else passes through untouched, including Omarchy Server's app
-	// gateway, so Omarchy Server still checks its own sign-in on every request. On top of that the
+	// on a port of its own and swaps the app's "nobody may embed me" header for "only My Own Data Center
+	// Touch may embed me". Everything else passes through untouched, including My Own Data Center's app
+	// gateway, so My Own Data Center still checks its own sign-in on every request. On top of that the
 	// relay only answers browsers signed in to Touch, and never passes Touch's cookie to the app.
 	const relays = new Map() // appId -> {port, targetPort, server, ancestors}
 	const PING_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
@@ -1617,7 +1617,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			.map((c) => c.trim())
 			.filter((c) => {
 				const name = c.slice(0, c.indexOf('='))
-				// Touch's cookies never reach the app; Touch's own Omarchy Server app session wins.
+				// Touch's cookies never reach the app; Touch's own My Own Data Center app session wins.
 				return c && name !== COOKIE && name !== APP_COOKIE && !(held && name === 'OMARCHY_APP_SESSION')
 			})
 		if (held) rest.push(held)
@@ -1738,7 +1738,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					try {
 						const to = new URL(headers.location, `http://${req.headers.host}`)
 						if (to.pathname.startsWith('/app-auth') && to.port !== String(relay.port)) {
-							// Omarchy Server wants a fresh sign-in; its page can't load in a window.
+							// My Own Data Center wants a fresh sign-in; its page can't load in a window.
 							ur.resume()
 							res.writeHead(401, {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'})
 							return res.end('<!doctype html><meta charset="utf-8"><body style="font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0;color:#888;text-align:center;padding:24px">Your app session ended.<br>Sign out and back in, then reopen this app.</body>')
@@ -1878,9 +1878,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		relays.clear()
 	}
 
-	// How each app opens on the desktop. With Touch's own Omarchy Server app session (every sign-in
+	// How each app opens on the desktop. With Touch's own My Own Data Center app session (every sign-in
 	// since 0.12), every app is relayed, so it opens in a window with no extra sign-in. Without it,
-	// only apps that forbid embedding are relayed and the browser's own Omarchy Server sign-in applies.
+	// only apps that forbid embedding are relayed and the browser's own My Own Data Center sign-in applies.
 	//   results[id]: window | tab | signin | unknown
 	//   relay[id]:   true when the app opens through a relay (ask /api/app-open for its address)
 	// How a browser tab reaches an app from the page that asked:
@@ -1914,7 +1914,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			const mode = relayMode(req)
 			const cookies = parseCookies(req.headers.cookie)
 			const held = store.getSession(req.sid)?.console?.appCookie
-			// Only Omarchy Server's own app-session cookies are sent (current and older Omarchy Server).
+			// Only My Own Data Center's own app-session cookies are sent (current and older My Own Data Center).
 			const cookieHeader =
 				held ??
 				['OMARCHY_APP_SESSION', 'OMARCHY_PROXY_TOKEN']
@@ -1929,7 +1929,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					const app = apps.find((a) => a.id === id)
 					if (!app?.port) return void (results[id] = 'unknown')
 					if (app.requiresHttps) return void (results[id] = 'tab')
-					// On this network Omarchy Server's own app gateway lets its apps be shown inside this
+					// On this network My Own Data Center's own app gateway lets its apps be shown inside this
 					// page, and hands each browser its app session itself: a plain window, no relay port.
 					if (mode === 'port') return void (results[id] = 'window')
 					if (sso && mode) {

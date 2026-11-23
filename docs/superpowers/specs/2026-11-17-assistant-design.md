@@ -2,7 +2,7 @@
 
 Date: 2026-11-17
 Status: approved
-Repo: omarchy-server. Ship on `feat/assistant` from `upstream/main`. Open a PR against TouchWorkStation/omarchy-server when the slices below are done. Do not add local clone-path wiring.
+Repo: omarchy-server. Ship on `feat/assistant` from `upstream/main`. Open a PR against MyOwnDataCenter/server when the slices below are done. Do not add local clone-path wiring.
 
 ## 1. Goal
 

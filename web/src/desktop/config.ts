@@ -17,7 +17,7 @@ export const WALLPAPERS = [
 	{id: 'tower', name: "Tower", by: "Viktor Forgacs", hsl: '189 45% 55%'},
 ] as const
 export type BuiltinWallpaper = (typeof WALLPAPERS)[number]['id']
-// 'server' = your Omarchy Server wallpaper (what the phone shows); 'photo' = the photo you uploaded;
+// 'server' = your My Own Data Center wallpaper (what the phone shows); 'photo' = the photo you uploaded;
 // 'omarchy' = an Omarchy desktop background (which one: prefs.omarchyBackground, or the desktop's own).
 // 'color:#rrggbb' = a plain colour instead of a picture.
 export type WallpaperId = BuiltinWallpaper | 'server' | 'photo' | 'omarchy' | `color:#${string}`

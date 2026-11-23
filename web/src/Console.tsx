@@ -1541,7 +1541,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 }
 
 // The Omarchy desktop is at its sign-in screen (or locked out after wrong passwords): sign the
-// owner in from here, once, after confirming their Omarchy Server password.
+// owner in from here, once, after confirming their My Own Data Center password.
 function DesktopSignIn({onDone}: {onDone: () => void}) {
 	const [password, setPassword] = useState('')
 	const [busy, setBusy] = useState(false)

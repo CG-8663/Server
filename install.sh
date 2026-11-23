@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Omarchy Server installer: run as your normal user on Omarchy (or any Arch Linux).
-#   curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash
+# My Own Data Center installer: run as your normal user on Omarchy (or any Arch Linux).
+#   curl -fsSL https://raw.githubusercontent.com/MyOwnDataCenter/server/main/install.sh | bash
 # Installs to ~/.local/share/omarchy-server and runs as two systemd user services:
 #   omarchyd            the backend, on 127.0.0.1:2021 only
 #   omarchy-server-web  the web app, on port 7780 (OMARCHY_SERVER_PORT to change)
@@ -47,13 +47,13 @@ for arg in "$@"; do
 done
 
 # Raise this when a change needs the installer run again (packages, the storage helper, services,
-# firewall rules). While Omarchy Server is in beta, the app asks the owner to run it at their next sign-in.
+# firewall rules). While My Own Data Center is in beta, the app asks the owner to run it at their next sign-in.
 INSTALLER_REVISION=4
 # Started from the app's "run the installer" prompt, in its own terminal: that terminal runs inside
 # omarchyd, so restarting omarchyd here would stop this script partway. Restart once it's done instead.
 FROM_APP="${OMARCHY_SERVER_FROM_APP:-0}"
 
-REPO="${OMARCHY_SERVER_REPO:-https://github.com/TouchWorkStation/omarchy-server.git}"
+REPO="${OMARCHY_SERVER_REPO:-https://github.com/MyOwnDataCenter/server.git}"
 BRANCH="${OMARCHY_SERVER_BRANCH:-main}"
 PORT="${OMARCHY_SERVER_PORT:-7780}"
 BASE="${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-server"

@@ -170,21 +170,21 @@ test('update: a failed build puts the previous version back', async () => {
 })
 
 test('checks and updates from the repository it was installed from (omarchy-server-dev, or omarchy-server)', async () => {
-	assert.equal(rawFromOrigin('https://github.com/TouchWorkStation/omarchy-server-dev.git'), 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server-dev')
-	assert.equal(rawFromOrigin('https://github.com/TouchWorkStation/omarchy-server'), 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server')
-	assert.equal(rawFromOrigin('git@github.com:TouchWorkStation/omarchy-server-dev.git'), 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server-dev')
+	assert.equal(rawFromOrigin('https://github.com/MyOwnDataCenter/omarchy-server-dev.git'), 'https://raw.githubusercontent.com/MyOwnDataCenter/omarchy-server-dev')
+	assert.equal(rawFromOrigin('https://github.com/MyOwnDataCenter/server'), 'https://raw.githubusercontent.com/MyOwnDataCenter/server')
+	assert.equal(rawFromOrigin('git@github.com:MyOwnDataCenter/omarchy-server-dev.git'), 'https://raw.githubusercontent.com/MyOwnDataCenter/omarchy-server-dev')
 	assert.equal(rawFromOrigin('https://evil.example/x/y.git'), null)
 	const asked = []
-	const run = async (cmd, args) => (cmd === 'git' && args.includes('get-url') ? 'https://github.com/TouchWorkStation/omarchy-server-dev.git\n' : '')
+	const run = async (cmd, args) => (cmd === 'git' && args.includes('get-url') ? 'https://github.com/MyOwnDataCenter/omarchy-server-dev.git\n' : '')
 	const fetchImpl = async (url) => (asked.push(String(url)), new Response(JSON.stringify({version: '0.6.1'})))
 	const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: dir, currentVersion: '0.5.0', run, fetchImpl, helperPath: '/nonexistent'})
 	await u.procedures['system.checkUpdate'].run()
-	assert.ok(asked.length && asked.every((a) => a.startsWith('https://raw.githubusercontent.com/TouchWorkStation/omarchy-server-dev/main/')), asked.join(' '))
+	assert.ok(asked.length && asked.every((a) => a.startsWith('https://raw.githubusercontent.com/MyOwnDataCenter/omarchy-server-dev/main/')), asked.join(' '))
 	// No origin (git isn't there): the main repository. A non-GitHub origin is not this path.
 	const asked2 = []
 	const u2 = createUpdater({autoCheck: false, appDir: '/app', dataDir: dir, currentVersion: '0.5.0', run: async () => { throw new Error('no git') }, fetchImpl: async (url) => (asked2.push(String(url)), new Response(JSON.stringify({version: '0.5.0'}))), helperPath: '/nonexistent'})
 	await u2.procedures['system.checkUpdate'].run()
-	assert.ok(asked2[0].startsWith('https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/'))
+	assert.ok(asked2[0].startsWith('https://raw.githubusercontent.com/MyOwnDataCenter/server/main/'))
 })
 
 test('installer prompt: needed after an update the installer hasn’t been run for, then not once it has', async () => {
@@ -203,7 +203,7 @@ test('installer prompt: needed after an update the installer hasn’t been run f
 	assert.deepEqual(installerPackages('for pkg in a b-c $(bad) d; do'), ['a', 'b-c', 'd'])
 	let installed = new Set(['nodejs', 'samba'])
 	const run = async (cmd, args) => {
-		if (cmd === 'git') return 'https://github.com/TouchWorkStation/omarchy-server.git\n'
+		if (cmd === 'git') return 'https://github.com/MyOwnDataCenter/server.git\n'
 		if (cmd === 'pacman' && !installed.has(args[1])) throw new Error('not found')
 		return ''
 	}
@@ -212,7 +212,7 @@ test('installer prompt: needed after an update the installer hasn’t been run f
 	assert.equal(st.needed, true)
 	assert.deepEqual(st.reasons, ['This update changed what the installer sets up.', 'The storage helper changed.', 'New system packages are needed: newthing.'])
 	// Runs the installer from the same place this copy came from, keeps the port, and defers the restart.
-	assert.equal(st.command, 'curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=7790 bash')
+	assert.equal(st.command, 'curl -fsSL https://raw.githubusercontent.com/MyOwnDataCenter/server/main/install.sh | OMARCHY_SERVER_FROM_APP=1 OMARCHY_SERVER_PORT=7790 bash')
 	// What the installer leaves behind when it finishes.
 	await writeFile(join(data, 'installer-revision'), '2\n')
 	await writeFile(helperPath, 'helper v2')
@@ -237,7 +237,7 @@ test('installer prompt runs the local clone’s install.sh when a source is set'
 	const helperPath = join(dir, 'prompt-helper.mjs')
 	await writeFile(helperPath, 'helper v1')
 	const run = async (cmd, args) => {
-		if (cmd === 'git') return 'https://github.com/TouchWorkStation/omarchy-server.git\n'
+		if (cmd === 'git') return 'https://github.com/MyOwnDataCenter/server.git\n'
 		if (cmd === 'pacman') throw new Error('not found')
 		return ''
 	}

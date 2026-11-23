@@ -1,4 +1,4 @@
-# Contributing to Omarchy Server
+# Contributing to My Own Data Center
 
 Thanks for helping. Bug reports, ideas and pull requests are all welcome.
 
@@ -7,8 +7,8 @@ Thanks for helping. Bug reports, ideas and pull requests are all welcome.
 You need Node.js 20 or newer (CI uses 22). You don't need Omarchy to work on most of it.
 
 ```sh
-git clone https://github.com/TouchWorkStation/omarchy-server.git
-cd omarchy-server
+git clone https://github.com/MyOwnDataCenter/server.git
+cd server
 npm ci
 npm run typecheck   # TypeScript check of the web app
 npm run build       # builds the web app into dist/
@@ -46,7 +46,7 @@ needs the web server running behind it:
 
 - Tabs for indentation in code (`.editorconfig` has the details), no semicolons, single quotes.
 - Comments and messages people see are plain English: say what someone can now do, skip jargon.
-- The product is **Omarchy Server**. Please don't use Umbrel's names in the interface.
+- The product is **My Own Data Center**. Please don't use Umbrel's names in the interface.
 
 ## Pull requests
 
@@ -60,5 +60,5 @@ needs the web server running behind it:
 ## Security
 
 Please report security problems privately through
-[GitHub's security advisories](https://github.com/TouchWorkStation/omarchy-server/security/advisories/new),
+[GitHub's security advisories](https://github.com/MyOwnDataCenter/server/security/advisories/new),
 not in a public issue.

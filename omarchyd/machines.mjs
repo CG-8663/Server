@@ -6,7 +6,7 @@
 // open ports on the host that lead into it. The screen is VNC on a unix socket in the machine's
 // own folder, never on a TCP port; omarchyd bridges it to the web app's console.
 //
-// Operating systems come from a catalog (TouchWorkStation/app-store, machines/catalog.json, with
+// Operating systems come from a catalog (MyOwnDataCenter/app-store, machines/catalog.json, with
 // a bundled copy as fallback). Images are cloud images: downloaded from the publisher, checked
 // against the publisher's checksum file, then copied per machine. cloud-init sets up the account
 // on first boot; only a SHA-512 crypt hash of the password is written, never the password.
@@ -27,7 +27,7 @@ import {PUBLIC_KEY, cloudMetaData, cloudUserData, hostnameFor, isWindowsClientLa
 import {RpcError} from './rpc.mjs'
 import {hostdevXml, parseUsbLive} from './usb.mjs'
 
-export const CATALOG_URL = 'https://raw.githubusercontent.com/TouchWorkStation/app-store/main/machines/catalog.json'
+export const CATALOG_URL = 'https://raw.githubusercontent.com/MyOwnDataCenter/app-store/main/machines/catalog.json'
 const BUNDLED_CATALOG = fileURLToPath(new URL('./machine-catalog.json', import.meta.url))
 const CATALOG_TTL = 6 * 60 * 60 * 1000
 export const PORT_MIN = 40_000

@@ -72,14 +72,14 @@ export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; 
 				{step === 'hello' && (
 					<>
 						<h2 id="welcome-title">Welcome{first ? `, ${first}` : ''}</h2>
-						<p>Omarchy Server runs your apps, files, machines and backups from one place. A few quick choices and you’re set. You can change all of it later in Settings › Appearance.</p>
+						<p>My Own Data Center runs your apps, files, machines and backups from one place. A few quick choices and you’re set. You can change all of it later in Settings › Appearance.</p>
 					</>
 				)}
 
 				{step === 'layout' && (
 					<>
 						<h2 id="welcome-title">Pick a layout</h2>
-						<p>How Omarchy Server looks on this device. Saved on this device only.</p>
+						<p>How My Own Data Center looks on this device. Saved on this device only.</p>
 						<ScreenLayoutCards value={layout} detected={detected} onPick={chooseLayout} />
 					</>
 				)}
@@ -87,7 +87,7 @@ export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; 
 				{step === 'theme' && (
 					<>
 						<h2 id="welcome-title">Choose a theme</h2>
-						<p>Colours for Omarchy Server. You can also use your own photo later.</p>
+						<p>Colours for My Own Data Center. You can also use your own photo later.</p>
 						<div className="welcome-themes" role="radiogroup" aria-label="Theme">
 							{PICKABLE_THEMES.map((t) => (
 								<button

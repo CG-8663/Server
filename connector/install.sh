@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Omarchy Server connector: join this Linux computer to your Omarchy Server's local swarm.
+# My Own Data Center connector: join this Linux computer to your My Own Data Center's local swarm.
 #
 # Get the exact command (with a one-time pairing code) from your server: Machines → Local swarm →
 # Add a computer. It looks like:
@@ -39,7 +39,7 @@ need_value() {
 	fi
 }
 
-SOURCE="https://raw.githubusercontent.com/TouchWorkStation/omarchy-server"
+SOURCE="https://raw.githubusercontent.com/MyOwnDataCenter/server"
 SERVER="" CA="" TOKEN="" ALLOW="" UNINSTALL=0
 while [ $# -gt 0 ]; do
 	case "$1" in

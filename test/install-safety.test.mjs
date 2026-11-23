@@ -323,6 +323,6 @@ test('#561 the local swarm steps list five abilities and their defaults', async 
 
 test('#552 README shows the piped --zfs command', async () => {
 	const readme = await readFile(readmePath, 'utf8')
-	const cmd = 'curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash -s -- --zfs'
+	const cmd = 'curl -fsSL https://raw.githubusercontent.com/MyOwnDataCenter/server/main/install.sh | bash -s -- --zfs'
 	assert.equal(readme.split(cmd).length - 1, 2)
 })

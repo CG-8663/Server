@@ -1,4 +1,4 @@
-// Software update for omarchyd: check a source tree for a newer Omarchy Server, and update in place.
+// Software update for omarchyd: check a source tree for a newer My Own Data Center, and update in place.
 // Source: a local clone (`sourceDir`) when the caller passes one, otherwise GitHub on `main`.
 //
 // Check: the version in package.json on the main branch, compared with the one installed. Release notes
@@ -7,6 +7,7 @@
 // restart both services from a detached systemd unit (so this process can be replaced). If a step
 // fails, the previous version is restored and rebuilt. Parts that need root (system packages and the
 // storage helper) aren't touched; when a new version changes them, the check says to run the installer.
+import {movedGithubUrl} from './moved.mjs'
 import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {createHash} from 'node:crypto'
@@ -15,8 +16,8 @@ import {join} from 'node:path'
 
 import {RpcError} from './rpc.mjs'
 
-export const REPO_RAW = 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server'
-export const INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash'
+export const REPO_RAW = 'https://raw.githubusercontent.com/MyOwnDataCenter/server'
+export const INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/MyOwnDataCenter/server/main/install.sh | bash'
 const shQuote = (value) => `'${String(value).replaceAll("'", `'\\''`)}'`
 export const installCommand = (sourceDir) => (sourceDir ? `OMARCHY_SERVER_REPO=${shQuote(sourceDir)} bash ${shQuote(join(sourceDir, 'install.sh'))}` : INSTALL_COMMAND)
 // The sign-in prompt runs this in a terminal. With a local source it must run that clone's
@@ -97,7 +98,7 @@ export function releaseNotes(changelogSource, since) {
 	return out.join('\n\n')
 }
 
-// While Omarchy Server is in beta, an update that needs the installer asks the owner to run it at their
+// While My Own Data Center is in beta, an update that needs the installer asks the owner to run it at their
 // next sign-in (people update in the app and never re-run the installer). Set to false after beta: the
 // update check still says when the installer is needed, in its release notes.
 export const BETA_INSTALLER_PROMPT = true
@@ -144,6 +145,13 @@ export function createUpdater({
 			origin = ''
 		}
 		if (!origin) return (resolved = {raw: REPO_RAW, origin: null})
+		// Installed from the project's old GitHub address: move this copy's origin to the new one
+		// (GitHub's redirect from the old name lasts only until someone else takes it).
+		const moved = movedGithubUrl(origin)
+		if (moved) {
+			await run('git', ['-C', appDir, 'remote', 'set-url', 'origin', moved], {timeout: 10_000}).catch(() => {})
+			origin = moved
+		}
 		const parsed = rawFromOrigin(origin)
 		return (resolved = parsed ? {raw: parsed, origin} : {raw: null, origin})
 	}

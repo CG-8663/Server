@@ -58,7 +58,7 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 			desk.launch(app)
 			return
 		}
-		// Inside Omarchy Server, full screen, once it answers (see openApp). The back button, on screen
+		// Inside My Own Data Center, full screen, once it answers (see openApp). The back button, on screen
 		// or the browser's own, returns here.
 		const ctrl = new AbortController()
 		waitCtrl.current?.abort()

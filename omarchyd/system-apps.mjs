@@ -5,10 +5,10 @@
 // Tailscale is one because it can't safely run in a container here. Containers run rootless, and a
 // rootless Tailscale can only use its userspace networking, in which every connection to the
 // server's Tailscale address is handed to 127.0.0.1 on the same port (wgengine/netstack: dialIP =
-// 127.0.0.1). Everything Omarchy Server keeps on localhost would then be open to the whole tailnet:
+// 127.0.0.1). Everything My Own Data Center keeps on localhost would then be open to the whole tailnet:
 // omarchyd itself and each app's private port behind the sign-in gateway. Installed on the system,
 // the way Omarchy's own menu does it, Tailscale gets a real network interface, so the tailnet
-// reaches only what the server offers to the network anyway (Omarchy Server and your apps'
+// reaches only what the server offers to the network anyway (My Own Data Center and your apps'
 // ports, behind their sign-in).
 import {execFile, spawn as nodeSpawn} from 'node:child_process'
 import {readFile} from 'node:fs/promises'
@@ -95,7 +95,7 @@ export function createSystemApps({helper, helperFile = HELPER_FILE, run = execRu
 		if (await canDrive()) return
 		if (!(await helperCan('tailscale-setup'))) throw needsSetup()
 		const r = JSON.parse(await helperSays('tailscale-setup'))
-		// Only what Omarchy Server installed is removed again; a Tailscale you set up yourself stays.
+		// Only what My Own Data Center installed is removed again; a Tailscale you set up yourself stays.
 		if (r.installedPackage) app.installedPackage = true
 	}
 	async function version() {
@@ -103,7 +103,7 @@ export function createSystemApps({helper, helperFile = HELPER_FILE, run = execRu
 	}
 
 	// Its page: `tailscale web` (Tailscale's sign-in page), run as the owner on a private port that
-	// only the app's gateway (behind Omarchy Server's sign-in) forwards to. On a normal Linux system
+	// only the app's gateway (behind My Own Data Center's sign-in) forwards to. On a normal Linux system
 	// this page has no sign-in of its own, so it must never listen anywhere else.
 	function startWeb(app) {
 		stopWeb(app)

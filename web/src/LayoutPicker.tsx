@@ -59,7 +59,7 @@ function Card({on, suits, art, title, body, onClick}: {on: boolean; suits?: bool
 	)
 }
 
-/** How this device shows Omarchy Server: Automatic, Desktop, or Phone & tablet. */
+/** How this device shows My Own Data Center: Automatic, Desktop, or Phone & tablet. */
 export function ScreenLayoutCards({value, detected, onPick, label = 'Screen layout'}: {value: LayoutPref | null; detected: boolean; onPick: (p: LayoutPref) => void; label?: string}) {
 	const pick = (p: LayoutPref) => {
 		haptic(6)

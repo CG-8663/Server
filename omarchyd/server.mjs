@@ -1,4 +1,4 @@
-// omarchyd: the Omarchy Server backend. It listens on localhost only; the Touch web server in front
+// omarchyd: the My Own Data Center backend. It listens on localhost only; the Touch web server in front
 // of it is the one thing that faces the network. Runs as the owner's own user, not root.
 import {execFile} from 'node:child_process'
 import {mkdir, readFile, readdir, realpath, rm, stat, writeFile} from 'node:fs/promises'
@@ -37,7 +37,7 @@ import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.71'
+export const OMARCHYD_VERSION = '0.9.72'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -948,7 +948,7 @@ WantedBy=graphical-session.target
 			.then((r) => r && r !== '{"fstab":0,"zfs":0}' && console.log('[omarchyd] hardened pool mounts', r))
 			.catch(() => {})
 
-	// Once: put the Omarchy Server icon in the Omarchy top bar (servers installed before the
+	// Once: put the My Own Data Center icon in the Omarchy top bar (servers installed before the
 	// icon supported Omarchy's own bar never got it). `omarchy-server widget off` removes it for good.
 	const widgetMark = join(dataDir, '.top-bar-widget-added')
 	const widgetBin = join(home, '.local', 'bin', 'omarchy-server')

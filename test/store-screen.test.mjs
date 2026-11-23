@@ -15,12 +15,12 @@ test('Store does not define Item inside its render body', async () => {
 	assert.match(storeBody, /<StoreItem\b/)
 })
 test('CommunityStores hides TouchWorkStation when replaced by a local store', async () => {
-	const tws = {url: 'https://github.com/TouchWorkStation/app-store', name: 'TouchWorkStation', blurb: 'browsers'}
+	const tws = {url: 'https://github.com/MyOwnDataCenter/app-store', name: 'TouchWorkStation', blurb: 'browsers'}
 	assert.equal(remainingSuggestedStores([tws], []).length, 1)
 	assert.equal(remainingSuggestedStores([tws], [{url: 'https://github.com/example/other', meta: {id: 'other', name: 'Other'}}]).length, 1)
-	assert.equal(remainingSuggestedStores([tws], [{url: 'https://github.com/TouchWorkStation/app-store.git/', meta: {id: 'tws', name: 'TWS'}}]).length, 0)
+	assert.equal(remainingSuggestedStores([tws], [{url: 'https://github.com/MyOwnDataCenter/app-store.git/', meta: {id: 'tws', name: 'TWS'}}]).length, 0)
 	assert.equal(
-		remainingSuggestedStores([tws], [{url: 'file:///tmp/app-store', meta: {id: 'local', name: 'Local'}, replaces: 'https://github.com/TouchWorkStation/app-store'}]).length,
+		remainingSuggestedStores([tws], [{url: 'file:///tmp/app-store', meta: {id: 'local', name: 'Local'}, replaces: 'https://github.com/MyOwnDataCenter/app-store'}]).length,
 		0,
 	)
 

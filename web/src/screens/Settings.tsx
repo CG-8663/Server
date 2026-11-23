@@ -1,4 +1,4 @@
-// Full settings, backed by the same omarchyd calls Omarchy Server uses.
+// Full settings, backed by the same omarchyd calls My Own Data Center uses.
 import {useContext, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
@@ -1117,7 +1117,7 @@ function PasswordSheet({open, onClose}: {open: boolean; onClose: () => void}) {
 					{
 						onSuccess: async () => {
 							onClose()
-							// Omarchy Server may sign every session out after a password change.
+							// My Own Data Center may sign every session out after a password change.
 							// This fetch does not go through the client that fires touch:signed-out.
 							const still = await fetch('/api/rpc/user.get', {credentials: 'same-origin'}).catch(() => null)
 							if (still?.status === 401) window.dispatchEvent(new Event('touch:signed-out'))

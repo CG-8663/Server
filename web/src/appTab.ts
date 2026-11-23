@@ -1,7 +1,7 @@
 // Opening an app in its own browser tab, and its address to copy (issue #86).
 //
 // On your network the page reaches this server on its own port, so the app's port on the same host
-// works (appUrl). Behind a reverse proxy that only serves Omarchy Server (https on 443) it doesn't:
+// works (appUrl). Behind a reverse proxy that only serves My Own Data Center (https on 443) it doesn't:
 // then the app opens at its own app address (/api/app-open, when app addresses are set up), or you're
 // told it needs one, instead of a tab that can't load.
 import {useCallback} from 'react'

@@ -6,7 +6,7 @@
 //   OpenAI returns an issued client id, kept with that account's tokens.
 // - OpenAI only redirects to an http://127.0.0.1:<port>/auth/callback address. When the browser is on
 //   this server, omarchyd catches it on that port. From a phone or another computer, that page won't
-//   load: the person pastes its address back into Omarchy Server, which checks it the same way.
+//   load: the person pastes its address back into My Own Data Center, which checks it the same way.
 // - Access and refresh tokens stay in omarchyd (keys.json, 0600) and never reach the browser. A
 //   repeat sign-in puts the ID token on the OpenAI authorize URL as a login hint. Access tokens last
 //   an hour and are refreshed here; each refresh rotates the refresh token.

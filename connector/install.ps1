@@ -7,7 +7,7 @@ param(
     [string]$Ca = "",
     [string]$Token = "",
     [string]$Allow = "",
-    [string]$Source = "https://raw.githubusercontent.com/TouchWorkStation/omarchy-server",
+    [string]$Source = "https://raw.githubusercontent.com/MyOwnDataCenter/server",
     [switch]$Uninstall
 )
 
@@ -18,13 +18,13 @@ $AgentPath = Join-Path $InstallDir "agent.py"
 $CaPath = Join-Path $InstallDir "server-ca.crt"
 
 if ($Uninstall) {
-    Write-Host "Removing Omarchy Server connector..."
+    Write-Host "Removing My Own Data Center connector..."
     try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
     try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     if (Test-Path $InstallDir) {
         Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue
     }
-    Write-Host "Omarchy Server connector removed."
+    Write-Host "My Own Data Center connector removed."
     exit 0
 }
 
@@ -142,7 +142,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# Enroll with the Omarchy Server using positional arguments: enroll SERVER TOKEN [ABILITIES]
+# Enroll with the My Own Data Center using positional arguments: enroll SERVER TOKEN [ABILITIES]
 Write-Host "Enrolling with $Server ..."
 $EnrollArgs = @($AgentPath, "enroll", $Server, $Token)
 if ($Allow) { $EnrollArgs += $Allow }
@@ -162,7 +162,7 @@ $Exe = if (Test-Path $PythonW) { $PythonW } else { $Python }
 $Action = New-ScheduledTaskAction -Execute $Exe -Argument "`"$AgentPath`"" -WorkingDirectory $InstallDir
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 0)
-Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description "Omarchy Server local swarm connector" | Out-Null
+Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description "My Own Data Center local swarm connector" | Out-Null
 Start-ScheduledTask -TaskName $TaskName
 
 Write-Host "Joined. The connector runs at sign-in, as the scheduled task '$TaskName'."

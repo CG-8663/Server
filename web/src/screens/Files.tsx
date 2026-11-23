@@ -625,7 +625,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   };
   const inTrash = !!path && (path === "/Trash" || path.startsWith("/Trash/"));
   const selecting = selected.size > 0;
-  // Where uploads go: the folder you're in (if Omarchy Server says it's writable), or Home from the start page.
+  // Where uploads go: the folder you're in (if My Own Data Center says it's writable), or Home from the start page.
   const writableHere =
     !!path && !path.startsWith("::") && !inTrash && listing.data?.operations?.includes("writable") !== false && !listing.error;
   const uploadDir = path === SERVER_FILES ? "/Home" : writableHere ? path : null;

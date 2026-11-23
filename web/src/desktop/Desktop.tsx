@@ -616,7 +616,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			const url = appUrl(app, boot.server!.host)
 			const verdict = framesRef.current?.results[app.id]
 			if (url && (cfgRef.current.appsOpenIn === 'tab' || (app.requiresHttps && location.protocol !== 'https:') || verdict === 'tab')) {
-				// Same as Omarchy Server: the app gets its own browser tab.
+				// Same as My Own Data Center: the app gets its own browser tab.
 				setOverview(null)
 				setMenu(null)
 				appTabRef.current.openTab(app)
@@ -2564,7 +2564,7 @@ function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetr
 	)
 }
 
-// An Omarchy Server app in a window. Omarchy Server asks each browser to sign in before it opens apps, and its
+// A My Own Data Center app in a window. My Own Data Center asks each browser to sign in before it opens apps, and its
 // sign-in page refuses to load inside another page, so that one step happens in a normal tab.
 // The session it creates covers all of this browser's apps (30 days); the window then loads.
 export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null; onClose: () => void}) {
@@ -2583,12 +2583,12 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 		return () => window.clearTimeout(t)
 	}, [access, handover])
 	// On your own network (plain http) the window simply loads the app's address: the app's
-	// gateway signs this browser in by itself (a quick hand-over through Omarchy Server) and lets
+	// gateway signs this browser in by itself (a quick hand-over through My Own Data Center) and lets
 	// the app be shown here. The checks below are only for remote HTTPS access.
 	// The same goes for https:// straight to this server (its own address and port, not a tunnel).
 	const lanHttps = location.protocol === 'https:' && location.port !== ''
 	const direct = !!app && !!url && (lanHttps || (location.protocol === 'http:' && !app.requiresHttps))
-	// How this app opens: through the relay (in a window, signed in by Omarchy Server) or directly.
+	// How this app opens: through the relay (in a window, signed in by My Own Data Center) or directly.
 	const frame = useAppFrame(app && !direct ? [app.id] : [])
 	const relayed = !!app && !!frame.data?.relay[app.id]
 	const touchSignsIn = relayed && !!frame.data?.sso
@@ -2690,7 +2690,7 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 				</span>
 			</div>
 		)
-	// Not signed in to the app gateway yet: hand this browser a session invisibly (Omarchy Server's
+	// Not signed in to the app gateway yet: hand this browser a session invisibly (My Own Data Center's
 	// one-time ticket through the app's own port), then load the app here. Only if that fails
 	// does the sign-in step fall back to a browser tab.
 	if (access === 'signin' && handover !== 'failed' && !waiting)

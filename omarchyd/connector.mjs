@@ -1,4 +1,4 @@
-// Local swarm: other Linux computers joined to this server through the Omarchy Server connector
+// Local swarm: other Linux computers joined to this server through the My Own Data Center connector
 // (connector/agent.py). The connector dials *out* to this server over wss:// (pinned to this
 // server's own certificate authority), so the other computer opens no ports.
 //
@@ -220,7 +220,7 @@ function serverAddresses() {
 	return out
 }
 
-export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(new URL('../connector', import.meta.url)), plugins = null, files = null, source = async () => 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000, sendWol = sendWolPacket}) {
+export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(new URL('../connector', import.meta.url)), plugins = null, files = null, source = async () => 'https://raw.githubusercontent.com/MyOwnDataCenter/server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000, sendWol = sendWolPacket}) {
 	const file = join(dataDir, 'swarm.json')
 	let state = {agents: []}
 	// Set when swarm.json exists but cannot be used. Nothing may write it until the owner repairs it.

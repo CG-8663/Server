@@ -1,6 +1,6 @@
 // NAS for omarchyd: drives and their health, Btrfs pools, drive sleep, and network (SMB) shares.
 // Reading drive layout needs no privileges (lsblk, /etc/fstab). Anything that needs root goes through
-// the Omarchy Server helper (helper/helper.mjs, installed root-owned, allowed by one sudoers rule),
+// the My Own Data Center helper (helper/helper.mjs, installed root-owned, allowed by one sudoers rule),
 // which re-checks every request itself.
 import {plainObject, writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
@@ -387,7 +387,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 			await applyShares(next)
 		})
 	}
-	// Shares without a password need a helper that knows them (installed with Omarchy Server 0.9.21 or
+	// Shares without a password need a helper that knows them (installed with My Own Data Center 0.9.21 or
 	// later). Read the installed helper rather than guess, so an older one is never asked (it would
 	// quietly keep the password, while the page said there was none).
 	const helperKnowsGuests = () => readFile(helperFile, 'utf8').then((t) => t.includes('guest ok = yes'), () => false)
