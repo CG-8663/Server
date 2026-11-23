@@ -418,7 +418,9 @@ export function Sheet({open, onClose, label, children, tall}: {open: boolean; on
 	}, [open])
 	if (!open) return null
 	// Swipe down to dismiss when the sheet is scrolled to the top (the close button is the accessible path).
+	// Disabled on centered desktop dialogs so touch drag cannot drop the -50% Y centering transform.
 	const onTouchStart = (e: React.TouchEvent) => {
+		if (document.documentElement.classList.contains('desk-mode')) return
 		if ((ref.current?.scrollTop ?? 0) > 0) return
 		const target = e.target as HTMLElement
 		if (target.closest('.logs, .gallery, input, textarea')) return

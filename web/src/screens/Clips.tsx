@@ -256,11 +256,13 @@ export function Clips({onBack}: {onBack?: () => void}) {
 									</a>
 								</div>
 								<Field label="Folder on this server" value={folder} onChange={(e) => setFolder(e.target.value)} />
-								<button className="btn" disabled={busy} onClick={() => pasteFolder(open)}>
-									Save into that folder
-								</button>
+								<div className="stack" style={{marginBottom: 12}}>
+									<button className="btn block" disabled={busy} onClick={() => pasteFolder(open)}>
+										Save into that folder
+									</button>
+								</div>
 								{owner && fileComputers.length > 0 && (
-									<>
+									<div className="stack" style={{marginBottom: 12}}>
 										<div className="row static" style={{minHeight: 56, gap: 8, flexWrap: 'wrap'}}>
 											<select className="field" aria-label="Computer to paste onto" value={computer} onChange={(e) => setComputer(e.target.value)}>
 												<option value="">A computer</option>
@@ -270,16 +272,18 @@ export function Clips({onBack}: {onBack?: () => void}) {
 											</select>
 											<Field label="File on that computer" value={destPath} onChange={(e) => setDestPath(e.target.value)} placeholder="Documents/notes.txt" />
 										</div>
-										<button className="btn" disabled={busy || !computer || !destPath.trim()} onClick={() => pasteComputer(open)}>
+										<button className="btn block" disabled={busy || !computer || !destPath.trim()} onClick={() => pasteComputer(open)}>
 											Save onto that computer
 										</button>
-									</>
+									</div>
 								)}
 							</>
 						)}
-						<button className="btn danger" disabled={busy} onClick={() => remove(open)}>
-							Remove from the clip book
-						</button>
+						<div className="stack" style={{marginTop: 8}}>
+							<button className="btn block danger" disabled={busy} onClick={() => remove(open)}>
+								Remove from the clip book
+							</button>
+						</div>
 					</>
 				)}
 			</Sheet>
