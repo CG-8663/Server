@@ -143,17 +143,39 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 	)
 	const listBody = (
 		<>
-			<div style={{position: 'relative'}}>
-				<button className="btn primary small" style={{position: 'absolute', right: 4, top: 14}} onClick={() => (haptic(6), setCreateHost({id: SERVER_FLEET_ID, name: serverName}))}>
-					<Icon name="plus" size={18} stroke={2.4} /> New
-				</button>
-				<h1 className="title">Machines</h1>
-				<p className="subtitle">{machines.isLoading ? 'Loading…' : problem && !machines.data ? 'Can’t reach your server' : `${online} of ${members.length} online`}</p>
-			</div>
-			{owner && (
-				<button className="btn small" style={{marginBottom: 12}} onClick={() => (haptic(6), setAdding(true))}>
-					<Icon name="plus" size={16} stroke={2.4} /> Add a computer
-				</button>
+			{wide ? (
+				// Desktop: a toolbar, like a desktop app's, instead of the phone's big title.
+				<div className="mdesk-bar">
+					<div className="mdesk-title">
+						<h1>Machines</h1>
+						<span>{machines.isLoading ? 'Loading…' : problem && !machines.data ? 'Can’t reach your server' : `${online} of ${members.length} online`}</span>
+					</div>
+					<div className="mdesk-actions">
+						{owner && (
+							<button className="btn small" onClick={() => (haptic(6), setAdding(true))}>
+								<Icon name="plus" size={15} stroke={2.4} /> Add a computer
+							</button>
+						)}
+						<button className="btn primary small" onClick={() => (haptic(6), setCreateHost({id: SERVER_FLEET_ID, name: serverName}))}>
+							<Icon name="plus" size={15} stroke={2.4} /> New virtual machine
+						</button>
+					</div>
+				</div>
+			) : (
+				<>
+					<div style={{position: 'relative'}}>
+						<button className="btn primary small" style={{position: 'absolute', right: 4, top: 14}} onClick={() => (haptic(6), setCreateHost({id: SERVER_FLEET_ID, name: serverName}))}>
+							<Icon name="plus" size={18} stroke={2.4} /> New
+						</button>
+						<h1 className="title">Machines</h1>
+						<p className="subtitle">{machines.isLoading ? 'Loading…' : problem && !machines.data ? 'Can’t reach your server' : `${online} of ${members.length} online`}</p>
+					</div>
+					{owner && (
+						<button className="btn small" style={{marginBottom: 12}} onClick={() => (haptic(6), setAdding(true))}>
+							<Icon name="plus" size={16} stroke={2.4} /> Add a computer
+						</button>
+					)}
+				</>
 			)}
 			{problem && (
 				<div className="error" role="alert">
@@ -168,6 +190,11 @@ export function Machines({onOpenApp, onTerminal}: {onOpenApp?: (app: UserApp) =>
 				</div>
 			)}
 			{machines.isLoading && Array.from({length: 2}, (_, i) => <div key={i} className="skeleton" style={{height: 130, borderRadius: 26, marginBottom: 12}} />)}
+			{wide && (
+				<div className="section-head machines-section">
+					<h2>This server</h2>
+				</div>
+			)}
 			{members.filter((member) => member.kind === 'server').map((member) => renderMember(member))}
 			{!machines.isLoading && (
 				<>
@@ -419,11 +446,12 @@ function VmCard({m, onOpen, onConsole}: {m: Machine; onOpen: () => void; onConso
 	const os = osLook(m.osId)
 	const power = usePowerActions({id: m.id, name: m.name, state: m.state, protected: m.protected})!
 	const status = machineStatus(m.state)
-	const busy = status.kind === 'busy' || power.pending || !!m.pending
+	// (m.pending means hardware changes wait for a reboot, not that it's busy.)
+	const busy = status.kind === 'busy' || power.pending
 	const memory = m.memoryGb ?? (m.memoryMb ? Math.round(m.memoryMb / 1024) : undefined)
 	const meta = [os.name, m.cores ? `${m.cores} CPU` : '', memory ? `${memory} GB` : '', m.state === 'running' && m.ipAddress ? m.ipAddress : ''].filter(Boolean).join(' · ')
 	return (
-		<article className="glass vm-card mrow">
+		<article className="glass vm-card mrow vm-row" onDoubleClick={(e) => !(e.target as HTMLElement).closest('button') && onOpen()}>
 			<span className="top">
 				<span className="vm-os" style={{background: os.bg}}>
 					<Icon name={os.icon} size={26} />
@@ -459,8 +487,8 @@ function VmCard({m, onOpen, onConsole}: {m: Machine; onOpen: () => void; onConso
 						<button type="button" className="btn small" onClick={power.shutdown}>
 							<Icon name="power" size={16} /> Shut down
 						</button>
-						<button type="button" className="btn small" onClick={power.reboot}>
-							<Icon name="restart" size={16} /> Reboot
+						<button type="button" className={`btn small${m.pending ? ' primary' : ''}`} title={m.pending ? 'Changes to its hardware apply after a reboot' : undefined} onClick={power.reboot}>
+							<Icon name="restart" size={16} /> {m.pending ? 'Reboot to apply' : 'Reboot'}
 						</button>
 						<button type="button" className="btn small" onClick={power.pause}>
 							<Icon name="pulse" size={16} /> Pause
