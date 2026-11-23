@@ -13,7 +13,7 @@ import WebSocket from 'ws'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
 import {cloudUserData, isWindowsClientLabel, omarchyConfiguration, windowsAnswerFile} from '../omarchyd/machine-media.mjs'
-import {createMachines, findChecksum} from '../omarchyd/machines.mjs'
+import {backupProgress, createMachines, findChecksum} from '../omarchyd/machines.mjs'
 import {RpcError} from '../omarchyd/rpc.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
@@ -76,6 +76,15 @@ test('install media: desktop cloud-init, Omarchy disk layout, Windows answer fil
 	assert.equal(Buffer.from(/<Value>([^<]+)<\/Value>/.exec(xml)[1], 'base64').toString('utf16le'), 'hunter2 secretPassword')
 })
 
+test('backup progress converts the units virsh prints before dividing', () => {
+	const job = (done, total) => `Job type:         Unbounded   \nOperation:        Backup\nData processed:   ${done}\nData remaining:   1.000 GiB\nData total:       ${total}\n`
+	assert.equal(backupProgress(job('300.000 MiB', '4.000 GiB')), 7)
+	assert.equal(backupProgress(job('1.000 GiB', '4.000 GiB')), 23)
+	assert.equal(backupProgress(job('2.000 GiB', '2.000 GiB')), 90)
+	assert.equal(backupProgress(job('0.000 B', '2.000 GiB')), 0)
+	assert.equal(backupProgress('Job type:         None\n'), null)
+})
+
 describe('omarchyd machines', () => {
 	let root, data, d, fixture, fixtureUrl, auth
 	const doms = new Map()
@@ -104,7 +113,7 @@ describe('omarchyd machines', () => {
 				case 'domifaddr':
 					return ''
 				case 'version':
-					return 'Compiled against library: libvirt 10.0.0\nRunning hypervisor: QEMU 9.0.0\n'
+					return 'Compiled against library: libvirt 10.0.0\nUsing library: libvirt 10.0.0\nUsing API: QEMU 10.0.0\nRunning hypervisor: QEMU 9.0.0\n'
 				case 'qemu-monitor-command':
 					return `VM status: running (${a.at(-1)})\n`
 				case 'backup-begin': {
@@ -148,6 +157,7 @@ describe('omarchyd machines', () => {
 			throw new Error(`virsh ${a[0]} not simulated`)
 		}
 		if (cmd === 'qemu-img') {
+			if (args[0] === 'info' && seen.virtualGb) return JSON.stringify({format: 'qcow2', 'virtual-size': seen.virtualGb * 1024 ** 3, 'actual-size': 4096})
 			if (args[0] === 'convert') await copyFile(args.at(-2), args.at(-1))
 			if (args[0] === 'create') await writeFile(args[3], 'blank')
 			return 'qemu-img version 9.0\n'
@@ -373,6 +383,7 @@ describe('omarchyd machines', () => {
 		const node = await q('machines.node')
 		assert.ok(node.threads >= 1 && node.memoryTotalMb > 0)
 		assert.equal(node.libvirtVersion, '10.0.0')
+		assert.equal(node.qemuVersion, '9.0.0', 'the QEMU version is the running hypervisor, not the libvirt API line')
 		assert.ok(node.videoModels.includes('vga'))
 	})
 
@@ -400,7 +411,8 @@ describe('omarchyd machines', () => {
 		assert.match(seen.xml, /org\.qemu\.guest_agent\.0/)
 		assert.match(seen.xml, /<bootmenu enable='yes'/)
 		await assert.rejects(call('machines.uninstall', {id}), /protected/)
-		await assert.rejects(call('machines.updateOptions', {id, startupDelay: 9999}), /Start delay/)
+		await assert.rejects(call('machines.updateOptions', {id, name: 'Renamed', startupDelay: 9999}), /Start delay/)
+		assert.equal((await q('machines.details', {id})).name, 'Box', 'a rejected request does not rename the machine')
 		await call('machines.updateOptions', {id, protection: false, agent: false, bootMenu: false, onBoot: false, notes: ''})
 		assert.ok(!seen.xml.includes('guest_agent'))
 	})
@@ -456,6 +468,13 @@ describe('omarchyd machines', () => {
 		await call('machines.revertSnapshot', {id, name: 'before'})
 		assert.ok(seen.calls.some((c) => /^qemu-img snapshot -a before /.test(c)))
 		assert.equal((await q('machines.details', {id})).hardware.memoryMb, 1024)
+		const before = (await q('machines.list')).find((x) => x.id === id).diskSizeGb
+		await call('machines.resizeDisk', {id, diskId: 'disk0', sizeGb: before + 5})
+		assert.equal((await q('machines.list')).find((x) => x.id === id).diskSizeGb, before + 5)
+		seen.virtualGb = before
+		await call('machines.revertSnapshot', {id, name: 'before'})
+		seen.virtualGb = undefined
+		assert.equal((await q('machines.list')).find((x) => x.id === id).diskSizeGb, before, 'the list shows the size the image has after the rollback')
 		await call('machines.deleteSnapshot', {id, name: 'before'})
 		assert.deepEqual((await q('machines.details', {id})).snapshots, [])
 	})
