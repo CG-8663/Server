@@ -492,7 +492,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'Pools') continue
 				const full = join(dir, e.name)
 				if (e.isDirectory()) await walk(full, depth + 1)
-				else if (e.isFile() && /\.iso$/i.test(e.name)) found.push(full)
+				else if (e.isFile() && /\.iso$/i.test(e.name) && found.length < 50) found.push(full)
 			}
 		}
 		await walk(home, 0)
