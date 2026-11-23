@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import http from 'node:http'
 import {chmod, mkdtemp, readdir, readFile, rm, stat} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
@@ -76,13 +77,31 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(r.body.server.reachable, true)
 		// a loopback Server address is reported as the address the phone used to reach Touch
 		assert.equal(r.body.server.host, '127.0.0.1')
-		assert.equal(r.body.server.url, 'http://127.0.0.1')
+		assert.equal(r.body.server.url, touch.base)
 		// before sign-in, not when it last started or its exact build
 		assert.equal(r.body.server.startedAt, undefined)
 		assert.equal(r.body.server.revision, undefined)
 		// before sign-in nothing identifies the accounts; only the backdrop wallpaper is shared
 		assert.deepEqual(r.body.accounts, [{userId: '', name: '', avatar: null, wallpaper: {id: '23', brandColorHsl: '24 90% 50%'}}])
 		assert.equal(r.body.session, null)
+	})
+
+	test('the server address in bootstrap keeps the port the page was opened on (#657)', async () => {
+		const r = await touch.req('GET', '/api/bootstrap', undefined, {})
+		const url = new URL(r.body.server.url)
+		assert.equal(url.port, new URL(touch.base).port)
+		const viaHost = await new Promise((resolve, reject) => {
+			const u = new URL(touch.base)
+			http
+				.get({host: u.hostname, port: u.port, path: '/api/bootstrap', headers: {host: '192.168.1.50:7780'}}, (res) => {
+					let data = ''
+					res.on('data', (c) => (data += c))
+					res.on('end', () => resolve(JSON.parse(data)))
+				})
+				.on('error', reject)
+		})
+		assert.equal(viaHost.server.url, 'http://192.168.1.50:7780')
+		assert.equal(viaHost.server.host, '192.168.1.50')
 	})
 
 	test('signed in, bootstrap says when the server last started and its exact build', async () => {

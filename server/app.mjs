@@ -780,7 +780,12 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const upstream = new URL(backend.baseUrl)
 		const local = isLoopback(upstream.hostname)
 		const host = local ? req.hostname : upstream.hostname
-		const publicUrl = local ? `http://${req.hostname}` : backend.baseUrl
+		// The page was reached on a port as well (7780 by default): keep it, so the link isn't port 80.
+		let pageHost = req.hostname
+		try {
+			pageHost = new URL(`${req.protocol}://${req.headers.host}`).host || pageHost
+		} catch {}
+		const publicUrl = local ? `${req.protocol}://${pageHost}` : backend.baseUrl
 		try {
 			const [version, discovery, accounts] = await Promise.all([
 				backend.query('system.version'),
