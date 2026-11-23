@@ -297,7 +297,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	function layoutFor(kind, dir, img) {
 		const disk = {id: 'disk0', file: join(dir, 'disk.qcow2'), device: 'disk', bus: 'virtio', format: 'qcow2'}
 		if (kind === 'cloud') return {firmware: img?.firmware === 'efi' ? 'efi' : 'bios', machineType: 'q35', nic: 'virtio', video: 'vga', disks: [disk, {id: 'seed', role: 'seed', file: join(dir, 'seed.iso'), device: 'cdrom', bus: 'sata', format: 'raw'}]}
-		// Windows installs without extra drivers on SATA, e1000e and a standard display.
+		// Windows (set up automatically, or an ISO you install by hand) installs without extra drivers on SATA, e1000e and a standard display.
 		if (kind === 'windows') return {firmware: 'efi', machineType: 'q35', nic: 'e1000e', video: 'vga', disks: [{...disk, bus: 'sata'}]}
 		return {firmware: 'efi', machineType: 'q35', nic: 'virtio', video: 'vga', disks: [disk]}
 	}
@@ -603,7 +603,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			do id = randomBytes(4).toString('hex')
 			while (machines.some((m) => m.id === id))
 			const dir = join(vmsDir, id)
-			const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' ? 'windows' : 'iso', dir, img)})
+			const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' || local?.platform === 'windows' ? 'windows' : 'iso', dir, img)})
 			if (kind === 'cloud') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
 			machines.push(m)
 			try {
