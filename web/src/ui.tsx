@@ -707,7 +707,7 @@ export function Providers({children}: {children: ReactNode}) {
 							<div className="prose" style={{marginBottom: 24}}>
 								{pending.body}
 							</div>
-							<div className="stack">
+							<div className="stack confirm-actions">
 								<button className={`btn block ${pending.danger ? 'danger solid' : 'primary'}`} onClick={() => finish(true)}>
 									{pending.confirm}
 								</button>

@@ -5,6 +5,25 @@ import {describe, test} from 'node:test'
 
 const CSS = readFileSync(new URL('../web/src/styles.css', import.meta.url), 'utf8')
 
+function splitTopLevelCommas(text) {
+	const out = []
+	let depth = 0
+	let start = 0
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i]
+		if (ch === '(' || ch === '[') depth++
+		else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1)
+		else if (ch === ',' && depth === 0) {
+			const s = text.slice(start, i).trim()
+			if (s) out.push(s)
+			start = i + 1
+		}
+	}
+	const tail = text.slice(start).trim()
+	if (tail) out.push(tail)
+	return out
+}
+
 function parseRules(css) {
 	const clean = css.replace(/\/\*[\s\S]*?\*\//g, '')
 	const rules = []
@@ -39,52 +58,91 @@ function parseRules(css) {
 			const val = part.slice(colon + 1).trim()
 			if (prop) decls[prop] = val
 		}
-		for (const sel of header.split(',')) {
-			const s = sel.trim()
-			if (s) rules.push({selector: s, decls, order: order++})
+		for (const sel of splitTopLevelCommas(header)) {
+			rules.push({selector: sel, decls, order: order++})
 		}
 	}
 	return rules
 }
 
-// Matches a selector against <button class="..."> inside <header class="desk-top"> inside an optional root container.
-function matchBellSelector(selector, buttonClasses, rootClasses = new Set()) {
-	if (/[:\[>+~]/.test(selector)) return null
-	const parts = selector.trim().split(/\s+/)
-	const targetPart = parts[parts.length - 1]
-	const ancestorParts = parts.slice(0, -1)
-
-	const matchPart = (part, tag, classes) => {
+// Matches a selector against <div class="desk ..."><header class="desk-top"><div class="top-right"><button class="...">
+// Supports :where(...) (0 specificity) and > combinators so scoped bar trigger rules are evaluated, not skipped.
+function matchChain(selector, chain) {
+	if (/[:\[+~]/.test(selector)) return null
+	const tokens = selector
+		.trim()
+		.replace(/\s*>\s*/g, ' > ')
+		.split(/\s+/)
+		.filter(Boolean)
+	const matchPart = (part, node) => {
 		const m = part.match(/^(?:([a-zA-Z0-9_-]+))?((?:\.[a-zA-Z0-9_-]+)*)$/)
 		if (!m) return null
 		const [, elTag, clsStr] = m
-		if (elTag && elTag !== tag) return null
+		if (elTag && elTag !== node.tag) return null
 		const cls = clsStr ? clsStr.slice(1).split('.') : []
-		if (!cls.every((c) => classes.has(c))) return null
+		if (!cls.every((c) => node.classes.has(c))) return null
 		return [0, cls.length, elTag ? 1 : 0]
 	}
-
-	const targetSpec = matchPart(targetPart, 'button', buttonClasses)
-	if (!targetSpec) return null
-
-	let total = [...targetSpec]
-	if (ancestorParts.length === 0) return total
-	if (ancestorParts.length === 1) {
-		const ancSpec = matchPart(ancestorParts[0], 'header', new Set(['desk-top']))
-		if (!ancSpec) return null
-		return [total[0] + ancSpec[0], total[1] + ancSpec[1], total[2] + ancSpec[2]]
+	// Walk right-to-left over compound parts and optional '>' combinators.
+	const items = []
+	for (let i = 0; i < tokens.length; i++) {
+		if (tokens[i] === '>') {
+			if (items.length) items[items.length - 1].child = true
+		} else {
+			items.push({part: tokens[i], child: false})
+		}
 	}
-	if (ancestorParts.length === 2) {
-		const rootSpec = matchPart(ancestorParts[0], 'div', rootClasses)
-		const ancSpec = matchPart(ancestorParts[1], 'header', new Set(['desk-top']))
-		if (!rootSpec || !ancSpec) return null
-		return [
-			total[0] + rootSpec[0] + ancSpec[0],
-			total[1] + rootSpec[1] + ancSpec[1],
-			total[2] + rootSpec[2] + ancSpec[2],
-		]
+	if (!items.length) return null
+	const lastSpec = matchPart(items[items.length - 1].part, chain[chain.length - 1])
+	if (!lastSpec) return null
+	let spec = [...lastSpec]
+	let nodeIdx = chain.length - 1
+	for (let k = items.length - 2; k >= 0; k--) {
+		const {part, child} = items[k]
+		if (child) {
+			nodeIdx -= 1
+			if (nodeIdx < 0) return null
+			const s = matchPart(part, chain[nodeIdx])
+			if (!s) return null
+			spec = [spec[0] + s[0], spec[1] + s[1], spec[2] + s[2]]
+		} else {
+			let found = -1
+			let foundSpec = null
+			for (let n = nodeIdx - 1; n >= 0; n--) {
+				const s = matchPart(part, chain[n])
+				if (s) {
+					found = n
+					foundSpec = s
+					break
+				}
+			}
+			if (found < 0) return null
+			nodeIdx = found
+			spec = [spec[0] + foundSpec[0], spec[1] + foundSpec[1], spec[2] + foundSpec[2]]
+		}
 	}
-	return null
+	return spec
+}
+
+function matchBellSelector(selector, buttonClasses, rootClasses = new Set()) {
+	const chain = [
+		{tag: 'div', classes: rootClasses},
+		{tag: 'header', classes: new Set(['desk-top'])},
+		{tag: 'div', classes: new Set(['top-right'])},
+		{tag: 'button', classes: buttonClasses},
+	]
+	const wm = selector.match(/^(.*?):where\(([^()]+)\)(.*)$/)
+	if (wm) {
+		const [, pre, inner, post] = wm
+		if (post.trim()) return null
+		const prefixSpec = pre.trim() ? matchChain(pre.trim(), chain.slice(0, 1)) : [0, 0, 0]
+		if (pre.trim() && !prefixSpec) return null
+		for (const branch of splitTopLevelCommas(inner)) {
+			if (matchChain(branch, chain)) return prefixSpec
+		}
+		return null
+	}
+	return matchChain(selector, chain)
 }
 
 function cmpSpec(a, b) {
@@ -109,7 +167,7 @@ function computeBellStyles(buttonClasses, rootClasses = new Set()) {
 }
 
 describe('desktop top bar bell styles', () => {
-	test('.desk-top .top-bell wins padding, display, width, and color over .desk-top button', () => {
+	test('.desk-top .top-bell wins padding, display, width, and color over scoped bar button defaults', () => {
 		const bell = computeBellStyles(new Set(['top-bell']))
 		assert.equal(bell.padding, '0')
 		assert.equal(bell.display, 'inline-grid')
@@ -120,10 +178,11 @@ describe('desktop top bar bell styles', () => {
 		assert.equal(lit.color, 'var(--accent-text)')
 	})
 
-	test('.style-daylight .desk-top .top-bell uses dark ink while preserving .lit accent color', () => {
+	test('.style-daylight .desk-top .top-bell uses dark ink while preserving .lit accent color and 30px width', () => {
 		const daylight = new Set(['style-daylight'])
 		const bell = computeBellStyles(new Set(['top-bell']), daylight)
 		assert.equal(bell.color, 'rgba(0, 0, 0, 0.62)')
+		assert.equal(bell.width, '30px')
 
 		const lit = computeBellStyles(new Set(['top-bell', 'lit']), daylight)
 		assert.equal(lit.color, 'var(--accent-text)')

@@ -22,23 +22,34 @@ test('workspace pill hover does not override active .on pill and Locked chip sta
 	assert.ok(lock && /color:\s*inherit;/.test(lock) && !/--accent-text/.test(lock))
 })
 
-test('title-bar tooltips are unified with --tip-* and keyboard focus, and ghost buttons keep 30px width with 12px group gap', () => {
+test('title-bar tooltips are unified with --tip-* and keyboard focus, and ghost buttons keep 30px width with 12px total group gap', () => {
 	assert.match(CSS, /\.win-btn\[data-tip\]::after \{[^}]*--tip-bg/)
 	assert.match(CSS, /\.win-btn\[data-tip\]:hover::after,\n\.win-btn\[data-tip\]:focus-visible::after \{/)
-	assert.match(CSS, /\.win-btn\.ghost \+ \.win-btn:not\(\.ghost\) \{[^}]*margin-left:\s*12px;/)
+	assert.match(CSS, /\.win-btn\.ghost \+ \.win-btn:not\(\.ghost\) \{[^}]*margin-left:\s*5px;/)
 	assert.doesNotMatch(CSS, /\.win-btn\.ghost \+ \.win-btn:not\(\.ghost\)::before/)
 })
 
-test('context & system menus share concentric 8px (Graphite 4px) item radius, truncation, and disabled hover suppression', () => {
+test('context & system menus share concentric 8px (Graphite 4px) item radius, truncation, and disabled hover exclusion in all styles', () => {
 	assert.match(CSS, /\.sys-pop button,\n\.ctx-menu button \{[^}]*border-radius:\s*8px;/)
 	assert.match(CSS, /\.style-graphite \.sys-pop button,\n\.style-graphite \.ctx-menu button \{[^}]*border-radius:\s*4px;/)
-	assert.match(CSS, /\.ctx-menu button:disabled:hover,\n\.ctx-menu button:disabled:focus-visible \{[^}]*background:\s*transparent;/)
+	assert.match(CSS, /\.ctx-menu button:not\(:disabled\):hover/)
+	assert.match(CSS, /\.style-daylight \.ctx-menu button:not\(:disabled\):hover/)
 	assert.match(DESKTOP, /<span>\{it\.label\}<\/span>/)
 })
 
-test('desktop-mode body sheets centre without swipe-drag jump and toasts clear the top bar', () => {
+test('offline banner sits above dock and below top bar, context menu sits above Hyprland overlays, and clock-pop stacks on narrow viewports', () => {
+	const z = (sel) => Number(CSS.match(new RegExp(`\\n${sel.replace(/\./g, '\\.')} \\{[^}]*?z-index: (\\d+)`))?.[1])
+	assert.ok(z('.desk-offline-banner') > z('.desk-dock'), 'offline banner must clear the dock')
+	assert.ok(z('.desk-top') > z('.desk-offline-banner'), 'top bar and its popovers must sit above the offline banner')
+	assert.ok(z('.menu-scrim') > z('.hypr-onboard') && z('.ctx-menu') > z('.menu-scrim'), 'context menu must sit above Hyprland overlays')
+	assert.match(CSS, /@media \(max-width: 600px\) \{\n\t\.clock-pop \{[^}]*grid-template-columns:\s*1fr;/)
+})
+
+test('desktop-mode body sheets centre with compact desktop confirm row, no swipe-drag jump, and toasts clear the top bar', () => {
 	assert.match(CSS, /html\.desk-mode > body > \.sheet \{/)
+	assert.match(CSS, /html\.desk-mode > body > \.sheet \.confirm-actions \{[^}]*flex-direction:\s*row-reverse;/)
 	assert.match(CSS, /html\.desk-mode \.toast \{[^}]*top:\s*calc\(var\(--top-h, 34px\) \+ 12px\);/)
+	assert.match(UI, /className="stack confirm-actions"/)
 	assert.match(UI, /if \(document\.documentElement\.classList\.contains\('desk-mode'\)\) return/)
 })
 

@@ -1344,7 +1344,7 @@ h1.title {
 	color: var(--red);
 }
 .btn.danger.solid {
-	background: var(--red);
+	background: color-mix(in srgb, var(--red) 72%, #3a0006);
 	color: #fff;
 }
 .btn.block {
@@ -4076,7 +4076,7 @@ html.desk-mode body {
 	top: calc(var(--top-h) + 8px);
 	left: 50%;
 	transform: translateX(-50%);
-	z-index: 100001;
+	z-index: 99999;
 	margin: 0;
 	padding: 8px 14px;
 	font-size: 13px;
@@ -4088,7 +4088,7 @@ html.desk-mode body {
 .menu-scrim {
 	position: fixed;
 	inset: 0;
-	z-index: 100001;
+	z-index: 100030;
 	background: transparent;
 	border: 0;
 	padding: 0;
@@ -4123,6 +4123,21 @@ html.desk-mode body {
 	gap: 0;
 	padding: 0;
 	overflow: hidden;
+}
+@media (max-width: 600px) {
+	.clock-pop {
+		grid-template-columns: 1fr;
+		max-height: calc(100dvh - var(--top-h, 34px) - 16px);
+		overflow-y: auto;
+	}
+	.clock-pop .pop-notes {
+		min-height: 0;
+		border-right: 0;
+		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	}
+	.style-daylight .clock-pop .pop-notes {
+		border-bottom-color: rgba(0, 0, 0, 0.08);
+	}
 }
 .pop-notes {
 	padding: 16px;
@@ -4297,10 +4312,10 @@ html.desk-mode body {
 	text-align: left;
 	cursor: default;
 }
-.sys-pop button:hover,
-.sys-pop button:focus-visible,
-.ctx-menu button:hover,
-.ctx-menu button:focus-visible {
+.sys-pop button:not(:disabled):hover,
+.sys-pop button:not(:disabled):focus-visible,
+.ctx-menu button:not(:disabled):hover,
+.ctx-menu button:not(:disabled):focus-visible {
 	background: rgba(255, 255, 255, 0.1);
 }
 .sys-pop button.danger,
@@ -4315,7 +4330,7 @@ html.desk-mode body {
 
 .ctx-menu {
 	position: fixed;
-	z-index: 100003;
+	z-index: 100032;
 	min-width: 220px;
 	max-width: min(340px, calc(100vw - 16px));
 	padding: 6px;
@@ -4347,7 +4362,7 @@ html.desk-mode body {
 }
 .snap-preview {
 	position: fixed;
-	z-index: 99998;
+	z-index: 99997;
 	border-radius: 12px;
 	background: color-mix(in srgb, var(--accent) 22%, transparent);
 	border: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
@@ -4480,7 +4495,7 @@ html.desk-mode body {
 	background: var(--glass);
 }
 .win-btn.ghost + .win-btn:not(.ghost) {
-	margin-left: 12px;
+	margin-left: 5px;
 }
 .win-btn[data-tip]::after {
 	content: attr(data-tip);
@@ -4671,6 +4686,25 @@ html.desk-mode > body > .sheet {
 }
 html.desk-mode > body > .sheet .grabber {
 	display: none;
+}
+html.desk-mode > body > .sheet .confirm-actions {
+	flex-direction: row-reverse;
+	justify-content: flex-end;
+	gap: 10px;
+}
+html.desk-mode > body > .sheet .confirm-actions .btn.block {
+	width: auto;
+	min-width: 104px;
+	height: 40px;
+	padding: 0 18px;
+}
+@media (max-width: 420px) {
+	html.desk-mode > body > .sheet .confirm-actions {
+		flex-direction: column;
+	}
+	html.desk-mode > body > .sheet .confirm-actions .btn.block {
+		width: 100%;
+	}
 }
 @keyframes sheet-pop {
 	from {
@@ -4957,7 +4991,7 @@ html.desk-mode > body > .sheet .grabber {
 	--dock-focus: rgba(255, 255, 255, 0.17);
 	--dock-dot: #fff;
 	position: fixed;
-	z-index: 99999;
+	z-index: 99998;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -5065,7 +5099,7 @@ html.desk-mode > body > .sheet .grabber {
 }
 .dock-hotzone {
 	position: fixed;
-	z-index: 99998;
+	z-index: 99997;
 }
 .hz-left {
 	left: 0;
@@ -5622,10 +5656,10 @@ html.desk-mode > body > .sheet .grabber {
 .style-daylight .cal-dow {
 	color: rgba(0, 0, 0, 0.5) !important;
 }
-.style-daylight .sys-pop button:hover,
-.style-daylight .sys-pop button:focus-visible,
-.style-daylight .ctx-menu button:hover,
-.style-daylight .ctx-menu button:focus-visible {
+.style-daylight .sys-pop button:not(:disabled):hover,
+.style-daylight .sys-pop button:not(:disabled):focus-visible,
+.style-daylight .ctx-menu button:not(:disabled):hover,
+.style-daylight .ctx-menu button:not(:disabled):focus-visible {
 	background: rgba(0, 0, 0, 0.07);
 }
 .style-daylight .pop-note {
