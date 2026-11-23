@@ -377,6 +377,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 				} else if (e.event === 'error') {
 					failed = true
 					setTurnError(e.data.message)
+					if (e.data.conversationId) setTurnConversationId(e.data.conversationId, since)
 				}
 			}, ac.signal)
 		} catch (err) {
