@@ -1,8 +1,8 @@
 name: Installer ISO
 
-# Builds the Omarchy Server installer ISO. When a release is published (or a v* tag is pushed), the
+# Builds the My Own Data Center installer ISO. When a release is published (or a v* tag is pushed), the
 # ISO is attached to that release, so
-# https://github.com/TouchWorkStation/omarchy-server/releases/latest/download/omarchy-server.iso
+# https://github.com/MyOwnDataCenter/server/releases/latest/download/omarchy-server.iso
 # always downloads the newest one. Run it by hand from the Actions tab to just test a build.
 on:
   workflow_dispatch:

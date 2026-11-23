@@ -31,7 +31,7 @@ test('a directory source becomes a curl URL on this server', () => {
 
 test('a GitHub source stays a raw URL without skipping certificate checks', () => {
 	const got = connectorInstallCommand({
-		source: 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/',
+		source: 'https://raw.githubusercontent.com/MyOwnDataCenter/server/',
 		server: 'https://10.1.2.3:7780',
 		ca,
 		token,
@@ -39,7 +39,7 @@ test('a GitHub source stays a raw URL without skipping certificate checks', () =
 	})
 	assert.equal(
 		got.command,
-		`curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/connector/install.sh | bash -s -- --server https://10.1.2.3:7780 --ca ${ca} --token ${token} --source https://raw.githubusercontent.com/TouchWorkStation/omarchy-server`,
+		`curl -fsSL https://raw.githubusercontent.com/MyOwnDataCenter/server/main/connector/install.sh | bash -s -- --server https://10.1.2.3:7780 --ca ${ca} --token ${token} --source https://raw.githubusercontent.com/MyOwnDataCenter/server`,
 	)
 	assert.equal(got.command.includes(' -k'), false)
 	assert.equal(got.command.includes('-fsSLk'), false)
@@ -87,10 +87,10 @@ test('the installer fetches connector files from this server with its own certif
 
 test('Windows: a PowerShell command from GitHub, or from this server with the certificate pinned by the installer', async () => {
 	const server = 'https://10.1.2.3:7780'
-	const gh = connectorInstallCommandWindows({source: 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/', server, ca, token, allow: 'terminal,files'})
+	const gh = connectorInstallCommandWindows({source: 'https://raw.githubusercontent.com/MyOwnDataCenter/server/', server, ca, token, allow: 'terminal,files'})
 	assert.equal(
 		gh.command,
-		`$s = irm 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/connector/install.ps1'; & ([scriptblock]::Create($s)) -Server '${server}' -Ca '${ca}' -Token '${token}' -Allow 'terminal,files' -Source 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server'`,
+		`$s = irm 'https://raw.githubusercontent.com/MyOwnDataCenter/server/main/connector/install.ps1'; & ([scriptblock]::Create($s)) -Server '${server}' -Ca '${ca}' -Token '${token}' -Allow 'terminal,files' -Source 'https://raw.githubusercontent.com/MyOwnDataCenter/server'`,
 	)
 	assert.equal(gh.command.includes('SkipCertificateCheck'), false)
 	assert.match(gh.uninstall, / -Uninstall$/)

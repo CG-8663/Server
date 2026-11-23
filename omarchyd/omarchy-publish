@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Publish or unpublish an app on this Omarchy Server.
+"""Publish or unpublish an app on this My Own Data Center.
 
-Runs inside a studio container. Omarchy Server mounts the token, a socket that
+Runs inside a studio container. My Own Data Center mounts the token, a socket that
 only accepts these two calls, and a map of container folders to home folders.
 The studio does not get the Podman socket.
 """

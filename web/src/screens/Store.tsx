@@ -263,14 +263,14 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 }
 
 // ---- community app stores ------------------------------------------------------------------------
-// Modc is where anyone can submit an app (the official store is packaged by TouchWorkStation).
-const MODC_URL = 'https://github.com/TouchWorkStation/Modc-app-store'
+// Modc is where anyone can submit an app (the official store is packaged by My Own Data Center).
+const MODC_URL = 'https://github.com/MyOwnDataCenter/Modc-app-store'
 const SUBMIT_APP_URL = `${MODC_URL}/issues/new?template=submit-app.yml`
 const SUBMIT_GUIDE_URL = `${MODC_URL}/blob/main/CONTRIBUTING.md`
 const SUGGESTED_STORES = [
 	{
-		url: 'https://github.com/TouchWorkStation/app-store',
-		name: 'TouchWorkStation',
+		url: 'https://github.com/MyOwnDataCenter/app-store',
+		name: 'My Own Data Center',
 		blurb: 'Google Chrome and Brave browsers that run on your server and stream to any device.',
 	},
 	{

@@ -2,7 +2,7 @@
 """Door in front of a published app.
 
 The app is started on localhost. Two listeners sit in front of it:
-the web port accepts Omarchy Server's sign-in gateway or a bearer token,
+the web port accepts My Own Data Center's sign-in gateway or a bearer token,
 and the API port accepts only the bearer token. That API port is the one
 published on the LAN and on the shared network. A missing localhost shim,
 a static program, or a check that cannot prove the shim will load refuses

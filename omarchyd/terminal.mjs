@@ -27,7 +27,7 @@ export function openShell({cols, rows, command = null, cwd = os.homedir(), env =
 // ---- tmux: shells that outlive omarchyd -------------------------------------------------------
 // Its own server (-L omarchy) and settings, so your own tmux setup is untouched. No status bar, the
 // normal screen (so the terminal's own scrollback keeps working), and the latest device's size.
-export const TMUX_CONF = `# Omarchy Server's terminal sessions. Written by omarchyd; changes here are replaced.
+export const TMUX_CONF = `# My Own Data Center's terminal sessions. Written by omarchyd; changes here are replaced.
 set -g status off
 set -g history-limit 50000
 set -g default-terminal "screen-256color"

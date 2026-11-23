@@ -1,10 +1,10 @@
-# Omarchy Server
+# My Own Data Center
 
 Turn an [Omarchy](https://omarchy.org) machine into a home server you run from any browser. Install
 apps from a catalog of about 580, keep your files and drives in one place, run virtual machines, and
 reach your real Omarchy desktop — from a phone, a tablet or another computer.
 
-![Omarchy Server's desktop in a browser, with App Store, Machines and Terminal windows open](docs/screenshots/desktop-overview.jpg)
+![My Own Data Center's desktop in a browser, with App Store, Machines and Terminal windows open](docs/screenshots/desktop-overview.jpg)
 
 <p align="center">
   <img src="docs/screenshots/phone-home.png" width="24%" alt="Home on a phone">
@@ -18,13 +18,13 @@ reach your real Omarchy desktop — from a phone, a tablet or another computer.
 On the Omarchy machine, as your normal user (not with sudo):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/MyOwnDataCenter/server/main/install.sh | bash
 ```
 
 The installer:
 
 - installs what's missing (Node.js, Podman, libvirt, wayvnc and friends);
-- builds Omarchy Server in `~/.local/share/omarchy-server`;
+- builds My Own Data Center in `~/.local/share/omarchy-server`;
 - asks you to create your account **in the terminal**, so your password never crosses the network;
 - starts two systemd user services that keep running while you're logged out.
 
@@ -36,7 +36,7 @@ and files are kept. Logs: `journalctl --user -u omarchyd -u omarchy-server-web -
 Want ZFS pools too? A piped install only receives `--zfs` after `--` (see [Storage](#storage-and-nas)):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash -s -- --zfs
+curl -fsSL https://raw.githubusercontent.com/MyOwnDataCenter/server/main/install.sh | bash -s -- --zfs
 ```
 
 To keep Software update and the App Store on local clones you sync yourself (no automatic GitHub
@@ -87,7 +87,7 @@ where you left off; add `--purge` to delete those too.
   network. Before installing, you see exactly what an app asks for (system ports, devices, host
   network, folders outside its own), and it gets only what you allow. Apps never receive your Omarchy
   Server sign-in.
-- **Behind your sign-in:** every app's port admits only browsers signed in to Omarchy Server.
+- **Behind your sign-in:** every app's port admits only browsers signed in to My Own Data Center.
 - Start, stop, restart, update, logs, and a shell inside any app.
 
 ### Files
@@ -146,7 +146,7 @@ pastes. On a phone there's a key row with Esc, Tab, Ctrl, Alt and arrows.
 - Every drive with its health (SMART), and sleep timers for hard drives.
 - **Btrfs pools** (combined, mirrored or RAID 10) on blank drives, import existing Btrfs drives, add
   drives, error checks.
-- **ZFS pools** (combined, mirrored, RAID-Z1, RAID-Z2) and imports, after `curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash -s -- --zfs`.
+- **ZFS pools** (combined, mirrored, RAID-Z1, RAID-Z2) and imports, after `curl -fsSL https://raw.githubusercontent.com/MyOwnDataCenter/server/main/install.sh | bash -s -- --zfs`.
 - Pools appear in Files at `~/Pools/<name>`, and can be shared over SMB.
 - Drives that hold anything are never erased: pools are only made on blank drives.
 
@@ -186,7 +186,7 @@ through a private socket in that user's runtime folder. Remove a computer and it
 your server and stops. To take the connector off a computer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/connector/install.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/MyOwnDataCenter/server/main/connector/install.sh | bash -s -- --uninstall
 ```
 
 The desktop works with Hyprland, Sway and other wlroots desktops (wayvnc) and X11 desktops
@@ -217,7 +217,7 @@ The desktop works with Hyprland, Sway and other wlroots desktops (wayvnc) and X1
 | `omarchy-server-web` (`server/`, `web/`) | you | `7780` (http and https) | The web app you open in a browser |
 | `helper/helper.mjs` | root, via one sudoers rule | — | Storage pools, shares, firewall ports, power |
 
-On the server itself: `omarchy-server` (status, open, restart, logs, uninstall), "Omarchy Server" in the
+On the server itself: `omarchy-server` (status, open, restart, logs, uninstall), "My Own Data Center" in the
 launcher, and a top-bar icon (`omarchy-server widget off` removes it).
 
 ## Requirements

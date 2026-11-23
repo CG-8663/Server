@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.72',
+		date: '2026-11-23',
+		title: 'My Own Data Center on GitHub',
+		added: [
+			'The project now lives at github.com/MyOwnDataCenter/server, and its app stores under MyOwnDataCenter (same names). Your server moves its update source and saved stores to the new addresses by itself, so updates keep coming once GitHub’s redirect from the old name ends. The install command is now: curl -fsSL https://raw.githubusercontent.com/MyOwnDataCenter/server/main/install.sh | bash',
+			'The installers, messages and docs say My Own Data Center.',
+		],
+	},
+	{
 		version: '0.9.71',
 		date: '2026-11-23',
 		title: 'Machines on the desktop, and one store at a time',

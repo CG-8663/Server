@@ -113,7 +113,7 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 			await mkdir(resticDir, {recursive: true})
 			await import('node:fs/promises').then((f) => f.symlink(process.env.OMARCHY_BACKUP_RESTIC, join(resticDir, 'restic')).catch(() => {}))
 		}
-		d = await startOmarchyd({port: 0, dataDir: data, tlsDir, home: root, webPort, backupOptions: {unshare: false, ...(backupIt ? {resticPath: process.env.OMARCHY_BACKUP_RESTIC} : {})}, appOptions: {run: async () => '', allowFileStores: true, defaultStores: [], systemApps: null}, updaterOptions: {autoCheck: false, raw: 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server'}})
+		d = await startOmarchyd({port: 0, dataDir: data, tlsDir, home: root, webPort, backupOptions: {unshare: false, ...(backupIt ? {resticPath: process.env.OMARCHY_BACKUP_RESTIC} : {})}, appOptions: {run: async () => '', allowFileStores: true, defaultStores: [], systemApps: null}, updaterOptions: {autoCheck: false, raw: 'https://raw.githubusercontent.com/MyOwnDataCenter/server'}})
 		await store.setConfig({backendUrl: d.url})
 		const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
 		auth = {authorization: `Bearer ${login.result.data.accessToken}`}
@@ -136,7 +136,7 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		const p = await pair({terminal: true, desktop: true, manage: true})
 		assert.match(p.token, /^[A-Za-z0-9_-]{32}$/)
 		assert.match(p.ca, /^[0-9a-f]{64}$/)
-		assert.equal(p.source, 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server')
+		assert.equal(p.source, 'https://raw.githubusercontent.com/MyOwnDataCenter/server')
 		assert.equal(p.port, webPort)
 		assert.ok(Array.isArray(p.addresses))
 		assert.ok(p.expiresAt > Date.now() + 14 * 60_000)

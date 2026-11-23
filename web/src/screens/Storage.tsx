@@ -1,4 +1,4 @@
-// Settings → Storage: Omarchy Server as a NAS. Drives and their health, Btrfs pools (new, imported,
+// Settings → Storage: My Own Data Center as a NAS. Drives and their health, Btrfs pools (new, imported,
 // grown, checked for errors), and drive sleep. Pools appear in Files under Home → Pools, and any folder
 // can be shared on the network from Files.
 //

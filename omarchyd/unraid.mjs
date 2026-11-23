@@ -213,7 +213,7 @@ export function containerPlan(c, {imageEnv = [], imageCmd = null, imageEntrypoin
 		const k = kv.slice(0, i)
 		const v = kv.slice(i + 1)
 		if (k === 'PATH' || k === 'HOST_OS' || k === 'HOST_HOSTNAME' || k === 'HOST_CONTAINERNAME') continue
-		// Unraid runs apps as nobody:users (99:100); here they run as the app user Omarchy Server sets.
+		// Unraid runs apps as nobody:users (99:100); here they run as the app user My Own Data Center sets.
 		if (k === 'PUID' || k === 'PGID') env[k] = `\${${k}}`
 		else env[k] = escapeCompose(v)
 	}
@@ -1117,7 +1117,7 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 							? 'Some share or container sizes are unknown; verify free space before starting.'
 							: null
 
-		// Collect ports already bound on Omarchy Server
+		// Collect ports already bound on My Own Data Center
 		const existingApps = (await apps?.procedures?.['apps.list']?.run?.().catch(() => [])) ?? []
 		const usedPorts = new Map() // port -> owner label
 		for (const a of existingApps) {

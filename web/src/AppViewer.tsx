@@ -9,13 +9,13 @@ import {useDialogFocus} from './focus'
 import {Icon} from './icons'
 import {AppIcon, haptic, lockPageScroll, usePortalRoot, useToast} from './ui'
 
-// An app opened full screen inside Omarchy Server, in this same tab, the way a phone opens an app.
+// An app opened full screen inside My Own Data Center, in this same tab, the way a phone opens an app.
 // The back button (on screen, or the browser's / phone's own) returns to where you were.
 export function AppViewer({app, onClose}: {app: UserApp; onClose: () => void}) {
 	const portalRoot = usePortalRoot()
 	const boot = useBootstrap()
 	const [reloads, setReloads] = useState(0)
-	// Some apps keep a login of their own inside (set by the app, not Omarchy Server). Their
+	// Some apps keep a login of their own inside (set by the app, not My Own Data Center). Their
 	// default details are shown here so there's nothing to look up.
 	const creds = app.credentials?.defaultPassword ? app.credentials : null
 	const seenKey = `omarchy.credsSeen.${app.id}`

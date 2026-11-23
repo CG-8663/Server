@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Omarchy Server connector: joins this Linux computer to an Omarchy Server's local swarm.
+"""My Own Data Center connector: joins this Linux computer to a My Own Data Center's local swarm.
 
 It dials out to the server (wss://, trusting only that server's own certificate authority), so this
 computer opens no ports. It runs as you (a systemd user service), never as root.
@@ -1428,7 +1428,7 @@ def _trim_scrollback(buf, limit=SHELL_SCROLLBACK_MAX):
 
 # ---- tmux: shells that outlive the connector (restarts, self-updates) ----
 # Its own server (-L omarchy) and settings, so the computer's own tmux setup is untouched.
-TMUX_CONF = """# Omarchy Server's terminal sessions. Written by the connector; changes here are replaced.
+TMUX_CONF = """# My Own Data Center's terminal sessions. Written by the connector; changes here are replaced.
 set -g status off
 set -g history-limit 50000
 set -g default-terminal "screen-256color"

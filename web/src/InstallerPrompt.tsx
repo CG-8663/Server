@@ -26,7 +26,7 @@ const setLater = (on: boolean) => {
 if (typeof window !== 'undefined') window.addEventListener('touch:signed-out', () => setLater(false))
 
 // During beta: when an update in the app needs the installer run again (system packages, the storage
-// helper), ask the owner at sign-in. The installer runs in Omarchy Server's own terminal, so sudo asks
+// helper), ask the owner at sign-in. The installer runs in My Own Data Center's own terminal, so sudo asks
 // for the password there, on the server; this page never sees it.
 export function InstallerPrompt({ready}: {ready: boolean}) {
 	const status = useQuery({queryKey: ['system.installerStatus'], queryFn: () => query<InstallerStatus>('system.installerStatus'), staleTime: 60_000, retry: false})

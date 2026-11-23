@@ -193,7 +193,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.71', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.72', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -588,7 +588,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 	})
 
 	test('community app stores can be listed, added and removed', async () => {
-		const url = 'https://github.com/TouchWorkStation/app-store'
+		const url = 'https://github.com/MyOwnDataCenter/app-store'
 		const add = await touch.req('POST', '/api/rpc/appStore.addRepository', {input: {url}})
 		assert.equal(add.status, 200)
 		const list = await touch.req('GET', '/api/rpc/appStore.repositories')

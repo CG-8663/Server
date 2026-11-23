@@ -830,7 +830,7 @@ export function useOmarchyThemes(enabled = true) {
 	return q
 }
 
-const FALLBACK_BRAND = '24 90% 50%' // Omarchy Server's default wallpaper colour
+const FALLBACK_BRAND = '24 90% 50%' // My Own Data Center's default wallpaper colour
 // The Omarchy theme takes every colour from the theme the Omarchy desktop uses right now: panels,
 // text and the palette that system icons are tinted with (see .sys-ico in styles.css).
 const OMARCHY_VARS = ['--bg', '--bg-solid', '--fg', '--fg-2', '--muted', '--faint', '--glass', '--glass-2', '--glass-press', '--line', '--line-2', '--sheet', '--dock', '--red', '--green', '--yellow', '--blue', '--mauve', '--teal', '--peach', '--pink']
@@ -892,7 +892,7 @@ export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 }
 
 // Appearance is cached in the browser for an instant first paint, and saved on the server per
-// Omarchy Server account so every device you sign in on gets it. The server counts each save (rev):
+// My Own Data Center account so every device you sign in on gets it. The server counts each save (rev):
 // a device takes the server's copy whenever it changed, checking again when it comes back to the
 // front (and every 20 s), and unsaved local edits stay pending until a save succeeds so offline
 // changes are never reverted by a poll.

@@ -1,4 +1,4 @@
-/* Omarchy Server — Omarchy Server's wallpaper + glass language, rebuilt for one hand. */
+/* My Own Data Center — My Own Data Center's wallpaper + glass language, rebuilt for one hand. */
 @import '@fontsource/jetbrains-mono/latin-400.css';
 @import '@fontsource/jetbrains-mono/latin-600.css';
 
@@ -241,7 +241,7 @@ img {
 	font-variant-numeric: tabular-nums;
 }
 
-/* ---- Backdrop: the account's Omarchy Server wallpaper --------------------------- */
+/* ---- Backdrop: the account's My Own Data Center wallpaper --------------------------- */
 /* z-index 0 (not -1): a negative z-index lets mobile browsers scroll a "fixed" layer with the page.
    100lvh: the large viewport, so showing/hiding the URL bar does not recrop a cover image. */
 .backdrop {
@@ -7830,7 +7830,7 @@ html.page-locked .auth {
 	padding-top: 10px;
 }
 
-/* Desktop top bar: the notification bell (rings while an Omarchy Server update is ready). */
+/* Desktop top bar: the notification bell (rings while a My Own Data Center update is ready). */
 .desk-top .top-bell {
 	position: relative;
 	display: inline-grid;

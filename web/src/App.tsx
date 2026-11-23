@@ -156,7 +156,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	const [tab, setTab] = useState<Tab>(tabFromHash)
 	const [storeBound, setStoreBound] = useState<StoreBinding | null>(null)
 	const [appId, setAppId] = useState<string | null>(null)
-	// An app open inside Omarchy Server (full screen, back button returns here).
+	// An app open inside My Own Data Center (full screen, back button returns here).
 	const [viewing, setViewing] = useState<UserApp | null>(null)
 	useEffect(() => {
 		const onView = (e: Event) => (setAppId(null), setViewing((e as CustomEvent<UserApp>).detail))
