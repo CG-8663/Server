@@ -34,6 +34,8 @@ test('dock tooltip portals inside .desk, clamps/bounds width, reveals auto-hidde
 	assert.match(dockFn, /instanceof globalThis\.Node/, 'blur check must use DOM Node (not hyprland layout Node)')
 	assert.match(dockFn, /startDrag\(k\)\(e\)/, 'dock item pointerdown must compose tip.hide with startDrag without overwriting it')
 	assert.doesNotMatch(dockFn.slice(dockFn.indexOf('const tipProps'), dockFn.indexOf('const frame')), /onPointerDown/, 'tipProps must not overwrite onPointerDown on dock items')
+	assert.match(tipFn, /node\.style\.maxWidth/, 'side-dock tooltip must constrain maxWidth to available space before clamping')
+	assert.match(dockFn, /!e\.currentTarget\.matches\(':focus-visible'\)/, 'pointer leave must not hide tooltip while keyboard focus remains')
 	assert.match(dockFn, /pointerType === 'mouse'/, 'touch taps must not leave sticky hover tooltips')
 	assert.match(dockFn, /matches\(':focus-visible'\)/, 'dock items must show tooltips on keyboard focus')
 	assert.match(dockFn, /Math\.max\(d\.right,\s*art\.right\)/, 'tooltip must measure rendered artwork instead of assuming full magnification')

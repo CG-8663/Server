@@ -1392,12 +1392,23 @@ function useTooltip(root: React.RefObject<HTMLElement>, side: TipSide, measure: 
 	const live = useRef({side, measure})
 	live.current = {side, measure}
 	const open = Boolean(tip)
-	const clamp = useCallback(() => {
+	const clamp = useCallback((anchor?: {x: number; y: number; side: TipSide} | null) => {
 		const node = el.current
 		if (!node) return
+		const m = 8
+		const curSide = anchor?.side ?? live.current.side
+		const ax = anchor?.x ?? parseFloat(node.style.left)
+		// On side docks, bound tooltip width to the remaining space between the artwork edge and viewport edge
+		// before clamping so long labels ellipsize instead of shifting back over a magnified icon.
+		if (curSide === 'right' && Number.isFinite(ax)) {
+			node.style.maxWidth = `${Math.max(64, Math.min(320, Math.floor(window.innerWidth - m - ax)))}px`
+		} else if (curSide === 'left' && Number.isFinite(ax)) {
+			node.style.maxWidth = `${Math.max(64, Math.min(320, Math.floor(ax - m)))}px`
+		} else {
+			node.style.maxWidth = ''
+		}
 		node.style.translate = ''
 		const r = node.getBoundingClientRect()
-		const m = 8
 		const dx = r.left < m ? m - r.left : r.right > window.innerWidth - m ? window.innerWidth - m - r.right : 0
 		const dy = r.top < m ? m - r.top : r.bottom > window.innerHeight - m ? window.innerHeight - m - r.bottom : 0
 		if (dx || dy) node.style.translate = `${dx}px ${dy}px`
@@ -1408,7 +1419,7 @@ function useTooltip(root: React.RefObject<HTMLElement>, side: TipSide, measure: 
 		const {side: curSide, measure: curMeasure} = live.current
 		const next = curMeasure(item)
 		setTip((cur) => (cur && (cur.x !== next.x || cur.y !== next.y || cur.side !== curSide) ? {...cur, ...next, side: curSide} : cur))
-		clamp()
+		clamp({x: next.x, y: next.y, side: curSide})
 	}, [clamp])
 	// Measured when the tip appears, after any hover scale or dock reveal has settled.
 	const show = (label: string, item: HTMLElement) => {
@@ -1452,7 +1463,7 @@ function useTooltip(root: React.RefObject<HTMLElement>, side: TipSide, measure: 
 	}, [open, layoutKey, side, refresh, root])
 	// Keep the tip on screen: a long label at the end of a full dock would otherwise run off the edge.
 	useLayoutEffect(() => {
-		clamp()
+		clamp(tip)
 	}, [tip, layoutKey, side, clamp])
 	// Inside .desk (not <body>) so the desktop style's tooltip colours apply.
 	const host = root.current?.closest('.desk') ?? document.body
@@ -1523,7 +1534,7 @@ function Dock(p: {
 			if (e.pointerType === 'mouse') tip.show(label, e.currentTarget)
 		},
 		onPointerLeave: (e: React.PointerEvent<HTMLElement>) => {
-			if (e.pointerType === 'mouse') tip.hide()
+			if (e.pointerType === 'mouse' && !e.currentTarget.matches(':focus-visible')) tip.hide()
 		},
 		// Keyboard focus gets the label too; a click that only moves focus doesn't.
 		onFocus: (e: React.FocusEvent<HTMLElement>) => e.currentTarget.matches(':focus-visible') && tip.show(label, e.currentTarget),
