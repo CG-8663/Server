@@ -644,7 +644,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		req.pipe(up)
 	})
 	const api = express.Router()
-	api.use(express.json({limit: '64kb'}))
+	const json64k = express.json({limit: '64kb'})
+	const jsonClipboard = express.json({limit: '256kb'})
+	api.use((req, res, next) => (req.path === '/rpc/hyprland.clipboardWrite' ? jsonClipboard(req, res, next) : json64k(req, res, next)))
 	api.use((req, res, next) => {
 		res.set('Cache-Control', 'no-store')
 		req.sid = parseCookies(req.headers.cookie)[COOKIE]

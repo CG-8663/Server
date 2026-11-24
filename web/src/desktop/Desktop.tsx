@@ -601,7 +601,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				.then(() => {
 					window.setTimeout(() => {
 						if (!winsRef.current.some((x) => x.id === id)) return
-						query<HyprlandWindow[]>('hyprland.windows')
+						query<HyprlandWindow[]>('hyprland.windows', {strict: true})
 							.then((list) => {
 								if (!list.some((rw) => rw.address.toLowerCase() === addr.toLowerCase())) {
 									removeWinLocally(id)

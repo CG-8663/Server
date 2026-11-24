@@ -249,6 +249,15 @@ export function createHyprland({
 		{path: join(home, '.icons'), userOwned: true},
 	]
 
+	function resolveXdgDataEnv() {
+		const dataHome = process.env.XDG_DATA_HOME && process.env.XDG_DATA_HOME.startsWith('/') ? process.env.XDG_DATA_HOME : join(home, '.local/share')
+		const dataDirs = (process.env.XDG_DATA_DIRS || '/usr/local/share:/usr/share')
+			.split(':')
+			.map((d) => d.trim())
+			.filter((d) => d.startsWith('/'))
+		return {dataHome, dataDirs: dataDirs.length ? dataDirs : ['/usr/local/share', '/usr/share']}
+	}
+
 	async function cleanGuiEnv(env) {
 		const keep = [
 			'HOME',
@@ -260,6 +269,7 @@ export function createHyprland({
 			'LC_ALL',
 			'TERM',
 			'XDG_RUNTIME_DIR',
+			'XDG_DATA_HOME',
 			'XDG_DATA_DIRS',
 			'XDG_CONFIG_DIRS',
 			'XDG_CONFIG_HOME',
@@ -277,6 +287,10 @@ export function createHyprland({
 		for (const k of keep) {
 			if (env[k] != null) out[k] = env[k]
 		}
+		// Keep scanner and gtk-launch aligned on the exact same XDG data roots.
+		const xdg = resolveXdgDataEnv()
+		out.XDG_DATA_HOME = xdg.dataHome
+		out.XDG_DATA_DIRS = xdg.dataDirs.join(':')
 		// Ensure Wayland/Electron/GTK/Qt/D-Bus vars are always present even when omarchyd runs as a minimal systemd user service
 		if (!out.DBUS_SESSION_BUS_ADDRESS && env.XDG_RUNTIME_DIR) {
 			const bus = join(env.XDG_RUNTIME_DIR, 'bus')
@@ -425,7 +439,7 @@ export function createHyprland({
 				scale: Number(m.scale) || 1,
 				refreshRate: Math.round(Number(m.refreshRate) || 60),
 				dpmsStatus: m.dpmsStatus !== false,
-				activeWorkspace: m.activeWorkspace?.id ?? 1,
+				activeWorkspace: Number.isInteger(m.activeWorkspace?.id) ? m.activeWorkspace.id : null,
 				reserved: Array.isArray(m.reserved) && m.reserved.length === 4 ? m.reserved.map((n) => Number(n) || 0) : [0, 0, 0, 0],
 				locked: Array.isArray(m.solitaryBlockedBy) && m.solitaryBlockedBy.includes('LOCK'),
 				hasLockInfo: Array.isArray(m.solitaryBlockedBy),
@@ -486,20 +500,26 @@ export function createHyprland({
 				['keyword', 'monitor', `${RAIL_OUTPUT},3840x2160@60,auto,1`],
 			).catch(() => {})
 			mons = await monitorsInfo()
-			rail = mons.find((m) => m.name === RAIL_OUTPUT) ?? rail
-			syncAllStreamRects().catch(() => {})
+			rail = mons.find((m) => m.name === RAIL_OUTPUT) ?? null
+			if (rail) syncAllStreamRects().catch(() => {})
 		}
 		if (rail && !rail.dpmsStatus) {
 			await wakeRailOutput()
 			mons = await monitorsInfo()
-			rail = mons.find((m) => m.name === RAIL_OUTPUT) ?? rail
+			rail = mons.find((m) => m.name === RAIL_OUTPUT) ?? null
 		}
-		return rail ?? null
+		if (!rail || !Number.isInteger(rail.activeWorkspace) || rail.activeWorkspace < 1 || rail.activeWorkspace > 99) {
+			return null
+		}
+		return rail
 	}
 
 	// Size & position a floating window strictly inside RAIL-1's usable rect.
-	async function placeOnRail(addr, reqW, reqH) {
+	async function placeOnRail(addr, reqW, reqH, {strict = false} = {}) {
 		const rail = await ensureRailOutput().catch(() => null)
+		if (strict && !rail) {
+			throw new RpcError('BAD_GATEWAY', 'Headless RAIL-1 display disappeared during window placement')
+		}
 		const padL = rail?.reserved?.[0] ?? 0
 		const padT = rail?.reserved?.[1] ?? 0
 		const padR = rail?.reserved?.[2] ?? 0
@@ -508,16 +528,23 @@ export function createHyprland({
 		const maxH = rail ? Math.max(260, Math.round(rail.height / (rail.scale || 1)) - padT - padB) : 2160
 		const w = Math.max(240, Math.min(maxW, Math.round(Number(reqW) || 1100)))
 		const h = Math.max(180, Math.min(maxH, Math.round(Number(reqH) || 740)))
-		await hyprDispatch(
+		const resizeP = hyprDispatch(
 			`hl.dispatch(hl.dsp.window.resize({window = "address:${addr}", x = ${w}, y = ${h}, exact = true}))`,
 			['dispatch', 'resizewindowpixel', `exact ${w} ${h},address:${addr}`],
-		).catch(() => {})
+		)
+		if (strict) await resizeP
+		else await resizeP.catch(() => {})
 		if (rail) {
 			const tx = rail.x + padL
 			const ty = rail.y + padT
 			const env = await discoverEnv()
-			if (env?.HYPRLAND_INSTANCE_SIGNATURE) {
-				await exec('hyprctl', ['dispatch', 'movewindowpixel', `exact ${tx} ${ty},address:${addr}`], {env, timeout: 4000}).catch(() => {})
+			if (!env?.HYPRLAND_INSTANCE_SIGNATURE) {
+				if (strict) throw new RpcError('PRECONDITION_FAILED', 'Hyprland desktop session unavailable during placement')
+			} else {
+				const r = await exec('hyprctl', ['dispatch', 'movewindowpixel', `exact ${tx} ${ty},address:${addr}`], {env, timeout: 4000})
+				if (strict && !r.ok) {
+					throw new RpcError('BAD_GATEWAY', `Failed to position window on RAIL-1: ${r.stderr.trim() || 'hyprctl failed'}`)
+				}
 			}
 		}
 		return {w, h}
@@ -580,13 +607,8 @@ export function createHyprland({
 
 	function resolveDesktopAppDirs() {
 		if (appDirs) return appDirs
-		const dirs = []
-		const dataHome = process.env.XDG_DATA_HOME && process.env.XDG_DATA_HOME.startsWith('/') ? process.env.XDG_DATA_HOME : join(home, '.local/share')
-		dirs.push(join(dataHome, 'applications'))
-		const dataDirs = (process.env.XDG_DATA_DIRS || '/usr/local/share:/usr/share')
-			.split(':')
-			.map((d) => d.trim())
-			.filter((d) => d.startsWith('/'))
+		const {dataHome, dataDirs} = resolveXdgDataEnv()
+		const dirs = [join(dataHome, 'applications')]
 		for (const d of dataDirs) {
 			const p = join(d, 'applications')
 			if (!dirs.includes(p)) dirs.push(p)
@@ -646,12 +668,23 @@ export function createHyprland({
 		if (!file) return null
 		const real = await realpath(resolve(file)).catch(() => null)
 		if (!real || !(await isAllowedIconPath(real))) return null
-		// Verify canonical target and read directly via one non-blocking descriptor with a 2 MiB byte ceiling
+		// Verify canonical target, open once with O_NOFOLLOW, and bind containment to the opened descriptor before reading any bytes.
 		let fh = null
 		try {
 			fh = await fsOpen(real, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0))
 			const st = await fh.stat()
 			if (!st.isFile() || st.size > 2 * 1024 * 1024) return null
+			// Bind the opened descriptor's kernel path (Linux /proc/self/fd) and post-open (dev, ino) to an allowed icon root so an ancestor swap cannot escape the jail.
+			const procFdReal = await realpath(`/proc/self/fd/${fh.fd}`).catch(() => null)
+			if (procFdReal) {
+				if (!(await isAllowedIconPath(procFdReal))) return null
+			} else {
+				const postReal = await realpath(real).catch(() => null)
+				const postStat = postReal ? await lstat(postReal).catch(() => null) : null
+				if (!postReal || !postStat || postStat.dev !== st.dev || postStat.ino !== st.ino || !(await isAllowedIconPath(postReal))) {
+					return null
+				}
+			}
 			const buf = Buffer.allocUnsafe(st.size + 1)
 			let total = 0
 			while (total <= 2 * 1024 * 1024) {
@@ -720,6 +753,35 @@ export function createHyprland({
 		eventReconnectTimer.unref?.()
 	}
 
+	let eventSockReady = false
+	const eventReadyWaiters = new Set()
+	function notifyEventReady() {
+		for (const fn of [...eventReadyWaiters]) {
+			eventReadyWaiters.delete(fn)
+			try {
+				fn()
+			} catch {}
+		}
+	}
+	function waitForEventSocketReady(timeoutMs = 1500) {
+		if (eventSockReady && eventSock) return Promise.resolve(true)
+		return new Promise((resolveReady) => {
+			let done = false
+			const finish = (ok) => {
+				if (done) return
+				done = true
+				clearTimeout(t)
+				eventReadyWaiters.delete(onReady)
+				resolveReady(ok)
+			}
+			const onReady = () => finish(true)
+			eventReadyWaiters.add(onReady)
+			const t = setTimeout(() => finish(false), timeoutMs)
+			t.unref?.()
+			ensureEventSocket().catch(() => {})
+		})
+	}
+
 	async function ensureEventSocket() {
 		if (busClosed || eventSock || eventSockConnecting || eventListeners.size === 0) return
 		eventSockConnecting = true
@@ -737,13 +799,15 @@ export function createHyprland({
 				return
 			}
 			if (busClosed || eventListeners.size === 0 || eventSock) return
-			const isReconnect = currentEventInstance !== null
 			currentEventInstance = instanceId
 			const sock = net.connect(sockPath)
 			eventSock = sock
+			eventSockReady = false
 			let buf = ''
-			let buffering = isReconnect
+			let buffering = true
+			let bufferOverflow = false
 			const bufferedEvts = []
+			let resyncTimer = null
 			const dispatchParsed = (evt) => {
 				if (evt.type === 'layoutchange') {
 					if (activeStreams.size > 0) syncAllStreamRects().catch(() => {})
@@ -751,6 +815,34 @@ export function createHyprland({
 					if (evt.type === 'activewindow') lastFocusedAddr = String(evt.address || '').toLowerCase()
 					emitEvent(evt)
 				}
+			}
+			const syncAuthoritative = () => {
+				if (busClosed || eventSock !== sock) return
+				buffering = true
+				bufferOverflow = false
+				bufferedEvts.length = 0
+				windowsSnapshot()
+					.then((snap) => {
+						if (busClosed || eventSock !== sock) return
+						if (bufferOverflow) {
+							syncAuthoritative()
+							return
+						}
+						emitEvent({type: 'windows', instanceId, windows: snap, authoritative: true})
+						buffering = false
+						for (const evt of bufferedEvts.splice(0)) {
+							if (!busClosed && eventSock === sock) dispatchParsed(evt)
+						}
+					})
+					.catch(() => {
+						if (busClosed || eventSock !== sock) return
+						// Never resume incremental events on stale state; retry authoritative snapshot until it succeeds or socket drops.
+						resyncTimer = setTimeout(() => {
+							resyncTimer = null
+							syncAuthoritative()
+						}, 750)
+						resyncTimer.unref?.()
+					})
 			}
 			sock.setEncoding('utf8')
 			sock.on('data', (chunk) => {
@@ -767,32 +859,28 @@ export function createHyprland({
 					const evt = parseSocket2Line(line.trim())
 					if (!evt) continue
 					if (buffering) {
-						if (bufferedEvts.length < 256) bufferedEvts.push(evt)
+						if (bufferedEvts.length >= 256) bufferOverflow = true
+						else bufferedEvts.push(evt)
 					} else {
 						dispatchParsed(evt)
 					}
 				}
 			})
-			if (isReconnect) {
-				// On reconnect / compositor restart, emit a fresh authoritative snapshot with instanceId, then replay buffered socket2 events.
-				sock.once('connect', () => {
-					windowsSnapshot()
-						.then((snap) => {
-							if (!busClosed && eventSock === sock) {
-								emitEvent({type: 'windows', instanceId, windows: snap, authoritative: true})
-							}
-						})
-						.catch(() => {})
-						.finally(() => {
-							buffering = false
-							for (const evt of bufferedEvts.splice(0)) {
-								if (!busClosed && eventSock === sock) dispatchParsed(evt)
-							}
-						})
-				})
-			}
+			sock.once('connect', () => {
+				if (busClosed || eventSock !== sock) return
+				eventSockReady = true
+				notifyEventReady()
+				syncAuthoritative()
+			})
 			const onEnd = () => {
-				if (eventSock === sock) eventSock = null
+				if (resyncTimer) {
+					clearTimeout(resyncTimer)
+					resyncTimer = null
+				}
+				if (eventSock === sock) {
+					eventSock = null
+					eventSockReady = false
+				}
 				scheduleEventReconnect()
 			}
 			sock.on('error', onEnd)
@@ -1079,11 +1167,12 @@ export function createHyprland({
 	const pendingLaunches = new Set() // {app}
 
 	function matchesLaunchedApp(app, winClass, winTitle = '') {
-		const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+		// Preserve punctuation (hyphens, dots, underscores) so distinct classes like "foo-bar" and "foobar" never collide.
+		const norm = (s) => String(s || '').trim().toLowerCase()
 		const cls = norm(winClass)
 		const title = norm(winTitle)
 		if (!cls && !title) return false
-		// When the desktop entry declares StartupWMClass, require an exact normalized class match.
+		// When the desktop entry declares StartupWMClass, require an exact case-insensitive class match.
 		if (app.wmClass) {
 			const expected = norm(app.wmClass)
 			return !!cls && !!expected && cls === expected
@@ -1114,92 +1203,100 @@ export function createHyprland({
 	async function launch(input = {}) {
 		const id = String(input.id ?? '').trim()
 		if (!DESKTOP_ID_RE.test(id)) throw new RpcError('BAD_REQUEST', 'Invalid application ID')
+		// Reserve launch capacity synchronously BEFORE the first await so concurrent requests cannot race past MAX_PENDING_LAUNCHES.
 		if (pendingLaunches.size >= MAX_PENDING_LAUNCHES) {
 			throw new RpcError('TOO_MANY_REQUESTS', 'Too many applications are launching at once; wait a moment and try again')
 		}
-		const catalog = await apps()
-		const app = catalog.find((a) => a.id === id)
-		if (!app) throw new RpcError('NOT_FOUND', `Application “${id}” is not installed`)
-		const env = await discoverEnv()
-		if (!env?.WAYLAND_DISPLAY || !env?.HYPRLAND_INSTANCE_SIGNATURE) {
-			throw new RpcError('PRECONDITION_FAILED', 'Hyprland desktop session isn’t running right now')
-		}
-		const railMon = await ensureRailOutput()
-		if (!railMon || !Number.isInteger(railMon.activeWorkspace) || railMon.activeWorkspace < 1 || railMon.activeWorkspace > 99) {
-			throw new RpcError('PRECONDITION_FAILED', 'Headless RAIL-1 display is unavailable; refusing to launch on physical display')
-		}
-		const railWs = railMon.activeWorkspace
-		const reqW = Math.max(360, Math.min(3840, Math.round(Number(input.width) || 1100)))
-		const reqH = Math.max(260, Math.min(2160, Math.round(Number(input.height) || 740)))
-
-		// Prune stale claims older than 30s
-		const nowMs = Date.now()
-		for (const [k, ts] of claimedLaunchAddrs) {
-			if (nowMs - ts > 30_000) claimedLaunchAddrs.delete(k)
-		}
-
-		// Require a strict window baseline BEFORE spawning so a failed inventory can never treat existing windows as new.
-		const baselineWins = await windows({strict: true})
-		const beforeAddrs = new Set(baselineWins.map((w) => w.address.toLowerCase()))
+		const launchEntry = {app: null, markAmbiguous: () => {}}
+		pendingLaunches.add(launchEntry)
 
 		let settled = false
 		let openedAddr = null
 		let ambiguous = false
 		let launchErr = null
-		let resolveOpen
-		const openPromise = new Promise((r) => (resolveOpen = r))
-		const markAmbiguous = () => {
-			if (settled) return
-			settled = true
-			ambiguous = true
-			resolveOpen(null)
-		}
-		const launchEntry = {app, markAmbiguous}
-		pendingLaunches.add(launchEntry)
-
-		const findAmbiguousPeers = (winClass, winTitle) => {
-			const peers = []
-			for (const peer of pendingLaunches) {
-				if (peer === launchEntry) continue
-				if (matchesLaunchedApp(peer.app, winClass, winTitle)) peers.push(peer)
-			}
-			return peers
-		}
-
-		const canClaim = (addr, winClass, winTitle) => {
-			const lower = String(addr || '').toLowerCase()
-			if (!lower || beforeAddrs.has(lower) || claimedLaunchAddrs.has(lower)) return false
-			return matchesLaunchedApp(app, winClass, winTitle)
-		}
-
-		const tryClaim = (addr, winClass, winTitle) => {
-			if (settled) return false
-			if (!canClaim(addr, winClass, winTitle)) return false
-			const peers = findAmbiguousPeers(winClass, winTitle)
-			if (peers.length > 0) {
-				markAmbiguous()
-				for (const peer of peers) peer.markAmbiguous()
-				return false
-			}
-			settled = true
-			openedAddr = addr
-			claimedLaunchAddrs.set(String(addr).toLowerCase(), Date.now())
-			resolveOpen(addr)
-			return true
-		}
-
-		const unsub = subscribeEvents((evt) => {
-			if (settled) return
-			if (evt.type === 'openwindow') {
-				tryClaim(evt.address, evt.class, evt.title)
-			}
-		})
-
 		let pollTimer = null
 		let deadlineTimer = null
+		let unsub = null
+
 		try {
+			const catalog = await apps()
+			const app = catalog.find((a) => a.id === id)
+			if (!app) throw new RpcError('NOT_FOUND', `Application “${id}” is not installed`)
+			const env = await discoverEnv()
+			if (!env?.WAYLAND_DISPLAY || !env?.HYPRLAND_INSTANCE_SIGNATURE) {
+				throw new RpcError('PRECONDITION_FAILED', 'Hyprland desktop session isn’t running right now')
+			}
+			const railMon = await ensureRailOutput()
+			if (!railMon || !Number.isInteger(railMon.activeWorkspace) || railMon.activeWorkspace < 1 || railMon.activeWorkspace > 99) {
+				throw new RpcError('PRECONDITION_FAILED', 'Headless RAIL-1 display is unavailable; refusing to launch on physical display')
+			}
+			const railWs = railMon.activeWorkspace
+			const reqW = Math.max(360, Math.min(3840, Math.round(Number(input.width) || 1100)))
+			const reqH = Math.max(260, Math.min(2160, Math.round(Number(input.height) || 740)))
+
+			// Prune stale claims older than 30s
+			const nowMs = Date.now()
+			for (const [k, ts] of claimedLaunchAddrs) {
+				if (nowMs - ts > 30_000) claimedLaunchAddrs.delete(k)
+			}
+
+			// Switch active workspace to RAIL-1 and capture strict window baseline BEFORE spawning so physical-display windows are never treated as new.
 			await hyprDispatch(`hl.dispatch(hl.dsp.workspace.change_id({id = ${railWs}}))`, ['dispatch', 'workspace', String(railWs)])
+			const baselineWins = await windows({strict: true})
+			const beforeAddrs = new Set(baselineWins.map((w) => w.address.toLowerCase()))
+
+			let resolveOpen
+			const openPromise = new Promise((r) => (resolveOpen = r))
+			const markAmbiguous = () => {
+				if (settled) return
+				settled = true
+				ambiguous = true
+				resolveOpen(null)
+			}
+			launchEntry.app = app
+			launchEntry.markAmbiguous = markAmbiguous
+
+			const findAmbiguousPeers = (winClass, winTitle) => {
+				const peers = []
+				for (const peer of pendingLaunches) {
+					if (peer === launchEntry || !peer.app) continue
+					if (matchesLaunchedApp(peer.app, winClass, winTitle)) peers.push(peer)
+				}
+				return peers
+			}
+
+			// Only claim new windows that actually opened on the intended RAIL workspace (never stealing newly opened physical-display windows).
+			const canClaim = (addr, winWorkspace, winClass, winTitle) => {
+				const lower = String(addr || '').toLowerCase()
+				if (!lower || beforeAddrs.has(lower) || claimedLaunchAddrs.has(lower)) return false
+				const wsNum = Number(winWorkspace)
+				if (!Number.isInteger(wsNum) || wsNum !== railWs) return false
+				return matchesLaunchedApp(app, winClass, winTitle)
+			}
+
+			const tryClaim = (addr, winWorkspace, winClass, winTitle) => {
+				if (settled) return false
+				if (!canClaim(addr, winWorkspace, winClass, winTitle)) return false
+				const peers = findAmbiguousPeers(winClass, winTitle)
+				if (peers.length > 0) {
+					markAmbiguous()
+					for (const peer of peers) peer.markAmbiguous()
+					return false
+				}
+				settled = true
+				openedAddr = addr
+				claimedLaunchAddrs.set(String(addr).toLowerCase(), Date.now())
+				resolveOpen(addr)
+				return true
+			}
+
 			const launchEnv = await cleanGuiEnv(env)
+			unsub = subscribeEvents((evt) => {
+				if (settled) return
+				if (evt.type === 'openwindow') {
+					tryClaim(evt.address, evt.workspace, evt.class, evt.title)
+				}
+			})
 			const child = spawnImpl('gtk-launch', [id], {env: launchEnv, detached: true, stdio: 'ignore'})
 			child.once('error', (err) => {
 				if (!settled) {
@@ -1228,7 +1325,7 @@ export function createHyprland({
 						if (!settled) schedulePoll()
 						return
 					}
-					const matches = cur.filter((w) => canClaim(w.address, w.class, w.title))
+					const matches = cur.filter((w) => canClaim(w.address, w.workspace, w.class, w.title))
 					if (matches.length > 1) {
 						markAmbiguous()
 						for (const m of matches) {
@@ -1237,7 +1334,7 @@ export function createHyprland({
 						return
 					}
 					if (matches.length === 1) {
-						tryClaim(matches[0].address, matches[0].class, matches[0].title)
+						tryClaim(matches[0].address, matches[0].workspace, matches[0].class, matches[0].title)
 						return
 					}
 					schedulePoll()
@@ -1282,10 +1379,12 @@ export function createHyprland({
 					['dispatch', 'setfloating', `address:${win.address}`],
 				)
 			}
-			await placeOnRail(win.address, reqW, reqH)
+			await placeOnRail(win.address, reqW, reqH, {strict: true})
 			await new Promise((r) => setTimeout(r, 150))
-			const updated = (await windows({strict: true}).catch(() => [])).find((w) => w.address.toLowerCase() === win.address.toLowerCase())
-			if (!updated || updated.workspace !== railWs) {
+			const [freshMons, freshWins] = await Promise.all([monitorsInfo(), windows({strict: true}).catch(() => [])])
+			const freshRail = freshMons.find((m) => m.name === RAIL_OUTPUT)
+			const updated = freshWins.find((w) => w.address.toLowerCase() === win.address.toLowerCase())
+			if (!freshRail || !Number.isInteger(freshRail.activeWorkspace) || !updated || updated.workspace !== freshRail.activeWorkspace) {
 				throw new RpcError('BAD_GATEWAY', 'Launched window could not be verified on the RAIL-1 workspace')
 			}
 			return {launched: true, app, window: updated}
@@ -1320,7 +1419,7 @@ export function createHyprland({
 
 	async function clipboardWrite(input = {}) {
 		const text = String(input.text ?? '')
-		if (Buffer.byteLength(text, 'utf8') > MAX_CLIPBOARD_BYTES) throw new RpcError('BAD_REQUEST', 'Clipboard text too large')
+		if (Buffer.byteLength(text, 'utf8') > MAX_CLIPBOARD_BYTES) throw new RpcError('PAYLOAD_TOO_LARGE', 'Clipboard text too large')
 		const env = await discoverEnv()
 		if (!env?.WAYLAND_DISPLAY) throw new RpcError('PRECONDITION_FAILED', 'Wayland display unavailable')
 		const r = await exec('wl-copy', [], {env, timeout: 2000, input: text})
@@ -2188,6 +2287,7 @@ export function createHyprland({
 		attachStream,
 		readAppIcon,
 		subscribeEvents,
+		waitForEventSocketReady,
 		notifyUnlocked,
 		windows,
 		windowsSnapshot,
@@ -2197,6 +2297,8 @@ export function createHyprland({
 		},
 		close() {
 			busClosed = true
+			eventSockReady = false
+			notifyEventReady()
 			if (disconnectLockRetryTimer) clearTimeout(disconnectLockRetryTimer)
 			disconnectLockRetryTimer = null
 			if (eventReconnectTimer) clearTimeout(eventReconnectTimer)
@@ -2222,7 +2324,7 @@ export function createHyprland({
 		},
 		procedures: {
 			'hyprland.status': {kind: 'query', run: status},
-			'hyprland.windows': {kind: 'query', run: windows},
+			'hyprland.windows': {kind: 'query', run: (input) => windows({strict: input?.strict === true})},
 			'hyprland.apps': {kind: 'query', run: (input) => apps({refresh: input?.refresh === true})},
 			'hyprland.launch': {kind: 'mutation', run: launch},
 			'hyprland.dispatch': {kind: 'mutation', run: dispatch},

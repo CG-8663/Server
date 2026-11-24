@@ -956,6 +956,7 @@ WantedBy=graphical-session.target
 				let unsub = null
 				let keepalive = null
 				let buffering = true
+				let bufferOverflow = false
 				const buffered = []
 				const sidKey = auth.sessionId || null
 				const cleanup = () => {
@@ -988,11 +989,12 @@ WantedBy=graphical-session.target
 					}
 					res.write(`data: ${JSON.stringify(evt)}\n\n`)
 				}
-				// Subscribe BEFORE taking the initial snapshot (buffering events until snapshot is written so no close event is missed in between).
+				// Subscribe BEFORE taking the initial snapshot (buffering events until an authoritative snapshot is written; if the buffer overflows, re-snapshot before resuming).
 				unsub = hyprland.subscribeEvents((evt) => {
 					if (closed) return
 					if (buffering) {
-						if (buffered.length < 256) buffered.push(evt)
+						if (buffered.length >= 256) bufferOverflow = true
+						else buffered.push(evt)
 					} else {
 						writeEvt(evt)
 					}
@@ -1011,17 +1013,38 @@ WantedBy=graphical-session.target
 				}
 				req.on('close', cleanup)
 				res.on('close', cleanup)
-				const [initial, instanceId] = await Promise.all([
-					hyprland.windowsSnapshot().catch(() => null),
-					hyprland.currentInstanceId().catch(() => null),
-				])
+				await hyprland.waitForEventSocketReady?.(1500).catch(() => {})
+				let snapOk = false
+				for (let attempt = 0; attempt < 3; attempt++) {
+					bufferOverflow = false
+					buffered.length = 0
+					const [initial, instanceId] = await Promise.all([
+						hyprland.windowsSnapshot().catch(() => null),
+						hyprland.currentInstanceId().catch(() => null),
+					])
+					if (closed || req.destroyed || res.writableEnded) {
+						cleanup()
+						return
+					}
+					if (!Array.isArray(initial)) {
+						stopStream()
+						return
+					}
+					if (bufferOverflow) continue
+					writeEvt({type: 'windows', instanceId, windows: initial, authoritative: true})
+					snapOk = true
+					break
+				}
+				if (!snapOk || closed || req.destroyed || res.writableEnded) {
+					stopStream()
+					return
+				}
+				buffering = false
+				for (const evt of buffered.splice(0)) writeEvt(evt)
 				if (closed || req.destroyed || res.writableEnded) {
 					cleanup()
 					return
 				}
-				if (Array.isArray(initial)) writeEvt({type: 'windows', instanceId, windows: initial, authoritative: true})
-				buffering = false
-				for (const evt of buffered.splice(0)) writeEvt(evt)
 				keepalive = setInterval(() => {
 					if (closed || res.writableEnded) return
 					const stillAuthed = accounts.authenticate(req)

@@ -1283,6 +1283,17 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		assert.equal(dup1.window, null)
 		assert.equal(dup2.window, null)
 
+		// Synchronous 8-launch cap must reject the 9th concurrent launch immediately before any await
+		spawnMode = 'exit1'
+		const nine = await Promise.allSettled(
+			Array.from({length: 9}, () => hypr.procedures['hyprland.launch'].run({id: 'alpha'})),
+		)
+		assert.ok(
+			nine.some((r) => r.status === 'rejected' && /Too many applications are launching/.test(r.reason?.message || '')),
+			'9th concurrent launch must be rejected synchronously by MAX_PENDING_LAUNCHES',
+		)
+		spawnMode = 'ok'
+
 		// windowsSnapshot() must reject empty stdout
 		const hyprEmpty = createHyprland({
 			dataDir: join(root, 'd2'),
@@ -1298,13 +1309,14 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		hyprEmpty.close()
 		hypr.close()
 
-		// Real Unix .socket2.sock reconnect + HTTP owner-only auth + CSP sandbox icon + SSE logout revocation + clean shutdown
+		// Real Unix .socket2.sock live event + instance-change reconnect + HTTP 413 clipboard + SSE logout revocation + clean shutdown
 		const sock2Path = join(root, 'hypr', 'sig123', '.socket2.sock')
 		const sock2Sockets = []
 		const sock2Server = net.createServer((c) => {
 			sock2Sockets.push(c)
 		})
 		await new Promise((resolve) => sock2Server.listen(sock2Path, resolve))
+		let sock2Server2 = null
 
 		const accounts = await openAccounts(data)
 		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
@@ -1365,6 +1377,14 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		assert.equal((await fetch(`${d.url}/hyprland/app-icon?id=demo`, {headers: member})).status, 403)
 		assert.equal((await fetch(`${d.url}/hyprland/events`, {headers: member})).status, 403)
 
+		// Oversized clipboardWrite must map PAYLOAD_TOO_LARGE -> HTTP 413
+		const bigClipRes = await fetch(`${d.url}/trpc/hyprland.clipboardWrite`, {
+			method: 'POST',
+			headers: {...owner, 'content-type': 'application/json'},
+			body: JSON.stringify({text: 'x'.repeat(130 * 1024)}),
+		})
+		assert.equal(bigClipRes.status, 413, 'oversized clipboard write must return HTTP 413')
+
 		const iconRes = await fetch(`${d.url}/hyprland/app-icon?id=demo`, {headers: owner})
 		assert.equal(iconRes.status, 200)
 		assert.equal(iconRes.headers.get('content-type'), 'image/svg+xml')
@@ -1382,12 +1402,32 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		assert.equal(firstEvt?.instanceId, 'sig123')
 		assert.equal(firstEvt?.windows?.[0]?.address, '0x55a1b2c3d4e0')
 
-		// Drop the .socket2.sock connection and verify reconnect sends a fresh authoritative snapshot
-		liveWindows = [{address: '0x55a1b2c3d4ff', title: 'After Reconnect', class: 'demo', workspace: {id: 11}, at: [0, 0], size: [800, 600], mapped: true}]
+		// Emit a real .socket2.sock openwindow event and verify SSE delivers it
+		sock2Sockets[0].write('openwindow>>55a1b2c3d4ee,11,demo,Live Window\n')
+		let liveEvt = null
+		for (let i = 0; i < 4; i++) {
+			const e = await readNextSseEvent(reader, bufRef, 3000)
+			if (e?.type === 'openwindow') {
+				liveEvt = e
+				break
+			}
+		}
+		assert.equal(liveEvt?.address, '0x55a1b2c3d4ee')
+
+		// Simulate compositor restart with a new instance signature (sig456) and verify reconnect emits authoritative snapshot with new instanceId
+		await mkdir(join(root, 'hypr', 'sig456'), {recursive: true})
+		await writeFile(join(root, 'hypr', 'sig456', '.socket.sock'), '')
+		sock2Server2 = net.createServer((c) => {
+			sock2Sockets.push(c)
+		})
+		await new Promise((resolve) => sock2Server2.listen(join(root, 'hypr', 'sig456', '.socket2.sock'), resolve))
+		await rm(join(root, 'hypr', 'sig123', '.socket.sock'), {force: true})
+		liveWindows = [{address: '0x55a1b2c3d4ff', title: 'After Restart', class: 'demo', workspace: {id: 11}, at: [0, 0], size: [800, 600], mapped: true}]
 		for (const s of sock2Sockets) s.destroy()
 		const reconnectedEvt = await readNextSseEvent(reader, bufRef, 5000)
 		assert.equal(reconnectedEvt?.type, 'windows')
 		assert.equal(reconnectedEvt?.authoritative, true)
+		assert.equal(reconnectedEvt?.instanceId, 'sig456')
 		assert.equal(reconnectedEvt?.windows?.[0]?.address, '0x55a1b2c3d4ff')
 
 		// user.logout must terminate the live SSE stream immediately
@@ -1412,6 +1452,7 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		assert.equal(closedOk, true, 'daemon close() must complete promptly with an active SSE subscriber')
 		await reader2.cancel().catch(() => {})
 		await new Promise((resolve) => sock2Server.close(resolve))
+		if (sock2Server2) await new Promise((resolve) => sock2Server2.close(resolve))
 	} finally {
 		if (d) await d.close()
 		await rm(root, {recursive: true, force: true})
