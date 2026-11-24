@@ -75,7 +75,17 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const files = createFiles({home, dataDir})
 	const defaultStores = storeDir ? [{url: fileUrl(storeDir)}] : undefined
 	const catalogUrl = storeDir ? fileUrl(join(storeDir, 'machines', 'catalog.json')) : undefined
-	const machines = createMachines({dataDir, files, ...(catalogUrl ? {catalogUrl} : {}), ...machineOptions})
+	let connector
+	const machines = createMachines({
+		dataDir,
+		files,
+		...(catalogUrl ? {catalogUrl} : {}),
+		connector: {
+			pair: (input) => connector.procedures['swarm.pair'].run(input),
+			list: () => connector.procedures['swarm.list'].run(),
+		},
+		...machineOptions,
+	})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
 	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, webPort, ...(sourceDir ? {sourceDir} : {}), ...(storeDir ? {appStoreDir: storeDir} : {}), ...updaterOptions})
 	// One certificate context for the app gateways and the Security settings. On a server this is
@@ -493,7 +503,13 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 						: [name, p],
 			),
 		),
-		...machines.procedures,
+		...Object.fromEntries(
+			Object.entries(machines.procedures).map(([name, p]) =>
+				name === 'machines.installConnector'
+					? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'install a guest connector'), p.run(input))}]
+					: [name, p],
+			),
+		),
 		...Object.fromEntries(
 			Object.entries(apps.procedures).map(([name, p]) =>
 				name === 'appStore.addRepository' || name === 'appStore.removeRepository'
@@ -551,7 +567,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const omarchyTheme = createOmarchyTheme({home, ...themeOptions})
 	const omarchyPlugins = createOmarchyPlugins({home, theme: omarchyTheme, ...pluginOptions})
 	// Local swarm: other Linux computers joined through the connector (see connector.mjs).
-	const connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, files, source: () => updater.source(), webPort})
+	connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, files, source: () => updater.source(), webPort})
 	clips = createClips({
 		dataDir,
 		files,

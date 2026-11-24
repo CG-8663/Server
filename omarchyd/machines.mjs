@@ -23,8 +23,9 @@ import {pipeline} from 'node:stream/promises'
 import {fileURLToPath} from 'node:url'
 
 import {fetchErrorMessage, httpDownloadErrorMessage, isNetworkError} from './fetch-error.mjs'
-import {connectorCloudInit} from './guest-install.mjs'
+import {connectorAllowList, connectorCloudInit, connectorKind, defaultConnectorAbilities, guestConnectorExec, guestReachableUrl} from './guest-install.mjs'
 import {PUBLIC_KEY, cloudMetaData, cloudUserData, hostnameFor, isWindowsClientLabel, isWindowsLabel, omarchyConfiguration, omarchyCredentials, windowsAnswerFile} from './machine-media.mjs'
+import {createQemuAgent} from './qemu-agent.mjs'
 import {RpcError} from './rpc.mjs'
 import {hostdevXml, parseUsbLive} from './usb.mjs'
 
@@ -100,7 +101,7 @@ function validCatalog(data) {
 	return ok.length ? ok : null
 }
 
-export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000}) {
+export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000}) {
 	const base = join(dataDir, 'machines')
 	const imagesDir = join(base, 'images')
 	const vmsDir = join(base, 'vms')
@@ -918,6 +919,49 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 	const writable = (m) => {
 		if (m.state === 'error' || busy.get(m.id)?.state === 'installing') throw new RpcError('PRECONDITION_FAILED', `${m.name} isn’t set up yet`)
+	}
+
+	function connectorAbilities(os, given) {
+		const defaults = defaultConnectorAbilities(os)
+		if (!given || typeof given !== 'object' || Array.isArray(given)) return defaults
+		return Object.fromEntries(Object.keys(defaults).map((k) => [k, given[k] === true]))
+	}
+
+	async function installConnector(input = {}) {
+		await ready
+		const m = find(input?.id)
+		// qemu-ga is root: sudoPassword is accepted and discarded, never saved.
+		const os = connectorKind(m.osId)
+		if (os === 'unsupported') return {status: 'unsupported', os: 'other', message: 'This operating system can’t run the connector.'}
+		if ((await liveState(m)) !== 'running') throw new RpcError('PRECONDITION_FAILED', 'Start the machine first.')
+		const agent = qemuAgent({run, domain: domain(m.id)})
+		try {
+			await agent.ping()
+		} catch {
+			return {status: 'needs-agent', os}
+		}
+		const username = String(input?.username ?? m.cloudInit?.username ?? '').trim()
+		if (os === 'linux' && !username) throw new RpcError('PRECONDITION_FAILED', 'Give the guest account to install as.')
+		const abilities = connectorAbilities(os, input?.abilities)
+		const pair = await connector.pair({machineId: m.id, ...abilities})
+		const url = guestReachableUrl({addresses: pair.addresses, port: pair.port})
+		if (!url) throw new RpcError('PRECONDITION_FAILED', 'This server has no address the guest can reach.')
+		const started = await agent.exec(guestConnectorExec({os, username, source: pair.source, server: url, ca: pair.ca, token: pair.token, allow: connectorAllowList(os, abilities)}))
+		if (!started?.pid) throw new RpcError('BAD_GATEWAY', `${m.name} didn’t start the connector installer`)
+		const poll = async () => {
+			const deadline = Date.now() + connectorEnrollTimeoutMs
+			const tick = Math.min(1_000, Math.max(25, Math.floor(connectorEnrollTimeoutMs / 4)))
+			while (Date.now() < deadline) {
+				const agents = await connector.list().catch(() => [])
+				if ((Array.isArray(agents) ? agents : []).some((a) => a?.guestOf === m.id)) return
+				await new Promise((r) => setTimeout(r, tick))
+			}
+			throw new Error('The connector didn’t join in time')
+		}
+		const work = task(m, 'connector', null, poll)
+		const taskId = m.tasks[0].id
+		work.catch(() => {})
+		return {status: 'started', os, taskId}
 	}
 
 	// Live usage: sampled often for the last reading; the hour chart keeps a coarser series.
@@ -2029,6 +2073,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			'machines.deleteBackup': {kind: 'mutation', run: deleteBackup},
 			'machines.clone': {kind: 'mutation', run: clone},
 			'machines.monitor': {kind: 'mutation', run: monitor},
+			'machines.installConnector': {kind: 'mutation', run: installConnector},
 		},
 	}
 }

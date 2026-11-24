@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
-import {connectorCloudInit, connectorKind, guestReachableUrl} from '../omarchyd/guest-install.mjs'
+import {connectorCloudInit, connectorInstallCommand, connectorInstallCommandWindows, connectorKind, guestConnectorExec, guestReachableUrl} from '../omarchyd/guest-install.mjs'
 
 test('guestReachableUrl skips loopback and prefers a LAN address', () => {
 	assert.equal(guestReachableUrl({addresses: [], port: 7780}), '')
@@ -47,4 +47,43 @@ test('connectorCloudInit adds qemu-guest-agent and python without dropping catal
 	const arch = connectorCloudInit({familyId: 'arch'})
 	assert.deepEqual(arch.packages, ['qemu-guest-agent', 'python'])
 	assert.deepEqual(arch.commands, [['systemctl', 'enable', '--now', 'qemu-guest-agent']])
+})
+
+test('guest-exec wraps the paste command as runuser or powershell', () => {
+	const ca = 'a'.repeat(64)
+	const linux = guestConnectorExec({
+		os: 'linux',
+		username: 'chris',
+		source: 'https://example.test',
+		server: 'https://192.168.84.81:7780',
+		ca,
+		token: 'tok',
+		allow: 'terminal,desktop,manage,files',
+	})
+	assert.equal(linux.path, 'runuser')
+	assert.deepEqual(linux.args.slice(0, 5), ['-u', 'chris', '--', 'bash', '-lc'])
+	assert.equal(
+		linux.args[5],
+		`curl -fsSL https://example.test/main/connector/install.sh | bash -s -- --server https://192.168.84.81:7780 --ca ${ca} --token tok --allow terminal,desktop,manage,files --source https://example.test`,
+	)
+	assert.equal(linux.args[5].includes('--user-enroll-only'), false)
+	assert.match(
+		connectorInstallCommand({source: '/home/x/omarchy-server', server: 'https://10.1.2.3:7780', ca, token: 't', allow: 'terminal'}),
+		/^curl -fsSLk https:\/\/10\.1\.2\.3:7780\/api\/connector\/install\.sh \| bash -s -- /,
+	)
+	const win = guestConnectorExec({
+		os: 'windows',
+		source: 'https://example.test',
+		server: 'https://192.168.84.81:7780',
+		ca,
+		token: 'tok',
+		allow: 'terminal,files,manage',
+	})
+	assert.equal(win.path, 'powershell.exe')
+	assert.deepEqual(win.args.slice(0, 2), ['-NoProfile', '-Command'])
+	assert.equal(
+		win.args[2],
+		`$s = irm 'https://example.test/main/connector/install.ps1'; & ([scriptblock]::Create($s)) -Server 'https://192.168.84.81:7780' -Ca '${ca}' -Token 'tok' -Allow 'terminal,files,manage' -Source 'https://example.test'`,
+	)
+	assert.match(connectorInstallCommandWindows({source: '/home/x/omarchy-server', server: 'https://10.1.2.3:7780', ca, token: 't', allow: ''}), /irm -SkipCertificateCheck 'https:\/\/10\.1\.2\.3:7780\/api\/connector\/install\.ps1'/)
 })
