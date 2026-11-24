@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 
 import {batteryGroups, batterySweep, computerSample, fleetRings, samplePercent, serverSample} from '../web/src/fleet/aggregate.ts'
+import {hostedVms} from '../web/src/fleet/hostedVms.ts'
 import {computerParent, computerPlacePath, filePlaces, filesParent, guestPlacePath, parseComputerPlace, parseGuestPlace, scopeRoot, SERVER_FILES, withinScope} from '../web/src/fleet/filePlaces.ts'
 import {fittingCrumbCount} from '../web/src/fleet/fittingCrumbs.ts'
 import {groupApps} from '../web/src/fleet/groupApps.ts'
@@ -202,4 +204,23 @@ test('file places list only machines whose files can be read', () => {
 	assert.equal(fittingCrumbCount([10, 20, 30], 35), 1)
 	assert.equal(fittingCrumbCount([80], 40), 1)
 	assert.equal(fittingCrumbCount([], 40), 0)
+})
+
+test('hostedVms splits this server from a joined computer', () => {
+	const list = [
+		{id: 'a', hostId: 'server'},
+		{id: 'b'},
+		{id: 'c', hostId: 'abc123abc123'},
+	]
+	assert.deepEqual(hostedVms(list, 'server').map((m) => m.id), ['a', 'b'])
+	assert.deepEqual(hostedVms(list, 'abc123abc123').map((m) => m.id), ['c'])
+})
+
+test('CreateMachine does not keep the remote stub copy', async () => {
+	const text = await readFile(new URL('../web/src/CreateMachine.tsx', import.meta.url), 'utf8')
+	assert.equal(text.includes('can’t host a virtual machine yet'), false)
+	assert.equal(text.includes('function RemoteVmHost'), false)
+	assert.match(text, /hostId: host\.id/)
+	assert.match(text, /The operating system is downloaded on/)
+	assert.match(text, /ISO from this server/)
 })

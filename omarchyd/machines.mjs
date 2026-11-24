@@ -285,7 +285,31 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 
 	// ---- libvirt --------------------------------------------------------------------------------
-	async function capabilities() {
+	const kvmWarning = 'Hardware virtualization (KVM) isn’t available, so machines run much slower. Turn on VT-x/AMD-V in the BIOS, or nested virtualization if this is itself a VM.'
+	async function hostStatus(hostId, ctx) {
+		assertOwner(ctx)
+		const agent = (await listedAgents()).find((a) => a.id === hostId)
+		if (!agent) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		const hostName = agent.name || 'that computer'
+		if (!agent.online) throw new RpcError('PRECONDITION_FAILED', `${hostName} is offline right now`)
+		return {status: readVmStatus(await remoteCall(hostId, 'vm-status', {})), hostName, agent}
+	}
+	async function capabilities(input, ctx) {
+		const hostId = String(input?.hostId ?? '').trim()
+		if (hostId && hostId !== 'server') {
+			if (!/^[0-9a-f]{12}$/.test(hostId)) throw new RpcError('BAD_REQUEST', 'That computer isn’t valid.')
+			const {status} = await hostStatus(hostId, ctx)
+			const libvirtAvailable = status.libvirt === true
+			const kvmAvailable = status.kvm === true
+			return {
+				hostArchitecture: status.arch === 'arm64' ? 'arm64' : 'amd64',
+				libvirtAvailable,
+				kvmAvailable,
+				threads: Number(status.threads) || 1,
+				memoryTotalMb: Number(status.memoryMb) || 0,
+				...(libvirtAvailable && !kvmAvailable ? {performanceWarning: kvmWarning} : {}),
+			}
+		}
 		const has = async (cmd, args) => run(cmd, args).then(() => true, () => false)
 		const libvirtAvailable = (await has('virsh', ['--version'])) && (await has('qemu-img', ['--version']))
 		const kvmAvailable = await access(kvmDevice, constants.R_OK | constants.W_OK).then(() => true, () => false)
@@ -293,7 +317,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			hostArchitecture: arch,
 			libvirtAvailable,
 			kvmAvailable,
-			...(libvirtAvailable && !kvmAvailable ? {performanceWarning: 'Hardware virtualization (KVM) isn’t available, so machines run much slower. Turn on VT-x/AMD-V in the BIOS, or nested virtualization if this is itself a VM.'} : {}),
+			...(libvirtAvailable && !kvmAvailable ? {performanceWarning: kvmWarning} : {}),
 		}
 	}
 
@@ -1575,8 +1599,42 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 
 	// The server itself (the "node" in Proxmox terms).
-	async function node() {
+	async function node(input, ctx) {
 		await ready
+		const machineId = String(input?.id ?? '').trim()
+		if (machineId) {
+			const m = find(machineId)
+			if (hostOf(m) !== 'server') {
+				const hostId = hostOf(m)
+				const {status, hostName} = await hostStatus(hostId, ctx)
+				const libvirtAvailable = status.libvirt === true
+				const kvmAvailable = status.kvm === true
+				const models = Array.isArray(status.videoModels) ? status.videoModels.filter((v) => v === 'vga' || v === 'virtio' || v === 'bochs' || v === 'qxl' || v === 'cirrus' || v === 'none') : []
+				const hostMachines = machines.filter((x) => hostOf(x) === hostId)
+				return {
+					hostname: hostName,
+					cpuModel: '',
+					threads: Number(status.threads) || 1,
+					loadAverage: [],
+					memoryTotalMb: Number(status.memoryMb) || 0,
+					memoryFreeMb: Math.max(0, Math.round((Number(status.freeGb) || 0) * 1024)),
+					uptimeSeconds: 0,
+					storage: {totalGb: 0, freeGb: Number(status.freeGb) || 0},
+					libvirtVersion: status.libvirtVersion ?? null,
+					qemuVersion: status.qemu ?? null,
+					hostArchitecture: status.arch === 'arm64' ? 'arm64' : 'amd64',
+					libvirtAvailable,
+					kvmAvailable,
+					...(libvirtAvailable && !kvmAvailable ? {performanceWarning: kvmWarning} : {}),
+					videoModels: models.length ? models : status.arch === 'arm64' ? ['virtio', 'none'] : ['vga', 'none'],
+					cpuTypes: CPU_TYPES,
+					nicModels: NICS,
+					diskBuses: BUSES,
+					diskCaches: CACHES,
+					counts: {total: hostMachines.length, running: hostMachines.filter((x) => (x.hostState ?? x.state) === 'running').length},
+				}
+			}
+		}
 		const caps = await capabilities()
 		const fs = await statfs(base).catch(() => null)
 		const cpus = os.cpus()

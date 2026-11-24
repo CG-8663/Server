@@ -119,7 +119,7 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 			fleetList({
 				server: {name: serverName},
 				computers: (swarm.data ?? []).filter((a) => !isGuestAgent(a)).map((a) => computerFleetInput({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on, libvirt: a.libvirt === true})),
-				guests: (machines.data ?? []).map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state, connector: !!guestAgent(swarm.data ?? [], m.id)})),
+				guests: (machines.data ?? []).map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state, hostId: m.hostId, connector: !!guestAgent(swarm.data ?? [], m.id)})),
 			}),
 		[serverName, swarm.data, machines.data],
 	)

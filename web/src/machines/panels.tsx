@@ -258,7 +258,7 @@ const useIsos = () =>
 	})
 
 export function HardwarePanel({d}: {d: MachineDetails}) {
-	const node = useNode()
+	const node = useNode(d.id)
 	const action = useMachineAction()
 	const [open, setOpen] = useState<string | null>(null)
 	const h = d.hardware
@@ -454,7 +454,7 @@ function NicEdit({h, models, onCancel, onSave, saving}: {h: MachineDetails['hard
 	)
 }
 function AddDisk({d, onDone}: {d: MachineDetails; onDone: () => void}) {
-	const node = useNode()
+	const node = useNode(d.id)
 	const action = useMachineAction()
 	const [size, setSize] = useState('32')
 	const [bus, setBus] = useState('virtio')
@@ -500,7 +500,7 @@ function AddDisk({d, onDone}: {d: MachineDetails; onDone: () => void}) {
 	)
 }
 function DriveEdit({d, drive, onDone}: {d: MachineDetails; drive: Drive; onDone: () => void}) {
-	const node = useNode()
+	const node = useNode(d.id)
 	const action = useMachineAction()
 	const confirm = useConfirm()
 	const isos = useIsos()

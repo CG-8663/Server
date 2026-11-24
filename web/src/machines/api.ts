@@ -66,7 +66,7 @@ export type Backup = {id: string; name: string; vmid: number; sourceId: string; 
 
 export const useMachineDetails = (id: string | null) =>
 	useQuery({queryKey: ['machines.details', id], queryFn: () => query<MachineDetails>('machines.details', {id}), enabled: !!id, refetchInterval: 5000})
-export const useNode = () => useQuery({queryKey: ['machines.node'], queryFn: () => query<NodeInfo>('machines.node'), refetchInterval: 15_000, staleTime: 10_000})
+export const useNode = (id?: string) => useQuery({queryKey: ['machines.node', id ?? 'server'], queryFn: () => query<NodeInfo>('machines.node', id ? {id} : undefined), refetchInterval: 15_000, staleTime: 10_000})
 export const useStats = (id: string | null, enabled = true) =>
 	useQuery({
 		queryKey: statsQueryKey(id ?? ''),
