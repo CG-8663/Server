@@ -10,11 +10,12 @@
  *
  * Build:
  *   gcc -O2 -Wall -Wextra -pthread hypr-rail-capture.c -o hypr-rail-capture \
- *       $(pkg-config --cflags --libs gbm libva libva-drm libavcodec libavfilter libavutil libdrm)
+ *       $(pkg-config --cflags --libs gbm libva libva-drm libavcodec libavfilter libavutil libdrm) -ldl
  */
 
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <gbm.h>
@@ -54,9 +55,22 @@
 #define WL_SHM_FORMAT_ABGR8888 0x34324241U
 #define WL_SHM_FORMAT_XBGR8888 0x34324258U
 #define CAP_SLOTS 3
+#define MAX_DAMAGE_RECTS 8
+#ifndef AV_PROFILE_HEVC_REXT
+#define AV_PROFILE_HEVC_REXT 4
+#endif
+
+typedef struct {
+	int32_t x, y, w, h;
+} DamageRect;
 
 static _Atomic int g_running = 1;
 static _Atomic int g_force_keyframe = 0;
+static _Atomic uint32_t g_reconfig_gen = 0;
+static pthread_mutex_t g_reconfig_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_reconfig_bitrate = 20000;
+static int g_reconfig_quality = 0;
+static char g_reconfig_codec[16] = "h264";
 static int g_wake_fd = -1;
 
 static void wake_wl(void) {
@@ -155,6 +169,86 @@ static void send_video_msg_parts(bool is_key, uint64_t ts_us, const uint8_t *ext
 
 static void send_video_msg(bool is_key, uint64_t ts_us, const uint8_t *data, size_t len) {
 	send_video_msg_parts(is_key, ts_us, NULL, 0, data, len);
+}
+
+/* ---- Optional 10 ms low-latency Opus stdin encoder (zero compile-time dep via dlopen libopus.so.0) ---- */
+typedef struct OpusEncoder OpusEncoder;
+typedef OpusEncoder *(*opus_encoder_create_fn)(int32_t Fs, int channels, int application, int *error);
+typedef void (*opus_encoder_destroy_fn)(OpusEncoder *st);
+typedef int32_t (*opus_encode_fn)(OpusEncoder *st, const int16_t *pcm, int frame_size, unsigned char *data, int32_t max_data_bytes);
+typedef int (*opus_encoder_ctl_fn)(OpusEncoder *st, int request, ...);
+
+static int run_opus_stdin(void) {
+	signal(SIGPIPE, SIG_IGN);
+	void *lib = dlopen("libopus.so.0", RTLD_LAZY);
+	if (!lib) return 2;
+	opus_encoder_create_fn p_create = (opus_encoder_create_fn)dlsym(lib, "opus_encoder_create");
+	opus_encoder_destroy_fn p_destroy = (opus_encoder_destroy_fn)dlsym(lib, "opus_encoder_destroy");
+	opus_encode_fn p_encode = (opus_encode_fn)dlsym(lib, "opus_encode");
+	opus_encoder_ctl_fn p_ctl = (opus_encoder_ctl_fn)dlsym(lib, "opus_encoder_ctl");
+	if (!p_create || !p_destroy || !p_encode || !p_ctl) {
+		dlclose(lib);
+		return 2;
+	}
+	int err = 0;
+	/* 48 kHz stereo, OPUS_APPLICATION_RESTRICTED_LOWDELAY (2051) for ~12.5 ms algorithmic delay */
+	OpusEncoder *enc = p_create(48000, 2, 2051, &err);
+	if (!enc || err != 0) {
+		if (enc) p_destroy(enc);
+		dlclose(lib);
+		return 2;
+	}
+	p_ctl(enc, 4002 /* OPUS_SET_BITRATE */, (int32_t)128000);
+	p_ctl(enc, 4010 /* OPUS_SET_COMPLEXITY */, (int32_t)5);
+
+	/* 10 ms @ 48 kHz stereo s16le = 480 frames * 4 bytes = 1920 bytes */
+	uint8_t pcm_raw[1920];
+	uint8_t out[2 + 1276];
+	int hang_frames = 0;
+	for (;;) {
+		size_t got = 0;
+		while (got < sizeof(pcm_raw)) {
+			ssize_t n = read(STDIN_FILENO, pcm_raw + got, sizeof(pcm_raw) - got);
+			if (n < 0) {
+				if (errno == EINTR) continue;
+				got = 0;
+				break;
+			}
+			if (n == 0) {
+				got = 0;
+				break;
+			}
+			got += (size_t)n;
+		}
+		if (got < sizeof(pcm_raw)) break;
+
+		bool silent = true;
+		const int16_t *samples = (const int16_t *)pcm_raw;
+		for (int i = 0; i < 960; i++) {
+			int16_t s = samples[i];
+			if (s > 16 || s < -16) {
+				silent = false;
+				break;
+			}
+		}
+		if (!silent) {
+			hang_frames = 24; /* 240 ms tail before gating to 0 kbps */
+		} else if (hang_frames > 0) {
+			hang_frames--;
+		} else {
+			continue;
+		}
+
+		int32_t encoded = p_encode(enc, samples, 480, out + 2, 1276);
+		if (encoded > 0 && encoded <= 1276) {
+			out[0] = (uint8_t)((encoded >> 8) & 0xFF);
+			out[1] = (uint8_t)(encoded & 0xFF);
+			if (!write_all(STDOUT_FILENO, out, (size_t)(2 + encoded))) break;
+		}
+	}
+	p_destroy(enc);
+	dlclose(lib);
+	return 0;
 }
 
 /* ---- Minimal Wayland binary wire client (zero generated headers needed) ---- */
@@ -634,8 +728,16 @@ typedef struct {
 	int64_t pts;
 	uint64_t start_us;
 	bool is_hevc;
+	int slices;
 	char encoder_name[32];
 	char codec_str[32];
+	/* Lightweight live telemetry (msgType 5 every ~500ms while active) */
+	uint64_t stat_window_us;
+	uint64_t stat_bytes;
+	uint64_t stat_enc_us[64];
+	int stat_enc_n;
+	uint32_t stat_polish_count;
+	uint32_t stat_roi_count;
 	/* Optional --bench-stats latency telemetry */
 	bool bench_stats;
 	uint64_t enc_samples[512];
@@ -695,11 +797,13 @@ static bool enc_init_one(VaapiEncoder *e, const char *vaapi_device, int w, int h
 	e->y_invert = y_invert;
 	e->drm_fourcc = fmt;
 	e->start_us = monotonic_us();
+	e->stat_window_us = e->start_us;
 
+	bool want_hevc444 = (strcmp(req_codec, "hevc444") == 0);
 	bool want_hevc10 = (strcmp(req_codec, "hevc10") == 0);
-	bool want_hevc = want_hevc10 || (strcmp(req_codec, "hevc") == 0);
+	bool want_hevc = want_hevc444 || want_hevc10 || (strcmp(req_codec, "hevc") == 0);
 	e->is_hevc = want_hevc;
-	const char *va_pix = want_hevc10 ? "p010" : "nv12";
+	const char *va_pix = want_hevc444 ? "vuyx" : want_hevc10 ? "p010" : "nv12";
 	enum AVPixelFormat sw_fmt = drm_to_av_sw_fmt(fmt, dmabuf_mode);
 
 	if (av_hwdevice_ctx_create(&e->vaapi_dev, AV_HWDEVICE_TYPE_VAAPI, vaapi_device, NULL, 0) < 0) {
@@ -799,6 +903,12 @@ static bool enc_init_one(VaapiEncoder *e, const char *vaapi_device, int w, int h
 		{AV_PROFILE_H264_MAIN,                 NULL, NULL,    0, "7", "avc1.4D4033"},
 		{AV_PROFILE_UNKNOWN,                   NULL, NULL,    0, NULL,"avc1.42E033"},
 	};
+	const EncTry hevc444_tries[] = {
+		{AV_PROFILE_HEVC_REXT, NULL, "QVBR", 20, "7", "hev1.4.10.L153.BE.8"},
+		{AV_PROFILE_HEVC_REXT, "1",  "QVBR", 20, "7", "hev1.4.10.L153.BE.8"},
+		{AV_PROFILE_HEVC_REXT, NULL, "VBR",   0, "7", "hev1.4.10.L153.BE.8"},
+		{AV_PROFILE_HEVC_REXT, NULL, NULL,    0, "7", "hev1.4.10.L153.BE.8"},
+	};
 	const EncTry hevc10_tries[] = {
 		{AV_PROFILE_HEVC_MAIN_10, NULL, "QVBR", 21, "7", "hev1.2.4.L153.B0"},
 		{AV_PROFILE_HEVC_MAIN_10, "1",  "QVBR", 21, "7", "hev1.2.4.L153.B0"},
@@ -812,13 +922,15 @@ static bool enc_init_one(VaapiEncoder *e, const char *vaapi_device, int w, int h
 		{AV_PROFILE_HEVC_MAIN, "1",  "VBR",   0, "7", "hev1.1.6.L153.B0"},
 		{AV_PROFILE_HEVC_MAIN, NULL, NULL,    0, "7", "hev1.1.6.L153.B0"},
 	};
-	const EncTry *tries = want_hevc10 ? hevc10_tries : want_hevc ? hevc8_tries : h264_tries;
-	size_t n_tries = want_hevc10 ? (sizeof(hevc10_tries) / sizeof(hevc10_tries[0]))
+	const EncTry *tries = want_hevc444 ? hevc444_tries : want_hevc10 ? hevc10_tries : want_hevc ? hevc8_tries : h264_tries;
+	size_t n_tries = want_hevc444 ? (sizeof(hevc444_tries) / sizeof(hevc444_tries[0]))
+		: want_hevc10 ? (sizeof(hevc10_tries) / sizeof(hevc10_tries[0]))
 		: want_hevc ? (sizeof(hevc8_tries) / sizeof(hevc8_tries[0]))
 		: (sizeof(h264_tries) / sizeof(h264_tries[0]));
 
 	rc = -1;
-	const char *chosen_id = want_hevc10 ? "hev1.2.4.L153.B0" : want_hevc ? "hev1.1.6.L153.B0" : "avc1.640033";
+	const char *chosen_id = want_hevc444 ? "hev1.4.10.L153.BE.8" : want_hevc10 ? "hev1.2.4.L153.B0" : want_hevc ? "hev1.1.6.L153.B0" : "avc1.640033";
+	int target_slices = ((int64_t)e->even_w * (int64_t)e->even_h >= 2000000LL) ? 4 : 1;
 	for (size_t ti = 0; ti < n_tries; ti++) {
 		if (e->codec) avcodec_free_context(&e->codec);
 		e->codec = avcodec_alloc_context3(codec);
@@ -844,6 +956,7 @@ static bool enc_init_one(VaapiEncoder *e, const char *vaapi_device, int w, int h
 		e->codec->gop_size = 1000000;
 		e->codec->max_b_frames = 0;
 		e->codec->refs = 1;
+		if (target_slices > 1) e->codec->slices = target_slices;
 		e->codec->profile = tries[ti].profile;
 		if (sink_hw) e->codec->hw_frames_ctx = av_buffer_ref(sink_hw);
 		else e->codec->hw_device_ctx = av_buffer_ref(e->vaapi_dev);
@@ -866,6 +979,7 @@ static bool enc_init_one(VaapiEncoder *e, const char *vaapi_device, int w, int h
 		av_dict_free(&opts);
 		if (rc == 0) {
 			chosen_id = tries[ti].codec_id;
+			e->slices = target_slices;
 			break;
 		}
 	}
@@ -875,7 +989,7 @@ static bool enc_init_one(VaapiEncoder *e, const char *vaapi_device, int w, int h
 	e->sw = av_frame_alloc();
 	e->pkt = av_packet_alloc();
 	if (!e->va_in || !e->nv12 || !e->sw || !e->pkt) { enc_destroy(e); return false; }
-	const char *prefix = want_hevc10 ? "hevc10_vaapi" : want_hevc ? "hevc_vaapi" : "h264_vaapi";
+	const char *prefix = want_hevc444 ? "hevc444_vaapi" : want_hevc10 ? "hevc10_vaapi" : want_hevc ? "hevc_vaapi" : "h264_vaapi";
 	snprintf(e->encoder_name, sizeof(e->encoder_name), "%s%s", prefix, dmabuf_mode ? "_dmabuf" : "");
 	snprintf(e->codec_str, sizeof(e->codec_str), "%s", chosen_id);
 	return true;
@@ -883,7 +997,7 @@ static bool enc_init_one(VaapiEncoder *e, const char *vaapi_device, int w, int h
 
 static bool enc_init(VaapiEncoder *e, const char *vaapi_device, int w, int h, uint32_t fmt, bool dmabuf_mode, bool y_invert, int fps, int bitrate_kbps, const char *req_codec, int req_quality, int req_comp) {
 	if (enc_init_one(e, vaapi_device, w, h, fmt, dmabuf_mode, y_invert, fps, bitrate_kbps, req_codec, req_quality, req_comp)) return true;
-	if (strcmp(req_codec, "hevc10") == 0) {
+	if (strcmp(req_codec, "hevc444") == 0 || strcmp(req_codec, "hevc10") == 0) {
 		if (enc_init_one(e, vaapi_device, w, h, fmt, dmabuf_mode, y_invert, fps, bitrate_kbps, "hevc", req_quality, req_comp)) return true;
 	}
 	if (strcmp(req_codec, "h264") != 0) {
@@ -893,11 +1007,71 @@ static bool enc_init(VaapiEncoder *e, const char *vaapi_device, int w, int h, ui
 	return false;
 }
 
+static int cmp_u64(const void *a, const void *b) {
+	uint64_t va = *(const uint64_t *)a;
+	uint64_t vb = *(const uint64_t *)b;
+	return (va > vb) - (va < vb);
+}
+
 static void noop_buf_free(void *opaque, uint8_t *data) {
 	(void)opaque; (void)data;
 }
 
-static bool enc_submit_capbuf(VaapiEncoder *e, CapBuf *b, int slot, bool force_key, uint64_t ready_us) {
+static void attach_roi_side_data(VaapiEncoder *e, AVFrame *frame, bool is_polish, const DamageRect *dmg, int n_dmg) {
+	if (is_polish) {
+		AVFrameSideData *sd = av_frame_new_side_data(frame, AV_FRAME_DATA_REGIONS_OF_INTEREST, sizeof(AVRegionOfInterest));
+		if (sd) {
+			AVRegionOfInterest *roi = (AVRegionOfInterest *)sd->data;
+			memset(roi, 0, sizeof(*roi));
+			roi->self_size = sizeof(AVRegionOfInterest);
+			roi->top = 0;
+			roi->left = 0;
+			roi->bottom = e->even_h;
+			roi->right = e->even_w;
+			roi->qoffset = (AVRational){-1, 4}; /* Build-to-Lossless delta QP (~ -12) for razor-sharp static text */
+			e->stat_polish_count++;
+		}
+		return;
+	}
+	if (!dmg || n_dmg <= 0) return;
+	AVRegionOfInterest rects[MAX_DAMAGE_RECTS];
+	int n_valid = 0;
+	uint64_t total_area = 0;
+	for (int i = 0; i < n_dmg && n_valid < MAX_DAMAGE_RECTS; i++) {
+		int32_t x1 = dmg[i].x < 0 ? 0 : dmg[i].x;
+		int32_t y1 = dmg[i].y < 0 ? 0 : dmg[i].y;
+		int32_t x2 = dmg[i].x + dmg[i].w;
+		int32_t y2 = dmg[i].y + dmg[i].h;
+		if (x2 > e->even_w) x2 = e->even_w;
+		if (y2 > e->even_h) y2 = e->even_h;
+		if (x2 <= x1 || y2 <= y1) continue;
+		if (e->y_invert) {
+			int32_t fy1 = e->even_h - y2;
+			int32_t fy2 = e->even_h - y1;
+			y1 = fy1;
+			y2 = fy2;
+		}
+		total_area += (uint64_t)(x2 - x1) * (uint64_t)(y2 - y1);
+		memset(&rects[n_valid], 0, sizeof(AVRegionOfInterest));
+		rects[n_valid].self_size = sizeof(AVRegionOfInterest);
+		rects[n_valid].left = x1;
+		rects[n_valid].top = y1;
+		rects[n_valid].right = x2;
+		rects[n_valid].bottom = y2;
+		rects[n_valid].qoffset = (AVRational){-1, 6}; /* Prioritize dirty text/UI regions (~ -8 QP) */
+		n_valid++;
+	}
+	uint64_t frame_area = (uint64_t)e->even_w * (uint64_t)e->even_h;
+	if (n_valid > 0 && frame_area > 0 && total_area * 100ULL < frame_area * 45ULL) {
+		AVFrameSideData *sd = av_frame_new_side_data(frame, AV_FRAME_DATA_REGIONS_OF_INTEREST, (size_t)n_valid * sizeof(AVRegionOfInterest));
+		if (sd) {
+			memcpy(sd->data, rects, (size_t)n_valid * sizeof(AVRegionOfInterest));
+			e->stat_roi_count++;
+		}
+	}
+}
+
+static bool enc_submit_capbuf(VaapiEncoder *e, CapBuf *b, int slot, bool force_key, bool is_polish, const DamageRect *dmg, int n_dmg, uint64_t ready_us) {
 	AVFrame *va_in = e->va_in;
 	AVFrame *nv12 = e->nv12;
 	AVPacket *pkt = e->pkt;
@@ -994,6 +1168,8 @@ static bool enc_submit_capbuf(VaapiEncoder *e, CapBuf *b, int slot, bool force_k
 	if (force_key) {
 		nv12->pict_type = AV_PICTURE_TYPE_I;
 		nv12->flags |= AV_FRAME_FLAG_KEY;
+	} else {
+		attach_roi_side_data(e, nv12, is_polish, dmg, n_dmg);
 	}
 	rc = avcodec_send_frame(e->codec, nv12);
 	av_frame_unref(nv12);
@@ -1013,6 +1189,10 @@ static bool enc_submit_capbuf(VaapiEncoder *e, CapBuf *b, int slot, bool force_k
 		if (e->bench_stats && pkt->pts > 2 && pkt->pts < 1024 && e->pts_ready[pkt->pts] > 0 && now_us >= e->pts_ready[pkt->pts] && e->enc_n < 512) {
 			e->enc_samples[e->enc_n++] = now_us - e->pts_ready[pkt->pts];
 		}
+		if (ready_us > 0 && now_us >= ready_us && e->stat_enc_n < 64) {
+			e->stat_enc_us[e->stat_enc_n++] = now_us - ready_us;
+		}
+		e->stat_bytes += (uint64_t)pkt->size;
 		bool has_param_set = false;
 		if (pkt->size > 4) {
 			if (e->is_hevc) {
@@ -1029,6 +1209,22 @@ static bool enc_submit_capbuf(VaapiEncoder *e, CapBuf *b, int slot, bool force_k
 			send_video_msg(is_key, ts_us, pkt->data, (size_t)pkt->size);
 		}
 		av_packet_unref(pkt);
+
+		if ((is_polish || now_us >= e->stat_window_us + 500000ULL) && e->stat_enc_n > 0) {
+			qsort(e->stat_enc_us, (size_t)e->stat_enc_n, sizeof(uint64_t), cmp_u64);
+			double enc_p50 = (double)e->stat_enc_us[e->stat_enc_n / 2] / 1000.0;
+			double enc_p95 = (double)e->stat_enc_us[(e->stat_enc_n * 95) / 100] / 1000.0;
+			double dt_us = (double)(now_us - e->stat_window_us);
+			double mbps = dt_us > 1000.0 ? ((double)e->stat_bytes * 8.0 / dt_us) : 0.0;
+			char stat_json[256];
+			snprintf(stat_json, sizeof(stat_json),
+				"{\"encMs\":%.2f,\"encP95Ms\":%.2f,\"mbps\":%.2f,\"polish\":%u,\"roi\":%u,\"slices\":%d}",
+				enc_p50, enc_p95, mbps, e->stat_polish_count, e->stat_roi_count, e->slices);
+			send_json_msg(5, stat_json);
+			e->stat_window_us = now_us;
+			e->stat_bytes = 0;
+			e->stat_enc_n = 0;
+		}
 	}
 	return true;
 }
@@ -1226,6 +1422,33 @@ static void handle_stdin_line(InputCtx *ic, const char *line) {
 	if (line[0] == 'F' && (line[1] == '\n' || line[1] == '\r' || line[1] == '\0')) {
 		atomic_store(&g_force_keyframe, 1);
 		wake_wl();
+		return;
+	}
+	if (line[0] == 'R' && line[1] == ' ') {
+		char *ep1 = NULL, *ep2 = NULL;
+		long br = strtol(line + 2, &ep1, 10);
+		long q = (ep1 != line + 2 && *ep1 == ' ') ? strtol(ep1 + 1, &ep2, 10) : -1;
+		if (ep2 != NULL && ep2 != ep1 + 1 && *ep2 == ' ') {
+			const char *cstr = ep2 + 1;
+			char codec_buf[16] = {0};
+			size_t ci = 0;
+			while (ci + 1 < sizeof(codec_buf) && cstr[ci] && cstr[ci] != '\n' && cstr[ci] != '\r' && cstr[ci] != ' ') {
+				codec_buf[ci] = cstr[ci];
+				ci++;
+			}
+			codec_buf[ci] = '\0';
+			bool valid_codec = (strcmp(codec_buf, "h264") == 0 || strcmp(codec_buf, "hevc") == 0 ||
+				strcmp(codec_buf, "hevc10") == 0 || strcmp(codec_buf, "hevc444") == 0);
+			if (br >= 1000 && br <= 150000 && (q == 0 || (q >= 10 && q <= 34)) && valid_codec) {
+				pthread_mutex_lock(&g_reconfig_mu);
+				g_reconfig_bitrate = (int)br;
+				g_reconfig_quality = (int)q;
+				snprintf(g_reconfig_codec, sizeof(g_reconfig_codec), "%s", codec_buf);
+				pthread_mutex_unlock(&g_reconfig_mu);
+				atomic_fetch_add(&g_reconfig_gen, 1);
+				wake_wl();
+			}
+		}
 		return;
 	}
 	if (strstr(line, "\"type\":\"keyframe\"")) {
@@ -1524,8 +1747,10 @@ typedef struct {
 	bool has_dmabuf;
 	uint32_t dma_fmt, dma_w, dma_h;
 	uint32_t flags;
-	bool buf_done, copy_sent, copy_ign, ready, failed;
+	bool buf_done, copy_sent, copy_ign, is_polish, ready, failed;
 	uint64_t armed_us, copy_sent_us;
+	DamageRect damage[MAX_DAMAGE_RECTS];
+	int n_damage;
 	CapBuf *buf;
 } FrameSlot;
 
@@ -1539,6 +1764,14 @@ static void on_frame_evt(void *ctx, uint32_t obj_id, uint16_t op, const uint8_t 
 			fs->has_shm = true; fs->shm_fmt = fmt; fs->shm_w = w; fs->shm_h = h; fs->shm_stride = stride;
 		}
 		if (!fs->window_mode && fs->mgr_ver < 3) fs->buf_done = true;
+	} else if (!fs->window_mode && op == 4 && len >= 16) {
+		if (fs->n_damage < MAX_DAMAGE_RECTS) {
+			uint32_t dx, dy, dw, dh;
+			memcpy(&dx, pl, 4); memcpy(&dy, pl + 4, 4); memcpy(&dw, pl + 8, 4); memcpy(&dh, pl + 12, 4);
+			if (dw > 0 && dh > 0) {
+				fs->damage[fs->n_damage++] = (DamageRect){(int32_t)dx, (int32_t)dy, (int32_t)dw, (int32_t)dh};
+			}
+		}
 	} else if (op == 5 && len >= 12) {
 		uint32_t fmt, w, h;
 		memcpy(&fmt, pl, 4); memcpy(&w, pl + 4, 4); memcpy(&h, pl + 8, 4);
@@ -1630,6 +1863,9 @@ typedef struct {
 	int q_count;
 	bool y_inv[CAP_SLOTS];
 	bool want_key[CAP_SLOTS];
+	bool is_polish[CAP_SLOTS];
+	DamageRect damage[CAP_SLOTS][MAX_DAMAGE_RECTS];
+	int n_damage[CAP_SLOTS];
 	uint64_t ready_us[CAP_SLOTS];
 	bool stop;
 	bool fallback_shm;
@@ -1646,18 +1882,17 @@ typedef struct {
 	bool bench_stats;
 } EncPipe;
 
-static int cmp_u64(const void *a, const void *b) {
-	uint64_t va = *(const uint64_t *)a;
-	uint64_t vb = *(const uint64_t *)b;
-	return (va > vb) - (va < vb);
-}
-
 static void *encode_thread(void *arg) {
 	EncPipe *ep = (EncPipe *)arg;
 	VaapiEncoder enc = {0};
 	for (int i = 0; i < CAP_SLOTS; i++) enc.imported_sid[i] = VA_INVALID_SURFACE;
 	bool enc_ready = false;
 	int enc_fail_streak = 0;
+	int cur_bitrate = ep->bitrate;
+	int cur_quality = ep->quality;
+	char cur_codec[16];
+	snprintf(cur_codec, sizeof(cur_codec), "%s", ep->req_codec);
+	uint32_t applied_reconfig_gen = atomic_load(&g_reconfig_gen);
 
 	for (;;) {
 		pthread_mutex_lock(&ep->mu);
@@ -1673,16 +1908,31 @@ static void *encode_thread(void *arg) {
 		ep->q_count--;
 		bool y_inv = ep->y_inv[slot];
 		bool want_key = ep->want_key[slot];
+		bool is_polish = ep->is_polish[slot];
+		int n_dmg = ep->n_damage[slot];
+		DamageRect dmg[MAX_DAMAGE_RECTS];
+		if (n_dmg > 0) memcpy(dmg, ep->damage[slot], (size_t)n_dmg * sizeof(DamageRect));
 		uint64_t ready_us = ep->ready_us[slot];
 		pthread_mutex_unlock(&ep->mu);
 
 		CapBuf *b = &ep->caps[slot];
 		bool dmabuf_fallback = false;
 		bool fatal = false;
+		bool reconfig_needed = false;
+		uint32_t cur_gen = atomic_load(&g_reconfig_gen);
+		if (cur_gen != applied_reconfig_gen) {
+			pthread_mutex_lock(&g_reconfig_mu);
+			cur_bitrate = g_reconfig_bitrate;
+			cur_quality = g_reconfig_quality;
+			snprintf(cur_codec, sizeof(cur_codec), "%s", g_reconfig_codec);
+			pthread_mutex_unlock(&g_reconfig_mu);
+			applied_reconfig_gen = cur_gen;
+			reconfig_needed = true;
+		}
 
-		if (!enc_ready || enc.width != b->width || enc.height != b->height || enc.dmabuf_mode != b->is_dmabuf || enc.drm_fourcc != b->fmt || enc.y_invert != y_inv) {
+		if (!enc_ready || reconfig_needed || enc.width != b->width || enc.height != b->height || enc.dmabuf_mode != b->is_dmabuf || enc.drm_fourcc != b->fmt || enc.y_invert != y_inv) {
 			if (enc_ready) enc_destroy(&enc);
-			enc_ready = enc_init(&enc, ep->vaapi_device, b->width, b->height, b->fmt, b->is_dmabuf, y_inv, ep->fps, ep->bitrate, ep->req_codec, ep->quality, ep->compression);
+			enc_ready = enc_init(&enc, ep->vaapi_device, b->width, b->height, b->fmt, b->is_dmabuf, y_inv, ep->fps, cur_bitrate, cur_codec, cur_quality, ep->compression);
 			enc.bench_stats = ep->bench_stats;
 			if (!enc_ready && b->is_dmabuf) {
 				dmabuf_fallback = true;
@@ -1699,7 +1949,7 @@ static void *encode_thread(void *arg) {
 		}
 
 		if (enc_ready && !dmabuf_fallback && !fatal) {
-			if (!enc_submit_capbuf(&enc, b, slot, want_key, ready_us)) {
+			if (!enc_submit_capbuf(&enc, b, slot, want_key, is_polish, dmg, n_dmg, ready_us)) {
 				if (b->is_dmabuf) {
 					enc_destroy(&enc);
 					enc_ready = false;
@@ -1748,6 +1998,9 @@ static void *encode_thread(void *arg) {
 }
 
 int main(int argc, char **argv) {
+	if (argc >= 2 && strcmp(argv[1], "--opus-stdin") == 0) {
+		return run_opus_stdin();
+	}
 	bool window_mode = false;
 	const char *address = "";
 	const char *output_name = "";
@@ -1781,6 +2034,9 @@ int main(int argc, char **argv) {
 	if (fps > 120) fps = 120;
 	if (bitrate < 1000) bitrate = 1000;
 	if (bitrate > 150000) bitrate = 150000;
+	g_reconfig_bitrate = bitrate;
+	g_reconfig_quality = quality;
+	snprintf(g_reconfig_codec, sizeof(g_reconfig_codec), "%s", req_codec);
 
 	/* Enlarge stdout pipe up to 2 MiB (fallback 1 MiB) so near-lossless 4K keyframes never stall the encoder thread */
 #ifdef F_SETPIPE_SZ
@@ -1943,6 +2199,10 @@ int main(int argc, char **argv) {
 
 	uint64_t interval_us = 1000000ULL / (uint64_t)fps;
 	uint64_t last_fire_us = 0;
+	uint64_t last_motion_us = 0;
+	bool needs_polish = false;
+	bool next_is_polish = false;
+	uint32_t seen_reconfig_gen = atomic_load(&g_reconfig_gen);
 	int fail_streak = 0;
 	bool first_frame = true;
 	int n_slots = once ? 1 : CAP_SLOTS;
@@ -1981,11 +2241,20 @@ int main(int argc, char **argv) {
 			continue;
 		}
 
-		/* If idle in copy_with_damage and an on-demand keyframe is requested, cancel idle wait & fire immediate copy! */
-		if (active_slot >= 0 && !fslots[active_slot].copy_ign && atomic_load(&g_force_keyframe)) {
+		uint32_t cur_reconfig_gen = atomic_load(&g_reconfig_gen);
+		bool reconfig_pending = (cur_reconfig_gen != seen_reconfig_gen);
+		/* Build-to-Lossless ("Still-Frame Polish"): 130 ms after motion stops, fire ONE near-lossless ROI polish frame so static text snaps crystal clear! */
+		bool polish_due = (!always_frame && !once && needs_polish && !first_frame && last_motion_us > 0 && (monotonic_us() - last_motion_us) >= 130000ULL);
+
+		/* If idle in copy_with_damage and an on-demand keyframe, live reconfig, or polish frame is due, cancel idle wait & fire immediate copy! */
+		if (active_slot >= 0 && !fslots[active_slot].copy_ign && (atomic_load(&g_force_keyframe) || reconfig_pending || polish_due)) {
 			int s = active_slot;
 			slot_destroy(&wl, &fslots[s]);
 			active_slot = -1;
+			if (polish_due && !reconfig_pending && !atomic_load(&g_force_keyframe)) {
+				next_is_polish = true;
+				needs_polish = false;
+			}
 			slot_arm(&wl, mgr_id, window_mode, mgr_ver, handle_u32, output_id, &fslots[s], &caps[s]);
 			next_slot = (s + 1) % n_slots;
 		}
@@ -2026,10 +2295,13 @@ int main(int argc, char **argv) {
 				pthread_mutex_unlock(&ep.mu);
 				if (!atomic_load(&g_running) || enc_fatal) break;
 
-				bool ign = first_frame || (atomic_load(&g_force_keyframe) != 0) || once || always_frame;
+				bool ign = first_frame || (atomic_load(&g_force_keyframe) != 0) || reconfig_pending || next_is_polish || once || always_frame;
+				fslots[s].is_polish = next_is_polish && !reconfig_pending && !first_frame;
 				if (slot_send_copy(&wl, gbm, shm_id, dmabuf_id, allow_dmabuf, &fslots[s], ign)) {
 					active_slot = s;
 					last_fire_us = monotonic_us();
+					next_is_polish = false;
+					if (reconfig_pending) seen_reconfig_gen = cur_reconfig_gen;
 					int nxt = (s + 1) % n_slots;
 					if (!once && !fslots[nxt].frame_id) {
 						slot_arm(&wl, mgr_id, window_mode, mgr_ver, handle_u32, output_id, &fslots[nxt], &caps[nxt]);
@@ -2046,6 +2318,10 @@ int main(int argc, char **argv) {
 			int s = active_slot;
 			bool ok = fslots[s].ready;
 			uint32_t flags = fslots[s].flags;
+			bool was_polish = fslots[s].is_polish;
+			int n_dmg = fslots[s].n_damage;
+			DamageRect dmg[MAX_DAMAGE_RECTS];
+			if (n_dmg > 0) memcpy(dmg, fslots[s].damage, (size_t)n_dmg * sizeof(DamageRect));
 			slot_destroy(&wl, &fslots[s]);
 			active_slot = -1;
 
@@ -2055,12 +2331,23 @@ int main(int argc, char **argv) {
 				bool y_inv = (flags & 1U) != 0;
 				bool want_key = first_frame || (atomic_exchange(&g_force_keyframe, 0) != 0);
 				first_frame = false;
+				if (!always_frame && !once) {
+					if (was_polish) {
+						needs_polish = false;
+					} else {
+						last_motion_us = ready_us;
+						needs_polish = true;
+					}
+				}
 
 				int next_free = -1;
 				pthread_mutex_lock(&ep.mu);
 				ep.slot_busy[s] = true;
 				ep.y_inv[s] = y_inv;
 				ep.want_key[s] = want_key;
+				ep.is_polish[s] = was_polish;
+				ep.n_damage[s] = n_dmg;
+				if (n_dmg > 0) memcpy(ep.damage[s], dmg, (size_t)n_dmg * sizeof(DamageRect));
 				ep.ready_us[s] = ready_us;
 				int tail = (ep.q_head + ep.q_count) % CAP_SLOTS;
 				ep.queue[tail] = s;
@@ -2079,10 +2366,14 @@ int main(int argc, char **argv) {
 
 				bool pacing_ok = (last_fire_us == 0) || ((ready_us - last_fire_us) >= (interval_us * 3ULL) / 4ULL);
 				if (next_free >= 0 && pacing_ok) {
-					bool next_ign = (atomic_load(&g_force_keyframe) != 0) || always_frame;
+					uint32_t ng = atomic_load(&g_reconfig_gen);
+					bool n_reconfig = (ng != seen_reconfig_gen);
+					bool next_ign = (atomic_load(&g_force_keyframe) != 0) || n_reconfig || always_frame;
+					fslots[next_free].is_polish = false;
 					if (slot_send_copy(&wl, gbm, shm_id, dmabuf_id, allow_dmabuf, &fslots[next_free], next_ign)) {
 						active_slot = next_free;
 						last_fire_us = ready_us;
+						if (n_reconfig) seen_reconfig_gen = ng;
 					}
 				}
 				slot_arm(&wl, mgr_id, window_mode, mgr_ver, handle_u32, output_id, &fslots[s], &caps[s]);

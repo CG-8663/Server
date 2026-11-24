@@ -2178,8 +2178,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					const fps = Math.max(5, Math.min(120, Math.round(Number(url.searchParams.get('fps')) || 60)))
 					const bitrate = Math.max(1000, Math.min(150000, Math.round(Number(url.searchParams.get('bitrate')) || 22000)))
 					const audio = url.searchParams.get('audio') === '1' ? '1' : '0'
+					const audioCodec = url.searchParams.get('audioCodec') === 'opus' ? 'opus' : 'pcm'
 					const rawCodec = url.searchParams.get('codec') ?? 'h264'
-					const codec = rawCodec === 'hevc10' || rawCodec === 'hevc' ? rawCodec : 'h264'
+					const codec = rawCodec === 'hevc444' || rawCodec === 'hevc10' || rawCodec === 'hevc' ? rawCodec : 'h264'
 					const rawQ = Number(url.searchParams.get('quality') ?? 0)
 					const rawComp = Number(url.searchParams.get('compression') ?? 0)
 					target.pathname = '/hyprland/stream'
@@ -2190,6 +2191,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 						fps: String(fps),
 						bitrate: String(bitrate),
 						audio,
+						audioCodec,
 						codec,
 						...(rawQ >= 10 && rawQ <= 34 ? {quality: String(Math.round(rawQ))} : {}),
 						...(rawComp >= 1 && rawComp <= 7 ? {compression: String(Math.round(rawComp))} : {}),
@@ -2240,9 +2242,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 							for (const ws of [client, upstream]) if (ws.readyState === WebSocket.OPEN) ws.close(safe, reason)
 						}
 						const hyprBitrateKbps = route === 'hyprland' ? Math.max(1000, Math.min(150000, Number(params.bitrate) || 22000)) : 22000
-						const hyprDeltaDrop = Math.max(384 * 1024, Math.min(4 * 1024 * 1024, Math.round(((hyprBitrateKbps * 1000) / 8) * 0.25)))
-						const hyprCloseCap = Math.max(4 * 1024 * 1024, hyprDeltaDrop * 6)
-						const hyprKeyDrain = Math.max(64 * 1024, Math.round(hyprDeltaDrop / 4))
+						let hyprDeltaDrop = Math.max(384 * 1024, Math.min(4 * 1024 * 1024, Math.round(((hyprBitrateKbps * 1000) / 8) * 0.25)))
+						let hyprCloseCap = Math.max(4 * 1024 * 1024, hyprDeltaDrop * 6)
+						let hyprKeyDrain = Math.max(64 * 1024, Math.round(hyprDeltaDrop / 4))
 						let dropUntilKey = false
 						let pendingKeyReq = false
 						let lastKeyReqAt = 0
@@ -2286,7 +2288,23 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 							}
 							client.send(data, {binary: isBinary})
 						})
-						client.on('message', (data, isBinary) => upstream.readyState === WebSocket.OPEN && upstream.send(data, {binary: isBinary}))
+						client.on('message', (data, isBinary) => {
+							if (route === 'hyprland' && !isBinary) {
+								const s = String(data ?? '')
+								if (s.length <= 256 && s.includes('"reconfig"')) {
+									try {
+										const parsed = JSON.parse(s)
+										if (parsed?.type === 'reconfig' && typeof parsed.bitrate === 'number' && Number.isFinite(parsed.bitrate)) {
+											const kbps = Math.max(1000, Math.min(150000, Math.round(parsed.bitrate)))
+											hyprDeltaDrop = Math.max(384 * 1024, Math.min(4 * 1024 * 1024, Math.round(((kbps * 1000) / 8) * 0.25)))
+											hyprCloseCap = Math.max(4 * 1024 * 1024, hyprDeltaDrop * 6)
+											hyprKeyDrain = Math.max(64 * 1024, Math.round(hyprDeltaDrop / 4))
+										}
+									} catch {}
+								}
+							}
+							if (upstream.readyState === WebSocket.OPEN) upstream.send(data, {binary: isBinary})
+						})
 						upstream.on('close', (code, reason) => closeBoth(code, reason))
 						client.on('close', () => closeBoth(1000))
 						upstream.on('error', () => client.terminate())

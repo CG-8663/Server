@@ -903,8 +903,9 @@ WantedBy=graphical-session.target
 				const fps = Number(url.searchParams.get('fps') ?? 60)
 				const bitrate = Number(url.searchParams.get('bitrate') ?? 22000)
 				const audio = url.searchParams.get('audio') === '1'
+				const audioCodec = url.searchParams.get('audioCodec') === 'opus' ? 'opus' : 'pcm'
 				const rawCodec = url.searchParams.get('codec') ?? 'h264'
-				const codec = rawCodec === 'hevc10' || rawCodec === 'hevc' ? rawCodec : 'h264'
+				const codec = rawCodec === 'hevc444' || rawCodec === 'hevc10' || rawCodec === 'hevc' ? rawCodec : 'h264'
 				const quality = Number(url.searchParams.get('quality') ?? 0)
 				const compression = Number(url.searchParams.get('compression') ?? 0)
 				return wss.handleUpgrade(req, socket, head, (ws) => {
@@ -913,7 +914,7 @@ WantedBy=graphical-session.target
 					} catch {}
 					viewerJoined()
 					ws.once('close', viewerLeft)
-					hyprland.attachStream(ws, {mode, address, output, fps, bitrate, audio, codec, quality, compression}).catch(() => ws.close(1011, 'Hyprland stream failed'))
+					hyprland.attachStream(ws, {mode, address, output, fps, bitrate, audio, audioCodec, codec, quality, compression}).catch(() => ws.close(1011, 'Hyprland stream failed'))
 				})
 			}
 			// A shell: your own, or one inside an installed app's container.

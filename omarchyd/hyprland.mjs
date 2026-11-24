@@ -250,7 +250,7 @@ export function createHyprland({
 			await mkdir(binDir, {recursive: true, mode: 0o700})
 			const flags = pkg.stdout.trim().split(/\s+/).filter(Boolean)
 			const tmpBin = `${outBin}.${process.pid}.tmp`
-			const cc = await exec('gcc', ['-O2', '-pthread', captureSource, '-o', tmpBin, ...flags], {timeout: 30_000})
+			const cc = await exec('gcc', ['-O2', '-pthread', captureSource, '-o', tmpBin, ...flags, '-ldl'], {timeout: 30_000})
 			if (!cc.ok) {
 				await rm(tmpBin, {force: true}).catch(() => {})
 				compileFailedAt = Date.now()
@@ -604,6 +604,17 @@ export function createHyprland({
 		}
 		if (msg.type === 'audio' && typeof msg.enabled === 'boolean') return {type: 'audio', enabled: msg.enabled}
 		if (msg.type === 'unlock_check') return {type: 'unlock_check'}
+		if (msg.type === 'reconfig') {
+			const out = {type: 'reconfig'}
+			const br = clamp(msg.bitrate, 1000, 150000)
+			if (br !== null) out.bitrate = Math.round(br)
+			const q = clamp(msg.quality, 0, 34)
+			if (q !== null && (q === 0 || q >= 10)) out.quality = Math.round(q)
+			if (msg.codec === 'h264' || msg.codec === 'hevc' || msg.codec === 'hevc10' || msg.codec === 'hevc444') {
+				out.codec = msg.codec
+			}
+			return out
+		}
 		return null
 	}
 
@@ -669,8 +680,8 @@ export function createHyprland({
 		throw new RpcError('BAD_REQUEST', 'Unsupported Hyprland action')
 	}
 
-	// Attach an authenticated owner WebSocket to a live 60 FPS GPU H.264/HEVC/AV1 Hyprland stream (with silence-gated PipeWire audio).
-	async function attachStream(ws, {mode = 'output', address = '', output = '', fps = 60, bitrate = 22000, audio = false, codec = 'h264', quality = 0, compression = 0} = {}) {
+	// Attach an authenticated owner WebSocket to a live 60 FPS GPU H.264/HEVC/HEVC-4:4:4 Hyprland stream (with 10 ms Opus or silence-gated PCM PipeWire audio).
+	async function attachStream(ws, {mode = 'output', address = '', output = '', fps = 60, bitrate = 22000, audio = false, audioCodec = 'pcm', codec = 'h264', quality = 0, compression = 0} = {}) {
 		if (activeStreams.size + pendingStreams >= MAX_STREAMS) {
 			ws.close(1013, 'Too many active Hyprland streams')
 			return
@@ -714,10 +725,15 @@ export function createHyprland({
 			}
 			const cleanFps = Math.max(5, Math.min(120, Math.round(Number(fps) || 60)))
 			const cleanBitrate = Math.max(1000, Math.min(150000, Math.round(Number(bitrate) || 22000)))
-			const cleanCodec = codec === 'hevc10' || codec === 'hevc' ? codec : 'h264'
+			const cleanCodec = codec === 'hevc444' || codec === 'hevc10' || codec === 'hevc' ? codec : 'h264'
 			const cleanQuality = Number.isFinite(Number(quality)) && Number(quality) >= 10 && Number(quality) <= 34 ? Math.round(Number(quality)) : 0
 			const cleanComp = Number.isFinite(Number(compression)) && Number(compression) >= 1 && Number(compression) <= 7 ? Math.round(Number(compression)) : 0
-			const bp = backpressureBudgets(cleanBitrate)
+			let curBitrate = cleanBitrate
+			let curQuality = cleanQuality
+			let curCodec = cleanCodec
+			let bp = backpressureBudgets(cleanBitrate)
+			const wantOpus = audioCodec === 'opus'
+			let opusFailed = false
 
 			// Ensure target window is on an awake, active workspace (move onto awake headless RAIL-1 if its monitor is asleep or workspace is hidden)
 			if (cleanMode === 'window') {
@@ -793,11 +809,29 @@ export function createHyprland({
 			let cleaned = false
 			let childExited = false
 			let killTimer = null
-			// Track per-child exit state & kill timer so rapid mute/unmute toggles can never orphan a previous parec worker.
-			let audioState = null // {proc, exited, killTimer}
+			// Track per-child exit state & kill timers so rapid mute/unmute toggles can never orphan parec or opus workers.
+			let audioState = null // {procs: [{proc, exited, killTimer}]}
 			let audioRx = Buffer.alloc(0)
 			let audioHangFrames = 0 // keep sending ~240ms of tail after non-silent audio, then gate to 0 kbps during silence
 			const AUDIO_CHUNK = 3840 // 20 ms of 48 kHz 16-bit stereo PCM (960 frames * 4 bytes)
+
+			const killAudioProc = (item) => {
+				if (item.killTimer) {
+					clearTimeout(item.killTimer)
+					item.killTimer = null
+				}
+				if (item.exited || item.proc.exitCode != null) return
+				try {
+					item.proc.kill('SIGTERM')
+					item.killTimer = setTimeout(() => {
+						item.killTimer = null
+						try {
+							if (!item.exited && item.proc.exitCode == null) item.proc.kill('SIGKILL')
+						} catch {}
+					}, 1000)
+					item.killTimer.unref?.()
+				} catch {}
+			}
 
 			const stopAudio = () => {
 				if (!audioState) return
@@ -805,35 +839,85 @@ export function createHyprland({
 				audioState = null
 				audioRx = Buffer.alloc(0)
 				audioHangFrames = 0
-				if (st.killTimer) {
-					clearTimeout(st.killTimer)
-					st.killTimer = null
-				}
-				if (st.exited || st.proc.exitCode != null) return
-				try {
-					st.proc.kill('SIGTERM')
-					st.killTimer = setTimeout(() => {
-						st.killTimer = null
-						try {
-							if (!st.exited && st.proc.exitCode == null) st.proc.kill('SIGKILL')
-						} catch {}
-					}, 1000)
-					st.killTimer.unref?.()
-				} catch {}
+				for (const item of st.procs) killAudioProc(item)
 			}
 
 			const startAudio = () => {
 				if (cleaned || audioState) return
+				// Prefer 10 ms Opus (128 kbps active, 0 kbps silent) via nativeBin --opus-stdin when supported; fallback cleanly to PCM 0x02.
+				if (wantOpus && nativeBin && !opusFailed) {
+					try {
+						const ac = spawnImpl('parec', ['--device=@DEFAULT_MONITOR@', '--format=s16le', '--rate=48000', '--channels=2', '--latency-msec=10'], {env, stdio: ['ignore', 'pipe', 'ignore']})
+						const oe = spawnImpl(nativeBin, ['--opus-stdin'], {env, stdio: ['pipe', 'pipe', 'ignore']})
+						const pItem = {proc: ac, exited: false, killTimer: null}
+						const oItem = {proc: oe, exited: false, killTimer: null}
+						const st = {procs: [pItem, oItem]}
+						audioState = st
+						let opusRx = Buffer.alloc(0)
+						const onProcDone = (item, other, isOpus, code) => {
+							item.exited = true
+							if (item.killTimer) {
+								clearTimeout(item.killTimer)
+								item.killTimer = null
+							}
+							if (audioState === st) {
+								audioState = null
+								killAudioProc(other)
+								if (isOpus && !cleaned && code !== 0) {
+									opusFailed = true
+									if (wantAudio) startAudio()
+								}
+							}
+						}
+						ac.once('error', () => onProcDone(pItem, oItem, false, 1))
+						ac.once('exit', (code) => onProcDone(pItem, oItem, false, code))
+						ac.once('close', (code) => onProcDone(pItem, oItem, false, code))
+						oe.once('error', () => onProcDone(oItem, pItem, true, 2))
+						oe.once('exit', (code) => onProcDone(oItem, pItem, true, code))
+						oe.once('close', (code) => onProcDone(oItem, pItem, true, code))
+						oe.stdin?.on('error', () => {})
+						ac.stdout?.on('data', (chunk) => {
+							if (cleaned || audioState !== st || !oe.stdin?.writable) return
+							try {
+								oe.stdin.write(chunk)
+							} catch {}
+						})
+						oe.stdout?.on('data', (chunk) => {
+							if (cleaned || audioState !== st || ws.readyState !== ws.OPEN) return
+							opusRx = opusRx.length ? Buffer.concat([opusRx, chunk]) : chunk
+							while (opusRx.length >= 2) {
+								const len = opusRx.readUInt16BE(0)
+								if (len === 0 || len > 4096) {
+									opusRx = Buffer.alloc(0)
+									break
+								}
+								if (opusRx.length < 2 + len) break
+								const frame = opusRx.subarray(2, 2 + len)
+								opusRx = opusRx.subarray(2 + len)
+								if (ws.bufferedAmount > 256 * 1024) continue
+								const pkt = Buffer.allocUnsafe(1 + len)
+								pkt[0] = 3 // 3 = 10 ms 48 kHz stereo Opus packet
+								frame.copy(pkt, 1)
+								ws.send(pkt, {binary: true})
+							}
+						})
+						return
+					} catch {
+						opusFailed = true
+						audioState = null
+					}
+				}
 				try {
 					const ac = spawnImpl('parec', ['--device=@DEFAULT_MONITOR@', '--format=s16le', '--rate=48000', '--channels=2', '--latency-msec=20'], {env, stdio: ['ignore', 'pipe', 'ignore']})
-					const st = {proc: ac, exited: false, killTimer: null}
+					const pItem = {proc: ac, exited: false, killTimer: null}
+					const st = {procs: [pItem]}
 					audioState = st
 					const onAudioEnd = () => {
-						st.exited = true
+						pItem.exited = true
 						if (audioState === st) audioState = null
-						if (st.killTimer) {
-							clearTimeout(st.killTimer)
-							st.killTimer = null
+						if (pItem.killTimer) {
+							clearTimeout(pItem.killTimer)
+							pItem.killTimer = null
 						}
 					}
 					ac.once('error', onAudioEnd)
@@ -854,7 +938,7 @@ export function createHyprland({
 							}
 							if (ws.bufferedAmount > 256 * 1024) continue
 							const pkt = Buffer.allocUnsafe(1 + AUDIO_CHUNK)
-							pkt[0] = 2 // 0=video delta, 1=video keyframe, 2=48kHz s16le stereo PCM
+							pkt[0] = 2 // 0=video delta, 1=video keyframe, 2=48kHz s16le stereo PCM, 3=Opus
 							pcm.copy(pkt, 1)
 							ws.send(pkt, {binary: true})
 						}
@@ -1040,6 +1124,10 @@ export function createHyprland({
 							const info = JSON.parse(payload.toString('utf8'))
 							if (typeof info.cursor === 'string') ws.send(JSON.stringify({type: 'cursor', cursor: info.cursor}))
 						} catch {}
+					} else if (msgType === 5) {
+						try {
+							ws.send(JSON.stringify({type: 'stats', ...JSON.parse(payload.toString('utf8'))}))
+						} catch {}
 					} else if (msgType === 2 && payload.length > 9) {
 						const isKey = payload[0] === 1
 						// Bitrate-proportional bufferbloat ceiling (~250 ms of stream bitrate) prevents WAN lag while giving high-bitrate LAN keyframes headroom.
@@ -1122,6 +1210,14 @@ export function createHyprland({
 									: `{"type":"key","code":${code},"down":${down === 1},"mods":${mods}}\n`,
 							)
 						}
+					} else if (tag === 0x14 && buf.length === 9) {
+						// Sub-millisecond binary RTT ping -> immediate 0x04 pong echo
+						if (ws.readyState === ws.OPEN) {
+							const pong = Buffer.allocUnsafe(9)
+							pong[0] = 0x04
+							buf.copy(pong, 1, 1, 9)
+							ws.send(pong, {binary: true})
+						}
 					}
 					return
 				}
@@ -1135,8 +1231,19 @@ export function createHyprland({
 				}
 				if (!clean) return
 				if (clean.type === 'audio') {
+					wantAudio = clean.enabled
 					if (clean.enabled) startAudio()
 					else stopAudio()
+					return
+				}
+				if (clean.type === 'reconfig') {
+					if (clean.bitrate !== undefined) curBitrate = clean.bitrate
+					if (clean.quality !== undefined) curQuality = clean.quality
+					if (clean.codec !== undefined) curCodec = clean.codec
+					bp = backpressureBudgets(curBitrate)
+					if (nativeBin) {
+						enqueueControlLine(`R ${curBitrate} ${curQuality} ${curCodec}\n`)
+					}
 					return
 				}
 				if (clean.type === 'unlock_check') {

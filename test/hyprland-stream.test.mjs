@@ -680,6 +680,123 @@ test('full binary input fast paths (0x10/0x11/0x12/0x13), focus-delayed drag ord
 	}
 })
 
+test('live zero-reconnect reconfig, RTT 0x14/0x04 ping-pong, msgType 5 telemetry, and 10ms Opus 0x03 with PCM fallback', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchy-hypr-r2-'))
+	try {
+		await writeFile(join(root, 'wayland-1'), '')
+		await mkdir(join(root, 'hypr', 'sig123'), {recursive: true})
+		await writeFile(join(root, 'hypr', 'sig123', '.socket.sock'), '')
+		const fakeBin = join(root, 'fake-capture')
+		await writeFile(fakeBin, '#!/bin/sh\n')
+
+		let videoChild = null
+		let opusChild = null
+		let parecCount = 0
+		const stdinChunks = []
+		const spawned = []
+
+		const hypr = createHyprland({
+			dataDir: join(root, 'data'),
+			runtimeDir: root,
+			captureBin: fakeBin,
+			vaapiDevice: join(root, 'wayland-1'),
+			async exec(cmd, args) {
+				if (cmd === 'hyprctl' && args[0] === 'monitors') {
+					return {ok: true, stdout: JSON.stringify([{id: 1, name: 'RAIL-1', x: 0, y: 0, width: 3840, height: 2160, scale: 1, refreshRate: 60, dpmsStatus: true, activeWorkspace: {id: 11}, solitaryBlockedBy: []}]), stderr: ''}
+				}
+				if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: '[]', stderr: ''}
+				return {ok: true, stdout: 'ok', stderr: ''}
+			},
+			spawnImpl(cmd, args) {
+				spawned.push({cmd, args})
+				const ch = Object.assign(new EventEmitter(), {
+					stdin: new PassThrough(),
+					stdout: new PassThrough(),
+					stderr: new PassThrough(),
+					killed: false,
+					exitCode: null,
+					kill() {
+						this.killed = true
+						this.exitCode = 0
+					},
+				})
+				if (cmd === 'parec') {
+					parecCount++
+					return ch
+				}
+				if (args.includes('--opus-stdin')) {
+					opusChild = ch
+					return ch
+				}
+				videoChild = ch
+				ch.stdin.on('data', (c) => stdinChunks.push(c.toString('utf8')))
+				return ch
+			},
+		})
+
+		const sent = []
+		const ws = Object.assign(new EventEmitter(), {
+			OPEN: 1,
+			readyState: 1,
+			bufferedAmount: 0,
+			send(data, opts) {
+				sent.push({data, binary: !!opts?.binary})
+			},
+			close() {
+				this.readyState = 3
+				this.emit('close')
+			},
+		})
+
+		await hypr.attachStream(ws, {mode: 'output', output: 'RAIL-1', fps: 60, bitrate: 20000, codec: 'hevc444', audio: true, audioCodec: 'opus'})
+		assert.ok(spawned.some((s) => s.args.includes('hevc444')), 'should forward hevc444 codec flag')
+		assert.ok(opusChild, 'should spawn --opus-stdin encoder when audioCodec=opus')
+
+		// Emit framed Opus packet ([u16be len][payload]) -> must forward as binary 0x03
+		const fakeOpus = Buffer.from([0xf8, 0x11, 0x22, 0x33, 0x44])
+		const opusHdr = Buffer.alloc(2)
+		opusHdr.writeUInt16BE(fakeOpus.length, 0)
+		opusChild.stdout.write(Buffer.concat([opusHdr, fakeOpus]))
+
+		// Emit msgType 5 telemetry JSON -> must forward as {type:'stats', ...}
+		videoChild.stdout.write(framePacket(5, Buffer.from(JSON.stringify({encMs: 10.4, encP95Ms: 11.3, mbps: 42.1, polish: 2, roi: 9, slices: 4}))))
+
+		// Send 9-byte binary RTT ping (0x14) -> immediate 9-byte 0x04 pong echo with identical payload
+		const ping = Buffer.alloc(9)
+		ping[0] = 0x14
+		ping.writeDoubleBE(1234.5, 1)
+		ws.emit('message', ping, true)
+
+		// Send zero-reconnect live reconfig -> forwards R <bitrate> <quality> <codec> and raises backpressure budget to 100 Mbps
+		ws.emit('message', JSON.stringify({type: 'reconfig', bitrate: 100000, quality: 12, codec: 'hevc444'}), false)
+		ws.bufferedAmount = 1_800_000 // > 20 Mbps delta cap, but well under 100 Mbps delta cap (~3.1 MB)
+		const deltaPayload = Buffer.concat([Buffer.from([0]), Buffer.alloc(8), Buffer.from([0, 0, 0, 1, 0x02, 0x01])])
+		videoChild.stdout.write(framePacket(2, deltaPayload))
+
+		await new Promise((r) => setTimeout(r, 40))
+
+		const opusPkt = sent.find((m) => m.binary && m.data[0] === 0x03)
+		assert.ok(opusPkt && opusPkt.data.length === 1 + fakeOpus.length, 'should forward 0x03 Opus packet')
+		const pongPkt = sent.find((m) => m.binary && m.data[0] === 0x04)
+		assert.ok(pongPkt && pongPkt.data.length === 9 && pongPkt.data.readDoubleBE(1) === 1234.5, 'should echo 0x04 RTT pong immediately')
+		const statsMsg = sent.find((m) => !m.binary && JSON.parse(m.data).type === 'stats')
+		assert.ok(statsMsg && JSON.parse(statsMsg.data).slices === 4, 'should forward msgType 5 telemetry stats')
+		assert.ok(stdinChunks.join('').includes('R 100000 12 hevc444\n'), 'reconfig should write compact R line to capture stdin')
+		assert.ok(sent.some((m) => m.binary && m.data[0] === 0), 'live reconfig to 100 Mbps should raise backpressure budget immediately')
+
+		// Simulate --opus-stdin exiting with code 2 (missing libopus.so.0) -> must fall back cleanly to parec 20ms PCM
+		opusChild.exitCode = 2
+		opusChild.emit('exit', 2, null)
+		await new Promise((r) => setTimeout(r, 30))
+		assert.ok(parecCount >= 2, 'missing libopus.so.0 exit(2) must fall back transparently to PCM parec')
+
+		ws.close()
+		hypr.close()
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
 test('native C capture engine compiles cleanly with -Wall -Wextra -Werror when Linux VA-API headers are present', async (t) => {
 	const pkgs = ['gbm', 'libdrm', 'libva', 'libva-drm', 'libavcodec', 'libavfilter', 'libavutil']
 	try {
@@ -693,7 +810,7 @@ test('native C capture engine compiles cleanly with -Wall -Wextra -Werror when L
 	try {
 		const flags = execFileSync('pkg-config', ['--cflags', '--libs', ...pkgs], {encoding: 'utf8'}).trim().split(/\s+/)
 		const out = join(dir, 'hypr-rail-capture')
-		execFileSync('gcc', ['-O2', '-Wall', '-Wextra', '-Werror', '-pthread', RAIL_C, '-o', out, ...flags], {stdio: 'pipe'})
+		execFileSync('gcc', ['-O2', '-Wall', '-Wextra', '-Werror', '-pthread', RAIL_C, '-o', out, ...flags, '-ldl'], {stdio: 'pipe'})
 	} finally {
 		await rm(dir, {recursive: true, force: true})
 	}

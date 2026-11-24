@@ -1,11 +1,11 @@
-// Direct Hyprland GPU WebCodecs renderer (H.264/HEVC Annex-B over WebSocket -> hardware VideoDecoder -> WebGL2 CAS Canvas).
+// Direct Hyprland GPU WebCodecs renderer (H.264/HEVC/HEVC-4:4:4 Annex-B over WebSocket -> hardware VideoDecoder -> WebGL2 Catmull-Rom + CAS Canvas).
 // Renders either the full Hyprland desktop monitor OR an individual native Hyprland Linux window.
-import {useEffect, useMemo, useRef, useState} from 'react'
+import {useEffect, useRef, useState} from 'react'
 
 import {mutate} from './api'
 import {Icon} from './icons'
 
-export type StreamCodec = 'hevc' | 'hevc10' | 'h264'
+export type StreamCodec = 'hevc444' | 'hevc' | 'hevc10' | 'h264'
 
 export type HyprlandWindow = {
 	address: string
@@ -114,22 +114,94 @@ function parseAvcCodecFromAnnexB(data: Uint8Array): string {
 	return 'avc1.42E028'
 }
 
-// Zero-copy WebGL2 VideoFrame texture blitter with single-pass AMD FidelityFX CAS 5-tap sharpening and
-// 1:1 physical pixel HiDPI sizing (applied only inside draw() so 0 FPS idle screens never flash black).
+// Parse HEVC SPS NAL (type 33) from Annex-B bytes to derive exact RFC 6381 hev1.<profile>.<compat>.<tier><level>.<constraints> string
+// so 4:4:4 RExt (hev1.4.10.L153.BE.8), Main 10, and Main configure WebCodecs accurately at any resolution/level.
+export function parseHevcCodecFromAnnexB(data: Uint8Array, fallback: string): string {
+	for (let i = 0; i < data.length - 16; i++) {
+		let start = -1
+		if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) start = i + 3
+		else if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 && data[i + 3] === 1) start = i + 4
+		if (start === -1 || start + 2 >= data.length) continue
+		const nalType = (data[start] >> 1) & 0x3f
+		if (nalType !== 33) continue
+		// Extract first 14 RBSP bytes after 2-byte NAL header, stripping emulation prevention (0x00 0x00 0x03).
+		const rbsp: number[] = []
+		for (let p = start + 2; p < data.length && rbsp.length < 14; p++) {
+			if (p >= start + 4 && data[p] === 3 && data[p - 1] === 0 && data[p - 2] === 0) continue
+			rbsp.push(data[p])
+		}
+		if (rbsp.length < 13) break
+		const ptl0 = rbsp[1]
+		const profileSpace = (ptl0 >> 6) & 3
+		const tierFlag = (ptl0 >> 5) & 1
+		const profileIdc = ptl0 & 0x1f
+		const compat = (((rbsp[2] << 24) | (rbsp[3] << 16) | (rbsp[4] << 8) | rbsp[5]) >>> 0)
+		let compatRev = 0
+		for (let b = 0; b < 32; b++) {
+			if ((compat >>> b) & 1) compatRev = (compatRev | (1 << (31 - b))) >>> 0
+		}
+		const levelIdc = rbsp[12]
+		const constraints = rbsp.slice(6, 12)
+		let lastNz = constraints.length - 1
+		while (lastNz > 0 && constraints[lastNz] === 0) lastNz--
+		const cStr = constraints
+			.slice(0, lastNz + 1)
+			.map((v) => v.toString(16).toUpperCase())
+			.join('.')
+		const spacePrefix = profileSpace === 1 ? 'A' : profileSpace === 2 ? 'B' : profileSpace === 3 ? 'C' : ''
+		return `hev1.${spacePrefix}${profileIdc}.${compatRev.toString(16).toUpperCase()}.${tierFlag ? 'H' : 'L'}${levelIdc}.${cStr}`
+	}
+	return fallback
+}
+
+// Zero-copy WebGL2 VideoFrame texture blitter with adaptive 5-tap Catmull-Rom bicubic scaling (when scaled) +
+// single-pass AMD FidelityFX CAS 5-tap sharpening and 1:1 physical pixel HiDPI sizing (applied inside draw() so idle screens never flash black).
 type FrameDrawResult = 'ok' | 'need-2d' | 'fail'
 type DrawOpts = {backingW: number; backingH: number; contain: boolean; sharpness: number}
 type FrameBlitter = {draw: (frame: VideoFrame, opts: DrawOpts) => FrameDrawResult; destroy: () => void}
 
-const CAS_FRAG_SHADER = `#version 300 es
+const CAS_BICUBIC_FRAG_SHADER = `#version 300 es
 precision highp float;
 uniform sampler2D uTex;
 uniform vec2 uTexel;
+uniform vec2 uTexSize;
 uniform float uSharpness;
+uniform float uBicubic;
 in vec2 vUv;
 out vec4 outColor;
+
+vec3 sampleCatmullRom5(vec2 uv) {
+	vec2 pos = uv * uTexSize;
+	vec2 center = floor(pos - 0.5) + 0.5;
+	vec2 f = pos - center;
+	vec2 f2 = f * f;
+	vec2 f3 = f2 * f;
+	vec2 w0 = f2 - 0.5 * (f3 + f);
+	vec2 w1 = 1.5 * f3 - 2.5 * f2 + 1.0;
+	vec2 w3 = 0.5 * (f3 - f2);
+	vec2 w2 = 1.0 - w0 - w1 - w3;
+	vec2 w12 = w1 + w2;
+	vec2 tc0 = (center - 1.0) * uTexel;
+	vec2 tc12 = (center + w2 / max(w12, vec2(1e-5))) * uTexel;
+	vec2 tc3 = (center + 2.0) * uTexel;
+	vec3 result = vec3(0.0);
+	float wt = 0.0;
+	float a = w12.x * w0.y;
+	result += texture(uTex, vec2(tc12.x, tc0.y)).rgb * a; wt += a;
+	float b = w0.x * w12.y;
+	result += texture(uTex, vec2(tc0.x, tc12.y)).rgb * b; wt += b;
+	float c = w12.x * w12.y;
+	result += texture(uTex, vec2(tc12.x, tc12.y)).rgb * c; wt += c;
+	float d = w3.x * w12.y;
+	result += texture(uTex, vec2(tc3.x, tc12.y)).rgb * d; wt += d;
+	float e = w12.x * w3.y;
+	result += texture(uTex, vec2(tc12.x, tc3.y)).rgb * e; wt += e;
+	return clamp(result / max(wt, 1e-5), 0.0, 1.0);
+}
+
 void main() {
 	vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
-	vec3 e = texture(uTex, uv).rgb;
+	vec3 e = uBicubic > 0.5 ? sampleCatmullRom5(uv) : texture(uTex, uv).rgb;
 	if (uSharpness <= 0.001) {
 		outColor = vec4(e, 1.0);
 		return;
@@ -160,7 +232,9 @@ function createFrameBlitter(canvas: HTMLCanvasElement, force2d = false): FrameBl
 	let tex: WebGLTexture | null = null
 	let vao: WebGLVertexArrayObject | null = null
 	let uTexelLoc: WebGLUniformLocation | null = null
+	let uTexSizeLoc: WebGLUniformLocation | null = null
 	let uSharpLoc: WebGLUniformLocation | null = null
+	let uBicubicLoc: WebGLUniformLocation | null = null
 	let texW = 0
 	let texH = 0
 	let maxTex = 4096
@@ -179,7 +253,7 @@ function createFrameBlitter(canvas: HTMLCanvasElement, force2d = false): FrameBl
 		if (vs && fs) {
 			gl.shaderSource(vs, `#version 300 es\nconst vec2 p[4]=vec2[4](vec2(-1,-1),vec2(1,-1),vec2(-1,1),vec2(1,1));\nout vec2 vUv;\nvoid main(){vUv=p[gl_VertexID]*0.5+0.5;gl_Position=vec4(p[gl_VertexID],0,1);}`)
 			gl.compileShader(vs)
-			gl.shaderSource(fs, CAS_FRAG_SHADER)
+			gl.shaderSource(fs, CAS_BICUBIC_FRAG_SHADER)
 			gl.compileShader(fs)
 			prog = gl.createProgram()
 			if (prog) {
@@ -192,7 +266,9 @@ function createFrameBlitter(canvas: HTMLCanvasElement, force2d = false): FrameBl
 			if (prog && gl.getProgramParameter(prog, gl.LINK_STATUS)) {
 				vao = gl.createVertexArray()
 				uTexelLoc = gl.getUniformLocation(prog, 'uTexel')
+				uTexSizeLoc = gl.getUniformLocation(prog, 'uTexSize')
 				uSharpLoc = gl.getUniformLocation(prog, 'uSharpness')
+				uBicubicLoc = gl.getUniformLocation(prog, 'uBicubic')
 				if (vao) {
 					gl.bindVertexArray(vao)
 					gl.useProgram(prog)
@@ -259,6 +335,7 @@ function createFrameBlitter(canvas: HTMLCanvasElement, force2d = false): FrameBl
 						texW = w
 						texH = h
 						if (uTexelLoc) ctx.uniform2f(uTexelLoc, 1 / w, 1 / h)
+						if (uTexSizeLoc) ctx.uniform2f(uTexSizeLoc, w, h)
 					}
 					let vx = 0
 					let vy = 0
@@ -281,6 +358,7 @@ function createFrameBlitter(canvas: HTMLCanvasElement, force2d = false): FrameBl
 						ctx.viewport(vx, vy, vw, vh)
 					}
 					if (uSharpLoc) ctx.uniform1f(uSharpLoc, opts.sharpness)
+					if (uBicubicLoc) ctx.uniform1f(uBicubicLoc, Math.abs(vw - w) > 1 || Math.abs(vh - h) > 1 ? 1 : 0)
 					ctx.texSubImage2D(ctx.TEXTURE_2D, 0, 0, 0, w, h, ctx.RGBA, ctx.UNSIGNED_BYTE, frame)
 					ctx.drawArrays(ctx.TRIANGLE_STRIP, 0, 4)
 					if (ctx.isContextLost()) {
@@ -329,13 +407,22 @@ function createFrameBlitter(canvas: HTMLCanvasElement, force2d = false): FrameBl
 
 const CODEC_PREF_KEY = 'omarchy-server:hypr-codec:v2'
 const QUALITY_TIER_KEY = 'omarchy-server:hypr-quality-tier:v1'
+const CHROMA_444_KEY = 'omarchy-server:hypr-chroma-444:v1'
+const SHARPNESS_KEY = 'omarchy-server:hypr-sharpness:v1'
 
 export type StreamQualityTier = 'balanced' | 'high' | 'ultra'
+export type SharpnessPreset = 'off' | 'crisp' | 'max'
 
 const QUALITY_TIERS: Record<StreamQualityTier, {label: string; bitrate: number; quality: number}> = {
 	balanced: {label: 'Balanced (20 Mbps)', bitrate: 20000, quality: 20},
 	high: {label: 'High (45 Mbps)', bitrate: 45000, quality: 16},
 	ultra: {label: 'Ultra LAN (100 Mbps)', bitrate: 100000, quality: 12},
+}
+
+const SHARPNESS_PRESETS: Record<SharpnessPreset, {label: string; value: number; next: SharpnessPreset}> = {
+	crisp: {label: 'Sharp: Crisp', value: 0.35, next: 'max'},
+	max: {label: 'Sharp: Max', value: 0.72, next: 'off'},
+	off: {label: 'Sharp: Off', value: 0, next: 'crisp'},
 }
 
 function readQualityTier(): StreamQualityTier {
@@ -346,34 +433,101 @@ function readQualityTier(): StreamQualityTier {
 	return 'balanced'
 }
 
-async function negotiateCodec(): Promise<StreamCodec> {
+function readChroma444(): boolean {
+	try {
+		return localStorage.getItem(CHROMA_444_KEY) === '1'
+	} catch {}
+	return false
+}
+
+function readSharpnessPreset(fallback: number): SharpnessPreset {
+	try {
+		const v = localStorage.getItem(SHARPNESS_KEY)
+		if (v === 'off' || v === 'crisp' || v === 'max') return v
+	} catch {}
+	if (fallback <= 0.01) return 'off'
+	if (fallback >= 0.55) return 'max'
+	return 'crisp'
+}
+
+type WebAudioDataLike = {
+	numberOfFrames: number
+	numberOfChannels: number
+	sampleRate: number
+	format?: string
+	copyTo: (dest: Float32Array, opts: {planeIndex: number; format?: string}) => void
+	close: () => void
+}
+type WebAudioDecoderLike = {
+	state: string
+	configure: (cfg: {codec: string; sampleRate: number; numberOfChannels: number}) => void
+	decode: (chunk: unknown) => void
+	close: () => void
+}
+type WebAudioDecoderCtor = {
+	new (init: {output: (data: WebAudioDataLike) => void; error: (err: DOMException) => void}): WebAudioDecoderLike
+	isConfigSupported?: (cfg: {codec: string; sampleRate: number; numberOfChannels: number}) => Promise<{supported?: boolean}>
+}
+
+async function probeCapabilities(): Promise<{baseCodec: StreamCodec; supports444: boolean; supportsOpus: boolean}> {
+	let baseCodec: StreamCodec = 'h264'
+	let cachedBase: StreamCodec | null = null
 	try {
 		const cached = sessionStorage.getItem(CODEC_PREF_KEY)
-		if (cached === 'hevc10' || cached === 'hevc' || cached === 'h264') return cached
+		if (cached === 'hevc10' || cached === 'hevc' || cached === 'h264') cachedBase = cached
 	} catch {}
-	if (typeof VideoDecoder?.isConfigSupported !== 'function') return 'h264'
-	// Prefer 8-bit HEVC Main (Full-Range BT.709, QVBR): fast hardware encode on Intel/AMD/Apple Silicon
-	// while keeping UI text & video sharp at locked 60 FPS; falls back cleanly to H.264 High.
-	for (const [id, codec] of [
-		['hevc', 'hev1.1.6.L153.B0'],
-		['hevc10', 'hev1.2.4.L153.B0'],
-	] as const) {
+
+	if (cachedBase) {
+		baseCodec = cachedBase
+	} else if (typeof VideoDecoder?.isConfigSupported === 'function') {
+		for (const [id, codec] of [
+			['hevc', 'hev1.1.6.L153.B0'],
+			['hevc10', 'hev1.2.4.L153.B0'],
+		] as const) {
+			try {
+				const res = await VideoDecoder.isConfigSupported({
+					codec,
+					codedWidth: 1920,
+					codedHeight: 1080,
+					hardwareAcceleration: 'prefer-hardware',
+					optimizeForLatency: true,
+				})
+				if (res?.supported) {
+					baseCodec = id
+					break
+				}
+			} catch {}
+		}
+	}
+
+	let supports444 = false
+	if (typeof VideoDecoder?.isConfigSupported === 'function') {
 		try {
-			const res = await VideoDecoder.isConfigSupported({
-				codec,
+			const r444 = await VideoDecoder.isConfigSupported({
+				codec: 'hev1.4.10.L153.BE.8',
 				codedWidth: 1920,
 				codedHeight: 1080,
 				hardwareAcceleration: 'prefer-hardware',
 				optimizeForLatency: true,
 			})
-			if (res?.supported) return id
+			supports444 = !!r444?.supported
 		} catch {}
 	}
-	return 'h264'
+
+	let supportsOpus = false
+	try {
+		const win = window as unknown as {AudioDecoder?: WebAudioDecoderCtor; EncodedAudioChunk?: unknown}
+		if (typeof win.AudioDecoder?.isConfigSupported === 'function' && typeof win.EncodedAudioChunk === 'function') {
+			const ro = await win.AudioDecoder.isConfigSupported({codec: 'opus', sampleRate: 48000, numberOfChannels: 2})
+			supportsOpus = !!ro?.supported
+		}
+	} catch {}
+
+	return {baseCodec, supports444, supportsOpus}
 }
 
 function nextFallbackCodec(cur: StreamCodec): 'hevc' | 'h264' | null {
-	if (cur === 'hevc10') return 'hevc'
+	if (cur === 'hevc444' || cur === 'hevc10') return 'hevc'
 	if (cur === 'hevc') return 'h264'
 	return null
 }
@@ -416,8 +570,9 @@ export function HyprlandView({
 	const toggleMute = onToggleMute ?? (() => setLocalMuted((m) => !m))
 	const mutedRef = useRef(muted)
 	mutedRef.current = muted
-	const sharpnessRef = useRef(sharpness)
-	sharpnessRef.current = sharpness
+	const [sharpnessPreset, setSharpnessPresetState] = useState<SharpnessPreset>(() => readSharpnessPreset(sharpness))
+	const sharpnessRef = useRef(SHARPNESS_PRESETS[sharpnessPreset].value)
+	sharpnessRef.current = chrome === 'full' ? SHARPNESS_PRESETS[sharpnessPreset].value : sharpness
 	const containRef = useRef(chrome === 'full')
 	containRef.current = chrome === 'full'
 
@@ -426,6 +581,7 @@ export function HyprlandView({
 	const hostRef = useRef<HTMLDivElement>(null)
 	const canvasRef = useRef<HTMLCanvasElement>(null)
 	const fpsSpanRef = useRef<HTMLSpanElement>(null)
+	const statsOverlayRef = useRef<HTMLDivElement>(null)
 	const [canvasMode, setCanvasMode] = useState<'webgl2' | '2d'>('webgl2')
 	const canvasModeRef = useRef<'webgl2' | '2d'>('webgl2')
 	canvasModeRef.current = canvasMode
@@ -446,26 +602,77 @@ export function HyprlandView({
 	const pendingPtrRef = useRef<{ux: number; uy: number} | null>(null)
 	const ptrTimerRef = useRef<number | null>(null)
 	const wsRef = useRef<WebSocket | null>(null)
-	const [negotiatedCodec, setNegotiatedCodec] = useState<StreamCodec | null>(null)
+	const [caps, setCaps] = useState<{baseCodec: StreamCodec; supports444: boolean; supportsOpus: boolean} | null>(null)
 	const [codecFallback, setCodecFallback] = useState<StreamCodec | null>(null)
 	const [qualityTier, setQualityTierState] = useState<StreamQualityTier>(readQualityTier)
+	const [chroma444, setChroma444State] = useState<boolean>(readChroma444)
+	const [showStats, setShowStats] = useState(false)
+	const showStatsRef = useRef(false)
+	showStatsRef.current = showStats
+	const qualityTierRef = useRef<StreamQualityTier>(qualityTier)
+	qualityTierRef.current = qualityTier
+	const chroma444Ref = useRef<boolean>(chroma444)
+	chroma444Ref.current = chroma444
+	const activeCodecRef = useRef<StreamCodec>('h264')
 	const [attempt, setAttempt] = useState(0)
+
+	const sendLiveReconfig = (nextTier: StreamQualityTier, next444: boolean) => {
+		const ws = wsRef.current
+		if (!ws || ws.readyState !== WebSocket.OPEN || !caps) return
+		const tier = QUALITY_TIERS[nextTier]
+		const nextCodec: StreamCodec = next444 && caps.supports444 ? 'hevc444' : (codecFallback ?? caps.baseCodec)
+		activeCodecRef.current = nextCodec
+		ws.send(
+			JSON.stringify({
+				type: 'reconfig',
+				bitrate: tier ? tier.bitrate : bitrate,
+				quality: tier ? tier.quality : 0,
+				codec: nextCodec,
+			}),
+		)
+	}
 
 	const setQualityTier = (next: StreamQualityTier) => {
 		setQualityTierState(next)
+		qualityTierRef.current = next
 		try {
 			localStorage.setItem(QUALITY_TIER_KEY, next)
 		} catch {}
+		sendLiveReconfig(next, chroma444Ref.current)
+	}
+
+	const toggleChroma444 = () => {
+		const next = !chroma444Ref.current
+		setChroma444State(next)
+		chroma444Ref.current = next
+		try {
+			localStorage.setItem(CHROMA_444_KEY, next ? '1' : '0')
+		} catch {}
+		sendLiveReconfig(qualityTierRef.current, next)
+	}
+
+	const cycleSharpness = () => {
+		const next = SHARPNESS_PRESETS[sharpnessPreset].next
+		setSharpnessPresetState(next)
+		sharpnessRef.current = SHARPNESS_PRESETS[next].value
+		try {
+			localStorage.setItem(SHARPNESS_KEY, next)
+		} catch {}
+		// Request one immediate frame refresh so static screens show the updated sharpness uniform immediately.
+		const ws = wsRef.current
+		if (ws && ws.readyState === WebSocket.OPEN) {
+			ws.send(JSON.stringify({type: 'keyframe'}))
+		}
 	}
 
 	useEffect(() => {
 		let cancelled = false
-		negotiateCodec()
+		probeCapabilities()
 			.then((c) => {
-				if (!cancelled) setNegotiatedCodec(c)
+				if (!cancelled) setCaps(c)
 			})
 			.catch(() => {
-				if (!cancelled) setNegotiatedCodec('h264')
+				if (!cancelled) setCaps({baseCodec: 'h264', supports444: false, supportsOpus: false})
 			})
 		return () => {
 			cancelled = true
@@ -475,18 +682,6 @@ export function HyprlandView({
 	useEffect(() => {
 		setCodecFallback(null)
 	}, [attempt])
-
-	const streamCfg = useMemo(() => {
-		if (!negotiatedCodec) return null
-		const tier = QUALITY_TIERS[qualityTier]
-		return {
-			codec: codecFallback ?? negotiatedCodec,
-			fps,
-			bitrate: tier ? tier.bitrate : bitrate,
-			quality: tier ? tier.quality : 0,
-			compression: 0,
-		}
-	}, [negotiatedCodec, codecFallback, qualityTier, fps, bitrate])
 
 	const refreshCanvasRect = () => {
 		const el = canvasRef.current
@@ -687,14 +882,19 @@ export function HyprlandView({
 			setError('This browser does not support WebCodecs hardware video decoding.')
 			return
 		}
-		if (!streamCfg) return
-		const activeCodec = streamCfg.codec
-		const activeFps = streamCfg.fps
-		const activeBitrate = streamCfg.bitrate
-		const activeQuality = streamCfg.quality
-		const activeCompression = streamCfg.compression
+		if (!caps) return
+		const initTier = QUALITY_TIERS[qualityTierRef.current]
+		const initCodec: StreamCodec = codecFallback ?? (chroma444Ref.current && caps.supports444 ? 'hevc444' : caps.baseCodec)
+		activeCodecRef.current = initCodec
+		const activeFps = fps
+		const activeBitrate = initTier ? initTier.bitrate : bitrate
+		const activeQuality = initTier ? initTier.quality : 0
+		const activeCompression = 0
 		let disposed = false
 		let decoder: VideoDecoder | null = null
+		let audioDecoder: WebAudioDecoderLike | null = null
+		let opusTs = 0
+		let audioModeLabel = caps.supportsOpus ? 'Opus 10ms' : 'PCM 20ms'
 		let blitter: FrameBlitter | null = null
 		let blitterCanvas: HTMLCanvasElement | null = null
 		let configured = false
@@ -702,27 +902,157 @@ export function HyprlandView({
 		let gotFirstFrame = false
 		let codecWatchdog = 0
 		let framesInWindow = 0
+		let lastFps = 0
 		let lastFpsAt = performance.now()
 		let pendingFrame: VideoFrame | null = null
 		let microtaskScheduled = false
 		let queueHighSince = 0
+		const decodeStartMap = new Map<number, number>()
+		let lastDecMs = 0
+		let lastRttMs: number | null = null
+		let lastServerStats: {encMs: number; encP95Ms: number; mbps: number; polish: number; roi: number; slices: number} | null = null
+		let metaEncName = ''
+		let metaDim = ''
+		const pingBuf = new Uint8Array(9)
+		const pingView = new DataView(pingBuf.buffer)
 
-		// Update FPS readout directly on the DOM node (zero 1 Hz React re-renders).
+		const renderStatsOverlay = () => {
+			if (!showStatsRef.current || !statsOverlayRef.current) return
+			const parts: string[] = []
+			if (metaEncName) parts.push(metaEncName)
+			if (metaDim) parts.push(metaDim)
+			parts.push(`${lastFps} fps`)
+			if (lastServerStats) {
+				parts.push(`${lastServerStats.mbps.toFixed(1)} Mbps`)
+				parts.push(`Enc ${lastServerStats.encMs.toFixed(1)}ms (p95 ${lastServerStats.encP95Ms.toFixed(1)}ms)`)
+				if (lastServerStats.slices > 1) parts.push(`${lastServerStats.slices} slices`)
+				if (lastServerStats.polish > 0) parts.push(`Polish ${lastServerStats.polish}`)
+				if (lastServerStats.roi > 0) parts.push(`ROI ${lastServerStats.roi}`)
+			}
+			if (lastDecMs > 0) parts.push(`Dec ${lastDecMs.toFixed(1)}ms`)
+			if (lastRttMs !== null) parts.push(`RTT ${lastRttMs.toFixed(1)}ms`)
+			parts.push(audioModeLabel)
+			statsOverlayRef.current.textContent = parts.join(' · ')
+		}
+
+		// Schedule decoded WebCodecs AudioData (10 ms Opus) onto WebAudio with tight 25 ms jitter cushion.
+		const scheduleAudioData = (ad: WebAudioDataLike) => {
+			try {
+				if (mutedRef.current) return
+				const ac = audioCtxRef.current
+				if (!ac || ac.state !== 'running') return
+				const frames = ad.numberOfFrames
+				const chCount = Math.min(2, ad.numberOfChannels || 2)
+				if (frames <= 0) return
+				const ab = ac.createBuffer(chCount, frames, ad.sampleRate || 48000)
+				const fmt = ad.format || ''
+				if (fmt.endsWith('-planar')) {
+					for (let c = 0; c < chCount; c++) {
+						ad.copyTo(ab.getChannelData(c), {planeIndex: c, format: 'f32-planar'})
+					}
+				} else {
+					const interleaved = new Float32Array(frames * chCount)
+					ad.copyTo(interleaved, {planeIndex: 0, format: 'f32'})
+					const ch0 = ab.getChannelData(0)
+					const ch1 = chCount > 1 ? ab.getChannelData(1) : null
+					for (let i = 0; i < frames; i++) {
+						ch0[i] = interleaved[i * chCount]
+						if (ch1) ch1[i] = interleaved[i * chCount + 1]
+					}
+				}
+				const src = ac.createBufferSource()
+				src.buffer = ab
+				src.connect(ac.destination)
+				const now = ac.currentTime
+				if (nextAudioTimeRef.current < now + 0.004 || nextAudioTimeRef.current > now + 0.14) {
+					nextAudioTimeRef.current = now + 0.025
+				}
+				src.start(nextAudioTimeRef.current)
+				nextAudioTimeRef.current += ab.duration
+			} catch {} finally {
+				ad.close()
+			}
+		}
+
+		const playOpusFrame = (opusBytes: Uint8Array) => {
+			if (mutedRef.current || opusBytes.byteLength === 0) return
+			audioModeLabel = 'Opus 10ms'
+			const ac = audioCtxRef.current
+			if (!ac || ac.state !== 'running') return
+			const win = window as unknown as {
+				AudioDecoder?: WebAudioDecoderCtor
+				EncodedAudioChunk?: new (init: {type: 'key'; timestamp: number; data: Uint8Array}) => unknown
+			}
+			if (!win.AudioDecoder || !win.EncodedAudioChunk) return
+			if (!audioDecoder || audioDecoder.state === 'closed') {
+				try {
+					audioDecoder = new win.AudioDecoder({
+						output: scheduleAudioData,
+						error() {
+							try {
+								audioDecoder?.close()
+							} catch {}
+							audioDecoder = null
+						},
+					})
+					audioDecoder.configure({codec: 'opus', sampleRate: 48000, numberOfChannels: 2})
+				} catch {
+					audioDecoder = null
+					return
+				}
+			}
+			if (audioDecoder.state !== 'configured') return
+			try {
+				audioDecoder.decode(new win.EncodedAudioChunk({type: 'key', timestamp: opusTs, data: opusBytes}))
+				opusTs += 10000
+			} catch {}
+		}
+
+		// Update FPS readout & telemetry overlay directly on DOM nodes (zero 1 Hz React re-renders).
 		const fpsTimer = window.setInterval(() => {
 			const now = performance.now()
 			const dt = (now - lastFpsAt) / 1000
-			if (dt > 0 && fpsSpanRef.current) {
-				const f = Math.round(framesInWindow / dt)
-				fpsSpanRef.current.textContent = chrome === 'full' ? `${f} fps` : f > 0 ? `${f} fps` : 'idle'
+			if (dt > 0) {
+				lastFps = Math.round(framesInWindow / dt)
+				if (fpsSpanRef.current) {
+					fpsSpanRef.current.textContent = chrome === 'full' ? `${lastFps} fps` : lastFps > 0 ? `${lastFps} fps` : 'idle'
+				}
+				renderStatsOverlay()
 			}
 			framesInWindow = 0
 			lastFpsAt = now
 		}, 1000)
 
+		// Sub-millisecond binary RTT ping (0x14 -> 0x04 pong) every 2s for live telemetry.
+		const pingTimer = window.setInterval(() => {
+			const curWs = wsRef.current
+			if (curWs && curWs.readyState === WebSocket.OPEN) {
+				pingBuf[0] = 0x14
+				pingView.setFloat64(1, performance.now(), false)
+				curWs.send(pingBuf)
+			}
+		}, 2000)
+
 		const triggerCodecFallback = () => {
-			if (disposed || gotFirstFrame || activeCodec === 'h264') return false
-			const next = nextFallbackCodec(activeCodec)
+			const cur = activeCodecRef.current
+			if (disposed || cur === 'h264') return false
+			const next = nextFallbackCodec(cur)
 			if (!next) return false
+			if (cur === 'hevc444') {
+				setChroma444State(false)
+				chroma444Ref.current = false
+				try {
+					localStorage.setItem(CHROMA_444_KEY, '0')
+				} catch {}
+				// If live stream already opened, downgrade 4:4:4 -> 4:2:0 in-place with zero reconnect!
+				if (gotFirstFrame && wsRef.current?.readyState === WebSocket.OPEN) {
+					const t = QUALITY_TIERS[qualityTierRef.current]
+					activeCodecRef.current = next
+					wsRef.current.send(JSON.stringify({type: 'reconfig', bitrate: t ? t.bitrate : bitrate, quality: t ? t.quality : 0, codec: next}))
+					return true
+				}
+			}
+			if (gotFirstFrame) return false
 			try {
 				sessionStorage.setItem(CODEC_PREF_KEY, next)
 			} catch {}
@@ -772,6 +1102,12 @@ export function HyprlandView({
 					return
 				}
 				if (res !== 'ok') return
+				const t0 = decodeStartMap.get(frame.timestamp)
+				if (t0 !== undefined) {
+					decodeStartMap.delete(frame.timestamp)
+					const dt = performance.now() - t0
+					lastDecMs = lastDecMs > 0 ? lastDecMs * 0.75 + dt * 0.25 : dt
+				}
 				framesInWindow++
 				if (!gotFirstFrame) {
 					gotFirstFrame = true
@@ -779,9 +1115,12 @@ export function HyprlandView({
 						window.clearTimeout(codecWatchdog)
 						codecWatchdog = 0
 					}
-					try {
-						sessionStorage.setItem(CODEC_PREF_KEY, activeCodec)
-					} catch {}
+					const c = activeCodecRef.current
+					if (c !== 'hevc444') {
+						try {
+							sessionStorage.setItem(CODEC_PREF_KEY, c)
+						} catch {}
+					}
 				}
 				setStatusTracked('live')
 			} catch {
@@ -875,7 +1214,8 @@ export function HyprlandView({
 			...(activeQuality >= 10 && activeQuality <= 34 ? {quality: String(activeQuality)} : {}),
 			...(activeCompression >= 1 && activeCompression <= 7 ? {compression: String(activeCompression)} : {}),
 			audio: mutedRef.current ? '0' : '1',
-			codec: activeCodec,
+			audioCodec: caps.supportsOpus ? 'opus' : 'pcm',
+			codec: initCodec,
 		})
 		const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
 		const ws = new WebSocket(`${scheme}//${location.host}/api/hyprland/stream?${qs.toString()}`)
@@ -884,6 +1224,9 @@ export function HyprlandView({
 		ws.onopen = () => {
 			if (!disposed && ws.readyState === WebSocket.OPEN) {
 				ws.send(JSON.stringify({type: 'audio', enabled: !mutedRef.current}))
+				pingBuf[0] = 0x14
+				pingView.setFloat64(1, performance.now(), false)
+				ws.send(pingBuf)
 			}
 		}
 		setStatusTracked('connecting')
@@ -904,13 +1247,27 @@ export function HyprlandView({
 						codedSizeRef.current = {w: currentW, h: currentH}
 						canvasRectRef.current = null
 						if (typeof msg.codec === 'string' && msg.codec) currentCodec = msg.codec
-						setMeta({width: currentW, height: currentH, fps: Number(msg.fps) || activeFps, encoder: String(msg.encoder || 'h264')})
+						const encStr = String(msg.encoder || 'h264')
+						metaEncName = encStr === 'hevc444_vaapi_dmabuf' ? 'HEVC 4:4:4' : encStr === 'hevc10_vaapi_dmabuf' ? 'HEVC 10-bit' : encStr === 'hevc_vaapi_dmabuf' ? 'HEVC' : 'H.264'
+						metaDim = `${currentW}x${currentH}`
+						setMeta({width: currentW, height: currentH, fps: Number(msg.fps) || activeFps, encoder: encStr})
 						try {
 							decoder?.close()
 						} catch {}
 						decoder = null
 						configured = false
 						needKey = true
+						renderStatsOverlay()
+					} else if (msg.type === 'stats') {
+						lastServerStats = {
+							encMs: Number(msg.encMs) || 0,
+							encP95Ms: Number(msg.encP95Ms) || 0,
+							mbps: Number(msg.mbps) || 0,
+							polish: Number(msg.polish) || 0,
+							roi: Number(msg.roi) || 0,
+							slices: Number(msg.slices) || 1,
+						}
+						renderStatsOverlay()
 					} else if (msg.type === 'lock') {
 						setSessionLocked(!!msg.locked)
 					} else if (msg.type === 'cursor') {
@@ -926,7 +1283,21 @@ export function HyprlandView({
 				return
 			}
 			const buf = new Uint8Array(ev.data as ArrayBuffer)
+			if (buf.byteLength === 9 && buf[0] === 0x04) {
+				const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+				const rtt = performance.now() - dv.getFloat64(1, false)
+				if (rtt >= 0 && rtt < 10000) {
+					lastRttMs = lastRttMs === null ? rtt : lastRttMs * 0.6 + rtt * 0.4
+					renderStatsOverlay()
+				}
+				return
+			}
+			if (buf.byteLength > 1 && buf[0] === 3) {
+				playOpusFrame(buf.subarray(1))
+				return
+			}
 			if (buf.byteLength > 4 && buf[0] === 2) {
+				audioModeLabel = 'PCM 20ms'
 				playPcmFrame(buf.subarray(1))
 				return
 			}
@@ -939,7 +1310,10 @@ export function HyprlandView({
 			const annexb = buf.subarray(9)
 
 			if (isKey) {
-				const codec = currentCodec.startsWith('hev') || currentCodec.startsWith('hvc') ? currentCodec : parseAvcCodecFromAnnexB(annexb)
+				const codec =
+					currentCodec.startsWith('hev') || currentCodec.startsWith('hvc')
+						? parseHevcCodecFromAnnexB(annexb, currentCodec)
+						: parseAvcCodecFromAnnexB(annexb)
 				if (!configured) ensureDecoder(codec, currentW, currentH)
 				needKey = false
 				queueHighSince = 0
@@ -966,6 +1340,8 @@ export function HyprlandView({
 				}
 				try {
 					if (isKey) armDecodeWatchdog()
+					if (decodeStartMap.size > 32) decodeStartMap.clear()
+					decodeStartMap.set(timestamp, nowMs)
 					decoder.decode(
 						new EncodedVideoChunk({
 							type: isKey ? 'key' : 'delta',
@@ -1010,6 +1386,7 @@ export function HyprlandView({
 			}
 			if (codecWatchdog) window.clearTimeout(codecWatchdog)
 			window.clearInterval(fpsTimer)
+			window.clearInterval(pingTimer)
 			try {
 				ws.close()
 			} catch {}
@@ -1018,10 +1395,13 @@ export function HyprlandView({
 				decoder?.close()
 			} catch {}
 			try {
+				audioDecoder?.close()
+			} catch {}
+			try {
 				blitter?.destroy()
 			} catch {}
 		}
-	}, [effectiveMode, effectiveAddress, effectiveOutput, streamCfg, attempt, chrome])
+	}, [effectiveMode, effectiveAddress, effectiveOutput, caps, codecFallback, fps, bitrate, attempt, chrome])
 
 	const sendBinaryMove = (ux: number, uy: number) => {
 		const ws = wsRef.current
@@ -1154,15 +1534,17 @@ export function HyprlandView({
 	}, [canvasMode])
 
 	const encoderLabel =
-		meta?.encoder === 'hevc10_vaapi_dmabuf'
-			? 'HEVC 10-bit DMA-BUF'
-			: meta?.encoder === 'hevc_vaapi_dmabuf'
-				? 'HEVC DMA-BUF'
-				: meta?.encoder === 'h264_vaapi_dmabuf'
-					? 'H.264 High DMA-BUF'
-					: meta?.encoder?.includes('vaapi')
-						? 'VA-API GPU'
-						: 'H.264'
+		meta?.encoder === 'hevc444_vaapi_dmabuf'
+			? 'HEVC 4:4:4 DMA-BUF'
+			: meta?.encoder === 'hevc10_vaapi_dmabuf'
+				? 'HEVC 10-bit DMA-BUF'
+				: meta?.encoder === 'hevc_vaapi_dmabuf'
+					? 'HEVC DMA-BUF'
+					: meta?.encoder === 'h264_vaapi_dmabuf'
+						? 'H.264 High DMA-BUF'
+						: meta?.encoder?.includes('vaapi')
+							? 'VA-API GPU'
+							: 'H.264'
 
 	return (
 		<div
@@ -1240,12 +1622,28 @@ export function HyprlandView({
 							aria-label="Stream bitrate quality"
 							value={qualityTier}
 							onChange={(e) => setQualityTier(e.target.value as StreamQualityTier)}
-							title="Stream bitrate & sharpness preset"
+							title="Live stream bitrate & quality preset (instant, zero reconnect)"
 						>
 							<option value="balanced">{QUALITY_TIERS.balanced.label}</option>
 							<option value="high">{QUALITY_TIERS.high.label}</option>
 							<option value="ultra">{QUALITY_TIERS.ultra.label}</option>
 						</select>
+						{caps?.supports444 && (
+							<button
+								type="button"
+								className={`btn small${chroma444 ? ' primary' : ''}`}
+								onClick={toggleChroma444}
+								title="Toggle hardware HEVC 4:4:4 full chroma for razor-sharp colored text (instant, zero reconnect)"
+							>
+								4:4:4
+							</button>
+						)}
+						<button type="button" className="btn small" onClick={cycleSharpness} title="Cycle WebGL2 AMD FidelityFX CAS sharpening">
+							{SHARPNESS_PRESETS[sharpnessPreset].label}
+						</button>
+						<button type="button" className={`btn small${showStats ? ' primary' : ''}`} onClick={() => setShowStats((s) => !s)} title="Toggle live GPU engine telemetry overlay">
+							Stats
+						</button>
 						<button type="button" className="btn small" onClick={toggleMute} title={muted ? 'Unmute desktop audio' : 'Mute desktop audio'}>
 							{muted ? 'Audio off' : 'Audio on'}
 						</button>
@@ -1309,6 +1707,34 @@ export function HyprlandView({
 					sendBinaryScroll(e.deltaX * 0.15, e.deltaY * 0.15)
 				}}
 			/>
+
+			{showStats && (
+				<div
+					ref={statsOverlayRef}
+					aria-live="off"
+					style={{
+						position: 'absolute',
+						left: 12,
+						bottom: 12,
+						zIndex: 7,
+						pointerEvents: 'none',
+						background: 'rgba(10, 12, 18, 0.82)',
+						color: '#e2e8f0',
+						border: '1px solid rgba(255, 255, 255, 0.14)',
+						borderRadius: 8,
+						padding: '5px 10px',
+						fontSize: 11,
+						fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+						backdropFilter: 'blur(8px)',
+						maxWidth: 'calc(100% - 24px)',
+						whiteSpace: 'nowrap',
+						overflow: 'hidden',
+						textOverflow: 'ellipsis',
+					}}
+				>
+					Collecting engine telemetry…
+				</div>
+			)}
 
 			{sessionLocked && status !== 'error' &&
 				(showingLockScreen || mode === 'output' ? (
