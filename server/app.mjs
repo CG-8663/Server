@@ -397,6 +397,8 @@ export function stripForwarding(req) {
 	}
 	return dropped
 }
+// Came through MODC Connect's Cloudflare tunnel (cloudflared on this machine adds CF-Connecting-IP).
+export const viaTunnel = (req) => fromLocalProxy(req) && !!req.headers['cf-connecting-ip']
 // The scheme a trusted local proxy says the browser used, or '' (no proxy, or not trusted).
 export const forwardedProto = (req) => (fromLocalProxy(req) ? String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase() : '')
 
@@ -490,6 +492,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		stripForwarding(req)
 		next()
 	})
+	// Computers joining the local swarm, and their backups, are for this network only: not through the
+	// tunnel (a browser behind Cloudflare Access never needs them).
+	app.use(['/connector', '/api/connector'], (req, res, next) => (viaTunnel(req) ? res.status(404).type('text/plain').send('Not found') : next()))
 	// This server's certificate authority, for devices to trust its https:// pages (public by nature).
 	app.get('/api/tls/ca.crt', (_req, res) => {
 		const ca = tls?.ca()
@@ -551,6 +556,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			'Content-Security-Policy': `default-src 'self'; img-src * data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ws: wss:; ${frameSrc}frame-ancestors 'none'; base-uri 'self'; form-action 'self'`,
 			'Referrer-Policy': 'no-referrer',
 			'X-Content-Type-Options': 'nosniff',
+			// Through the tunnel the address is always https: browsers remember that (not for subdomains).
+			...(viaTunnel(req) ? {'Strict-Transport-Security': 'max-age=31536000'} : {}),
 		})
 		next()
 	})
@@ -2131,6 +2138,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const r = typeof req.query.r === 'string' && req.query.r.startsWith('/') && !req.query.r.startsWith('//') ? req.query.r : '/'
 		if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) return res.status(400).type('text/plain').send('Bad app')
 		if (!store.getSession(req.sid)) return res.redirect(302, '/')
+		// An app's own port isn't reachable through the tunnel: never send the browser there.
+		if (viaTunnel(req)) return res.status(409).type('text/plain').send('Opening apps remotely needs app addresses')
 		try {
 			const {ticket, port} = await authedCall(req, 'apps.accessTicket', 'mutation', {appId: id, view: req.query.view === '1'})
 			const h = bracketHost(req.hostname)
@@ -2244,6 +2253,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				// A connector on another computer: no browser session; it signs in with its own key,
 				// which omarchyd checks. Passed straight through.
 				if (url.pathname === '/connector/ws') {
+					if (viaTunnel(req)) return refuse('404 Not Found')
 					const target = new URL(getClient().baseUrl)
 					target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:'
 					target.pathname = '/connector/ws'
@@ -2380,7 +2390,19 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 						} catch {}
 						let proxyKeyTimer = null
 						let unregisterActive = () => {}
+						// Cloudflare (and many proxies) close a WebSocket after ~100 s with nothing sent either
+						// way. A ping every 30 s keeps an idle terminal or console open through MODC Connect.
+						const keepOpen = setInterval(() => {
+							if (client.readyState === WebSocket.OPEN) {
+								try {
+									client.ping()
+								} catch {}
+							}
+						}, 30_000)
+						keepOpen.unref?.()
+						client.once('close', () => clearInterval(keepOpen))
 						const closeBoth = (code, reason) => {
+							clearInterval(keepOpen)
 							unregisterActive()
 							if (proxyKeyTimer) {
 								clearTimeout(proxyKeyTimer)

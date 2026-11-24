@@ -215,6 +215,30 @@ test('sign-in limits through the tunnel: per address, per account, and they donâ
 	}
 })
 
+test('through the tunnel only: no swarm joins or connector scripts, HSTS on, no app-port redirects', async () => {
+	const s = await stack()
+	try {
+		for (const [method, path] of [['POST', '/connector/enroll'], ['GET', '/connector/agent.py'], ['GET', '/connector/backup/x'], ['GET', '/api/connector/install.sh']]) {
+			const remote = await request(s.port, {method, path, headers: TUNNEL(), ...(method === 'POST' ? {body: '{}'} : {})})
+			assert.equal(remote.status, 404, `${path} through the tunnel`)
+		}
+		// At home they're still there.
+		// At home the request goes on to omarchyd (its JSON answer), instead of the tunnel's plain "Not found".
+		const home = await request(s.port, {method: 'POST', path: '/connector/enroll', headers: {host: `127.0.0.1:${s.port}`}, body: '{}'})
+		assert.match(home.headers['content-type'], /application\/json/)
+		assert.equal(await wsOpen(s.port, '/connector/ws', {...TUNNEL(), origin: `https://${HOST}`}), 404)
+		const page = await request(s.port, {path: '/api/health', headers: TUNNEL()})
+		assert.equal(page.headers['strict-transport-security'], 'max-age=31536000')
+		assert.equal((await request(s.port, {path: '/api/health', headers: {host: `127.0.0.1:${s.port}`}})).headers['strict-transport-security'], undefined, 'not at home')
+		const signed = await signIn(s.port, TUNNEL())
+		const enter = await request(s.port, {path: '/api/app-enter?app=nextcloud', headers: {...TUNNEL(), cookie: signed.cookie}})
+		assert.equal(enter.status, 409)
+		assert.equal(enter.headers.location, undefined)
+	} finally {
+		await s.close()
+	}
+})
+
 test('an update-hold file keeps a development build from being replaced', async () => {
 	const dir = await mkdtemp(join(os.tmpdir(), 'update-hold-'))
 	try {
