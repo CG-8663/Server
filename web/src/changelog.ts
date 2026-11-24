@@ -4,6 +4,19 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.76',
+		date: '2026-11-24',
+		title: 'This server’s screen, and readings from an older server',
+		added: [
+			'This server’s screen can be drawn from the Hyprland session you are signed in to. Only the owner can open it.',
+			'An installed desktop app can open on that screen. A launch that cannot be shown there is refused. The clipboard on that screen is the desktop’s clipboard.',
+		],
+		fixed: [
+			'A connector newer than its server keeps sending readings until that server asks it to watch. After that, it sends only while a screen is open.',
+			'Store and plugin categories stay on one line. The arrows move what does not fit, and a chip cut by the edge fades out.',
+		],
+	},
+	{
 		version: '0.9.75',
 		date: '2026-11-24',
 		title: 'Macs, ARM servers, and a desktop you can open',
