@@ -6,7 +6,7 @@ import {mutate, query} from '../api'
 import {Icon} from '../icons'
 import {Card, Field, Group, Segmented, useConfirm, useToast} from '../ui'
 
-export type StreamCodec = 'hevc' | 'hevc10' | 'h264'
+export type StreamCodec = 'hevc444' | 'hevc' | 'hevc10' | 'h264'
 
 export type StreamProfile = {
 	id: string
@@ -87,6 +87,7 @@ export async function probeClientCodecs(): Promise<StreamCodec[]> {
 	const VD = (globalThis as {VideoDecoder?: typeof VideoDecoder}).VideoDecoder
 	if (typeof VD?.isConfigSupported !== 'function') return out
 	const tests: [StreamCodec, string][] = [
+		['hevc444', 'hev1.4.10.L153.BE.8'],
 		['hevc', 'hev1.1.6.L153.B0'],
 		['hevc10', 'hev1.2.4.L153.B0'],
 		['h264', 'avc1.640033'],
@@ -124,6 +125,7 @@ export async function measureServerRtt(): Promise<number> {
 }
 
 const CODEC_LABELS: Record<StreamCodec, string> = {
+	hevc444: 'HEVC 4:4:4',
 	hevc: 'HEVC 8-bit',
 	hevc10: 'HEVC 10-bit',
 	h264: 'H.264 High',
@@ -345,6 +347,7 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 								value={editing.codec}
 								onChange={(v) => setEditing({...editing, codec: v as StreamCodec})}
 								options={[
+									{id: 'hevc444', label: 'HEVC 4:4:4'},
 									{id: 'hevc', label: 'HEVC 8-bit'},
 									{id: 'hevc10', label: 'HEVC 10-bit'},
 									{id: 'h264', label: 'H.264 High'},

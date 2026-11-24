@@ -54,8 +54,8 @@ export function scoreProfileCandidate(cand, {rttMs = 15} = {}) {
 	else if (p95 <= budgetMs * 1.45) score += 16
 	else if (p95 <= budgetMs * 1.9) score += 7
 
-	// 3. Visual sharpness & codec efficiency (0..21 pts)
-	const codecBonus = codec === 'hevc' ? 12 : codec === 'hevc10' ? 13 : 8
+	// 3. Visual sharpness & codec efficiency (0..23 pts)
+	const codecBonus = codec === 'hevc444' ? 14 : codec === 'hevc10' ? 13 : codec === 'hevc' ? 12 : 8
 	const sharpBonus = quality <= 14 ? 9 : quality <= 17 ? 8 : quality <= 20 ? 7 : quality <= 22 ? 5 : quality <= 25 ? 3 : 1
 	score += codecBonus + sharpBonus
 
@@ -1578,6 +1578,7 @@ export function createHyprland({
 
 	function codecFromEncoderName(encoderName, fallbackCodec) {
 		const name = String(encoderName || '').toLowerCase()
+		if (name.startsWith('hevc444')) return 'hevc444'
 		if (name.startsWith('hevc10')) return 'hevc10'
 		if (name.startsWith('hevc')) return 'hevc'
 		if (name.startsWith('h264') || name.includes('264')) return 'h264'
@@ -1590,7 +1591,7 @@ export function createHyprland({
 			.replace(/[^A-Za-z0-9._-]/g, '-')
 			.slice(0, 64)
 		if (!PROFILE_ID_RE.test(id)) return null
-		const codec = raw?.codec === 'hevc10' || raw?.codec === 'hevc' ? raw.codec : 'h264'
+		const codec = raw?.codec === 'hevc444' || raw?.codec === 'hevc10' || raw?.codec === 'hevc' ? raw.codec : 'h264'
 		const fps = Math.max(15, Math.min(60, Math.round(Number(raw?.fps) || 60)))
 		const bitrate = Math.max(4000, Math.min(150000, Math.round(Number(raw?.bitrate) || 22000)))
 		const quality = Math.max(10, Math.min(34, Math.round(Number(raw?.quality) || 20)))
@@ -1865,7 +1866,7 @@ export function createHyprland({
 			}
 			const rttMs = Math.max(0, Math.min(2000, Math.round(Number(input?.clientRttMs) || 15)))
 			const explicitCodecs = Array.isArray(input?.clientCodecs)
-			const rawClientCodecs = explicitCodecs ? input.clientCodecs.filter((c) => c === 'hevc' || c === 'hevc10' || c === 'h264') : ['hevc', 'h264']
+			const rawClientCodecs = explicitCodecs ? input.clientCodecs.filter((c) => c === 'hevc444' || c === 'hevc' || c === 'hevc10' || c === 'h264') : ['hevc', 'h264']
 			const clientCodecs = [...new Set(rawClientCodecs)]
 			if (!clientCodecs.length) {
 				throw new RpcError('PRECONDITION_FAILED', 'Client browser reported no supported WebCodecs video codecs')
@@ -1873,11 +1874,21 @@ export function createHyprland({
 			const rail = await ensureRailOutput().catch(() => null)
 			const outputName = rail?.name || RAIL_OUTPUT
 
-			// Tailor candidate matrix to client RTT + supported WebCodecs hardware decoders (including Ultra LAN on local links)
+			// Tailor candidate matrix to client RTT + supported WebCodecs hardware decoders (including Ultra LAN & HEVC 4:4:4 on local links)
 			const isHighWan = rttMs >= 45
 			const isModWan = rttMs >= 18 && rttMs < 45
 			const isLan = rttMs < 12
 			const candidates = []
+			if (clientCodecs.includes('hevc444') && isLan) {
+				candidates.push({
+					label: 'HEVC 4:4:4 Ultra LAN 60',
+					codec: 'hevc444',
+					fps: 60,
+					bitrate: 100000,
+					quality: 12,
+					compression: 7,
+				})
+			}
 			if (clientCodecs.includes('hevc')) {
 				if (isLan) {
 					candidates.push({
