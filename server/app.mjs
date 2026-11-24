@@ -172,6 +172,9 @@ export const ALLOWED = {
 	'assistant.reject': 'mutation',
 	'omarchy.installPlugin': 'mutation',
 	'omarchy.removePlugin': 'mutation',
+	'hyprland.status': 'query',
+	'hyprland.windows': 'query',
+	'hyprland.dispatch': 'mutation',
 	'apps.uninstall': 'mutation',
 	'apps.trackOpen': 'mutation',
 	'machines.start': 'mutation',
@@ -2097,7 +2100,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		for (const r of relays.values()) r.server?.destroyConnections?.()
 	}
 	app.attachConsole = (server) => {
-		const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024})
+		const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false})
 		consoles.add(wss)
 		server.on('upgrade', async (req, socket, head) => {
 			if (app.relayUpgrade(req, socket, head)) return
@@ -2151,7 +2154,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					})
 					return
 				}
-				const route = {'/api/console': 'machines', '/api/terminal': 'terminal'}[url.pathname]
+				const route = {'/api/console': 'machines', '/api/terminal': 'terminal', '/api/hyprland/stream': 'hyprland'}[url.pathname]
 				if (!route) return refuse('404 Not Found')
 				// Browsers always send Origin on WebSocket handshakes: refuse other sites.
 				const origin = req.headers.origin
@@ -2166,6 +2169,31 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					if (!/^[A-Za-z0-9_-]{1,64}$/.test(machineId)) return refuse('400 Bad Request')
 					target.pathname = '/machines/console'
 					params = {machineId, sessionId: randomUUID()}
+				} else if (route === 'hyprland') {
+					const mode = url.searchParams.get('mode') === 'window' ? 'window' : 'output'
+					const address = mode === 'window' ? (url.searchParams.get('address') ?? '') : ''
+					if (mode === 'window' && !/^0x[0-9a-f]{4,16}$/i.test(address)) return refuse('400 Bad Request')
+					const output = mode === 'output' ? (url.searchParams.get('output') ?? '') : ''
+					if (output && !/^[A-Za-z0-9_.-]{1,32}$/.test(output)) return refuse('400 Bad Request')
+					const fps = Math.max(5, Math.min(120, Math.round(Number(url.searchParams.get('fps')) || 60)))
+					const bitrate = Math.max(1000, Math.min(50000, Math.round(Number(url.searchParams.get('bitrate')) || 22000)))
+					const audio = url.searchParams.get('audio') === '1' ? '1' : '0'
+					const rawCodec = url.searchParams.get('codec') ?? 'h264'
+					const codec = rawCodec === 'hevc10' || rawCodec === 'hevc' ? rawCodec : 'h264'
+					const rawQ = Number(url.searchParams.get('quality') ?? 0)
+					const rawComp = Number(url.searchParams.get('compression') ?? 0)
+					target.pathname = '/hyprland/stream'
+					params = {
+						mode,
+						...(address ? {address} : {}),
+						...(output ? {output} : {}),
+						fps: String(fps),
+						bitrate: String(bitrate),
+						audio,
+						codec,
+						...(rawQ >= 16 && rawQ <= 34 ? {quality: String(Math.round(rawQ))} : {}),
+						...(rawComp >= 1 && rawComp <= 7 ? {compression: String(Math.round(rawComp))} : {}),
+					}
 				} else {
 					const appId = url.searchParams.get('appId') ?? ''
 					const agentId = url.searchParams.get('agentId') ?? ''
@@ -2179,7 +2207,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					if (session && !/^[A-Za-z0-9._-]{1,40}$/.test(session)) return refuse('400 Bad Request')
 					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), ...(session ? {session} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
 				}
-				const needsOwner = route === 'terminal' || params.machineId === 'desktop' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
+				const needsOwner = route === 'terminal' || route === 'hyprland' || params.machineId === 'desktop' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
 				if (needsOwner) {
 					let owner
 					try {
@@ -2191,7 +2219,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				}
 				const ticket = await consoleTicket(sid, route)
 				target.search = new URLSearchParams({...params, ticket}).toString()
-				const upstream = new WebSocket(target, route === 'machines' ? ['binary'] : [], {handshakeTimeout: 10_000})
+				const upstream = new WebSocket(target, route === 'machines' ? ['binary'] : [], {handshakeTimeout: 10_000, perMessageDeflate: false})
 				upstream.once('unexpected-response', (_q, r) => {
 					r.resume()
 					upstream.removeAllListeners('error')
@@ -2203,12 +2231,50 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					upstream.removeAllListeners('error')
 					wss.handleUpgrade(req, socket, head, (client) => {
 						stopWatching()
+						try {
+							socket.setNoDelay?.(true)
+							upstream._socket?.setNoDelay?.(true)
+						} catch {}
 						const closeBoth = (code, reason) => {
 							const safe = typeof code === 'number' && (code === 1000 || (code >= 3000 && code <= 4999)) ? code : 1000
 							for (const ws of [client, upstream]) if (ws.readyState === WebSocket.OPEN) ws.close(safe, reason)
 						}
+						let dropUntilKey = false
+						let pendingKeyReq = false
+						let lastKeyReqAt = 0
 						upstream.on('message', (data, isBinary) => {
 							if (client.readyState !== WebSocket.OPEN) return
+							if (route === 'hyprland') {
+								const buf = isBinary && Buffer.isBuffer(data) ? data : null
+								const isVideoDelta = buf && buf.length > 9 && buf[0] === 0
+								const isVideoKey = buf && buf.length > 9 && buf[0] === 1
+								if (client.bufferedAmount > 4 * 1024 * 1024) {
+									closeBoth(1011, 'The viewer fell behind')
+									return
+								}
+								// Tight 384 KiB WAN delta-drop ceiling (~150 ms at 20 Mbps) prevents TCP bufferbloat without cutting live streams
+								if (client.bufferedAmount > 384 * 1024 && isVideoDelta) {
+									dropUntilKey = true
+									pendingKeyReq = true
+									return
+								}
+								// Only request recovery IDR once TCP send queue drains below 64 KiB so keyframes do not pile onto congestion
+								if (pendingKeyReq && client.bufferedAmount <= 64 * 1024) {
+									const nowMs = Date.now()
+									if (nowMs - lastKeyReqAt >= 1500 && upstream.readyState === WebSocket.OPEN) {
+										lastKeyReqAt = nowMs
+										pendingKeyReq = false
+										upstream.send('{"type":"keyframe"}')
+									}
+								}
+								if (dropUntilKey && isVideoDelta) return
+								if (isVideoKey) {
+									dropUntilKey = false
+									pendingKeyReq = false
+								}
+								client.send(data, {binary: isBinary})
+								return
+							}
 							// Same 1 MiB cap as the connector viewer. The connector passthrough above does not use it.
 							if (client.bufferedAmount > 1024 * 1024) {
 								closeBoth(1011, 'The viewer fell behind')

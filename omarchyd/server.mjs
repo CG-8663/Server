@@ -31,6 +31,7 @@ import {createUpdater} from './updater.mjs'
 import {createSystemApps} from './system-apps.mjs'
 import {createTailscale} from './tailscale.mjs'
 import {createOidc} from './oidc.mjs'
+import {createHyprland} from './hyprland.mjs'
 import {authorityInfo, readPolicy, rotateAuthority, tlsContext, writePolicy} from './tls.mjs'
 import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
@@ -39,7 +40,7 @@ import {WebSocketServer} from 'ws'
 
 export const OMARCHYD_VERSION = '0.9.75'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
 	const storeDir = localGitDir('OMARCHY_SERVER_APP_STORE', process.env.OMARCHY_SERVER_APP_STORE)
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
@@ -221,7 +222,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'user.createWebSocketTicket': {
 			kind: 'mutation',
 			run: (input, {auth}) => {
-				if (input?.target !== 'machines' && input?.target !== 'terminal') throw new RpcError('BAD_REQUEST', 'Unknown console')
+				if (input?.target !== 'machines' && input?.target !== 'terminal' && input?.target !== 'hyprland') throw new RpcError('BAD_REQUEST', 'Unknown console')
 				const now = Date.now()
 				for (const [t, v] of tickets) if (v.expires < now) tickets.delete(t)
 				const ticket = randomBytes(24).toString('base64url')
@@ -393,8 +394,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 				ownerOnly(auth)
 				await accounts.confirmPassword(auth.userId, input?.password)
 				const r = await storage.helper('desktop-sign-in')
-				signedInAt = Date.now()
-				remoteSignIn = true
+				markRemoteSignIn()
+				hyprland.notifyUnlocked?.().catch(() => {})
 				return {result: r}
 			},
 		},
@@ -537,19 +538,14 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		},
 	})
 	let signedInAt = 0
-	// After a sign-in from the web, lock the desktop again once nobody is viewing it (Settings →
+	// After a sign-in or remote unlock from the web, lock the desktop again once nobody is viewing it (Settings ->
 	// Security), so the screen isn't left signed in at the server itself. A short wait lets a page
 	// reload or a reconnect keep the session.
 	let remoteSignIn = false
 	let desktopViewers = 0
 	let lockTimer = null
 	const lockGraceMs = machineOptions.lockGraceMs ?? 60_000
-	const viewerJoined = () => {
-		desktopViewers++
-		clearTimeout(lockTimer)
-	}
-	const viewerLeft = () => {
-		desktopViewers = Math.max(0, desktopViewers - 1)
+	const scheduleRelockIfIdle = () => {
 		if (desktopViewers || !remoteSignIn || security.lockAfterRemote === false) return
 		clearTimeout(lockTimer)
 		lockTimer = setTimeout(() => {
@@ -559,6 +555,29 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		}, lockGraceMs)
 		lockTimer.unref?.()
 	}
+	const markRemoteSignIn = () => {
+		signedInAt = Date.now()
+		remoteSignIn = true
+		scheduleRelockIfIdle()
+	}
+	const viewerJoined = () => {
+		desktopViewers++
+		clearTimeout(lockTimer)
+	}
+	const viewerLeft = () => {
+		desktopViewers = Math.max(0, desktopViewers - 1)
+		scheduleRelockIfIdle()
+	}
+	const hyprland = createHyprland({
+		dataDir,
+		home,
+		onRemoteUnlock: markRemoteSignIn,
+		...hyprlandOptions,
+	})
+	Object.assign(
+		procedures,
+		Object.fromEntries(Object.entries(hyprland.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'render the Hyprland desktop'), p.run(input))}])),
+	)
 	async function lockDesktop() {
 		if (machineOptions.lockDesktop) return machineOptions.lockDesktop()
 		// The owner's own graphical session on this machine: logind tells Omarchy's lock screen.
@@ -858,7 +877,7 @@ WantedBy=graphical-session.target
 	// VNC unix socket. Only reachable on localhost, and only with a fresh ticket.
 	// Your shell runs in tmux, when it's installed, so it survives omarchyd restarts and updates.
 	const terminals = createTerminalSessions({tmux: terminalTmux === undefined ? createTmux({conf: join(dataDir, 'terminal', 'tmux.conf')}) : terminalTmux})
-	const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024})
+	const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false})
 	server.on('upgrade', async (req, socket, head) => {
 		const refuse = (status) => {
 			socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`)
@@ -868,12 +887,35 @@ WantedBy=graphical-session.target
 			const url = new URL(req.url ?? '/', 'http://localhost')
 			// A connector on another computer (it signs in with its own key, checked in connector.mjs).
 			if (url.pathname === '/connector/ws') return await connector.upgradeAgent(req, socket, head)
-			const route = {'/machines/console': 'machines', '/terminal': 'terminal'}[url.pathname]
+			const route = {'/machines/console': 'machines', '/terminal': 'terminal', '/hyprland/stream': 'hyprland'}[url.pathname]
 			if (!route) return refuse('404 Not Found')
 			const t = tickets.get(url.searchParams.get('ticket') ?? '')
 			tickets.delete(url.searchParams.get('ticket') ?? '')
 			if (!t || t.expires < Date.now() || t.target !== route) return refuse('401 Unauthorized')
 			const owner = (t.role ?? accounts.getUser(t.userId)?.role) === 'owner'
+			if (route === 'hyprland') {
+				if (!owner) return refuse('403 Forbidden')
+				const mode = url.searchParams.get('mode') === 'window' ? 'window' : 'output'
+				const address = mode === 'window' ? (url.searchParams.get('address') ?? '') : ''
+				if (mode === 'window' && !/^0x[0-9a-f]{4,16}$/i.test(address)) return refuse('400 Bad Request')
+				const output = mode === 'output' ? (url.searchParams.get('output') ?? '') : ''
+				if (output && !/^[A-Za-z0-9_.-]{1,32}$/.test(output)) return refuse('400 Bad Request')
+				const fps = Number(url.searchParams.get('fps') ?? 60)
+				const bitrate = Number(url.searchParams.get('bitrate') ?? 22000)
+				const audio = url.searchParams.get('audio') === '1'
+				const rawCodec = url.searchParams.get('codec') ?? 'h264'
+				const codec = rawCodec === 'hevc10' || rawCodec === 'hevc' ? rawCodec : 'h264'
+				const quality = Number(url.searchParams.get('quality') ?? 0)
+				const compression = Number(url.searchParams.get('compression') ?? 0)
+				return wss.handleUpgrade(req, socket, head, (ws) => {
+					try {
+						socket.setNoDelay?.(true)
+					} catch {}
+					viewerJoined()
+					ws.once('close', viewerLeft)
+					hyprland.attachStream(ws, {mode, address, output, fps, bitrate, audio, codec, quality, compression}).catch(() => ws.close(1011, 'Hyprland stream failed'))
+				})
+			}
 			// A shell: your own, or one inside an installed app's container.
 			if (route === 'terminal') {
 				// This process runs as the owner’s user, and a swarm computer’s terminal is the
@@ -969,7 +1011,7 @@ WantedBy=graphical-session.target
 		}
 	}, 20_000).unref?.()
 
-	return {url: `http://${host}:${server.address().port}`, accounts, terminals, close: () => (sampler.stop(), apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), assistant.chatgpt.close(), terminals.close(), new Promise((r) => server.close(r)))}
+	return {url: `http://${host}:${server.address().port}`, accounts, terminals, hyprland, close: () => (sampler.stop(), apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), hyprland.close(), assistant.chatgpt.close(), terminals.close(), new Promise((r) => server.close(r)))}
 }
 
 // The "always use the secure address" choice made while omarchyd kept its own certificate folder.
