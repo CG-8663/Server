@@ -8,9 +8,16 @@ import {test} from 'node:test'
 
 import {createConnector} from '../omarchyd/connector.mjs'
 import {RpcError} from '../omarchyd/rpc.mjs'
-import {guestAgent, hostGuestMetrics, isGuestAgent, linuxConnectorOs} from '../web/src/swarm/guestLink.ts'
+import {connectorKind, guestAgent, hostGuestMetrics, isGuestAgent, linuxConnectorOs, windowsConnectorOs} from '../web/src/swarm/guestLink.ts'
 
 test('the connector installs on Linux guests, and host stats omit disk use', () => {
+	assert.equal(connectorKind('ubuntu'), 'linux')
+	assert.equal(connectorKind('omarchy'), 'linux')
+	assert.equal(connectorKind(''), 'linux')
+	assert.equal(connectorKind('windows-11'), 'windows')
+	assert.equal(connectorKind('macos'), 'unsupported')
+	assert.equal(connectorKind('haos'), 'unsupported')
+	assert.equal(connectorKind('alpine'), 'unsupported')
 	assert.equal(linuxConnectorOs('ubuntu'), true)
 	assert.equal(linuxConnectorOs(''), true)
 	assert.equal(linuxConnectorOs('omarchy'), true)
@@ -18,6 +25,11 @@ test('the connector installs on Linux guests, and host stats omit disk use', () 
 	assert.equal(linuxConnectorOs('macos'), false)
 	assert.equal(linuxConnectorOs('haos'), false)
 	assert.equal(linuxConnectorOs('home-assistant'), false)
+	assert.equal(linuxConnectorOs('alpine'), false)
+	assert.equal(windowsConnectorOs('windows-11'), true)
+	assert.equal(windowsConnectorOs('ubuntu'), false)
+	assert.equal(windowsConnectorOs('alpine'), false)
+	assert.equal(windowsConnectorOs('macos'), false)
 	const metrics = hostGuestMetrics({cpu: 12, memMb: 512}, 1024, 2)
 	assert.equal(metrics.cpu, 12)
 	assert.equal(metrics.cores, 2)
@@ -111,4 +123,18 @@ test('an older connector file still loads, and a bad guest id does not hide the 
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}
+})
+
+test('the machine page runs machines.installConnector and asks for a password', async () => {
+	const guest = await readFile(new URL('../web/src/fleet/GuestLive.tsx', import.meta.url), 'utf8')
+	assert.match(guest, /machines\.installConnector/)
+	assert.match(guest, /type="password"/)
+	assert.match(guest, /autoComplete="off"|autocomplete="off"/)
+	assert.match(guest, /onOpenStorage\(\{agentId: agent\.id, name: machine\.name\}\)/)
+	assert.doesNotMatch(guest, /swarm\.isFetched && !agent && linux &&/)
+	const swarm = await readFile(new URL('../web/src/swarm/Swarm.tsx', import.meta.url), 'utf8')
+	assert.match(swarm, /windowsConnectorOs\(guest\??\.osId\)/)
+	assert.match(swarm, /osId\?/)
+	const api = await readFile(new URL('../web/src/api.ts', import.meta.url), 'utf8')
+	assert.match(api, /['"]machines\.installConnector['"]/)
 })

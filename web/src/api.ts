@@ -59,6 +59,7 @@ const SLOW_RPC = new Set([
 	'machines.backup',
 	'machines.restoreBackup',
 	'machines.clone',
+	'machines.installConnector',
 	'wifi.connect',
 	'hardware.raid.addDevice',
 	'hardware.raid.addMirror',
