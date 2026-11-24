@@ -10,7 +10,7 @@ import {
 	applyReconfigUnsupportedToProfiledStreamState,
 } from './hyprlandStreamState.mjs'
 import {Icon} from './icons'
-import {getRailDeviceId, type StreamCodec, type StreamProfile, type StreamProfilesResponse} from './screens/StreamProfiler'
+import {getRailDeviceId, StreamProfilerSheet, type StreamCodec, type StreamProfile, type StreamProfilesResponse} from './screens/StreamProfiler'
 
 export type HyprlandWindow = {
 	address: string
@@ -677,6 +677,7 @@ export function HyprlandView({
 	const [chromaOverride, setChromaOverrideState] = useState<boolean | null>(readChroma444Override)
 	const [confirmedCodec, setConfirmedCodec] = useState<StreamCodec | null>(null)
 	const [showStats, setShowStats] = useState(false)
+	const [showProfiler, setShowProfiler] = useState(false)
 	const showStatsRef = useRef(false)
 	showStatsRef.current = showStats
 	const tierOverrideRef = useRef<StreamQualityTier | null>(tierOverride)
@@ -797,6 +798,23 @@ export function HyprlandView({
 		codecFallbackRef.current = null
 		setCodecFallback(null)
 	}, [activeProfileKey, attempt])
+
+	useEffect(() => {
+		const onActivated = () => {
+			tierOverrideRef.current = null
+			chromaOverrideRef.current = null
+			codecFallbackRef.current = null
+			setTierOverrideState(null)
+			setChromaOverrideState(null)
+			setCodecFallback(null)
+			try {
+				localStorage.removeItem(QUALITY_TIER_KEY)
+				localStorage.removeItem(CHROMA_444_KEY)
+			} catch {}
+		}
+		window.addEventListener('omarchy:stream-profile-activated', onActivated)
+		return () => window.removeEventListener('omarchy:stream-profile-activated', onActivated)
+	}, [])
 
 	const profilesReady = !profilesQ.isPending || !!profilesQ.data
 	const activeProfileRef = useRef(activeProfile)
@@ -1851,6 +1869,7 @@ export function HyprlandView({
 			}}
 			onBlur={releaseHeldInputs}
 			onKeyDown={(e) => {
+				if (showProfiler) return
 				ensureAudioCtx()
 				const tag = (e.target as HTMLElement | null)?.tagName
 				if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
@@ -1862,6 +1881,7 @@ export function HyprlandView({
 				sendBinaryKey(code, true, modsMask(e))
 			}}
 			onKeyUp={(e) => {
+				if (showProfiler) return
 				const tag = (e.target as HTMLElement | null)?.tagName
 				if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
 				const code = EVDEV_CODE[e.code]
@@ -1932,6 +1952,17 @@ export function HyprlandView({
 								4:4:4
 							</button>
 						)}
+						<button
+							type="button"
+							className={`btn small${showProfiler ? ' primary' : ''}`}
+							onClick={() => {
+								releaseHeldInputs()
+								setShowProfiler(true)
+							}}
+							title="Benchmark GPU and manage per-device stream profiles"
+						>
+							Profiles
+						</button>
 						<button type="button" className="btn small" onClick={cycleSharpness} title="Cycle WebGL2 AMD FidelityFX CAS sharpening">
 							{SHARPNESS_PRESETS[sharpnessPreset].label}
 						</button>
@@ -2160,6 +2191,24 @@ export function HyprlandView({
 					)}
 				</div>
 			)}
+			<div onKeyDown={(e) => e.stopPropagation()} onKeyUp={(e) => e.stopPropagation()}>
+				<StreamProfilerSheet
+					open={showProfiler}
+					onClose={() => setShowProfiler(false)}
+					onProfileActivated={() => {
+						tierOverrideRef.current = null
+						chromaOverrideRef.current = null
+						codecFallbackRef.current = null
+						setTierOverrideState(null)
+						setChromaOverrideState(null)
+						setCodecFallback(null)
+						try {
+							localStorage.removeItem(QUALITY_TIER_KEY)
+							localStorage.removeItem(CHROMA_444_KEY)
+						} catch {}
+					}}
+				/>
+			</div>
 		</div>
 	)
 }

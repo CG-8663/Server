@@ -1,10 +1,10 @@
-// Stream Profiler & per-device RAIL streaming profiles (Settings › Remote Apps).
+// Stream Profiler & per-device desktop streaming profiles (opened from Desktop stream controls).
 import {useEffect, useMemo, useState, type CSSProperties, type FormEvent} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from '../api'
 import {Icon} from '../icons'
-import {Card, Field, Group, Segmented, useConfirm, useToast} from '../ui'
+import {Card, Field, Group, Segmented, Sheet, SheetHeader, useConfirm, useToast} from '../ui'
 
 export type StreamCodec = 'hevc444' | 'hevc' | 'hevc10' | 'h264'
 
@@ -149,7 +149,33 @@ const CODEC_LABELS: Record<StreamCodec, string> = {
 	h264: 'H.264 High',
 }
 
-export function StreamProfilerPage({onBack}: {onBack: () => void}) {
+export function StreamProfilerSheet({
+	open,
+	onClose,
+	onProfileActivated,
+}: {
+	open: boolean
+	onClose: () => void
+	onProfileActivated?: () => void
+}) {
+	return (
+		<Sheet open={open} onClose={onClose} label="Stream profiles" tall>
+			<SheetHeader
+				icon={
+					<span className="row-ico" style={{'--c': 'var(--blue)'} as CSSProperties}>
+						<Icon name="gpu" size={20} />
+					</span>
+				}
+				title="Stream profiles"
+				subtitle="Benchmark this device and manage saved stream presets"
+				onClose={onClose}
+			/>
+			{open && <StreamProfilerBody onProfileActivated={onProfileActivated} />}
+		</Sheet>
+	)
+}
+
+function StreamProfilerBody({onProfileActivated}: {onProfileActivated?: () => void}) {
 	const qc = useQueryClient()
 	const toast = useToast()
 	const confirm = useConfirm()
@@ -206,6 +232,10 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 			setBenchRun({winner: res.winner, results: res.results})
 			qc.invalidateQueries({queryKey: ['hyprland.profiles']})
 			if (res.winner) {
+				onProfileActivated?.()
+				try {
+					window.dispatchEvent(new Event('omarchy:stream-profile-activated'))
+				} catch {}
 				toast(`Selected ${CODEC_LABELS[res.winner.codec]} (${Math.round(res.winner.bitrate / 1000)} Mbps, score ${res.winner.score ?? 0}/100)`)
 			} else {
 				toast('No stream preset passed GPU benchmarking; existing profile kept', true)
@@ -217,8 +247,14 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 	const saveProfile = useMutation({
 		mutationFn: (input: {profile: Partial<StreamProfile>; deviceId?: string; activate?: boolean; setDefault?: boolean}) =>
 			mutate('hyprland.profileSave', input),
-		onSuccess: () => {
+		onSuccess: (_data, vars) => {
 			qc.invalidateQueries({queryKey: ['hyprland.profiles']})
+			if (vars.activate) {
+				onProfileActivated?.()
+				try {
+					window.dispatchEvent(new Event('omarchy:stream-profile-activated'))
+				} catch {}
+			}
 			setEditing(null)
 			toast('Stream profile saved')
 		},
@@ -276,13 +312,6 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 
 	return (
 		<div className="stagger">
-			<div className="page-head" style={{margin: '6px 0 14px'}}>
-				<button className="round-btn" aria-label="Back" onClick={onBack}>
-					<Icon name="back" size={20} />
-				</button>
-				<h1 className="title">Remote Apps (RAIL)</h1>
-			</div>
-
 			<Card>
 				<div style={{display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12}}>
 					<span className="row-ico" style={{'--c': 'var(--blue)'} as CSSProperties}>
