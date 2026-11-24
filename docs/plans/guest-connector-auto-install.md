@@ -396,7 +396,7 @@ Worktree: `/home/joseph/.worktrees/omarchy-server-guest-connector-install` from 
 - [x] Implement Series A slices (Tasks 1–7 on `feat/guest-connector-auto-install`, HEAD `970de8f`)
 - [x] Final-review fixes: wait for guest-ping, root linger prep, and Windows AutoLogon (`0f0adfe`); linger before enroll (`61a227d`); show install failure (`cfa1e07`)
 - [x] Targeted tests + web typecheck (re-run at finish: 97 pass, 0 fail; `tsc --noEmit -p web` exit 0; HEAD `b819d52`)
-- [ ] PR (when asked)
+- [x] PR Series A: https://github.com/MyOwnDataCenter/Server/pull/951 (`feat/guest-connector-auto-install` → `main`)
 
 ## Constraints to keep
 
