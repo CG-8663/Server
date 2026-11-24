@@ -2,10 +2,10 @@ import type {SwarmMetrics} from './gauges'
 
 export type ConnectorKind = 'linux' | 'unsupported'
 
-// Same rules as omarchyd/guest-install.mjs connectorKind. The connector runs on Linux with systemd.
+// Same rules as omarchyd/guest-install.mjs connectorKind. The connector runs on Linux with systemd or Alpine OpenRC.
 export function connectorKind(osId = ''): ConnectorKind {
 	const id = String(osId).toLowerCase()
-	if (/win|macos|osx|darwin|haos|home-?assistant|alpine/.test(id)) return 'unsupported'
+	if (/win|macos|osx|darwin|haos|home-?assistant/.test(id)) return 'unsupported'
 	return 'linux'
 }
 

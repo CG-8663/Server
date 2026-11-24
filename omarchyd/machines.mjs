@@ -23,7 +23,7 @@ import {pipeline} from 'node:stream/promises'
 import {fileURLToPath} from 'node:url'
 
 import {fetchErrorMessage, httpDownloadErrorMessage, isNetworkError} from './fetch-error.mjs'
-import {connectorAllowList, connectorCloudInit, connectorKind, defaultConnectorAbilities, guestConnectorExec, guestConnectorPrep, guestReachableUrl} from './guest-install.mjs'
+import {connectorAllowList, connectorCloudInit, connectorKind, defaultConnectorAbilities, guestConnectorExec, guestConnectorPrep, guestDefaultGateway, guestOwnAddresses, guestReachableUrl} from './guest-install.mjs'
 import {PUBLIC_KEY, cloudMetaData, cloudUserData, hostnameFor, isWindowsClientLabel, isWindowsLabel, omarchyConfiguration, omarchyCredentials, windowsAnswerFile} from './machine-media.mjs'
 import {createQemuAgent} from './qemu-agent.mjs'
 import {remoteGuestAgentRun} from './remote-guest-agent.mjs'
@@ -1449,17 +1449,25 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			return result
 		}
 		if (os === 'linux') {
-			for (const cmd of guestConnectorPrep({username})) {
+			for (const cmd of guestConnectorPrep({username, osId: m.osId})) {
 				const prepared = await guestExecExit(cmd)
 				if (prepared.exitcode !== 0) throw new RpcError('PRECONDITION_FAILED', `${m.name} couldn’t prepare the connector installer.`)
 			}
 		}
 		const abilities = connectorAbilities(os, input?.abilities)
 		const pair = await connector.pair({machineId: m.id, ...abilities})
-		const url = guestReachableUrl({addresses: pair.addresses, port: pair.port})
+		let exclude = []
+		let gateway = ''
+		try {
+			exclude = guestOwnAddresses(await agent.interfaces?.() ?? [])
+		} catch {}
+		try {
+			gateway = guestDefaultGateway(await agent.routes?.() ?? [])
+		} catch {}
+		const url = guestReachableUrl({addresses: pair.addresses, port: pair.port, exclude, gateway})
 		if (!url) throw new RpcError('PRECONDITION_FAILED', 'This server has no address the guest can reach.')
 		const caPem = /^https:\/\//i.test(String(pair.source ?? '')) ? undefined : await connector.caCertificate()
-		const result = await guestExecExit(guestConnectorExec({os, username, source: pair.source, server: url, ca: pair.ca, token: pair.token, allow: connectorAllowList(os, abilities), caPem}))
+		const result = await guestExecExit(guestConnectorExec({os, osId: m.osId, username, source: pair.source, server: url, ca: pair.ca, token: pair.token, allow: connectorAllowList(os, abilities), caPem}))
 		if (result.exitcode !== 0) throw new RpcError('PRECONDITION_FAILED', `${m.name} couldn’t install the connector.`)
 		const poll = async () => {
 			const joinUntil = Date.now() + connectorEnrollTimeoutMs

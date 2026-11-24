@@ -43,7 +43,7 @@ Leave out what cannot be done. A virtual machine does not host another virtual m
 
 ### Without a connector
 
-The host can power the guest and can open its screen while it is running. Show gauges only from measurements the host actually has. An unreadable guest is not listed in the file manager, and the machine page does not invent files. Terminal stays unavailable until a shell exists. Offer Install connector when the guest can run Linux with systemd. When the operating system cannot run the connector, say that on the machine. Do not offer the guest as a place to install an application until its connector is online and the guest is running.
+The host can power the guest and can open its screen while it is running. Show gauges only from measurements the host actually has. An unreadable guest is not listed in the file manager, and the machine page does not invent files. Terminal stays unavailable until a shell exists. Offer Install connector when the guest can run Linux with systemd or Alpine OpenRC. When the operating system cannot run the connector, say that on the machine. Do not offer the guest as a place to install an application until its connector is online and the guest is running.
 
 ### With a connector
 

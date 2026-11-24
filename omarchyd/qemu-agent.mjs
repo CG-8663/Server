@@ -21,6 +21,14 @@ export function createQemuAgent({run, domain}) {
 		async ping() {
 			await agentCommand({execute: 'guest-ping'})
 		},
+		async interfaces() {
+			const reply = await agentCommand({execute: 'guest-network-get-interfaces'})
+			return Array.isArray(reply.return) ? reply.return : []
+		},
+		async routes() {
+			const reply = await agentCommand({execute: 'guest-network-get-route'})
+			return Array.isArray(reply.return) ? reply.return : []
+		},
 		async exec({path, args, input, capture} = {}) {
 			const ga = {path}
 			if (args !== undefined) ga.arg = args

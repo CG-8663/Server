@@ -205,7 +205,7 @@ test('a stopped remote guest asks to be started and does not ping', async () => 
 })
 
 test('an unsupported remote guest does not ask the host', async () => {
-	const {root, machines, calls} = await openRemote({osId: 'alpine-3.24.1-amd64', present: false})
+	const {root, machines, calls} = await openRemote({osId: 'haos', present: false})
 	try {
 		const out = await machines.procedures['machines.installConnector'].run({id: ID})
 		assert.equal(out.status, 'unsupported')
@@ -336,20 +336,40 @@ test('a failed remote create does not ping the guest agent', async () => {
 	}
 })
 
-test('remote Alpine create does not enroll', async () => {
+test('remote Alpine create enrolls through OpenRC without linger', async () => {
 	const calls = []
-	const {root, machines} = await openCreate(calls)
+	const opened = await openCreate(calls)
+	const {root, machines, pairCalls, resolveCreate} = opened
 	try {
-		const {id} = await machines.procedures['machines.create'].run(
+		const pending = machines.procedures['machines.create'].run(
 			{hostId: HOST, name: 'Al', osId: 'alpine-3.24.1-amd64', cores: 1, memoryGb: 1, diskSizeGb: 8, username: 'chris', password: 'hunter2'},
 			auth,
 		)
-		await until(async () => (await machines.procedures['machines.list'].run()).find((m) => m.id === id)?.state !== 'installing')
-		await new Promise((r) => setTimeout(r, 50))
-		assert.equal(calls.some((c) => c.name === 'vm-ga-ping'), false)
-		const seedText = JSON.stringify(calls.find((c) => c.name === 'vm-seed')?.args ?? {})
+		pending.then(() => resolveCreate(), () => {})
+		const {id} = await pending
+		const done = await until(async () => {
+			const task = (await machines.procedures['machines.tasks'].run()).find((row) => row.machineId === id && row.type === 'connector' && row.status === 'ok')
+			return task ?? null
+		}, 3000)
+		assert.equal(done?.type, 'connector')
+		assert.equal(pairCalls[0].machineId, id)
+		const seed = calls.find((c) => c.name === 'vm-seed')
+		const seedText = JSON.stringify(seed.args)
 		assert.match(seedText, /qemu-guest-agent/)
+		assert.match(seedText, /python3/)
+		assert.match(seedText, /bash/)
+		assert.match(seed.args.files['user-data'], /rc-update/)
+		assert.doesNotMatch(seed.args.files['user-data'], /loginctl/)
 		assert.equal(seedText.includes('install.sh'), false)
+		assert.equal(calls.some((c) => c.name === 'vm-ga-ping'), true)
+		const enroll = calls.filter((c) => c.name === 'vm-ga-exec').find((c) => {
+			const text = [c.args.path, ...(c.args.args ?? [])].join(' ')
+			return text.includes('runuser') && text.includes('--user-enroll-only')
+		})
+		assert.ok(enroll, 'enrolls as the guest user')
+		const text = [enroll.args.path, ...(enroll.args.args ?? [])].join(' ')
+		assert.equal(text.includes('DBUS_SESSION_BUS_ADDRESS'), false)
+		assert.match(text, /\/etc\/init\.d\/omarchy-connector/)
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}

@@ -6,8 +6,9 @@
 #   curl -fsSL <source>/main/connector/install.sh | bash -s -- --server https://<server>:7780 --ca <fingerprint> --token <code> --allow terminal,desktop,manage,backup
 #
 # Run it as your normal user (it asks for sudo only to install packages and to keep the connector
-# running while you're signed out). Works on any Linux with systemd: Debian, Ubuntu, Fedora, Arch,
-# Omarchy, openSUSE and their relatives. It finds the distribution's package manager itself.
+# running while you're signed out). Works on Linux with systemd (Debian, Ubuntu, Fedora, Arch,
+# Omarchy, openSUSE and their relatives) and on Alpine with OpenRC. It finds the distribution's
+# package manager itself. On Alpine the connector is an OpenRC system service that runs as you.
 # On a Mac (macOS 12 or later) it needs no sudo: it runs as a LaunchAgent while you're signed in.
 #
 # Remove it again:  curl -fsSL <source>/main/connector/install.sh | bash -s -- --uninstall
@@ -94,7 +95,16 @@ case "$(uname -s)" in
 	*) die "The connector is for Linux and macOS (Windows has its own command)." ;;
 esac
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not with sudo (the connector works as you)."
-[ "$MAC" = 1 ] || command -v systemctl >/dev/null || die "systemd is required."
+OPENRC=0
+if [ "$MAC" != 1 ]; then
+	if command -v systemctl >/dev/null; then
+		:
+	elif command -v rc-service >/dev/null || command -v openrc >/dev/null; then
+		OPENRC=1
+	else
+		die "systemd or OpenRC is required."
+	fi
+fi
 PLIST="$HOME/Library/LaunchAgents/org.myowndatacenter.connector.plist"
 
 if [ "$MAC" = 1 ] && [ "$UNINSTALL" = 1 ]; then
@@ -108,11 +118,22 @@ fi
 
 if [ "$UNINSTALL" = 1 ]; then
 	say "Removing the connector"
-	systemctl --user disable --now omarchy-connector.service 2>/dev/null || true
-	rm -f "$UNIT"
-	systemctl --user daemon-reload 2>/dev/null || true
+	if [ "$OPENRC" = 1 ]; then
+		rc-service omarchy-connector stop 2>/dev/null || true
+		rc-update del omarchy-connector default 2>/dev/null || true
+	else
+		systemctl --user disable --now omarchy-connector.service 2>/dev/null || true
+		rm -f "$UNIT"
+		systemctl --user daemon-reload 2>/dev/null || true
+	fi
 	rm -rf "$DIR" "$CONF" "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-connector"
-	if ! sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules; then
+	if [ "$OPENRC" = 1 ]; then
+		if ! sudo rm -f /etc/init.d/omarchy-connector /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules; then
+			warn "The helper, its sudoers rule, the init script and the sleep udev rule could not be removed. Run this yourself:"
+			printf '  sudo rm -f /etc/init.d/omarchy-connector /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules\n' >&2
+			exit 1
+		fi
+	elif ! sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules; then
 		warn "The helper, its sudoers rule and the sleep udev rule could not be removed. Run this yourself:"
 		printf '  sudo rm -f /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules\n' >&2
 		printf '  sudo udevadm control --reload\n' >&2
@@ -153,7 +174,7 @@ fi
 # 1. What this computer needs: Python 3, git (for plugins), tmux (for the terminal) and screen sharing (for the desktop).
 pm=""
 [ "$MAC" = 1 ] && pm=mac
-for p in apt-get dnf pacman zypper; do [ "$MAC" = 1 ] && break; command -v "$p" >/dev/null && { pm="$p"; break; }; done
+for p in apt-get dnf pacman zypper apk; do [ "$MAC" = 1 ] && break; command -v "$p" >/dev/null && { pm="$p"; break; }; done
 pkgs=()
 command -v python3 >/dev/null || case "$pm" in pacman) pkgs+=(python) ;; *) pkgs+=(python3) ;; esac
 has manage && ! command -v git >/dev/null && pkgs+=(git)
@@ -205,6 +226,12 @@ if has vms; then
 		zypper)
 			pkgs+=(qemu-x86 qemu-tools libvirt-client libvirt-daemon passt xorriso qemu-ovmf-x86_64)
 			;;
+		apk)
+			case "$arch" in
+				aarch64 | arm64) pkgs+=(qemu-system-aarch64 qemu-img libvirt libvirt-client passt xorriso qemu-efi-aarch64) ;;
+				*) pkgs+=(qemu-system-x86_64 qemu-img libvirt libvirt-client passt xorriso ovmf) ;;
+			esac
+			;;
 		mac) ;;
 		*)
 			[ "$USER_ENROLL_ONLY" = 1 ] || warn "Install QEMU and libvirt yourself (no package manager found that I know)"
@@ -220,6 +247,7 @@ if [ "$USER_ENROLL_ONLY" != 1 ] && [ ${#pkgs[@]} -gt 0 ]; then
 			dnf) as_root dnf install -y "$p" >/dev/null || warn "Couldn't install $p" ;;
 			pacman) if command -v omarchy >/dev/null; then omarchy pkg add "$p" || warn "Couldn't install $p"; else as_root pacman -S --needed --noconfirm "$p" >/dev/null || warn "Couldn't install $p"; fi ;;
 			zypper) as_root zypper --non-interactive install "$p" >/dev/null || warn "Couldn't install $p" ;;
+			apk) as_root apk add --no-cache "$p" >/dev/null || warn "Couldn't install $p" ;;
 			mac) ;;
 			*) warn "Install $p yourself (no package manager found that I know)" ;;
 		esac
@@ -287,7 +315,8 @@ if has vms && [ "$USER_ENROLL_ONLY" != 1 ] && [ "$MAC" != 1 ]; then
 fi
 
 # Linger before the pairing code is used. A noninteractive sudo failure must leave that code unused.
-if [ "$MAC" != 1 ] && [ "$USER_ENROLL_ONLY" != 1 ]; then
+# Alpine OpenRC has no loginctl linger; the system service below is what keeps it running.
+if [ "$MAC" != 1 ] && [ "$OPENRC" != 1 ] && [ "$USER_ENROLL_ONLY" != 1 ]; then
 	if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q 'Linger=yes'; then
 		if noninteractive; then
 			sudo -n loginctl enable-linger "$USER" || need_password "This computer needs a password to finish installing."
@@ -327,6 +356,30 @@ if [ "$MAC" = 1 ]; then
 EOF
 	launchctl bootout "gui/$(id -u)/org.myowndatacenter.connector" 2>/dev/null || true
 	launchctl bootstrap "gui/$(id -u)" "$PLIST" || die "Couldn't start the connector (launchctl)."
+	say "Done. \"$name\" is now in your server's Machines → Local swarm."
+	exit 0
+fi
+if [ "$OPENRC" = 1 ]; then
+	if [ "$USER_ENROLL_ONLY" != 1 ]; then
+		as_root tee /etc/init.d/omarchy-connector >/dev/null <<EOF || need_password "This computer needs a password to finish installing."
+#!/sbin/openrc-run
+name="omarchy-connector"
+command="/usr/bin/env"
+command_args="python3 $DIR/agent.py"
+command_user="$USER"
+supervisor=supervise-daemon
+respawn_delay=5
+pidfile="/run/omarchy-connector.pid"
+start_pre() {
+  uid=\$(id -u $USER)
+  mkdir -p "/run/user/\$uid"
+  chown $USER "/run/user/\$uid"
+}
+EOF
+		as_root chmod +x /etc/init.d/omarchy-connector || need_password "This computer needs a password to finish installing."
+		as_root rc-update add omarchy-connector default || need_password "This computer needs a password to finish installing."
+		as_root rc-service omarchy-connector start || die "Couldn't start the connector (OpenRC)."
+	fi
 	say "Done. \"$name\" is now in your server's Machines → Local swarm."
 	exit 0
 fi
