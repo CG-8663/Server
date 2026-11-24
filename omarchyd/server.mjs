@@ -1203,9 +1203,10 @@ WantedBy=graphical-session.target
 			}
 			// This server's own desktop is the owner's signed-in Omarchy session: owner-only too.
 			if (machineId === 'desktop' && !owner) return refuse('403 Forbidden')
-			const target = machineId === 'desktop' ? await desktopTarget() : await machines.vncSocket(machineId).then((path) => ({path}), () => null)
+			const target = machineId === 'desktop' ? await desktopTarget() : await machines.vncSocket(machineId).catch(() => null)
 			if (!target) return refuse('409 Conflict')
-			const vnc = net.connect(target)
+			if (typeof target === 'object' && target.agentId) return wss.handleUpgrade(req, socket, head, (ws) => connector.openChannel(target.agentId, 'vnc', ws, {guest: target.guest}))
+			const vnc = net.connect(typeof target === 'string' ? {path: target} : target)
 			vnc.once('error', () => refuse('502 Bad Gateway'))
 			vnc.once('connect', () => {
 				vnc.removeAllListeners('error')

@@ -2525,10 +2525,19 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return {output: String(out).slice(0, 64_000)}
 	}
 
-	// For the console bridge: the VNC socket of a running machine.
+	// For the console bridge: a local unix path, or the host agent for a remote guest.
 	async function vncSocket(id) {
 		await ready
 		const m = find(id)
+		const hostId = hostOf(m)
+		if (hostId !== 'server') {
+			const listed = await connector.list()
+			const agent = (Array.isArray(listed) ? listed : []).find((a) => a.id === hostId)
+			const name = agent?.name || 'that computer'
+			if (!agent || agent.online !== true) throw new RpcError('PRECONDITION_FAILED', `${name} is offline right now`)
+			if (!agent.allowed?.vms || !agent.on?.vms) throw new RpcError('FORBIDDEN', `Pair ${name} again with Virtual machines switched on.`)
+			return {agentId: hostId, guest: id}
+		}
 		const sock = join(vmsDir, m.id, 'vnc.sock')
 		const s = await stat(sock).catch(() => null)
 		if (!s?.isSocket()) throw new RpcError('PRECONDITION_FAILED', `${m.name} isn’t running`)
