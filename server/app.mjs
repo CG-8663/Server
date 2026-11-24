@@ -17,7 +17,7 @@ import {join} from 'node:path'
 import express from 'express'
 import WebSocket, {WebSocketServer} from 'ws'
 
-import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
+import {dualProtocolServer, fromLocalProxy, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {linkProxy} from '../omarchyd/proxy-link.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
@@ -295,6 +295,18 @@ export const ALLOWED = {
 	'tailscale.login': 'mutation',
 	'tailscale.logout': 'mutation',
 	'tailscale.ping': 'mutation',
+	// MODC Connect: pairing with myowndatacenter.com and its check-ins. Owner only, checked in omarchyd.
+	// The answers never carry the polling secret or the device credential.
+	'connect.status': 'query',
+	'connect.pair': 'mutation',
+	'connect.cancel': 'mutation',
+	'connect.dismiss': 'mutation',
+	'connect.disconnect': 'mutation',
+	'connect.checkNow': 'mutation',
+	'connect.tunnel.enable': 'mutation',
+	'connect.tunnel.disable': 'mutation',
+	'connect.tunnel.check': 'mutation',
+	'connect.tunnel.install': 'mutation',
 	// This server as an OpenID Connect provider. Owner only, checked in omarchyd.
 	'oidc.status': 'query',
 	'oidc.setConfig': 'mutation',
@@ -370,6 +382,23 @@ function hostOf(origin) {
 		return null
 	}
 }
+
+// Forwarding headers: x-forwarded-*, forwarded, x-real-ip and Cloudflare's cf-* (cf-connecting-ip,
+// cf-visitor, …). Removed from any request that didn't come from this machine.
+const FORWARDING = /^(x-forwarded-|forwarded$|x-real-ip$|cf-|true-client-ip$)/
+export function stripForwarding(req) {
+	if (fromLocalProxy(req)) return false
+	let dropped = false
+	for (const k of Object.keys(req.headers)) {
+		if (FORWARDING.test(k)) {
+			delete req.headers[k]
+			dropped = true
+		}
+	}
+	return dropped
+}
+// The scheme a trusted local proxy says the browser used, or '' (no proxy, or not trusted).
+export const forwardedProto = (req) => (fromLocalProxy(req) ? String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase() : '')
 
 function parseCookies(header = '') {
 	const out = {}
@@ -454,6 +483,13 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	const app = express()
 	app.disable('x-powered-by')
 	app.set('trust proxy', 'loopback')
+	// Reverse-proxy headers are only believed from a proxy on this machine (cloudflared, Tailscale
+	// Serve). From anyone else they are dropped before anything reads them, so no one on the network
+	// can claim to be https, another host or another address.
+	app.use((req, _res, next) => {
+		stripForwarding(req)
+		next()
+	})
 	// This server's certificate authority, for devices to trust its https:// pages (public by nature).
 	app.get('/api/tls/ca.crt', (_req, res) => {
 		const ca = tls?.ca()
@@ -994,6 +1030,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	})
 
 	api.get('/account-avatar', async (req, res) => {
+		// Who has an account here is for signed-in people only (the sign-in page shows no avatars).
+		if (!store.getSession(req.sid)) return res.status(401).end()
 		const backend = getClient()
 		const path = String(req.query.path ?? '')
 		if (!backend || !/^\/api\/accounts\/[\w.\-/]+$/.test(path) || path.includes('..')) return res.status(404).end()
@@ -1010,19 +1048,51 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	})
 
 	// ---- Auth ----------------------------------------------------------------
+	// Sign-in limits. Per address: 10 tries in 5 minutes (req.ip is the browser's own address, also
+	// through a trusted local proxy). From outside this network (through a proxy on this machine, such
+	// as the MODC Connect tunnel), also: 10 wrong passwords for one account in 15 minutes, and 50 wrong
+	// passwords from everyone in 5 minutes. Those two count only remote failures, so someone on the
+	// internet can't lock the owner out at home.
 	const attempts = new Map()
+	const accountFailures = new Map()
+	let remoteFailures = []
+	const LOGIN_WINDOW_MS = 5 * 60 * 1000
+	const ACCOUNT_WINDOW_MS = 15 * 60 * 1000
+	const viaProxy = (req) => fromLocalProxy(req) && !!(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'])
+	const tooMany = (res, until) =>
+		res
+			.set('Retry-After', String(Math.max(1, Math.ceil((until - Date.now()) / 1000))))
+			.status(429)
+			.json({error: {code: 'TOO_MANY_REQUESTS', message: 'Too many attempts. Wait a few minutes.'}})
+	const prune = (map, windowMs, now) => {
+		if (map.size < 5000) return
+		for (const [k, v] of map) if (!v.length || now - v[v.length - 1] > windowMs) map.delete(k)
+	}
 	api.post('/auth/login', async (req, res) => {
 		const backend = getClient()
 		if (!backend) return res.status(409).json({error: {code: 'NOT_CONFIGURED', message: 'Connect to your server first'}})
 		const ip = req.ip ?? 'unknown'
 		const now = Date.now()
-		const LOGIN_WINDOW_MS = 5 * 60 * 1000
+		const remote = viaProxy(req)
+		const accountKey = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase().slice(0, 200) : ''
+		prune(attempts, LOGIN_WINDOW_MS, now)
+		prune(accountFailures, ACCOUNT_WINDOW_MS, now)
 		const recent = (attempts.get(ip) ?? []).filter((t) => now - t < LOGIN_WINDOW_MS)
-		if (recent.length >= 10) {
-			const retryAfter = Math.max(1, Math.ceil((recent[0] + LOGIN_WINDOW_MS - now) / 1000))
-			return res.set('Retry-After', String(retryAfter)).status(429).json({error: {code: 'TOO_MANY_REQUESTS', message: 'Too many attempts. Wait a few minutes.'}})
+		if (recent.length >= 10) return tooMany(res, recent[0] + LOGIN_WINDOW_MS)
+		if (remote) {
+			remoteFailures = remoteFailures.filter((t) => now - t < LOGIN_WINDOW_MS)
+			if (remoteFailures.length >= 50) return tooMany(res, remoteFailures[0] + LOGIN_WINDOW_MS)
+			const acct = (accountFailures.get(accountKey) ?? []).filter((t) => now - t < ACCOUNT_WINDOW_MS)
+			if (accountKey && acct.length >= 10) return tooMany(res, acct[0] + ACCOUNT_WINDOW_MS)
 		}
 		attempts.set(ip, [...recent, now])
+		res.on('finish', () => {
+			if (!remote) return
+			if (res.statusCode === 401) {
+				remoteFailures.push(Date.now())
+				if (accountKey) accountFailures.set(accountKey, [...(accountFailures.get(accountKey) ?? []).filter((t) => Date.now() - t < ACCOUNT_WINDOW_MS), Date.now()])
+			} else if (res.statusCode === 200 && accountKey) accountFailures.delete(accountKey)
+		})
 
 		const {password, totpToken, username} = req.body ?? {}
 		if (typeof username !== 'string' || !username.trim() || typeof password !== 'string' || !password) {
@@ -1818,7 +1888,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				for (const [key, entry] of appSessions) if (entry.exp <= nowMs) appSessions.delete(key)
 				appSessions.set(id, {sid: t.sid, appId: app.id, exp: nowMs + 12 * 60 * 60 * 1000})
 				const r = url.searchParams.get('r') ?? '/'
-				const secure = req.headers['x-forwarded-proto'] === 'https' && isLoopback(String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, ''))
+				const secure = forwardedProto(req) === 'https'
 				res.writeHead(302, {
 					location: r.startsWith('/') && !r.startsWith('//') ? r : '/',
 					'set-cookie': `${APP_COOKIE}=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200${secure ? '; Secure' : ''}`,
@@ -1846,7 +1916,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 						if (to.port === String(relay.targetPort) && (to.hostname === hostname || isLoopback(to.hostname) || to.hostname === serverHost)) {
 							// Back to the address the browser used: its scheme and its host, port and all (an
 							// app address behind a TLS proxy has no port, and \`to.host = …\` would keep the old one).
-							const proto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() || (req.socket.encrypted ? 'https' : 'http')
+							const proto = forwardedProto(req) || (req.socket.encrypted ? 'https' : 'http')
 							headers.location = `${proto === 'https' ? 'https' : 'http'}://${req.headers.host}${to.pathname}${to.search}${to.hash}`
 						}
 					} catch {
@@ -2149,6 +2219,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false})
 		consoles.add(wss)
 		server.on('upgrade', async (req, socket, head) => {
+			// Upgrades skip Express: drop untrusted forwarding headers here too.
+			stripForwarding(req)
 			if (app.relayUpgrade(req, socket, head)) return
 			const refuse = (status) => {
 				if (socket.destroyed) return
@@ -2208,7 +2280,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				if (origin) {
 					try {
 						const ou = new URL(origin)
-						const expectedProto = req.socket?.encrypted || req.headers['x-forwarded-proto'] === 'https' ? 'https:' : 'http:'
+						const expectedProto = req.socket?.encrypted || forwardedProto(req) === 'https' ? 'https:' : 'http:'
 						originOk = ou.host === req.headers.host && ou.protocol === expectedProto
 					} catch {}
 				}
