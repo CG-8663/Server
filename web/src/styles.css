@@ -10164,3 +10164,20 @@ button.mm-squares {
 		transition: none;
 	}
 }
+
+/* A connected computer whose desktop can't be opened: why, and the fix. */
+.desk-help {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+	margin: 10px 2px 0;
+	padding: 10px 12px;
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--accent) 8%, transparent);
+	font-size: 13.5px;
+}
+.desk-help > span {
+	flex: 1 1 200px;
+	min-width: 0;
+}

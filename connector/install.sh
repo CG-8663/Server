@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# My Own Data Center connector: join this Linux computer to your My Own Data Center's local swarm.
+# My Own Data Center connector: join this Linux computer or Mac to your My Own Data Center's local swarm.
 #
 # Get the exact command (with a one-time pairing code) from your server: Machines → Local swarm →
 # Add a computer. It looks like:
@@ -7,7 +7,8 @@
 #
 # Run it as your normal user (it asks for sudo only to install packages and to keep the connector
 # running while you're signed out). Works on any Linux with systemd: Debian, Ubuntu, Fedora, Arch,
-# Omarchy, openSUSE and their relatives.
+# Omarchy, openSUSE and their relatives. It finds the distribution's package manager itself.
+# On a Mac (macOS 12 or later) it needs no sudo: it runs as a LaunchAgent while you're signed in.
 #
 # Remove it again:  curl -fsSL <source>/main/connector/install.sh | bash -s -- --uninstall
 set -euo pipefail
@@ -72,9 +73,24 @@ CONF="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-connector"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT="$UNIT_DIR/omarchy-connector.service"
 
-[ "$(uname -s)" = Linux ] || die "The connector is for Linux."
+MAC=0
+case "$(uname -s)" in
+	Linux) ;;
+	Darwin) MAC=1 ;;
+	*) die "The connector is for Linux and macOS (Windows has its own command)." ;;
+esac
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not with sudo (the connector works as you)."
-command -v systemctl >/dev/null || die "systemd is required."
+[ "$MAC" = 1 ] || command -v systemctl >/dev/null || die "systemd is required."
+PLIST="$HOME/Library/LaunchAgents/org.myowndatacenter.connector.plist"
+
+if [ "$MAC" = 1 ] && [ "$UNINSTALL" = 1 ]; then
+	say "Removing the connector"
+	launchctl bootout "gui/$(id -u)/org.myowndatacenter.connector" 2>/dev/null || true
+	rm -f "$PLIST"
+	rm -rf "$DIR" "$CONF" "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-connector"
+	say "Done. Remove this computer in Machines → Local swarm too, if it's still listed."
+	exit 0
+fi
 
 if [ "$UNINSTALL" = 1 ]; then
 	say "Removing the connector"
@@ -97,11 +113,33 @@ fi
 case "$SERVER" in https://*) ;; *) die "The server address must start with https://" ;; esac
 [[ "$CA" =~ ^[0-9a-f]{64}$ ]] || die "That command looks cut off (the server fingerprint is missing). Copy it again."
 [[ "$ALLOW" =~ ^[a-z,]*$ ]] || die "Bad --allow list"
+# A Mac can have its terminal, files and power; the rest needs Linux (the connector agrees).
+if [ "$MAC" = 1 ]; then
+	keep=""
+	for a in ${ALLOW//,/ }; do case "$a" in terminal | files | manage) keep="$keep${keep:+,}$a" ;; esac; done
+	ALLOW="$keep"
+fi
 has() { [[ ",$ALLOW," == *",$1,"* ]]; }
+
+if [ "$MAC" = 1 ]; then
+	# macOS ships a python3 that asks to install the Command Line Tools the first time.
+	if ! python3 -c 'import ssl, sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then
+		if command -v brew >/dev/null; then
+			say "Installing Python (Homebrew)"
+			brew install python >/dev/null || die "Couldn't install Python. Run: brew install python"
+		else
+			die "Python 3 is needed. Run: xcode-select --install   (or install it from python.org), then run this again."
+		fi
+	fi
+	if has terminal && ! command -v tmux >/dev/null && command -v brew >/dev/null; then
+		brew install tmux >/dev/null || warn "Couldn't install tmux (the terminal works without it)."
+	fi
+fi
 
 # 1. What this computer needs: Python 3, git (for plugins), tmux (for the terminal) and screen sharing (for the desktop).
 pm=""
-for p in apt-get dnf pacman zypper; do command -v "$p" >/dev/null && { pm="$p"; break; }; done
+[ "$MAC" = 1 ] && pm=mac
+for p in apt-get dnf pacman zypper; do [ "$MAC" = 1 ] && break; command -v "$p" >/dev/null && { pm="$p"; break; }; done
 pkgs=()
 command -v python3 >/dev/null || case "$pm" in pacman) pkgs+=(python) ;; *) pkgs+=(python3) ;; esac
 has manage && ! command -v git >/dev/null && pkgs+=(git)
@@ -129,6 +167,7 @@ if [ ${#pkgs[@]} -gt 0 ]; then
 			dnf) sudo dnf install -y "$p" >/dev/null || warn "Couldn't install $p" ;;
 			pacman) if command -v omarchy >/dev/null; then omarchy pkg add "$p" || warn "Couldn't install $p"; else sudo pacman -S --needed --noconfirm "$p" >/dev/null || warn "Couldn't install $p"; fi ;;
 			zypper) sudo zypper --non-interactive install "$p" >/dev/null || warn "Couldn't install $p" ;;
+			mac) ;;
 			*) warn "Install $p yourself (no package manager found that I know)" ;;
 		esac
 	done
@@ -189,6 +228,34 @@ say "Joining your server"
 name=$(python3 "$DIR/agent.py" enroll "$SERVER" "$TOKEN" "$ALLOW") || die "Joining didn't work (see above)."
 
 # 5. Keep it running, as you, from now on.
+if [ "$MAC" = 1 ]; then
+	# Escaped for the plist (a home folder may have & or < in its name); launchd's own PATH has no
+	# Homebrew, so give it one (from kdegeek's #864).
+	xml() { python3 -c 'import sys, xml.sax.saxutils as x; print(x.escape(sys.argv[1]))' "$1"; }
+	py=$(xml "$(command -v python3)")
+	dir_xml=$(xml "$DIR")
+	mkdir -p "$(dirname "$PLIST")" "$DIR/log"
+	cat >"$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>org.myowndatacenter.connector</string>
+	<key>ProgramArguments</key><array><string>$py</string><string>$dir_xml/agent.py</string></array>
+	<key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>ThrottleInterval</key><integer>5</integer>
+	<key>ProcessType</key><string>Background</string>
+	<key>StandardErrorPath</key><string>$dir_xml/log/connector.log</string>
+</dict>
+</plist>
+EOF
+	launchctl bootout "gui/$(id -u)/org.myowndatacenter.connector" 2>/dev/null || true
+	launchctl bootstrap "gui/$(id -u)" "$PLIST" || die "Couldn't start the connector (launchctl)."
+	say "Done. \"$name\" is now in your server's Machines → Local swarm."
+	exit 0
+fi
 # Storage needs sudo to the helper, so NoNewPrivileges stays off only when Storage was allowed.
 nnp=""
 has storage || nnp="NoNewPrivileges=yes"

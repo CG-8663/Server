@@ -64,13 +64,14 @@ ABILITY_NAMES = ("terminal", "desktop", "manage", "storage", "backup", "services
 FILE_CHUNK = 64 * 1024
 FILE_WINDOW = 4
 IS_WINDOWS = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
 if IS_WINDOWS:
     CONFIG_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "omarchy-connector")
 else:
     CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "omarchy-connector")
 CONFIG = os.path.join(CONFIG_DIR, "config.json")
 CA_FILE = os.path.join(CONFIG_DIR, "server-ca.crt")
-RUNTIME = CONFIG_DIR if IS_WINDOWS else (os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+RUNTIME = CONFIG_DIR if IS_WINDOWS or IS_MAC else (os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
 DATA_DIR = CONFIG_DIR if IS_WINDOWS else os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "omarchy-connector")
 
 # restic, the backup engine: this computer's own if it's new enough, otherwise its official build,
@@ -230,6 +231,8 @@ def read(path, default=""):
 def os_release():
     if IS_WINDOWS:
         return {"PRETTY_NAME": f"Windows {platform.release()}".strip(), "NAME": "Windows", "ID": "windows"}
+    if IS_MAC:
+        return {"PRETTY_NAME": f"macOS {platform.mac_ver()[0]}".strip(), "NAME": "macOS", "ID": "macos"}
     out = {}
     for line in read("/etc/os-release").splitlines():
         if "=" in line:
@@ -241,6 +244,8 @@ def os_release():
 def package_manager():
     if IS_WINDOWS:
         return "winget" if shutil.which("winget") else ""
+    if IS_MAC:
+        return "brew" if shutil.which("brew") else "softwareupdate"
     for name in ("apt", "dnf", "pacman", "zypper"):
         if shutil.which(name if name != "apt" else "apt-get"):
             return name
@@ -250,7 +255,7 @@ def package_manager():
 def update_command(pkg, omarchy):
     if omarchy:
         return "omarchy update"
-    return {"apt": "sudo apt update && sudo apt upgrade", "dnf": "sudo dnf upgrade --refresh", "pacman": "sudo pacman -Syu", "zypper": "sudo zypper update", "winget": "winget upgrade --all"}.get(pkg, "")
+    return {"apt": "sudo apt update && sudo apt upgrade", "dnf": "sudo dnf upgrade --refresh", "pacman": "sudo pacman -Syu", "zypper": "sudo zypper update", "winget": "winget upgrade --all", "brew": "softwareupdate -l && brew upgrade", "softwareupdate": "softwareupdate -l"}.get(pkg, "")
 
 
 def omarchy_facts():
@@ -295,6 +300,8 @@ def lan_macs(list_dir=os.listdir, read_file=read, root="/sys/class/net"):
     """Non-virtual network adapter MAC addresses for Wake-on-LAN."""
     if IS_WINDOWS and list_dir is os.listdir and read_file is read:
         return _windows_macs()
+    if IS_MAC and list_dir is os.listdir and read_file is read:
+        return _mac_macs()
     try:
         names = sorted(list_dir(root))
     except OSError:
@@ -406,6 +413,121 @@ def _windows_cpu_percent():
         return None
 
 
+# ---- macOS: the same readings, from sysctl, vm_stat and the Mach host statistics. ------------
+_mac_cpu_last = None
+
+
+def _mac_out(cmd, timeout=5):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _mac_sysctl(name):
+    return _mac_out(["sysctl", "-n", name]).strip()
+
+
+def _mac_macs(out=None):
+    out = _mac_out(["ifconfig"]) if out is None else out
+    seen, macs, name = set(), [], ""
+    for line in out.splitlines():
+        if line and not line[0].isspace():
+            name = line.split(":", 1)[0]
+            continue
+        m = re.match(r"\s+ether ([0-9a-f]{2}(?::[0-9a-f]{2}){5})", line)
+        # en* are the real adapters; bridges, VPN and AirDrop (awdl) can't wake the Mac.
+        if m and name.startswith("en") and m.group(1) not in seen and m.group(1) != "00:00:00:00:00:00":
+            seen.add(m.group(1))
+            macs.append(m.group(1))
+    return macs[:8]
+
+
+def _mac_meminfo(vm_stat=None, memsize=None, swap=None):
+    try:
+        total = int(memsize if memsize is not None else _mac_sysctl("hw.memsize") or 0)
+        text = _mac_out(["vm_stat"]) if vm_stat is None else vm_stat
+        page = int((re.search(r"page size of (\d+)", text) or [0, 4096])[1])
+        pages = {k.strip().lower(): int(v.strip().rstrip(".")) for k, v in re.findall(r"^\"?([A-Za-z -]+)\"?:\s+(\d+)\.?$", text, re.M)}
+        # What Activity Monitor calls Memory Used: app memory (active), wired, and compressed.
+        used_pages = pages.get("pages active", 0) + pages.get("pages wired down", 0) + pages.get("pages occupied by compressor", 0)
+        mem = {"total": total, "used": min(total, used_pages * page) if total else 0}
+        sw = _mac_sysctl("vm.swapusage") if swap is None else swap
+        unit = {"K": 1024, "M": 1024**2, "G": 1024**3}
+
+        def size(key):
+            m = re.search(key + r" = ([\d.]+)([KMG])", sw)
+            return int(float(m.group(1)) * unit[m.group(2)]) if m else 0
+
+        return mem, {"total": size("total"), "used": size("used")}
+    except (ValueError, TypeError):
+        return {"total": 0, "used": 0}, {"total": 0, "used": 0}
+
+
+def _mac_disks():
+    rows, seen = [], set()
+    # Everything you save is on the Data volume; "/" is the sealed, read-only system.
+    roots = [("/", "/System/Volumes/Data" if os.path.isdir("/System/Volumes/Data") else "/")]
+    try:
+        roots += [(os.path.join("/Volumes", n), os.path.join("/Volumes", n)) for n in sorted(os.listdir("/Volumes"))]
+    except OSError:
+        pass
+    for mount, path in roots:
+        try:
+            st = os.stat(path)
+            u = shutil.disk_usage(path)
+        except OSError:
+            continue
+        if st.st_dev in seen or u.total <= 0 or (mount != "/" and os.path.realpath(path) == "/"):
+            continue
+        seen.add(st.st_dev)
+        rows.append({"mount": mount, "total": int(u.total), "used": int(u.used)})
+    return rows[:12]
+
+
+def _mac_uptime(boot=None):
+    boot = _mac_sysctl("kern.boottime") if boot is None else boot
+    m = re.search(r"sec = (\d+)", boot)
+    return max(0.0, time.time() - int(m.group(1))) if m else 0.0
+
+
+def _mac_cpu_ticks():
+    """(user, system, idle, nice) ticks since boot, from host_statistics(HOST_CPU_LOAD_INFO)."""
+    try:
+        libc = ctypes.CDLL("/usr/lib/libSystem.dylib")
+        libc.mach_host_self.restype = ctypes.c_uint
+        ticks = (ctypes.c_uint * 4)()
+        count = ctypes.c_uint(4)
+        if libc.host_statistics(libc.mach_host_self(), 3, ctypes.byref(ticks), ctypes.byref(count)) != 0:
+            return None
+        return tuple(int(t) for t in ticks)
+    except (OSError, AttributeError):
+        return None
+
+
+def _mac_cpu_percent(ticks=None):
+    global _mac_cpu_last
+    t = _mac_cpu_ticks() if ticks is None else ticks
+    if not t:
+        return None
+    idle, total = t[2], sum(t)
+    prev, _mac_cpu_last = _mac_cpu_last, (idle, total)
+    if not prev or total <= prev[1]:
+        return None
+    return round(max(0.0, min(100.0, 100.0 * (1.0 - (idle - prev[0]) / (total - prev[1])))), 1)
+
+
+def _mac_batteries(out=None):
+    out = _mac_out(["pmset", "-g", "batt"]) if out is None else out
+    rows = []
+    for m in re.finditer(r"(\d+)%;\s*([a-zA-Z ]+?);\s*(?:(\d+):(\d+) remaining)?", out):
+        state = m.group(2).strip().lower()
+        status = {"charging": "charging", "discharging": "discharging", "charged": "full", "finishing charge": "charging", "ac attached": "not-charging"}.get(state, "unknown")
+        secs = int(m.group(3)) * 3600 + int(m.group(4)) * 60 if m.group(3) else None
+        rows.append({"id": f"battery{len(rows)}", "index": len(rows), "name": "Battery", "percent": min(100, int(m.group(1))), "status": status, "secondsRemaining": secs, "power": None, "energyNow": None, "energyFull": None})
+    return rows[:2]
+
+
 def _user_name():
     if pwd is not None:
         return pwd.getpwuid(os.getuid()).pw_name
@@ -444,6 +566,8 @@ def cpu_percent():
     global _cpu_last
     if IS_WINDOWS:
         return _windows_cpu_percent()
+    if IS_MAC:
+        return _mac_cpu_percent()
     parts = read("/proc/stat").split("\n", 1)[0].split()[1:]
     vals = [int(x) for x in parts] if parts else []
     if len(vals) < 4:
@@ -459,6 +583,8 @@ def cpu_percent():
 def meminfo():
     if IS_WINDOWS:
         return _windows_meminfo()
+    if IS_MAC:
+        return _mac_meminfo()
     m = {}
     for line in read("/proc/meminfo").splitlines():
         k, _, rest = line.partition(":")
@@ -503,6 +629,8 @@ def _begin_stat(mount):
 def disks():
     if IS_WINDOWS:
         return _windows_disks()
+    if IS_MAC:
+        return _mac_disks()
     out, seen, mounts = [], set(), []
     for line in read("/proc/mounts").splitlines():
         p = line.split()
@@ -551,6 +679,8 @@ def _num(s):
 
 def batteries(list_dir=os.listdir, read_file=read, root="/sys/class/power_supply"):
     """System packs only. HID mouse/keyboard batteries (scope=Device) are skipped."""
+    if IS_MAC and list_dir is os.listdir and read_file is read:
+        return _mac_batteries()
     try:
         names = sorted(list_dir(root))
     except OSError:
@@ -926,7 +1056,7 @@ def default_reads():
         "temp": temperature,
         "battery": batteries,
         "disk": disks,
-        "uptime": _windows_uptime if IS_WINDOWS else (lambda: float(read("/proc/uptime", "0").split()[0] or 0)),
+        "uptime": _windows_uptime if IS_WINDOWS else _mac_uptime if IS_MAC else (lambda: float(read("/proc/uptime", "0").split()[0] or 0)),
     }
 
 
@@ -1130,15 +1260,54 @@ def metrics(pkg, sampler=None):
 
 # ---------------------------------------------------------------------------------------------
 # Desktop: which kind this computer has, and a VNC server on a private socket when one is shown.
-def _hypr_signature():
+def _live_hypr():
+    """The running Hyprland: (signature, its Wayland socket or None). Folders left by an earlier
+    session (a restart, a crash) are skipped: Hyprland's lock file names its process, which must be
+    alive, and the Wayland socket it made."""
     d = os.path.join(RUNTIME, "hypr")
-    sigs = sorted(os.listdir(d), key=lambda s: os.path.getmtime(os.path.join(d, s)), reverse=True) if os.path.isdir(d) else []
-    return sigs[0] if sigs else None
+    try:
+        sigs = sorted(os.listdir(d), key=lambda x: os.path.getmtime(os.path.join(d, x)), reverse=True)
+    except OSError:
+        return None, None
+    fallback = None
+    for sig in sigs:
+        try:
+            with open(os.path.join(d, sig, "hyprland.lock"), encoding="utf-8", errors="replace") as f:
+                words = f.read().split()
+        except OSError:
+            # An older Hyprland without the lock file: the newest folder, as before.
+            fallback = fallback or sig
+            continue
+        pid = int(words[0]) if words and words[0].isdigit() else 0
+        if pid and not os.path.exists(f"/proc/{pid}"):
+            continue
+        wl = next((w for w in words[1:] if re.fullmatch(r"wayland-\d+", w)), None)
+        return sig, wl
+    return fallback, None
+
+
+def _hypr_signature():
+    return _live_hypr()[0]
 
 
 def _wayland_display():
-    socks = sorted(f for f in os.listdir(RUNTIME) if re.fullmatch(r"wayland-\d+", f)) if os.path.isdir(RUNTIME) else []
-    return socks[0] if socks else None
+    """The live session's Wayland socket: the one Hyprland says it made, else the newest one that
+    still has its lock (an old wayland-0 left behind isn't picked just for sorting first)."""
+    if not os.path.isdir(RUNTIME):
+        return None
+    _sig, wl = _live_hypr()
+    if wl and os.path.exists(os.path.join(RUNTIME, wl)):
+        return wl
+    socks = [f for f in os.listdir(RUNTIME) if re.fullmatch(r"wayland-\d+", f)]
+    locked = [f for f in socks if os.path.exists(os.path.join(RUNTIME, f + ".lock"))] or socks
+
+    def newest(f):
+        try:
+            return os.path.getmtime(os.path.join(RUNTIME, f))
+        except OSError:
+            return 0
+
+    return max(locked, key=newest) if locked else None
 
 
 def _x_display():
@@ -1165,14 +1334,16 @@ def _xauthority():
 def desktop_kind():
     if IS_WINDOWS:
         return {"kind": "none", "ok": False, "why": "Sharing a Windows computer’s screen isn’t available yet."}
+    if IS_MAC:
+        return {"kind": "none", "ok": False, "why": "Sharing a Mac’s screen isn’t available yet."}
     wl = _wayland_display()
     wlroots = _hypr_signature() or any(f.startswith("sway-ipc.") for f in (os.listdir(RUNTIME) if os.path.isdir(RUNTIME) else []))
     if wl and wlroots:
-        return {"kind": "wlroots", "ok": bool(shutil.which("wayvnc")), "why": "" if shutil.which("wayvnc") else "wayvnc isn’t installed. Run the connector installer again with the desktop switched on."}
+        return {"kind": "wlroots", "ok": bool(shutil.which("wayvnc")), "why": "" if shutil.which("wayvnc") else "Screen sharing (wayvnc) isn’t installed on this computer."}
     if wl:
         return {"kind": "wayland", "ok": False, "why": "This desktop (GNOME or KDE on Wayland) can’t be shared yet. Sign in with an X11 session, or use Hyprland or Sway."}
     if _x_display():
-        return {"kind": "x11", "ok": bool(shutil.which("x11vnc")), "why": "" if shutil.which("x11vnc") else "x11vnc isn’t installed. Run the connector installer again with the desktop switched on."}
+        return {"kind": "x11", "ok": bool(shutil.which("x11vnc")), "why": "" if shutil.which("x11vnc") else "Screen sharing (x11vnc) isn’t installed on this computer."}
     return {"kind": "none", "ok": False, "why": "Nobody is signed in to a desktop on this computer."}
 
 
@@ -2036,6 +2207,10 @@ def split_home_path(rel, allow_empty=False):
 
 
 def _fd_real(fd):
+    if IS_MAC:  # no /proc there: F_GETPATH asks the kernel for the descriptor's path
+        import fcntl
+
+        return os.path.realpath(fcntl.fcntl(fd, 50, b"\0" * 1024).split(b"\0", 1)[0].decode())
     return os.path.realpath(f"/proc/self/fd/{fd}")
 
 
@@ -2162,10 +2337,10 @@ def prepare_write(rel, size, home=None, config=None, data=None):
         raise RuntimeError("That file’s size isn’t usable")
     parts = split_home_path(rel)
     parent, name = "/".join(parts[:-1]), parts[-1]
-    if IS_WINDOWS:
-        raise RuntimeError("Uploading to a Windows computer isn’t available yet")
-    dirfd, _st, _real, _name = resolve_home(parent, "dir", home, config, data)
     tmp = ".incoming." + base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
+    if IS_WINDOWS:
+        return _prepare_write_windows(parent, name, tmp, size, home, config, data)
+    dirfd, _st, _real, _name = resolve_home(parent, "dir", home, config, data)
     fd = None
     try:
         try:
@@ -2194,10 +2369,33 @@ def prepare_write(rel, size, home=None, config=None, data=None):
     return {"dirfd": dirfd, "fd": fd, "tmp": tmp, "name": name, "size": size}
 
 
+def _prepare_write_windows(parent, name, tmp, size, home, config, data):
+    # No descriptors for folders there: resolve_home checked every step of the way to the folder,
+    # and nothing below follows a link. The upload goes to a hidden temporary file beside the
+    # target, then takes its name with a rename, which refuses to replace a file already there.
+    _fd, _st, real, _name = resolve_home(parent, "dir", home, config, data)
+    target = os.path.join(real, name)
+    if os.path.lexists(target):
+        raise RuntimeError("A file with that name is already there")
+    path = os.path.join(real, tmp)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    return {"dirfd": None, "dir": real, "fd": fd, "tmp": tmp, "name": name, "size": size}
+
+
 def commit_write(prep):
     os.fsync(prep["fd"])
     os.close(prep["fd"])
     prep["fd"] = None
+    if prep.get("dir") is not None:  # Windows
+        try:
+            os.rename(os.path.join(prep["dir"], prep["tmp"]), os.path.join(prep["dir"], prep["name"]))
+        except OSError as e:
+            abort_write(prep)
+            if isinstance(e, FileExistsError):
+                raise RuntimeError("A file with that name is already there") from e
+            raise RuntimeError("Couldn’t save that file") from e
+        prep["dir"] = None
+        return
     try:
         os.link(prep["tmp"], prep["name"], src_dir_fd=prep["dirfd"], dst_dir_fd=prep["dirfd"])
     except OSError as e:
@@ -2220,6 +2418,12 @@ def abort_write(prep):
             os.close(fd)
         except OSError:
             pass
+    if prep.get("dir") is not None and prep.get("tmp"):  # Windows
+        try:
+            os.unlink(os.path.join(prep["dir"], prep["tmp"]))
+        except OSError:
+            pass
+        prep["dir"] = None
     dirfd = prep.get("dirfd")
     if dirfd is not None and prep.get("tmp"):
         try:
@@ -2453,6 +2657,9 @@ def reboot(_args):
     if IS_WINDOWS:
         run(["shutdown", "/r", "/t", "0"], timeout=30, creationflags=_WIN_NO_WINDOW)
         return True
+    if IS_MAC:
+        _mac_power("restart")
+        return True
     run(["systemctl", "reboot"], timeout=30)
     return True
 
@@ -2493,9 +2700,18 @@ def app_install(args):
 
 
 
+def _mac_power(what):
+    # As the signed-in person, the way the Apple menu does it (no sudo). The first time, macOS asks
+    # on that Mac whether the connector may control System Events.
+    run(["osascript", "-e", f'tell application "System Events" to {what}'], timeout=30)
+
+
 def shutdown(_args):
     if IS_WINDOWS:
         run(["shutdown", "/s", "/t", "0"], timeout=30, creationflags=_WIN_NO_WINDOW)
+        return True
+    if IS_MAC:
+        _mac_power("shut down")
         return True
     run(["systemctl", "poweroff"], timeout=30)
     return True
@@ -2504,6 +2720,9 @@ def shutdown(_args):
 def suspend(_args):
     if IS_WINDOWS:
         run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], timeout=30, creationflags=_WIN_NO_WINDOW)
+        return True
+    if IS_MAC:
+        run(["pmset", "sleepnow"], timeout=30)
         return True
     run(["systemctl", "suspend"], timeout=30)
     return True
@@ -2575,17 +2794,21 @@ def update_self(args, cfg, cafile=None, target_path=None, on_restart=None, fetch
     return {"sha256": actual, "restarting": True}
 
 
-# What a Windows computer can do so far: its terminal, its files (reading, moving, deleting) and
-# power. The rest (screen, disks, backups, services) needs Linux.
+# What a Windows computer or a Mac can do so far: its terminal, its files and power. The rest
+# (screen, disks, backups, services) needs Linux.
 WINDOWS_ABILITIES = ("terminal", "files", "manage")
+MAC_ABILITIES = ("terminal", "files", "manage")
+MAC_LABEL = "org.myowndatacenter.connector"  # its LaunchAgent (connector/install.sh)
 
 
-def supported_abilities(abilities, windows=None):
+def supported_abilities(abilities, windows=None, mac=None):
     windows = IS_WINDOWS if windows is None else windows
+    mac = IS_MAC if mac is None else mac
     abilities = dict(abilities or {})
-    if windows:
+    only = WINDOWS_ABILITIES if windows else MAC_ABILITIES if mac else None
+    if only is not None:
         for k in ABILITY_NAMES:
-            if k not in WINDOWS_ABILITIES:
+            if k not in only:
                 abilities[k] = False
     return abilities
 
@@ -3800,6 +4023,13 @@ def forget():
         # --no-block so this process isn't waiting on its own stop.
         if IS_WINDOWS:
             subprocess.run(["schtasks", "/Delete", "/TN", "OmarchyConnector", "/F"], capture_output=True, timeout=30, creationflags=_WIN_NO_WINDOW)
+        elif IS_MAC:
+            plist = os.path.expanduser(f"~/Library/LaunchAgents/{MAC_LABEL}.plist")
+            try:
+                os.unlink(plist)
+            except OSError:
+                pass
+            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{MAC_LABEL}"], capture_output=True, timeout=30)
         else:
             subprocess.run(["systemctl", "--user", "disable", "--now", "--no-block", "omarchy-connector.service"], capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
