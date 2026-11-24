@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import {execFileSync, spawn} from 'node:child_process'
 import {EventEmitter} from 'node:events'
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises'
+import net from 'node:net'
 import os from 'node:os'
 import {dirname, join} from 'node:path'
 import {PassThrough} from 'node:stream'
@@ -9,7 +10,7 @@ import {test} from 'node:test'
 import {fileURLToPath} from 'node:url'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
-import {backpressureBudgets, createFrameReader, createHyprland, isPcmSilent} from '../omarchyd/hyprland.mjs'
+import {backpressureBudgets, createFrameReader, createHyprland, isPcmSilent, parseDesktopEntry} from '../omarchyd/hyprland.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -1093,6 +1094,416 @@ test('stream control state preserves saved 4:4:4 preference on non-4:4:4 clients
 	assert.equal(rbB.tier, 'high')
 	assert.equal(rbB.chroma444Pref, true)
 	assert.equal(rbB.codec, 'h264')
+})
+
+test('parseDesktopEntry extracts metadata and skips hidden/non-app entries', () => {
+	const ok = parseDesktopEntry(
+		`[Desktop Entry]
+Type=Application
+Name=Chromium Web Browser
+Name[fr]=Navigateur Chromium
+Comment=Access the Internet
+Exec=/usr/bin/chromium %U
+Icon=chromium
+Categories=Network;WebBrowser;
+StartupWMClass=chromium
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/usr/bin/chromium --new-window
+`,
+		'chromium',
+	)
+	assert.deepEqual(ok, {
+		id: 'chromium',
+		name: 'Chromium Web Browser',
+		comment: 'Access the Internet',
+		icon: 'chromium',
+		categories: ['Network', 'WebBrowser'],
+		terminal: false,
+		wmClass: 'chromium',
+	})
+
+	assert.equal(parseDesktopEntry('[Desktop Entry]\nType=Application\nName=Hidden\nExec=foo\nNoDisplay=true\n', 'h'), null)
+	assert.equal(parseDesktopEntry('[Desktop Entry]\nType=Link\nName=Link\nURL=https://example.com\n', 'l'), null)
+})
+
+test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and simultaneous WM-class launch correlation', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchy-hypr-rail-'))
+	const home = join(root, 'home')
+	const data = join(root, 'data')
+	const appsDir = join(root, 'apps')
+	const lowAppsDir = join(root, 'apps-low')
+	const iconDir = join(home, '.local', 'share', 'icons', 'hicolor', 'scalable', 'apps')
+	let d
+	try {
+		await mkdir(appsDir, {recursive: true})
+		await mkdir(lowAppsDir, {recursive: true})
+		await mkdir(iconDir, {recursive: true})
+		await writeFile(join(iconDir, 'demo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>')
+		await writeFile(join(root, 'outside.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>')
+		await symlink(join(root, 'outside.svg'), join(iconDir, 'escaped.svg'))
+		await writeFile(join(appsDir, 'demo.desktop'), '[Desktop Entry]\nType=Application\nName=Demo\nExec=/usr/bin/demo\nIcon=demo\nStartupWMClass=demo\n')
+		await writeFile(join(appsDir, 'evil.desktop'), `[Desktop Entry]\nType=Application\nName=Evil\nExec=/usr/bin/evil\nIcon=${join(root, 'outside.svg')}\n`)
+		await writeFile(join(appsDir, 'sym.desktop'), '[Desktop Entry]\nType=Application\nName=Sym\nExec=/usr/bin/sym\nIcon=escaped\n')
+		await writeFile(join(appsDir, 'alpha.desktop'), '[Desktop Entry]\nType=Application\nName=Alpha\nExec=/usr/bin/alpha\nStartupWMClass=alpha-app\n')
+		await writeFile(join(appsDir, 'beta.desktop'), '[Desktop Entry]\nType=Application\nName=Beta\nExec=/usr/bin/beta\nStartupWMClass=beta-app\n')
+		await writeFile(join(appsDir, 'shadowed.desktop'), '[Desktop Entry]\nType=Application\nName=Shadowed\nExec=/usr/bin/shadowed\nHidden=true\n')
+		await writeFile(join(lowAppsDir, 'shadowed.desktop'), '[Desktop Entry]\nType=Application\nName=Shadowed Visible\nExec=/usr/bin/shadowed\n')
+		await writeFile(join(root, 'wayland-1'), '')
+		await mkdir(join(root, 'hypr', 'sig123'), {recursive: true})
+		await writeFile(join(root, 'hypr', 'sig123', '.socket.sock'), '')
+
+		let clipText = ''
+		let failCopy = false
+		let pasteMode = 'ok'
+		let railMissing = false
+		let clientsFail = false
+		let spawnMode = 'ok'
+		let moveOffRailOnWake = false
+		let moveOffRailOnLuaResize = false
+		const mutatedAddrs = []
+		let betaLaunchSeq = 0
+		const clients = [{address: '0x55a1b2c3d4e0', title: 'Demo', class: 'demo', workspace: {id: 1}, at: [0, 0], size: [640, 480], mapped: true}]
+
+		const hypr = createHyprland({
+			dataDir: join(root, 'd1'),
+			home,
+			runtimeDir: root,
+			appDirs: [appsDir, lowAppsDir],
+			vaapiDevice: join(root, 'nonexistent'),
+			async exec(cmd, args, opts) {
+				if (cmd === 'pkg-config') return {ok: false, stdout: '', stderr: ''}
+				if (cmd === 'hyprctl' && args[0] === 'monitors') {
+					if (railMissing) return {ok: true, stdout: JSON.stringify([{id: 0, name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080, scale: 1, refreshRate: 60, dpmsStatus: true, activeWorkspace: {id: 1}}]), stderr: ''}
+					return {ok: true, stdout: JSON.stringify([{id: 1, name: 'RAIL-1', x: 0, y: 0, width: 3840, height: 2160, scale: 1, refreshRate: 60, dpmsStatus: true, activeWorkspace: {id: 11}}]), stderr: ''}
+				}
+				if (cmd === 'hyprctl' && args[0] === 'clients') {
+					if (clientsFail) return {ok: false, stdout: '', stderr: 'hyprctl failed'}
+					return {ok: true, stdout: JSON.stringify(clients), stderr: ''}
+				}
+				if (cmd === 'hyprctl' && args[0] === 'output') {
+					return railMissing ? {ok: false, stdout: '', stderr: 'cannot create headless output'} : {ok: true, stdout: 'ok', stderr: ''}
+				}
+				if (cmd === 'hyprctl' && moveOffRailOnWake && (args.join(' ').includes('dpms'))) {
+					// Simulate user moving the newly launched window onto physical workspace 1 during wakeRailOutput()
+					const target = clients.find((c) => c.address === '0x55a1000000cc')
+					if (target) target.workspace = {id: 1}
+				}
+				if (cmd === 'hyprctl' && moveOffRailOnLuaResize && args[0] === 'eval' && args[1]?.includes('window.resize') && args[1]?.includes('0x55a1000000dd')) {
+					// Simulate Lua resize failing while the window moves to physical workspace 1 before legacy fallback runs
+					const target = clients.find((c) => c.address === '0x55a1000000dd')
+					if (target) target.workspace = {id: 1}
+					return {ok: false, stdout: '', stderr: 'eval unsupported'}
+				}
+				if (cmd === 'hyprctl' && /float|resize|movewindowpixel/.test(args.join(' '))) {
+					mutatedAddrs.push(args.join(' '))
+				}
+				if (cmd === 'wl-copy') {
+					if (failCopy) return {ok: false, stdout: '', stderr: 'wl-copy failed'}
+					clipText = opts?.input ?? ''
+					return {ok: true, stdout: '', stderr: ''}
+				}
+				if (cmd === 'wl-paste') {
+					if (pasteMode === 'empty') return {ok: false, stdout: '', stderr: 'Nothing is copied'}
+					if (pasteMode === 'error') return {ok: false, stdout: '', stderr: 'Failed to connect to a compositor'}
+					return {ok: true, stdout: clipText, stderr: ''}
+				}
+				return {ok: true, stdout: 'ok', stderr: ''}
+			},
+			spawnImpl(cmd, args) {
+				const p = new EventEmitter()
+				p.unref = () => {}
+				if (cmd === 'gtk-launch') {
+					if (spawnMode === 'enoent') {
+						setTimeout(() => p.emit('error', Object.assign(new Error('spawn gtk-launch ENOENT'), {code: 'ENOENT'})), 5)
+						return p
+					}
+					if (spawnMode === 'exit1') {
+						setTimeout(() => p.emit('exit', 1, null), 5)
+						return p
+					}
+					if (args[0] === 'alpha') {
+						setTimeout(() => {
+							clients.push({address: '0x55a100000001', title: 'Alpha build log', class: 'foot', workspace: {id: 1}, at: [0, 0], size: [400, 300], mapped: true, floating: true})
+						}, 15)
+						setTimeout(() => {
+							clients.push({address: '0x55a1000000aa', title: 'Alpha Main', class: 'alpha-app', workspace: {id: 11}, at: [0, 0], size: [900, 600], mapped: true, floating: true})
+						}, 80)
+					} else if (args[0] === 'beta') {
+						const seq = ++betaLaunchSeq
+						const addr = moveOffRailOnWake
+							? '0x55a1000000cc'
+							: moveOffRailOnLuaResize
+								? '0x55a1000000dd'
+								: seq === 1
+									? '0x55a1000000bb'
+									: `0x55a1000000b${seq}`
+						setTimeout(() => {
+							clients.push({address: addr, title: `Beta Main ${seq}`, class: 'beta-app', workspace: {id: 11}, at: [0, 0], size: [900, 600], mapped: true, floating: !moveOffRailOnWake})
+						}, 40)
+					}
+				}
+				return p
+			},
+		})
+
+		const catalog = await hypr.procedures['hyprland.apps'].run()
+		assert.equal(catalog.find((a) => a.id === 'demo')?.hasIcon, true)
+		assert.equal(catalog.find((a) => a.id === 'evil')?.hasIcon, false, 'outside .svg path must be rejected by icon jail')
+		assert.equal(catalog.find((a) => a.id === 'shadowed'), undefined, 'Hidden=true in higher-priority dir must shadow lower-priority .desktop')
+		assert.ok((await hypr.readAppIcon('demo'))?.data.toString('utf8').includes('<svg'), 'inside .svg positive control must succeed')
+		assert.equal(await hypr.readAppIcon('evil'), null, 'outside .svg must be refused by readAppIcon')
+		assert.equal(await hypr.readAppIcon('sym'), null, 'symlinks escaping iconRoots to an outside .svg must be refused')
+		assert.equal(await hypr.readAppIcon('../outside'), null)
+
+		await hypr.procedures['hyprland.clipboardWrite'].run({text: 'hello-rail'})
+		assert.equal((await hypr.procedures['hyprland.clipboardRead'].run()).text, 'hello-rail')
+		pasteMode = 'empty'
+		assert.equal((await hypr.procedures['hyprland.clipboardRead'].run()).text, '', 'empty clipboard stderr should return empty text')
+		pasteMode = 'error'
+		await assert.rejects(() => hypr.procedures['hyprland.clipboardRead'].run(), /Failed to connect to a compositor/)
+		pasteMode = 'ok'
+		await assert.rejects(() => hypr.procedures['hyprland.clipboardWrite'].run({text: '\u{1F600}'.repeat(40_000)}), /Clipboard text too large/)
+		failCopy = true
+		await assert.rejects(() => hypr.procedures['hyprland.clipboardWrite'].run({text: 'fail'}), /wl-copy failed/)
+		failCopy = false
+
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: '../evil'}), /Invalid application ID/)
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: 'not-installed'}), /not installed/)
+
+		// Failed RAIL-1 setup must refuse launch before spawning
+		railMissing = true
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: 'alpha'}), /RAIL-1/)
+		railMissing = false
+
+		// Failed baseline inventory must refuse launch rather than claiming physical windows
+		clientsFail = true
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: 'alpha'}), /hyprctl/)
+		clientsFail = false
+
+		// Missing gtk-launch and non-zero exit must fail fast
+		spawnMode = 'enoent'
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: 'alpha'}), /Failed to launch/)
+		spawnMode = 'exit1'
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: 'alpha'}), /exited with status 1/)
+		spawnMode = 'ok'
+
+		const [resA, resB] = await Promise.all([
+			hypr.procedures['hyprland.launch'].run({id: 'alpha'}),
+			hypr.procedures['hyprland.launch'].run({id: 'beta'}),
+		])
+		assert.equal(resA.window?.address, '0x55a1000000aa')
+		assert.equal(resB.window?.address, '0x55a1000000bb')
+
+		// Concurrent indistinguishable same-class launches must return ambiguous instead of swapping windows
+		const [dup1, dup2] = await Promise.all([
+			hypr.procedures['hyprland.launch'].run({id: 'beta'}),
+			hypr.procedures['hyprland.launch'].run({id: 'beta'}),
+		])
+		assert.equal(dup1.ambiguous, true)
+		assert.equal(dup2.ambiguous, true)
+		assert.equal(dup1.window, null)
+		assert.equal(dup2.window, null)
+
+		// If a window moves to a physical workspace during wakeRailOutput(), launch must NOT float, resize, or move it
+		mutatedAddrs.length = 0
+		moveOffRailOnWake = true
+		const movedRes = await hypr.procedures['hyprland.launch'].run({id: 'beta'})
+		moveOffRailOnWake = false
+		assert.equal(movedRes.window, null)
+		assert.equal(
+			mutatedAddrs.some((s) => s.includes('0x55a1000000cc')),
+			false,
+			`must not float/resize/move window after it moved off RAIL-1, saw: ${mutatedAddrs.join('; ')}`,
+		)
+
+		// If Lua resize fails and the window leaves RAIL-1 before the legacy resizewindowpixel fallback runs, fallback must NOT dispatch
+		mutatedAddrs.length = 0
+		moveOffRailOnLuaResize = true
+		const movedOnLuaRes = await hypr.procedures['hyprland.launch'].run({id: 'beta'})
+		moveOffRailOnLuaResize = false
+		assert.equal(movedOnLuaRes.window, null)
+		assert.equal(
+			mutatedAddrs.some((s) => s.includes('0x55a1000000dd') && (s.includes('resizewindowpixel') || s.includes('movewindowpixel'))),
+			false,
+			`must not send legacy resizewindowpixel/movewindowpixel after window left RAIL-1 during failed Lua resize, saw: ${mutatedAddrs.join('; ')}`,
+		)
+
+		// Synchronous 8-launch cap must reject the 9th concurrent launch immediately before any await
+		spawnMode = 'exit1'
+		const nine = await Promise.allSettled(
+			Array.from({length: 9}, () => hypr.procedures['hyprland.launch'].run({id: 'alpha'})),
+		)
+		assert.ok(
+			nine.some((r) => r.status === 'rejected' && /Too many applications are launching/.test(r.reason?.message || '')),
+			'9th concurrent launch must be rejected synchronously by MAX_PENDING_LAUNCHES',
+		)
+		spawnMode = 'ok'
+
+		// windowsSnapshot() must reject empty stdout
+		const hyprEmpty = createHyprland({
+			dataDir: join(root, 'd2'),
+			home,
+			runtimeDir: root,
+			vaapiDevice: join(root, 'nonexistent'),
+			async exec(cmd, args) {
+				if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: '', stderr: ''}
+				return {ok: true, stdout: 'ok', stderr: ''}
+			},
+		})
+		await assert.rejects(() => hyprEmpty.windowsSnapshot())
+		hyprEmpty.close()
+		hypr.close()
+
+		// Real Unix .socket2.sock live event + instance-change reconnect + HTTP 413 clipboard + SSE logout revocation + clean shutdown
+		const sock2Path = join(root, 'hypr', 'sig123', '.socket2.sock')
+		const sock2Sockets = []
+		const sock2Server = net.createServer((c) => {
+			sock2Sockets.push(c)
+		})
+		await new Promise((resolve) => sock2Server.listen(sock2Path, resolve))
+		let sock2Server2 = null
+
+		const accounts = await openAccounts(data)
+		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+		const state = JSON.parse(await readFile(join(data, 'accounts.json'), 'utf8'))
+		state.users.push({...state.users[0], userId: 'member', name: 'Pat', role: 'member'})
+		await writeFile(join(data, 'accounts.json'), JSON.stringify(state, null, '\t'))
+
+		const readNextSseEvent = async (reader, bufRef, timeoutMs = 4000) => {
+			const deadline = Date.now() + timeoutMs
+			while (true) {
+				const sep = bufRef.buf.indexOf('\n\n')
+				if (sep >= 0) {
+					const block = bufRef.buf.slice(0, sep)
+					bufRef.buf = bufRef.buf.slice(sep + 2)
+					const dataLines = block.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim())
+					if (dataLines.length) return JSON.parse(dataLines.join('\n'))
+					continue
+				}
+				const rem = deadline - Date.now()
+				if (rem <= 0) throw new Error('Timed out waiting for SSE event')
+				const next = await Promise.race([
+					reader.read(),
+					new Promise((_, rej) => setTimeout(() => rej(new Error('SSE read timeout')), rem)),
+				])
+				if (next.done) return null
+				bufRef.buf += Buffer.from(next.value).toString('utf8')
+			}
+		}
+
+		let liveWindows = [{address: '0x55a1b2c3d4e0', title: 'Demo', class: 'demo', workspace: {id: 1}, at: [0, 0], size: [640, 480], mapped: true}]
+		d = await startOmarchyd({
+			port: 0,
+			dataDir: data,
+			home,
+			updaterOptions: {autoCheck: false, installerCheck: true},
+			hyprlandOptions: {
+				runtimeDir: root,
+				appDirs: [appsDir],
+				vaapiDevice: join(root, 'nonexistent'),
+				async exec(cmd, args) {
+					if (cmd === 'pkg-config') return {ok: false, stdout: '', stderr: ''}
+					if (cmd === 'hyprctl' && args[0] === 'monitors') return {ok: true, stdout: '[]', stderr: ''}
+					if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: JSON.stringify(liveWindows), stderr: ''}
+					return {ok: false, stdout: '', stderr: ''}
+				},
+			},
+		})
+		const login = async (userId) => {
+			const r = await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId, password: 'correct horse', client: {id: 't'}})})
+			const body = await r.json()
+			return {authorization: `Bearer ${body.result.data.accessToken}`}
+		}
+		const owner = await login('owner')
+		const member = await login('member')
+
+		assert.equal((await fetch(`${d.url}/hyprland/app-icon?id=demo`)).status, 401)
+		assert.equal((await fetch(`${d.url}/hyprland/events`)).status, 401)
+		assert.equal((await fetch(`${d.url}/hyprland/app-icon?id=demo`, {headers: member})).status, 403)
+		assert.equal((await fetch(`${d.url}/hyprland/events`, {headers: member})).status, 403)
+
+		// Oversized clipboardWrite must map PAYLOAD_TOO_LARGE -> HTTP 413
+		const bigClipRes = await fetch(`${d.url}/trpc/hyprland.clipboardWrite`, {
+			method: 'POST',
+			headers: {...owner, 'content-type': 'application/json'},
+			body: JSON.stringify({text: 'x'.repeat(130 * 1024)}),
+		})
+		assert.equal(bigClipRes.status, 413, 'oversized clipboard write must return HTTP 413')
+
+		const iconRes = await fetch(`${d.url}/hyprland/app-icon?id=demo`, {headers: owner})
+		assert.equal(iconRes.status, 200)
+		assert.equal(iconRes.headers.get('content-type'), 'image/svg+xml')
+		assert.equal(iconRes.headers.get('content-security-policy'), 'sandbox')
+		assert.equal(iconRes.headers.get('x-content-type-options'), 'nosniff')
+
+		const ac = new AbortController()
+		const sseRes = await fetch(`${d.url}/hyprland/events`, {headers: owner, signal: ac.signal})
+		assert.equal(sseRes.status, 200)
+		const reader = sseRes.body.getReader()
+		const bufRef = {buf: ''}
+		const firstEvt = await readNextSseEvent(reader, bufRef)
+		assert.equal(firstEvt?.type, 'windows')
+		assert.equal(firstEvt?.authoritative, true)
+		assert.equal(firstEvt?.instanceId, 'sig123')
+		assert.equal(firstEvt?.windows?.[0]?.address, '0x55a1b2c3d4e0')
+
+		// Emit a real .socket2.sock openwindow event and verify SSE delivers it
+		sock2Sockets[0].write('openwindow>>55a1b2c3d4ee,11,demo,Live Window\n')
+		let liveEvt = null
+		for (let i = 0; i < 4; i++) {
+			const e = await readNextSseEvent(reader, bufRef, 3000)
+			if (e?.type === 'openwindow') {
+				liveEvt = e
+				break
+			}
+		}
+		assert.equal(liveEvt?.address, '0x55a1b2c3d4ee')
+
+		// Simulate compositor restart with a new instance signature (sig456) and verify reconnect emits authoritative snapshot with new instanceId
+		await mkdir(join(root, 'hypr', 'sig456'), {recursive: true})
+		await writeFile(join(root, 'hypr', 'sig456', '.socket.sock'), '')
+		sock2Server2 = net.createServer((c) => {
+			sock2Sockets.push(c)
+		})
+		await new Promise((resolve) => sock2Server2.listen(join(root, 'hypr', 'sig456', '.socket2.sock'), resolve))
+		await rm(join(root, 'hypr', 'sig123', '.socket.sock'), {force: true})
+		liveWindows = [{address: '0x55a1b2c3d4ff', title: 'After Restart', class: 'demo', workspace: {id: 11}, at: [0, 0], size: [800, 600], mapped: true}]
+		for (const s of sock2Sockets) s.destroy()
+		const reconnectedEvt = await readNextSseEvent(reader, bufRef, 5000)
+		assert.equal(reconnectedEvt?.type, 'windows')
+		assert.equal(reconnectedEvt?.authoritative, true)
+		assert.equal(reconnectedEvt?.instanceId, 'sig456')
+		assert.equal(reconnectedEvt?.windows?.[0]?.address, '0x55a1b2c3d4ff')
+
+		// user.logout must terminate the live SSE stream immediately
+		await fetch(`${d.url}/trpc/user.logout`, {method: 'POST', headers: {...owner, 'content-type': 'application/json'}, body: '{}'})
+		const afterLogout = await readNextSseEvent(reader, bufRef, 2000)
+		assert.equal(afterLogout, null, 'user.logout must end active /hyprland/events SSE response')
+		ac.abort()
+		await reader.cancel().catch(() => {})
+
+		// Open a fresh SSE subscriber and verify d.close() completes cleanly without hanging
+		const owner2 = await login('owner')
+		const sseRes2 = await fetch(`${d.url}/hyprland/events`, {headers: owner2})
+		assert.equal(sseRes2.status, 200)
+		const reader2 = sseRes2.body.getReader()
+		const bufRef2 = {buf: ''}
+		await readNextSseEvent(reader2, bufRef2)
+		const closedOk = await Promise.race([
+			d.close().then(() => true),
+			new Promise((r) => setTimeout(() => r(false), 3000)),
+		])
+		d = null
+		assert.equal(closedOk, true, 'daemon close() must complete promptly with an active SSE subscriber')
+		await reader2.cancel().catch(() => {})
+		await new Promise((resolve) => sock2Server.close(resolve))
+		if (sock2Server2) await new Promise((resolve) => sock2Server2.close(resolve))
+	} finally {
+		if (d) await d.close()
+		await rm(root, {recursive: true, force: true})
+	}
 })
 
 test('native C capture engine compiles cleanly with -Wall -Wextra -Werror when Linux VA-API headers are present', async (t) => {

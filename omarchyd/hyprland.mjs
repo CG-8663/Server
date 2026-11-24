@@ -9,9 +9,11 @@
 //     session lock-state reporting wired into Lock-after-viewing-remotely.
 import {execFile, spawn} from 'node:child_process'
 import {createHash} from 'node:crypto'
-import {access, chmod, mkdir, readFile, readdir, rename, rm, stat} from 'node:fs/promises'
+import {constants as fsConstants} from 'node:fs'
+import {access, chmod, lstat, mkdir, open as fsOpen, readFile, readdir, realpath, rename, rm, stat} from 'node:fs/promises'
+import net from 'node:net'
 import os from 'node:os'
-import {dirname, join} from 'node:path'
+import {dirname, extname, join, resolve} from 'node:path'
 import {fileURLToPath} from 'node:url'
 
 import {RpcError} from './rpc.mjs'
@@ -20,8 +22,12 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const STREAM_SCRIPT = join(HERE, 'hypr-stream.py')
 const CAPTURE_SOURCE = join(HERE, 'hypr-rail-capture.c')
 const ADDRESS_RE = /^0x[0-9a-f]{4,16}$/i
+const DESKTOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/
 const OUTPUT_NAME_RE = /^[A-Za-z0-9_.-]{1,32}$/
 const MAX_STREAMS = 12
+const MAX_SSE_SUBSCRIBERS = 32
+const MAX_PENDING_LAUNCHES = 8
+const MAX_CLIPBOARD_BYTES = 128 * 1024
 const RAIL_OUTPUT = 'RAIL-1'
 
 // O(1)-amortized chunk queue for framed stdout streams ([u8 type][u32be len][payload]), avoiding O(N^2) Buffer.concat and Array.shift().
@@ -133,10 +139,10 @@ export function backpressureBudgets(bitrateKbps = 22000) {
 
 const exists = (p) => access(p).then(() => true, () => false)
 
-function execOut(cmd, args, {env, timeout = 5000, input = null} = {}) {
+function execOut(cmd, args, {env, timeout = 5000, input = null, maxBuffer = 4 * 1024 * 1024} = {}) {
 	return new Promise((resolveDone) => {
-		const child = execFile(cmd, args, {env, timeout, maxBuffer: 4 * 1024 * 1024}, (err, stdout, stderr) => {
-			resolveDone({ok: !err, stdout: String(stdout ?? ''), stderr: String(stderr ?? err?.message ?? '')})
+		const child = execFile(cmd, args, {env, timeout, maxBuffer}, (err, stdout, stderr) => {
+			resolveDone({ok: !err, code: err?.code ?? null, stdout: String(stdout ?? ''), stderr: String(stderr ?? err?.message ?? '')})
 		})
 		if (input != null && child.stdin) {
 			child.stdin.on('error', () => {})
@@ -145,8 +151,67 @@ function execOut(cmd, args, {env, timeout = 5000, input = null} = {}) {
 	})
 }
 
+async function readBoundedRegularFile(filePath, maxBytes) {
+	let fh = null
+	try {
+		fh = await fsOpen(filePath, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0))
+		const st = await fh.stat()
+		if (!st.isFile() || st.size > maxBytes) return null
+		const cap = Math.min(maxBytes, Math.max(0, st.size))
+		const buf = Buffer.allocUnsafe(cap + 1)
+		let total = 0
+		while (total <= maxBytes) {
+			const {bytesRead} = await fh.read(buf, total, buf.length - total, null)
+			if (bytesRead <= 0) break
+			total += bytesRead
+			if (total > maxBytes) return null
+		}
+		return buf.subarray(0, total)
+	} catch {
+		return null
+	} finally {
+		await fh?.close().catch(() => {})
+	}
+}
+
+export function parseDesktopEntry(text, id) {
+	let inMain = false
+	const fields = {}
+	for (const rawLine of String(text ?? '').split('\n')) {
+		const line = rawLine.trim()
+		if (!line || line.startsWith('#')) continue
+		if (line.startsWith('[')) {
+			inMain = line === '[Desktop Entry]'
+			continue
+		}
+		if (!inMain) continue
+		const eq = line.indexOf('=')
+		if (eq <= 0) continue
+		const k = line.slice(0, eq).trim()
+		if (k.includes('[')) continue // skip localized duplicates; keep base English/default keys
+		if (!Object.hasOwn(fields, k)) fields[k] = line.slice(eq + 1).trim()
+	}
+	if (fields.Type !== 'Application') return null
+	if (fields.NoDisplay === 'true' || fields.Hidden === 'true') return null
+	if (!fields.Name || !fields.Exec) return null
+	const cats = String(fields.Categories ?? '')
+		.split(';')
+		.map((s) => s.trim())
+		.filter(Boolean)
+	return {
+		id,
+		name: fields.Name.slice(0, 80),
+		comment: String(fields.Comment || fields.GenericName || '').slice(0, 140),
+		icon: String(fields.Icon || '').slice(0, 160),
+		categories: cats.slice(0, 6),
+		terminal: fields.Terminal === 'true',
+		wmClass: String(fields.StartupWMClass || '').slice(0, 80),
+	}
+}
+
 export function createHyprland({
 	dataDir = join(os.tmpdir(), 'omarchy-hypr'),
+	home = os.homedir(),
 	runtimeDir = process.env.XDG_RUNTIME_DIR || (typeof process.getuid === 'function' ? `/run/user/${process.getuid()}` : ''),
 	exec = execOut,
 	spawnImpl = spawn,
@@ -154,18 +219,97 @@ export function createHyprland({
 	captureSource = CAPTURE_SOURCE,
 	captureBin = null,
 	vaapiDevice = '/dev/dri/renderD128',
+	appDirs = null,
 	onRemoteUnlock = null,
 } = {}) {
 	const activeStreams = new Set()
 	let pendingStreams = 0
+	const eventListeners = new Set()
+	let busClosed = false
+	let eventSock = null
+	let eventSockConnecting = false
+	let eventReconnectTimer = null
+	let currentEventInstance = null
 	let rectSyncTimer = null
 	let lastLockedState = null
 	let lockProbeSeq = 0
 	let lastAppliedLockSeq = 0
 	let lastFocusedAddr = ''
+	let appsCache = {at: 0, list: [], iconPaths: new Map()}
+	let appsScanPromise = null
 	let compilePromise = null
 	let compiledBin = captureBin || null
 	let compileFailedAt = 0
+
+	const iconRoots = [
+		{path: '/usr/share/icons', userOwned: false},
+		{path: '/usr/share/pixmaps', userOwned: false},
+		{path: '/usr/local/share/icons', userOwned: false},
+		{path: join(home, '.local/share/icons'), userOwned: true},
+		{path: join(home, '.icons'), userOwned: true},
+	]
+
+	function resolveXdgDataEnv() {
+		const dataHome = process.env.XDG_DATA_HOME && process.env.XDG_DATA_HOME.startsWith('/') ? process.env.XDG_DATA_HOME : join(home, '.local/share')
+		const dataDirs = (process.env.XDG_DATA_DIRS || '/usr/local/share:/usr/share')
+			.split(':')
+			.map((d) => d.trim())
+			.filter((d) => d.startsWith('/'))
+		return {dataHome, dataDirs: dataDirs.length ? dataDirs : ['/usr/local/share', '/usr/share']}
+	}
+
+	async function cleanGuiEnv(env) {
+		const keep = [
+			'HOME',
+			'USER',
+			'LOGNAME',
+			'PATH',
+			'SHELL',
+			'LANG',
+			'LC_ALL',
+			'TERM',
+			'XDG_RUNTIME_DIR',
+			'XDG_DATA_HOME',
+			'XDG_DATA_DIRS',
+			'XDG_CONFIG_DIRS',
+			'XDG_CONFIG_HOME',
+			'XDG_CACHE_HOME',
+			'XDG_STATE_HOME',
+			'WAYLAND_DISPLAY',
+			'HYPRLAND_INSTANCE_SIGNATURE',
+			'DBUS_SESSION_BUS_ADDRESS',
+			'QT_QPA_PLATFORM',
+			'GDK_BACKEND',
+			'MOZ_ENABLE_WAYLAND',
+			'ELECTRON_OZONE_PLATFORM_HINT',
+		]
+		const out = {}
+		for (const k of keep) {
+			if (env[k] != null) out[k] = env[k]
+		}
+		// Keep scanner and gtk-launch aligned on the exact same XDG data roots.
+		const xdg = resolveXdgDataEnv()
+		out.XDG_DATA_HOME = xdg.dataHome
+		out.XDG_DATA_DIRS = xdg.dataDirs.join(':')
+		// Ensure Wayland/Electron/GTK/Qt/D-Bus vars are always present even when omarchyd runs as a minimal systemd user service
+		if (!out.DBUS_SESSION_BUS_ADDRESS && env.XDG_RUNTIME_DIR) {
+			const bus = join(env.XDG_RUNTIME_DIR, 'bus')
+			if (await exists(bus)) out.DBUS_SESSION_BUS_ADDRESS = `unix:path=${bus}`
+		}
+		out.XDG_SESSION_TYPE = 'wayland'
+		out.XDG_CURRENT_DESKTOP = 'Hyprland'
+		out.ELECTRON_OZONE_PLATFORM_HINT = out.ELECTRON_OZONE_PLATFORM_HINT || 'wayland'
+		out.GDK_BACKEND = out.GDK_BACKEND || 'wayland,x11,*'
+		out.QT_QPA_PLATFORM = out.QT_QPA_PLATFORM || 'wayland;xcb'
+		out.MOZ_ENABLE_WAYLAND = out.MOZ_ENABLE_WAYLAND || '1'
+		out.SDL_VIDEODRIVER = 'wayland'
+		// Only forward DISPLAY if Xwayland is actually live (a stale DISPLAY=:0 socket causes Electron/AppImage apps to hang!)
+		if (env.DISPLAY) {
+			const xw = await exec('pgrep', ['-x', 'Xwayland'], {timeout: 1500})
+			if (xw.ok && xw.stdout.trim()) out.DISPLAY = env.DISPLAY
+		}
+		return out
+	}
 
 	async function discoverEnv() {
 		if (!runtimeDir) return null
@@ -211,16 +355,18 @@ export function createHyprland({
 	}
 
 	// Run a Hyprland 0.57+ Lua eval with automatic fallback to legacy `hyprctl dispatch` for older Hyprland releases.
-	async function hyprDispatch(luaExpr, legacyArgs) {
+	async function hyprDispatch(luaExpr, legacyArgs, {beforeAttempt} = {}) {
 		const env = await discoverEnv()
 		if (!env?.HYPRLAND_INSTANCE_SIGNATURE) {
 			throw new RpcError('PRECONDITION_FAILED', 'Hyprland desktop session isn’t running right now')
 		}
 		if (luaExpr) {
+			if (beforeAttempt && !(await beforeAttempt())) return null
 			const r = await exec('hyprctl', ['eval', luaExpr], {env, timeout: 4000})
 			if (r.ok && r.stdout.trim() === 'ok') return r.stdout
 		}
 		if (legacyArgs?.length) {
+			if (beforeAttempt && !(await beforeAttempt())) return null
 			const r2 = await exec('hyprctl', legacyArgs, {env, timeout: 4000})
 			const out2 = r2.stdout.trim()
 			if (r2.ok && (!out2 || out2 === 'ok')) return r2.stdout
@@ -295,7 +441,7 @@ export function createHyprland({
 				scale: Number(m.scale) || 1,
 				refreshRate: Math.round(Number(m.refreshRate) || 60),
 				dpmsStatus: m.dpmsStatus !== false,
-				activeWorkspace: m.activeWorkspace?.id ?? 1,
+				activeWorkspace: Number.isInteger(m.activeWorkspace?.id) ? m.activeWorkspace.id : null,
 				reserved: Array.isArray(m.reserved) && m.reserved.length === 4 ? m.reserved.map((n) => Number(n) || 0) : [0, 0, 0, 0],
 				locked: Array.isArray(m.solitaryBlockedBy) && m.solitaryBlockedBy.includes('LOCK'),
 				hasLockInfo: Array.isArray(m.solitaryBlockedBy),
@@ -356,20 +502,36 @@ export function createHyprland({
 				['keyword', 'monitor', `${RAIL_OUTPUT},3840x2160@60,auto,1`],
 			).catch(() => {})
 			mons = await monitorsInfo()
-			rail = mons.find((m) => m.name === RAIL_OUTPUT) ?? rail
-			syncAllStreamRects().catch(() => {})
+			rail = mons.find((m) => m.name === RAIL_OUTPUT) ?? null
+			if (rail) syncAllStreamRects().catch(() => {})
 		}
 		if (rail && !rail.dpmsStatus) {
 			await wakeRailOutput()
 			mons = await monitorsInfo()
-			rail = mons.find((m) => m.name === RAIL_OUTPUT) ?? rail
+			rail = mons.find((m) => m.name === RAIL_OUTPUT) ?? null
 		}
-		return rail ?? null
+		if (!rail || !Number.isInteger(rail.activeWorkspace) || rail.activeWorkspace < 1 || rail.activeWorkspace > 99) {
+			return null
+		}
+		return rail
 	}
 
 	// Size & position a floating window strictly inside RAIL-1's usable rect.
-	async function placeOnRail(addr, reqW, reqH) {
+	async function placeOnRail(addr, reqW, reqH, {strict = false, expectedWorkspace = null} = {}) {
+		const checkOwnership = async () => {
+			if (!Number.isInteger(expectedWorkspace)) return true
+			const cur = await windows({strict: true}).catch(() => [])
+			const found = cur.find((w) => w.address.toLowerCase() === String(addr).toLowerCase())
+			return !!found && found.workspace === expectedWorkspace
+		}
 		const rail = await ensureRailOutput().catch(() => null)
+		if (strict && !rail) {
+			throw new RpcError('BAD_GATEWAY', 'Headless RAIL-1 display disappeared during window placement')
+		}
+		if (Number.isInteger(expectedWorkspace) && !(await checkOwnership())) {
+			return null
+		}
+		const beforeAttempt = Number.isInteger(expectedWorkspace) ? checkOwnership : null
 		const padL = rail?.reserved?.[0] ?? 0
 		const padT = rail?.reserved?.[1] ?? 0
 		const padR = rail?.reserved?.[2] ?? 0
@@ -378,19 +540,386 @@ export function createHyprland({
 		const maxH = rail ? Math.max(260, Math.round(rail.height / (rail.scale || 1)) - padT - padB) : 2160
 		const w = Math.max(240, Math.min(maxW, Math.round(Number(reqW) || 1100)))
 		const h = Math.max(180, Math.min(maxH, Math.round(Number(reqH) || 740)))
-		await hyprDispatch(
-			`hl.dispatch(hl.dsp.window.resize({window = "address:${addr}", x = ${w}, y = ${h}, exact = true}))`,
-			['dispatch', 'resizewindowpixel', `exact ${w} ${h},address:${addr}`],
-		).catch(() => {})
+		let resized
+		try {
+			resized = await hyprDispatch(
+				`hl.dispatch(hl.dsp.window.resize({window = "address:${addr}", x = ${w}, y = ${h}, exact = true}))`,
+				['dispatch', 'resizewindowpixel', `exact ${w} ${h},address:${addr}`],
+				{beforeAttempt},
+			)
+		} catch (err) {
+			if (strict) throw err
+		}
+		if (beforeAttempt && resized === null) return null
 		if (rail) {
 			const tx = rail.x + padL
 			const ty = rail.y + padT
-			const env = await discoverEnv()
-			if (env?.HYPRLAND_INSTANCE_SIGNATURE) {
-				await exec('hyprctl', ['dispatch', 'movewindowpixel', `exact ${tx} ${ty},address:${addr}`], {env, timeout: 4000}).catch(() => {})
+			let moved
+			try {
+				moved = await hyprDispatch(null, ['dispatch', 'movewindowpixel', `exact ${tx} ${ty},address:${addr}`], {beforeAttempt})
+			} catch (err) {
+				if (strict) throw err
 			}
+			if (beforeAttempt && moved === null) return null
 		}
 		return {w, h}
+	}
+
+	// ---- Native .desktop application catalog & icon resolver ------------------------------------
+	async function isAllowedIconPath(real) {
+		const ext = extname(real).toLowerCase()
+		if (ext !== '.svg' && ext !== '.png') return false
+		const realHome = await realpath(home).catch(() => null)
+		for (const root of iconRoots) {
+			if (root.userOwned) {
+				// Reject user-writable icon roots that are themselves symlinks escaping home
+				const lst = await lstat(root.path).catch(() => null)
+				if (!lst || lst.isSymbolicLink() || !lst.isDirectory()) continue
+				const realRoot = await realpath(root.path).catch(() => null)
+				if (!realRoot || (realHome && realRoot !== realHome && !realRoot.startsWith(`${realHome}/`))) continue
+				if (real.startsWith(`${realRoot}/`)) return true
+			} else {
+				const realRoot = await realpath(root.path).catch(() => null)
+				if (realRoot && real.startsWith(`${realRoot}/`)) return true
+			}
+		}
+		return false
+	}
+
+	async function resolveIconPath(iconName) {
+		if (!iconName || iconName.includes('..') || iconName.includes('\0')) return null
+		if (iconName.startsWith('/')) {
+			if (!(await exists(iconName))) return null
+			const real = await realpath(iconName).catch(() => null)
+			if (!real) return null
+			return (await isAllowedIconPath(real)) ? real : null
+		}
+		const exts = /\.(svg|png)$/i.test(iconName) ? [''] : ['.svg', '.png']
+		const subdirs = [
+			'/usr/share/icons/hicolor/scalable/apps',
+			'/usr/share/icons/hicolor/256x256/apps',
+			'/usr/share/icons/hicolor/128x128/apps',
+			'/usr/share/icons/hicolor/64x64/apps',
+			'/usr/share/icons/hicolor/48x48/apps',
+			'/usr/share/icons/Adwaita/scalable/apps',
+			'/usr/share/icons/Adwaita/48x48/apps',
+			'/usr/share/pixmaps',
+			join(home, '.local/share/icons/hicolor/scalable/apps'),
+			join(home, '.local/share/icons/hicolor/128x128/apps'),
+			join(home, '.local/share/icons'),
+		]
+		for (const dir of subdirs) {
+			for (const ext of exts) {
+				const cand = join(dir, `${iconName}${ext}`)
+				if (await exists(cand)) {
+					const real = await realpath(cand).catch(() => null)
+					if (real && (await isAllowedIconPath(real))) return real
+				}
+			}
+		}
+		return null
+	}
+
+	function resolveDesktopAppDirs() {
+		if (appDirs) return appDirs
+		const {dataHome, dataDirs} = resolveXdgDataEnv()
+		const dirs = [join(dataHome, 'applications')]
+		for (const d of dataDirs) {
+			const p = join(d, 'applications')
+			if (!dirs.includes(p)) dirs.push(p)
+		}
+		return dirs
+	}
+
+	async function apps({refresh = false} = {}) {
+		if (!refresh && appsCache.list.length && Date.now() - appsCache.at < 60_000) {
+			return appsCache.list
+		}
+		if (appsScanPromise) return appsScanPromise
+		appsScanPromise = (async () => {
+			const dirs = resolveDesktopAppDirs()
+			const reservedIds = new Set()
+			const seen = new Map()
+			const iconMap = new Map()
+			for (const dir of dirs) {
+				const files = await readdir(dir).catch(() => [])
+				for (const file of files) {
+					if (!file.endsWith('.desktop')) continue
+					const id = file.slice(0, -'.desktop'.length)
+					if (!DESKTOP_ID_RE.test(id) || reservedIds.has(id)) continue
+					const rawBuf = await readBoundedRegularFile(join(dir, file), 64 * 1024)
+					if (!rawBuf) continue
+					// Reserve ID on the highest-priority desktop file so Hidden=true / NoDisplay=true properly shadows lower-priority system entries.
+					reservedIds.add(id)
+					const parsed = parseDesktopEntry(rawBuf.toString('utf8'), id)
+					if (!parsed) continue
+					const iconPath = await resolveIconPath(parsed.icon)
+					if (iconPath) iconMap.set(id, iconPath)
+					seen.set(id, {
+						id: parsed.id,
+						name: parsed.name,
+						comment: parsed.comment,
+						categories: parsed.categories,
+						terminal: parsed.terminal,
+						wmClass: parsed.wmClass,
+						hasIcon: !!iconPath,
+					})
+				}
+			}
+			const list = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
+			appsCache = {at: Date.now(), list, iconPaths: iconMap}
+			return list
+		})().finally(() => {
+			appsScanPromise = null
+		})
+		return appsScanPromise
+	}
+
+	async function readAppIcon(id) {
+		const clean = String(id ?? '')
+		if (!DESKTOP_ID_RE.test(clean)) return null
+		if (!appsCache.list.length) await apps()
+		const file = appsCache.iconPaths.get(clean)
+		if (!file) return null
+		const real = await realpath(resolve(file)).catch(() => null)
+		if (!real || !(await isAllowedIconPath(real))) return null
+		// Verify canonical target, open once with O_NOFOLLOW, and bind containment to the opened descriptor before reading any bytes.
+		let fh = null
+		try {
+			fh = await fsOpen(real, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0))
+			const st = await fh.stat()
+			if (!st.isFile() || st.size > 2 * 1024 * 1024) return null
+			// Bind the opened descriptor's kernel path (Linux /proc/self/fd) and post-open (dev, ino) to an allowed icon root so an ancestor swap cannot escape the jail.
+			const procFdReal = await realpath(`/proc/self/fd/${fh.fd}`).catch(() => null)
+			if (procFdReal) {
+				if (!(await isAllowedIconPath(procFdReal))) return null
+			} else {
+				const postReal = await realpath(real).catch(() => null)
+				const postStat = postReal ? await lstat(postReal).catch(() => null) : null
+				if (!postReal || !postStat || postStat.dev !== st.dev || postStat.ino !== st.ino || !(await isAllowedIconPath(postReal))) {
+					return null
+				}
+			}
+			const buf = Buffer.allocUnsafe(st.size + 1)
+			let total = 0
+			while (total <= 2 * 1024 * 1024) {
+				const {bytesRead} = await fh.read(buf, total, buf.length - total, null)
+				if (bytesRead <= 0) break
+				total += bytesRead
+				if (total > 2 * 1024 * 1024) return null
+			}
+			const data = buf.subarray(0, total)
+			const ext = extname(real).toLowerCase()
+			const contentType = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : null
+			if (!contentType) return null
+			return {data, contentType}
+		} catch {
+			return null
+		} finally {
+			await fh?.close().catch(() => {})
+		}
+	}
+
+	// ---- Real-time Hyprland .socket2.sock IPC event bus -----------------------------------------
+	function emitEvent(evt) {
+		for (const fn of [...eventListeners]) {
+			try {
+				fn(evt)
+			} catch {}
+		}
+	}
+
+	function parseSocket2Line(line) {
+		const sep = line.indexOf('>>')
+		if (sep <= 0) return null
+		const kind = line.slice(0, sep)
+		const rest = line.slice(sep + 2)
+		if (kind === 'openwindow') {
+			const p = rest.split(',')
+			if (p.length >= 4) {
+				const addr = p[0].startsWith('0x') ? p[0] : `0x${p[0]}`
+				return {type: 'openwindow', address: addr, workspace: p[1], class: p[2], title: p.slice(3).join(',')}
+			}
+		} else if (kind === 'closewindow') {
+			const addr = rest.startsWith('0x') ? rest : `0x${rest}`
+			return {type: 'closewindow', address: addr}
+		} else if (kind === 'windowtitlev2') {
+			const c = rest.indexOf(',')
+			if (c > 0) {
+				const rawAddr = rest.slice(0, c)
+				const addr = rawAddr.startsWith('0x') ? rawAddr : `0x${rawAddr}`
+				return {type: 'windowtitle', address: addr, title: rest.slice(c + 1)}
+			}
+		} else if (kind === 'activewindowv2') {
+			const addr = rest.startsWith('0x') ? rest : `0x${rest}`
+			return {type: 'activewindow', address: addr}
+		} else if (kind === 'movewindowv2' || kind === 'changefloatingmode' || kind === 'fullscreen') {
+			return {type: 'layoutchange'}
+		}
+		return null
+	}
+
+	function scheduleEventReconnect() {
+		if (busClosed || eventListeners.size === 0 || eventReconnectTimer || eventSock) return
+		eventReconnectTimer = setTimeout(() => {
+			eventReconnectTimer = null
+			ensureEventSocket().catch(() => {})
+		}, 2000)
+		eventReconnectTimer.unref?.()
+	}
+
+	let eventSockReady = false
+	let eventSnapSeq = 0
+	const eventReadyWaiters = new Set()
+	function notifyEventReady() {
+		for (const fn of [...eventReadyWaiters]) {
+			eventReadyWaiters.delete(fn)
+			try {
+				fn()
+			} catch {}
+		}
+	}
+	function waitForEventSocketReady(timeoutMs = 1500) {
+		if (eventSockReady && eventSock) return Promise.resolve(true)
+		return new Promise((resolveReady) => {
+			let done = false
+			const finish = (ok) => {
+				if (done) return
+				done = true
+				clearTimeout(t)
+				eventReadyWaiters.delete(onReady)
+				resolveReady(ok)
+			}
+			const onReady = () => finish(true)
+			eventReadyWaiters.add(onReady)
+			const t = setTimeout(() => finish(false), timeoutMs)
+			t.unref?.()
+			ensureEventSocket().catch(() => {})
+		})
+	}
+
+	async function ensureEventSocket() {
+		if (busClosed || eventSock || eventSockConnecting || eventListeners.size === 0) return
+		eventSockConnecting = true
+		try {
+			const env = await discoverEnv()
+			if (busClosed || eventListeners.size === 0 || eventSock) return
+			if (!env?.HYPRLAND_INSTANCE_SIGNATURE) {
+				scheduleEventReconnect()
+				return
+			}
+			const instanceId = env.HYPRLAND_INSTANCE_SIGNATURE
+			const sockPath = join(env.XDG_RUNTIME_DIR, 'hypr', instanceId, '.socket2.sock')
+			if (!(await exists(sockPath))) {
+				scheduleEventReconnect()
+				return
+			}
+			if (busClosed || eventListeners.size === 0 || eventSock) return
+			currentEventInstance = instanceId
+			const sock = net.connect(sockPath)
+			eventSock = sock
+			eventSockReady = false
+			let buf = ''
+			let buffering = true
+			let bufferOverflow = false
+			const bufferedEvts = []
+			let resyncTimer = null
+			const dispatchParsed = (evt) => {
+				if (evt.type === 'layoutchange') {
+					if (activeStreams.size > 0) syncAllStreamRects().catch(() => {})
+				} else {
+					if (evt.type === 'activewindow') lastFocusedAddr = String(evt.address || '').toLowerCase()
+					emitEvent(evt)
+				}
+			}
+			const syncAuthoritative = () => {
+				if (busClosed || eventSock !== sock) return
+				buffering = true
+				bufferOverflow = false
+				bufferedEvts.length = 0
+				const snapSeq = ++eventSnapSeq
+				windowsSnapshot()
+					.then((snap) => {
+						if (busClosed || eventSock !== sock) return
+						if (bufferOverflow) {
+							syncAuthoritative()
+							return
+						}
+						emitEvent({type: 'windows', instanceId, windows: snap, authoritative: true, seq: snapSeq})
+						buffering = false
+						for (const evt of bufferedEvts.splice(0)) {
+							if (!busClosed && eventSock === sock) dispatchParsed(evt)
+						}
+					})
+					.catch(() => {
+						if (busClosed || eventSock !== sock) return
+						// Never resume incremental events on stale state; retry authoritative snapshot until it succeeds or socket drops.
+						resyncTimer = setTimeout(() => {
+							resyncTimer = null
+							syncAuthoritative()
+						}, 750)
+						resyncTimer.unref?.()
+					})
+			}
+			sock.setEncoding('utf8')
+			sock.on('data', (chunk) => {
+				buf += chunk
+				if (buf.length > 64 * 1024 && !buf.includes('\n')) {
+					buf = ''
+					return
+				}
+				const lines = buf.split('\n')
+				buf = lines.pop() ?? ''
+				if (buf.length > 64 * 1024) buf = ''
+				for (const line of lines) {
+					if (line.length > 16 * 1024) continue
+					const evt = parseSocket2Line(line.trim())
+					if (!evt) continue
+					if (buffering) {
+						if (bufferedEvts.length >= 256) bufferOverflow = true
+						else bufferedEvts.push(evt)
+					} else {
+						dispatchParsed(evt)
+					}
+				}
+			})
+			sock.once('connect', () => {
+				if (busClosed || eventSock !== sock) return
+				eventSockReady = true
+				notifyEventReady()
+				syncAuthoritative()
+			})
+			const onEnd = () => {
+				if (resyncTimer) {
+					clearTimeout(resyncTimer)
+					resyncTimer = null
+				}
+				if (eventSock === sock) {
+					eventSock = null
+					eventSockReady = false
+				}
+				scheduleEventReconnect()
+			}
+			sock.on('error', onEnd)
+			sock.on('close', onEnd)
+		} finally {
+			eventSockConnecting = false
+		}
+	}
+
+	function subscribeEvents(listener) {
+		if (busClosed || eventListeners.size >= MAX_SSE_SUBSCRIBERS) return null
+		eventListeners.add(listener)
+		ensureEventSocket().catch(() => {})
+		return () => {
+			eventListeners.delete(listener)
+			if (eventListeners.size === 0 && eventSock) {
+				try {
+					eventSock.destroy()
+				} catch {}
+				eventSock = null
+			}
+		}
 	}
 
 	// Detect whether Wayland ext_session_lock_v1 (e.g. Omarchy shell lockscreen) is holding pointer/keyboard input.
@@ -436,6 +965,7 @@ export function createHyprland({
 			wayland: env?.WAYLAND_DISPLAY ?? null,
 			vaapi: hasVaapi,
 			nativeEngine: hasNativeCapture,
+			railReady: available,
 			sessionLocked,
 			encoder: hasNativeCapture ? 'h264_vaapi_dmabuf' : hasVaapi ? 'h264_vaapi' : hasFfmpeg ? 'libx264' : null,
 			monitors,
@@ -461,7 +991,7 @@ export function createHyprland({
 				address: String(c.address),
 				title: String(c.title || c.initialTitle || c.class || 'Window').slice(0, 140),
 				class: String(c.class || c.initialClass || '').slice(0, 80),
-				workspace: Number(c.workspace?.id) || 1,
+				workspace: Number.isInteger(c.workspace?.id) ? c.workspace.id : null,
 				at: Array.isArray(c.at) ? [Number(c.at[0]) || 0, Number(c.at[1]) || 0] : [0, 0],
 				size: Array.isArray(c.size) ? [Number(c.size[0]) || 0, Number(c.size[1]) || 0] : [0, 0],
 				floating: !!c.floating,
@@ -470,6 +1000,8 @@ export function createHyprland({
 			}))
 			.sort((a, b) => a.workspace - b.workspace || a.title.localeCompare(b.title))
 	}
+
+	const windowsSnapshot = () => windows({strict: true})
 
 	// Push updated window or monitor logical rect straight to live streams so pointer clicks stay pixel-perfect across multi-monitor layouts.
 	function writeRectForEntry(entry, mons, wins) {
@@ -646,6 +1178,278 @@ export function createHyprland({
 			return out
 		}
 		return null
+	}
+
+	const claimedLaunchAddrs = new Map() // lowercase address -> timestamp
+	const pendingLaunches = new Set() // {app}
+
+	function matchesLaunchedApp(app, winClass, winTitle = '') {
+		// Preserve punctuation (hyphens, dots, underscores) so distinct classes like "foo-bar" and "foobar" never collide.
+		const norm = (s) => String(s || '').trim().toLowerCase()
+		const cls = norm(winClass)
+		const title = norm(winTitle)
+		if (!cls && !title) return false
+		// When the desktop entry declares StartupWMClass, require an exact case-insensitive class match.
+		if (app.wmClass) {
+			const expected = norm(app.wmClass)
+			return !!cls && !!expected && cls === expected
+		}
+		const targets = new Set()
+		if (app.id) {
+			const idLeaf = app.id.includes('.') ? app.id.split('.').at(-1) : app.id
+			targets.add(norm(app.id))
+			if (idLeaf) targets.add(norm(idLeaf))
+		}
+		if (app.name) targets.add(norm(app.name))
+		targets.delete('')
+		if (cls) {
+			for (const t of targets) {
+				if (t.length >= 3 && cls === t) return true
+			}
+			return false
+		}
+		if (title) {
+			for (const t of targets) {
+				if (t.length >= 4 && title === t) return true
+			}
+		}
+		return false
+	}
+
+	// Launch an allowlisted installed `.desktop` app onto the headless RAIL output and return its newly mapped window.
+	async function launch(input = {}) {
+		const id = String(input.id ?? '').trim()
+		if (!DESKTOP_ID_RE.test(id)) throw new RpcError('BAD_REQUEST', 'Invalid application ID')
+		// Reserve launch capacity synchronously BEFORE the first await so concurrent requests cannot race past MAX_PENDING_LAUNCHES.
+		if (pendingLaunches.size >= MAX_PENDING_LAUNCHES) {
+			throw new RpcError('TOO_MANY_REQUESTS', 'Too many applications are launching at once; wait a moment and try again')
+		}
+		const launchEntry = {app: null, markAmbiguous: () => {}}
+		pendingLaunches.add(launchEntry)
+
+		let settled = false
+		let openedAddr = null
+		let ambiguous = false
+		let launchErr = null
+		let pollTimer = null
+		let deadlineTimer = null
+		let unsub = null
+
+		try {
+			const catalog = await apps()
+			const app = catalog.find((a) => a.id === id)
+			if (!app) throw new RpcError('NOT_FOUND', `Application “${id}” is not installed`)
+			const env = await discoverEnv()
+			if (!env?.WAYLAND_DISPLAY || !env?.HYPRLAND_INSTANCE_SIGNATURE) {
+				throw new RpcError('PRECONDITION_FAILED', 'Hyprland desktop session isn’t running right now')
+			}
+			const railMon = await ensureRailOutput()
+			if (!railMon || !Number.isInteger(railMon.activeWorkspace) || railMon.activeWorkspace < 1 || railMon.activeWorkspace > 99) {
+				throw new RpcError('PRECONDITION_FAILED', 'Headless RAIL-1 display is unavailable; refusing to launch on physical display')
+			}
+			const railWs = railMon.activeWorkspace
+			const reqW = Math.max(360, Math.min(3840, Math.round(Number(input.width) || 1100)))
+			const reqH = Math.max(260, Math.min(2160, Math.round(Number(input.height) || 740)))
+
+			// Prune stale claims older than 30s
+			const nowMs = Date.now()
+			for (const [k, ts] of claimedLaunchAddrs) {
+				if (nowMs - ts > 30_000) claimedLaunchAddrs.delete(k)
+			}
+
+			// Switch active workspace to RAIL-1 and capture strict window baseline BEFORE spawning so physical-display windows are never treated as new.
+			await hyprDispatch(`hl.dispatch(hl.dsp.workspace.change_id({id = ${railWs}}))`, ['dispatch', 'workspace', String(railWs)])
+			const baselineWins = await windows({strict: true})
+			const beforeAddrs = new Set(baselineWins.map((w) => w.address.toLowerCase()))
+
+			let resolveOpen
+			const openPromise = new Promise((r) => (resolveOpen = r))
+			const markAmbiguous = () => {
+				if (settled) return
+				settled = true
+				ambiguous = true
+				resolveOpen(null)
+			}
+			launchEntry.app = app
+			launchEntry.markAmbiguous = markAmbiguous
+
+			const findAmbiguousPeers = (winClass, winTitle) => {
+				const peers = []
+				for (const peer of pendingLaunches) {
+					if (peer === launchEntry || !peer.app) continue
+					if (matchesLaunchedApp(peer.app, winClass, winTitle)) peers.push(peer)
+				}
+				return peers
+			}
+
+			// Only claim new windows that actually opened on the intended RAIL workspace (never stealing newly opened physical-display windows).
+			const canClaim = (addr, winWorkspace, winClass, winTitle) => {
+				const lower = String(addr || '').toLowerCase()
+				if (!lower || beforeAddrs.has(lower) || claimedLaunchAddrs.has(lower)) return false
+				const wsNum = Number(winWorkspace)
+				if (!Number.isInteger(wsNum) || wsNum !== railWs) return false
+				return matchesLaunchedApp(app, winClass, winTitle)
+			}
+
+			const tryClaim = (addr, winWorkspace, winClass, winTitle) => {
+				if (settled) return false
+				if (!canClaim(addr, winWorkspace, winClass, winTitle)) return false
+				const peers = findAmbiguousPeers(winClass, winTitle)
+				if (peers.length > 0) {
+					markAmbiguous()
+					for (const peer of peers) peer.markAmbiguous()
+					return false
+				}
+				settled = true
+				openedAddr = addr
+				claimedLaunchAddrs.set(String(addr).toLowerCase(), Date.now())
+				resolveOpen(addr)
+				return true
+			}
+
+			const launchEnv = await cleanGuiEnv(env)
+			unsub = subscribeEvents((evt) => {
+				if (settled) return
+				if (evt.type === 'openwindow') {
+					tryClaim(evt.address, evt.workspace, evt.class, evt.title)
+				}
+			})
+			const child = spawnImpl('gtk-launch', [id], {env: launchEnv, detached: true, stdio: 'ignore'})
+			child.once('error', (err) => {
+				if (!settled) {
+					settled = true
+					launchErr = new RpcError('BAD_GATEWAY', `Failed to launch “${id}”: ${err?.message || 'gtk-launch unavailable'}`)
+					resolveOpen(null)
+				}
+			})
+			child.once('exit', (code) => {
+				if (!settled && typeof code === 'number' && code !== 0) {
+					settled = true
+					launchErr = new RpcError('BAD_GATEWAY', `Application launcher exited with status ${code}`)
+					resolveOpen(null)
+				}
+			})
+			child.unref?.()
+
+			// Sequential poll loop (never overlapping hyprctl calls); checks settled immediately before claiming.
+			const schedulePoll = () => {
+				if (settled) return
+				pollTimer = setTimeout(async () => {
+					pollTimer = null
+					if (settled) return
+					const cur = await windows({strict: true}).catch(() => null)
+					if (settled || !Array.isArray(cur)) {
+						if (!settled) schedulePoll()
+						return
+					}
+					const matches = cur.filter((w) => canClaim(w.address, w.workspace, w.class, w.title))
+					if (matches.length > 1) {
+						markAmbiguous()
+						for (const m of matches) {
+							for (const peer of findAmbiguousPeers(m.class, m.title)) peer.markAmbiguous()
+						}
+						return
+					}
+					if (matches.length === 1) {
+						tryClaim(matches[0].address, matches[0].workspace, matches[0].class, matches[0].title)
+						return
+					}
+					schedulePoll()
+				}, 450)
+				pollTimer.unref?.()
+			}
+			schedulePoll()
+			deadlineTimer = setTimeout(() => {
+				if (!settled) {
+					settled = true
+					resolveOpen(null)
+				}
+			}, 15_000)
+			await openPromise
+			if (deadlineTimer) {
+				clearTimeout(deadlineTimer)
+				deadlineTimer = null
+			}
+			if (pollTimer) {
+				clearTimeout(pollTimer)
+				pollTimer = null
+			}
+			if (launchErr) throw launchErr
+			if (ambiguous || !openedAddr) {
+				return {launched: true, app, window: null, ...(ambiguous ? {ambiguous: true} : {})}
+			}
+
+			// Wake RAIL-1 BEFORE checking ownership, then revalidate RAIL workspace immediately before every mutation so a window moved to a physical workspace is never touched.
+			await wakeRailOutput()
+			const list = await windows({strict: true}).catch(() => [])
+			const win = list.find((w) => w.address.toLowerCase() === openedAddr.toLowerCase())
+			if (!win || win.workspace !== railWs) {
+				return {launched: true, app, window: null}
+			}
+			if (!win.floating) {
+				const checkFloatOwnership = async () => {
+					const cur = await windows({strict: true}).catch(() => [])
+					const found = cur.find((w) => w.address.toLowerCase() === win.address.toLowerCase())
+					return !!found && found.workspace === railWs
+				}
+				const floated = await hyprDispatch(
+					`hl.dispatch(hl.dsp.window.float({window = "address:${win.address}", state = true}))`,
+					['dispatch', 'setfloating', `address:${win.address}`],
+					{beforeAttempt: checkFloatOwnership},
+				)
+				if (floated === null) {
+					return {launched: true, app, window: null}
+				}
+			}
+			const placed = await placeOnRail(win.address, reqW, reqH, {strict: true, expectedWorkspace: railWs})
+			if (!placed) {
+				return {launched: true, app, window: null}
+			}
+			await new Promise((r) => setTimeout(r, 150))
+			const [freshMons, freshWins] = await Promise.all([monitorsInfo(), windows({strict: true}).catch(() => [])])
+			const freshRail = freshMons.find((m) => m.name === RAIL_OUTPUT)
+			const updated = freshWins.find((w) => w.address.toLowerCase() === win.address.toLowerCase())
+			if (!freshRail || !Number.isInteger(freshRail.activeWorkspace) || !updated || updated.workspace !== freshRail.activeWorkspace) {
+				throw new RpcError('BAD_GATEWAY', 'Launched window could not be verified on the RAIL-1 workspace')
+			}
+			return {launched: true, app, window: updated}
+		} finally {
+			settled = true
+			pendingLaunches.delete(launchEntry)
+			if (deadlineTimer) clearTimeout(deadlineTimer)
+			if (pollTimer) clearTimeout(pollTimer)
+			unsub?.()
+		}
+	}
+
+	async function clipboardRead() {
+		const env = await discoverEnv()
+		if (!env?.WAYLAND_DISPLAY) throw new RpcError('PRECONDITION_FAILED', 'Wayland display unavailable')
+		const r = await exec('wl-paste', ['--no-newline', '--type', 'text/plain;charset=utf-8'], {env, timeout: 2000, maxBuffer: MAX_CLIPBOARD_BYTES + 4096})
+		if (!r.ok) {
+			if (r.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+				throw new RpcError('PAYLOAD_TOO_LARGE', 'Wayland clipboard text exceeds 128 KiB limit')
+			}
+			const msg = r.stderr.trim().toLowerCase()
+			if (msg.includes('nothing is copied') || msg.includes('no selection') || msg.includes('clipboard is empty') || msg.includes('no matching type')) {
+				return {text: ''}
+			}
+			throw new RpcError('INTERNAL_SERVER_ERROR', r.stderr.trim() || 'Failed to read Wayland clipboard')
+		}
+		if (Buffer.byteLength(r.stdout, 'utf8') > MAX_CLIPBOARD_BYTES) {
+			throw new RpcError('PAYLOAD_TOO_LARGE', 'Wayland clipboard text exceeds 128 KiB limit')
+		}
+		return {text: r.stdout}
+	}
+
+	async function clipboardWrite(input = {}) {
+		const text = String(input.text ?? '')
+		if (Buffer.byteLength(text, 'utf8') > MAX_CLIPBOARD_BYTES) throw new RpcError('PAYLOAD_TOO_LARGE', 'Clipboard text too large')
+		const env = await discoverEnv()
+		if (!env?.WAYLAND_DISPLAY) throw new RpcError('PRECONDITION_FAILED', 'Wayland display unavailable')
+		const r = await exec('wl-copy', [], {env, timeout: 2000, input: text})
+		if (!r.ok) throw new RpcError('INTERNAL_SERVER_ERROR', r.stderr.trim() || 'Failed to update Wayland clipboard')
+		return true
 	}
 
 	// Strict allowlisted Hyprland window controls (never arbitrary exec/shell).
@@ -1506,13 +2310,34 @@ export function createHyprland({
 
 	return {
 		attachStream,
+		readAppIcon,
+		subscribeEvents,
+		waitForEventSocketReady,
+		nextEventSnapSeq: () => ++eventSnapSeq,
 		notifyUnlocked,
 		windows,
+		windowsSnapshot,
+		async currentInstanceId() {
+			const env = await discoverEnv()
+			return env?.HYPRLAND_INSTANCE_SIGNATURE ?? null
+		},
 		close() {
+			busClosed = true
+			eventSockReady = false
+			notifyEventReady()
 			if (disconnectLockRetryTimer) clearTimeout(disconnectLockRetryTimer)
 			disconnectLockRetryTimer = null
+			if (eventReconnectTimer) clearTimeout(eventReconnectTimer)
+			eventReconnectTimer = null
 			if (rectSyncTimer) clearInterval(rectSyncTimer)
 			rectSyncTimer = null
+			if (eventSock) {
+				try {
+					eventSock.destroy()
+				} catch {}
+				eventSock = null
+			}
+			eventListeners.clear()
 			for (const e of [...activeStreams]) {
 				try {
 					e.child.kill('SIGTERM')
@@ -1525,8 +2350,12 @@ export function createHyprland({
 		},
 		procedures: {
 			'hyprland.status': {kind: 'query', run: status},
-			'hyprland.windows': {kind: 'query', run: windows},
+			'hyprland.windows': {kind: 'query', run: (input) => windows({strict: input?.strict === true})},
+			'hyprland.apps': {kind: 'query', run: (input) => apps({refresh: input?.refresh === true})},
+			'hyprland.launch': {kind: 'mutation', run: launch},
 			'hyprland.dispatch': {kind: 'mutation', run: dispatch},
+			'hyprland.clipboardRead': {kind: 'query', run: clipboardRead},
+			'hyprland.clipboardWrite': {kind: 'mutation', run: clipboardWrite},
 		},
 	}
 }
