@@ -397,7 +397,11 @@ Worktree: `/home/joseph/.worktrees/omarchy-server-guest-connector-install` from 
 - [x] Final-review fixes: wait for guest-ping, root linger prep, and Windows AutoLogon (`0f0adfe`); linger before enroll (`61a227d`); show install failure (`cfa1e07`)
 - [x] Targeted tests + web typecheck (re-run at finish: 97 pass, 0 fail; `tsc --noEmit -p web` exit 0; HEAD `b819d52`)
 - [x] PR Series A: https://github.com/MyOwnDataCenter/Server/pull/951 (`feat/guest-connector-auto-install` → `main`)
-- [ ] Series B spec and plan on `feat/swarm-vm-hosting`: `docs/superpowers/specs/2026-11-24-swarm-vm-hosting-design.md` and `docs/superpowers/plans/2026-11-24-swarm-vm-hosting.md`. Slices 7–9 are not implemented.
+- [x] Series B spec and plan on `feat/swarm-vm-hosting`: `docs/superpowers/specs/2026-11-24-swarm-vm-hosting-design.md` and `docs/superpowers/plans/2026-11-24-swarm-vm-hosting.md` (`d29fd96`)
+- [x] Implement Series B slices 7–9 (Tasks 1–12 on `feat/swarm-vm-hosting`, HEAD `94bcf2f`)
+- [x] Targeted tests + web typecheck (93 pass, 0 fail on swarm-vms/console/machines/fleet-list/connector-install-noint; `tsc --noEmit -p web` exit 0; Python VM helper and agent suites OK)
+- [ ] PR Series B stacked on A (`feat/swarm-vm-hosting` → `feat/guest-connector-auto-install`)
+- [ ] Series C: remote `installConnector` when `hostId !== 'server'`, and create-time auto-install on a remote guest
 
 ## Constraints to keep
 
