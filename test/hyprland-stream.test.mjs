@@ -1649,7 +1649,9 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 						ch.once('exit', () => clearInterval(iv))
 					})
 				} else if (modeScenario === 'bench-burst-stall') {
-					setImmediate(() => {
+					// Even after a 950 ms cold startup delay, a 24-frame burst followed by silence must observe the full 750 ms window and fail
+					setTimeout(() => {
+						if (ch.killed || ch.exitCode !== null) return
 						ch.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, encoder: `${reqCodec}_vaapi_dmabuf`, codec: 'hev1'}))))
 						let count = 0
 						const iv = setInterval(() => {
@@ -1662,7 +1664,7 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 							count++
 						}, 16)
 						ch.once('exit', () => clearInterval(iv))
-					})
+					}, 950)
 				}
 				return ch
 			},
@@ -1767,6 +1769,14 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 		await assert.rejects(
 			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: 7, name: 'Numeric Seven', codec: 'h264', fps: 60, bitrate: 16000}}),
 			/Invalid profile ID/,
+		)
+		await assert.rejects(
+			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: null, name: 'Null ID', codec: 'h264', fps: 60, bitrate: 16000}}),
+			/Invalid profile ID/,
+		)
+		await assert.rejects(
+			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: 'ok-id', name: 'Null Dev', codec: 'h264', fps: 60, bitrate: 16000}, deviceId: null}),
+			/Invalid device ID/,
 		)
 		assert.equal(
 			(await hypr.procedures['hyprland.profiles'].run()).profiles.find((p) => p.id === '7')?.name,

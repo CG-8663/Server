@@ -646,7 +646,21 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	})
 	Object.assign(
 		procedures,
-		Object.fromEntries(Object.entries(hyprland.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'render the Hyprland desktop'), p.run(input))}])),
+		Object.fromEntries(
+			Object.entries(hyprland.procedures).map(([name, p]) => [
+				name,
+				{
+					kind: p.kind,
+					run: (input, {auth}) => {
+						ownerOnly(auth, 'render the Hyprland desktop')
+						if (factoryResetInProgress && p.kind === 'mutation') {
+							throw new RpcError('CONFLICT', 'Factory reset is in progress')
+						}
+						return p.run(input)
+					},
+				},
+			]),
+		),
 	)
 	async function lockDesktop() {
 		if (machineOptions.lockDesktop) return machineOptions.lockDesktop()

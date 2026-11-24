@@ -1597,7 +1597,7 @@ export function createHyprland({
 
 	function sanitizeProfile(raw, fallbackId = '', {strict = false} = {}) {
 		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
-		if (strict && raw.id !== undefined && raw.id !== null && typeof raw.id !== 'string') return null
+		if (strict && raw.id !== undefined && typeof raw.id !== 'string') return null
 		const hasExplicitId = raw.id !== undefined && raw.id !== null && String(raw.id).trim() !== ''
 		let id
 		if (hasExplicitId) {
@@ -1745,10 +1745,10 @@ export function createHyprland({
 			if (!rawProf || typeof rawProf !== 'object' || Array.isArray(rawProf)) {
 				throw new RpcError('BAD_REQUEST', 'Invalid stream profile')
 			}
-			if (rawProf.id !== undefined && rawProf.id !== null && typeof rawProf.id !== 'string') {
+			if (rawProf.id !== undefined && typeof rawProf.id !== 'string') {
 				throw new RpcError('BAD_REQUEST', 'Invalid profile ID')
 			}
-			if (input?.id !== undefined && input?.id !== null && typeof input.id !== 'string') {
+			if (input?.id !== undefined && typeof input.id !== 'string') {
 				throw new RpcError('BAD_REQUEST', 'Invalid profile ID')
 			}
 			const explicitId =
@@ -1765,7 +1765,7 @@ export function createHyprland({
 			}
 			const rawDev = input?.deviceId
 			let dev = ''
-			if (rawDev !== undefined && rawDev !== null) {
+			if (rawDev !== undefined) {
 				if (typeof rawDev !== 'string') throw new RpcError('BAD_REQUEST', 'Invalid device ID')
 				dev = rawDev.trim()
 				if (dev !== '' && !PROFILE_ID_RE.test(dev)) throw new RpcError('BAD_REQUEST', 'Invalid device ID')
@@ -1956,6 +1956,7 @@ export function createHyprland({
 						if (pl[0] === 1 && keyKb === 0) keyKb = payloadBytes / 1024
 						if (firstFrameAt === 0) {
 							firstFrameAt = now
+							clearTimeout(stopTimer)
 							sampleTimer = setTimeout(finish, durationMs)
 						} else {
 							dts.push(now - lastFrameAt)
