@@ -65,6 +65,25 @@ test('pairing a virtual machine keeps the connector off the physical computer li
 	}
 })
 
+test('a guest pairing code lasts six hours; a computer pairing code lasts fifteen minutes', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'guest-pair-ttl-'))
+	try {
+		execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-days', '1', '-subj', '/CN=t'], {cwd: root, stdio: 'ignore'})
+		const now = 1_700_000_000_000
+		const swarm = createConnector({dataDir: root, tlsDir: root, source: async () => 'https://example.test', now: () => now})
+		try {
+			const guest = await swarm.procedures['swarm.pair'].run({machineId: 'abcd1234', terminal: true})
+			assert.equal(guest.expiresAt, now + 6 * 60 * 60_000)
+			const computer = await swarm.procedures['swarm.pair'].run({terminal: true})
+			assert.equal(computer.expiresAt, now + 15 * 60_000)
+		} finally {
+			swarm.close()
+		}
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
 test('an older connector file still loads, and a bad guest id does not hide the computer', async () => {
 	const root = await mkdtemp(join(os.tmpdir(), 'guest-connector-old-'))
 	try {

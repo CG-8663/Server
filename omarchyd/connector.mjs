@@ -21,6 +21,7 @@ import {fileURLToPath} from 'node:url'
 import {WebSocketServer} from 'ws'
 
 import {writeAtomic} from './atomic.mjs'
+import {GUEST_PAIR_TTL} from './guest-install.mjs'
 import {RpcError} from './rpc.mjs'
 import {parseResize} from './terminal.mjs'
 
@@ -354,8 +355,9 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		const linked = pairingGuest(input?.machineId)
 		const token = randomBytes(24).toString('base64url')
 		for (const [k, p] of pairings) if (p.expires < now()) pairings.delete(k)
-		pairings.set(sha(token), {abilities, expires: now() + PAIR_TTL, ...(linked ? {guestOf: linked} : {})})
-		return {token, ca: await caFingerprint(), expiresAt: now() + PAIR_TTL, abilities, source: await source(), port: webPort, addresses: serverAddresses()}
+		const ttl = linked ? GUEST_PAIR_TTL : PAIR_TTL
+		pairings.set(sha(token), {abilities, expires: now() + ttl, ...(linked ? {guestOf: linked} : {})})
+		return {token, ca: await caFingerprint(), expiresAt: now() + ttl, abilities, source: await source(), port: webPort, addresses: serverAddresses()}
 	}
 	// Re-authorize an existing computer in place so its name, id, metrics and backups stay intact.
 	async function reauthorize(input = {}) {
