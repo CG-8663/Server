@@ -134,6 +134,7 @@ export const ALLOWED = {
 	'swarm.setAbilities': 'mutation',
 	'swarm.action': 'mutation',
 	'swarm.storage.status': 'query',
+	'swarm.vms.status': 'query',
 	'swarm.storage.disks': 'query',
 	'swarm.storage.pools': 'query',
 	'swarm.storage.importable': 'query',

@@ -3,7 +3,7 @@
 // server's own certificate authority), so the other computer opens no ports.
 //
 // Joining: the owner makes a one-time pairing code (15 minutes, used once) with the abilities they
-// allow (watching is always on; terminal, desktop, manage, storage, backup and files are optional). The connector trades
+// allow (watching is always on; terminal, desktop, manage, storage, backup, files and virtual machines are optional). The connector trades
 // it for its own id and key; only a hash of the key is kept here.
 //
 // Two limits on what a computer does: the abilities chosen when pairing, which the connector also
@@ -30,7 +30,8 @@ import {parseResize} from './terminal.mjs'
 // storage: see its drives, format extra disks, and manage pools on that computer (connector/helper.py).
 // services: inspect and restart user systemd units and Podman/Docker containers.
 // files: browse, upload, download, and copy files inside /Home and /Pools (and Clip Book home streaming).
-const ABILITIES = ['terminal', 'desktop', 'manage', 'storage', 'backup', 'services', 'files']
+// vms: create and run virtual machines on that computer (connector/vm-helper.py).
+const ABILITIES = ['terminal', 'desktop', 'manage', 'storage', 'backup', 'services', 'files', 'vms']
 const REMOTE_FILE_MAX = 20 * 1024 * 1024
 const PAIR_TTL = 15 * 60_000
 // A viewer that stops reading must not queue connector frames in memory without a bound.
@@ -206,6 +207,7 @@ function cleanInfo(i = {}) {
 		themes: Array.isArray(i.themes) ? i.themes.slice(0, 200).map((t) => clip(t, 80)) : [],
 		theme: clip(i.theme, 80),
 		desktop: {kind: clip(i.desktop?.kind, 32), ok: !!i.desktop?.ok, why: clip(i.desktop?.why, 200)},
+		libvirt: i.libvirt === true,
 	}
 }
 
@@ -330,6 +332,7 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			allowed: a.allowed,
 			on: a.on,
 			info: a.info ?? null,
+			libvirt: a.info?.libvirt === true,
 			metrics: l?.metrics ?? a.metrics ?? null,
 			updateAvailable: Boolean(a.info && bundledShas.agentSha && agentSha !== bundledShas.agentSha),
 			helperUpdateAvailable: Boolean(a.info && a.allowed?.storage && bundledShas.helperSha && helperSha && helperSha !== bundledShas.helperSha),
@@ -1233,6 +1236,33 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 					} catch (e) {
 						if (/allow Storage|doesn’t allow/i.test(e.message)) return {helperAvailable: false, zfsAvailable: false, storageAllowed: false}
 						throw storageReadError(e, a.name)
+					}
+				},
+			},
+			'swarm.vms.status': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAgent(input, false)
+					if (!may(a, 'vms')) return {vmsAllowed: false, libvirt: false}
+					try {
+						const raw = await call(a.id, 'vm-status', {}, 30_000)
+						const s = typeof raw === 'string' ? JSON.parse(raw) : raw
+						const libvirt = s?.libvirt === true
+						const kvm = s?.kvm === true
+						const models = Array.isArray(s?.videoModels) ? s.videoModels.filter((m) => m === 'vga' || m === 'virtio' || m === 'bochs' || m === 'qxl' || m === 'cirrus' || m === 'none') : []
+						return {
+							vmsAllowed: true,
+							libvirt,
+							kvm,
+							arch: s?.arch === 'arm64' ? 'arm64' : 'amd64',
+							threads: num(s?.threads),
+							memoryMb: num(s?.memoryMb),
+							freeGb: num(s?.freeGb),
+							videoModels: models,
+							...(libvirt && !kvm ? {performanceWarning: 'Hardware virtualization (KVM) isn’t available, so machines run much slower. Turn on VT-x/AMD-V in the BIOS, or nested virtualization if this is itself a VM.'} : {}),
+						}
+					} catch (e) {
+						throw new RpcError('BAD_GATEWAY', e.message)
 					}
 				},
 			},
