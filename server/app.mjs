@@ -407,7 +407,11 @@ const isLoopback = (hostname) => hostname === 'localhost' || hostname === '::1' 
 export function normalizeBackendUrl(input) {
 	let value = String(input ?? '').trim()
 	if (!value) throw new Error('Enter your server’s address')
-	if (!/^https?:\/\//i.test(value)) value = `http://${value}`
+	const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value)?.[1]
+	if (scheme && !/^https?$/i.test(scheme)) throw new Error(`An address can’t start with ${scheme}://. Use an http:// or https:// address, or just the IP address or name`)
+	// A bare IPv6 address (more than one colon, no brackets) needs brackets to be a URL host.
+	if (!scheme && !value.startsWith('[') && !value.includes('/') && (value.match(/:/g) ?? []).length > 1) value = `[${value}]`
+	if (!scheme) value = `http://${value}`
 	const url = new URL(value)
 	if (url.username || url.password) throw new Error('The address must not contain a username or password')
 	return `${url.protocol}//${url.host}`

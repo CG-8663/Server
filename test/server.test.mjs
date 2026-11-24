@@ -6,7 +6,7 @@ import {after, before, describe, test} from 'node:test'
 
 import WebSocket from 'ws'
 
-import {createApp, SLOW, timeoutFor} from '../server/app.mjs'
+import {createApp, normalizeBackendUrl, SLOW, timeoutFor} from '../server/app.mjs'
 import {createStore} from '../server/store.mjs'
 import {startFakeserverd} from './fake-omarchyd.mjs'
 
@@ -977,5 +977,21 @@ describe('app relays', () => {
 			await touch.close()
 			await fake.close()
 		}
+	})
+})
+
+describe('normalizeBackendUrl (#655)', () => {
+	test('refuses an address that starts with a scheme other than http or https', () => {
+		for (const input of ['ws://10.0.0.5:7780', 'ftp://nas.local', 'smb://nas']) {
+			assert.throws(() => normalizeBackendUrl(input), /can’t start with/)
+		}
+	})
+	test('accepts a bare IPv6 address, bracketed or not, and keeps the usual forms', () => {
+		assert.equal(normalizeBackendUrl('fe80::1'), 'http://[fe80::1]')
+		assert.equal(normalizeBackendUrl('::1'), 'http://[::1]')
+		assert.equal(normalizeBackendUrl('[fe80::1]'), 'http://[fe80::1]')
+		assert.equal(normalizeBackendUrl('10.0.0.5:2021'), 'http://10.0.0.5:2021')
+		assert.equal(normalizeBackendUrl('nas.local'), 'http://nas.local')
+		assert.equal(normalizeBackendUrl('HTTPS://nas.local'), 'https://nas.local')
 	})
 })
