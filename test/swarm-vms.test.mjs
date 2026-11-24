@@ -209,7 +209,6 @@ test('remote power, options, and uninstall use the host, and snapshots do not', 
 	await assert.rejects(machines.procedures['machines.snapshot'].run({id: 'abcd1234', name: 's'}, auth), /isn’t available there yet/)
 	await assert.rejects(machines.procedures['machines.hibernate'].run({id: 'abcd1234'}, auth), /isn’t available there yet/)
 	await assert.rejects(machines.procedures['machines.addDisk'].run({id: 'abcd1234', sizeGb: 2}, auth), /isn’t available there yet/)
-	await assert.rejects(machines.procedures['machines.installConnector'].run({id: 'abcd1234', username: 'chris'}, auth), /hosts this virtual machine/)
 	assert.equal(calls.some((c) => String(c.name).startsWith('vm-ga-')), false)
 	calls.length = 0
 	await machines.procedures['machines.uninstall'].run({id: 'abcd1234'}, auth)

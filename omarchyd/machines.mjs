@@ -26,6 +26,7 @@ import {fetchErrorMessage, httpDownloadErrorMessage, isNetworkError} from './fet
 import {connectorAllowList, connectorCloudInit, connectorKind, defaultConnectorAbilities, guestConnectorExec, guestConnectorPrep, guestReachableUrl} from './guest-install.mjs'
 import {PUBLIC_KEY, cloudMetaData, cloudUserData, hostnameFor, isWindowsClientLabel, isWindowsLabel, omarchyConfiguration, omarchyCredentials, windowsAnswerFile} from './machine-media.mjs'
 import {createQemuAgent} from './qemu-agent.mjs'
+import {remoteGuestAgentRun} from './remote-guest-agent.mjs'
 import {RpcError} from './rpc.mjs'
 import {hostdevXml, parseUsbLive} from './usb.mjs'
 
@@ -1381,6 +1382,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return Object.fromEntries(Object.keys(defaults).map((k) => [k, given[k] === true]))
 	}
 
+	function qemuAgentFor(m) {
+		if (hostOf(m) === 'server') return qemuAgent({run, domain: domain(m.id)})
+		return qemuAgent({run: remoteGuestAgentRun({call: (name, args) => remoteCall(hostOf(m), name, args), guestId: m.id}), domain: domain(m.id)})
+	}
+
 	// Create returns before cloud-init (and a desktop reboot) can answer guest-ping. The button still pings once.
 	const sleepUnref = (ms) => new Promise((resolve) => {
 		const timer = setTimeout(resolve, ms)
@@ -1416,12 +1422,16 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function installConnector(input = {}) {
 		await ready
 		const m = find(input?.id)
-		if (hostOf(m) !== 'server') throw new RpcError('PRECONDITION_FAILED', 'Install the connector from the computer that hosts this virtual machine once that is available.')
 		// qemu-ga is root: sudoPassword is accepted and discarded, never saved.
 		const os = connectorKind(m.osId)
 		if (os === 'unsupported') return {status: 'unsupported', os: 'other', message: 'This operating system can’t run the connector.'}
+		if (hostOf(m) !== 'server') {
+			const info = await hostAgent(m)
+			if (!info.agent.online) throw new RpcError('PRECONDITION_FAILED', `${info.hostName} is offline right now`)
+			if (!info.agent.allowed?.vms || !info.agent.on?.vms) throw new RpcError('FORBIDDEN', `Pair ${info.hostName} again with Virtual machines switched on.`)
+		}
 		if ((await liveState(m)) !== 'running') throw new RpcError('PRECONDITION_FAILED', 'Start the machine first.')
-		const agent = qemuAgent({run, domain: domain(m.id)})
+		const agent = qemuAgentFor(m)
 		try {
 			await agent.ping()
 		} catch {
