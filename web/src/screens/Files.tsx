@@ -1664,6 +1664,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
           shared={shareMap.get(open.path)}
           canShare={owner}
           onClose={() => setOpen(null)}
+          onSelect={() => (setOpen(null), rowApi.current.long(open))}
           onOpenFolder={() => (setOpen(null), go(open.path))}
           onDownload={() => download([open.path])}
           onRename={() => setPrompt({ kind: "rename", entry: open })}
@@ -1869,6 +1870,7 @@ const FileRow = memo(function FileRow({
         className={`file-tile${selected ? " sel" : ""}`}
         role="button"
         tabIndex={0}
+        aria-pressed={selecting ? selected : undefined}
         onClick={() => activate(f)}
         onKeyDown={(e) => shouldActivateRowOnKey(e) && activate(f)}
         {...press(f)}
@@ -1887,6 +1889,7 @@ const FileRow = memo(function FileRow({
       className={`row file-row${selected ? " sel" : ""}`}
       role="button"
       tabIndex={0}
+      aria-pressed={selecting ? selected : undefined}
       onClick={() => activate(f)}
       onKeyDown={(e) => shouldActivateRowOnKey(e) && activate(f)}
       {...press(f)}
@@ -1972,6 +1975,7 @@ function ItemSheet(p: {
   shared?: SmbShare;
   canShare?: boolean;
   onClose: () => void;
+  onSelect: () => void;
   onOpenFolder: () => void;
   onView?: () => void;
   onDownload: () => void;
@@ -2074,6 +2078,13 @@ function ItemSheet(p: {
               .catch((e: Error) => toast(e.message, true));
           },
           show: offersFile(f) && !f.path.startsWith("/Trash/"),
+        },
+        {
+          id: "select",
+          label: "Select",
+          icon: "checked",
+          onClick: p.onSelect,
+          show: f.operations.length > 0,
         },
         {
           id: "rename",

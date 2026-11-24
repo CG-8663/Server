@@ -423,3 +423,12 @@ describe('files screen: folder empty state, upload errors, and unserved roots', 
 		assert.match(src, /folderPickerRoots\(/)
 	})
 })
+
+describe('files screen: #515 multi-select is reachable without a long press and exposes its state', () => {
+	test('the item sheet has a Select action and selected rows and tiles carry aria-pressed', async () => {
+		const src = await filesSource()
+		assert.match(src, /id: "select",\s*label: "Select"/)
+		assert.match(src, /onSelect=\{\(\) => \(setOpen\(null\), rowApi\.current\.long\(open\)\)\}/)
+		assert.equal(src.match(/aria-pressed=\{selecting \? selected : undefined\}/g)?.length, 2)
+	})
+})
