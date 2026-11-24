@@ -61,6 +61,13 @@ function xmlChars(s) {
 	}
 	return true
 }
+// Backup progress (0-90) from `virsh domjobinfo`. virsh prints each figure in its own most readable unit, so convert both to bytes first.
+const UNIT_BYTES = {B: 1, KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3, TiB: 1024 ** 4}
+export function backupProgress(info) {
+	const m = /Data processed:\s+([\d.]+)\s*(\w+)[\s\S]*Data total:\s+([\d.]+)\s*(\w+)/.exec(info)
+	if (!m || !UNIT_BYTES[m[2]] || !UNIT_BYTES[m[4]]) return null
+	return Math.min(90, Math.round(((Number(m[1]) * UNIT_BYTES[m[2]]) / Math.max(1, Number(m[3]) * UNIT_BYTES[m[4]])) * 90))
+}
 const hostArch = () => (os.arch() === 'arm64' ? 'arm64' : 'amd64')
 
 // Find the expected hash for `file` in a checksum file. Handles GNU (`hash  file`, `hash *file`)
@@ -1028,7 +1035,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			uptimeSeconds: Math.round(os.uptime()),
 			storage: fs ? {totalGb: Math.round((fs.blocks * fs.bsize) / 1024 ** 3), freeGb: Math.round((fs.bavail * fs.bsize) / 1024 ** 3)} : null,
 			libvirtVersion: /libvirt[^\d]*([\d.]+)/i.exec(versions)?.[1] ?? null,
-			qemuVersion: /QEMU[^\d]*([\d.]+)/i.exec(versions)?.[1] ?? null,
+			qemuVersion: /Running hypervisor:\s*QEMU\s+([\d.]+)/i.exec(versions)?.[1] ?? null,
 			...caps,
 			videoModels: await availableVideo(),
 			cpuTypes: CPU_TYPES,
@@ -1491,6 +1498,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const c = snap.config
 			Object.assign(m, {sockets: c.sockets, cores: c.cores, memoryMb: c.memoryMb, memoryGb: Math.max(1, Math.round(c.memoryMb / 1024)), cpuType: c.cpuType})
 			Object.assign(m.layout, c.layout)
+			// The rollback also restores each image's virtual size, so re-read it instead of keeping a size from before.
+			for (const t of targets) {
+				const d = m.layout.disks.find((x) => x.id === t.id)
+				const {virtualGb} = await diskInfo(t.file)
+				if (!d || virtualGb === undefined) continue
+				d.sizeGb = virtualGb
+				if (d.id === 'disk0') m.diskSizeGb = virtualGb
+			}
 			m.hibernated = false
 			await markChanged(m)
 			return true
@@ -1590,8 +1605,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 							await abortJob()
 							throw error
 						}
-						const pct = /Data processed:\s+([\d.]+)\s*(\w+)[\s\S]*Data total:\s+([\d.]+)\s*(\w+)/.exec(info)
-						if (pct) busy.set(m.id, {state: 'running', progress: Math.min(90, Math.round((Number(pct[1]) / Math.max(1, Number(pct[3]))) * 90))})
+						const progress = backupProgress(info)
+						if (progress !== null) busy.set(m.id, {state: 'running', progress})
 						// A failed query is not "job finished". Only a real reply that the job is idle ends the wait.
 						if (!/Job type:\s+(Unbounded|Bounded)/.test(info)) break
 						if (Date.now() > end) {
