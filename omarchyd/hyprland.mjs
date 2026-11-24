@@ -537,15 +537,9 @@ export function createHyprland({
 		if (rail) {
 			const tx = rail.x + padL
 			const ty = rail.y + padT
-			const env = await discoverEnv()
-			if (!env?.HYPRLAND_INSTANCE_SIGNATURE) {
-				if (strict) throw new RpcError('PRECONDITION_FAILED', 'Hyprland desktop session unavailable during placement')
-			} else {
-				const r = await exec('hyprctl', ['dispatch', 'movewindowpixel', `exact ${tx} ${ty},address:${addr}`], {env, timeout: 4000})
-				if (strict && !r.ok) {
-					throw new RpcError('BAD_GATEWAY', `Failed to position window on RAIL-1: ${r.stderr.trim() || 'hyprctl failed'}`)
-				}
-			}
+			const moveP = hyprDispatch(null, ['dispatch', 'movewindowpixel', `exact ${tx} ${ty},address:${addr}`])
+			if (strict) await moveP
+			else await moveP.catch(() => {})
 		}
 		return {w, h}
 	}
@@ -754,6 +748,7 @@ export function createHyprland({
 	}
 
 	let eventSockReady = false
+	let eventSnapSeq = 0
 	const eventReadyWaiters = new Set()
 	function notifyEventReady() {
 		for (const fn of [...eventReadyWaiters]) {
@@ -821,6 +816,7 @@ export function createHyprland({
 				buffering = true
 				bufferOverflow = false
 				bufferedEvts.length = 0
+				const snapSeq = ++eventSnapSeq
 				windowsSnapshot()
 					.then((snap) => {
 						if (busClosed || eventSock !== sock) return
@@ -828,7 +824,7 @@ export function createHyprland({
 							syncAuthoritative()
 							return
 						}
-						emitEvent({type: 'windows', instanceId, windows: snap, authoritative: true})
+						emitEvent({type: 'windows', instanceId, windows: snap, authoritative: true, seq: snapSeq})
 						buffering = false
 						for (const evt of bufferedEvts.splice(0)) {
 							if (!busClosed && eventSock === sock) dispatchParsed(evt)
@@ -974,7 +970,7 @@ export function createHyprland({
 				address: String(c.address),
 				title: String(c.title || c.initialTitle || c.class || 'Window').slice(0, 140),
 				class: String(c.class || c.initialClass || '').slice(0, 80),
-				workspace: Number(c.workspace?.id) || 1,
+				workspace: Number.isInteger(c.workspace?.id) ? c.workspace.id : null,
 				at: Array.isArray(c.at) ? [Number(c.at[0]) || 0, Number(c.at[1]) || 0] : [0, 0],
 				size: Array.isArray(c.size) ? [Number(c.size[0]) || 0, Number(c.size[1]) || 0] : [0, 0],
 				floating: !!c.floating,
@@ -1364,15 +1360,12 @@ export function createHyprland({
 
 			const list = await windows({strict: true}).catch(() => [])
 			const win = list.find((w) => w.address.toLowerCase() === openedAddr.toLowerCase())
-			if (!win) {
+			// Revalidate RAIL workspace ownership before touching the window; never pull a window off a physical workspace.
+			if (!win || win.workspace !== railWs) {
 				return {launched: true, app, window: null}
 			}
 
 			await wakeRailOutput()
-			await hyprDispatch(
-				`hl.dispatch(hl.dsp.window.move({window = "address:${win.address}", workspace = "${railWs}", silent = true}))`,
-				['dispatch', 'movetoworkspacesilent', `${railWs},address:${win.address}`],
-			)
 			if (!win.floating) {
 				await hyprDispatch(
 					`hl.dispatch(hl.dsp.window.float({window = "address:${win.address}", state = true}))`,
@@ -2288,6 +2281,7 @@ export function createHyprland({
 		readAppIcon,
 		subscribeEvents,
 		waitForEventSocketReady,
+		nextEventSnapSeq: () => ++eventSnapSeq,
 		notifyUnlocked,
 		windows,
 		windowsSnapshot,

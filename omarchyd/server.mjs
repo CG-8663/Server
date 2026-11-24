@@ -981,8 +981,13 @@ WantedBy=graphical-session.target
 						if (!res.writableEnded) res.end()
 					} catch {}
 				}
+				let lastSentSnapSeq = 0
 				const writeEvt = (evt) => {
 					if (closed || res.writableEnded) return
+					if (evt?.type === 'windows' && typeof evt.seq === 'number') {
+						if (evt.seq < lastSentSnapSeq) return
+						lastSentSnapSeq = evt.seq
+					}
 					if (res.writableLength > 256 * 1024) {
 						stopStream()
 						return
@@ -1013,11 +1018,16 @@ WantedBy=graphical-session.target
 				}
 				req.on('close', cleanup)
 				res.on('close', cleanup)
-				await hyprland.waitForEventSocketReady?.(1500).catch(() => {})
+				const sockReady = await hyprland.waitForEventSocketReady?.(1500).catch(() => false)
+				if (!sockReady || closed || req.destroyed || res.writableEnded) {
+					stopStream()
+					return
+				}
 				let snapOk = false
 				for (let attempt = 0; attempt < 3; attempt++) {
 					bufferOverflow = false
 					buffered.length = 0
+					const initSeq = hyprland.nextEventSnapSeq?.() ?? 0
 					const [initial, instanceId] = await Promise.all([
 						hyprland.windowsSnapshot().catch(() => null),
 						hyprland.currentInstanceId().catch(() => null),
@@ -1031,7 +1041,13 @@ WantedBy=graphical-session.target
 						return
 					}
 					if (bufferOverflow) continue
-					writeEvt({type: 'windows', instanceId, windows: initial, authoritative: true})
+					// If the socket's own syncAuthoritative() already buffered a newer snapshot while we queried, drop the stale initSeq snapshot and start from the newer one.
+					const newerSnapIdx = buffered.findIndex((e) => e?.type === 'windows' && e.authoritative && typeof e.seq === 'number' && e.seq > initSeq)
+					if (newerSnapIdx >= 0) {
+						buffered.splice(0, newerSnapIdx)
+					} else {
+						writeEvt({type: 'windows', instanceId, windows: initial, authoritative: true, seq: initSeq})
+					}
 					snapOk = true
 					break
 				}
