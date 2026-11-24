@@ -366,6 +366,13 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(r.body.prefs.theme, 'tokyo', 'the rest is untouched')
 		assert.equal((await touch.req('POST', '/api/prefs', {theme: '<script>'})).status, 400)
 		assert.equal((await touch.req('POST', '/api/prefs', {customBrandHsl: 'red; x'})).status, 400)
+		// Only plain strings are stored: an array or object is a 400, not a stored array or a 500.
+		for (const bad of [['24 90% 50%'], {toString: 1}, 5]) {
+			assert.equal((await touch.req('POST', '/api/prefs', {customBrandHsl: bad})).status, 400)
+			assert.equal((await touch.req('POST', '/api/prefs', {omarchyBackground: bad})).status, 400)
+		}
+		assert.equal((await touch.req('POST', '/api/prefs', {omarchyBackground: ['0123456789abcdef']})).status, 400)
+		assert.equal((await touch.req('GET', '/api/prefs')).body.prefs.customBrandHsl ?? null, null)
 		const anon = await fetch(`${touch.base}/api/prefs`)
 		assert.equal(anon.status, 401)
 	})

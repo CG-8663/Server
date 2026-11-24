@@ -1134,7 +1134,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			patch.solidColor = solidColor === null ? null : String(solidColor).toLowerCase()
 		}
 		if (omarchyBackground !== undefined) {
-			if (omarchyBackground !== null && !/^[0-9a-f]{16}$/.test(String(omarchyBackground))) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown background'}})
+			if (omarchyBackground !== null && (typeof omarchyBackground !== 'string' || !/^[0-9a-f]{16}$/.test(omarchyBackground))) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown background'}})
 			patch.omarchyBackground = omarchyBackground
 		}
 		if (theme !== undefined) {
@@ -1146,7 +1146,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			patch.accent = accent
 		}
 		if (customBrandHsl !== undefined) {
-			if (customBrandHsl !== null && !HSL.test(String(customBrandHsl))) {
+			if (customBrandHsl !== null && (typeof customBrandHsl !== 'string' || !HSL.test(customBrandHsl))) {
 				return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad colour'}})
 			}
 			patch.customBrandHsl = customBrandHsl
