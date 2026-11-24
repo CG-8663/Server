@@ -150,9 +150,10 @@ test('hyprland status, windows, strict dispatch allowlist, and WebSocket H.264 s
 		await hypr.procedures['hyprland.dispatch'].run({action: 'resize', address: '0x55a1b2c3d4e0', width: 1280, height: 720})
 		await hypr.procedures['hyprland.dispatch'].run({action: 'moveToRail', address: '0x55a1b2c3d4e0'})
 		assert.deepEqual(dispatched, [['dispatch', 'focuswindow', 'address:0x55a1b2c3d4e0']])
-		assert.ok(luaDispatched.some((x) => x.includes('hl.dsp.workspace.change_id({id = 2})')))
-		assert.ok(luaDispatched.some((x) => x.includes('hl.dsp.window.resize({window = "address:0x55a1b2c3d4e0", x = 1280, y = 720, exact = true})')))
-		assert.ok(luaDispatched.some((x) => x.includes('hl.dsp.window.move({window = "address:0x55a1b2c3d4e0", workspace = "11"')))
+		assert.ok(luaDispatched.some((x) => x.includes('hl.dsp.focus({workspace = 2})')))
+		assert.ok(luaDispatched.some((x) => x.includes('hl.dsp.window.float({window = "address:0x55a1b2c3d4e0", action = "set"})')))
+		assert.ok(luaDispatched.some((x) => x.includes('hl.dsp.window.resize({window = "address:0x55a1b2c3d4e0", x = 1280, y = 720, relative = false})')))
+		assert.ok(luaDispatched.some((x) => x.includes('hl.dsp.window.move({window = "address:0x55a1b2c3d4e0", workspace = 11, silent = true})')))
 		await assert.rejects(() => hypr.procedures['hyprland.dispatch'].run({action: 'exec', command: 'id'}), /Unsupported/)
 		await assert.rejects(() => hypr.procedures['hyprland.dispatch'].run({action: 'focus', address: '0x12;rm -rf /'}), /Invalid window address/)
 
@@ -1196,7 +1197,7 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 					if (target) target.workspace = {id: 1}
 					return {ok: false, stdout: '', stderr: 'eval unsupported'}
 				}
-				if (cmd === 'hyprctl' && /float|resize|movewindowpixel/.test(args.join(' '))) {
+				if (cmd === 'hyprctl' && /float|resize|movewindowpixel|window\.move/.test(args.join(' '))) {
 					mutatedAddrs.push(args.join(' '))
 				}
 				if (cmd === 'wl-copy') {
@@ -1325,9 +1326,9 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		moveOffRailOnLuaResize = false
 		assert.equal(movedOnLuaRes.window, null)
 		assert.equal(
-			mutatedAddrs.some((s) => s.includes('0x55a1000000dd') && (s.includes('resizewindowpixel') || s.includes('movewindowpixel'))),
+			mutatedAddrs.some((s) => s.includes('0x55a1000000dd') && (s.includes('resizewindowpixel') || s.includes('movewindowpixel') || s.includes('window.move'))),
 			false,
-			`must not send legacy resizewindowpixel/movewindowpixel after window left RAIL-1 during failed Lua resize, saw: ${mutatedAddrs.join('; ')}`,
+			`must not send legacy resizewindowpixel or window move after window left RAIL-1 during failed Lua resize, saw: ${mutatedAddrs.join('; ')}`,
 		)
 
 		// Synchronous 8-launch cap must reject the 9th concurrent launch immediately before any await
