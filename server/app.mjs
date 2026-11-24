@@ -288,6 +288,14 @@ export const ALLOWED = {
 	'tailscale.login': 'mutation',
 	'tailscale.logout': 'mutation',
 	'tailscale.ping': 'mutation',
+	// MODC Connect: pairing with myowndatacenter.com and its check-ins. Owner only, checked in omarchyd.
+	// The answers never carry the polling secret or the device credential.
+	'connect.status': 'query',
+	'connect.pair': 'mutation',
+	'connect.cancel': 'mutation',
+	'connect.dismiss': 'mutation',
+	'connect.disconnect': 'mutation',
+	'connect.checkNow': 'mutation',
 	// This server as an OpenID Connect provider. Owner only, checked in omarchyd.
 	'oidc.status': 'query',
 	'oidc.setConfig': 'mutation',
