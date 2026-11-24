@@ -355,16 +355,18 @@ export function createHyprland({
 	}
 
 	// Run a Hyprland 0.57+ Lua eval with automatic fallback to legacy `hyprctl dispatch` for older Hyprland releases.
-	async function hyprDispatch(luaExpr, legacyArgs) {
+	async function hyprDispatch(luaExpr, legacyArgs, {beforeAttempt} = {}) {
 		const env = await discoverEnv()
 		if (!env?.HYPRLAND_INSTANCE_SIGNATURE) {
 			throw new RpcError('PRECONDITION_FAILED', 'Hyprland desktop session isn’t running right now')
 		}
 		if (luaExpr) {
+			if (beforeAttempt && !(await beforeAttempt())) return null
 			const r = await exec('hyprctl', ['eval', luaExpr], {env, timeout: 4000})
 			if (r.ok && r.stdout.trim() === 'ok') return r.stdout
 		}
 		if (legacyArgs?.length) {
+			if (beforeAttempt && !(await beforeAttempt())) return null
 			const r2 = await exec('hyprctl', legacyArgs, {env, timeout: 4000})
 			const out2 = r2.stdout.trim()
 			if (r2.ok && (!out2 || out2 === 'ok')) return r2.stdout
@@ -529,6 +531,7 @@ export function createHyprland({
 		if (Number.isInteger(expectedWorkspace) && !(await checkOwnership())) {
 			return null
 		}
+		const beforeAttempt = Number.isInteger(expectedWorkspace) ? checkOwnership : null
 		const padL = rail?.reserved?.[0] ?? 0
 		const padT = rail?.reserved?.[1] ?? 0
 		const padR = rail?.reserved?.[2] ?? 0
@@ -537,21 +540,27 @@ export function createHyprland({
 		const maxH = rail ? Math.max(260, Math.round(rail.height / (rail.scale || 1)) - padT - padB) : 2160
 		const w = Math.max(240, Math.min(maxW, Math.round(Number(reqW) || 1100)))
 		const h = Math.max(180, Math.min(maxH, Math.round(Number(reqH) || 740)))
-		const resizeP = hyprDispatch(
-			`hl.dispatch(hl.dsp.window.resize({window = "address:${addr}", x = ${w}, y = ${h}, exact = true}))`,
-			['dispatch', 'resizewindowpixel', `exact ${w} ${h},address:${addr}`],
-		)
-		if (strict) await resizeP
-		else await resizeP.catch(() => {})
+		let resized
+		try {
+			resized = await hyprDispatch(
+				`hl.dispatch(hl.dsp.window.resize({window = "address:${addr}", x = ${w}, y = ${h}, exact = true}))`,
+				['dispatch', 'resizewindowpixel', `exact ${w} ${h},address:${addr}`],
+				{beforeAttempt},
+			)
+		} catch (err) {
+			if (strict) throw err
+		}
+		if (beforeAttempt && resized === null) return null
 		if (rail) {
-			if (Number.isInteger(expectedWorkspace) && !(await checkOwnership())) {
-				return null
-			}
 			const tx = rail.x + padL
 			const ty = rail.y + padT
-			const moveP = hyprDispatch(null, ['dispatch', 'movewindowpixel', `exact ${tx} ${ty},address:${addr}`])
-			if (strict) await moveP
-			else await moveP.catch(() => {})
+			let moved
+			try {
+				moved = await hyprDispatch(null, ['dispatch', 'movewindowpixel', `exact ${tx} ${ty},address:${addr}`], {beforeAttempt})
+			} catch (err) {
+				if (strict) throw err
+			}
+			if (beforeAttempt && moved === null) return null
 		}
 		return {w, h}
 	}
@@ -1378,10 +1387,19 @@ export function createHyprland({
 				return {launched: true, app, window: null}
 			}
 			if (!win.floating) {
-				await hyprDispatch(
+				const checkFloatOwnership = async () => {
+					const cur = await windows({strict: true}).catch(() => [])
+					const found = cur.find((w) => w.address.toLowerCase() === win.address.toLowerCase())
+					return !!found && found.workspace === railWs
+				}
+				const floated = await hyprDispatch(
 					`hl.dispatch(hl.dsp.window.float({window = "address:${win.address}", state = true}))`,
 					['dispatch', 'setfloating', `address:${win.address}`],
+					{beforeAttempt: checkFloatOwnership},
 				)
+				if (floated === null) {
+					return {launched: true, app, window: null}
+				}
 			}
 			const placed = await placeOnRail(win.address, reqW, reqH, {strict: true, expectedWorkspace: railWs})
 			if (!placed) {

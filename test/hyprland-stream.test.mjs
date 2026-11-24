@@ -1161,6 +1161,7 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		let clientsFail = false
 		let spawnMode = 'ok'
 		let moveOffRailOnWake = false
+		let moveOffRailOnLuaResize = false
 		const mutatedAddrs = []
 		let betaLaunchSeq = 0
 		const clients = [{address: '0x55a1b2c3d4e0', title: 'Demo', class: 'demo', workspace: {id: 1}, at: [0, 0], size: [640, 480], mapped: true}]
@@ -1188,6 +1189,12 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 					// Simulate user moving the newly launched window onto physical workspace 1 during wakeRailOutput()
 					const target = clients.find((c) => c.address === '0x55a1000000cc')
 					if (target) target.workspace = {id: 1}
+				}
+				if (cmd === 'hyprctl' && moveOffRailOnLuaResize && args[0] === 'eval' && args[1]?.includes('window.resize') && args[1]?.includes('0x55a1000000dd')) {
+					// Simulate Lua resize failing while the window moves to physical workspace 1 before legacy fallback runs
+					const target = clients.find((c) => c.address === '0x55a1000000dd')
+					if (target) target.workspace = {id: 1}
+					return {ok: false, stdout: '', stderr: 'eval unsupported'}
 				}
 				if (cmd === 'hyprctl' && /float|resize|movewindowpixel/.test(args.join(' '))) {
 					mutatedAddrs.push(args.join(' '))
@@ -1225,7 +1232,13 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 						}, 80)
 					} else if (args[0] === 'beta') {
 						const seq = ++betaLaunchSeq
-						const addr = moveOffRailOnWake ? '0x55a1000000cc' : seq === 1 ? '0x55a1000000bb' : `0x55a1000000b${seq}`
+						const addr = moveOffRailOnWake
+							? '0x55a1000000cc'
+							: moveOffRailOnLuaResize
+								? '0x55a1000000dd'
+								: seq === 1
+									? '0x55a1000000bb'
+									: `0x55a1000000b${seq}`
 						setTimeout(() => {
 							clients.push({address: addr, title: `Beta Main ${seq}`, class: 'beta-app', workspace: {id: 11}, at: [0, 0], size: [900, 600], mapped: true, floating: !moveOffRailOnWake})
 						}, 40)
@@ -1303,6 +1316,18 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 			mutatedAddrs.some((s) => s.includes('0x55a1000000cc')),
 			false,
 			`must not float/resize/move window after it moved off RAIL-1, saw: ${mutatedAddrs.join('; ')}`,
+		)
+
+		// If Lua resize fails and the window leaves RAIL-1 before the legacy resizewindowpixel fallback runs, fallback must NOT dispatch
+		mutatedAddrs.length = 0
+		moveOffRailOnLuaResize = true
+		const movedOnLuaRes = await hypr.procedures['hyprland.launch'].run({id: 'beta'})
+		moveOffRailOnLuaResize = false
+		assert.equal(movedOnLuaRes.window, null)
+		assert.equal(
+			mutatedAddrs.some((s) => s.includes('0x55a1000000dd') && (s.includes('resizewindowpixel') || s.includes('movewindowpixel'))),
+			false,
+			`must not send legacy resizewindowpixel/movewindowpixel after window left RAIL-1 during failed Lua resize, saw: ${mutatedAddrs.join('; ')}`,
 		)
 
 		// Synchronous 8-launch cap must reject the 9th concurrent launch immediately before any await
