@@ -172,6 +172,45 @@ if has storage; then
 	sbin mkfs.btrfs || pkgs+=(btrfs-progs)
 	sbin hdparm || pkgs+=(hdparm)
 fi
+# Virtual machines: session libvirt, QEMU, passt, and a seed ISO tool. Always install the list;
+# apt-get install -y / pacman -S --needed are the idempotent step, not a PATH check for qemu-img.
+if has vms; then
+	arch=$(uname -m)
+	case "$pm" in
+		pacman)
+			case "$arch" in
+				aarch64 | arm64)
+					vm_fw=edk2-aarch64
+					pacman -Si "$vm_fw" >/dev/null 2>&1 || pacman -Qi "$vm_fw" >/dev/null 2>&1 || vm_fw=qemu-system-arm-firmware
+					pkgs+=(qemu-base qemu-system-aarch64 "$vm_fw" libvirt passt libisoburn)
+					;;
+				*)
+					pkgs+=(qemu-base edk2-ovmf libvirt passt libisoburn)
+					;;
+			esac
+			;;
+		apt-get)
+			case "$arch" in
+				aarch64 | arm64)
+					pkgs+=(qemu-system-arm qemu-utils libvirt-clients libvirt-daemon passt xorriso qemu-efi-aarch64)
+					;;
+				*)
+					pkgs+=(qemu-system-x86 qemu-utils libvirt-clients libvirt-daemon passt xorriso ovmf)
+					;;
+			esac
+			;;
+		dnf)
+			pkgs+=(qemu-kvm qemu-img libvirt-client libvirt-daemon passt xorriso edk2-ovmf)
+			;;
+		zypper)
+			pkgs+=(qemu-x86 qemu-tools libvirt-client libvirt-daemon passt xorriso qemu-ovmf-x86_64)
+			;;
+		mac) ;;
+		*)
+			[ "$USER_ENROLL_ONLY" = 1 ] || warn "Install QEMU and libvirt yourself (no package manager found that I know)"
+			;;
+	esac
+fi
 if [ "$USER_ENROLL_ONLY" != 1 ] && [ ${#pkgs[@]} -gt 0 ]; then
 	say "Installing ${pkgs[*]} (sudo needed)"
 	# One package at a time, so one that a distribution doesn't carry doesn't stop the rest.
@@ -237,6 +276,14 @@ if has storage && [ "$USER_ENROLL_ONLY" != 1 ]; then
 ${USER} ALL=(root) NOPASSWD: /usr/local/libexec/omarchy-connector/helper.py
 EOF
 	as_root chmod 440 /etc/sudoers.d/omarchy-connector || need_password "This computer needs a password to finish installing."
+fi
+
+if has vms && [ "$USER_ENROLL_ONLY" != 1 ] && [ "$MAC" != 1 ]; then
+	say "Installing the virtual machine helper"
+	fetch_connector "$(connector_url vm-helper.py)" "$tmp.vm-helper.py" || die "Couldn't download the virtual machine helper."
+	python_ok "$tmp.vm-helper.py" || die "The downloaded virtual machine helper didn't check out."
+	install -m 700 "$tmp.vm-helper.py" "$DIR/vm-helper.py"
+	rm -f "$tmp.vm-helper.py"
 fi
 
 # Linger before the pairing code is used. A noninteractive sudo failure must leave that code unused.

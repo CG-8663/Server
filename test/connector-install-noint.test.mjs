@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import {spawnSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
-import {chmod, mkdir, mkdtemp, readFile, rm, writeFile, access} from 'node:fs/promises'
+import {chmod, mkdir, mkdtemp, readFile, rm, writeFile, access, stat} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, test} from 'node:test'
@@ -40,7 +40,7 @@ exit 0`,
 		'curl',
 		`out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
 echo "curl $*" >>"$FAKE_LOG"
-case "$*" in *ca.crt*) printf '%s' "$FAKE_PEM" >"$out" ;; *agent.py*) cp "$FAKE_AGENT" "$out" ;; esac`,
+case "$*" in *ca.crt*) printf '%s' "$FAKE_PEM" >"$out" ;; *vm-helper.py*) cp "$FAKE_VM_HELPER" "$out" ;; *agent.py*) cp "$FAKE_AGENT" "$out" ;; esac`,
 	)
 	if (python3) {
 		await put(
@@ -62,6 +62,7 @@ function install(home, bin, args, extra = {}) {
 			FAKE_LOG: log,
 			FAKE_PEM: PEM,
 			FAKE_AGENT: AGENT,
+			FAKE_VM_HELPER: fileURLToPath(new URL('../connector/vm-helper.py', import.meta.url)),
 			FAKE_SUDO_FAILS: extra.FAKE_SUDO_FAILS,
 			OMARCHY_CONNECTOR_NONINTERACTIVE: extra.OMARCHY_CONNECTOR_NONINTERACTIVE,
 		},
@@ -158,6 +159,36 @@ exit 0`,
 	assert.match(log, /sudo -n /)
 	assert.match(log, /enroll https:\/\/192\.168\.1\.20:7780 abc123 terminal,desktop,manage,files$/m)
 	assert.match(log, /systemctl --user enable --now omarchy-connector\.service/)
+})
+
+test('--allow vms installs the helper as the user and qemu packages, and keeps NoNewPrivileges when storage is off', {skip}, async () => {
+	const home = join(root, 'vms-allow')
+	await mkdir(home)
+	const bin = await stubs()
+	const arch = spawnSync('uname', ['-m'], {encoding: 'utf8'}).stdout.trim()
+	const qemuPkg = arch === 'aarch64' || arch === 'arm64' ? 'qemu-system-arm' : 'qemu-system-x86'
+	const r = install(home, bin, ['--server', 'https://192.168.1.20:7780', '--ca', CA, '--token', 'abc123', '--allow', 'terminal,vms'])
+	assert.equal(r.status, 0, r.out)
+	const log = await readFile(r.log, 'utf8')
+	assert.match(log, new RegExp(`apt-get install -y ${qemuPkg}`))
+	assert.match(log, /apt-get install -y passt/)
+	assert.match(log, /apt-get install -y xorriso/)
+	const helper = join(home, '.local/share/omarchy-connector/vm-helper.py')
+	const st = await stat(helper)
+	assert.equal(st.mode & 0o777, 0o700)
+	assert.equal(/libexec\/omarchy-connector\/vm-helper/.test(log), false)
+	const unit = await readFile(join(home, '.config/systemd/user/omarchy-connector.service'), 'utf8')
+	assert.match(unit, /NoNewPrivileges=yes/)
+})
+
+test('--allow terminal does not install qemu', {skip}, async () => {
+	const home = join(root, 'no-vms')
+	await mkdir(home)
+	const r = install(home, await stubs(), ['--server', 'https://192.168.1.20:7780', '--ca', CA, '--token', 'abc123', '--allow', 'terminal'])
+	assert.equal(r.status, 0, r.out)
+	const log = await readFile(r.log, 'utf8')
+	assert.equal(/qemu-base|qemu-system|libvirt/.test(log), false)
+	await assert.rejects(stat(join(home, '.local/share/omarchy-connector/vm-helper.py')))
 })
 
 test('--user-enroll-only with no python3 exits 1, not 4', {skip}, async () => {
