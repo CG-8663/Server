@@ -117,20 +117,28 @@ function parseAvcCodecFromAnnexB(data: Uint8Array): string {
 // Parse HEVC SPS NAL (type 33) from Annex-B bytes to derive exact RFC 6381 hev1.<profile>.<compat>.<tier><level>.<constraints> string
 // so 4:4:4 RExt (hev1.4.10.L153.BE.8), Main 10, and Main configure WebCodecs accurately at any resolution/level.
 export function parseHevcCodecFromAnnexB(data: Uint8Array, fallback: string): string {
-	for (let i = 0; i < data.length - 16; i++) {
+	for (let i = 0; i < data.length - 4; i++) {
 		let start = -1
 		if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) start = i + 3
 		else if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 && data[i + 3] === 1) start = i + 4
 		if (start === -1 || start + 2 >= data.length) continue
 		const nalType = (data[start] >> 1) & 0x3f
 		if (nalType !== 33) continue
+		// Bound RBSP extraction strictly to this NAL unit (stop at the next Annex-B start code).
+		let nalEnd = data.length
+		for (let j = start + 2; j < data.length - 2; j++) {
+			if (data[j] === 0 && data[j + 1] === 0 && (data[j + 2] === 1 || (j + 3 < data.length && data[j + 2] === 0 && data[j + 3] === 1))) {
+				nalEnd = j
+				break
+			}
+		}
 		// Extract first 14 RBSP bytes after 2-byte NAL header, stripping emulation prevention (0x00 0x00 0x03).
 		const rbsp: number[] = []
-		for (let p = start + 2; p < data.length && rbsp.length < 14; p++) {
+		for (let p = start + 2; p < nalEnd && rbsp.length < 14; p++) {
 			if (p >= start + 4 && data[p] === 3 && data[p - 1] === 0 && data[p - 2] === 0) continue
 			rbsp.push(data[p])
 		}
-		if (rbsp.length < 13) break
+		if (rbsp.length < 13) return fallback
 		const ptl0 = rbsp[1]
 		const profileSpace = (ptl0 >> 6) & 3
 		const tierFlag = (ptl0 >> 5) & 1
@@ -577,6 +585,7 @@ export function HyprlandView({
 	containRef.current = chrome === 'full'
 
 	const audioCtxRef = useRef<AudioContext | null>(null)
+	const audioGainRef = useRef<GainNode | null>(null)
 	const nextAudioTimeRef = useRef(0)
 	const hostRef = useRef<HTMLDivElement>(null)
 	const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -761,9 +770,14 @@ export function HyprlandView({
 			const Ctor = window.AudioContext || (window as unknown as {webkitAudioContext?: typeof AudioContext}).webkitAudioContext
 			if (!Ctor) return null
 			ac = new Ctor({sampleRate: 48000, latencyHint: 'interactive'})
+			const gain = ac.createGain()
+			gain.gain.value = mutedRef.current ? 0 : 1
+			gain.connect(ac.destination)
 			audioCtxRef.current = ac
+			audioGainRef.current = gain
 			nextAudioTimeRef.current = 0
 		}
+		if (audioGainRef.current) audioGainRef.current.gain.value = mutedRef.current ? 0 : 1
 		if (ac.state === 'suspended') {
 			ac.resume().catch(() => {})
 		}
@@ -773,7 +787,8 @@ export function HyprlandView({
 	const playPcmFrame = (pcmBytes: Uint8Array) => {
 		if (mutedRef.current || pcmBytes.byteLength < 4) return
 		const ac = audioCtxRef.current
-		if (!ac || ac.state !== 'running') return
+		const gain = audioGainRef.current
+		if (!ac || !gain || ac.state !== 'running') return
 		const samples = Math.floor(pcmBytes.byteLength / 4)
 		if (samples <= 0) return
 		const ab = ac.createBuffer(2, samples, 48000)
@@ -786,7 +801,7 @@ export function HyprlandView({
 		}
 		const src = ac.createBufferSource()
 		src.buffer = ab
-		src.connect(ac.destination)
+		src.connect(gain)
 		const now = ac.currentTime
 		// Tight 35 ms jitter cushion; resync automatically if network stalls or resumes from silence gating
 		if (nextAudioTimeRef.current < now + 0.005 || nextAudioTimeRef.current > now + 0.16) {
@@ -796,8 +811,9 @@ export function HyprlandView({
 		nextAudioTimeRef.current += ab.duration
 	}
 
-	// Push live mute/unmute to backend without reconnecting video stream
+	// Push live mute/unmute to backend without reconnecting video stream; zero gain immediately so queued audio stops on handoff
 	useEffect(() => {
+		if (audioGainRef.current) audioGainRef.current.gain.value = muted ? 0 : 1
 		const ws = wsRef.current
 		if (ws && ws.readyState === WebSocket.OPEN) {
 			ws.send(JSON.stringify({type: 'audio', enabled: !muted}))
@@ -809,12 +825,20 @@ export function HyprlandView({
 		}
 	}, [muted])
 
+	// When WebGL2 loses context and falls back to a fresh 2D canvas, request one immediate keyframe so the replacement canvas paints right away
+	useEffect(() => {
+		if (canvasMode === '2d' && wsRef.current?.readyState === WebSocket.OPEN) {
+			wsRef.current.send(JSON.stringify({type: 'keyframe'}))
+		}
+	}, [canvasMode])
+
 	useEffect(() => {
 		return () => {
 			try {
 				audioCtxRef.current?.close()
 			} catch {}
 			audioCtxRef.current = null
+			audioGainRef.current = null
 		}
 	}, [])
 
@@ -894,13 +918,17 @@ export function HyprlandView({
 		let decoder: VideoDecoder | null = null
 		let audioDecoder: WebAudioDecoderLike | null = null
 		let opusTs = 0
+		let opusErrorCount = 0
+		let opusBroken = false
 		let audioModeLabel = caps.supportsOpus ? 'Opus 10ms' : 'PCM 20ms'
 		let blitter: FrameBlitter | null = null
 		let blitterCanvas: HTMLCanvasElement | null = null
 		let configured = false
 		let needKey = true
 		let gotFirstFrame = false
+		let gotFrameForConfig = false
 		let codecWatchdog = 0
+		let keyframeRetryTimer = 0
 		let framesInWindow = 0
 		let lastFps = 0
 		let lastFpsAt = performance.now()
@@ -935,12 +963,13 @@ export function HyprlandView({
 			statsOverlayRef.current.textContent = parts.join(' · ')
 		}
 
-		// Schedule decoded WebCodecs AudioData (10 ms Opus) onto WebAudio with tight 25 ms jitter cushion.
+		// Schedule decoded WebCodecs AudioData (10 ms Opus) onto WebAudio with tight 25 ms jitter cushion via per-view GainNode.
 		const scheduleAudioData = (ad: WebAudioDataLike) => {
 			try {
 				if (mutedRef.current) return
 				const ac = audioCtxRef.current
-				if (!ac || ac.state !== 'running') return
+				const gain = audioGainRef.current
+				if (!ac || !gain || ac.state !== 'running') return
 				const frames = ad.numberOfFrames
 				const chCount = Math.min(2, ad.numberOfChannels || 2)
 				if (frames <= 0) return
@@ -962,7 +991,7 @@ export function HyprlandView({
 				}
 				const src = ac.createBufferSource()
 				src.buffer = ab
-				src.connect(ac.destination)
+				src.connect(gain)
 				const now = ac.currentTime
 				if (nextAudioTimeRef.current < now + 0.004 || nextAudioTimeRef.current > now + 0.14) {
 					nextAudioTimeRef.current = now + 0.025
@@ -974,8 +1003,21 @@ export function HyprlandView({
 			}
 		}
 
+		const failOverOpusToPcm = () => {
+			if (opusBroken) return
+			opusBroken = true
+			audioModeLabel = 'PCM 20ms'
+			try {
+				audioDecoder?.close()
+			} catch {}
+			audioDecoder = null
+			if (wsRef.current?.readyState === WebSocket.OPEN) {
+				wsRef.current.send(JSON.stringify({type: 'audio', enabled: !mutedRef.current, codec: 'pcm'}))
+			}
+		}
+
 		const playOpusFrame = (opusBytes: Uint8Array) => {
-			if (mutedRef.current || opusBytes.byteLength === 0) return
+			if (mutedRef.current || opusBroken || opusBytes.byteLength === 0) return
 			audioModeLabel = 'Opus 10ms'
 			const ac = audioCtxRef.current
 			if (!ac || ac.state !== 'running') return
@@ -983,21 +1025,30 @@ export function HyprlandView({
 				AudioDecoder?: WebAudioDecoderCtor
 				EncodedAudioChunk?: new (init: {type: 'key'; timestamp: number; data: Uint8Array}) => unknown
 			}
-			if (!win.AudioDecoder || !win.EncodedAudioChunk) return
+			if (!win.AudioDecoder || !win.EncodedAudioChunk) {
+				failOverOpusToPcm()
+				return
+			}
 			if (!audioDecoder || audioDecoder.state === 'closed') {
 				try {
 					audioDecoder = new win.AudioDecoder({
-						output: scheduleAudioData,
+						output(ad) {
+							opusErrorCount = 0
+							scheduleAudioData(ad)
+						},
 						error() {
+							opusErrorCount++
 							try {
 								audioDecoder?.close()
 							} catch {}
 							audioDecoder = null
+							if (opusErrorCount >= 2) failOverOpusToPcm()
 						},
 					})
 					audioDecoder.configure({codec: 'opus', sampleRate: 48000, numberOfChannels: 2})
 				} catch {
 					audioDecoder = null
+					failOverOpusToPcm()
 					return
 				}
 			}
@@ -1005,7 +1056,10 @@ export function HyprlandView({
 			try {
 				audioDecoder.decode(new win.EncodedAudioChunk({type: 'key', timestamp: opusTs, data: opusBytes}))
 				opusTs += 10000
-			} catch {}
+			} catch {
+				opusErrorCount++
+				if (opusErrorCount >= 2) failOverOpusToPcm()
+			}
 		}
 
 		// Update FPS readout & telemetry overlay directly on DOM nodes (zero 1 Hz React re-renders).
@@ -1060,12 +1114,39 @@ export function HyprlandView({
 			return true
 		}
 
-		// Start the decode deadline only once a decodable keyframe arrives (avoids downgrading working HEVC during cold gcc compile or slow WAN handshake).
+		const scheduleKeyframeReq = () => {
+			if (disposed || !needKey) return
+			const curWs = wsRef.current
+			if (!curWs || curWs.readyState !== WebSocket.OPEN) return
+			const nowMs = performance.now()
+			const waitMs = Math.max(0, 1500 - (nowMs - lastKeyframeReq.current))
+			if (waitMs === 0) {
+				lastKeyframeReq.current = nowMs
+				curWs.send(JSON.stringify({type: 'keyframe'}))
+				if (keyframeRetryTimer) {
+					window.clearTimeout(keyframeRetryTimer)
+					keyframeRetryTimer = 0
+				}
+				keyframeRetryTimer = window.setTimeout(() => {
+					keyframeRetryTimer = 0
+					if (needKey) scheduleKeyframeReq()
+				}, 1500)
+				return
+			}
+			if (!keyframeRetryTimer) {
+				keyframeRetryTimer = window.setTimeout(() => {
+					keyframeRetryTimer = 0
+					if (needKey) scheduleKeyframeReq()
+				}, waitMs)
+			}
+		}
+
+		// Start a per-configuration decode deadline on each decodable IDR keyframe (catches both cold connect and silent live 4:4:4 switch hangs).
 		const armDecodeWatchdog = () => {
-			if (codecWatchdog || gotFirstFrame) return
+			if (codecWatchdog || gotFrameForConfig) return
 			codecWatchdog = window.setTimeout(() => {
 				codecWatchdog = 0
-				if (disposed || gotFirstFrame) return
+				if (disposed || gotFrameForConfig) return
 				if (!triggerCodecFallback()) {
 					setStatusTracked('error')
 					setError('Hardware video decoder timed out before rendering a frame.')
@@ -1109,12 +1190,13 @@ export function HyprlandView({
 					lastDecMs = lastDecMs > 0 ? lastDecMs * 0.75 + dt * 0.25 : dt
 				}
 				framesInWindow++
+				gotFrameForConfig = true
+				if (codecWatchdog) {
+					window.clearTimeout(codecWatchdog)
+					codecWatchdog = 0
+				}
 				if (!gotFirstFrame) {
 					gotFirstFrame = true
-					if (codecWatchdog) {
-						window.clearTimeout(codecWatchdog)
-						codecWatchdog = 0
-					}
 					const c = activeCodecRef.current
 					if (c !== 'hevc444') {
 						try {
@@ -1181,11 +1263,7 @@ export function HyprlandView({
 						return
 					}
 					setError(`Decoder reset: ${err.message}`)
-					const nowMs = performance.now()
-					if (nowMs - lastKeyframeReq.current >= 1500) {
-						lastKeyframeReq.current = nowMs
-						wsRef.current?.send(JSON.stringify({type: 'keyframe'}))
-					}
+					scheduleKeyframeReq()
 				},
 			})
 			try {
@@ -1257,6 +1335,11 @@ export function HyprlandView({
 						decoder = null
 						configured = false
 						needKey = true
+						gotFrameForConfig = false
+						if (codecWatchdog) {
+							window.clearTimeout(codecWatchdog)
+							codecWatchdog = 0
+						}
 						renderStatsOverlay()
 					} else if (msg.type === 'stats') {
 						lastServerStats = {
@@ -1317,6 +1400,10 @@ export function HyprlandView({
 				if (!configured) ensureDecoder(codec, currentW, currentH)
 				needKey = false
 				queueHighSince = 0
+				if (keyframeRetryTimer) {
+					window.clearTimeout(keyframeRetryTimer)
+					keyframeRetryTimer = 0
+				}
 			} else if (needKey || !configured) {
 				return
 			}
@@ -1332,10 +1419,7 @@ export function HyprlandView({
 				if (!isKey && (q > 12 || (queueHighSince > 0 && nowMs - queueHighSince > 80))) {
 					needKey = true
 					queueHighSince = 0
-					if (nowMs - lastKeyframeReq.current >= 1500) {
-						lastKeyframeReq.current = nowMs
-						ws.send(JSON.stringify({type: 'keyframe'}))
-					}
+					scheduleKeyframeReq()
 					return
 				}
 				try {
@@ -1357,10 +1441,7 @@ export function HyprlandView({
 						setError('Hardware video decoder rejected the incoming video stream.')
 						return
 					}
-					if (nowMs - lastKeyframeReq.current >= 1500) {
-						lastKeyframeReq.current = nowMs
-						ws.send(JSON.stringify({type: 'keyframe'}))
-					}
+					scheduleKeyframeReq()
 				}
 			}
 		}
@@ -1385,6 +1466,7 @@ export function HyprlandView({
 				pendingFrame = null
 			}
 			if (codecWatchdog) window.clearTimeout(codecWatchdog)
+			if (keyframeRetryTimer) window.clearTimeout(keyframeRetryTimer)
 			window.clearInterval(fpsTimer)
 			window.clearInterval(pingTimer)
 			try {

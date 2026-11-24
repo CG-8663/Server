@@ -24,53 +24,60 @@ const OUTPUT_NAME_RE = /^[A-Za-z0-9_.-]{1,32}$/
 const MAX_STREAMS = 12
 const RAIL_OUTPUT = 'RAIL-1'
 
-// O(1)-amortized chunk queue for framed stdout streams ([u8 type][u32be len][payload]), avoiding O(N^2) Buffer.concat on 4K keyframes.
+// O(1)-amortized chunk queue for framed stdout streams ([u8 type][u32be len][payload]), avoiding O(N^2) Buffer.concat and Array.shift().
 export function createFrameReader() {
-	const chunks = []
+	let chunks = []
+	let headIdx = 0
 	let headOff = 0
 	let total = 0
 
+	const advanceHead = () => {
+		headIdx++
+		headOff = 0
+		if (headIdx >= chunks.length) {
+			chunks = []
+			headIdx = 0
+		} else if (headIdx >= 64 && headIdx * 2 >= chunks.length) {
+			chunks = chunks.slice(headIdx)
+			headIdx = 0
+		}
+	}
+
 	const consume = (n) => {
 		if (n <= 0) return Buffer.alloc(0)
-		const first = chunks[0]
+		const first = chunks[headIdx]
 		if (first && first.length - headOff >= n) {
 			const out = first.subarray(headOff, headOff + n)
 			headOff += n
 			total -= n
-			if (headOff >= first.length) {
-				chunks.shift()
-				headOff = 0
-			}
+			if (headOff >= first.length) advanceHead()
 			return out
 		}
 		const out = Buffer.allocUnsafe(n)
 		let written = 0
-		while (written < n && chunks.length > 0) {
-			const cur = chunks[0]
+		while (written < n && headIdx < chunks.length) {
+			const cur = chunks[headIdx]
 			const avail = cur.length - headOff
 			const take = Math.min(avail, n - written)
 			cur.copy(out, written, headOff, headOff + take)
 			written += take
 			headOff += take
 			total -= take
-			if (headOff >= cur.length) {
-				chunks.shift()
-				headOff = 0
-			}
+			if (headOff >= cur.length) advanceHead()
 		}
 		return out
 	}
 
 	const peekHeader = () => {
-		const first = chunks[0]
+		const first = chunks[headIdx]
 		if (first && first.length - headOff >= 5) {
 			return {type: first[headOff], len: first.readUInt32BE(headOff + 1)}
 		}
 		const hdr = Buffer.allocUnsafe(5)
 		let filled = 0
-		for (let i = 0; i < chunks.length && filled < 5; i++) {
+		for (let i = headIdx; i < chunks.length && filled < 5; i++) {
 			const c = chunks[i]
-			const off = i === 0 ? headOff : 0
+			const off = i === headIdx ? headOff : 0
 			const take = Math.min(c.length - off, 5 - filled)
 			c.copy(hdr, filled, off, off + take)
 			filled += take
@@ -96,7 +103,8 @@ export function createFrameReader() {
 			return true
 		},
 		clear() {
-			chunks.length = 0
+			chunks = []
+			headIdx = 0
 			headOff = 0
 			total = 0
 		},
@@ -152,6 +160,8 @@ export function createHyprland({
 	let pendingStreams = 0
 	let rectSyncTimer = null
 	let lastLockedState = null
+	let lockProbeSeq = 0
+	let lastAppliedLockSeq = 0
 	let lastFocusedAddr = ''
 	let compilePromise = null
 	let compiledBin = captureBin || null
@@ -384,19 +394,26 @@ export function createHyprland({
 	}
 
 	// Detect whether Wayland ext_session_lock_v1 (e.g. Omarchy shell lockscreen) is holding pointer/keyboard input.
+	// Returns true (locked), false (unlocked), or null (unknown/probe failed) so transient hyprctl failures never fabricate an unlock.
 	async function isSessionLocked() {
 		try {
-			const mons = await monitorsInfo()
+			const rawMons = await hyprctl(['monitors', '-j'])
+			const parsedMons = JSON.parse(rawMons || '[]')
+			if (!Array.isArray(parsedMons)) return null
+			const mons = parsedMons.map((m) => ({
+				locked: Array.isArray(m.solitaryBlockedBy) && m.solitaryBlockedBy.includes('LOCK'),
+				hasLockInfo: Array.isArray(m.solitaryBlockedBy),
+			}))
 			if (mons.some((m) => m.locked)) return true
 			// When Hyprland reports solitaryBlockedBy, trust it directly so an unlocked empty workspace is never misclassified as locked.
 			if (mons.some((m) => m.hasLockInfo)) return false
-			const wins = await windows()
+			const wins = await windows({strict: true})
 			if (!wins.length) return false
 			const raw = await hyprctl(['activewindow', '-j'])
 			const active = JSON.parse(raw || '{}')
 			return !active || !active.address
 		} catch {
-			return false
+			return null
 		}
 	}
 
@@ -412,7 +429,8 @@ export function createHyprland({
 		const hasFfmpeg = hasNativeCapture || (await exec('ffmpeg', ['-version'], {timeout: 3000})).ok
 		const hasPython = (await exec('python3', ['--version'], {timeout: 3000})).ok
 		const available = !!(env?.WAYLAND_DISPLAY && env?.HYPRLAND_INSTANCE_SIGNATURE && (hasNativeCapture || (hasFfmpeg && hasPython)))
-		const [monitors, sessionLocked] = available ? await Promise.all([monitorsInfo(), isSessionLocked()]) : [[], false]
+		const [monitors, rawLocked] = available ? await Promise.all([monitorsInfo(), isSessionLocked()]) : [[], false]
+		const sessionLocked = rawLocked === true
 		return {
 			available,
 			wayland: env?.WAYLAND_DISPLAY ?? null,
@@ -490,7 +508,11 @@ export function createHyprland({
 
 	async function notifyUnlocked() {
 		await new Promise((r) => setTimeout(r, 300))
-		const locked = await isSessionLocked().catch(() => false)
+		const seq = ++lockProbeSeq
+		const locked = await isSessionLocked().catch(() => null)
+		if (locked === null) return
+		if (seq < lastAppliedLockSeq) return
+		lastAppliedLockSeq = seq
 		lastLockedState = locked
 		for (const s of [...activeStreams]) {
 			if (s.ws.readyState === s.ws.OPEN) {
@@ -512,7 +534,10 @@ export function createHyprland({
 		}
 	}
 
-	function applyLockState(locked, {hadViewer = activeStreams.size > 0} = {}) {
+	function applyLockState(locked, {hadViewer = activeStreams.size > 0, seq = ++lockProbeSeq} = {}) {
+		if (locked === null) return
+		if (seq < lastAppliedLockSeq) return
+		lastAppliedLockSeq = seq
 		if (locked === lastLockedState) return
 		const prev = lastLockedState
 		lastLockedState = locked
@@ -554,8 +579,9 @@ export function createHyprland({
 					})
 					.catch(() => {})
 				const hadViewer = activeStreams.size > 0
+				const seq = ++lockProbeSeq
 				isSessionLocked()
-					.then((locked) => applyLockState(locked, {hadViewer: hadViewer || activeStreams.size > 0}))
+					.then((locked) => applyLockState(locked, {hadViewer: hadViewer || activeStreams.size > 0, seq}))
 					.catch(() => {})
 				syncAllStreamRects().catch(() => {})
 			}, 1200)
@@ -602,7 +628,11 @@ export function createHyprland({
 			if (mods !== null) out.mods = Math.round(mods)
 			return out
 		}
-		if (msg.type === 'audio' && typeof msg.enabled === 'boolean') return {type: 'audio', enabled: msg.enabled}
+		if (msg.type === 'audio' && typeof msg.enabled === 'boolean') {
+			const out = {type: 'audio', enabled: msg.enabled}
+			if (msg.codec === 'pcm' || msg.codec === 'opus') out.codec = msg.codec
+			return out
+		}
 		if (msg.type === 'unlock_check') return {type: 'unlock_check'}
 		if (msg.type === 'reconfig') {
 			const out = {type: 'reconfig'}
@@ -689,18 +719,24 @@ export function createHyprland({
 		pendingStreams++
 		let closedEarly = false
 		let wantAudio = !!audio
+		let earlyAudioCodec = null
+		let earlyReconfig = null
 		const onEarlyClose = () => {
 			closedEarly = true
 		}
-		// Capture any audio mute/ownership resync sent immediately on ws.onopen while attachStream is still awaiting setup.
+		// Capture any audio mute/codec or live reconfig sent immediately on ws.onopen while attachStream is still awaiting setup.
 		const onEarlyMessage = (data, isBinary) => {
 			if (isBinary) return
 			const text = String(data ?? '')
-			if (text.length > 256) return
+			if (text.length > 512) return
 			try {
-				const parsed = JSON.parse(text)
-				if (parsed && parsed.type === 'audio' && typeof parsed.enabled === 'boolean') {
-					wantAudio = parsed.enabled
+				const clean = sanitizeInputMsg(JSON.parse(text))
+				if (!clean) return
+				if (clean.type === 'audio') {
+					wantAudio = clean.enabled
+					if (clean.codec) earlyAudioCodec = clean.codec
+				} else if (clean.type === 'reconfig') {
+					earlyReconfig = {...(earlyReconfig || {}), ...clean}
 				}
 			} catch {}
 		}
@@ -724,15 +760,11 @@ export function createHyprland({
 				return
 			}
 			const cleanFps = Math.max(5, Math.min(120, Math.round(Number(fps) || 60)))
-			const cleanBitrate = Math.max(1000, Math.min(150000, Math.round(Number(bitrate) || 22000)))
-			const cleanCodec = codec === 'hevc444' || codec === 'hevc10' || codec === 'hevc' ? codec : 'h264'
-			const cleanQuality = Number.isFinite(Number(quality)) && Number(quality) >= 10 && Number(quality) <= 34 ? Math.round(Number(quality)) : 0
+			let curBitrate = Math.max(1000, Math.min(150000, Math.round(Number(bitrate) || 22000)))
+			let curCodec = codec === 'hevc444' || codec === 'hevc10' || codec === 'hevc' ? codec : 'h264'
+			let curQuality = Number.isFinite(Number(quality)) && Number(quality) >= 10 && Number(quality) <= 34 ? Math.round(Number(quality)) : 0
 			const cleanComp = Number.isFinite(Number(compression)) && Number(compression) >= 1 && Number(compression) <= 7 ? Math.round(Number(compression)) : 0
-			let curBitrate = cleanBitrate
-			let curQuality = cleanQuality
-			let curCodec = cleanCodec
-			let bp = backpressureBudgets(cleanBitrate)
-			const wantOpus = audioCodec === 'opus'
+			let wantOpus = (earlyAudioCodec ?? audioCodec) === 'opus'
 			let opusFailed = false
 
 			// Ensure target window is on an awake, active workspace (move onto awake headless RAIL-1 if its monitor is asleep or workspace is hidden)
@@ -783,16 +815,24 @@ export function createHyprland({
 			const nativeBin = await ensureCaptureBinary().catch(() => null)
 			if (closedEarly || ws.readyState !== ws.OPEN) return
 
+			if (earlyReconfig && nativeBin) {
+				if (earlyReconfig.bitrate !== undefined) curBitrate = earlyReconfig.bitrate
+				if (earlyReconfig.quality !== undefined) curQuality = earlyReconfig.quality
+				if (earlyReconfig.codec !== undefined) curCodec = earlyReconfig.codec
+			}
+			if (earlyAudioCodec) wantOpus = earlyAudioCodec === 'opus'
+			let bp = backpressureBudgets(curBitrate)
+
 			let child
 			if (nativeBin) {
-				const args = ['--mode', cleanMode, '--fps', String(cleanFps), '--bitrate', String(cleanBitrate), '--codec', cleanCodec, '--vaapi-device', vaapiDevice]
-				if (cleanQuality) args.push('--quality', String(cleanQuality))
+				const args = ['--mode', cleanMode, '--fps', String(cleanFps), '--bitrate', String(curBitrate), '--codec', curCodec, '--vaapi-device', vaapiDevice]
+				if (curQuality) args.push('--quality', String(curQuality))
 				if (cleanComp) args.push('--compression', String(cleanComp))
 				if (cleanAddr) args.push('--address', cleanAddr)
 				if (resolvedOutput) args.push('--output', resolvedOutput)
 				child = spawnImpl(nativeBin, args, {env, stdio: ['pipe', 'pipe', 'pipe']})
 			} else {
-				const args = [scriptPath, '--mode', cleanMode, '--fps', String(Math.min(60, cleanFps)), '--bitrate', String(cleanBitrate)]
+				const args = [scriptPath, '--mode', cleanMode, '--fps', String(Math.min(60, cleanFps)), '--bitrate', String(curBitrate)]
 				if (cleanAddr) args.push('--address', cleanAddr)
 				if (resolvedOutput) args.push('--output', resolvedOutput)
 				child = spawnImpl('python3', args, {env, stdio: ['pipe', 'pipe', 'pipe']})
@@ -806,6 +846,7 @@ export function createHyprland({
 			let dropUntilKey = false
 			let pendingKeyReq = false
 			let lastKeyframeReqAt = 0
+			let keyframeTimer = null
 			let cleaned = false
 			let childExited = false
 			let killTimer = null
@@ -846,13 +887,16 @@ export function createHyprland({
 				if (cleaned || audioState) return
 				// Prefer 10 ms Opus (128 kbps active, 0 kbps silent) via nativeBin --opus-stdin when supported; fallback cleanly to PCM 0x02.
 				if (wantOpus && nativeBin && !opusFailed) {
+					let ac = null
+					let pItem = null
 					try {
-						const ac = spawnImpl('parec', ['--device=@DEFAULT_MONITOR@', '--format=s16le', '--rate=48000', '--channels=2', '--latency-msec=10'], {env, stdio: ['ignore', 'pipe', 'ignore']})
-						const oe = spawnImpl(nativeBin, ['--opus-stdin'], {env, stdio: ['pipe', 'pipe', 'ignore']})
-						const pItem = {proc: ac, exited: false, killTimer: null}
-						const oItem = {proc: oe, exited: false, killTimer: null}
-						const st = {procs: [pItem, oItem]}
+						ac = spawnImpl('parec', ['--device=@DEFAULT_MONITOR@', '--format=s16le', '--rate=48000', '--channels=2', '--latency-msec=10'], {env, stdio: ['ignore', 'pipe', 'ignore']})
+						pItem = {proc: ac, exited: false, killTimer: null}
+						const st = {procs: [pItem]}
 						audioState = st
+						const oe = spawnImpl(nativeBin, ['--opus-stdin'], {env, stdio: ['pipe', 'pipe', 'ignore']})
+						const oItem = {proc: oe, exited: false, killTimer: null}
+						st.procs.push(oItem)
 						let opusRx = Buffer.alloc(0)
 						const onProcDone = (item, other, isOpus, code) => {
 							item.exited = true
@@ -879,7 +923,12 @@ export function createHyprland({
 						ac.stdout?.on('data', (chunk) => {
 							if (cleaned || audioState !== st || !oe.stdin?.writable) return
 							try {
-								oe.stdin.write(chunk)
+								if (!oe.stdin.write(chunk)) {
+									ac.stdout.pause?.()
+									oe.stdin.once('drain', () => {
+										if (!cleaned && audioState === st) ac.stdout?.resume?.()
+									})
+								}
 							} catch {}
 						})
 						oe.stdout?.on('data', (chunk) => {
@@ -903,6 +952,7 @@ export function createHyprland({
 						})
 						return
 					} catch {
+						if (pItem) killAudioProc(pItem)
 						opusFailed = true
 						audioState = null
 					}
@@ -953,16 +1003,30 @@ export function createHyprland({
 			const cleanup = () => {
 				if (cleaned) return
 				cleaned = true
+				if (keyframeTimer) {
+					clearTimeout(keyframeTimer)
+					keyframeTimer = null
+				}
 				frameReader.clear()
 				stopAudio()
 				const wasLastLocked = lastLockedState === true
 				activeStreams.delete(entry)
 				ensureRectSyncTimer()
-				// If the last viewer closes right after unlocking (before the 1.2s poll tick), check lock state once so remoteSignIn relock still arms.
-				if (activeStreams.size === 0 && wasLastLocked) {
-					isSessionLocked()
-						.then((locked) => applyLockState(locked, {hadViewer: true}))
-						.catch(() => {})
+				// If the last viewer closes right after unlocking (before the 1.2s poll tick), check lock state once so remoteSignIn relock still arms, then reset baseline for the next viewing session.
+				if (activeStreams.size === 0) {
+					if (wasLastLocked) {
+						const seq = ++lockProbeSeq
+						isSessionLocked()
+							.then((locked) => {
+								applyLockState(locked, {hadViewer: true, seq})
+								if (activeStreams.size === 0) lastLockedState = null
+							})
+							.catch(() => {
+								if (activeStreams.size === 0) lastLockedState = null
+							})
+					} else {
+						lastLockedState = null
+					}
 				}
 				try {
 					child.stdin?.end()
@@ -1079,21 +1143,44 @@ export function createHyprland({
 				enqueueControlLine(line)
 			}
 
-			const reqKeyframeDebounced = () => {
+			const scheduleKeyframeRecovery = () => {
+				if (cleaned || !pendingKeyReq || ws.readyState !== ws.OPEN) return
 				const nowMs = Date.now()
-				if (nowMs - lastKeyframeReqAt >= 1500) {
+				const cooldownLeft = Math.max(0, 1500 - (nowMs - lastKeyframeReqAt))
+				if (ws.bufferedAmount <= bp.keyDrainBytes && cooldownLeft === 0) {
 					lastKeyframeReqAt = nowMs
 					enqueueControlLine(nativeBin ? 'F\n' : '{"type":"keyframe"}\n')
+					if (keyframeTimer) {
+						clearTimeout(keyframeTimer)
+						keyframeTimer = null
+					}
+					// Re-check after 1500 ms if still waiting on a keyframe (e.g., static screen or second drop inside one cooldown)
+					keyframeTimer = setTimeout(() => {
+						keyframeTimer = null
+						if (dropUntilKey && pendingKeyReq) scheduleKeyframeRecovery()
+					}, 1500)
+					keyframeTimer.unref?.()
+					return
+				}
+				if (!keyframeTimer) {
+					const waitMs = cooldownLeft > 0 ? cooldownLeft : 120
+					keyframeTimer = setTimeout(() => {
+						keyframeTimer = null
+						scheduleKeyframeRecovery()
+					}, waitMs)
+					keyframeTimer.unref?.()
 				}
 			}
 
 			// Push initial window or monitor logical rect for pixel-perfect pointer mapping (window AND multi-monitor output mode)
 			syncAllStreamRects().catch(() => {})
 			const initHadViewer = activeStreams.size > 0
+			const initSeq = ++lockProbeSeq
 			isSessionLocked()
 				.then((locked) => {
+					if (locked === null) return
 					const changed = locked !== lastLockedState
-					applyLockState(locked, {hadViewer: initHadViewer || activeStreams.size > 0})
+					applyLockState(locked, {hadViewer: initHadViewer || activeStreams.size > 0, seq: initSeq})
 					if (!changed && locked && ws.readyState === ws.OPEN) {
 						ws.send(JSON.stringify({type: 'lock', locked: true}))
 					}
@@ -1134,22 +1221,27 @@ export function createHyprland({
 						if (ws.bufferedAmount > bp.hardDropBytes) {
 							dropUntilKey = true
 							pendingKeyReq = true
+							scheduleKeyframeRecovery()
 							return
 						}
 						if (ws.bufferedAmount > bp.deltaDropBytes && !isKey) {
 							dropUntilKey = true
 							pendingKeyReq = true
+							scheduleKeyframeRecovery()
 							return
 						}
 						// Wait for TCP send queue to drain below keyDrainBytes before requesting a recovery IDR so keyframes never pile onto congestion.
 						if (pendingKeyReq && ws.bufferedAmount <= bp.keyDrainBytes) {
-							pendingKeyReq = false
-							reqKeyframeDebounced()
+							scheduleKeyframeRecovery()
 						}
 						if (dropUntilKey && !isKey) return
 						if (isKey) {
 							dropUntilKey = false
 							pendingKeyReq = false
+							if (keyframeTimer) {
+								clearTimeout(keyframeTimer)
+								keyframeTimer = null
+							}
 						}
 						ws.send(payload, {binary: true})
 					}
@@ -1232,18 +1324,31 @@ export function createHyprland({
 				if (!clean) return
 				if (clean.type === 'audio') {
 					wantAudio = clean.enabled
+					if (clean.codec === 'pcm') {
+						wantOpus = false
+						opusFailed = true
+						stopAudio()
+						if (clean.enabled) startAudio()
+						return
+					}
 					if (clean.enabled) startAudio()
 					else stopAudio()
 					return
 				}
 				if (clean.type === 'reconfig') {
+					if (!nativeBin) {
+						if (ws.readyState === ws.OPEN) {
+							try {
+								ws.send(JSON.stringify({type: 'reconfig_unsupported'}))
+							} catch {}
+						}
+						return
+					}
 					if (clean.bitrate !== undefined) curBitrate = clean.bitrate
 					if (clean.quality !== undefined) curQuality = clean.quality
 					if (clean.codec !== undefined) curCodec = clean.codec
 					bp = backpressureBudgets(curBitrate)
-					if (nativeBin) {
-						enqueueControlLine(`R ${curBitrate} ${curQuality} ${curCodec}\n`)
-					}
+					enqueueControlLine(`R ${curBitrate} ${curQuality} ${curCodec}\n`)
 					return
 				}
 				if (clean.type === 'unlock_check') {
@@ -1252,8 +1357,9 @@ export function createHyprland({
 						const t = setTimeout(() => {
 							if (cleaned) return
 							const hadViewer = activeStreams.size > 0
+							const seq = ++lockProbeSeq
 							isSessionLocked()
-								.then((locked) => applyLockState(locked, {hadViewer: hadViewer || activeStreams.size > 0}))
+								.then((locked) => applyLockState(locked, {hadViewer: hadViewer || activeStreams.size > 0, seq}))
 								.catch(() => {})
 						}, ms)
 						t.unref?.()

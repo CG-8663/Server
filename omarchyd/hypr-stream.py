@@ -172,6 +172,7 @@ class WaylandClient:
         self.sock.connect(sock_path)
         self.lock = threading.Lock()
         self.next_id = 2
+        self.free_ids = []
         self.rx = bytearray()
         self.globals = {}  # interface -> list[(name, version)]
         self.callbacks = {}
@@ -179,6 +180,8 @@ class WaylandClient:
         self.last_error = None
 
     def alloc_id(self) -> int:
+        if self.free_ids:
+            return self.free_ids.pop()
         oid = self.next_id
         self.next_id += 1
         return oid
@@ -229,6 +232,10 @@ class WaylandClient:
                     err_obj, err_code = struct.unpack_from("<II", payload, 0)
                     err_msg, _ = wl_unpack_str(payload, 8)
                     self.last_error = f"wl_display error obj={err_obj} code={err_code}: {err_msg}"
+                elif op == 1 and len(payload) >= 4:
+                    (del_id,) = struct.unpack_from("<I", payload, 0)
+                    if del_id >= 2 and len(self.free_ids) < 256:
+                        self.free_ids.append(del_id)
                 continue
             fn = self.handlers.get(obj_id)
             if fn:
@@ -431,6 +438,8 @@ class H264Encoder:
                 "constrained_baseline",
                 "-bf",
                 "0",
+                "-aud",
+                "1",
                 "-g",
                 str(max(15, self.fps * 2)),
                 "-b:v",
@@ -453,7 +462,7 @@ class H264Encoder:
             "-tune",
             "zerolatency",
             "-x264-params",
-            "slices=1:repeat-headers=1",
+            "slices=1:repeat-headers=1:aud=1",
             "-profile:v",
             "baseline",
             "-bf",
@@ -517,6 +526,54 @@ class H264Encoder:
         start_t = time.monotonic()
         self.frames_emitted = 0
         stdout = self.proc.stdout
+        au_parts = []
+        au_has_vcl = False
+        au_is_key = False
+
+        def flush_au():
+            nonlocal au_parts, au_has_vcl, au_is_key
+            if not au_has_vcl or not au_parts:
+                au_parts = []
+                au_has_vcl = False
+                au_is_key = False
+                return
+            payload = ((sps or b"") + (pps or b"") if au_is_key else b"") + b"".join(au_parts)
+            ts_us = int((time.monotonic() - start_t) * 1_000_000)
+            self.frames_emitted += 1
+            self.writer.send_video(au_is_key, ts_us, payload)
+            au_parts = []
+            au_has_vcl = False
+            au_is_key = False
+
+        def handle_nal(nal: bytes, l0: int):
+            nonlocal sps, pps, au_has_vcl, au_is_key
+            if len(nal) <= l0:
+                return
+            nal_type = nal[l0] & 0x1F
+            if nal_type == 9:
+                # Access Unit Delimiter starts a new picture
+                flush_au()
+                return
+            if nal_type == 7:
+                if au_has_vcl:
+                    flush_au()
+                sps = nal
+                return
+            if nal_type == 8:
+                if au_has_vcl:
+                    flush_au()
+                pps = nal
+                return
+            if nal_type in (1, 5):
+                # first_mb_in_slice == 0 (exp-golomb leading bit 1 at MSB of first slice header byte) starts a new picture
+                is_first_slice = len(nal) > l0 + 1 and (nal[l0 + 1] & 0x80) != 0
+                if au_has_vcl and is_first_slice:
+                    flush_au()
+                au_parts.append(nal)
+                au_has_vcl = True
+                if nal_type == 5:
+                    au_is_key = True
+
         while not self.stop_event.is_set():
             chunk = stdout.read(65536)
             if not chunk:
@@ -525,30 +582,21 @@ class H264Encoder:
             codes = find_start_codes(buf)
             if len(codes) < 2:
                 continue
-            # Emit every complete NALU before the final start code
+            # Process every complete NALU before the final start code
             last_pos = codes[-1][0]
             for i in range(len(codes) - 1):
                 p0, l0 = codes[i]
                 p1, _ = codes[i + 1]
-                nal = bytes(buf[p0:p1])
-                if len(nal) <= l0:
-                    continue
-                nal_type = nal[l0] & 0x1F
-                if nal_type == 7:
-                    sps = nal
-                elif nal_type == 8:
-                    pps = nal
-                elif nal_type == 5:
-                    # Keyframe (IDR): always prepend SPS + PPS so WebCodecs can decode immediately
-                    au = (sps or b"") + (pps or b"") + nal
-                    ts_us = int((time.monotonic() - start_t) * 1_000_000)
-                    self.frames_emitted += 1
-                    self.writer.send_video(True, ts_us, au)
-                elif nal_type == 1:
-                    ts_us = int((time.monotonic() - start_t) * 1_000_000)
-                    self.frames_emitted += 1
-                    self.writer.send_video(False, ts_us, nal)
+                handle_nal(bytes(buf[p0:p1]), l0)
             del buf[:last_pos]
+
+        # Drain remaining NALUs and flush the final access unit on EOF
+        codes = find_start_codes(buf)
+        for i in range(len(codes)):
+            p0, l0 = codes[i]
+            p1 = codes[i + 1][0] if i + 1 < len(codes) else len(buf)
+            handle_nal(bytes(buf[p0:p1]), l0)
+        flush_au()
 
     def write_frame(self, raw: bytes) -> bool:
         if not self.proc or self.proc.poll() is not None:

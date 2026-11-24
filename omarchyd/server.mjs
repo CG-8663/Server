@@ -126,6 +126,35 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	})
 	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).
 	const tickets = new Map()
+	const hyprSocketsBySession = new Map() // sessionId -> Set<WebSocket>
+	function revokeSessionStreams(sessionId) {
+		if (!sessionId) return
+		for (const [tk, v] of tickets) {
+			if (v.sessionId === sessionId) tickets.delete(tk)
+		}
+		const set = hyprSocketsBySession.get(sessionId)
+		if (set) {
+			hyprSocketsBySession.delete(sessionId)
+			for (const ws of set) {
+				try {
+					ws.close(1008, 'Session ended')
+				} catch {}
+			}
+		}
+	}
+	function revokeAllHyprStreams() {
+		for (const [tk, v] of tickets) {
+			if (v.target === 'hyprland') tickets.delete(tk)
+		}
+		for (const set of hyprSocketsBySession.values()) {
+			for (const ws of set) {
+				try {
+					ws.close(1008, 'Session ended')
+				} catch {}
+			}
+		}
+		hyprSocketsBySession.clear()
+	}
 	const release = await system.osRelease()
 	const settings = {hostname: os.hostname()}
 
@@ -196,7 +225,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			},
 		},
 		'user.renewToken': {kind: 'mutation', run: async (_i, {auth}) => (auth.kind === 'browser' && (await accounts.renewBrowser(auth.bearer)), 'renewed')},
-		'user.logout': {kind: 'mutation', run: async (_i, {auth}) => (await accounts.logout(auth), true)},
+		'user.logout': {kind: 'mutation', run: async (_i, {auth}) => (revokeSessionStreams(auth.sessionId), await accounts.logout(auth), true)},
 		// ---- the Omarchy desktop's themes (Settings → Appearance → Omarchy) ---------------------------
 		'omarchy.themes': {kind: 'query', run: () => omarchyTheme.themes()},
 		'omarchy.backgrounds': {kind: 'query', run: (input) => omarchyTheme.backgrounds(input ?? {})},
@@ -226,7 +255,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 				const now = Date.now()
 				for (const [t, v] of tickets) if (v.expires < now) tickets.delete(t)
 				const ticket = randomBytes(24).toString('base64url')
-				tickets.set(ticket, {userId: auth.userId, role: accounts.getUser(auth.userId)?.role, target: input.target, expires: now + 30_000})
+				tickets.set(ticket, {userId: auth.userId, sessionId: auth.sessionId ?? null, role: accounts.getUser(auth.userId)?.role, target: input.target, expires: now + 30_000})
 				return ticket
 			},
 		},
@@ -307,6 +336,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 					await backups.clearSettings().catch((e) => console.error('[omarchyd] reset backups', e.message))
 					await storage.clearShares().catch((e) => console.error('[omarchyd] reset shares', e.message))
 					await oidc.reset().catch((e) => console.error('[omarchyd] reset oidc', e.message))
+					revokeAllHyprStreams()
 					if (appsRemain || machinesRemain) return
 					await accounts.reset()
 					console.log('[omarchyd] factory reset done')
@@ -895,6 +925,13 @@ WantedBy=graphical-session.target
 			const owner = (t.role ?? accounts.getUser(t.userId)?.role) === 'owner'
 			if (route === 'hyprland') {
 				if (!owner) return refuse('403 Forbidden')
+				if (req.headers.origin) {
+					let originHost = null
+					try {
+						originHost = new URL(req.headers.origin).host
+					} catch {}
+					if (!originHost || originHost !== req.headers.host) return refuse('403 Forbidden')
+				}
 				const mode = url.searchParams.get('mode') === 'window' ? 'window' : 'output'
 				const address = mode === 'window' ? (url.searchParams.get('address') ?? '') : ''
 				if (mode === 'window' && !/^0x[0-9a-f]{4,16}$/i.test(address)) return refuse('400 Bad Request')
@@ -908,10 +945,23 @@ WantedBy=graphical-session.target
 				const codec = rawCodec === 'hevc444' || rawCodec === 'hevc10' || rawCodec === 'hevc' ? rawCodec : 'h264'
 				const quality = Number(url.searchParams.get('quality') ?? 0)
 				const compression = Number(url.searchParams.get('compression') ?? 0)
+				const sidKey = t.sessionId || null
 				return wss.handleUpgrade(req, socket, head, (ws) => {
 					try {
 						socket.setNoDelay?.(true)
 					} catch {}
+					if (sidKey) {
+						let set = hyprSocketsBySession.get(sidKey)
+						if (!set) {
+							set = new Set()
+							hyprSocketsBySession.set(sidKey, set)
+						}
+						set.add(ws)
+						ws.once('close', () => {
+							set.delete(ws)
+							if (set.size === 0) hyprSocketsBySession.delete(sidKey)
+						})
+					}
 					viewerJoined()
 					ws.once('close', viewerLeft)
 					hyprland.attachStream(ws, {mode, address, output, fps, bitrate, audio, audioCodec, codec, quality, compression}).catch(() => ws.close(1011, 'Hyprland stream failed'))

@@ -270,6 +270,8 @@ typedef struct {
 	int fd;
 	pthread_mutex_t tx_lock;
 	uint32_t next_id;
+	uint32_t free_ids[256];
+	int n_free_ids;
 	uint32_t registry_id;
 	WlGlobal globals[128];
 	int num_globals;
@@ -281,6 +283,9 @@ typedef struct {
 } WlClient;
 
 static uint32_t wl_alloc_id(WlClient *wl) {
+	if (wl->n_free_ids > 0) {
+		return wl->free_ids[--wl->n_free_ids];
+	}
 	return wl->next_id++;
 }
 
@@ -491,6 +496,13 @@ static bool wl_pump(WlClient *wl, int timeout_ms) {
 				if (sl > 0 && sl <= plen - 12) {
 					snprintf(wl->last_error, sizeof(wl->last_error), "wl_display error obj=%u code=%u: %.*s", eo, ec, (int)(sl - 1), (const char *)(pl + 12));
 				}
+			} else if (op == 1 && plen >= 4) {
+				/* wl_display::delete_id - recycle acknowledged object IDs so long-lived 60 FPS streams never grow libwayland's ID map */
+				uint32_t del_id = 0;
+				memcpy(&del_id, pl, 4);
+				if (del_id >= 2 && wl->n_free_ids < (int)(sizeof(wl->free_ids) / sizeof(wl->free_ids[0]))) {
+					wl->free_ids[wl->n_free_ids++] = del_id;
+				}
 			}
 			if (pl != pl_stack) free(pl);
 			continue;
@@ -670,11 +682,24 @@ static bool capbuf_create_dmabuf(WlClient *wl, struct gbm_device *gbm, uint32_t 
 	return true;
 }
 
+static bool is_supported_shm_fmt(uint32_t fmt) {
+	return fmt == WL_SHM_FORMAT_ARGB8888 || fmt == WL_SHM_FORMAT_XRGB8888 || fmt == WL_SHM_FORMAT_ABGR8888 || fmt == WL_SHM_FORMAT_XBGR8888;
+}
+
+static bool is_supported_drm_fmt(uint32_t fmt) {
+	return fmt == DRM_FORMAT_XRGB8888 || fmt == DRM_FORMAT_ARGB8888 || fmt == DRM_FORMAT_XBGR8888 || fmt == DRM_FORMAT_ABGR8888;
+}
+
 static bool capbuf_create_shm(WlClient *wl, uint32_t shm_id, int w, int h, uint32_t stride, uint32_t fmt, CapBuf *b) {
 	memset(b, 0, sizeof(*b));
 	b->dmabuf_fd = -1;
 	b->shm_fd = -1;
-	size_t sz = (size_t)stride * (size_t)h;
+	if (!is_supported_shm_fmt(fmt) || w < 2 || h < 2 || w > 16384 || h > 16384) return false;
+	if ((uint64_t)stride < (uint64_t)w * 4ULL) return false;
+	uint64_t sz64 = (uint64_t)stride * (uint64_t)h;
+	/* wl_shm::create_pool takes a signed 32-bit size field; refuse sizes that overflow int32 */
+	if (sz64 == 0 || sz64 > 0x7FFFFFFFULL) return false;
+	size_t sz = (size_t)sz64;
 	int fd = memfd_create("hypr-rail-shm", MFD_CLOEXEC);
 	if (fd < 0) return false;
 	if (ftruncate(fd, (off_t)sz) < 0) {
@@ -932,56 +957,62 @@ static bool enc_init_one(VaapiEncoder *e, const char *vaapi_device, int w, int h
 	const char *chosen_id = want_hevc444 ? "hev1.4.10.L153.BE.8" : want_hevc10 ? "hev1.2.4.L153.B0" : want_hevc ? "hev1.1.6.L153.B0" : "avc1.640033";
 	int target_slices = ((int64_t)e->even_w * (int64_t)e->even_h >= 2000000LL) ? 4 : 1;
 	for (size_t ti = 0; ti < n_tries; ti++) {
-		if (e->codec) avcodec_free_context(&e->codec);
-		e->codec = avcodec_alloc_context3(codec);
-		if (!e->codec) { enc_destroy(e); return false; }
-		e->codec->width = e->even_w;
-		e->codec->height = e->even_h;
-		e->codec->time_base = (AVRational){1, fps};
-		e->codec->framerate = (AVRational){fps, 1};
-		e->codec->pix_fmt = AV_PIX_FMT_VAAPI;
-		e->codec->color_primaries = AVCOL_PRI_BT709;
-		e->codec->color_trc = AVCOL_TRC_IEC61966_2_1;
-		e->codec->colorspace = AVCOL_SPC_BT709;
-		e->codec->color_range = AVCOL_RANGE_JPEG;
-		e->codec->bit_rate = (int64_t)bitrate_kbps * 1000LL;
-		/* Tight WAN-friendly VBV (0.25s buffer, 1.25x peak) prevents 600KB keyframe / scene-cut TCP bufferbloat */
-		e->codec->rc_max_rate = (int64_t)bitrate_kbps * 1250LL;
-		e->codec->rc_buffer_size = (int64_t)bitrate_kbps * 250LL;
-		int eff_q = (req_quality >= 10 && req_quality <= 34) ? req_quality : tries[ti].global_q;
-		if (tries[ti].rc_mode && strcmp(tries[ti].rc_mode, "QVBR") == 0 && eff_q > 0) {
-			e->codec->global_quality = eff_q;
-		}
-		/* Infinite GOP over reliable TCP WebSocket eliminates periodic 320 KB IDR spikes; on-demand IDR fires on connect/resize/recovery */
-		e->codec->gop_size = 1000000;
-		e->codec->max_b_frames = 0;
-		e->codec->refs = 1;
-		if (target_slices > 1) e->codec->slices = target_slices;
-		e->codec->profile = tries[ti].profile;
-		if (sink_hw) e->codec->hw_frames_ctx = av_buffer_ref(sink_hw);
-		else e->codec->hw_device_ctx = av_buffer_ref(e->vaapi_dev);
+		int slice_cands[2] = {target_slices, 1};
+		int n_slice_cands = (target_slices > 1) ? 2 : 1;
+		for (int sc = 0; sc < n_slice_cands; sc++) {
+			int try_slices = slice_cands[sc];
+			if (e->codec) avcodec_free_context(&e->codec);
+			e->codec = avcodec_alloc_context3(codec);
+			if (!e->codec) { enc_destroy(e); return false; }
+			e->codec->width = e->even_w;
+			e->codec->height = e->even_h;
+			e->codec->time_base = (AVRational){1, fps};
+			e->codec->framerate = (AVRational){fps, 1};
+			e->codec->pix_fmt = AV_PIX_FMT_VAAPI;
+			e->codec->color_primaries = AVCOL_PRI_BT709;
+			e->codec->color_trc = AVCOL_TRC_IEC61966_2_1;
+			e->codec->colorspace = AVCOL_SPC_BT709;
+			e->codec->color_range = AVCOL_RANGE_JPEG;
+			e->codec->bit_rate = (int64_t)bitrate_kbps * 1000LL;
+			/* Tight WAN-friendly VBV (0.25s buffer, 1.25x peak) prevents 600KB keyframe / scene-cut TCP bufferbloat */
+			e->codec->rc_max_rate = (int64_t)bitrate_kbps * 1250LL;
+			e->codec->rc_buffer_size = (int64_t)bitrate_kbps * 250LL;
+			int eff_q = (req_quality >= 10 && req_quality <= 34) ? req_quality : tries[ti].global_q;
+			if (tries[ti].rc_mode && strcmp(tries[ti].rc_mode, "QVBR") == 0 && eff_q > 0) {
+				e->codec->global_quality = eff_q;
+			}
+			/* Infinite GOP over reliable TCP WebSocket eliminates periodic 320 KB IDR spikes; on-demand IDR fires on connect/resize/recovery */
+			e->codec->gop_size = 1000000;
+			e->codec->max_b_frames = 0;
+			e->codec->refs = 1;
+			if (try_slices > 1) e->codec->slices = try_slices;
+			e->codec->profile = tries[ti].profile;
+			if (sink_hw) e->codec->hw_frames_ctx = av_buffer_ref(sink_hw);
+			else e->codec->hw_device_ctx = av_buffer_ref(e->vaapi_dev);
 
-		AVDictionary *opts = NULL;
-		if (tries[ti].low_power) av_dict_set(&opts, "low_power", tries[ti].low_power, 0);
-		if (tries[ti].rc_mode) av_dict_set(&opts, "rc_mode", tries[ti].rc_mode, 0);
-		char comp_buf[8];
-		if (req_comp >= 1 && req_comp <= 7 && tries[ti].comp) {
-			snprintf(comp_buf, sizeof(comp_buf), "%d", req_comp);
-			av_dict_set(&opts, "compression_level", comp_buf, 0);
-		} else if (tries[ti].comp) {
-			av_dict_set(&opts, "compression_level", tries[ti].comp, 0);
+			AVDictionary *opts = NULL;
+			if (tries[ti].low_power) av_dict_set(&opts, "low_power", tries[ti].low_power, 0);
+			if (tries[ti].rc_mode) av_dict_set(&opts, "rc_mode", tries[ti].rc_mode, 0);
+			char comp_buf[8];
+			if (req_comp >= 1 && req_comp <= 7 && tries[ti].comp) {
+				snprintf(comp_buf, sizeof(comp_buf), "%d", req_comp);
+				av_dict_set(&opts, "compression_level", comp_buf, 0);
+			} else if (tries[ti].comp) {
+				av_dict_set(&opts, "compression_level", tries[ti].comp, 0);
+			}
+			/* async_depth=1 flushes every frame immediately with 0 queued frames (eliminates +16.7ms latency and last-frame damage stalls) */
+			av_dict_set(&opts, "async_depth", "1", 0);
+			av_dict_set(&opts, "aud", "0", 0);
+			av_dict_set(&opts, "sei", "0", 0);
+			rc = avcodec_open2(e->codec, codec, &opts);
+			av_dict_free(&opts);
+			if (rc == 0) {
+				chosen_id = tries[ti].codec_id;
+				e->slices = try_slices;
+				break;
+			}
 		}
-		/* async_depth=1 flushes every frame immediately with 0 queued frames (eliminates +16.7ms latency and last-frame damage stalls) */
-		av_dict_set(&opts, "async_depth", "1", 0);
-		av_dict_set(&opts, "aud", "0", 0);
-		av_dict_set(&opts, "sei", "0", 0);
-		rc = avcodec_open2(e->codec, codec, &opts);
-		av_dict_free(&opts);
-		if (rc == 0) {
-			chosen_id = tries[ti].codec_id;
-			e->slices = target_slices;
-			break;
-		}
+		if (rc == 0) break;
 	}
 	if (rc < 0) { enc_destroy(e); return false; }
 	e->va_in = av_frame_alloc();
@@ -1038,13 +1069,17 @@ static void attach_roi_side_data(VaapiEncoder *e, AVFrame *frame, bool is_polish
 	int n_valid = 0;
 	uint64_t total_area = 0;
 	for (int i = 0; i < n_dmg && n_valid < MAX_DAMAGE_RECTS; i++) {
-		int32_t x1 = dmg[i].x < 0 ? 0 : dmg[i].x;
-		int32_t y1 = dmg[i].y < 0 ? 0 : dmg[i].y;
-		int32_t x2 = dmg[i].x + dmg[i].w;
-		int32_t y2 = dmg[i].y + dmg[i].h;
-		if (x2 > e->even_w) x2 = e->even_w;
-		if (y2 > e->even_h) y2 = e->even_h;
-		if (x2 <= x1 || y2 <= y1) continue;
+		int64_t x1_64 = dmg[i].x < 0 ? 0 : (int64_t)dmg[i].x;
+		int64_t y1_64 = dmg[i].y < 0 ? 0 : (int64_t)dmg[i].y;
+		int64_t x2_64 = (int64_t)dmg[i].x + (int64_t)dmg[i].w;
+		int64_t y2_64 = (int64_t)dmg[i].y + (int64_t)dmg[i].h;
+		if (x2_64 > (int64_t)e->even_w) x2_64 = (int64_t)e->even_w;
+		if (y2_64 > (int64_t)e->even_h) y2_64 = (int64_t)e->even_h;
+		if (x2_64 <= x1_64 || y2_64 <= y1_64) continue;
+		int32_t x1 = (int32_t)x1_64;
+		int32_t y1 = (int32_t)y1_64;
+		int32_t x2 = (int32_t)x2_64;
+		int32_t y2 = (int32_t)y2_64;
 		if (e->y_invert) {
 			int32_t fy1 = e->even_h - y2;
 			int32_t fy2 = e->even_h - y1;
@@ -1760,22 +1795,23 @@ static void on_frame_evt(void *ctx, uint32_t obj_id, uint16_t op, const uint8_t 
 	if (op == 0 && len >= 16) {
 		uint32_t fmt, w, h, stride;
 		memcpy(&fmt, pl, 4); memcpy(&w, pl + 4, 4); memcpy(&h, pl + 8, 4); memcpy(&stride, pl + 12, 4);
-		if (!fs->has_shm || fmt == WL_SHM_FORMAT_ARGB8888 || fmt == WL_SHM_FORMAT_XRGB8888 || fmt == WL_SHM_FORMAT_ABGR8888 || fmt == WL_SHM_FORMAT_XBGR8888) {
+		if (is_supported_shm_fmt(fmt) && w >= 2 && h >= 2 && w <= 16384 && h <= 16384 &&
+			(uint64_t)stride >= (uint64_t)w * 4ULL && (uint64_t)stride * (uint64_t)h <= 0x7FFFFFFFULL) {
 			fs->has_shm = true; fs->shm_fmt = fmt; fs->shm_w = w; fs->shm_h = h; fs->shm_stride = stride;
 		}
 		if (!fs->window_mode && fs->mgr_ver < 3) fs->buf_done = true;
-	} else if (!fs->window_mode && op == 4 && len >= 16) {
+	} else if (((fs->window_mode && op == 1) || (!fs->window_mode && op == 4)) && len >= 16) {
 		if (fs->n_damage < MAX_DAMAGE_RECTS) {
 			uint32_t dx, dy, dw, dh;
 			memcpy(&dx, pl, 4); memcpy(&dy, pl + 4, 4); memcpy(&dw, pl + 8, 4); memcpy(&dh, pl + 12, 4);
-			if (dw > 0 && dh > 0) {
+			if (dw > 0 && dh > 0 && dx <= 0x7FFFFFFFU && dy <= 0x7FFFFFFFU && dw <= 0x7FFFFFFFU && dh <= 0x7FFFFFFFU) {
 				fs->damage[fs->n_damage++] = (DamageRect){(int32_t)dx, (int32_t)dy, (int32_t)dw, (int32_t)dh};
 			}
 		}
 	} else if (op == 5 && len >= 12) {
 		uint32_t fmt, w, h;
 		memcpy(&fmt, pl, 4); memcpy(&w, pl + 4, 4); memcpy(&h, pl + 8, 4);
-		if (!fs->has_dmabuf || fmt == DRM_FORMAT_XRGB8888 || fmt == DRM_FORMAT_ARGB8888 || fmt == DRM_FORMAT_XBGR8888 || fmt == DRM_FORMAT_ABGR8888) {
+		if (is_supported_drm_fmt(fmt) && w >= 2 && h >= 2 && w <= 16384 && h <= 16384) {
 			fs->has_dmabuf = true; fs->dma_fmt = fmt; fs->dma_w = w; fs->dma_h = h;
 		}
 	} else if ((fs->window_mode && op == 2) || (!fs->window_mode && op == 1)) {
@@ -1888,11 +1924,16 @@ static void *encode_thread(void *arg) {
 	for (int i = 0; i < CAP_SLOTS; i++) enc.imported_sid[i] = VA_INVALID_SURFACE;
 	bool enc_ready = false;
 	int enc_fail_streak = 0;
-	int cur_bitrate = ep->bitrate;
-	int cur_quality = ep->quality;
+	int cur_bitrate;
+	int cur_quality;
 	char cur_codec[16];
-	snprintf(cur_codec, sizeof(cur_codec), "%s", ep->req_codec);
+	/* Snapshot initial reconfig settings and generation together under g_reconfig_mu so early stdin R lines are never lost */
+	pthread_mutex_lock(&g_reconfig_mu);
+	cur_bitrate = g_reconfig_bitrate;
+	cur_quality = g_reconfig_quality;
+	snprintf(cur_codec, sizeof(cur_codec), "%s", g_reconfig_codec);
 	uint32_t applied_reconfig_gen = atomic_load(&g_reconfig_gen);
+	pthread_mutex_unlock(&g_reconfig_mu);
 
 	for (;;) {
 		pthread_mutex_lock(&ep->mu);
@@ -2228,10 +2269,13 @@ int main(int argc, char **argv) {
 			for (int i = 0; i < CAP_SLOTS; i++) slot_destroy(&wl, &fslots[i]);
 			active_slot = -1;
 			pthread_mutex_lock(&ep.mu);
-			while ((ep.slot_busy[0] || ep.slot_busy[1] || ep.slot_busy[2]) && atomic_load(&g_running)) {
+			while ((ep.slot_busy[0] || ep.slot_busy[1] || ep.slot_busy[2]) && atomic_load(&g_running) && !ep.fatal) {
 				pthread_cond_wait(&ep.cv, &ep.mu);
 			}
+			enc_fatal = ep.fatal;
 			pthread_mutex_unlock(&ep.mu);
+			/* On shutdown or fatal error, never destroy buffers before encode_thread is joined below */
+			if (!atomic_load(&g_running) || enc_fatal) break;
 			allow_dmabuf = false;
 			for (int i = 0; i < CAP_SLOTS; i++) capbuf_destroy(&wl, &caps[i]);
 			for (int i = 0; i < n_slots; i++) {

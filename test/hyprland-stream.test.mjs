@@ -317,7 +317,10 @@ w.send_video(True, 12345678, b"\\x00\\x00\\x00\\x01\\x67\\x42\\xe0\\x28")
 		}
 
 		await hypr.attachStream(fakeWs, {mode: 'output'})
-		await new Promise((r) => setTimeout(r, 300))
+		const deadline = Date.now() + 3000
+		while (sent.length < 2 && Date.now() < deadline) {
+			await new Promise((r) => setTimeout(r, 20))
+		}
 
 		assert.equal(sent.length, 2, `expected meta + keyframe from real Python FrameWriter, got ${sent.length}`)
 		const meta = JSON.parse(sent[0].data)
@@ -793,6 +796,204 @@ test('live zero-reconnect reconfig, RTT 0x14/0x04 ping-pong, msgType 5 telemetry
 		ws.close()
 		hypr.close()
 	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('session revocation closes active streams, lock probe failure does not invent unlock, double congestion recovers, and Python AU framing assembles multi-slice pictures', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchy-hypr-hard-'))
+	const home = join(root, 'home')
+	const data = join(root, 'data')
+	let d
+	try {
+		await mkdir(home, {recursive: true})
+		await writeFile(join(root, 'wayland-1'), '')
+		await mkdir(join(root, 'hypr', 'sig123'), {recursive: true})
+		await writeFile(join(root, 'hypr', 'sig123', '.socket.sock'), '')
+		const fakeBin = join(root, 'fake-cap')
+		await writeFile(fakeBin, '#!/bin/sh\n')
+
+		// 1. Lock probe failure (hyprctl error) must NOT invent an unlock or invoke onRemoteUnlock
+		let lockMode = 'locked'
+		let remoteUnlockCount = 0
+		const stdinLines = []
+		let capChild = null
+		const hypr = createHyprland({
+			dataDir: join(root, 'd1'),
+			runtimeDir: root,
+			captureBin: fakeBin,
+			vaapiDevice: join(root, 'wayland-1'),
+			onRemoteUnlock: () => remoteUnlockCount++,
+			async exec(cmd, args) {
+				if (cmd === 'hyprctl' && args[0] === 'monitors') {
+					if (lockMode === 'error') return {ok: false, stdout: '', stderr: 'socket busy'}
+					return {ok: true, stdout: JSON.stringify([{id: 1, name: 'RAIL-1', x: 0, y: 0, width: 1920, height: 1080, scale: 1, refreshRate: 60, dpmsStatus: true, activeWorkspace: {id: 11}, solitaryBlockedBy: lockMode === 'locked' ? ['LOCK'] : []}]), stderr: ''}
+				}
+				if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: '[]', stderr: ''}
+				return {ok: true, stdout: 'ok', stderr: ''}
+			},
+			spawnImpl() {
+				capChild = Object.assign(new EventEmitter(), {
+					stdin: new PassThrough(),
+					stdout: new PassThrough(),
+					stderr: new PassThrough(),
+					killed: false,
+					exitCode: null,
+					kill() {
+						this.killed = true
+						this.exitCode = 0
+					},
+				})
+				capChild.stdin.on('data', (c) => stdinLines.push(c.toString('utf8')))
+				return capChild
+			},
+		})
+		const sent = []
+		const ws = Object.assign(new EventEmitter(), {
+			OPEN: 1,
+			readyState: 1,
+			bufferedAmount: 0,
+			send(data, opts) {
+				sent.push({data, binary: !!opts?.binary})
+			},
+			close() {
+				this.readyState = 3
+				this.emit('close')
+			},
+		})
+		await hypr.attachStream(ws, {mode: 'output', output: 'RAIL-1', fps: 60, bitrate: 10000})
+		await new Promise((r) => setTimeout(r, 30))
+		assert.ok(sent.some((m) => !m.binary && JSON.parse(m.data).type === 'lock' && JSON.parse(m.data).locked === true))
+		lockMode = 'error'
+		ws.emit('message', JSON.stringify({type: 'unlock_check'}), false)
+		await new Promise((r) => setTimeout(r, 360))
+		assert.equal(remoteUnlockCount, 0, 'failed lock probe must not invent a remote unlock')
+		assert.ok(!sent.some((m) => !m.binary && JSON.parse(m.data).type === 'lock' && JSON.parse(m.data).locked === false))
+
+		// 2. Two congestion episodes inside one 1500ms cooldown must still schedule and emit a recovery keyframe without extra frames arriving
+		const delta = Buffer.concat([Buffer.from([0]), Buffer.alloc(8), Buffer.from([0, 0, 0, 1, 0x41, 0x9a])])
+		const key = Buffer.concat([Buffer.from([1]), Buffer.alloc(8), Buffer.from([0, 0, 0, 1, 0x65, 0x88])])
+		ws.bufferedAmount = 512 * 1024
+		capChild.stdout.write(framePacket(2, delta))
+		ws.bufferedAmount = 0
+		capChild.stdout.write(framePacket(2, delta)) // triggers immediate 1st 'F\n'
+		capChild.stdout.write(framePacket(2, key)) // recovers 1st drop
+		ws.bufferedAmount = 512 * 1024
+		capChild.stdout.write(framePacket(2, delta)) // 2nd congestion inside 1500ms cooldown!
+		ws.bufferedAmount = 0 // socket drains, no more video frames arrive (static desktop)
+		await new Promise((r) => setTimeout(r, 1700))
+		const fCount = stdinLines.join('').split('\n').filter((l) => l === 'F').length
+		assert.ok(fCount >= 2, `expected scheduled 2nd recovery keyframe after cooldown, got ${fCount}`)
+		ws.close()
+		hypr.close()
+
+		// 3. Python _read_loop assembles multi-slice NALs into 1 Access Unit per picture and flushes final AU at EOF
+		const pyOut = execFileSync(
+			'python3',
+			[
+				'-c',
+				`
+import importlib.util, io, sys
+spec = importlib.util.spec_from_file_location("hs", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+# Two slices for picture 1 (IDR: slice1 first_mb=0 0x88, slice2 first_mb>0 0x01) + AUD + picture 2 (P-frame, 2 slices)
+bitstream = (
+    b"\\x00\\x00\\x00\\x01\\x67\\x42\\xe0\\x28"
+    b"\\x00\\x00\\x00\\x01\\x68\\xce\\x38\\x80"
+    b"\\x00\\x00\\x00\\x01\\x65\\x88\\x01\\x02"
+    b"\\x00\\x00\\x00\\x01\\x65\\x01\\x03\\x04"
+    b"\\x00\\x00\\x00\\x01\\x09\\x30"
+    b"\\x00\\x00\\x00\\x01\\x41\\x9a\\x05\\x06"
+    b"\\x00\\x00\\x00\\x01\\x41\\x01\\x07\\x08"
+)
+out = []
+class W:
+    def send_video(self, is_key, ts, data):
+        out.append((is_key, len(data)))
+enc = object.__new__(mod.H264Encoder)
+enc.stop_event = __import__("threading").Event()
+enc.writer = W()
+enc.proc = type("P", (), {"stdout": io.BytesIO(bitstream)})()
+enc._read_loop()
+print(len(out), out[0][0], out[1][0])
+`,
+				STREAM_PY,
+			],
+			{encoding: 'utf8'},
+		).trim()
+		assert.equal(pyOut, '2 True False', `expected exactly 2 assembled access units (IDR + P) with EOF flush, got: ${pyOut}`)
+
+		// 4. omarchyd user.logout immediately revokes outstanding tickets and closes an active /hyprland/stream socket
+		const accounts = await openAccounts(data)
+		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+		d = await startOmarchyd({
+			port: 0,
+			dataDir: data,
+			home,
+			updaterOptions: {autoCheck: false, installerCheck: true},
+			hyprlandOptions: {
+				runtimeDir: root,
+				vaapiDevice: join(root, 'nonexistent'),
+				async exec(cmd, args) {
+					if (cmd === 'pkg-config') return {ok: false, stdout: '', stderr: ''}
+					if (cmd === 'hyprctl' && args[0] === 'monitors') return {ok: true, stdout: '[]', stderr: ''}
+					if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: '[]', stderr: ''}
+					return {ok: true, stdout: 'ok', stderr: ''}
+				},
+				spawnImpl() {
+					return Object.assign(new EventEmitter(), {
+						stdin: new PassThrough(),
+						stdout: new PassThrough(),
+						stderr: new PassThrough(),
+						killed: false,
+						exitCode: null,
+						kill() {
+							this.killed = true
+							this.exitCode = 0
+						},
+					})
+				},
+			},
+		})
+		const loginRes = await fetch(`${d.url}/trpc/user.loginNative`, {
+			method: 'POST',
+			headers: {'content-type': 'application/json'},
+			body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 'dev-1'}}),
+		})
+		const tok = (await loginRes.json()).result.data.accessToken
+		const authHdr = {authorization: `Bearer ${tok}`, 'content-type': 'application/json'}
+		const t1 = (await (await fetch(`${d.url}/trpc/user.createWebSocketTicket`, {method: 'POST', headers: authHdr, body: JSON.stringify({target: 'hyprland'})})).json()).result.data
+		const t2 = (await (await fetch(`${d.url}/trpc/user.createWebSocketTicket`, {method: 'POST', headers: authHdr, body: JSON.stringify({target: 'hyprland'})})).json()).result.data
+
+		const {WebSocket} = await import('ws')
+		const wsUrl = d.url.replace(/^http/, 'ws')
+		const liveWs = new WebSocket(`${wsUrl}/hyprland/stream?mode=output&ticket=${encodeURIComponent(t1)}`)
+		await new Promise((resolve, reject) => {
+			liveWs.once('open', resolve)
+			liveWs.once('error', reject)
+		})
+		const closedP = new Promise((resolve) => liveWs.once('close', (code) => resolve(code)))
+		await fetch(`${d.url}/trpc/user.logout`, {method: 'POST', headers: authHdr, body: '{}'})
+		const closeCode = await Promise.race([closedP, new Promise((r) => setTimeout(() => r(-1), 2000))])
+		assert.equal(closeCode, 1008, 'user.logout must immediately close active /hyprland/stream sockets')
+
+		// Outstanding unused ticket t2 from the revoked session must be rejected (401)
+		const rejectedStatus = await new Promise((resolve) => {
+			const wsBad = new WebSocket(`${wsUrl}/hyprland/stream?mode=output&ticket=${encodeURIComponent(t2)}`)
+			wsBad.once('unexpected-response', (_req, res) => {
+				res.resume()
+				resolve(res.statusCode)
+			})
+			wsBad.once('open', () => {
+				wsBad.close()
+				resolve(200)
+			})
+			wsBad.once('error', () => {})
+		})
+		assert.equal(rejectedStatus, 401, 'revoked session ticket must be rejected with 401')
+	} finally {
+		if (d) await d.close()
 		await rm(root, {recursive: true, force: true})
 	}
 })

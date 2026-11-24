@@ -855,7 +855,10 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			const probe = createBackendClient({baseUrl: url, fetchImpl, timeoutMs: 8000})
 			const version = await probe.query('system.version')
 			if (!version?.version) throw new BackendError('That address answered, but not like My Own Data Center', {status: 502})
-			if (configured && url !== store.getConfig().backendUrl) await store.clearSessions()
+			if (configured && url !== store.getConfig().backendUrl) {
+				closeAllSessionStreams()
+				await store.clearSessions()
+			}
 			await store.setConfig({backendUrl: url})
 			res.json({ok: true, url, version: version.version, name: version.name})
 		} catch (error) {
@@ -1331,6 +1334,39 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	// omarchyd serves file bytes over plain HTTP, authorised by the browser cookie plus
 	// a session-wide URL token. We fetch both server-side and stream the bytes through.
 	const urlTokens = new Map() // sid -> {token, at}
+	const sessionStreamsByKey = new Map() // hashId(sid) -> Set<() => void>
+	const registerSessionStream = (key, closeFn) => {
+		let set = sessionStreamsByKey.get(key)
+		if (!set) {
+			set = new Set()
+			sessionStreamsByKey.set(key, set)
+		}
+		set.add(closeFn)
+		return () => {
+			set.delete(closeFn)
+			if (set.size === 0) sessionStreamsByKey.delete(key)
+		}
+	}
+	const closeSessionStreams = (key) => {
+		const set = sessionStreamsByKey.get(key)
+		if (!set) return
+		sessionStreamsByKey.delete(key)
+		for (const fn of [...set]) {
+			try {
+				fn()
+			} catch {}
+		}
+	}
+	const closeAllSessionStreams = () => {
+		for (const set of [...sessionStreamsByKey.values()]) {
+			for (const fn of [...set]) {
+				try {
+					fn()
+				} catch {}
+			}
+		}
+		sessionStreamsByKey.clear()
+	}
 	// Cookie ids are not stored on the session (the file is keyed by their hash). Remember the
 	// ones this process has seen so a removed session can drop its URL token.
 	const sidByKey = new Map()
@@ -1338,8 +1374,12 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		if (typeof sid === 'string' && sid) sidByKey.set(hashId(sid), sid)
 	}
 	const forgetUrlToken = (sid) => {
-		if (typeof sid === 'string' && sid) urlTokens.delete(sid)
-		if (typeof sid === 'string' && sid) sidByKey.delete(hashId(sid))
+		if (typeof sid === 'string' && sid) {
+			const key = hashId(sid)
+			urlTokens.delete(sid)
+			sidByKey.delete(key)
+			closeSessionStreams(key)
+		}
 	}
 	async function fileUrlToken(sid) {
 		rememberSid(sid)
@@ -2156,11 +2196,21 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				}
 				const route = {'/api/console': 'machines', '/api/terminal': 'terminal', '/api/hyprland/stream': 'hyprland'}[url.pathname]
 				if (!route) return refuse('404 Not Found')
-				// Browsers always send Origin on WebSocket handshakes: refuse other sites.
+				// Browsers always send Origin on WebSocket handshakes: refuse other sites and scheme mismatches.
 				const origin = req.headers.origin
-				if (!origin || hostOf(origin) !== req.headers.host) return refuse('403 Forbidden')
+				let originOk = false
+				if (origin) {
+					try {
+						const ou = new URL(origin)
+						const expectedProto = req.socket?.encrypted || req.headers['x-forwarded-proto'] === 'https' ? 'https:' : 'http:'
+						originOk = ou.host === req.headers.host && ou.protocol === expectedProto
+					} catch {}
+				}
+				if (!originOk) return refuse('403 Forbidden')
 				const sid = parseCookies(req.headers.cookie)[COOKIE]
 				if (!store.getSession(sid)) return refuse('401 Unauthorized')
+				const sidKey = hashId(sid)
+				rememberSid(sid)
 				const target = new URL(getClient().baseUrl)
 				target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:'
 				let params
@@ -2229,18 +2279,39 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				})
 				upstream.once('error', () => refuse('502 Bad Gateway'))
 				const stopWatching = dropWithBrowser(upstream)
+				const unregisterPending = registerSessionStream(sidKey, () => {
+					try {
+						upstream.terminate()
+					} catch {}
+					refuse('401 Unauthorized')
+				})
+				upstream.once('close', unregisterPending)
+				upstream.once('error', unregisterPending)
 				upstream.once('open', () => {
+					unregisterPending()
 					upstream.removeAllListeners('error')
+					if (!store.getSession(sid)) {
+						upstream.close(1008, 'Signed out')
+						return refuse('401 Unauthorized')
+					}
 					wss.handleUpgrade(req, socket, head, (client) => {
 						stopWatching()
 						try {
 							socket.setNoDelay?.(true)
 							upstream._socket?.setNoDelay?.(true)
 						} catch {}
+						let proxyKeyTimer = null
+						let unregisterActive = () => {}
 						const closeBoth = (code, reason) => {
+							unregisterActive()
+							if (proxyKeyTimer) {
+								clearTimeout(proxyKeyTimer)
+								proxyKeyTimer = null
+							}
 							const safe = typeof code === 'number' && (code === 1000 || (code >= 3000 && code <= 4999)) ? code : 1000
 							for (const ws of [client, upstream]) if (ws.readyState === WebSocket.OPEN) ws.close(safe, reason)
 						}
+						unregisterActive = registerSessionStream(sidKey, () => closeBoth(1008, 'Signed out'))
 						const hyprBitrateKbps = route === 'hyprland' ? Math.max(1000, Math.min(150000, Number(params.bitrate) || 22000)) : 22000
 						let hyprDeltaDrop = Math.max(384 * 1024, Math.min(4 * 1024 * 1024, Math.round(((hyprBitrateKbps * 1000) / 8) * 0.25)))
 						let hyprCloseCap = Math.max(4 * 1024 * 1024, hyprDeltaDrop * 6)
@@ -2248,6 +2319,32 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 						let dropUntilKey = false
 						let pendingKeyReq = false
 						let lastKeyReqAt = 0
+						const scheduleProxyKeyReq = () => {
+							if (!pendingKeyReq || client.readyState !== WebSocket.OPEN || upstream.readyState !== WebSocket.OPEN) return
+							const nowMs = Date.now()
+							const cooldownLeft = Math.max(0, 1500 - (nowMs - lastKeyReqAt))
+							if (client.bufferedAmount <= hyprKeyDrain && cooldownLeft === 0) {
+								lastKeyReqAt = nowMs
+								upstream.send('{"type":"keyframe"}')
+								if (proxyKeyTimer) {
+									clearTimeout(proxyKeyTimer)
+									proxyKeyTimer = null
+								}
+								proxyKeyTimer = setTimeout(() => {
+									proxyKeyTimer = null
+									if (dropUntilKey && pendingKeyReq) scheduleProxyKeyReq()
+								}, 1500)
+								proxyKeyTimer.unref?.()
+								return
+							}
+							if (!proxyKeyTimer) {
+								proxyKeyTimer = setTimeout(() => {
+									proxyKeyTimer = null
+									scheduleProxyKeyReq()
+								}, cooldownLeft > 0 ? cooldownLeft : 120)
+								proxyKeyTimer.unref?.()
+							}
+						}
 						upstream.on('message', (data, isBinary) => {
 							if (client.readyState !== WebSocket.OPEN) return
 							if (route === 'hyprland') {
@@ -2262,21 +2359,21 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 								if (client.bufferedAmount > hyprDeltaDrop && isVideoDelta) {
 									dropUntilKey = true
 									pendingKeyReq = true
+									scheduleProxyKeyReq()
 									return
 								}
 								// Only request recovery IDR once TCP send queue drains below hyprKeyDrain so keyframes do not pile onto congestion
 								if (pendingKeyReq && client.bufferedAmount <= hyprKeyDrain) {
-									const nowMs = Date.now()
-									if (nowMs - lastKeyReqAt >= 1500 && upstream.readyState === WebSocket.OPEN) {
-										lastKeyReqAt = nowMs
-										pendingKeyReq = false
-										upstream.send('{"type":"keyframe"}')
-									}
+									scheduleProxyKeyReq()
 								}
 								if (dropUntilKey && isVideoDelta) return
 								if (isVideoKey) {
 									dropUntilKey = false
 									pendingKeyReq = false
+									if (proxyKeyTimer) {
+										clearTimeout(proxyKeyTimer)
+										proxyKeyTimer = null
+									}
 								}
 								client.send(data, {binary: isBinary})
 								return
@@ -2329,6 +2426,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			if (fresh?.accessToken) await backend.mutation('user.logout', undefined, {token: fresh.accessToken}).catch(() => {})
 		}
 		forgetUrlToken(sidByKey.get(key))
+		closeSessionStreams(key)
 		await store.deleteSessionByKey(key)
 	}
 	// Signing a device out ends every app pass this person holds (passes have one generation per
@@ -2408,6 +2506,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			await rm(join(store.dataDir, 'backgrounds'), {recursive: true, force: true})
 			urlTokens.clear()
 			sidByKey.clear()
+			closeAllSessionStreams()
 			await store.clearSessions()
 			setCookie(res, '', 0)
 			res.append('Set-Cookie', 'OMARCHY_APP_SESSION=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0')
