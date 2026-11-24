@@ -1146,6 +1146,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (!CPU_TYPES.includes(cpuType)) throw new RpcError('BAD_REQUEST', 'Unknown CPU type')
 		const machineType = input.machineType ?? m.layout.machineType
 		if (!['q35', 'pc'].includes(machineType)) throw new RpcError('BAD_REQUEST', 'Machine type must be q35 or i440fx (pc)')
+		if (machineType !== 'pc' && machineType !== m.layout.machineType && m.layout.disks.some((d) => d.bus === 'ide')) throw new RpcError('BAD_REQUEST', 'Move the IDE drives to another bus before switching to q35: it has no IDE controller')
 		const firmware = input.firmware ?? m.layout.firmware
 		if (!['bios', 'efi'].includes(firmware)) throw new RpcError('BAD_REQUEST', 'Firmware must be SeaBIOS (bios) or OVMF (efi)')
 		const video = input.video ?? m.layout.video
@@ -1248,6 +1249,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		while (m.layout.disks.some((d) => d.id === `${prefix}${n}`)) n++
 		return `${prefix}${n}`
 	}
+	// The q35 machine type has no IDE controller, so libvirt refuses to define a domain with an IDE drive.
+	const IDE_NEEDS_PC = 'IDE is only available on the i440fx (pc) machine type'
 	async function addDisk(input = {}) {
 		await ready
 		const idArg = find(input.id).id
@@ -1259,6 +1262,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const bus = input.bus ?? 'virtio'
 			if (!Number.isInteger(sizeGb) || sizeGb < 1 || sizeGb > 4096) throw new RpcError('BAD_REQUEST', 'Disk size must be between 1 and 4096 GB')
 			if (!BUSES.includes(bus)) throw new RpcError('BAD_REQUEST', 'Unknown disk bus')
+			if (bus === 'ide' && m.layout.machineType !== 'pc') throw new RpcError('BAD_REQUEST', IDE_NEEDS_PC)
 			if (input.cache !== undefined && !CACHES.includes(input.cache)) throw new RpcError('BAD_REQUEST', 'Unknown cache mode')
 			if (m.layout.disks.length >= 16) throw new RpcError('BAD_REQUEST', 'A machine can have up to 16 drives here')
 			const fs = await statfs(base)
@@ -1280,6 +1284,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		refuseIfBusy(m)
 		const d = findDisk(m, input.diskId)
 		if (input.bus !== undefined && !BUSES.includes(input.bus)) throw new RpcError('BAD_REQUEST', 'Unknown disk bus')
+		if (input.bus === 'ide' && m.layout.machineType !== 'pc') throw new RpcError('BAD_REQUEST', IDE_NEEDS_PC)
 		if (input.cache !== undefined && !CACHES.includes(input.cache)) throw new RpcError('BAD_REQUEST', 'Unknown cache mode')
 		return task(m, 'edit-disk', d.id, async () => {
 			if (input.bus !== undefined) d.bus = input.bus
