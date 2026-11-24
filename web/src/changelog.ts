@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.79',
+		date: '2026-11-24',
+		title: 'One drawing for a machine’s readings',
+		added: [
+			'A tap on a machine’s readings cycles one line, three lines, and gauges. That choice is saved with the account and is the same on every machine. Home keeps its aggregate gauges.',
+		],
+	},
+	{
 		version: '0.9.78',
 		date: '2026-11-24',
 		title: 'Linux guests, Square panes, and a steadier stream',
