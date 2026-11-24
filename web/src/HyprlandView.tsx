@@ -328,6 +328,23 @@ function createFrameBlitter(canvas: HTMLCanvasElement, force2d = false): FrameBl
 }
 
 const CODEC_PREF_KEY = 'omarchy-server:hypr-codec:v2'
+const QUALITY_TIER_KEY = 'omarchy-server:hypr-quality-tier:v1'
+
+export type StreamQualityTier = 'balanced' | 'high' | 'ultra'
+
+const QUALITY_TIERS: Record<StreamQualityTier, {label: string; bitrate: number; quality: number}> = {
+	balanced: {label: 'Balanced (20 Mbps)', bitrate: 20000, quality: 20},
+	high: {label: 'High (45 Mbps)', bitrate: 45000, quality: 16},
+	ultra: {label: 'Ultra LAN (100 Mbps)', bitrate: 100000, quality: 12},
+}
+
+function readQualityTier(): StreamQualityTier {
+	try {
+		const v = localStorage.getItem(QUALITY_TIER_KEY)
+		if (v === 'balanced' || v === 'high' || v === 'ultra') return v
+	} catch {}
+	return 'balanced'
+}
 
 async function negotiateCodec(): Promise<StreamCodec> {
 	try {
@@ -431,7 +448,15 @@ export function HyprlandView({
 	const wsRef = useRef<WebSocket | null>(null)
 	const [negotiatedCodec, setNegotiatedCodec] = useState<StreamCodec | null>(null)
 	const [codecFallback, setCodecFallback] = useState<StreamCodec | null>(null)
+	const [qualityTier, setQualityTierState] = useState<StreamQualityTier>(readQualityTier)
 	const [attempt, setAttempt] = useState(0)
+
+	const setQualityTier = (next: StreamQualityTier) => {
+		setQualityTierState(next)
+		try {
+			localStorage.setItem(QUALITY_TIER_KEY, next)
+		} catch {}
+	}
 
 	useEffect(() => {
 		let cancelled = false
@@ -453,14 +478,15 @@ export function HyprlandView({
 
 	const streamCfg = useMemo(() => {
 		if (!negotiatedCodec) return null
+		const tier = QUALITY_TIERS[qualityTier]
 		return {
 			codec: codecFallback ?? negotiatedCodec,
 			fps,
-			bitrate,
-			quality: 0,
+			bitrate: tier ? tier.bitrate : bitrate,
+			quality: tier ? tier.quality : 0,
 			compression: 0,
 		}
-	}, [negotiatedCodec, codecFallback, fps, bitrate])
+	}, [negotiatedCodec, codecFallback, qualityTier, fps, bitrate])
 
 	const refreshCanvasRect = () => {
 		const el = canvasRef.current
@@ -846,7 +872,7 @@ export function HyprlandView({
 			...(effectiveMode === 'output' && effectiveOutput ? {output: effectiveOutput} : {}),
 			fps: String(activeFps),
 			bitrate: String(activeBitrate),
-			...(activeQuality >= 16 && activeQuality <= 34 ? {quality: String(activeQuality)} : {}),
+			...(activeQuality >= 10 && activeQuality <= 34 ? {quality: String(activeQuality)} : {}),
 			...(activeCompression >= 1 && activeCompression <= 7 ? {compression: String(activeCompression)} : {}),
 			audio: mutedRef.current ? '0' : '1',
 			codec: activeCodec,
@@ -1209,6 +1235,17 @@ export function HyprlandView({
 								))}
 							</select>
 						)}
+						<select
+							className="hypr-select"
+							aria-label="Stream bitrate quality"
+							value={qualityTier}
+							onChange={(e) => setQualityTier(e.target.value as StreamQualityTier)}
+							title="Stream bitrate & sharpness preset"
+						>
+							<option value="balanced">{QUALITY_TIERS.balanced.label}</option>
+							<option value="high">{QUALITY_TIERS.high.label}</option>
+							<option value="ultra">{QUALITY_TIERS.ultra.label}</option>
+						</select>
 						<button type="button" className="btn small" onClick={toggleMute} title={muted ? 'Unmute desktop audio' : 'Mute desktop audio'}>
 							{muted ? 'Audio off' : 'Audio on'}
 						</button>

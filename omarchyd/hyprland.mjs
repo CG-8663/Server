@@ -113,6 +113,16 @@ export function isPcmSilent(buf, threshold = 16) {
 	return true
 }
 
+// Bitrate-proportional WebSocket backpressure ceilings (~250 ms budget):
+// stays tight on WAN (384 KiB at 16 Mbps) while giving high-bitrate LAN (80-120 Mbps, 1.5+ MiB near-lossless 4K keyframes) headroom without false drops.
+export function backpressureBudgets(bitrateKbps = 22000) {
+	const kbps = Math.max(1000, Math.min(150000, Math.round(Number(bitrateKbps) || 22000)))
+	const deltaDropBytes = Math.max(384 * 1024, Math.min(4 * 1024 * 1024, Math.round(((kbps * 1000) / 8) * 0.25)))
+	const hardDropBytes = Math.max(1536 * 1024, deltaDropBytes * 4)
+	const keyDrainBytes = Math.max(64 * 1024, Math.round(deltaDropBytes / 4))
+	return {deltaDropBytes, hardDropBytes, keyDrainBytes}
+}
+
 const exists = (p) => access(p).then(() => true, () => false)
 
 function execOut(cmd, args, {env, timeout = 5000, input = null} = {}) {
@@ -703,10 +713,11 @@ export function createHyprland({
 				return
 			}
 			const cleanFps = Math.max(5, Math.min(120, Math.round(Number(fps) || 60)))
-			const cleanBitrate = Math.max(1000, Math.min(50000, Math.round(Number(bitrate) || 22000)))
+			const cleanBitrate = Math.max(1000, Math.min(150000, Math.round(Number(bitrate) || 22000)))
 			const cleanCodec = codec === 'hevc10' || codec === 'hevc' ? codec : 'h264'
-			const cleanQuality = Number.isFinite(Number(quality)) && Number(quality) >= 16 && Number(quality) <= 34 ? Math.round(Number(quality)) : 0
+			const cleanQuality = Number.isFinite(Number(quality)) && Number(quality) >= 10 && Number(quality) <= 34 ? Math.round(Number(quality)) : 0
 			const cleanComp = Number.isFinite(Number(compression)) && Number(compression) >= 1 && Number(compression) <= 7 ? Math.round(Number(compression)) : 0
+			const bp = backpressureBudgets(cleanBitrate)
 
 			// Ensure target window is on an awake, active workspace (move onto awake headless RAIL-1 if its monitor is asleep or workspace is hidden)
 			if (cleanMode === 'window') {
@@ -1031,19 +1042,19 @@ export function createHyprland({
 						} catch {}
 					} else if (msgType === 2 && payload.length > 9) {
 						const isKey = payload[0] === 1
-						// Tight WAN bufferbloat ceiling: drop deltas above 384 KiB (~150 ms at 20 Mbps), hard-drop above 1.5 MiB.
-						if (ws.bufferedAmount > 1536 * 1024) {
+						// Bitrate-proportional bufferbloat ceiling (~250 ms of stream bitrate) prevents WAN lag while giving high-bitrate LAN keyframes headroom.
+						if (ws.bufferedAmount > bp.hardDropBytes) {
 							dropUntilKey = true
 							pendingKeyReq = true
 							return
 						}
-						if (ws.bufferedAmount > 384 * 1024 && !isKey) {
+						if (ws.bufferedAmount > bp.deltaDropBytes && !isKey) {
 							dropUntilKey = true
 							pendingKeyReq = true
 							return
 						}
-						// Wait for TCP send queue to drain below 64 KiB before requesting a recovery IDR so keyframes never pile onto congestion.
-						if (pendingKeyReq && ws.bufferedAmount <= 64 * 1024) {
+						// Wait for TCP send queue to drain below keyDrainBytes before requesting a recovery IDR so keyframes never pile onto congestion.
+						if (pendingKeyReq && ws.bufferedAmount <= bp.keyDrainBytes) {
 							pendingKeyReq = false
 							reqKeyframeDebounced()
 						}

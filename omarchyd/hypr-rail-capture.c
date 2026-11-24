@@ -836,7 +836,7 @@ static bool enc_init_one(VaapiEncoder *e, const char *vaapi_device, int w, int h
 		/* Tight WAN-friendly VBV (0.25s buffer, 1.25x peak) prevents 600KB keyframe / scene-cut TCP bufferbloat */
 		e->codec->rc_max_rate = (int64_t)bitrate_kbps * 1250LL;
 		e->codec->rc_buffer_size = (int64_t)bitrate_kbps * 250LL;
-		int eff_q = (req_quality >= 16 && req_quality <= 34) ? req_quality : tries[ti].global_q;
+		int eff_q = (req_quality >= 10 && req_quality <= 34) ? req_quality : tries[ti].global_q;
 		if (tries[ti].rc_mode && strcmp(tries[ti].rc_mode, "QVBR") == 0 && eff_q > 0) {
 			e->codec->global_quality = eff_q;
 		}
@@ -1780,11 +1780,13 @@ int main(int argc, char **argv) {
 	if (fps < 5) fps = 5;
 	if (fps > 120) fps = 120;
 	if (bitrate < 1000) bitrate = 1000;
-	if (bitrate > 50000) bitrate = 50000;
+	if (bitrate > 150000) bitrate = 150000;
 
-	/* Enlarge stdout pipe to 1 MiB (best-effort) so 4K keyframes never block the encoder thread */
+	/* Enlarge stdout pipe up to 2 MiB (fallback 1 MiB) so near-lossless 4K keyframes never stall the encoder thread */
 #ifdef F_SETPIPE_SZ
-	(void)fcntl(STDOUT_FILENO, F_SETPIPE_SZ, 1048576);
+	if (fcntl(STDOUT_FILENO, F_SETPIPE_SZ, 2097152) < 0) {
+		(void)fcntl(STDOUT_FILENO, F_SETPIPE_SZ, 1048576);
+	}
 #endif
 	g_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 

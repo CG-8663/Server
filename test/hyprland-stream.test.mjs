@@ -9,7 +9,7 @@ import {test} from 'node:test'
 import {fileURLToPath} from 'node:url'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
-import {createFrameReader, createHyprland, isPcmSilent} from '../omarchyd/hyprland.mjs'
+import {backpressureBudgets, createFrameReader, createHyprland, isPcmSilent} from '../omarchyd/hyprland.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -58,6 +58,16 @@ test('isPcmSilent detects near-silent PCM frames and passes audible signal', () 
 	const loud = Buffer.alloc(3840, 0)
 	loud.writeInt16LE(-800, 120)
 	assert.equal(isPcmSilent(loud), false)
+})
+
+test('backpressureBudgets stays tight on WAN bitrates and scales up cleanly for 100+ Mbps LAN streams', () => {
+	const wan = backpressureBudgets(16000)
+	const high = backpressureBudgets(45000)
+	const ultra = backpressureBudgets(100000)
+	assert.equal(wan.deltaDropBytes, 500_000)
+	assert.ok(high.deltaDropBytes > 1_200_000, '45 Mbps should absorb 685 KB keyframes')
+	assert.ok(ultra.deltaDropBytes >= 3_000_000, '100 Mbps LAN should absorb 1.7 MiB near-lossless 4K keyframes without false delta drops')
+	assert.ok(ultra.hardDropBytes > ultra.deltaDropBytes * 2)
 })
 
 test('hyprland status, windows, strict dispatch allowlist, and WebSocket H.264 stream bridge with WAN backpressure', async () => {

@@ -2176,7 +2176,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					const output = mode === 'output' ? (url.searchParams.get('output') ?? '') : ''
 					if (output && !/^[A-Za-z0-9_.-]{1,32}$/.test(output)) return refuse('400 Bad Request')
 					const fps = Math.max(5, Math.min(120, Math.round(Number(url.searchParams.get('fps')) || 60)))
-					const bitrate = Math.max(1000, Math.min(50000, Math.round(Number(url.searchParams.get('bitrate')) || 22000)))
+					const bitrate = Math.max(1000, Math.min(150000, Math.round(Number(url.searchParams.get('bitrate')) || 22000)))
 					const audio = url.searchParams.get('audio') === '1' ? '1' : '0'
 					const rawCodec = url.searchParams.get('codec') ?? 'h264'
 					const codec = rawCodec === 'hevc10' || rawCodec === 'hevc' ? rawCodec : 'h264'
@@ -2191,7 +2191,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 						bitrate: String(bitrate),
 						audio,
 						codec,
-						...(rawQ >= 16 && rawQ <= 34 ? {quality: String(Math.round(rawQ))} : {}),
+						...(rawQ >= 10 && rawQ <= 34 ? {quality: String(Math.round(rawQ))} : {}),
 						...(rawComp >= 1 && rawComp <= 7 ? {compression: String(Math.round(rawComp))} : {}),
 					}
 				} else {
@@ -2239,6 +2239,10 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 							const safe = typeof code === 'number' && (code === 1000 || (code >= 3000 && code <= 4999)) ? code : 1000
 							for (const ws of [client, upstream]) if (ws.readyState === WebSocket.OPEN) ws.close(safe, reason)
 						}
+						const hyprBitrateKbps = route === 'hyprland' ? Math.max(1000, Math.min(150000, Number(params.bitrate) || 22000)) : 22000
+						const hyprDeltaDrop = Math.max(384 * 1024, Math.min(4 * 1024 * 1024, Math.round(((hyprBitrateKbps * 1000) / 8) * 0.25)))
+						const hyprCloseCap = Math.max(4 * 1024 * 1024, hyprDeltaDrop * 6)
+						const hyprKeyDrain = Math.max(64 * 1024, Math.round(hyprDeltaDrop / 4))
 						let dropUntilKey = false
 						let pendingKeyReq = false
 						let lastKeyReqAt = 0
@@ -2248,18 +2252,18 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 								const buf = isBinary && Buffer.isBuffer(data) ? data : null
 								const isVideoDelta = buf && buf.length > 9 && buf[0] === 0
 								const isVideoKey = buf && buf.length > 9 && buf[0] === 1
-								if (client.bufferedAmount > 4 * 1024 * 1024) {
+								if (client.bufferedAmount > hyprCloseCap) {
 									closeBoth(1011, 'The viewer fell behind')
 									return
 								}
-								// Tight 384 KiB WAN delta-drop ceiling (~150 ms at 20 Mbps) prevents TCP bufferbloat without cutting live streams
-								if (client.bufferedAmount > 384 * 1024 && isVideoDelta) {
+								// Bitrate-proportional delta-drop ceiling (~250 ms) prevents WAN bufferbloat while allowing 100+ Mbps LAN near-lossless frames
+								if (client.bufferedAmount > hyprDeltaDrop && isVideoDelta) {
 									dropUntilKey = true
 									pendingKeyReq = true
 									return
 								}
-								// Only request recovery IDR once TCP send queue drains below 64 KiB so keyframes do not pile onto congestion
-								if (pendingKeyReq && client.bufferedAmount <= 64 * 1024) {
+								// Only request recovery IDR once TCP send queue drains below hyprKeyDrain so keyframes do not pile onto congestion
+								if (pendingKeyReq && client.bufferedAmount <= hyprKeyDrain) {
 									const nowMs = Date.now()
 									if (nowMs - lastKeyReqAt >= 1500 && upstream.readyState === WebSocket.OPEN) {
 										lastKeyReqAt = nowMs
