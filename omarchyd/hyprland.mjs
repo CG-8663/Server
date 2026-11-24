@@ -473,7 +473,7 @@ export function createHyprland({
 	// Wake the headless RAIL-1 monitor without lighting up physical displays (eDP-1 stays dark/asleep).
 	async function wakeRailOutput() {
 		await hyprDispatch(
-			`hl.dispatch(hl.dsp.dpms({state = "on", monitor = "${RAIL_OUTPUT}"}))`,
+			`hl.dispatch(hl.dsp.dpms({action = "on", monitor = "${RAIL_OUTPUT}"}))`,
 			['dispatch', 'dpms', 'on', RAIL_OUTPUT],
 		).catch(() => {})
 	}
@@ -543,7 +543,7 @@ export function createHyprland({
 		let resized
 		try {
 			resized = await hyprDispatch(
-				`hl.dispatch(hl.dsp.window.resize({window = "address:${addr}", x = ${w}, y = ${h}, exact = true}))`,
+				`hl.dispatch(hl.dsp.window.resize({window = "address:${addr}", x = ${w}, y = ${h}, relative = false}))`,
 				['dispatch', 'resizewindowpixel', `exact ${w} ${h},address:${addr}`],
 				{beforeAttempt},
 			)
@@ -556,7 +556,11 @@ export function createHyprland({
 			const ty = rail.y + padT
 			let moved
 			try {
-				moved = await hyprDispatch(null, ['dispatch', 'movewindowpixel', `exact ${tx} ${ty},address:${addr}`], {beforeAttempt})
+				moved = await hyprDispatch(
+					`hl.dispatch(hl.dsp.window.move({window = "address:${addr}", x = ${tx}, y = ${ty}, relative = false}))`,
+					['dispatch', 'movewindowpixel', `exact ${tx} ${ty},address:${addr}`],
+					{beforeAttempt},
+				)
 			} catch (err) {
 				if (strict) throw err
 			}
@@ -1258,7 +1262,7 @@ export function createHyprland({
 			}
 
 			// Switch active workspace to RAIL-1 and capture strict window baseline BEFORE spawning so physical-display windows are never treated as new.
-			await hyprDispatch(`hl.dispatch(hl.dsp.workspace.change_id({id = ${railWs}}))`, ['dispatch', 'workspace', String(railWs)])
+			await hyprDispatch(`hl.dispatch(hl.dsp.focus({workspace = ${railWs}}))`, ['dispatch', 'workspace', String(railWs)])
 			const baselineWins = await windows({strict: true})
 			const beforeAddrs = new Set(baselineWins.map((w) => w.address.toLowerCase()))
 
@@ -1393,7 +1397,7 @@ export function createHyprland({
 					return !!found && found.workspace === railWs
 				}
 				const floated = await hyprDispatch(
-					`hl.dispatch(hl.dsp.window.float({window = "address:${win.address}", state = true}))`,
+					`hl.dispatch(hl.dsp.window.float({window = "address:${win.address}", action = "set"}))`,
 					['dispatch', 'setfloating', `address:${win.address}`],
 					{beforeAttempt: checkFloatOwnership},
 				)
@@ -1476,7 +1480,7 @@ export function createHyprland({
 			const cur = (await windows().catch(() => [])).find((x) => x.address.toLowerCase() === addr.toLowerCase())
 			if (cur && !cur.floating) {
 				await hyprDispatch(
-					`hl.dispatch(hl.dsp.window.float({window = "address:${addr}", state = true}))`,
+					`hl.dispatch(hl.dsp.window.float({window = "address:${addr}", action = "set"}))`,
 					['dispatch', 'setfloating', `address:${addr}`],
 				).catch(() => {})
 			}
@@ -1486,7 +1490,7 @@ export function createHyprland({
 				await placeOnRail(addr, w, h)
 			} else {
 				await hyprDispatch(
-					`hl.dispatch(hl.dsp.window.resize({window = "address:${addr}", x = ${w}, y = ${h}, exact = true}))`,
+					`hl.dispatch(hl.dsp.window.resize({window = "address:${addr}", x = ${w}, y = ${h}, relative = false}))`,
 					['dispatch', 'resizewindowpixel', `exact ${w} ${h},address:${addr}`],
 				)
 			}
@@ -1499,7 +1503,7 @@ export function createHyprland({
 			const railMon = await ensureRailOutput()
 			const railWs = Number.isInteger(railMon?.activeWorkspace) && railMon.activeWorkspace >= 1 && railMon.activeWorkspace <= 99 ? railMon.activeWorkspace : 11
 			await hyprDispatch(
-				`hl.dispatch(hl.dsp.window.move({window = "address:${addr}", workspace = "${railWs}", silent = true}))`,
+				`hl.dispatch(hl.dsp.window.move({window = "address:${addr}", workspace = ${railWs}, silent = true}))`,
 				['dispatch', 'movetoworkspacesilent', `${railWs},address:${addr}`],
 			)
 			await syncStreamRect(addr).catch(() => {})
@@ -1508,7 +1512,7 @@ export function createHyprland({
 		if (action === 'workspace') {
 			const id = Number(input.workspace)
 			if (!Number.isInteger(id) || id < 1 || id > 20) throw new RpcError('BAD_REQUEST', 'Invalid workspace')
-			await hyprDispatch(`hl.dispatch(hl.dsp.workspace.change_id({id = ${id}}))`, ['dispatch', 'workspace', String(id)])
+			await hyprDispatch(`hl.dispatch(hl.dsp.focus({workspace = ${id}}))`, ['dispatch', 'workspace', String(id)])
 			return true
 		}
 		throw new RpcError('BAD_REQUEST', 'Unsupported Hyprland action')
@@ -1597,7 +1601,7 @@ export function createHyprland({
 					const railWs = Number.isInteger(ensured?.activeWorkspace) && ensured.activeWorkspace >= 1 && ensured.activeWorkspace <= 99 ? ensured.activeWorkspace : 11
 					if (ensured) {
 						await hyprDispatch(
-							`hl.dispatch(hl.dsp.window.move({window = "address:${cleanAddr}", workspace = "${railWs}", silent = true}))`,
+							`hl.dispatch(hl.dsp.window.move({window = "address:${cleanAddr}", workspace = ${railWs}, silent = true}))`,
 							['dispatch', 'movetoworkspacesilent', `${railWs},address:${cleanAddr}`],
 						).catch(() => {})
 						await placeOnRail(cleanAddr, targetWin.size[0], targetWin.size[1]).catch(() => {})
