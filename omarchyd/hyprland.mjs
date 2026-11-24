@@ -1563,6 +1563,7 @@ export function createHyprland({
 	let profileBenchChain = Promise.resolve()
 	let stuckBenchChild = null
 	let profileTmpSeq = 0
+	let profileResetGen = 0
 
 	function withProfileStoreLock(fn) {
 		const run = profileStoreChain.then(fn, fn)
@@ -1576,6 +1577,13 @@ export function createHyprland({
 		return run
 	}
 
+	function resetProfiles() {
+		profileResetGen++
+		return withProfileStoreLock(async () => {
+			await rm(profilesPath, {force: true})
+		})
+	}
+
 	function codecFromEncoderName(encoderName, fallbackCodec) {
 		const name = String(encoderName || '').toLowerCase()
 		if (name.startsWith('hevc444')) return 'hevc444'
@@ -1585,34 +1593,65 @@ export function createHyprland({
 		return fallbackCodec
 	}
 
-	function sanitizeProfile(raw, fallbackId = '') {
-		const id = String(raw?.id ?? fallbackId ?? '')
-			.trim()
-			.replace(/[^A-Za-z0-9._-]/g, '-')
-			.slice(0, 64)
+	const VALID_CODECS = new Set(['hevc444', 'hevc10', 'hevc', 'h264'])
+
+	function sanitizeProfile(raw, fallbackId = '', {strict = false} = {}) {
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+		const hasExplicitId = raw.id !== undefined && raw.id !== null && String(raw.id).trim() !== ''
+		let id
+		if (hasExplicitId) {
+			const trimmed = String(raw.id).trim()
+			if (strict) {
+				if (!PROFILE_ID_RE.test(trimmed)) return null
+				id = trimmed
+			} else {
+				id = trimmed.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 64)
+			}
+		} else {
+			id = String(fallbackId ?? '')
+				.trim()
+				.replace(/[^A-Za-z0-9._-]/g, '-')
+				.slice(0, 64)
+		}
 		if (!PROFILE_ID_RE.test(id)) return null
-		const codec = raw?.codec === 'hevc444' || raw?.codec === 'hevc10' || raw?.codec === 'hevc' ? raw.codec : 'h264'
-		const fps = Math.max(15, Math.min(60, Math.round(Number(raw?.fps) || 60)))
-		const bitrate = Math.max(4000, Math.min(150000, Math.round(Number(raw?.bitrate) || 22000)))
-		const quality = Math.max(10, Math.min(34, Math.round(Number(raw?.quality) || 20)))
-		const compression = Math.max(1, Math.min(7, Math.round(Number(raw?.compression) || 7)))
+		let codec
+		if (strict) {
+			if (typeof raw.codec !== 'string' || !VALID_CODECS.has(raw.codec)) return null
+			codec = raw.codec
+		} else {
+			codec = VALID_CODECS.has(raw.codec) ? raw.codec : 'h264'
+		}
+		const rawFps = raw.fps === undefined ? 60 : Number(raw.fps)
+		const rawBitrate = raw.bitrate === undefined ? 22000 : Number(raw.bitrate)
+		const rawQuality = raw.quality === undefined ? 20 : Number(raw.quality)
+		const rawCompression = raw.compression === undefined ? 7 : Number(raw.compression)
+		if (strict) {
+			if (!Number.isFinite(rawFps) || rawFps < 15 || rawFps > 60) return null
+			if (!Number.isFinite(rawBitrate) || rawBitrate < 4000 || rawBitrate > 150000) return null
+			if (!Number.isFinite(rawQuality) || rawQuality < 10 || rawQuality > 34) return null
+			if (!Number.isFinite(rawCompression) || rawCompression < 1 || rawCompression > 7) return null
+		}
+		const fps = Math.max(15, Math.min(60, Math.round(Number.isFinite(rawFps) ? rawFps : 60)))
+		const bitrate = Math.max(4000, Math.min(150000, Math.round(Number.isFinite(rawBitrate) ? rawBitrate : 22000)))
+		const quality = Math.max(10, Math.min(34, Math.round(Number.isFinite(rawQuality) ? rawQuality : 20)))
+		const compression = Math.max(1, Math.min(7, Math.round(Number.isFinite(rawCompression) ? rawCompression : 7)))
 		return {
 			id,
-			name: String(raw?.name || id).trim().slice(0, 64) || id,
-			deviceHint: String(raw?.deviceHint || '').trim().slice(0, 100),
+			name: String(raw.name || id).trim().slice(0, 64) || id,
+			deviceHint: String(raw.deviceHint || '').trim().slice(0, 100),
 			codec,
 			fps,
 			bitrate,
 			quality,
 			compression,
-			...(Number.isFinite(Number(raw?.measuredFps)) ? {measuredFps: Math.round(Number(raw.measuredFps) * 10) / 10} : {}),
-			...(Number.isFinite(Number(raw?.measuredP95Ms)) ? {measuredP95Ms: Math.round(Number(raw.measuredP95Ms) * 10) / 10} : {}),
-			...(Number.isFinite(Number(raw?.measuredRttMs)) ? {measuredRttMs: Math.round(Number(raw.measuredRttMs))} : {}),
-			...(Number.isFinite(Number(raw?.measuredMbps)) ? {measuredMbps: Math.round(Number(raw.measuredMbps) * 10) / 10} : {}),
-			...(typeof raw?.encoder === 'string' && raw.encoder ? {encoder: raw.encoder.slice(0, 40)} : {}),
-			...(Number.isFinite(Number(raw?.score)) ? {score: Math.round(Number(raw.score))} : {}),
-			...(Number.isFinite(Number(raw?.testedAt)) ? {testedAt: Number(raw.testedAt)} : {}),
-			autoSelected: raw?.autoSelected === true,
+			...(raw.measuredFps != null && Number.isFinite(Number(raw.measuredFps)) ? {measuredFps: Math.round(Number(raw.measuredFps) * 10) / 10} : {}),
+			...(raw.measuredP95Ms != null && Number.isFinite(Number(raw.measuredP95Ms)) ? {measuredP95Ms: Math.round(Number(raw.measuredP95Ms) * 10) / 10} : {}),
+			...(raw.measuredRttMs != null && Number.isFinite(Number(raw.measuredRttMs)) ? {measuredRttMs: Math.round(Number(raw.measuredRttMs))} : {}),
+			...(raw.measuredMbps != null && Number.isFinite(Number(raw.measuredMbps)) ? {measuredMbps: Math.round(Number(raw.measuredMbps) * 10) / 10} : {}),
+			...(typeof raw.encoder === 'string' && raw.encoder ? {encoder: raw.encoder.slice(0, 40)} : {}),
+			...(raw.score != null && Number.isFinite(Number(raw.score)) ? {score: Math.round(Number(raw.score))} : {}),
+			...(raw.testedAt != null && Number.isFinite(Number(raw.testedAt)) ? {testedAt: Number(raw.testedAt)} : {}),
+			autoSelected: raw.autoSelected === true,
 		}
 	}
 
@@ -1627,15 +1666,37 @@ export function createHyprland({
 		}
 		try {
 			const raw = JSON.parse(text)
-			const list = Array.isArray(raw?.profiles) ? raw.profiles.map((p) => sanitizeProfile(p)).filter(Boolean) : []
+			if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+				throw new Error('Root must be a JSON object')
+			}
+			if (!Array.isArray(raw.profiles)) {
+				if (strict) throw new Error('profiles must be an array')
+			}
+			const list = []
+			if (Array.isArray(raw.profiles)) {
+				for (const item of raw.profiles) {
+					const clean = sanitizeProfile(item, '', {strict})
+					if (!clean) {
+						if (strict) throw new Error('Invalid profile entry in store')
+						continue
+					}
+					list.push(clean)
+				}
+			}
+			if (raw.activeByDevice !== undefined && (raw.activeByDevice === null || typeof raw.activeByDevice !== 'object' || Array.isArray(raw.activeByDevice))) {
+				if (strict) throw new Error('activeByDevice must be an object')
+			}
+			if (raw.defaultProfileId !== undefined && raw.defaultProfileId !== null && typeof raw.defaultProfileId !== 'string') {
+				if (strict) throw new Error('defaultProfileId must be a string or null')
+			}
 			const activeByDevice = {}
-			if (raw?.activeByDevice && typeof raw.activeByDevice === 'object') {
+			if (raw.activeByDevice && typeof raw.activeByDevice === 'object' && !Array.isArray(raw.activeByDevice)) {
 				const validIds = new Set(list.map((p) => p.id))
 				for (const [dev, pid] of Object.entries(raw.activeByDevice)) {
 					if (PROFILE_ID_RE.test(dev) && typeof pid === 'string' && validIds.has(pid)) activeByDevice[dev] = pid
 				}
 			}
-			const defaultProfileId = typeof raw?.defaultProfileId === 'string' && list.some((p) => p.id === raw.defaultProfileId) ? raw.defaultProfileId : (list[0]?.id ?? null)
+			const defaultProfileId = typeof raw.defaultProfileId === 'string' && list.some((p) => p.id === raw.defaultProfileId) ? raw.defaultProfileId : (list[0]?.id ?? null)
 			return {profiles: list, activeByDevice, defaultProfileId}
 		} catch {
 			if (strict) throw new RpcError('INTERNAL_SERVER_ERROR', 'Saved stream profiles file is corrupted; refusing to overwrite')
@@ -1662,15 +1723,39 @@ export function createHyprland({
 		return {...store, vaapi: hasVaapi, nativeEngine: hasNative}
 	}
 
-	function profileSave(input = {}) {
+	function profileSave(input = {}, {expectedResetGen = null} = {}) {
 		return withProfileStoreLock(async () => {
+			if (expectedResetGen !== null && expectedResetGen !== profileResetGen) {
+				return {profiles: [], activeByDevice: {}, defaultProfileId: null, saved: null, abortedByReset: true}
+			}
+			const rawProf = input?.profile ?? input
+			if (!rawProf || typeof rawProf !== 'object' || Array.isArray(rawProf)) {
+				throw new RpcError('BAD_REQUEST', 'Invalid stream profile')
+			}
+			const explicitId = rawProf.id !== undefined && rawProf.id !== null && String(rawProf.id).trim() !== ''
+				? String(rawProf.id).trim()
+				: input?.id !== undefined && input?.id !== null && String(input.id).trim() !== ''
+					? String(input.id).trim()
+					: null
+			if (explicitId !== null && !PROFILE_ID_RE.test(explicitId)) {
+				throw new RpcError('BAD_REQUEST', 'Invalid profile ID')
+			}
+			if (typeof rawProf.codec !== 'string' || !VALID_CODECS.has(rawProf.codec)) {
+				throw new RpcError('BAD_REQUEST', 'Unsupported video codec')
+			}
+			const rawDev = input?.deviceId
+			let dev = ''
+			if (rawDev !== undefined && rawDev !== null && String(rawDev).trim() !== '') {
+				dev = String(rawDev).trim()
+				if (!PROFILE_ID_RE.test(dev)) throw new RpcError('BAD_REQUEST', 'Invalid device ID')
+			}
 			const store = await readProfilesStore({strict: true})
-			const clean = sanitizeProfile(input?.profile ?? input, input?.id || `profile-${Date.now().toString(36)}`)
-			if (!clean) throw new RpcError('BAD_REQUEST', 'Invalid stream profile')
+			const candidate = explicitId !== null ? {...rawProf, id: explicitId} : rawProf
+			const clean = sanitizeProfile(candidate, `profile-${Date.now().toString(36)}`, {strict: true})
+			if (!clean) throw new RpcError('BAD_REQUEST', 'Invalid stream profile parameters')
 			const idx = store.profiles.findIndex((p) => p.id === clean.id)
 			if (idx >= 0) store.profiles[idx] = clean
 			else store.profiles.push(clean)
-			const dev = typeof input?.deviceId === 'string' && PROFILE_ID_RE.test(input.deviceId.trim()) ? input.deviceId.trim() : ''
 			if (dev && input?.activate !== false) store.activeByDevice[dev] = clean.id
 			if (input?.setDefault || !store.defaultProfileId) store.defaultProfileId = clean.id
 			await writeProfilesStore(store)
@@ -1720,6 +1805,7 @@ export function createHyprland({
 			let meta = null
 			let firstFrameAt = 0
 			let lastFrameAt = 0
+			let windowEndAt = 0
 			let frames = 0
 			let totalBytes = 0
 			let keyKb = 0
@@ -1728,6 +1814,10 @@ export function createHyprland({
 			let exited = false
 			let hasStarted = false
 			let stuck = false
+			let hadError = false
+			let errorMsg = null
+			let framingError = false
+			let prematureExit = false
 			let settled = false
 			let killTimer = null
 			let closeWaitTimer = null
@@ -1741,16 +1831,32 @@ export function createHyprland({
 				if (sampleTimer) clearTimeout(sampleTimer)
 				if (killTimer) clearTimeout(killTimer)
 				if (closeWaitTimer) clearTimeout(closeWaitTimer)
-				// Measure steady-state FPS excluding cold VA-API initialization
-				const spanSec = frames > 1 && lastFrameAt > firstFrameAt ? (lastFrameAt - firstFrameAt) / 1000 : 0
-				const measuredFps = spanSec > 0.05 ? (frames - 1) / spanSec : 0
-				const sorted = [...dts].sort((a, b) => a - b)
-				const p50Ms = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0
-				const p95Ms = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : 0
+				// Measure sustained FPS across the full observation window (including any trailing stall after the last frame).
+				const endAt = windowEndAt || performance.now()
+				const observedMs = firstFrameAt > 0 && endAt > firstFrameAt ? Math.max(durationMs * 0.95, endAt - firstFrameAt) : 0
+				const spanSec = observedMs / 1000
+				const measuredFps = frames > 1 && spanSec > 0.05 ? (frames - 1) / spanSec : 0
+				const allDts = [...dts]
+				if (lastFrameAt > 0 && endAt - lastFrameAt > 50) allDts.push(endAt - lastFrameAt)
+				allDts.sort((a, b) => a - b)
+				const p50Ms = allDts.length ? allDts[Math.floor(allDts.length / 2)] : 0
+				const p95Ms = allDts.length ? allDts[Math.min(allDts.length - 1, Math.floor(allDts.length * 0.95))] : 0
 				const mbps = spanSec > 0.05 ? (totalBytes * 8) / spanSec / 1e6 : 0
+				const cleanTermination = !stuck && !hadError && !framingError && !prematureExit
 				resolveDone({
-					ok: !stuck && frames >= 6 && !!meta,
+					ok: cleanTermination && frames >= 6 && !!meta,
 					stuck,
+					...(errorMsg || framingError || prematureExit || stuck
+						? {
+								error:
+									errorMsg ||
+									(framingError
+										? 'Malformed capture wire framing'
+										: prematureExit
+											? 'Capture worker exited unexpectedly'
+											: 'Capture worker timed out on shutdown'),
+							}
+						: {}),
 					frames,
 					fps: Math.round(measuredFps * 10) / 10,
 					p50Ms: Math.round(p50Ms * 10) / 10,
@@ -1765,6 +1871,7 @@ export function createHyprland({
 			const finish = () => {
 				if (stopping) return
 				stopping = true
+				if (!windowEndAt) windowEndAt = performance.now()
 				clearTimeout(stopTimer)
 				if (sampleTimer) clearTimeout(sampleTimer)
 				try {
@@ -1830,12 +1937,23 @@ export function createHyprland({
 						lastFrameAt = now
 						frames++
 					} else if (typ === 3) {
+						hadError = true
+						try {
+							const parsed = JSON.parse(pl.toString('utf8'))
+							if (typeof parsed?.error === 'string' && parsed.error) errorMsg = parsed.error.slice(0, 200)
+						} catch {}
+						if (!errorMsg) errorMsg = 'Capture encoder reported fatal error'
 						finish()
 					}
 				})
-				if (!ok) finish()
+				if (!ok) {
+					framingError = true
+					finish()
+				}
 			})
 			const onExit = () => {
+				if (!stopping) prematureExit = true
+				if (!windowEndAt) windowEndAt = performance.now()
 				exited = true
 				if (stuckBenchChild === child) stuckBenchChild = null
 				resolveResult()
@@ -1851,7 +1969,11 @@ export function createHyprland({
 	}
 
 	function profileRun(input = {}) {
+		const runGen = profileResetGen
 		return withProfileBenchLock(async () => {
+			if (runGen !== profileResetGen) {
+				return {winner: null, results: [], rttMs: null, profiles: [], activeByDevice: {}, defaultProfileId: null}
+			}
 			if (stuckBenchChild && stuckBenchChild.exitCode == null) {
 				throw new RpcError('CONFLICT', 'A previous GPU benchmark worker is still exiting; wait a moment and try again')
 			}
@@ -1864,9 +1986,11 @@ export function createHyprland({
 			if (!bin) {
 				throw new RpcError('PRECONDITION_FAILED', 'Native VA-API GPU capture engine is unavailable on this host')
 			}
-			const rttMs = Math.max(0, Math.min(2000, Math.round(Number(input?.clientRttMs) || 15)))
+			const hasMeasuredRtt = input?.clientRttMs != null && Number.isFinite(Number(input.clientRttMs))
+			const measuredRttMs = hasMeasuredRtt ? Math.max(0, Math.min(2000, Math.round(Number(input.clientRttMs)))) : null
+			const effectiveRttMs = measuredRttMs ?? 20
 			const explicitCodecs = Array.isArray(input?.clientCodecs)
-			const rawClientCodecs = explicitCodecs ? input.clientCodecs.filter((c) => c === 'hevc444' || c === 'hevc' || c === 'hevc10' || c === 'h264') : ['hevc', 'h264']
+			const rawClientCodecs = explicitCodecs ? input.clientCodecs.filter((c) => VALID_CODECS.has(c)) : ['hevc', 'h264']
 			const clientCodecs = [...new Set(rawClientCodecs)]
 			if (!clientCodecs.length) {
 				throw new RpcError('PRECONDITION_FAILED', 'Client browser reported no supported WebCodecs video codecs')
@@ -1874,18 +1998,18 @@ export function createHyprland({
 			const rail = await ensureRailOutput().catch(() => null)
 			const outputName = rail?.name || RAIL_OUTPUT
 
-			// Tailor candidate matrix to client RTT + supported WebCodecs hardware decoders (including Ultra LAN & HEVC 4:4:4 on local links)
-			const isHighWan = rttMs >= 45
-			const isModWan = rttMs >= 18 && rttMs < 45
-			const isLan = rttMs < 12
+			// Tailor candidate matrix to client RTT + EVERY advertised WebCodecs codec (never injecting unadvertised codecs)
+			const isHighWan = effectiveRttMs >= 45
+			const isModWan = effectiveRttMs >= 18 && effectiveRttMs < 45
+			const isLan = effectiveRttMs < 12
 			const candidates = []
-			if (clientCodecs.includes('hevc444') && isLan) {
+			if (clientCodecs.includes('hevc444')) {
 				candidates.push({
-					label: 'HEVC 4:4:4 Ultra LAN 60',
+					label: isLan ? 'HEVC 4:4:4 Ultra LAN 60' : 'HEVC 4:4:4 Crisp 60',
 					codec: 'hevc444',
 					fps: 60,
-					bitrate: 100000,
-					quality: 12,
+					bitrate: isLan ? 100000 : isHighWan ? 18000 : isModWan ? 24000 : 32000,
+					quality: isLan ? 12 : isHighWan ? 21 : 19,
 					compression: 7,
 				})
 			}
@@ -1936,7 +2060,7 @@ export function createHyprland({
 					compression: 7,
 				})
 			}
-			if (clientCodecs.includes('h264') || !candidates.length) {
+			if (clientCodecs.includes('h264')) {
 				candidates.push({
 					label: isLan ? 'H.264 High LAN 60' : 'H.264 High Universal',
 					codec: 'h264',
@@ -1949,48 +2073,63 @@ export function createHyprland({
 
 			const results = []
 			for (const c of candidates) {
+				if (runGen !== profileResetGen) break
 				const m = await runCaptureBenchmark(bin, env, {...c, outputName})
 				// Score the codec the encoder ACTUALLY used (in case hardware fell back from HEVC -> H.264).
 				const actualCodec = m.ok ? codecFromEncoderName(m.encoder, c.codec) : c.codec
 				const clientSupportsActual = clientCodecs.includes(actualCodec)
-				const score = clientSupportsActual ? scoreProfileCandidate({...c, ...m, codec: actualCodec, targetFps: c.fps}, {rttMs}) : 0
+				const score = clientSupportsActual ? scoreProfileCandidate({...c, ...m, codec: actualCodec, targetFps: c.fps}, {rttMs: effectiveRttMs}) : 0
 				results.push({...c, ...m, codec: actualCodec, targetFps: c.fps, score})
 				if (m.stuck) break
+			}
+			if (runGen !== profileResetGen) {
+				return {winner: null, results: [], rttMs: measuredRttMs, profiles: [], activeByDevice: {}, defaultProfileId: null}
 			}
 			results.sort((a, b) => b.score - a.score)
 			const best = results.find((r) => r.ok && r.score > 0 && clientCodecs.includes(r.codec)) ?? null
 
 			let store = await readProfilesStore()
 			if (!best) {
-				return {winner: null, results, rttMs, ...store}
+				return {winner: null, results, rttMs: measuredRttMs, ...store}
 			}
 
 			const deviceId = typeof input?.deviceId === 'string' && PROFILE_ID_RE.test(input.deviceId.trim()) ? input.deviceId.trim() : `device-${Date.now().toString(36)}`
-			const netTag = rttMs >= 45 ? 'WAN' : rttMs >= 18 ? 'Remote' : 'LAN'
+			const netTag = effectiveRttMs >= 45 ? 'WAN' : effectiveRttMs >= 18 ? 'Remote' : 'LAN'
 			const profileName = String(input?.deviceName || '').trim().slice(0, 48) || `Auto (${netTag})`
-			const winner = sanitizeProfile({
-				id: deviceId,
-				name: `${profileName} · ${best.label}`,
-				deviceHint: String(input?.deviceHint || '').trim().slice(0, 100),
-				codec: best.codec,
-				fps: best.targetFps ?? 60,
-				bitrate: best.bitrate,
-				quality: best.quality,
-				compression: best.compression,
-				measuredFps: best.fps,
-				measuredP95Ms: best.p95Ms,
-				measuredRttMs: rttMs,
-				measuredMbps: best.mbps,
-				encoder: best.encoder || undefined,
-				score: best.score,
-				testedAt: Date.now(),
-				autoSelected: true,
-			})
+			const winner = sanitizeProfile(
+				{
+					id: deviceId,
+					name: `${profileName} · ${best.label}`,
+					deviceHint: String(input?.deviceHint || '').trim().slice(0, 100),
+					codec: best.codec,
+					fps: best.targetFps ?? 60,
+					bitrate: best.bitrate,
+					quality: best.quality,
+					compression: best.compression,
+					measuredFps: best.fps,
+					measuredP95Ms: best.p95Ms,
+					...(measuredRttMs !== null ? {measuredRttMs} : {}),
+					measuredMbps: best.mbps,
+					encoder: best.encoder || undefined,
+					score: best.score,
+					testedAt: Date.now(),
+					autoSelected: true,
+				},
+				'',
+				{strict: true},
+			)
 
 			if (input?.saveAsActive !== false && winner) {
-				store = await profileSave({profile: winner, deviceId, activate: true, setDefault: !store.defaultProfileId})
+				const saved = await profileSave(
+					{profile: winner, deviceId, activate: true, setDefault: !store.defaultProfileId},
+					{expectedResetGen: runGen},
+				)
+				if (saved?.abortedByReset) {
+					return {winner: null, results: [], rttMs: measuredRttMs, profiles: [], activeByDevice: {}, defaultProfileId: null}
+				}
+				store = saved
 			}
-			return {winner, results, rttMs, ...store}
+			return {winner, results, rttMs: measuredRttMs, ...store}
 		})
 	}
 
@@ -2793,6 +2932,7 @@ export function createHyprland({
 		waitForEventSocketReady,
 		nextEventSnapSeq: () => ++eventSnapSeq,
 		notifyUnlocked,
+		resetProfiles,
 		windows,
 		windowsSnapshot,
 		async currentInstanceId() {

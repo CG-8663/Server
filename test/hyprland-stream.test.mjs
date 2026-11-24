@@ -1551,6 +1551,7 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 		await writeFile(fakeBin, '#!/bin/sh\n')
 
 		let modeScenario = 'bench-ok'
+		const spawnedCodecArgs = []
 		const hypr = createHyprland({
 			dataDir: join(root, 'data'),
 			home: root,
@@ -1565,6 +1566,9 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 				return {ok: true, stdout: 'ok', stderr: ''}
 			},
 			spawnImpl(_cmd, args) {
+				const codecIdx = args.indexOf('--codec')
+				const reqCodec = codecIdx >= 0 ? args[codecIdx + 1] : 'h264'
+				spawnedCodecArgs.push(reqCodec)
 				const ch = Object.assign(new EventEmitter(), {
 					stdin: new PassThrough(),
 					stdout: new PassThrough(),
@@ -1572,23 +1576,23 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 					killed: false,
 					exitCode: null,
 					kill(sig) {
+						if (this.killed) return
 						this.killed = true
-						this.exitCode = 0
 						setImmediate(() => {
+							if (this.exitCode !== null) return
+							this.exitCode = 0
 							this.emit('exit', 0, sig || null)
 							this.emit('close', 0, sig || null)
 						})
 					},
 				})
 				if (modeScenario === 'bench-ok' || modeScenario === 'bench-fallback-h264') {
-					const codecIdx = args.indexOf('--codec')
-					const reqCodec = codecIdx >= 0 ? args[codecIdx + 1] : 'h264'
 					const reportedEnc = modeScenario === 'bench-fallback-h264' ? 'h264_vaapi_dmabuf' : `${reqCodec}_vaapi_dmabuf`
 					setImmediate(() => {
 						ch.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, encoder: reportedEnc, codec: 'hev1'}))))
 						let count = 0
 						const iv = setInterval(() => {
-							if (ch.exitCode !== null || count >= 12) {
+							if (ch.killed || ch.exitCode !== null) {
 								clearInterval(iv)
 								return
 							}
@@ -1601,6 +1605,63 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 				} else if (modeScenario === 'bench-fail') {
 					setImmediate(() => {
 						ch.stdout.write(framePacket(3, Buffer.from(JSON.stringify({error: 'VA-API busy'}))))
+					})
+				} else if (modeScenario === 'bench-late-error') {
+					setImmediate(() => {
+						ch.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, encoder: `${reqCodec}_vaapi_dmabuf`, codec: 'hev1'}))))
+						let count = 0
+						const iv = setInterval(() => {
+							if (ch.killed || ch.exitCode !== null) {
+								clearInterval(iv)
+								return
+							}
+							if (count < 8) {
+								const pl = Buffer.concat([Buffer.from([count === 0 ? 1 : 0]), Buffer.alloc(8), Buffer.alloc(1200)])
+								ch.stdout.write(framePacket(2, pl))
+								count++
+							} else {
+								clearInterval(iv)
+								ch.stdout.write(framePacket(3, Buffer.from(JSON.stringify({error: 'GPU hang mid-stream'}))))
+							}
+						}, 16)
+						ch.once('exit', () => clearInterval(iv))
+					})
+				} else if (modeScenario === 'bench-early-crash') {
+					setImmediate(() => {
+						ch.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, encoder: `${reqCodec}_vaapi_dmabuf`, codec: 'hev1'}))))
+						let count = 0
+						const iv = setInterval(() => {
+							if (ch.killed || ch.exitCode !== null) {
+								clearInterval(iv)
+								return
+							}
+							if (count < 8) {
+								const pl = Buffer.concat([Buffer.from([count === 0 ? 1 : 0]), Buffer.alloc(8), Buffer.alloc(1200)])
+								ch.stdout.write(framePacket(2, pl))
+								count++
+							} else {
+								clearInterval(iv)
+								ch.exitCode = 1
+								ch.emit('exit', 1, null)
+								ch.emit('close', 1, null)
+							}
+						}, 16)
+						ch.once('exit', () => clearInterval(iv))
+					})
+				} else if (modeScenario === 'bench-burst-stall') {
+					setImmediate(() => {
+						ch.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, encoder: `${reqCodec}_vaapi_dmabuf`, codec: 'hev1'}))))
+						let count = 0
+						const iv = setInterval(() => {
+							if (ch.killed || ch.exitCode !== null || count >= 10) {
+								clearInterval(iv)
+								return
+							}
+							const pl = Buffer.concat([Buffer.from([count === 0 ? 1 : 0]), Buffer.alloc(8), Buffer.alloc(1200)])
+							ch.stdout.write(framePacket(2, pl))
+							count++
+						}, 16)
+						ch.once('exit', () => clearInterval(iv))
 					})
 				}
 				return ch
@@ -1618,12 +1679,57 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 		assert.ok(ran.winner && ran.winner.id === 'mac-studio-chrome')
 		assert.equal(ran.winner.codec, 'hevc')
 		assert.equal(ran.winner.fps, 60)
+		assert.ok(ran.winner.measuredFps >= 45, `sustained benchmark FPS should stay high, got ${ran.winner.measuredFps}`)
 		assert.equal(ran.activeByDevice['mac-studio-chrome'], 'mac-studio-chrome')
+
+		// Unmeasured RTT (undefined) must NOT fabricate measuredRttMs: 20 on the saved profile
+		const noRtt = await hypr.procedures['hyprland.profileRun'].run({
+			deviceId: 'no-rtt-dev',
+			clientCodecs: ['hevc444'],
+			saveAsActive: true,
+		})
+		assert.equal(noRtt.rttMs, null)
+		assert.equal(noRtt.winner?.codec, 'hevc444', 'hevc444-only client on non-LAN RTT must benchmark RTT-appropriate hevc444 and never inject h264')
+		assert.equal(noRtt.winner?.measuredRttMs, undefined, 'unmeasured RTT must not be stored as fabricated 20 ms')
+		assert.ok(spawnedCodecArgs.at(-1) === 'hevc444', 'must only spawn advertised hevc444 codec')
 
 		await assert.rejects(
 			() => hypr.procedures['hyprland.profileRun'].run({deviceId: 'none-dev', clientCodecs: [], clientRttMs: 20}),
 			/no supported WebCodecs/i,
 		)
+
+		// Fatal error packet AFTER 8 good frames must fail the candidate (never persist as winner)
+		modeScenario = 'bench-late-error'
+		const lateErrRun = await hypr.procedures['hyprland.profileRun'].run({
+			deviceId: 'late-err-dev',
+			clientCodecs: ['hevc'],
+			clientRttMs: 20,
+			saveAsActive: true,
+		})
+		assert.equal(lateErrRun.winner, null, 'worker emitting fatal error after good frames must be rejected')
+		assert.equal(lateErrRun.results[0]?.ok, false)
+
+		// Unexpected early exit AFTER 8 good frames must fail the candidate
+		modeScenario = 'bench-early-crash'
+		const crashRun = await hypr.procedures['hyprland.profileRun'].run({
+			deviceId: 'crash-dev',
+			clientCodecs: ['hevc'],
+			clientRttMs: 20,
+			saveAsActive: true,
+		})
+		assert.equal(crashRun.winner, null, 'worker exiting prematurely before benchmark window must be rejected')
+		assert.equal(crashRun.results[0]?.ok, false)
+
+		// Short burst followed by stall must NOT score as sustained 60 FPS
+		modeScenario = 'bench-burst-stall'
+		const stallRun = await hypr.procedures['hyprland.profileRun'].run({
+			deviceId: 'stall-dev',
+			clientCodecs: ['hevc'],
+			clientRttMs: 20,
+			saveAsActive: false,
+		})
+		assert.ok((stallRun.results[0]?.fps ?? 99) < 25, `burst+stall must not report sustained 60 FPS, got ${stallRun.results[0]?.fps}`)
+		assert.ok((stallRun.results[0]?.p95Ms ?? 0) >= 400, `burst+stall p95 must reflect trailing stall, got ${stallRun.results[0]?.p95Ms}`)
 
 		modeScenario = 'bench-fallback-h264'
 		const unadvertisedFallback = await hypr.procedures['hyprland.profileRun'].run({
@@ -1654,6 +1760,31 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 		assert.equal(failedRun.winner, null)
 		assert.equal(failedRun.activeByDevice['mac-studio-chrome'], 'mac-studio-chrome')
 
+		// Strict validation on profileSave: reject invalid IDs and unsupported codecs instead of silently rewriting/coercing
+		await assert.rejects(
+			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: '../bad/id', name: 'Bad', codec: 'hevc', fps: 60, bitrate: 20000}}),
+			/Invalid profile ID/,
+		)
+		await assert.rejects(
+			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: 'bad-codec', name: 'Bad', codec: 'av1', fps: 60, bitrate: 20000}}),
+			/Unsupported video codec/,
+		)
+
+		// Factory reset clears saved profiles and prevents an in-flight profileRun from persisting stale data
+		modeScenario = 'bench-ok'
+		const inFlight = hypr.procedures['hyprland.profileRun'].run({
+			deviceId: 'pre-reset-dev',
+			clientCodecs: ['hevc'],
+			clientRttMs: 20,
+			saveAsActive: true,
+		})
+		await new Promise((r) => setTimeout(r, 80))
+		await hypr.resetProfiles()
+		const afterResetRun = await inFlight
+		assert.equal(afterResetRun.winner, null, 'in-flight profileRun interrupted by factory reset must not save a winner')
+		const postResetStore = await hypr.procedures['hyprland.profiles'].run()
+		assert.equal(postResetStore.profiles.length, 0, 'resetProfiles must leave saved profiles empty')
+
 		await Promise.all([
 			hypr.procedures['hyprland.profileSave'].run({
 				profile: {id: 'lan-a', name: 'LAN Ultra', codec: 'hevc', fps: 60, bitrate: 120000, quality: 12, compression: 7},
@@ -1674,6 +1805,12 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 		assert.equal(listed.activeByDevice['dev-a'], 'lan-a')
 		assert.equal(listed.activeByDevice['dev-b'], 'lan-b')
 
+		// Both malformed JSON and wrong-shape valid JSON must be rejected in strict mode (refusing to overwrite)
+		await writeFile(join(root, 'data', 'hyprland-profiles.json'), '{"profiles":"not-an-array"}')
+		await assert.rejects(
+			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: 'should-fail', name: 'X', codec: 'h264', fps: 60, bitrate: 16000}}),
+			/corrupted/i,
+		)
 		await writeFile(join(root, 'data', 'hyprland-profiles.json'), '{not-valid-json')
 		await assert.rejects(
 			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: 'should-fail', name: 'X', codec: 'h264', fps: 60, bitrate: 16000}}),

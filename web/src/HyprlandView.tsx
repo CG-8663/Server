@@ -12,7 +12,7 @@ import {
 	shouldReplayHandshakeReconfig,
 } from './hyprlandStreamState.mjs'
 import {Icon} from './icons'
-import {getRailDeviceId, type StreamCodec, type StreamProfilesResponse} from './screens/StreamProfiler'
+import {getRailDeviceId, type StreamCodec, type StreamProfile, type StreamProfilesResponse} from './screens/StreamProfiler'
 
 export type HyprlandWindow = {
 	address: string
@@ -451,19 +451,59 @@ const SHARPNESS_PRESETS: Record<SharpnessPreset, {label: string; value: number; 
 	off: {label: 'Sharp: Off', value: 0, next: 'crisp'},
 }
 
-function readQualityTier(): StreamQualityTier {
+function readQualityTierOverride(): StreamQualityTier | null {
 	try {
 		const v = localStorage.getItem(QUALITY_TIER_KEY)
 		if (v === 'balanced' || v === 'high' || v === 'ultra') return v
 	} catch {}
-	return 'balanced'
+	return null
 }
 
-function readChroma444(): boolean {
+function readChroma444Override(): boolean | null {
 	try {
-		return localStorage.getItem(CHROMA_444_KEY) === '1'
+		const v = localStorage.getItem(CHROMA_444_KEY)
+		if (v === '1') return true
+		if (v === '0') return false
 	} catch {}
-	return false
+	return null
+}
+
+export function resolveEffectiveStreamConfig({
+	profile,
+	caps,
+	tierOverride,
+	chromaOverride,
+	codecFallback,
+	defaultBitrate,
+	defaultFps,
+}: {
+	profile: StreamProfile | null
+	caps: {baseCodec: StreamCodec; supports444: boolean; supportsOpus: boolean}
+	tierOverride: StreamQualityTier | null
+	chromaOverride: boolean | null
+	codecFallback: StreamCodec | null
+	defaultBitrate: number
+	defaultFps: number
+}): {codec: StreamCodec; bitrate: number; quality: number; fps: number; compression: number; chroma444: boolean; selectorValue: 'profile' | StreamQualityTier} {
+	const effectiveTier = tierOverride ?? (profile ? null : 'balanced')
+	const tier = effectiveTier ? QUALITY_TIERS[effectiveTier] : null
+	const effectiveBitrate = tier ? tier.bitrate : profile?.bitrate || QUALITY_TIERS.balanced.bitrate || defaultBitrate
+	const effectiveQuality = tier ? tier.quality : profile?.quality || QUALITY_TIERS.balanced.quality || 0
+	const effectiveFps = profile?.fps || defaultFps
+	const effectiveCompression = profile?.compression || 0
+	const non444Base: StreamCodec = profile && profile.codec !== 'hevc444' ? profile.codec : caps.baseCodec
+	const want444 = codecFallback ? false : chromaOverride !== null ? chromaOverride : profile?.codec === 'hevc444'
+	const effective444 = want444 && caps.supports444
+	const effectiveCodec: StreamCodec = codecFallback ?? (effective444 ? 'hevc444' : non444Base)
+	return {
+		codec: effectiveCodec,
+		bitrate: effectiveBitrate,
+		quality: effectiveQuality,
+		fps: effectiveFps,
+		compression: effectiveCompression,
+		chroma444: effectiveCodec === 'hevc444',
+		selectorValue: tierOverride ?? (profile ? 'profile' : 'balanced'),
+	}
 }
 
 function readSharpnessPreset(fallback: number): SharpnessPreset {
@@ -632,54 +672,76 @@ export function HyprlandView({
 	const deviceId = useMemo(() => getRailDeviceId(), [])
 	const [caps, setCaps] = useState<{baseCodec: StreamCodec; supports444: boolean; supportsOpus: boolean} | null>(null)
 	const [codecFallback, setCodecFallback] = useState<StreamCodec | null>(null)
-	const [qualityTier, setQualityTierState] = useState<StreamQualityTier>(readQualityTier)
-	const [chroma444, setChroma444State] = useState<boolean>(readChroma444)
+	const codecFallbackRef = useRef<StreamCodec | null>(codecFallback)
+	codecFallbackRef.current = codecFallback
+	const [tierOverride, setTierOverrideState] = useState<StreamQualityTier | null>(readQualityTierOverride)
+	const [chromaOverride, setChromaOverrideState] = useState<boolean | null>(readChroma444Override)
 	const [confirmedCodec, setConfirmedCodec] = useState<StreamCodec | null>(null)
 	const [showStats, setShowStats] = useState(false)
 	const showStatsRef = useRef(false)
 	showStatsRef.current = showStats
-	const qualityTierRef = useRef<StreamQualityTier>(qualityTier)
-	qualityTierRef.current = qualityTier
-	const chroma444Ref = useRef<boolean>(chroma444)
-	chroma444Ref.current = chroma444
+	const tierOverrideRef = useRef<StreamQualityTier | null>(tierOverride)
+	tierOverrideRef.current = tierOverride
+	const chromaOverrideRef = useRef<boolean | null>(chromaOverride)
+	chromaOverrideRef.current = chromaOverride
 	const activeCodecRef = useRef<StreamCodec>('h264')
 	const [attempt, setAttempt] = useState(0)
 
-	const sendLiveReconfig = (nextTier: StreamQualityTier, next444: boolean) => {
+	const sendLiveReconfig = (nextTier: StreamQualityTier | null, nextChroma: boolean | null, nextFallback: StreamCodec | null = codecFallbackRef.current) => {
 		const ws = wsRef.current
 		if (!ws || ws.readyState !== WebSocket.OPEN || !caps) return
-		const tier = QUALITY_TIERS[nextTier]
-		const nextCodec: StreamCodec = next444 && caps.supports444 ? 'hevc444' : (codecFallback ?? caps.baseCodec)
-		activeCodecRef.current = nextCodec
+		const cfg = resolveEffectiveStreamConfig({
+			profile: activeProfileRef.current,
+			caps,
+			tierOverride: nextTier,
+			chromaOverride: nextChroma,
+			codecFallback: nextFallback,
+			defaultBitrate: bitrate,
+			defaultFps: fps,
+		})
+		activeCodecRef.current = cfg.codec
 		ws.send(
 			JSON.stringify({
 				type: 'reconfig',
-				bitrate: tier ? tier.bitrate : bitrate,
-				quality: tier ? tier.quality : 0,
-				codec: nextCodec,
+				bitrate: cfg.bitrate,
+				quality: cfg.quality,
+				codec: cfg.codec,
 			}),
 		)
 	}
 
-	const setQualityTier = (next: StreamQualityTier) => {
-		setQualityTierState(next)
-		qualityTierRef.current = next
+	const setQualityChoice = (choice: 'profile' | StreamQualityTier) => {
+		const nextTier: StreamQualityTier | null = choice === 'profile' ? null : choice
+		setTierOverrideState(nextTier)
+		tierOverrideRef.current = nextTier
 		try {
-			localStorage.setItem(QUALITY_TIER_KEY, next)
+			if (nextTier === null) localStorage.removeItem(QUALITY_TIER_KEY)
+			else localStorage.setItem(QUALITY_TIER_KEY, nextTier)
 		} catch {}
-		sendLiveReconfig(next, chroma444Ref.current)
+		sendLiveReconfig(nextTier, chromaOverrideRef.current)
 	}
 
 	const toggleChroma444 = () => {
-		const curDisplay = confirmedCodec !== null ? confirmedCodec === 'hevc444' : chroma444Ref.current
+		if (!caps) return
+		const cur = resolveEffectiveStreamConfig({
+			profile: activeProfileRef.current,
+			caps,
+			tierOverride: tierOverrideRef.current,
+			chromaOverride: chromaOverrideRef.current,
+			codecFallback: codecFallbackRef.current,
+			defaultBitrate: bitrate,
+			defaultFps: fps,
+		})
+		const curDisplay = confirmedCodec !== null ? confirmedCodec === 'hevc444' : cur.chroma444
 		const next = !curDisplay
-		setChroma444State(next)
-		chroma444Ref.current = next
+		setChromaOverrideState(next)
+		chromaOverrideRef.current = next
 		setConfirmedCodec(null)
 		try {
 			localStorage.setItem(CHROMA_444_KEY, next ? '1' : '0')
 		} catch {}
-		sendLiveReconfig(qualityTierRef.current, next)
+		const nextFallback = next ? null : codecFallbackRef.current
+		sendLiveReconfig(tierOverrideRef.current, next, nextFallback)
 	}
 
 	const cycleSharpness = () => {
@@ -734,6 +796,17 @@ export function HyprlandView({
 	const profilesReady = !profilesQ.isPending || !!profilesQ.data
 	const activeProfileRef = useRef(activeProfile)
 	activeProfileRef.current = activeProfile
+	const resolvedConfig = caps
+		? resolveEffectiveStreamConfig({
+				profile: activeProfile,
+				caps,
+				tierOverride,
+				chromaOverride,
+				codecFallback,
+				defaultBitrate: bitrate,
+				defaultFps: fps,
+			})
+		: null
 	const refreshCanvasRect = () => {
 		const el = canvasRef.current
 		if (!el) return null
@@ -959,15 +1032,21 @@ export function HyprlandView({
 		}
 		if (!caps || !profilesReady) return
 		const prof = activeProfileRef.current
-		const initTier = QUALITY_TIERS[qualityTierRef.current]
-		const useTierOverride = !prof || qualityTierRef.current !== 'balanced'
-		const baseCodec: StreamCodec = prof?.codec ?? caps.baseCodec
-		const initCodec: StreamCodec = codecFallback ?? (chroma444Ref.current && caps.supports444 ? 'hevc444' : baseCodec)
+		const initCfg = resolveEffectiveStreamConfig({
+			profile: prof,
+			caps,
+			tierOverride: tierOverrideRef.current,
+			chromaOverride: chromaOverrideRef.current,
+			codecFallback: codecFallbackRef.current,
+			defaultBitrate: bitrate,
+			defaultFps: fps,
+		})
+		const initCodec: StreamCodec = initCfg.codec
 		activeCodecRef.current = initCodec
-		const activeFps = prof?.fps || fps
-		const activeBitrate = useTierOverride && initTier ? initTier.bitrate : prof?.bitrate || initTier?.bitrate || bitrate
-		const activeQuality = useTierOverride && initTier ? initTier.quality : prof?.quality || initTier?.quality || 0
-		const activeCompression = prof?.compression || 0
+		const activeFps = initCfg.fps
+		const activeBitrate = initCfg.bitrate
+		const activeQuality = initCfg.quality
+		const activeCompression = initCfg.compression
 		let disposed = false
 		let decoder: VideoDecoder | null = null
 		let audioDecoder: WebAudioDecoderLike | null = null
@@ -1147,16 +1226,31 @@ export function HyprlandView({
 			const next = nextFallbackCodec(cur)
 			if (!next) return false
 			if (cur === 'hevc444') {
-				setChroma444State(false)
-				chroma444Ref.current = false
+				setChromaOverrideState(false)
+				chromaOverrideRef.current = false
 				try {
 					localStorage.setItem(CHROMA_444_KEY, '0')
 				} catch {}
-				// If live stream already opened, downgrade 4:4:4 -> 4:2:0 in-place with zero reconnect!
+				// If live stream already opened, downgrade 4:4:4 -> 4:2:0 in-place with zero reconnect while preserving active bitrate & QP!
 				if (gotFirstFrame && wsRef.current?.readyState === WebSocket.OPEN) {
-					const t = QUALITY_TIERS[qualityTierRef.current]
-					activeCodecRef.current = next
-					wsRef.current.send(JSON.stringify({type: 'reconfig', bitrate: t ? t.bitrate : bitrate, quality: t ? t.quality : 0, codec: next}))
+					const fallbackCfg = resolveEffectiveStreamConfig({
+						profile: activeProfileRef.current,
+						caps,
+						tierOverride: tierOverrideRef.current,
+						chromaOverride: false,
+						codecFallback: next,
+						defaultBitrate: bitrate,
+						defaultFps: fps,
+					})
+					activeCodecRef.current = fallbackCfg.codec
+					wsRef.current.send(
+						JSON.stringify({
+							type: 'reconfig',
+							bitrate: fallbackCfg.bitrate,
+							quality: fallbackCfg.quality,
+							codec: fallbackCfg.codec,
+						}),
+					)
 					return true
 				}
 			}
@@ -1798,10 +1892,11 @@ export function HyprlandView({
 						<select
 							className="hypr-select"
 							aria-label="Stream bitrate quality"
-							value={qualityTier}
-							onChange={(e) => setQualityTier(e.target.value as StreamQualityTier)}
+							value={resolvedConfig?.selectorValue ?? (tierOverride ?? (activeProfile ? 'profile' : 'balanced'))}
+							onChange={(e) => setQualityChoice(e.target.value as 'profile' | StreamQualityTier)}
 							title="Live stream bitrate & quality preset (instant, zero reconnect)"
 						>
+							{activeProfile && <option value="profile">{`Profile (${Math.round(activeProfile.bitrate / 1000)} Mbps)`}</option>}
 							<option value="balanced">{QUALITY_TIERS.balanced.label}</option>
 							<option value="high">{QUALITY_TIERS.high.label}</option>
 							<option value="ultra">{QUALITY_TIERS.ultra.label}</option>
@@ -1809,7 +1904,7 @@ export function HyprlandView({
 						{caps?.supports444 && (
 							<button
 								type="button"
-								className={`btn small${(confirmedCodec !== null ? confirmedCodec === 'hevc444' : chroma444) ? ' primary' : ''}`}
+								className={`btn small${(confirmedCodec !== null ? confirmedCodec === 'hevc444' : !!resolvedConfig?.chroma444) ? ' primary' : ''}`}
 								onClick={toggleChroma444}
 								title="Toggle hardware HEVC 4:4:4 full chroma for razor-sharp colored text (instant, zero reconnect)"
 							>

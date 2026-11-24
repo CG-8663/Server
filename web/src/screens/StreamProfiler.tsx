@@ -109,17 +109,35 @@ export async function probeClientCodecs(): Promise<StreamCodec[]> {
 	return out
 }
 
-export async function measureServerRtt(): Promise<number> {
-	const samples: number[] = []
+export async function measureServerRtt(): Promise<number | null> {
+	const warmSamples: number[] = []
+	let firstOk: number | null = null
 	for (let i = 0; i < 4; i++) {
 		const t0 = performance.now()
+		let ac: AbortController | null = null
+		let timer: ReturnType<typeof setTimeout> | null = null
 		try {
-			await fetch('/api/health', {cache: 'no-store'})
+			const signal =
+				typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+					? AbortSignal.timeout(3000)
+					: (() => {
+							ac = new AbortController()
+							timer = setTimeout(() => ac?.abort(), 3000)
+							return ac.signal
+						})()
+			const res = await fetch('/api/health', {cache: 'no-store', signal})
+			if (!res.ok) continue
 			const dt = performance.now() - t0
-			if (i > 0) samples.push(dt) // skip first TLS/connection warm-up
-		} catch {}
+			if (i === 0) firstOk = dt
+			else warmSamples.push(dt) // prefer post-warm-up samples once TLS/HTTP connection is open
+		} catch {
+			// ignore individual failed/timed-out probe
+		} finally {
+			if (timer) clearTimeout(timer)
+		}
 	}
-	if (!samples.length) return 20
+	const samples = warmSamples.length ? warmSamples : firstOk !== null ? [firstOk] : []
+	if (!samples.length) return null
 	samples.sort((a, b) => a - b)
 	return Math.max(1, Math.round(samples[Math.floor(samples.length / 2)]))
 }
@@ -140,12 +158,21 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 
 	const [clientCodecs, setClientCodecs] = useState<StreamCodec[]>([])
 	const [liveRtt, setLiveRtt] = useState<number | null>(null)
-	const [benchResults, setBenchResults] = useState<ProfileBenchResult[] | null>(null)
+	const [rttMeasured, setRttMeasured] = useState(false)
+	const [benchRun, setBenchRun] = useState<{winner: StreamProfile | null; results: ProfileBenchResult[]} | null>(null)
 	const [editing, setEditing] = useState<StreamProfile | null>(null)
 
 	useEffect(() => {
 		probeClientCodecs().then(setClientCodecs).catch(() => setClientCodecs([]))
-		measureServerRtt().then(setLiveRtt).catch(() => {})
+		measureServerRtt()
+			.then((rtt) => {
+				setLiveRtt(rtt)
+				setRttMeasured(true)
+			})
+			.catch(() => {
+				setLiveRtt(null)
+				setRttMeasured(true)
+			})
 	}, [])
 
 	const profilesQ = useQuery({
@@ -162,20 +189,21 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 			const [codecs, rttMs] = await Promise.all([probeClientCodecs(), measureServerRtt()])
 			setClientCodecs(codecs)
 			setLiveRtt(rttMs)
+			setRttMeasured(true)
 			if (!codecs.length) {
 				throw new Error('This browser reported no supported WebCodecs video decoders.')
 			}
-			return mutate<{winner: StreamProfile | null; results: ProfileBenchResult[]; rttMs: number}>('hyprland.profileRun', {
+			return mutate<{winner: StreamProfile | null; results: ProfileBenchResult[]; rttMs: number | null}>('hyprland.profileRun', {
 				deviceId,
 				deviceName: deviceInfo.name,
 				deviceHint: deviceInfo.hint,
 				clientCodecs: codecs,
-				clientRttMs: rttMs,
+				...(rttMs !== null ? {clientRttMs: rttMs} : {}),
 				saveAsActive: true,
 			})
 		},
 		onSuccess: (res) => {
-			setBenchResults(res.results)
+			setBenchRun({winner: res.winner, results: res.results})
 			qc.invalidateQueries({queryKey: ['hyprland.profiles']})
 			if (res.winner) {
 				toast(`Selected ${CODEC_LABELS[res.winner.codec]} (${Math.round(res.winner.bitrate / 1000)} Mbps, score ${res.winner.score ?? 0}/100)`)
@@ -199,7 +227,8 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 
 	const deleteProfile = useMutation({
 		mutationFn: (id: string) => mutate('hyprland.profileDelete', {id}),
-		onSuccess: () => {
+		onSuccess: (_data, deletedId) => {
+			setEditing((cur) => (cur?.id === deletedId ? null : cur))
 			qc.invalidateQueries({queryKey: ['hyprland.profiles']})
 			toast('Profile removed')
 		},
@@ -211,7 +240,7 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 		const base = activeProfile ?? {
 			codec: (clientCodecs[0] ?? 'hevc') as StreamCodec,
 			fps: 60,
-			bitrate: liveRtt && liveRtt >= 45 ? 16000 : isLan ? 48000 : 24000,
+			bitrate: liveRtt !== null && liveRtt >= 45 ? 16000 : isLan ? 48000 : 24000,
 			quality: isLan ? 16 : 20,
 			compression: 7,
 		}
@@ -234,7 +263,16 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 		saveProfile.mutate({profile: editing, deviceId, activate: true})
 	}
 
-	const linkKind = liveRtt === null ? 'Measuring…' : liveRtt < 15 ? `${liveRtt} ms · LAN` : liveRtt < 45 ? `${liveRtt} ms · Remote` : `${liveRtt} ms · WAN`
+	const linkKind =
+		liveRtt === null
+			? rttMeasured
+				? 'Unavailable'
+				: 'Measuring…'
+			: liveRtt < 15
+				? `${liveRtt} ms · LAN`
+				: liveRtt < 45
+					? `${liveRtt} ms · Remote`
+					: `${liveRtt} ms · WAN`
 
 	return (
 		<div className="stagger">
@@ -305,26 +343,29 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 				</p>
 			</Card>
 
-			{benchResults && benchResults.length > 0 && (
-				<Group title="Latest profiler results" footer="Highest score wins and is automatically assigned to this device.">
-					{benchResults.map((r, idx) => (
-						<div className="row static" key={`${r.label}-${idx}`} style={{minHeight: 58}}>
-							<span className="row-ico" style={{'--c': idx === 0 ? 'var(--green)' : '#8e8e93'} as CSSProperties}>
-								<Icon name={idx === 0 ? 'check' : 'gpu'} size={18} />
-							</span>
-							<span className="main">
-								<b style={{fontWeight: 550}}>
-									{r.label} {idx === 0 ? '· Selected' : ''}
-								</b>
-								<span>
-									{r.ok
-										? `${r.fps} fps · p95 ${r.p95Ms} ms · ${Math.round(r.bitrate / 1000)} Mbps · keyframe ${r.keyKb} KB`
-										: 'Not supported on this GPU'}
+			{benchRun && benchRun.results.length > 0 && (
+				<Group title="Latest profiler results" footer="Highest passing score wins and is automatically assigned to this device.">
+					{benchRun.results.map((r, idx) => {
+						const isWinner = benchRun.winner !== null && idx === 0 && r.ok && r.score > 0
+						return (
+							<div className="row static" key={`${r.label}-${idx}`} style={{minHeight: 58}}>
+								<span className="row-ico" style={{'--c': isWinner ? 'var(--green)' : '#8e8e93'} as CSSProperties}>
+									<Icon name={isWinner ? 'check' : 'gpu'} size={18} />
 								</span>
-							</span>
-							<span style={{fontWeight: 600, fontSize: 13, opacity: idx === 0 ? 1 : 0.72}}>{r.score}/100</span>
-						</div>
-					))}
+								<span className="main">
+									<b style={{fontWeight: 550}}>
+										{r.label} {isWinner ? '· Selected' : ''}
+									</b>
+									<span>
+										{r.ok
+											? `${r.fps} fps · p95 ${r.p95Ms} ms · ${Math.round(r.bitrate / 1000)} Mbps · keyframe ${r.keyKb} KB`
+											: 'Not supported on this GPU'}
+									</span>
+								</span>
+								<span style={{fontWeight: 600, fontSize: 13, opacity: isWinner ? 1 : 0.72}}>{r.score}/100</span>
+							</div>
+						)
+					})}
 				</Group>
 			)}
 
@@ -362,6 +403,7 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 								options={[
 									{id: '60', label: '60 FPS'},
 									{id: '30', label: '30 FPS'},
+									...(editing.fps !== 60 && editing.fps !== 30 ? [{id: String(editing.fps), label: `${editing.fps} FPS`}] : []),
 								]}
 							/>
 						</Field>
@@ -387,10 +429,10 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 						<Field label={`Target bitrate (${Math.round(editing.bitrate / 1000)} Mbps)`}>
 							<input
 								type="range"
-								min={8000}
-								max={120000}
-								step={4000}
-								value={Math.min(120000, editing.bitrate)}
+								min={4000}
+								max={150000}
+								step={2000}
+								value={Math.max(4000, Math.min(150000, editing.bitrate))}
 								onChange={(e) => setEditing({...editing, bitrate: Number(e.target.value)})}
 								style={{width: '100%'}}
 							/>
@@ -399,9 +441,9 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 							<input
 								type="range"
 								min={10}
-								max={28}
+								max={34}
 								step={1}
-								value={editing.quality}
+								value={Math.max(10, Math.min(34, editing.quality))}
 								onChange={(e) => setEditing({...editing, quality: Number(e.target.value)})}
 								style={{width: '100%'}}
 							/>
@@ -409,10 +451,10 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 						<Field label={`GPU Encoder Preset (TU${editing.compression}, higher is faster)`}>
 							<input
 								type="range"
-								min={4}
+								min={1}
 								max={7}
 								step={1}
-								value={editing.compression}
+								value={Math.max(1, Math.min(7, editing.compression))}
 								onChange={(e) => setEditing({...editing, compression: Number(e.target.value)})}
 								style={{width: '100%'}}
 							/>
@@ -430,7 +472,18 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 			)}
 
 			<Group title="Saved device profiles" footer="Each browser/device automatically uses its assigned profile when opening Linux apps.">
-				{(profilesQ.data?.profiles ?? []).length === 0 && !profilesQ.isLoading && (
+				{profilesQ.isError && (
+					<div className="row static">
+						<span className="main">
+							<b>Couldn’t load saved profiles</b>
+							<span>{(profilesQ.error as Error)?.message || 'Request failed'}</span>
+						</span>
+						<button type="button" className="btn get" onClick={() => profilesQ.refetch()}>
+							Retry
+						</button>
+					</div>
+				)}
+				{!profilesQ.isError && (profilesQ.data?.profiles ?? []).length === 0 && !profilesQ.isLoading && (
 					<div className="row static">
 						<span className="main">
 							<b>No saved profiles yet</b>
