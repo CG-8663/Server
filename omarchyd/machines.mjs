@@ -196,8 +196,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 
 	async function osImages() {
 		const out = []
+		// The catalog stays this server's, both architectures. The form filters to the host.
 		for (const img of await images()) {
-			if (img.arch !== arch) continue // only what this server can run
 			const dl = downloads.get(img.id)
 			const state = dl ? 'downloading' : (await exists(imagePath(img))) ? 'downloaded' : failedImages.has(img.id) ? 'failed' : 'available'
 			out.push({
@@ -710,6 +710,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			cores: m.cores,
 			cpuType: m.cpuType ?? 'host',
 			mac: m.mac,
+			linkDown: !!m.linkDown,
 			firmware: layout.firmware === 'efi' ? 'efi' : 'bios',
 			arch: status.arch === 'arm64' ? 'arm64' : 'amd64',
 			machineType: layout.machineType === 'pc' ? 'pc' : 'q35',
@@ -914,7 +915,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const nameKey = String(input.name ?? '').trim().toLowerCase()
 		const runCreate = async () => {
 			const caps = await capabilities()
-			if (!caps.libvirtAvailable && !(await run('qemu-img', ['--version']).then(() => true, () => false))) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the installer again to add them.')
+			if (!caps.libvirtAvailable) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the installer again to add them.')
 			// x86-64 and ARM servers both run machines of their own kind (an ARM server runs ARM images).
 			if (!['amd64', 'arm64'].includes(caps.hostArchitecture)) throw new RpcError('PRECONDITION_FAILED', 'Machines need an x86-64 or ARM 64-bit server')
 			const osId = String(input.osId ?? '')
@@ -1287,7 +1288,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (input.portForwards !== undefined) {
 			if (!Array.isArray(input.portForwards) || input.portForwards.length > 32) throw new RpcError('BAD_REQUEST', 'Invalid port forwards')
 			const seen = new Set()
-			const used = new Set(machines.filter((x) => x.id !== m.id).flatMap((x) => (x.portForwards ?? []).map((f) => `${f.protocol}:${f.hostPort}`)))
+			// passt binds the host port on the computer that runs the guest, not across the swarm.
+			const used = new Set(machines.filter((x) => x.id !== m.id && hostOf(x) === hostOf(m)).flatMap((x) => (x.portForwards ?? []).map((f) => `${f.protocol}:${f.hostPort}`)))
 			const next = input.portForwards.map((f) => {
 				const protocol = f?.protocol === 'udp' ? 'udp' : 'tcp'
 				const hostPort = Number(f?.hostPort)
@@ -1583,6 +1585,32 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			await lifecycle((d) => ['start', d], 'starting')({id: m.id}).catch((e) => console.error('[omarchyd] start on boot', m.name, e.message))
 			const wait = Math.min(600, Math.max(0, Number(m.options.startupDelay) || 0))
 			if (wait) await new Promise((r) => setTimeout(r, wait * 1000))
+		}
+	}
+
+	// Remote "start on boot": when that computer comes online, not from this server's virsh.
+	const booting = new Set()
+	async function bootRemote(hostId) {
+		if (!/^[0-9a-f]{12}$/.test(String(hostId ?? ''))) return
+		if (booting.has(hostId)) return
+		booting.add(hostId)
+		try {
+			await ready
+			const agent = (await listedAgents()).find((a) => a.id === hostId)
+			if (!agent?.online || !agent.allowed?.vms || !agent.on?.vms) return
+			const list = machines.filter((m) => hostOf(m) === hostId && m.options?.onBoot && m.state !== 'error' && m.state !== 'installing').sort((a, b) => (a.options.startupOrder ?? 999) - (b.options.startupOrder ?? 999) || a.vmid - b.vmid)
+			for (const m of list) {
+				try {
+					await remoteCall(hostId, 'vm-start', {guestId: m.id})
+				} catch (error) {
+					const message = String(error?.message ?? error)
+					if (!/already (?:running|active)/i.test(message)) console.error('[omarchyd] start on boot', m.name, message)
+				}
+				const wait = Math.min(600, Math.max(0, Number(m.options.startupDelay) || 0))
+				if (wait) await new Promise((r) => setTimeout(r, wait * 1000))
+			}
+		} finally {
+			booting.delete(hostId)
 		}
 	}
 
@@ -2655,6 +2683,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			return {done: !busy.has(id) && m.state !== 'installing', error: m.state === 'error' ? m.errorMessage || 'It didn’t work' : null, name: m.name}
 		},
 		vncSocket,
+		bootRemote,
 		usbBindings,
 		bindUsb,
 		unbindUsb,

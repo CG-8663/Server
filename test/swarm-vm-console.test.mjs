@@ -63,6 +63,8 @@ test('vncSocket for a local guest whose socket is absent says it isn’t running
 test('the console upgrade branches on agentId', async () => {
 	const text = await readFile(new URL('../omarchyd/server.mjs', import.meta.url), 'utf8')
 	assert.match(text, /openChannel\(target\.agentId, 'vnc', ws, \{guest: target\.guest\}\)/)
+	assert.doesNotMatch(text, /vncSocket\(machineId\)\.catch\(\(\) => null\)/)
+	assert.match(text, /ws\.close\(1011, message\)/)
 })
 
 test('vncSocket for a remote guest fails when the host is offline', async () => {

@@ -1674,10 +1674,10 @@ test('on an ARM server (Omarchy on Apple Silicon) a machine is an aarch64 "virt"
 		assert.match(xml, /seed\.iso'\/><target dev='sda' bus='scsi'\/>/)
 		assert.match(xml, /<controller type='scsi' model='virtio-scsi'\/>/)
 		assert.match(xml, /<video><model type='virtio'\/><\/video>/)
-		// Only ARM images are offered on an ARM server.
+		// The catalog query keeps both architectures. The form filters to the host.
 		const images = await machines.procedures['machines.osImages'].run()
-		assert.ok(images.length > 0 && images.every((i) => i.arch === 'arm64'))
-		assert.ok(images.some((i) => i.id === 'ubuntu-24.04-server-arm64'))
+		assert.ok(images.some((i) => i.arch === 'arm64' && i.id === 'ubuntu-24.04-server-arm64'))
+		assert.ok(images.some((i) => i.arch === 'amd64'))
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}

@@ -23,7 +23,7 @@ import {createMachines} from './machines.mjs'
 import {createOmarchyTheme} from './omarchy-theme.mjs'
 import {createOmarchyPlugins} from './omarchy-plugins.mjs'
 import {createClips} from './clips.mjs'
-import {createConnector} from './connector.mjs'
+import {closeReason, createConnector} from './connector.mjs'
 import {createStorage} from './storage.mjs'
 import {createUsb, listHostUsb} from './usb.mjs'
 import {createTerminalSessions, createTmux} from './terminal.mjs'
@@ -570,7 +570,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const omarchyTheme = createOmarchyTheme({home, ...themeOptions})
 	const omarchyPlugins = createOmarchyPlugins({home, theme: omarchyTheme, ...pluginOptions})
 	// Local swarm: other Linux computers joined through the connector (see connector.mjs).
-	connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, files, source: () => updater.source(), webPort})
+	connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, files, source: () => updater.source(), webPort, onOnline: (id) => machines.bootRemote(id)})
 	clips = createClips({
 		dataDir,
 		files,
@@ -1203,7 +1203,14 @@ WantedBy=graphical-session.target
 			}
 			// This server's own desktop is the owner's signed-in Omarchy session: owner-only too.
 			if (machineId === 'desktop' && !owner) return refuse('403 Forbidden')
-			const target = machineId === 'desktop' ? await desktopTarget() : await machines.vncSocket(machineId).catch(() => null)
+			let target
+			try {
+				target = machineId === 'desktop' ? await desktopTarget() : await machines.vncSocket(machineId)
+			} catch (error) {
+				if (!(error instanceof RpcError)) throw error
+				const message = closeReason(error.message)
+				return wss.handleUpgrade(req, socket, head, (ws) => ws.close(1011, message))
+			}
 			if (!target) return refuse('409 Conflict')
 			if (typeof target === 'object' && target.agentId) return wss.handleUpgrade(req, socket, head, (ws) => connector.openChannel(target.agentId, 'vnc', ws, {guest: target.guest}))
 			const vnc = net.connect(typeof target === 'string' ? {path: target} : target)

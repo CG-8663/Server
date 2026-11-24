@@ -32,7 +32,11 @@ async function waitUntil(fn, ms = 2000) {
 async function readyHarness(calls, {fail} = {}) {
 	const root = await mkdtemp(join(os.tmpdir(), 'swarm-create-'))
 	const arch = os.arch() === 'arm64' ? 'arm64' : 'amd64'
-	const catalog = {version: 1, images: [{id: 'debian-12', familyId: 'debian', name: 'Debian', version: '12', arch, kind: 'cloud', url: 'https://example.test/os.qcow2', sha256: 'ab'.repeat(32), sizeMb: 1, adminGroup: 'sudo'}]}
+	const other = arch === 'arm64' ? 'amd64' : 'arm64'
+	const catalog = {version: 1, images: [
+		{id: 'debian-12', familyId: 'debian', name: 'Debian', version: '12', arch, kind: 'cloud', url: 'https://example.test/os.qcow2', sha256: 'ab'.repeat(32), sizeMb: 1, adminGroup: 'sudo'},
+		{id: 'debian-12-other', familyId: 'debian', name: 'Debian', version: '12', arch: other, kind: 'cloud', url: 'https://example.test/os-other.qcow2', sha256: 'cd'.repeat(32), sizeMb: 1, adminGroup: 'sudo'},
+	]}
 	const seen = []
 	const machines = createMachines({
 		dataDir: join(root, 'data'),
@@ -41,6 +45,11 @@ async function readyHarness(calls, {fail} = {}) {
 		run: async (cmd, args) => {
 			seen.push([cmd, ...(args ?? [])])
 			if (cmd === 'openssl') return '$6$salt$hash\n'
+			if (cmd === 'qemu-img' && args?.[0] === '--version') return 'qemu-img version 9\n'
+			if (cmd === 'virsh' && args?.[0] === '--version') {
+				if (fail === 'virsh-version') throw new Error('virsh missing')
+				return '10.0.0\n'
+			}
 			if (cmd === 'virsh') throw new Error('local virsh')
 			return ''
 		},
@@ -119,6 +128,27 @@ test('hostId server still creates locally', async () => {
 	assert.equal(calls.some((c) => String(c.name).startsWith('vm-')), false)
 	const row = (await machines.procedures['machines.list'].run()).find((m) => m.id === id)
 	assert.equal(row.hostId, 'server')
+	assert.ok(seen.some((c) => c[0] === 'virsh' && c[1] === '--version'))
+})
+
+test('local create still throws when virsh --version fails', async () => {
+	const calls = []
+	const {machines} = await readyHarness(calls, {fail: 'virsh-version'})
+	await assert.rejects(
+		machines.procedures['machines.create'].run({hostId: 'server', name: 'Here', osId: 'debian-12', cores: 1, memoryGb: 1, diskSizeGb: 8, username: 'chris', password: 'hunter2'}, {auth: {role: 'member'}}),
+		(e) => e.code === 'PRECONDITION_FAILED' && /libvirt and QEMU/.test(e.message),
+	)
+	assert.equal(calls.some((c) => String(c.name).startsWith('vm-')), false)
+})
+
+test('osImages returns both catalog architectures and the form keeps the host’s', async () => {
+	const {machines, arch} = await readyHarness([])
+	const images = await machines.procedures['machines.osImages'].run()
+	const other = arch === 'arm64' ? 'amd64' : 'arm64'
+	assert.ok(images.some((i) => i.id === 'debian-12' && i.arch === arch))
+	assert.ok(images.some((i) => i.id === 'debian-12-other' && i.arch === other))
+	const form = await readFile(new URL('../web/src/CreateMachine.tsx', import.meta.url), 'utf8')
+	assert.match(form, /i\.arch === hostArch/)
 })
 
 test('an interrupted remote install is an error and is not resumed', async () => {
@@ -202,6 +232,86 @@ test('remote list reads running from the host', async () => {
 	const rows = await machines.procedures['machines.list'].run()
 	assert.equal(rows.find((m) => m.id === 'abcd1234').state, 'running')
 	assert.ok(calls.some((c) => c.name === 'vm-state'))
+})
+
+test('remote define keeps linkDown', async () => {
+	const calls = []
+	const {machines} = await readyWithBox(calls)
+	await machines.procedures['machines.updateHardware'].run({id: 'abcd1234', linkDown: true}, {auth: {role: 'owner'}})
+	const spec = calls.find((c) => c.name === 'vm-define')?.args?.spec
+	assert.equal(spec.linkDown, true)
+})
+
+test('port forwards conflict only on the same host', async () => {
+	const calls = []
+	const root = await mkdtemp(join(os.tmpdir(), 'swarm-ports-'))
+	const data = join(root, 'data')
+	await mkdir(join(data, 'machines'), {recursive: true})
+	const same = {...box, id: 'bbbb2222', name: 'Same', mac: '52:54:00:11:22:44', portForwards: [{id: 'p1', protocol: 'tcp', hostPort: 40023, guestPort: 22}]}
+	const other = {...box, id: 'cccc3333', name: 'Other', hostId: 'def456def456', mac: '52:54:00:11:22:55', portForwards: [{id: 'p2', protocol: 'tcp', hostPort: 40022, guestPort: 22}]}
+	const here = {...box, id: 'dddd4444', name: 'Here', hostId: 'server', mac: '52:54:00:11:22:66', portForwards: [{id: 'p3', protocol: 'tcp', hostPort: 40022, guestPort: 22}]}
+	await writeFile(join(data, 'machines', 'machines.json'), JSON.stringify({machines: [box, same, other, here]}))
+	const machines = createMachines({
+		dataDir: data,
+		run: async () => { throw new Error('local virsh') },
+		kvmDevice: join(root, 'no-kvm'),
+		isOwner: (ctx) => ctx?.auth?.role === 'owner',
+		connector: {
+			pair: async () => { throw new Error('no pair') },
+			list: async () => [{id: 'abc123abc123', name: 'PC', online: true, allowed: {vms: true}, on: {vms: true}}],
+			progress: () => null,
+			call: async (id, name, args) => {
+				calls.push({id, name, args})
+				if (name === 'vm-state') return {}
+				if (name === 'vm-status') return {libvirt: true, kvm: true, arch: 'amd64', threads: 4, memoryMb: 8192, freeGb: 40, videoModels: ['vga']}
+				return 'ok'
+			},
+		},
+	})
+	await machines.ready
+	const auth = {auth: {role: 'owner'}}
+	await machines.procedures['machines.updateSettings'].run({id: 'abcd1234', portForwards: [{protocol: 'tcp', hostPort: 40022, guestPort: 22}]}, auth)
+	await assert.rejects(
+		machines.procedures['machines.updateSettings'].run({id: 'abcd1234', portForwards: [{protocol: 'tcp', hostPort: 40023, guestPort: 22}]}, auth),
+		(e) => e.code === 'CONFLICT' && /already forwarded/.test(e.message),
+	)
+	await rm(root, {recursive: true, force: true})
+})
+
+test('a host coming online starts its onBoot guests and treats already active as success', async () => {
+	const calls = []
+	const root = await mkdtemp(join(os.tmpdir(), 'swarm-boot-'))
+	const data = join(root, 'data')
+	await mkdir(join(data, 'machines'), {recursive: true})
+	const boot = {...box, options: {...box.options, onBoot: true}}
+	const quiet = {...box, id: 'bbbb2222', name: 'Quiet', mac: '52:54:00:11:22:44', options: {agent: true}}
+	await writeFile(join(data, 'machines', 'machines.json'), JSON.stringify({machines: [boot, quiet]}))
+	const machines = createMachines({
+		dataDir: data,
+		run: async () => { throw new Error('local virsh') },
+		kvmDevice: join(root, 'no-kvm'),
+		isOwner: (ctx) => ctx?.auth?.role === 'owner',
+		connector: {
+			pair: async () => { throw new Error('no pair') },
+			list: async () => [{id: 'abc123abc123', name: 'PC', online: true, allowed: {vms: true}, on: {vms: true}}],
+			progress: () => null,
+			call: async (id, name, args) => {
+				calls.push({id, name, args})
+				if (name === 'vm-start') throw new Error('Domain is already active')
+				return 'ok'
+			},
+		},
+	})
+	await machines.ready
+	await machines.bootRemote('abc123abc123')
+	assert.deepEqual(calls.filter((c) => c.name === 'vm-start').map((c) => c.args.guestId), ['abcd1234'])
+	await machines.bootRemote('server')
+	assert.equal(calls.filter((c) => c.name === 'vm-start').length, 1)
+	const text = await readFile(new URL('../omarchyd/connector.mjs', import.meta.url), 'utf8')
+	assert.match(text, /onOnline\(a\.id\)/)
+	const server = await readFile(new URL('../omarchyd/server.mjs', import.meta.url), 'utf8')
+	assert.match(server, /onOnline: \(id\) => machines\.bootRemote\(id\)/)
+	await rm(root, {recursive: true, force: true})
 })
 
 test('a member cannot start a remote guest', async () => {

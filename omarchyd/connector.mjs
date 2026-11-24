@@ -223,7 +223,7 @@ function serverAddresses() {
 	return out
 }
 
-export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(new URL('../connector', import.meta.url)), plugins = null, files = null, source = async () => 'https://raw.githubusercontent.com/MyOwnDataCenter/server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000, sendWol = sendWolPacket}) {
+export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(new URL('../connector', import.meta.url)), plugins = null, files = null, source = async () => 'https://raw.githubusercontent.com/MyOwnDataCenter/server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000, sendWol = sendWolPacket, onOnline = null}) {
 	const file = join(dataDir, 'swarm.json')
 	let state = {agents: []}
 	// Set when swarm.json exists but cannot be used. Nothing may write it until the owner repairs it.
@@ -734,6 +734,8 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 						} catch {
 							console.error('[omarchyd] couldn’t save swarm.json')
 						}
+						// Not awaited: a vm-start result is a later message on this socket.
+						if (typeof onOnline === 'function') onOnline(a.id)
 					} else if (msg.op === 'metrics') {
 						l.metrics = cleanMetrics(msg.metrics)
 						a.metrics = l.metrics

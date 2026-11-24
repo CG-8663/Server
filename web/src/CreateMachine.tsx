@@ -90,9 +90,9 @@ function LocalCreateMachine({open, onClose, host}: {open: boolean; onClose: () =
 	const list = useMemo(
 		() =>
 			(images.data ?? [])
-				.filter((i) => !i.custom)
-				.sort((a, b) => Number(b.arch === hostArch) - Number(a.arch === hostArch) || a.name.localeCompare(b.name) || (a.variantName ?? '').localeCompare(b.variantName ?? '')),
-		[images.data, hostArch],
+				.filter((i) => !i.custom && caps.data?.hostArchitecture != null && i.arch === hostArch)
+				.sort((a, b) => a.name.localeCompare(b.name) || (a.variantName ?? '').localeCompare(b.variantName ?? '')),
+		[images.data, hostArch, caps.data?.hostArchitecture],
 	)
 
 	const renderRow = (os: OsImage) => {
