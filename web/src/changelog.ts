@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.78',
+		date: '2026-11-24',
+		title: 'Linux guests, Square panes, and a steadier stream',
+		added: [
+			'A Linux guest can install the connector, on this server or on a joined computer. It runs on Linux with systemd. Windows, macOS, and Home Assistant do not run it.',
+			'Square panes resize when you drag the gap between them.',
+		],
+		fixed: [
+			'The guest installer checks this server’s certificate.',
+			'A machine’s usage rate is taken when the reading starts, so a slow reading does not shrink the percentage.',
+			'On a slow connection, the desktop stream gives audio a little more room, and the stats line shows the jitter. A local network keeps the short cushion.',
+		],
+	},
+	{
 		version: '0.9.77',
 		date: '2026-11-24',
 		title: 'Hyprland 0.57, and stream profiles',
