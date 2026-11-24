@@ -85,7 +85,7 @@ export type AssistantEvent =
 	| {event: 'tool'; data: {name: string; state: string}}
 	| {event: 'action'; data: AssistantAction}
 	| {event: 'done'; data: {conversationId: string}}
-	| {event: 'error'; data: {message: string}}
+	| {event: 'error'; data: {message: string; conversationId?: string}}
 
 export type AssistantStreamBody =
 	| {conversationId?: string; message: string; keyId?: string}

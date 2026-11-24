@@ -34,6 +34,7 @@ import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, scrollPhoneToTop, us
 import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
+import { safeLocal, safeSession } from "../safeStorage";
 import { MachineTrees, TreeChildren, type TreeActions, type TreeMachine } from "../fleet/FileTree";
 import { actionsForItems, asFileSearch, batchToast, copyTextOrToast, FILES_LIST_PAGE, filesListMoreLeft, filesPathToStore, nice, offersDownload, readStoredFilesPath, searchMatchNote, selectionAfterQuery, viewerAfterPathChange, type BatchKind } from "./filesRules";
 import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, emptyFolderUploadHint, type FavoriteItem, favoritePath, fileKindLabel, filesSearching, filterUnsyncedPhotos, folderPickerRoots, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
@@ -504,14 +505,14 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   const disk = useDisk();
   const storageId = windowId ?? (scope ? `machine:${scope.kind === "computer" ? scope.id : "server"}` : undefined);
   const [nav, setNav] = useState(() => {
-    const start = withinScope(scope, readStoredFilesPath(storageId, initialPath ?? (scope ? scopeRoot(scope) : undefined), (key) => sessionStorage.getItem(key)));
+    const start = withinScope(scope, readStoredFilesPath(storageId, initialPath ?? (scope ? scopeRoot(scope) : undefined), (key) => safeSession.get(key)));
     return {entries: [start] as (string | null)[], index: 0};
   });
   const path = nav.entries[nav.index] ?? null;
   const [listLimit, setListLimit] = useState(FILES_LIST_PAGE);
   const [sort, setSort] = useState<"name" | "modified" | "size">("name");
   const [grid, setGrid] = useState(
-    () => localStorage.getItem("omarchy-server:files-grid") === "1",
+    () => safeLocal.get("omarchy-server:files-grid") === "1",
   );
   const [q, setQ] = useState("");
   const searching = filesSearching(q);
@@ -565,8 +566,8 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
 
   useEffect(() => {
     const stored = filesPathToStore(storageId, path);
-    if (stored.value === null) sessionStorage.removeItem(stored.key);
-    else sessionStorage.setItem(stored.key, stored.value);
+    if (stored.value === null) safeSession.remove(stored.key);
+    else safeSession.set(stored.key, stored.value);
     setSelected(new Set());
     setOpenFolders(new Set());
     setListLimit(FILES_LIST_PAGE);
@@ -979,7 +980,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   const serverPlacesView = path === SERVER_FILES && !searching;
   const setFileMode = (next: boolean) => {
     haptic(5);
-    localStorage.setItem("omarchy-server:files-grid", next ? "1" : "0");
+    safeLocal.set("omarchy-server:files-grid", next ? "1" : "0");
     setGrid(next);
   };
   const rootItems: NuItem[] = [
@@ -1664,6 +1665,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
           shared={shareMap.get(open.path)}
           canShare={owner}
           onClose={() => setOpen(null)}
+          onSelect={() => (setOpen(null), rowApi.current.long(open))}
           onOpenFolder={() => (setOpen(null), go(open.path))}
           onDownload={() => download([open.path])}
           onRename={() => setPrompt({ kind: "rename", entry: open })}
@@ -1869,6 +1871,7 @@ const FileRow = memo(function FileRow({
         className={`file-tile${selected ? " sel" : ""}`}
         role="button"
         tabIndex={0}
+        aria-pressed={selecting ? selected : undefined}
         onClick={() => activate(f)}
         onKeyDown={(e) => shouldActivateRowOnKey(e) && activate(f)}
         {...press(f)}
@@ -1887,6 +1890,7 @@ const FileRow = memo(function FileRow({
       className={`row file-row${selected ? " sel" : ""}`}
       role="button"
       tabIndex={0}
+      aria-pressed={selecting ? selected : undefined}
       onClick={() => activate(f)}
       onKeyDown={(e) => shouldActivateRowOnKey(e) && activate(f)}
       {...press(f)}
@@ -1972,6 +1976,7 @@ function ItemSheet(p: {
   shared?: SmbShare;
   canShare?: boolean;
   onClose: () => void;
+  onSelect: () => void;
   onOpenFolder: () => void;
   onView?: () => void;
   onDownload: () => void;
@@ -2074,6 +2079,13 @@ function ItemSheet(p: {
               .catch((e: Error) => toast(e.message, true));
           },
           show: offersFile(f) && !f.path.startsWith("/Trash/"),
+        },
+        {
+          id: "select",
+          label: "Select",
+          icon: "checked",
+          onClick: p.onSelect,
+          show: f.operations.length > 0,
         },
         {
           id: "rename",

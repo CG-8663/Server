@@ -1,6 +1,13 @@
 import {useEffect, useMemo, useRef, useState, type ReactNode} from 'react'
 
-import {launcherRowMatches, scrollSelectedRow, stepLauncherSelection} from './launcherScroll'
+import {
+	focusedLauncherIndex,
+	launcherRowMatches,
+	scrollSelectedRow,
+	shouldLauncherCaptureEnter,
+	shouldYieldLauncherKey,
+	stepLauncherSelection,
+} from './launcherScroll'
 
 export type LaunchItem = {key: string; label: string; icon: (size: number) => ReactNode}
 
@@ -9,6 +16,8 @@ export function Launcher({onClose, onOpen, items}: {onClose: () => void; onOpen:
 	const [sel, setSel] = useState(0)
 	const input = useRef<HTMLInputElement>(null)
 	const list = useRef<HTMLUListElement>(null)
+	const ignoreHover = useRef(false)
+	const lastPtr = useRef<{x: number; y: number} | null>(null)
 	const rows = useMemo(() => items.filter((r) => launcherRowMatches(r.label, q)), [items, q])
 	const pick = (key: string) => {
 		onOpen(key)
@@ -22,19 +31,23 @@ export function Launcher({onClose, onOpen, items}: {onClose: () => void; onOpen:
 	}, [sel, rows.length])
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
+			if (shouldYieldLauncherKey(document, e.target)) return
 			if (e.key === 'Escape') {
 				e.preventDefault()
 				onClose()
 			}
-			if (e.key === 'ArrowDown') {
+			if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
 				e.preventDefault()
-				setSel((s) => stepLauncherSelection(s, 'ArrowDown', rows.length))
+				ignoreHover.current = true
+				const focusedIdx = focusedLauncherIndex(list.current, document.activeElement)
+				const base = focusedIdx >= 0 ? focusedIdx : sel
+				const next = stepLauncherSelection(base, e.key, rows.length)
+				setSel(next)
+				if (focusedIdx >= 0) {
+					list.current?.children[next]?.querySelector<HTMLElement>('button')?.focus()
+				}
 			}
-			if (e.key === 'ArrowUp') {
-				e.preventDefault()
-				setSel((s) => stepLauncherSelection(s, 'ArrowUp', rows.length))
-			}
-			if (e.key === 'Enter' && rows[sel]) {
+			if (e.key === 'Enter' && rows[sel] && shouldLauncherCaptureEnter(input.current, document.activeElement, e.target)) {
 				e.preventDefault()
 				pick(rows[sel].key)
 			}
@@ -49,7 +62,21 @@ export function Launcher({onClose, onOpen, items}: {onClose: () => void; onOpen:
 				<ul ref={list}>
 					{rows.map((r, i) => (
 						<li key={r.key}>
-							<button className={i === sel ? 'on' : ''} onClick={() => pick(r.key)} onMouseEnter={() => setSel(i)}>
+							<button
+								className={i === sel ? 'on' : ''}
+								onClick={() => pick(r.key)}
+								onMouseEnter={() => {
+									if (!ignoreHover.current) setSel(i)
+								}}
+								onMouseMove={(e) => {
+									const prev = lastPtr.current
+									if (prev && prev.x === e.clientX && prev.y === e.clientY) return
+									lastPtr.current = {x: e.clientX, y: e.clientY}
+									ignoreHover.current = false
+									setSel(i)
+								}}
+								onFocus={() => setSel(i)}
+							>
 								<span className="hypr-launch-ico">{r.icon(22)}</span>
 								{r.label}
 							</button>

@@ -19,12 +19,16 @@ import {
 	isOffline,
 	isOnline,
 	nextFilter,
+	loadManagerDials,
+	MANAGER_DIALS_KEY,
 	managerAccess,
 	managerBusy,
 	managerHealth,
 	managerPower,
 	managerRows,
 	managerStats,
+	saveManagerDials,
+	valueDials,
 	mergeMotion,
 	reachLabel,
 	seenFact,
@@ -163,8 +167,8 @@ function snaps(metrics: SwarmMetrics | null | undefined) {
 	return swarmGaugeItems(metrics).map((g) => ({name: g.k, percent: g.p, ready: g.ready}))
 }
 
-function dialItems(metrics: SwarmMetrics | null | undefined): GaugeModel[] {
-	return swarmGaugeItems(metrics).map((g) => ({
+function dialItems(metrics: SwarmMetrics | null | undefined, stats: readonly ManagerStat[]): GaugeModel[] {
+	const percent = swarmGaugeItems(metrics).map((g) => ({
 		k: g.k,
 		icon: g.icon,
 		p: g.p,
@@ -173,10 +177,19 @@ function dialItems(metrics: SwarmMetrics | null | undefined): GaugeModel[] {
 		key: 'key' in g ? g.key : undefined,
 		color: 'color' in g ? g.color : undefined,
 	}))
+	const values = valueDials(stats).map((d) => ({
+		k: d.label,
+		icon: d.icon,
+		p: 0,
+		sub: '',
+		ready: true,
+		key: d.id,
+		reading: {text: d.text},
+	}))
+	return [...percent, ...values]
 }
 
 function Squares({stats, dials, onOpen}: {stats: readonly ManagerStat[]; dials: boolean; onOpen: () => void}) {
-	const canDial = stats.some((s) => s.dial)
 	const body = stats.map((s) => (
 		<span className="mm-square" key={s.id}>
 			<Icon name={s.icon} size={16} />
@@ -185,7 +198,6 @@ function Squares({stats, dials, onOpen}: {stats: readonly ManagerStat[]; dials: 
 		</span>
 	))
 	if (!stats.length) return <p className="quiet mm-noread">No readings yet.</p>
-	if (!canDial) return <div className="mm-squares">{body}</div>
 	return (
 		<button type="button" className="mm-squares" aria-expanded={dials} aria-label="Show gauges" onClick={onOpen}>
 			{body}
@@ -193,7 +205,7 @@ function Squares({stats, dials, onOpen}: {stats: readonly ManagerStat[]; dials: 
 	)
 }
 
-function Dials({metrics, onClose}: {metrics: SwarmMetrics | null | undefined; onClose: () => void}) {
+function Dials({stats, metrics, onClose}: {stats: readonly ManagerStat[]; metrics: SwarmMetrics | null | undefined; onClose: () => void}) {
 	return (
 		<div
 			className="mm-dials"
@@ -209,7 +221,7 @@ function Dials({metrics, onClose}: {metrics: SwarmMetrics | null | undefined; on
 				}
 			}}
 		>
-			<GaugeCluster items={dialItems(metrics)} />
+			<GaugeCluster items={dialItems(metrics, stats)} />
 		</div>
 	)
 }
@@ -307,17 +319,15 @@ function RowFrame({
 }
 
 function Readings({stats, metrics, dials, setDials}: {stats: readonly ManagerStat[]; metrics: SwarmMetrics | null | undefined; dials: boolean; setDials: (on: boolean) => void}) {
-	const canDial = stats.some((s) => s.dial)
+	if (!stats.length) return <p className="quiet mm-noread">No readings yet.</p>
 	return (
 		<>
-			<Ease open={!dials || !canDial}>
+			<Ease open={!dials}>
 				<Squares stats={stats} dials={dials} onOpen={() => setDials(true)} />
 			</Ease>
-			{canDial && (
-				<Ease open={dials}>
-					<Dials metrics={metrics} onClose={() => setDials(false)} />
-				</Ease>
-			)}
+			<Ease open={dials}>
+				<Dials stats={stats} metrics={metrics} onClose={() => setDials(false)} />
+			</Ease>
 		</>
 	)
 }
@@ -578,7 +588,21 @@ export function MachineManager({
 		}
 	}
 	const [openId, setOpenId] = useState<string | null>(null)
-	const [dials, setDials] = useState(false)
+	const [dials, setDialsOn] = useState(() => {
+		try {
+			return loadManagerDials(localStorage.getItem(MANAGER_DIALS_KEY))
+		} catch {
+			return false
+		}
+	})
+	const setDials = (on: boolean) => {
+		setDialsOn(on)
+		try {
+			localStorage.setItem(MANAGER_DIALS_KEY, saveManagerDials(on))
+		} catch {
+			/* private mode: kept for this visit */
+		}
+	}
 	const [addOpen, setAddOpen] = useState(false)
 	const [term, setTerm] = useState<{id: string; name: string} | null>(null)
 	const [screen, setScreen] = useState<{id: string; name: string} | null>(null)
@@ -593,7 +617,6 @@ export function MachineManager({
 	const alerts = alertsQ.data ?? []
 	useEffect(() => {
 		setOpenId(null)
-		setDials(false)
 	}, [queryText, filter])
 	useEffect(() => {
 		if (!addOpen) return
@@ -654,14 +677,10 @@ export function MachineManager({
 	const rowKey = rowIds.join('\0')
 	useEffect(() => {
 		const matched = rowKey ? rowKey.split('\0') : []
-		if (openId && !matched.includes(openId)) {
-			setOpenId(null)
-			setDials(false)
-		}
+		if (openId && !matched.includes(openId)) setOpenId(null)
 	}, [rowKey, openId])
 	const toggle = (id: string) => {
 		haptic(6)
-		setDials(false)
 		setOpenId((cur) => (cur === id ? null : id))
 	}
 	return (

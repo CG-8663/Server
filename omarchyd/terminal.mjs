@@ -318,7 +318,16 @@ export function createTerminalSessions({exec = execFile, tmux = null} = {}) {
 		const s = {child, cols, rows, history: createReplayHistory(), sockets: new Set(), used: Date.now(), pty: null}
 		const out = (d) => {
 			s.history.push(d)
-			for (const ws of s.sockets) if (ws.readyState === ws.OPEN) ws.send(d, {binary: true})
+			for (const ws of s.sockets) {
+				if (ws.readyState !== ws.OPEN) continue
+				// A browser that stopped reading must not make the server queue the shell's output without
+				// limit. Let it go: the shell keeps running and the next connection replays the history.
+				if (ws.bufferedAmount > 1024 * 1024) {
+					ws.terminate()
+					continue
+				}
+				ws.send(d, {binary: true})
+			}
 		}
 		child.stdout.on('data', out)
 		child.stderr.on('data', out)
