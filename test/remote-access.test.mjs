@@ -14,10 +14,15 @@ import {createApp} from '../server/app.mjs'
 import {createStore} from '../server/store.mjs'
 import {createUpdater} from '../omarchyd/updater.mjs'
 import {startFakeserverd} from './fake-omarchyd.mjs'
+import {createRemoteGate} from '../server/remote-gate.mjs'
+import {accessTeam, openConfig} from './access-fixture.mjs'
 
 const HOST = 'nodezero.myowndatacenter.com'
-// What cloudflared adds to every request it hands the dashboard.
-const TUNNEL = (ip = '203.0.113.9') => ({host: HOST, 'x-forwarded-proto': 'https', 'x-forwarded-for': ip, 'cf-connecting-ip': ip, 'cf-ray': '8f0000000000-DFW', 'cf-visitor': '{"scheme":"https"}'})
+// The Cloudflare Access team in front of it, and the token it gives a browser it lets through.
+const team = accessTeam()
+const ACCESS = team.token()
+// What cloudflared adds to every request it hands the dashboard (Access-approved).
+const TUNNEL = (ip = '203.0.113.9') => ({host: HOST, 'x-forwarded-proto': 'https', 'x-forwarded-for': ip, 'cf-connecting-ip': ip, 'cf-ray': '8f0000000000-DFW', 'cf-visitor': '{"scheme":"https"}', 'cf-access-jwt-assertion': ACCESS})
 const LAN = Object.values(os.networkInterfaces())
 	.flat()
 	.find((a) => a && !a.internal && a.family === 'IPv4')?.address
@@ -27,7 +32,8 @@ async function stack() {
 	const dir = await mkdtemp(join(os.tmpdir(), 'remote-access-'))
 	const store = await createStore(dir)
 	await store.setConfig({backendUrl: fake.url})
-	const app = createApp({store, relayPortBase: 0, relayHost: '127.0.0.1'})
+	const remoteGate = createRemoteGate({fetchConfig: async () => openConfig(), verifier: team.verifier(), log: () => {}})
+	const app = createApp({store, relayPortBase: 0, relayHost: '127.0.0.1', remoteGate})
 	// Listen everywhere, like the real server (0.0.0.0), so the network address can be tried too.
 	const server = await new Promise((resolve) => {
 		const s = app.listen(0, '0.0.0.0', () => resolve(s))

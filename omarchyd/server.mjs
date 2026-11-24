@@ -849,6 +849,18 @@ WantedBy=graphical-session.target
 				return await backups.handleUpload(req, res, agentId, url.pathname.slice('/connector/backup/'.length))
 			}
 			// A connector updating itself from this server (authenticated with its own key).
+			// The web server's remote-access gate reads its settings here: non-secret values only, and only
+			// for a caller on this machine.
+			if (url.pathname === '/internal/remote-gate' && req.method === 'GET') {
+				const a = String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, '')
+				if (a !== '::1' && !/^127\./.test(a)) {
+					res.writeHead(404).end()
+					return
+				}
+				res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'})
+				res.end(JSON.stringify(connect.remoteGate()))
+				return
+			}
 			if (url.pathname === '/connector/agent.py' && req.method === 'GET') {
 				const agent = await connector.authenticateAgent(req)
 				if (!agent) return sendJson(res, 401, {error: 'unauthorized'})
