@@ -10181,3 +10181,87 @@ button.mm-squares {
 	flex: 1 1 200px;
 	min-width: 0;
 }
+.hypr-view {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	height: 100%;
+	background: #000;
+	outline: none;
+	overflow: hidden;
+}
+.hypr-hud {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 6px 10px;
+	background: rgba(14, 16, 22, 0.88);
+	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	font-size: 12.5px;
+	color: #e5e7eb;
+	z-index: 2;
+}
+.hypr-hud .hypr-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-weight: 550;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.hypr-hud-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: none;
+}
+.hypr-select {
+	height: 28px;
+	max-width: 240px;
+	padding: 0 8px;
+	border-radius: 8px;
+	border: 1px solid rgba(255, 255, 255, 0.16);
+	background: rgba(255, 255, 255, 0.08);
+	color: #f3f4f6;
+	font: inherit;
+	font-size: 12px;
+}
+.hypr-canvas {
+	flex: 1;
+	width: 100%;
+	height: 100%;
+	min-height: 0;
+	object-fit: contain;
+	display: block;
+	cursor: default;
+	touch-action: none;
+	contain: strict;
+}
+.hypr-view.rail .hypr-canvas {
+	object-fit: fill;
+}
+.hypr-rail-badge {
+	position: absolute;
+	right: 10px;
+	bottom: 10px;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 4px 8px;
+	border-radius: 99px;
+	background: rgba(12, 14, 20, 0.72);
+	border: 1px solid rgba(255, 255, 255, 0.14);
+	color: #cbd5e1;
+	font-size: 11px;
+	font-weight: 550;
+	pointer-events: none;
+	opacity: 0;
+	transition: opacity 0.2s ease;
+	z-index: 3;
+}
+.hypr-view.rail:hover .hypr-rail-badge {
+	opacity: 0.92;
+}
