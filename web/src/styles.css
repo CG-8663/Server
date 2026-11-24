@@ -5088,7 +5088,7 @@ html.desk-mode > body > .sheet .confirm-actions .btn.block {
 	bottom: 0;
 	width: var(--dock-thick);
 	flex-direction: column;
-	padding: 10px 0 12px;
+	padding: 10px 0;
 }
 .dock-left .desk-dock {
 	left: 0;
@@ -5104,7 +5104,7 @@ html.desk-mode > body > .sheet .confirm-actions .btn.block {
 	right: 0;
 	height: var(--dock-thick);
 	flex-direction: row;
-	padding: 0 14px 0 10px;
+	padding: 0 10px;
 	justify-content: center;
 }
 .dock-bottom .desk-dock {
@@ -5123,11 +5123,11 @@ html.desk-mode > body > .sheet .confirm-actions .btn.block {
 }
 .dock-floating.dock-left .desk-dock,
 .dock-floating.dock-right .desk-dock {
-	top: 50%;
+	top: calc(50% + var(--top-h) / 2);
 	bottom: auto;
 	transform: translateY(-50%);
 	width: calc(var(--dock-thick) - 14px);
-	max-height: calc(100vh - var(--top-h) - 20px);
+	max-height: calc(100vh - var(--top-h) - 16px);
 	padding: 10px 0;
 }
 .dock-floating.dock-left .desk-dock {
@@ -5345,7 +5345,8 @@ html.desk-mode > body > .sheet .confirm-actions .btn.block {
 	place-items: center;
 	border-radius: 12px;
 	color: inherit;
-	background: rgba(127, 127, 127, 0.22);
+	/* A bare glyph: the dock item's hover/focus pad is the only tile, as in GNOME. */
+	background: transparent;
 }
 .desk-dock .show-apps-btn {
 	color: #fff;
@@ -5354,7 +5355,10 @@ html.desk-mode > body > .sheet .confirm-actions .btn.block {
 .dock-tip {
 	position: fixed;
 	z-index: 100005;
+	max-width: min(320px, calc(100vw - 16px));
 	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	padding: 6px 11px;
 	border-radius: 9px;
 	background: rgba(20, 20, 24, 0.95);
@@ -5432,7 +5436,8 @@ html.desk-mode > body > .sheet .confirm-actions .btn.block {
 	.dock-item.bouncing .dock-art {
 		animation: none;
 	}
-	.dock-hover-lift .dock-item:hover .dock-art {
+	.dock-hover-lift .dock-item:hover .dock-art,
+	.dock-hover-lift .dock-item:hover .show-apps {
 		transform: none;
 	}
 }
