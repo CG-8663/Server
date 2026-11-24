@@ -1,5 +1,5 @@
 // Desktop mode: Ubuntu (GNOME) by default — top bar, dock, icons, floating windows, Activities.
-// Optional Hyprland shell: tiling, workspaces 1–9, Omarchy Super chords. Same screens either way.
+// Square tiles those same windows over the dock. Omarchy Super chords stay off until enabled.
 import {createContext, lazy, memo, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 import {useAppTab} from '../appTab'
 import {createPortal} from 'react-dom'
@@ -116,7 +116,7 @@ const rectOf = (win: Win): Rect => (win.snap ? snapRect(win.snap) : clampWindowR
 const dockThickness = (cfg: DeskConfig) => cfg.dock.iconSize + 26 + (cfg.dock.floating ? 14 : 0)
 const reducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
 const LAYOUT_KEY = 'omarchy-server:hypr-layout'
-const usable = () => ({x: GAP, y: TOP + GAP, w: Math.max(0, window.innerWidth - GAP * 2), h: Math.max(0, window.innerHeight - TOP - GAP * 2)})
+const usable = () => ({x: AREA.l + GAP, y: AREA.t + GAP, w: Math.max(0, window.innerWidth - AREA.l - AREA.r - GAP * 2), h: Math.max(0, window.innerHeight - AREA.t - AREA.b - GAP * 2)})
 function loadLayout(): {workspace: number; trees: Record<number, Node | null>} {
 	try {
 		const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? '')
@@ -319,6 +319,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	startingRef.current = starting
 	const startingFlightRef = useRef(new Set<string>())
 	const hypr = cfg.shell === 'hyprland'
+	const superKeys = hypr && cfg.omarchySuperKeys === true
 	const [shellGen, setShellGen] = useState(0)
 	const [hyprWs, setHyprWs] = useState(() => loadLayout().workspace)
 	const [trees, setTrees] = useState<Record<number, Node | null>>(() => loadLayout().trees)
@@ -337,9 +338,9 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const [cheatsheet, setCheatsheet] = useState(false)
 	const [onboard, setOnboard] = useState(() => {
 		try {
-			return hypr && !localStorage.getItem(ONBOARDING_KEY)
+			return superKeys && !localStorage.getItem(ONBOARDING_KEY)
 		} catch {
-			return hypr
+			return superKeys
 		}
 	})
 	const zTop = useRef(Math.max(10, ...wins.map((w) => w.z)))
@@ -361,6 +362,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const hyprRef = useRef(hypr)
 	hyprRef.current = hypr
 	const hyprPrev = useRef(hypr)
+	const superKeysPrev = useRef(superKeys)
 	// The focused tile on a workspace: the top tiled window there (what a new window splits).
 	const topTileOn = (ws: number, except?: string) =>
 		winsRef.current.filter((x) => x.id !== except && !x.min && !x.float && (x.workspace ?? 1) === ws).sort((a, b) => b.z - a.z)[0]
@@ -374,12 +376,10 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const confirm = useConfirm()
 	const qc = useQueryClient()
 
-	// Reserve space for the dock (unless it hides itself). Hyprland mode has no dock.
+	// Reserve space for the dock (unless it hides itself). Square tiles over the same dock.
 	const thick = dockThickness(cfg)
-	const reserve = hypr || cfg.dock.autohide ? 0 : thick
-	AREA = hypr
-		? {t: TOP, l: 0, r: 0, b: 0}
-		: {t: TOP + (cfg.dock.position === 'top' ? reserve : 0), l: cfg.dock.position === 'left' ? reserve : 0, r: cfg.dock.position === 'right' ? reserve : 0, b: cfg.dock.position === 'bottom' ? reserve : 0}
+	const reserve = cfg.dock.autohide ? 0 : thick
+	AREA = {t: TOP + (cfg.dock.position === 'top' ? reserve : 0), l: cfg.dock.position === 'left' ? reserve : 0, r: cfg.dock.position === 'right' ? reserve : 0, b: cfg.dock.position === 'bottom' ? reserve : 0}
 
 	useEffect(() => save(STORE_KEY, wins.filter((w) => w.kind !== 'terminal' && w.kind !== 'console')), [wins])
 	useEffect(() => {
@@ -401,14 +401,24 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		return () => document.documentElement.classList.remove('desk-mode')
 	}, [])
 	useEffect(() => {
-		if (hypr) {
+		if (superKeys) {
 			try {
 				if (!localStorage.getItem(ONBOARDING_KEY)) setOnboard(true)
 			} catch {
 				setOnboard(true)
 			}
 		}
-	}, [hypr])
+	}, [superKeys])
+	useEffect(() => {
+		if (superKeysPrev.current && !superKeys) {
+			setGrab((s) => {
+				if (s.method === 'keyboard-lock') void releaseKeyboardLock()
+				if (!s.keysLocked && s.method === 'none') return s
+				return {...s, keysLocked: false, method: 'none'}
+			})
+		}
+		superKeysPrev.current = superKeys
+	}, [superKeys])
 
 	const onWs = (w: Win) => (w.workspace ?? 1) === hyprWs
 	const visible = wins.filter((w) => !w.min && (!hypr || onWs(w)))
@@ -791,7 +801,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	}
 	runHyprRef.current = runHyprAction
 
-	// GNOME: Super tap toggles Activities, Ctrl+Alt+T opens a terminal. Hyprland: Omarchy Super map.
+	// Square without Super keybindings matches Round: Super tap toggles Activities, Ctrl+Alt+T opens a terminal.
+	// Omarchy Super keybindings listen first, so those shortcuts win over a focused window.
 	useEffect(() => {
 		let superAlone = false
 		const down = (e: KeyboardEvent) => {
@@ -801,9 +812,9 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				if (ignoreRepeatedDesktopShortcut({repeat: e.repeat, terminalChord: true, action: null, forwardsToConsole: false})) return
 				e.preventDefault()
 				api.openTerminal()
-				if (cfg.shell === 'hyprland') return
+				if (superKeys) return
 			}
-			if (cfg.shell === 'hyprland') {
+			if (superKeys) {
 				const top = topVisibleWindow(winsRef.current, hyprWsRef.current, true)
 				const consoleFocused = top?.kind === 'console'
 				const res = resolveHyprKey(e, {consoleFocused: !!consoleFocused})
@@ -844,26 +855,26 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			}
 		}
 		const up = (e: KeyboardEvent) => {
-			if (cfg.shell !== 'hyprland' && (e.key === 'Meta' || e.key === 'OS') && superAlone)
+			if (!superKeys && (e.key === 'Meta' || e.key === 'OS') && superAlone)
 				setOverview((o) => {
 					if (!o) overviewOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
 					return o ? null : 'windows'
 				})
 			superAlone = false
-			if (cfg.shell === 'hyprland' && lastConsoleRef.current && (isSuper({code: e.code, key: e.key, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey}) || keysymFromEvent(e))) {
+			if (superKeys && lastConsoleRef.current && (isSuper({code: e.code, key: e.key, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey}) || keysymFromEvent(e))) {
 				injectConsoleKey(lastConsoleRef.current, e)
 			}
 		}
-		// Hyprland listens before the page (capture), so its Super shortcuts win over a focused
-		// window. Ubuntu keeps listening after it, as it always has.
-		const capture = cfg.shell === 'hyprland'
+		// Super keybindings listen before the page (capture), so they win over a focused window.
+		// Round, and Square without them, keep listening after the page, as before.
+		const capture = superKeys
 		window.addEventListener('keydown', down, capture)
 		window.addEventListener('keyup', up, capture)
 		return () => {
 			window.removeEventListener('keydown', down, capture)
 			window.removeEventListener('keyup', up, capture)
 		}
-	}, [api, owner, cfg.shell])
+	}, [api, owner, superKeys])
 
 	// -- dock --
 	const pinned = cfg.dock.items.filter((k) => !info(k).missing)
@@ -1190,13 +1201,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 									releaseLastConsole()
 									setHyprWs(n)
 								}}
+								onMenu={() => setLauncher(true)}
 							/>
 						) : undefined
 					}
-					lockChip={hypr ? <LockChip locked={grab.keysLocked} onClick={onLockChip} title={lockTitle} /> : undefined}
+					lockChip={superKeys ? <LockChip locked={grab.keysLocked} onClick={onLockChip} title={lockTitle} /> : undefined}
 				/>
 
-				{!hypr && <DesktopIcons
+				<DesktopIcons
 					cfg={cfg}
 					setCfg={setCfg}
 					info={info}
@@ -1210,7 +1222,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					empty={wins.length === 0}
 					deviceName={boot.server?.device ?? 'server'}
 					inert={!!overview}
-				/>}
+				/>
 
 				{wins.map((w) => (
 					<WindowFrame
@@ -1238,7 +1250,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 
 				{preview && <div className="snap-preview" style={{left: preview.x, top: preview.y, width: preview.w, height: preview.h}} />}
 
-				{!hypr && <Dock
+				<Dock
 					cfg={cfg}
 					keys={dockKeys}
 					info={info}
@@ -1268,9 +1280,9 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 							],
 						})
 					}
-				/>}
+				/>
 
-				{!hypr && overview && (
+				{overview && (
 					<Overview
 						mode={overview}
 						setMode={setOverview}
@@ -1306,8 +1318,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 							.filter((it) => !it.missing)}
 					/>
 				)}
-				{hypr && cheatsheet && <Cheatsheet onClose={() => setCheatsheet(false)} />}
-				{hypr && onboard && (
+				{superKeys && cheatsheet && <Cheatsheet onClose={() => setCheatsheet(false)} />}
+				{superKeys && onboard && (
 					<Onboarding
 						onDismiss={() => {
 							try {
@@ -1878,8 +1890,23 @@ function TopBar(p: {
 	const closeTopMenu = () => p.setMenu(null)
 	useDialogFocus(p.menu === 'clock', clockRef, closeTopMenu)
 	const runSysAction = useMenuFocus(p.menu === 'system', sysRef, closeTopMenu)
+	// Clicking blank bar space or another bar control (e.g. Activities) also closes an open menu,
+	// while keeping the popover, its switching triggers, and the scrim (which closes on click) intact.
+	useEffect(() => {
+		if (!p.menu) return
+		const onDown = (e: PointerEvent) => {
+			const el = e.target as HTMLElement | null
+			if (el?.closest('.top-pop, .top-clock, .top-bell, .top-sys, .menu-scrim')) return
+			p.setMenu(null)
+		}
+		document.addEventListener('pointerdown', onDown, true)
+		return () => document.removeEventListener('pointerdown', onDown, true)
+	}, [p.menu, p.setMenu])
 	return (
 		<>
+		{/* Outside the header: its backdrop-filter makes it the containing block for fixed children,
+		    which would shrink the scrim to the bar, and its button rules would size it to 26px. */}
+		{p.menu && <button className="menu-scrim top-scrim" aria-label="Close menu" tabIndex={-1} onClick={() => p.setMenu(null)} />}
 		<header className="desk-top">
 			<div className="top-left">
 				{p.left ?? (
@@ -1939,7 +1966,6 @@ function TopBar(p: {
 				</button>
 			</div>
 
-			{p.menu && <button className="menu-scrim" aria-label="Close menu" tabIndex={-1} onClick={() => p.setMenu(null)} />}
 			{p.menu === 'clock' && (
 				<div ref={clockRef} className="top-pop clock-pop" role="dialog" aria-modal="true" aria-label="Notifications and calendar" tabIndex={-1}>
 					<div className="pop-notes">

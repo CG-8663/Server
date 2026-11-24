@@ -47,6 +47,8 @@ export type DeskConfig = {
 	style: DeskStyle
 	accent: DeskAccent
 	shell: DeskShell
+	// Omarchy Super shortcuts, key capture, and the snippet. Square tiles without this.
+	omarchySuperKeys: boolean
 	dock: {position: DockPos; iconSize: number; hover: DockHover; magnify: number; bounce: boolean; floating: boolean; autohide: boolean; showRunning: boolean; items: string[]}
 	icons: DeskIcon[]
 	showIcons: boolean
@@ -81,6 +83,7 @@ export const DEFAULT_CONFIG: DeskConfig = {
 	style: 'glass',
 	accent: 'wallpaper',
 	shell: 'gnome',
+	omarchySuperKeys: false,
 	dock: {position: 'left', iconSize: 46, hover: 'lift', magnify: 1.6, bounce: true, floating: false, autohide: false, showRunning: true, items: [...SYSTEM_DOCK]},
 	icons: [
 		{key: 'folder:/Home', col: 0, row: 0},
@@ -111,6 +114,7 @@ function clean(raw: unknown): DeskConfig {
 		wallpaper: okWall(c.wallpaper) ? c.wallpaper : d.wallpaper,
 		style: STYLES.some((s) => s.id === c.style) ? (c.style as DeskStyle) : d.style,
 		shell: c.shell === 'hyprland' ? 'hyprland' : 'gnome',
+		omarchySuperKeys: c.omarchySuperKeys === true,
 		accent: (['app', 'wallpaper', 'blue', 'mauve', 'teal', 'peach', 'green', 'pink'] as const).includes(c.accent as DeskAccent) ? (c.accent as DeskAccent) : d.accent,
 		dock: {
 			position: (['left', 'bottom', 'right', 'top'] as const).includes(dock.position) ? dock.position : 'left',

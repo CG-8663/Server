@@ -16,6 +16,8 @@ export type GaugeModel = {
 	ready: boolean
 	color?: string
 	battery?: FleetRings['battery']
+	/** A reading that is not a percent. The ring stays empty and this text sits in the center. */
+	reading?: {text: string}
 }
 
 /** High use is a warning at 75% and danger at 90%. A low battery flips that: 25% and 15%. */
@@ -78,6 +80,13 @@ export function ServerSpecs() {
 
 function gaugeFace(g: GaugeModel): ReactNode {
 	if (g.battery) return <BatteryRing groups={g.battery.groups} lowest={g.battery.lowest} color={g.color} />
+	if (g.reading) {
+		return (
+			<Ring value={0} empty color="var(--muted)" label={`${g.k}, ${g.reading.text}`}>
+				<span className="plain">{g.reading.text}</span>
+			</Ring>
+		)
+	}
 	return (
 		<Ring value={g.p} color={g.color ?? levelColor(g.p)} label={`${g.k} ${Math.round(g.p)}%`}>
 			<span className="pct">

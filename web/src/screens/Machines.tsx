@@ -23,7 +23,9 @@ import {ServerSpecs} from '../fleet/serverGauges'
 import {guestAgent, isGuestAgent} from '../swarm/guestLink'
 import {AgentCard, LocalSwarm, useSwarm} from '../swarm/Swarm'
 import {StoragePanel} from './Storage'
-import {SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
+import {SheetHeader, StatusPill, haptic, machineStatus, useLayout} from '../ui'
+import {MachineManager} from '../fleet/MachineManager'
+import {usePreRelease} from '../prerelease'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
@@ -38,6 +40,7 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 	const problem = queryProblem(machines, browserOnline)
 	const swarmProblem = queryProblem(swarm, browserOnline)
 	const owner = useUser().data?.role !== 'member'
+	const phoneManager = usePreRelease() && !useLayout().desktop
 	const [selectedId, setSelectedId] = useState<string | null>(null)
 	const [computerId, setComputerId] = useState<string | null>(null)
 	const [serverOpen, setServerOpen] = useState(false)
@@ -310,6 +313,31 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 					<div className="machines-list">{listBody}</div>
 					<div className="machines-detail">{detail}</div>
 				</div>
+			) : phoneManager ? (
+				<>
+					<MachineManager
+						owner={owner}
+						serverTerminal={!!onTerminal}
+						online={online}
+						total={members.length}
+						loading={machines.isLoading}
+						problem={problem}
+						swarmProblem={swarmProblem}
+						members={members}
+						machines={list}
+						agents={agents}
+						onManage={openMember}
+						onServerTerminal={openServerTerminal}
+						onServerDesktop={openDesktop}
+						onGuestDesktop={(id) => {
+							haptic(8)
+							setConsoleId(id)
+						}}
+						onAddComputer={() => setAdding(true)}
+						onCreateVm={() => setCreateHost({id: SERVER_FLEET_ID, name: serverName})}
+					/>
+					{detail}
+				</>
 			) : (
 				<>
 					{listBody}
@@ -436,16 +464,13 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 				}
 				onClose={onClose}
 			/>
-			<div style={{display: 'flex', justifyContent: 'flex-end', marginTop: 8}}>
-				<PinButton pin={{kind: 'vm', id: m.id, computer: SERVER_FLEET_ID}} name={m.name} />
-			</div>
 			{m.errorMessage && (
 				<div className="error">
 					<Icon name="alert" size={18} />
 					{/^\[[\w-]+\]$/.test(m.errorMessage) ? m.errorMessage.slice(1, -1).replace(/-/g, ' ') : m.errorMessage}
 				</div>
 			)}
-			<GuestLive machine={m} onOpenStore={() => (onClose(), openStore({id: m.id, kind: 'guest', name: m.name}))} onOpenDesktop={onConsole} onOpenStorage={setStorage} onBackups={() => setTab('backups')} onOpenTerminal={(agent, input) => setGuestTerm({id: agent.id, name: agent.name, input})} tabs={(sections) => {
+			<GuestLive machine={m} pin={<PinButton pin={{kind: 'vm', id: m.id, computer: SERVER_FLEET_ID}} name={m.name} />} onOpenStore={() => (onClose(), openStore({id: m.id, kind: 'guest', name: m.name}))} onOpenDesktop={onConsole} onOpenStorage={setStorage} onBackups={() => setTab('backups')} onOpenTerminal={(agent, input) => setGuestTerm({id: agent.id, name: agent.name, input})} tabs={(sections) => {
 				const rows: MachineTab[] = [
 					...(sections.files ? [{id: 'files', label: 'Files', body: sections.files}] : []),
 					...(sections.apps ? [{id: 'apps', label: 'Apps', body: sections.apps}] : []),

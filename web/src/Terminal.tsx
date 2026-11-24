@@ -11,6 +11,7 @@ import {clipText} from './clips'
 import {BootstrapContext} from './data'
 import {Icon} from './icons'
 import {overlayBackUsesHistory, popstateClosesOverlay} from './overlayHistory'
+import {forwardTerminalInput, ignoreOpeningFocus} from './terminalInput'
 import {pasteInto, terminalPasteDecision} from './terminalPaste'
 import {SEQ, applyTerminalModifiers} from './terminalKeys'
 import {AppIcon, haptic, useConfirm, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -98,6 +99,8 @@ export function TerminalScreen({
 	const confirm = useConfirm()
 	// A command to have ready at the prompt (typed, never run: you press Enter). Only once.
 	const pending = useRef(input)
+	// When this screen appeared. The tap that opened it is still in progress then.
+	const openedAt = useRef(performance.now())
 	mods.current = {ctrl, alt}
 	const toast = useToast()
 	useVisualViewport(root, !embedded)
@@ -286,6 +289,10 @@ export function TerminalScreen({
 			if (ws?.readyState === WebSocket.OPEN) ws.send(data)
 		}
 		term.onData((data) => {
+			if (!forwardTerminalInput(data, focusReportFromUser)) return
+			if (data === '\x1b[I' || data === '\x1b[O') focusReportFromUser = false
+			// Drop the composition the opening tap just dumped. The on-screen keys send on their own.
+			if (ignoreOpeningFocus(coarsePointer(), performance.now() - openedAt.current)) return
 			// Typing here after another device resized this shell: take it back to this window's size.
 			// (Sent now, ahead of what's typed: the server holds the typing until the shell has resized.)
 			if (term.cols !== size.current.cols || term.rows !== size.current.rows) {
@@ -300,11 +307,35 @@ export function TerminalScreen({
 			send(res.data)
 		})
 		const ta = term.textarea
+		ta?.setAttribute('autocomplete', 'off')
 		ta?.setAttribute('autocapitalize', 'off')
 		ta?.setAttribute('autocorrect', 'off')
 		ta?.setAttribute('spellcheck', 'false')
+		const coarsePointer = () => matchMedia('(pointer: coarse)').matches
+		// Set in the capture phase, before xterm turns the focus or blur into a report.
+		// A report that arrives without this flag was produced by replaying the session.
+		let focusReportFromUser = false
+		const markFocusReport = () => {
+			if (ignoreOpeningFocus(coarsePointer(), performance.now() - openedAt.current)) return
+			focusReportFromUser = true
+			// xterm emits the report synchronously, before this microtask. If focus reporting
+			// is off, nothing is emitted and the flag must not stay set for the replay.
+			queueMicrotask(() => {
+				focusReportFromUser = false
+			})
+		}
+		ta?.addEventListener('focus', markFocusReport, true)
+		ta?.addEventListener('blur', markFocusReport, true)
 		// (Typing scrolls to the prompt by itself; tapping in to type doesn't throw away your place.)
-		const onFocus = () => setKbd(true)
+		// The tap that opened this screen focuses the phone's stretched field and dumps a composition.
+		const onFocus = () => {
+			if (ignoreOpeningFocus(coarsePointer(), performance.now() - openedAt.current)) {
+				if (ta) ta.value = ''
+				term.blur()
+				return
+			}
+			setKbd(true)
+		}
 		const onBlur = () => setKbd(false)
 		ta?.addEventListener('focus', onFocus)
 		ta?.addEventListener('blur', onBlur)
@@ -340,7 +371,12 @@ export function TerminalScreen({
 					pending.current = undefined
 					setTimeout(() => ws.readyState === WebSocket.OPEN && ws.send(text), 400)
 				}
-				term.focus() // types straight away with a hardware keyboard; phones may still need the keyboard button
+				// A hardware keyboard can type immediately. A phone waits: focusing now would
+				// catch the tap that opened this screen and insert whatever the keyboard was composing.
+				if (!coarsePointer()) {
+					if (ta) ta.value = ''
+					term.focus()
+				}
 			}
 			ws.onmessage = (e) => {
 				if (typeof e.data !== 'string') return term.write(new Uint8Array(e.data))
@@ -456,6 +492,8 @@ export function TerminalScreen({
 			}
 			fling = requestAnimationFrame(step)
 		}
+		// Until this settles, the phone's stretched typing field ignores the tap that opened the screen.
+		const readyTimer = window.setTimeout(() => root.current?.classList.add('term-ready'), 500)
 		el.addEventListener('touchstart', onTouchStart, {capture: true, passive: true})
 		el.addEventListener('touchmove', onTouchMove, {capture: true, passive: false})
 		el.addEventListener('touchend', onTouchEnd, {capture: true})
@@ -466,12 +504,15 @@ export function TerminalScreen({
 			ro.disconnect()
 			cancelAnimationFrame(raf)
 			stopFling()
+			window.clearTimeout(readyTimer)
 			window.clearTimeout(sizeTimer)
 			rootEl?.removeEventListener('viewportchange', onResize)
 			el.removeEventListener('touchstart', onTouchStart, {capture: true})
 			el.removeEventListener('touchmove', onTouchMove, {capture: true})
 			el.removeEventListener('touchend', onTouchEnd, {capture: true})
 			el.removeEventListener('touchcancel', onTouchEnd, {capture: true})
+			ta?.removeEventListener('focus', markFocusReport, true)
+			ta?.removeEventListener('blur', markFocusReport, true)
 			ta?.removeEventListener('focus', onFocus)
 			ta?.removeEventListener('blur', onBlur)
 			wsRef.current?.close()
@@ -602,7 +643,17 @@ export function TerminalScreen({
 					<Icon name="clipboard" size={19} />
 				</button>
 			</header>
-			<div className="term-screen" onClick={() => live && !kbd && termRef.current?.focus()}>
+			<div
+				className="term-screen"
+				onClick={() => {
+					if (!live || kbd) return
+					if (ignoreOpeningFocus(matchMedia('(pointer: coarse)').matches, performance.now() - openedAt.current)) return
+					const term = termRef.current
+					if (!term) return
+					if (term.textarea) term.textarea.value = ''
+					term.focus()
+				}}
+			>
 				<div ref={host} className="term-host" />
 				{state !== 'connected' && state !== 'connecting' && (
 					<div className="console-overlay">

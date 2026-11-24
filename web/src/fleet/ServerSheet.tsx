@@ -133,10 +133,7 @@ export function ServerSheet({
 				subtitle="Computer · entrypoint · online"
 				onClose={onClose}
 			/>
-			<div style={{display: 'flex', justifyContent: 'flex-end', marginTop: 8}}>
-				<PinButton pin={{kind: 'machine', id: SERVER_FLEET_ID, computer: ''}} name={name} />
-			</div>
-			<MachineActions terminal={!!onTerminal} desktop={owner} onTerminal={() => onTerminal?.()} onDesktop={onDesktop} />
+			<MachineActions terminal={!!onTerminal} desktop={owner} onTerminal={() => onTerminal?.()} onDesktop={onDesktop} pin={<PinButton pin={{kind: 'machine', id: SERVER_FLEET_ID, computer: ''}} name={name} />} />
 			<ServerRings />
 			<SheetGroup title="Now">
 				<Row icon="disk" color="var(--teal)" label={disk?.mount ?? 'Disk'} sub={disk ? `${bytes(disk.used, 1)} of ${bytes(disk.total, 0)}` : undefined} trailing={diskPct != null ? <b>{diskPct}%</b> : undefined} />
