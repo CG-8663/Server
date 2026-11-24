@@ -333,6 +333,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		m.snapshots ??= []
 		m.mac ??= randomMac()
 		m.usbDevices = Array.isArray(m.usbDevices) ? m.usbDevices : []
+		// Missing or corrupt hostId stays on this server. Only 'server' or a 12-hex agent id may dispatch.
+		m.hostId = m.hostId === 'server' || /^[0-9a-f]{12}$/.test(String(m.hostId ?? '')) ? m.hostId : 'server'
 		// Machines saved before 0.4.0 have no layout. Hardware reads m.layout.disks, so give them the cloud wiring.
 		if (!m.layout) m.layout = layoutFor('cloud', join(vmsDir, m.id))
 		if (m.layout) {
@@ -553,6 +555,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				id: m.id,
 				vmid: m.vmid,
 				name: m.name,
+				hostId: m.hostId,
 				osId: m.osId,
 				cores: m.cores * (m.sockets ?? 1),
 				memoryGb: m.memoryGb,

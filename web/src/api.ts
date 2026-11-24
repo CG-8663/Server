@@ -367,6 +367,7 @@ export type Machine = {
 	id: string
 	vmid?: number
 	name: string
+	hostId?: string
 	osId?: string
 	cores?: number
 	memoryGb?: number
