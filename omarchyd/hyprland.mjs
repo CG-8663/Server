@@ -10,7 +10,7 @@
 import {execFile, spawn} from 'node:child_process'
 import {createHash} from 'node:crypto'
 import {constants as fsConstants} from 'node:fs'
-import {access, chmod, lstat, mkdir, open as fsOpen, readFile, readdir, realpath, rename, rm, stat} from 'node:fs/promises'
+import {access, chmod, lstat, mkdir, open as fsOpen, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import {dirname, extname, join, resolve} from 'node:path'
@@ -24,11 +24,52 @@ const CAPTURE_SOURCE = join(HERE, 'hypr-rail-capture.c')
 const ADDRESS_RE = /^0x[0-9a-f]{4,16}$/i
 const DESKTOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/
 const OUTPUT_NAME_RE = /^[A-Za-z0-9_.-]{1,32}$/
+const PROFILE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const MAX_STREAMS = 12
 const MAX_SSE_SUBSCRIBERS = 32
 const MAX_PENDING_LAUNCHES = 8
 const MAX_CLIPBOARD_BYTES = 128 * 1024
 const RAIL_OUTPUT = 'RAIL-1'
+
+// Deterministic selector algorithm for ranking measured GPU encode presets against client RTT & target frame rate.
+export function scoreProfileCandidate(cand, {rttMs = 15} = {}) {
+	const fps = Number(cand.fps) || 0
+	const targetFps = Math.max(15, Number(cand.targetFps) || 60)
+	const p95 = Number(cand.p95Ms) || 999
+	const keyKb = Number(cand.keyKb) || 0
+	const codec = String(cand.codec || 'h264')
+	const quality = Number(cand.quality) || 22
+	const bitrate = Number(cand.bitrate) || 20000
+	const rtt = Math.max(0, Number(rttMs) || 0)
+
+	if (!cand.ok || fps < 12) return 0
+
+	// 1. Frame-rate adherence (0..45 pts) - heavily penalize stuttery presets that drop below 88% of target FPS
+	const fpsRatio = Math.min(1, fps / targetFps)
+	let score = fpsRatio >= 0.9 ? 45 : fpsRatio >= 0.78 ? 28 * fpsRatio : 12 * fpsRatio
+
+	// 2. Frame-pacing stability (0..25 pts) - reward tight p95 frame times near 16.7ms
+	const budgetMs = 1000 / targetFps
+	if (p95 <= budgetMs * 1.15) score += 25
+	else if (p95 <= budgetMs * 1.45) score += 16
+	else if (p95 <= budgetMs * 1.9) score += 7
+
+	// 3. Visual sharpness & codec efficiency (0..20 pts)
+	const codecBonus = codec === 'hevc' ? 12 : codec === 'hevc10' ? 13 : 8
+	const sharpBonus = quality <= 20 ? 8 : quality <= 22 ? 6 : quality <= 25 ? 4 : 2
+	score += codecBonus + sharpBonus
+
+	// 4. Network-aware WAN/LAN fit (0..10 pts) - penalize oversized keyframes & excessive bitrate on high-RTT WAN links
+	const idealMaxBitrate = rtt >= 45 ? 18000 : rtt >= 18 ? 24000 : 32000
+	const idealMinBitrate = rtt >= 45 ? 12000 : rtt >= 18 ? 16000 : 20000
+	let netScore = 10
+	if (bitrate > idealMaxBitrate) netScore -= Math.min(6, (bitrate - idealMaxBitrate) / 3000)
+	if (bitrate < idealMinBitrate) netScore -= Math.min(4, (idealMinBitrate - bitrate) / 3000)
+	if (rtt >= 25 && keyKb > 450) netScore -= Math.min(4, (keyKb - 450) / 120)
+	score += Math.max(0, netScore)
+
+	return Math.max(0, Math.min(100, Math.round(score)))
+}
 
 // O(1)-amortized chunk queue for framed stdout streams ([u8 type][u32be len][payload]), avoiding O(N^2) Buffer.concat and Array.shift().
 export function createFrameReader() {
@@ -1516,6 +1557,412 @@ export function createHyprland({
 
 	let disconnectLockRetryTimer = null
 
+	// ---- Stream Profiler & Per-Device Saved Profiles --------------------------------------------
+	const profilesPath = join(dataDir, 'hyprland-profiles.json')
+	let profileStoreChain = Promise.resolve()
+	let profileBenchChain = Promise.resolve()
+	let stuckBenchChild = null
+	let profileTmpSeq = 0
+
+	function withProfileStoreLock(fn) {
+		const run = profileStoreChain.then(fn, fn)
+		profileStoreChain = run.then(() => {}, () => {})
+		return run
+	}
+
+	function withProfileBenchLock(fn) {
+		const run = profileBenchChain.then(fn, fn)
+		profileBenchChain = run.then(() => {}, () => {})
+		return run
+	}
+
+	function codecFromEncoderName(encoderName, fallbackCodec) {
+		const name = String(encoderName || '').toLowerCase()
+		if (name.startsWith('hevc10')) return 'hevc10'
+		if (name.startsWith('hevc')) return 'hevc'
+		if (name.startsWith('h264') || name.includes('264')) return 'h264'
+		return fallbackCodec
+	}
+
+	function sanitizeProfile(raw, fallbackId = '') {
+		const id = String(raw?.id ?? fallbackId ?? '')
+			.trim()
+			.replace(/[^A-Za-z0-9._-]/g, '-')
+			.slice(0, 64)
+		if (!PROFILE_ID_RE.test(id)) return null
+		const codec = raw?.codec === 'hevc10' || raw?.codec === 'hevc' ? raw.codec : 'h264'
+		const fps = Math.max(15, Math.min(60, Math.round(Number(raw?.fps) || 60)))
+		const bitrate = Math.max(4000, Math.min(45000, Math.round(Number(raw?.bitrate) || 22000)))
+		const quality = Math.max(16, Math.min(34, Math.round(Number(raw?.quality) || 20)))
+		const compression = Math.max(1, Math.min(7, Math.round(Number(raw?.compression) || 7)))
+		return {
+			id,
+			name: String(raw?.name || id).trim().slice(0, 64) || id,
+			deviceHint: String(raw?.deviceHint || '').trim().slice(0, 100),
+			codec,
+			fps,
+			bitrate,
+			quality,
+			compression,
+			...(Number.isFinite(Number(raw?.measuredFps)) ? {measuredFps: Math.round(Number(raw.measuredFps) * 10) / 10} : {}),
+			...(Number.isFinite(Number(raw?.measuredP95Ms)) ? {measuredP95Ms: Math.round(Number(raw.measuredP95Ms) * 10) / 10} : {}),
+			...(Number.isFinite(Number(raw?.measuredRttMs)) ? {measuredRttMs: Math.round(Number(raw.measuredRttMs))} : {}),
+			...(Number.isFinite(Number(raw?.measuredMbps)) ? {measuredMbps: Math.round(Number(raw.measuredMbps) * 10) / 10} : {}),
+			...(typeof raw?.encoder === 'string' && raw.encoder ? {encoder: raw.encoder.slice(0, 40)} : {}),
+			...(Number.isFinite(Number(raw?.score)) ? {score: Math.round(Number(raw.score))} : {}),
+			...(Number.isFinite(Number(raw?.testedAt)) ? {testedAt: Number(raw.testedAt)} : {}),
+			autoSelected: raw?.autoSelected === true,
+		}
+	}
+
+	async function readProfilesStore({strict = false} = {}) {
+		let text
+		try {
+			text = await readFile(profilesPath, 'utf8')
+		} catch (err) {
+			if (err && err.code === 'ENOENT') return {profiles: [], activeByDevice: {}, defaultProfileId: null}
+			if (strict) throw new RpcError('INTERNAL_SERVER_ERROR', `Failed to read saved stream profiles: ${err?.message || 'IO error'}`)
+			return {profiles: [], activeByDevice: {}, defaultProfileId: null}
+		}
+		try {
+			const raw = JSON.parse(text)
+			const list = Array.isArray(raw?.profiles) ? raw.profiles.map((p) => sanitizeProfile(p)).filter(Boolean) : []
+			const activeByDevice = {}
+			if (raw?.activeByDevice && typeof raw.activeByDevice === 'object') {
+				const validIds = new Set(list.map((p) => p.id))
+				for (const [dev, pid] of Object.entries(raw.activeByDevice)) {
+					if (PROFILE_ID_RE.test(dev) && typeof pid === 'string' && validIds.has(pid)) activeByDevice[dev] = pid
+				}
+			}
+			const defaultProfileId = typeof raw?.defaultProfileId === 'string' && list.some((p) => p.id === raw.defaultProfileId) ? raw.defaultProfileId : (list[0]?.id ?? null)
+			return {profiles: list, activeByDevice, defaultProfileId}
+		} catch {
+			if (strict) throw new RpcError('INTERNAL_SERVER_ERROR', 'Saved stream profiles file is corrupted; refusing to overwrite')
+			return {profiles: [], activeByDevice: {}, defaultProfileId: null}
+		}
+	}
+
+	async function writeProfilesStore(store) {
+		await mkdir(dataDir, {recursive: true, mode: 0o700})
+		const tmp = `${profilesPath}.${process.pid}.${++profileTmpSeq}.${Math.random().toString(36).slice(2, 8)}.tmp`
+		try {
+			await writeFile(tmp, JSON.stringify(store, null, '\t') + '\n', {mode: 0o600})
+			await rename(tmp, profilesPath)
+		} catch (err) {
+			await rm(tmp, {force: true}).catch(() => {})
+			throw err
+		}
+	}
+
+	async function profiles() {
+		const store = await readProfilesStore()
+		const hasVaapi = await exists(vaapiDevice)
+		const hasNative = !!(compiledBin && (await exists(compiledBin)))
+		return {...store, vaapi: hasVaapi, nativeEngine: hasNative}
+	}
+
+	function profileSave(input = {}) {
+		return withProfileStoreLock(async () => {
+			const store = await readProfilesStore({strict: true})
+			const clean = sanitizeProfile(input?.profile ?? input, input?.id || `profile-${Date.now().toString(36)}`)
+			if (!clean) throw new RpcError('BAD_REQUEST', 'Invalid stream profile')
+			const idx = store.profiles.findIndex((p) => p.id === clean.id)
+			if (idx >= 0) store.profiles[idx] = clean
+			else store.profiles.push(clean)
+			const dev = typeof input?.deviceId === 'string' && PROFILE_ID_RE.test(input.deviceId.trim()) ? input.deviceId.trim() : ''
+			if (dev && input?.activate !== false) store.activeByDevice[dev] = clean.id
+			if (input?.setDefault || !store.defaultProfileId) store.defaultProfileId = clean.id
+			await writeProfilesStore(store)
+			return {...store, saved: clean}
+		})
+	}
+
+	function profileDelete(input = {}) {
+		return withProfileStoreLock(async () => {
+			const id = String(input?.id ?? '').trim()
+			if (!PROFILE_ID_RE.test(id)) throw new RpcError('BAD_REQUEST', 'Invalid profile ID')
+			const store = await readProfilesStore({strict: true})
+			store.profiles = store.profiles.filter((p) => p.id !== id)
+			for (const [dev, pid] of Object.entries(store.activeByDevice)) {
+				if (pid === id) delete store.activeByDevice[dev]
+			}
+			if (store.defaultProfileId === id) store.defaultProfileId = store.profiles[0]?.id ?? null
+			await writeProfilesStore(store)
+			return store
+		})
+	}
+
+	function runCaptureBenchmark(bin, env, {codec, fps, bitrate, quality, compression, outputName, durationMs = 750}) {
+		return new Promise((resolveDone) => {
+			const args = [
+				'--mode',
+				'output',
+				'--output',
+				outputName,
+				'--fps',
+				String(fps),
+				'--bitrate',
+				String(bitrate),
+				'--codec',
+				codec,
+				'--quality',
+				String(quality),
+				'--compression',
+				String(compression),
+				'--vaapi-device',
+				vaapiDevice,
+				'--continuous',
+			]
+			const child = spawnImpl(bin, args, {env, stdio: ['pipe', 'pipe', 'pipe']})
+			child.stdin?.on('error', () => {})
+			const frameReader = createFrameReader()
+			let meta = null
+			let firstFrameAt = 0
+			let lastFrameAt = 0
+			let frames = 0
+			let totalBytes = 0
+			let keyKb = 0
+			const dts = []
+			let stopping = false
+			let exited = false
+			let hasStarted = false
+			let stuck = false
+			let settled = false
+			let killTimer = null
+			let closeWaitTimer = null
+			let sampleTimer = null
+
+			const resolveResult = () => {
+				if (settled) return
+				settled = true
+				frameReader.clear()
+				clearTimeout(stopTimer)
+				if (sampleTimer) clearTimeout(sampleTimer)
+				if (killTimer) clearTimeout(killTimer)
+				if (closeWaitTimer) clearTimeout(closeWaitTimer)
+				// Measure steady-state FPS excluding cold VA-API initialization
+				const spanSec = frames > 1 && lastFrameAt > firstFrameAt ? (lastFrameAt - firstFrameAt) / 1000 : 0
+				const measuredFps = spanSec > 0.05 ? (frames - 1) / spanSec : 0
+				const sorted = [...dts].sort((a, b) => a - b)
+				const p50Ms = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0
+				const p95Ms = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : 0
+				const mbps = spanSec > 0.05 ? (totalBytes * 8) / spanSec / 1e6 : 0
+				resolveDone({
+					ok: !stuck && frames >= 6 && !!meta,
+					stuck,
+					frames,
+					fps: Math.round(measuredFps * 10) / 10,
+					p50Ms: Math.round(p50Ms * 10) / 10,
+					p95Ms: Math.round(p95Ms * 10) / 10,
+					mbps: Math.round(mbps * 10) / 10,
+					keyKb: Math.round(keyKb * 10) / 10,
+					encoder: meta?.encoder ?? null,
+					codecStr: meta?.codec ?? null,
+				})
+			}
+
+			const finish = () => {
+				if (stopping) return
+				stopping = true
+				clearTimeout(stopTimer)
+				if (sampleTimer) clearTimeout(sampleTimer)
+				try {
+					child.stdin?.end()
+				} catch {}
+				if (exited || child.exitCode != null) {
+					resolveResult()
+					return
+				}
+				try {
+					child.kill('SIGTERM')
+				} catch {}
+				// Track actual exit (NOT child.killed, which becomes true immediately on SIGTERM!) and hold the GPU lock until exit/close is observed.
+				killTimer = setTimeout(() => {
+					try {
+						if (!exited && child.exitCode == null) child.kill('SIGKILL')
+					} catch {}
+				}, 350)
+				killTimer.unref?.()
+				// Emergency uninterruptible-D-state cap so the RPC cannot hang forever; hold stuckBenchChild until real exit so no later run overlaps it.
+				closeWaitTimer = setTimeout(() => {
+					if (!exited && child.exitCode == null) {
+						try {
+							child.kill('SIGKILL')
+						} catch {}
+						stuck = true
+						stuckBenchChild = child
+						frames = 0
+						meta = null
+						resolveResult()
+					}
+				}, 5000)
+				closeWaitTimer.unref?.()
+			}
+
+			// Keep sampleTimer and stopTimer ref'd (both are cleared in resolveResult/finish) so Node 22 never exits early when awaiting mocked PassThrough workers.
+			const stopTimer = setTimeout(finish, durationMs + 700)
+
+			child.once('spawn', () => {
+				hasStarted = true
+			})
+			child.stdout?.on('data', (chunk) => {
+				hasStarted = true
+				if (stopping) return
+				frameReader.push(chunk)
+				const ok = frameReader.drain((typ, pl) => {
+					if (stopping) return
+					if (typ === 1) {
+						try {
+							meta = JSON.parse(pl.toString('utf8'))
+						} catch {}
+					} else if (typ === 2 && pl.length > 9) {
+						const now = performance.now()
+						const payloadBytes = pl.length - 9
+						if (pl[0] === 1 && keyKb === 0) keyKb = payloadBytes / 1024
+						if (firstFrameAt === 0) {
+							firstFrameAt = now
+							sampleTimer = setTimeout(finish, durationMs)
+						} else {
+							dts.push(now - lastFrameAt)
+							totalBytes += payloadBytes
+						}
+						lastFrameAt = now
+						frames++
+					} else if (typ === 3) {
+						finish()
+					}
+				})
+				if (!ok) finish()
+			})
+			const onExit = () => {
+				exited = true
+				if (stuckBenchChild === child) stuckBenchChild = null
+				resolveResult()
+			}
+			// Only treat 'error' as immediate exit when spawn itself failed (process never started);
+			// post-spawn kill errors leave the worker alive, so retain the GPU guard until 'exit' or 'close'.
+			child.once('error', () => {
+				if (!hasStarted && child.pid == null) onExit()
+			})
+			child.once('exit', onExit)
+			child.once('close', onExit)
+		})
+	}
+
+	function profileRun(input = {}) {
+		return withProfileBenchLock(async () => {
+			if (stuckBenchChild && stuckBenchChild.exitCode == null) {
+				throw new RpcError('CONFLICT', 'A previous GPU benchmark worker is still exiting; wait a moment and try again')
+			}
+			stuckBenchChild = null
+			const env = await discoverEnv()
+			if (!env?.WAYLAND_DISPLAY || !env?.HYPRLAND_INSTANCE_SIGNATURE) {
+				throw new RpcError('PRECONDITION_FAILED', 'Hyprland desktop session isn’t running right now')
+			}
+			const bin = await ensureCaptureBinary().catch(() => null)
+			if (!bin) {
+				throw new RpcError('PRECONDITION_FAILED', 'Native VA-API GPU capture engine is unavailable on this host')
+			}
+			const rttMs = Math.max(0, Math.min(2000, Math.round(Number(input?.clientRttMs) || 15)))
+			const explicitCodecs = Array.isArray(input?.clientCodecs)
+			const rawClientCodecs = explicitCodecs ? input.clientCodecs.filter((c) => c === 'hevc' || c === 'hevc10' || c === 'h264') : ['hevc', 'h264']
+			const clientCodecs = [...new Set(rawClientCodecs)]
+			if (!clientCodecs.length) {
+				throw new RpcError('PRECONDITION_FAILED', 'Client browser reported no supported WebCodecs video codecs')
+			}
+			const rail = await ensureRailOutput().catch(() => null)
+			const outputName = rail?.name || RAIL_OUTPUT
+
+			// Tailor candidate matrix to client RTT + supported WebCodecs hardware decoders
+			const isHighWan = rttMs >= 45
+			const isModWan = rttMs >= 18 && rttMs < 45
+			const candidates = []
+			if (clientCodecs.includes('hevc')) {
+				candidates.push({
+					label: 'HEVC Crisp Low-Latency 60',
+					codec: 'hevc',
+					fps: 60,
+					bitrate: isHighWan ? 16000 : isModWan ? 22000 : 26000,
+					quality: isHighWan ? 21 : 20,
+					compression: 7,
+				})
+				candidates.push({
+					label: 'HEVC Balanced 60',
+					codec: 'hevc',
+					fps: 60,
+					bitrate: isHighWan ? 14000 : 18000,
+					quality: 22,
+					compression: 5,
+				})
+			}
+			if (clientCodecs.includes('hevc10')) {
+				candidates.push({
+					label: 'HEVC 10-bit Deep Color',
+					codec: 'hevc10',
+					fps: 60,
+					bitrate: isHighWan ? 16000 : 24000,
+					quality: 21,
+					compression: 7,
+				})
+			}
+			if (clientCodecs.includes('h264') || !candidates.length) {
+				candidates.push({
+					label: 'H.264 High Universal',
+					codec: 'h264',
+					fps: 60,
+					bitrate: isHighWan ? 16000 : 22000,
+					quality: 21,
+					compression: 7,
+				})
+			}
+
+			const results = []
+			for (const c of candidates) {
+				const m = await runCaptureBenchmark(bin, env, {...c, outputName})
+				// Score the codec the encoder ACTUALLY used (in case hardware fell back from HEVC -> H.264).
+				const actualCodec = m.ok ? codecFromEncoderName(m.encoder, c.codec) : c.codec
+				const clientSupportsActual = clientCodecs.includes(actualCodec)
+				const score = clientSupportsActual ? scoreProfileCandidate({...c, ...m, codec: actualCodec, targetFps: c.fps}, {rttMs}) : 0
+				results.push({...c, ...m, codec: actualCodec, targetFps: c.fps, score})
+				if (m.stuck) break
+			}
+			results.sort((a, b) => b.score - a.score)
+			const best = results.find((r) => r.ok && r.score > 0 && clientCodecs.includes(r.codec)) ?? null
+
+			let store = await readProfilesStore()
+			if (!best) {
+				return {winner: null, results, rttMs, ...store}
+			}
+
+			const deviceId = typeof input?.deviceId === 'string' && PROFILE_ID_RE.test(input.deviceId.trim()) ? input.deviceId.trim() : `device-${Date.now().toString(36)}`
+			const netTag = rttMs >= 45 ? 'WAN' : rttMs >= 18 ? 'Remote' : 'LAN'
+			const profileName = String(input?.deviceName || '').trim().slice(0, 48) || `Auto (${netTag})`
+			const winner = sanitizeProfile({
+				id: deviceId,
+				name: `${profileName} · ${best.label}`,
+				deviceHint: String(input?.deviceHint || '').trim().slice(0, 100),
+				codec: best.codec,
+				fps: best.targetFps ?? 60,
+				bitrate: best.bitrate,
+				quality: best.quality,
+				compression: best.compression,
+				measuredFps: best.fps,
+				measuredP95Ms: best.p95Ms,
+				measuredRttMs: rttMs,
+				measuredMbps: best.mbps,
+				encoder: best.encoder || undefined,
+				score: best.score,
+				testedAt: Date.now(),
+				autoSelected: true,
+			})
+
+			if (input?.saveAsActive !== false && winner) {
+				store = await profileSave({profile: winner, deviceId, activate: true, setDefault: !store.defaultProfileId})
+			}
+			return {winner, results, rttMs, ...store}
+		})
+	}
+
 	// Attach an authenticated owner WebSocket to a live 60 FPS GPU H.264/HEVC/HEVC-4:4:4 Hyprland stream (with 10 ms Opus or silence-gated PCM PipeWire audio).
 	async function attachStream(ws, {mode = 'output', address = '', output = '', fps = 60, bitrate = 22000, audio = false, audioCodec = 'pcm', codec = 'h264', quality = 0, compression = 0} = {}) {
 		if (activeStreams.size + pendingStreams >= MAX_STREAMS) {
@@ -2356,6 +2803,10 @@ export function createHyprland({
 			'hyprland.dispatch': {kind: 'mutation', run: dispatch},
 			'hyprland.clipboardRead': {kind: 'query', run: clipboardRead},
 			'hyprland.clipboardWrite': {kind: 'mutation', run: clipboardWrite},
+			'hyprland.profiles': {kind: 'query', run: profiles},
+			'hyprland.profileRun': {kind: 'mutation', run: profileRun},
+			'hyprland.profileSave': {kind: 'mutation', run: profileSave},
+			'hyprland.profileDelete': {kind: 'mutation', run: profileDelete},
 		},
 	}
 }

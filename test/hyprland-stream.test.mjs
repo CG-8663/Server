@@ -10,7 +10,7 @@ import {test} from 'node:test'
 import {fileURLToPath} from 'node:url'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
-import {backpressureBudgets, createFrameReader, createHyprland, isPcmSilent, parseDesktopEntry} from '../omarchyd/hyprland.mjs'
+import {backpressureBudgets, createFrameReader, createHyprland, isPcmSilent, parseDesktopEntry, scoreProfileCandidate} from '../omarchyd/hyprland.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -1502,6 +1502,174 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		if (sock2Server2) await new Promise((resolve) => sock2Server2.close(resolve))
 	} finally {
 		if (d) await d.close()
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('scoreProfileCandidate ranks 60 FPS HEVC above stuttery 10-bit and rewards WAN-sized streams on high RTT', () => {
+	const failed = scoreProfileCandidate({ok: false, fps: 0, targetFps: 60, p95Ms: 999, codec: 'hevc', quality: 20, bitrate: 16000}, {rttMs: 46})
+	assert.equal(failed, 0)
+
+	const hevc60Wan = scoreProfileCandidate(
+		{ok: true, fps: 59.8, targetFps: 60, p95Ms: 17.4, keyKb: 320, codec: 'hevc', quality: 20, bitrate: 16000},
+		{rttMs: 46},
+	)
+	const hevc10Slow = scoreProfileCandidate(
+		{ok: true, fps: 42.9, targetFps: 60, p95Ms: 26.5, keyKb: 490, codec: 'hevc10', quality: 21, bitrate: 16000},
+		{rttMs: 46},
+	)
+	const h26460Wan = scoreProfileCandidate(
+		{ok: true, fps: 59.9, targetFps: 60, p95Ms: 17.1, keyKb: 390, codec: 'h264', quality: 21, bitrate: 16000},
+		{rttMs: 46},
+	)
+	const bloatedWan = scoreProfileCandidate(
+		{ok: true, fps: 59.8, targetFps: 60, p95Ms: 17.4, keyKb: 720, codec: 'hevc', quality: 20, bitrate: 34000},
+		{rttMs: 60},
+	)
+
+	assert.ok(hevc60Wan > hevc10Slow + 20, `locked 60 FPS HEVC (${hevc60Wan}) must beat 42.9 FPS HEVC10 (${hevc10Slow})`)
+	assert.ok(hevc60Wan > h26460Wan, `HEVC (${hevc60Wan}) should beat H.264 (${h26460Wan}) at matched FPS`)
+	assert.ok(hevc60Wan > bloatedWan, `WAN-sized stream (${hevc60Wan}) should beat oversized bitrate/keyframe (${bloatedWan}) on high RTT`)
+})
+
+test('stream profiler runs benchmarks safely, handles encoder fallback, serializes concurrent saves, and rejects corrupted stores', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchy-hypr-prof-'))
+	try {
+		await writeFile(join(root, 'wayland-1'), '')
+		await mkdir(join(root, 'hypr', 'sig123'), {recursive: true})
+		await writeFile(join(root, 'hypr', 'sig123', '.socket.sock'), '')
+		const fakeBin = join(root, 'fake-capture')
+		await writeFile(fakeBin, '#!/bin/sh\n')
+
+		let modeScenario = 'bench-ok'
+		const hypr = createHyprland({
+			dataDir: join(root, 'data'),
+			home: root,
+			runtimeDir: root,
+			captureBin: fakeBin,
+			vaapiDevice: join(root, 'wayland-1'),
+			async exec(cmd, args) {
+				if (cmd === 'hyprctl' && args[0] === 'monitors') {
+					return {ok: true, stdout: JSON.stringify([{id: 1, name: 'RAIL-1', x: 0, y: 0, width: 3840, height: 2160, scale: 1, refreshRate: 60, dpmsStatus: true, activeWorkspace: {id: 11}, solitaryBlockedBy: []}]), stderr: ''}
+				}
+				if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: '[]', stderr: ''}
+				return {ok: true, stdout: 'ok', stderr: ''}
+			},
+			spawnImpl(_cmd, args) {
+				const ch = Object.assign(new EventEmitter(), {
+					stdin: new PassThrough(),
+					stdout: new PassThrough(),
+					stderr: new PassThrough(),
+					killed: false,
+					exitCode: null,
+					kill(sig) {
+						this.killed = true
+						this.exitCode = 0
+						setImmediate(() => {
+							this.emit('exit', 0, sig || null)
+							this.emit('close', 0, sig || null)
+						})
+					},
+				})
+				if (modeScenario === 'bench-ok' || modeScenario === 'bench-fallback-h264') {
+					const codecIdx = args.indexOf('--codec')
+					const reqCodec = codecIdx >= 0 ? args[codecIdx + 1] : 'h264'
+					const reportedEnc = modeScenario === 'bench-fallback-h264' ? 'h264_vaapi_dmabuf' : `${reqCodec}_vaapi_dmabuf`
+					setImmediate(() => {
+						ch.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, encoder: reportedEnc, codec: 'hev1'}))))
+						let count = 0
+						const iv = setInterval(() => {
+							if (ch.exitCode !== null || count >= 12) {
+								clearInterval(iv)
+								return
+							}
+							const pl = Buffer.concat([Buffer.from([count === 0 ? 1 : 0]), Buffer.alloc(8), Buffer.alloc(1200)])
+							ch.stdout.write(framePacket(2, pl))
+							count++
+						}, 16)
+						ch.once('exit', () => clearInterval(iv))
+					})
+				} else if (modeScenario === 'bench-fail') {
+					setImmediate(() => {
+						ch.stdout.write(framePacket(3, Buffer.from(JSON.stringify({error: 'VA-API busy'}))))
+					})
+				}
+				return ch
+			},
+		})
+
+		const ran = await hypr.procedures['hyprland.profileRun'].run({
+			deviceId: 'mac-studio-chrome',
+			deviceName: 'macOS · Chrome',
+			deviceHint: 'Chrome · macOS · 5120x2880',
+			clientCodecs: ['hevc', 'h264'],
+			clientRttMs: 46,
+			saveAsActive: true,
+		})
+		assert.ok(ran.winner && ran.winner.id === 'mac-studio-chrome')
+		assert.equal(ran.winner.codec, 'hevc')
+		assert.equal(ran.winner.fps, 60)
+		assert.equal(ran.activeByDevice['mac-studio-chrome'], 'mac-studio-chrome')
+
+		await assert.rejects(
+			() => hypr.procedures['hyprland.profileRun'].run({deviceId: 'none-dev', clientCodecs: [], clientRttMs: 20}),
+			/no supported WebCodecs/i,
+		)
+
+		modeScenario = 'bench-fallback-h264'
+		const unadvertisedFallback = await hypr.procedures['hyprland.profileRun'].run({
+			deviceId: 'hevc-only-dev',
+			deviceName: 'HEVC Only',
+			clientCodecs: ['hevc'],
+			clientRttMs: 20,
+			saveAsActive: true,
+		})
+		assert.equal(unadvertisedFallback.winner, null, 'must not activate unadvertised fallback codec')
+
+		const advertisedFallback = await hypr.procedures['hyprland.profileRun'].run({
+			deviceId: 'fallback-dev',
+			deviceName: 'Fallback',
+			clientCodecs: ['hevc', 'h264'],
+			clientRttMs: 20,
+			saveAsActive: true,
+		})
+		assert.equal(advertisedFallback.winner?.codec, 'h264')
+
+		modeScenario = 'bench-fail'
+		const failedRun = await hypr.procedures['hyprland.profileRun'].run({
+			deviceId: 'mac-studio-chrome',
+			clientCodecs: ['hevc'],
+			clientRttMs: 46,
+			saveAsActive: true,
+		})
+		assert.equal(failedRun.winner, null)
+		assert.equal(failedRun.activeByDevice['mac-studio-chrome'], 'mac-studio-chrome')
+
+		await Promise.all([
+			hypr.procedures['hyprland.profileSave'].run({
+				profile: {id: 'lan-a', name: 'LAN A', codec: 'hevc', fps: 60, bitrate: 28000, quality: 18, compression: 7},
+				deviceId: 'dev-a',
+				activate: true,
+			}),
+			hypr.procedures['hyprland.profileSave'].run({
+				profile: {id: 'lan-b', name: 'LAN B', codec: 'h264', fps: 60, bitrate: 20000, quality: 20, compression: 7},
+				deviceId: 'dev-b',
+				activate: true,
+			}),
+		])
+		const listed = await hypr.procedures['hyprland.profiles'].run()
+		assert.ok(listed.profiles.some((p) => p.id === 'lan-a') && listed.profiles.some((p) => p.id === 'lan-b'))
+		assert.equal(listed.activeByDevice['dev-a'], 'lan-a')
+		assert.equal(listed.activeByDevice['dev-b'], 'lan-b')
+
+		await writeFile(join(root, 'data', 'hyprland-profiles.json'), '{not-valid-json')
+		await assert.rejects(
+			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: 'should-fail', name: 'X', codec: 'h264', fps: 60, bitrate: 16000}}),
+			/corrupted/i,
+		)
+
+		hypr.close()
+	} finally {
 		await rm(root, {recursive: true, force: true})
 	}
 })

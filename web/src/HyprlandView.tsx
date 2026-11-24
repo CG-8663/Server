@@ -1,8 +1,9 @@
 // Direct Hyprland GPU WebCodecs renderer (H.264/HEVC/HEVC-4:4:4 Annex-B over WebSocket -> hardware VideoDecoder -> WebGL2 Catmull-Rom + CAS Canvas).
 // Renders either the full Hyprland desktop monitor OR an individual native Hyprland Linux window.
-import {useEffect, useRef, useState} from 'react'
+import {useEffect, useMemo, useRef, useState} from 'react'
+import {useQuery} from '@tanstack/react-query'
 
-import {mutate} from './api'
+import {mutate, query} from './api'
 import {
 	applyMetaToStreamControl,
 	applyReconfigAppliedToStreamControl,
@@ -11,8 +12,7 @@ import {
 	shouldReplayHandshakeReconfig,
 } from './hyprlandStreamState.mjs'
 import {Icon} from './icons'
-
-export type StreamCodec = 'hevc444' | 'hevc' | 'hevc10' | 'h264'
+import {getRailDeviceId, type StreamCodec, type StreamProfilesResponse} from './screens/StreamProfiler'
 
 export type HyprlandWindow = {
 	address: string
@@ -629,6 +629,7 @@ export function HyprlandView({
 	const pendingPtrRef = useRef<{ux: number; uy: number} | null>(null)
 	const ptrTimerRef = useRef<number | null>(null)
 	const wsRef = useRef<WebSocket | null>(null)
+	const deviceId = useMemo(() => getRailDeviceId(), [])
 	const [caps, setCaps] = useState<{baseCodec: StreamCodec; supports444: boolean; supportsOpus: boolean} | null>(null)
 	const [codecFallback, setCodecFallback] = useState<StreamCodec | null>(null)
 	const [qualityTier, setQualityTierState] = useState<StreamQualityTier>(readQualityTier)
@@ -695,6 +696,13 @@ export function HyprlandView({
 		}
 	}
 
+	const profilesQ = useQuery({
+		queryKey: ['hyprland.profiles'],
+		queryFn: () => query<StreamProfilesResponse>('hyprland.profiles'),
+		staleTime: 10_000,
+		retry: false,
+	})
+
 	useEffect(() => {
 		let cancelled = false
 		probeCapabilities()
@@ -709,10 +717,23 @@ export function HyprlandView({
 		}
 	}, [])
 
+	const activeProfile = useMemo(() => {
+		const store = profilesQ.data
+		const activeId = store?.activeByDevice?.[deviceId] ?? store?.defaultProfileId ?? null
+		return activeId ? store?.profiles?.find((p) => p.id === activeId) ?? null : null
+	}, [profilesQ.data, deviceId])
+
+	const activeProfileKey = activeProfile
+		? `${activeProfile.id}:${activeProfile.codec}:${activeProfile.fps}:${activeProfile.bitrate}:${activeProfile.quality}:${activeProfile.compression}`
+		: ''
+
 	useEffect(() => {
 		setCodecFallback(null)
-	}, [attempt])
+	}, [activeProfileKey, attempt])
 
+	const profilesReady = !profilesQ.isPending || !!profilesQ.data
+	const activeProfileRef = useRef(activeProfile)
+	activeProfileRef.current = activeProfile
 	const refreshCanvasRect = () => {
 		const el = canvasRef.current
 		if (!el) return null
@@ -936,14 +957,17 @@ export function HyprlandView({
 			setError('This browser does not support WebCodecs hardware video decoding.')
 			return
 		}
-		if (!caps) return
+		if (!caps || !profilesReady) return
+		const prof = activeProfileRef.current
 		const initTier = QUALITY_TIERS[qualityTierRef.current]
-		const initCodec: StreamCodec = codecFallback ?? (chroma444Ref.current && caps.supports444 ? 'hevc444' : caps.baseCodec)
+		const useTierOverride = !prof || qualityTierRef.current !== 'balanced'
+		const baseCodec: StreamCodec = prof?.codec ?? caps.baseCodec
+		const initCodec: StreamCodec = codecFallback ?? (chroma444Ref.current && caps.supports444 ? 'hevc444' : baseCodec)
 		activeCodecRef.current = initCodec
-		const activeFps = fps
-		const activeBitrate = initTier ? initTier.bitrate : bitrate
-		const activeQuality = initTier ? initTier.quality : 0
-		const activeCompression = 0
+		const activeFps = prof?.fps || fps
+		const activeBitrate = useTierOverride && initTier ? initTier.bitrate : prof?.bitrate || initTier?.bitrate || bitrate
+		const activeQuality = useTierOverride && initTier ? initTier.quality : prof?.quality || initTier?.quality || 0
+		const activeCompression = prof?.compression || 0
 		let disposed = false
 		let decoder: VideoDecoder | null = null
 		let audioDecoder: WebAudioDecoderLike | null = null
@@ -1555,7 +1579,7 @@ export function HyprlandView({
 				blitter?.destroy()
 			} catch {}
 		}
-	}, [effectiveMode, effectiveAddress, effectiveOutput, caps, codecFallback, fps, bitrate, attempt, chrome])
+	}, [effectiveMode, effectiveAddress, effectiveOutput, caps, profilesReady, activeProfileKey, codecFallback, fps, bitrate, attempt, chrome])
 
 	const sendBinaryMove = (ux: number, uy: number) => {
 		const ws = wsRef.current
@@ -2004,6 +2028,7 @@ export function HyprlandView({
 									type="button"
 									className="btn primary small"
 									onClick={() => {
+										profilesQ.refetch().catch(() => {})
 										setAttempt((a) => a + 1)
 									}}
 								>
