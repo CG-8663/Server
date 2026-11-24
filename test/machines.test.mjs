@@ -1427,6 +1427,50 @@ test('an imported raw disk is defined as qcow2 only when the copy is qcow2', asy
 	}
 })
 
+test('Pause and Resume report "pausing" and "resuming", then the libvirt state straight away', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-pause-'))
+	try {
+		let name = ''
+		let libvirt = 'shut off'
+		let hold = null
+		const run = async (cmd, args, opts = {}) => {
+			if (cmd === 'openssl') return execFileSync('openssl', args, {input: opts.input}).toString()
+			if (cmd === 'xorriso') {
+				await writeFile(args[args.indexOf('-output') + 1], 'iso')
+				return ''
+			}
+			if (cmd === 'qemu-img' && args[0] === 'convert') await writeFile(args.at(-1), 'disk')
+			if (cmd === 'virsh') {
+				const a = args[0] === '-c' ? args.slice(2) : args
+				if (a[0] === 'define') name = /<name>([^<]+)<\/name>/.exec(await readFile(a[1], 'utf8'))[1]
+				if (a[0] === 'start') libvirt = 'running'
+				if (a[0] === 'suspend' || a[0] === 'resume') {
+					await hold
+					libvirt = a[0] === 'suspend' ? 'paused' : 'running'
+				}
+				if (a[0] === 'list') return ` Id   Name   State\n------------------\n${libvirt === 'shut off' && !name ? '' : ` -    ${name}   ${libvirt}\n`}`
+			}
+			return ''
+		}
+		const machines = await cloudCreate({root, run})
+		const {id} = await machines.procedures['machines.create'].run({name: 'Napper', osId: 'testos-amd64', cores: 1, memoryGb: 1, diskSizeGb: 10, username: 'chris', password: 'hunter2'})
+		await untilMachine(machines, id, 'running')
+		const state = async () => (await machines.procedures['machines.list'].run()).find((m) => m.id === id).state
+		for (const [verb, during, after] of [['pause', 'pausing', 'suspended'], ['resume', 'resuming', 'running']]) {
+			let release
+			hold = new Promise((r) => (release = r))
+			const done = machines.procedures[`machines.${verb}`].run({id})
+			await new Promise((r) => setTimeout(r, 50))
+			assert.equal(await state(), during)
+			release()
+			await done
+			assert.equal(await state(), after, `${verb} shows the real state at once`)
+		}
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
 test('your own ISOs: a folder with more than 50 ISOs lists only 50', async () => {
 	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-isos-'))
 	try {
