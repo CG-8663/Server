@@ -133,3 +133,93 @@ test('an interrupted remote install is an error and is not resumed', async () =>
 	assert.equal(row.errorMessage, 'Creating it was interrupted. Delete it and create it again.')
 	await rm(root, {recursive: true, force: true})
 })
+
+const box = {id: 'abcd1234', name: 'Box', hostId: 'abc123abc123', osId: 'debian-12', cores: 1, memoryGb: 1, memoryMb: 1024, diskSizeGb: 8, mac: '52:54:00:11:22:33', cloudInit: {username: 'chris', hostname: 'box'}, layout: {firmware: 'bios', machineType: 'q35', nic: 'virtio', video: 'vga', disks: [{id: 'disk0', file: 'disk.qcow2', device: 'disk', bus: 'virtio', format: 'qcow2'}, {id: 'seed', role: 'seed', file: 'seed.iso', device: 'cdrom', bus: 'sata', format: 'raw'}]}, options: {agent: true}, boot: ['disk0'], portForwards: []}
+
+async function readyWithBox(calls, {offline = false} = {}) {
+	const root = await mkdtemp(join(os.tmpdir(), 'swarm-box-'))
+	const data = join(root, 'data')
+	await mkdir(join(data, 'machines'), {recursive: true})
+	await writeFile(join(data, 'machines', 'machines.json'), JSON.stringify({machines: [box]}))
+	const machines = createMachines({
+		dataDir: data,
+		run: async () => { throw new Error('local virsh') },
+		kvmDevice: join(root, 'no-kvm'),
+		isOwner: (ctx) => ctx?.auth?.role === 'owner',
+		connector: {
+			pair: async () => { throw new Error('no pair') },
+			list: async () => [{id: 'abc123abc123', name: 'PC', online: !offline, allowed: {vms: true}, on: {vms: true}}],
+			progress: () => null,
+			call: async (id, name, args) => {
+				if (offline) throw new Error('offline')
+				calls.push({id, name, args})
+				if (name === 'vm-state') return {'omarchy-abcd1234': 'running'}
+				if (name === 'vm-inspect') return {state: 'running', disks: []}
+				if (name === 'vm-stats') return ''
+				if (name === 'vm-status') return {libvirt: true, kvm: true, arch: 'amd64', threads: 4, memoryMb: 8192, freeGb: 40, videoModels: ['vga']}
+				return 'ok'
+			},
+		},
+	})
+	await machines.ready
+	return {machines, root}
+}
+
+test('remote power, options, and uninstall use the host, and snapshots do not', async () => {
+	const calls = []
+	const {machines} = await readyWithBox(calls)
+	const auth = {auth: {role: 'owner'}}
+	await machines.procedures['machines.start'].run({id: 'abcd1234'}, auth)
+	assert.equal(calls.at(-1).name, 'vm-start')
+	assert.equal(calls.at(-1).args.guestId, 'abcd1234')
+	await machines.procedures['machines.updateOptions'].run({id: 'abcd1234', notes: 'hi'}, auth)
+	assert.ok(calls.some((c) => c.name === 'vm-define'))
+	await machines.procedures['machines.updateCloudInit'].run({id: 'abcd1234', username: 'chris', hostname: 'box', sshKeys: []}, auth)
+	assert.ok(calls.some((c) => c.name === 'vm-seed'))
+	await assert.rejects(machines.procedures['machines.snapshot'].run({id: 'abcd1234', name: 's'}, auth), /isn’t available there yet/)
+	await assert.rejects(machines.procedures['machines.hibernate'].run({id: 'abcd1234'}, auth), /isn’t available there yet/)
+	await assert.rejects(machines.procedures['machines.addDisk'].run({id: 'abcd1234', sizeGb: 2}, auth), /isn’t available there yet/)
+	await assert.rejects(machines.procedures['machines.installConnector'].run({id: 'abcd1234', username: 'chris'}, auth), /hosts this virtual machine/)
+	assert.equal(calls.some((c) => String(c.name).startsWith('vm-ga-')), false)
+	calls.length = 0
+	await machines.procedures['machines.uninstall'].run({id: 'abcd1234'}, auth)
+	assert.equal(calls[0].name, 'vm-undefine')
+	const left = await machines.procedures['machines.list'].run()
+	assert.equal(left.some((m) => m.id === 'abcd1234'), false)
+})
+
+test('remote list reads virsh state from the host and keeps the row when the host is offline', async () => {
+	const calls = []
+	const {machines} = await readyWithBox(calls, {offline: true})
+	const rows = await machines.procedures['machines.list'].run()
+	assert.equal(rows[0].state, 'stopped')
+	assert.equal(calls.some((c) => c.name === 'vm-state'), false)
+})
+
+test('remote list reads running from the host', async () => {
+	const calls = []
+	const {machines} = await readyWithBox(calls)
+	const rows = await machines.procedures['machines.list'].run()
+	assert.equal(rows.find((m) => m.id === 'abcd1234').state, 'running')
+	assert.ok(calls.some((c) => c.name === 'vm-state'))
+})
+
+test('a member cannot start a remote guest', async () => {
+	const {machines} = await readyWithBox([])
+	await assert.rejects(
+		machines.procedures['machines.start'].run({id: 'abcd1234'}, {auth: {role: 'member'}}),
+		(e) => e.code === 'FORBIDDEN' && /owner/.test(e.message),
+	)
+})
+
+test('uninstall while the host is offline keeps the row', async () => {
+	const calls = []
+	const {machines} = await readyWithBox(calls, {offline: true})
+	await assert.rejects(
+		machines.procedures['machines.uninstall'].run({id: 'abcd1234'}, {auth: {role: 'owner'}}),
+		(e) => e.code === 'PRECONDITION_FAILED' && /was not deleted/.test(e.message),
+	)
+	const left = await machines.procedures['machines.list'].run()
+	assert.equal(left.some((m) => m.id === 'abcd1234'), true)
+	assert.equal(calls.some((c) => c.name === 'vm-undefine'), false)
+})

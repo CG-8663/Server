@@ -333,6 +333,57 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	function assertOwner(ctx) {
 		if (!isOwner(ctx)) throw new RpcError('FORBIDDEN', 'Only the server’s owner can manage virtual machines on another computer.')
 	}
+	function assertLocal(m) {
+		if (hostOf(m) !== 'server') throw new RpcError('PRECONDITION_FAILED', `${m.name} is on another computer. That action isn’t available there yet.`)
+	}
+	async function listedAgents() {
+		try {
+			const listed = await connector?.list?.()
+			return Array.isArray(listed) ? listed : []
+		} catch {
+			return []
+		}
+	}
+	async function hostAgent(m) {
+		const hostId = hostOf(m)
+		const agent = (await listedAgents()).find((a) => a.id === hostId)
+		if (!agent) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		return {hostId, hostName: agent.name || 'that computer', agent}
+	}
+	async function requireRemote(m, ctx) {
+		assertOwner(ctx)
+		const info = await hostAgent(m)
+		if (!info.agent.online) throw new RpcError('PRECONDITION_FAILED', `${info.hostName} is offline right now`)
+		if (!info.agent.allowed?.vms || !info.agent.on?.vms) throw new RpcError('FORBIDDEN', `Pair ${info.hostName} again with Virtual machines switched on.`)
+		return info
+	}
+	function parseVmState(raw) {
+		if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw
+		try {
+			const parsed = JSON.parse(String(raw ?? ''))
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+		} catch {}
+		return {}
+	}
+	async function remoteCall(hostId, name, args = {}) {
+		const timeout = name === 'vm-fetch' || name === 'vm-disk-create' ? 30 * 60_000 : name === 'vm-status' ? 30_000 : 120_000
+		try {
+			return await connector.call(hostId, name, args, timeout)
+		} catch (error) {
+			if (error instanceof RpcError) throw error
+			throw new RpcError('BAD_GATEWAY', String(error?.message ?? error).replace(/\s+/g, ' ').trim().slice(0, 300))
+		}
+	}
+	async function remoteLive(m) {
+		try {
+			const word = parseVmState(await remoteCall(hostOf(m), 'vm-state', {}))[domain(m.id)]
+			const live = STATE[word] ?? 'stopped'
+			m.hostState = live
+			return live
+		} catch {
+			return m.hostState ?? 'stopped'
+		}
+	}
 	// Machines from earlier versions get the settings newer ones have, unchanged in effect.
 	function normalize(m) {
 		m.vmid ??= nextVmid()
@@ -463,6 +514,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		}
 	}
 	async function define(m) {
+		if (hostOf(m) !== 'server') {
+			const status = readVmStatus(await remoteCall(hostOf(m), 'vm-status', {}))
+			await remoteCall(hostOf(m), 'vm-define', {guestId: m.id, spec: defineSpec(m, status)})
+			return
+		}
 		const dir = join(vmsDir, m.id)
 		await mkdir(dir, {recursive: true, mode: 0o700})
 		const file = join(dir, 'domain.xml')
@@ -558,10 +614,27 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await ready
 		touchWatch()
 		const states = await domainStates()
-		return machines.map((m) => {
+		const agents = await listedAgents()
+		const remoteState = new Map()
+		const hosts = [...new Set(machines.map((m) => hostOf(m)).filter((h) => h !== 'server'))]
+		let persist = false
+		for (const hostId of hosts) {
+			if (!agents.find((a) => a.id === hostId)?.online) continue
+			try {
+				remoteState.set(hostId, parseVmState(await remoteCall(hostId, 'vm-state', {})))
+			} catch {}
+		}
+		const rows = machines.map((m) => {
+			const host = hostOf(m)
 			const b = busy.get(m.id)
-			const live = STATE[states.get(domain(m.id))]
-			const state = b?.state ?? (m.state === 'error' ? 'error' : (live ?? 'stopped'))
+			let live
+			if (host === 'server') live = STATE[states.get(domain(m.id))]
+			else if (remoteState.has(host)) {
+				live = STATE[remoteState.get(host)[domain(m.id)]] ?? 'stopped'
+				if (m.hostState !== live) persist = true
+				m.hostState = live
+			} else live = m.hostState ?? 'stopped'
+			const state = b?.state ?? (m.state === 'error' ? 'error' : m.state === 'installing' ? 'installing' : (live ?? 'stopped'))
 			return {
 				id: m.id,
 				vmid: m.vmid,
@@ -572,7 +645,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				memoryGb: m.memoryGb,
 				memoryMb: m.memoryMb,
 				diskSizeGb: m.diskSizeGb,
-				state: state === 'stopped' && m.hibernated ? 'hibernated' : state,
+				state: host === 'server' && state === 'stopped' && m.hibernated ? 'hibernated' : state,
 				...(m.pending && state === 'running' ? {pending: true} : {}),
 				...(m.options?.protection ? {protected: true} : {}),
 				...(m.options?.onBoot ? {onBoot: true} : {}),
@@ -582,6 +655,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				...(state === 'error' && m.errorMessage ? {errorMessage: m.errorMessage} : {}),
 			}
 		})
+		if (persist) await save().catch(() => {})
+		return rows
 	}
 
 	function readVmStatus(raw) {
@@ -958,9 +1033,91 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 
 	const VERBS = {starting: 'start', stopping: 'shutdown', restarting: 'reboot', killing: 'stop', pausing: 'pause', resuming: 'resume', hibernating: 'hibernate'}
-	const lifecycle = (verb, pending) => async (input) => {
+	const remotePowerName = (pending, verb, id) => {
+		if (pending === 'starting') return 'vm-start'
+		if (pending === 'restarting') return 'vm-reboot'
+		if (pending === 'pausing') return 'vm-suspend'
+		if (pending === 'resuming') return 'vm-resume'
+		if (pending === 'stopping') return verb(domain(id))[0] === 'destroy' ? 'vm-destroy' : 'vm-shutdown'
+		return null
+	}
+	async function remotePower(m, pending, verb, ctx) {
+		await requireRemote(m, ctx)
+		if (isBusy(m.id)) throw new RpcError('CONFLICT', `${m.name} is busy`)
+		const callName = remotePowerName(pending, verb, m.id)
+		if (!callName) throw new RpcError('PRECONDITION_FAILED', `${m.name} is on another computer. That action isn’t available there yet.`)
+		if (m.state === 'error') {
+			if (pending !== 'starting') throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish setting up. Delete it and create it again.`)
+			let hasDisk = false
+			try {
+				const inspect = await remoteCall(hostOf(m), 'vm-inspect', {guestId: m.id})
+				const parsed = inspect && typeof inspect === 'object' ? inspect : JSON.parse(String(inspect ?? 'null'))
+				const disks = Array.isArray(parsed?.disks) ? parsed.disks : []
+				hasDisk = disks.some((d) => /(^|\/)disk\.qcow2$/.test(String(d?.file ?? '')))
+			} catch {}
+			if (!hasDisk) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish setting up. Delete it and create it again.`)
+			try {
+				await define(m)
+			} catch (error) {
+				throw engineFailure(error, m.name, 'start')
+			}
+			delete m.state
+			delete m.errorMessage
+			await save()
+		}
+		const force = callName === 'vm-destroy'
+		const action = force ? 'stop' : {starting: 'start', stopping: 'shut down', restarting: 'restart', pausing: 'pause', resuming: 'resume'}[pending] ?? pending
+		const t = beginTask(m, force ? 'stop' : VERBS[pending] ?? pending)
+		busy.set(m.id, {state: pending})
+		try {
+			if (pending === 'restarting' && m.pending) {
+				await remoteCall(hostOf(m), 'vm-shutdown', {guestId: m.id})
+				const end = Date.now() + 180_000
+				for (;;) {
+					const word = parseVmState(await remoteCall(hostOf(m), 'vm-state', {}))[domain(m.id)]
+					if (word === 'shut off' || word == null) break
+					if (Date.now() > end) throw new Error(`${m.name} didn’t shut down within 3 minutes; use Stop, then Start`)
+					await new Promise((r) => setTimeout(r, 1000))
+				}
+				await define(m)
+				try {
+					await remoteCall(hostOf(m), 'vm-start', {guestId: m.id})
+				} catch (error) {
+					if (!alreadyActive(error)) throw error
+				}
+			} else if (pending === 'starting') {
+				try {
+					await remoteCall(hostOf(m), 'vm-start', {guestId: m.id})
+				} catch (error) {
+					if (!alreadyActive(error)) throw error
+				}
+			} else {
+				await remoteCall(hostOf(m), callName, {guestId: m.id})
+			}
+			if (pending === 'starting' || pending === 'restarting') {
+				delete m.pending
+				delete m.hibernated
+				m.liveForwards = (m.portForwards ?? []).map(forwardKey)
+			}
+			if (force) delete m.liveForwards
+			endTask(m, t)
+		} catch (error) {
+			endTask(m, t, error)
+			throw engineFailure(error, m.name, action)
+		} finally {
+			await save().catch(() => {})
+			const entry = {...busy.get(m.id), settling: true}
+			if (pending === 'pausing' || pending === 'resuming') busy.delete(m.id)
+			else busy.set(m.id, entry)
+			setTimeout(() => busy.get(m.id) === entry && busy.delete(m.id), pending === 'stopping' ? 0 : 1500)
+		}
+		return true
+	}
+	const lifecycle = (verb, pending) => async (input, ctx) => {
 		await ready
 		const m = find(input?.id)
+		if (pending === 'hibernating') assertLocal(m)
+		if (hostOf(m) !== 'server') return remotePower(m, pending, verb, ctx)
 		if (isBusy(m.id)) throw new RpcError('CONFLICT', `${m.name} is busy`)
 		let defined = false
 		if (m.state === 'error') {
@@ -1063,12 +1220,26 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		throw new RpcError('BAD_GATEWAY', `${m.name} was not deleted because it could not be removed from libvirt`)
 	}
 
-	async function uninstall(input) {
+	async function uninstall(input, ctx) {
 		await ready
 		const m = find(input?.id)
 		if (busy.get(m.id)?.state === 'installing') throw new RpcError('CONFLICT', `${m.name} is still being set up`)
 		if (isBusy(m.id)) throw new RpcError('CONFLICT', `${m.name} is busy`)
 		if (m.options?.protection && !input?.force) throw new RpcError('PRECONDITION_FAILED', `${m.name} is protected. Turn off Protection in its options to delete it.`)
+		if (hostOf(m) !== 'server') {
+			assertOwner(ctx)
+			const {hostId, hostName, agent} = await hostAgent(m)
+			if (!agent.online) throw new RpcError('PRECONDITION_FAILED', `${hostName} is offline, so ${m.name} was not deleted.`)
+			if (!agent.allowed?.vms || !agent.on?.vms) throw new RpcError('FORBIDDEN', `Pair ${hostName} again with Virtual machines switched on.`)
+			try {
+				await remoteCall(hostId, 'vm-undefine', {guestId: m.id})
+			} catch (error) {
+				throw engineFailure(error, m.name, 'delete')
+			}
+			machines = machines.filter((x) => x.id !== m.id)
+			await save()
+			return true
+		}
 		const live = await readDomainState(m)
 		if (live && live !== 'shut off') {
 			try {
@@ -1084,9 +1255,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return true
 	}
 
-	async function updateSettings(input) {
+	async function updateSettings(input, ctx) {
 		await ready
 		const m = find(input?.id)
+		if (hostOf(m) !== 'server') await requireRemote(m, ctx)
 		refuseIfBusy(m)
 		if (input.portForwards !== undefined) {
 			if (!Array.isArray(input.portForwards) || input.portForwards.length > 32) throw new RpcError('BAD_REQUEST', 'Invalid port forwards')
@@ -1144,9 +1316,17 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			.slice(0, 100)
 	}
 
-	const liveState = async (m) => STATE[(await domainStates()).get(domain(m.id))] ?? 'stopped'
+	const liveState = async (m) => (hostOf(m) === 'server' ? (STATE[(await domainStates()).get(domain(m.id))] ?? 'stopped') : remoteLive(m))
 	// The guest still holds its disks whenever the domain exists and is not shut off (running, paused, shutting down).
 	const domainOpen = async (m) => {
+		if (hostOf(m) !== 'server') {
+			try {
+				const word = parseVmState(await remoteCall(hostOf(m), 'vm-state', {}))[domain(m.id)]
+				return word != null && word !== 'shut off'
+			} catch {
+				return false
+			}
+		}
 		const raw = (await domainStates()).get(domain(m.id))
 		return raw != null && raw !== 'shut off'
 	}
@@ -1210,6 +1390,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function installConnector(input = {}) {
 		await ready
 		const m = find(input?.id)
+		if (hostOf(m) !== 'server') throw new RpcError('PRECONDITION_FAILED', 'Install the connector from the computer that hosts this virtual machine once that is available.')
 		// qemu-ga is root: sudoPassword is accepted and discarded, never saved.
 		const os = connectorKind(m.osId)
 		if (os === 'unsupported') return {status: 'unsupported', os: 'other', message: 'This operating system can’t run the connector.'}
@@ -1271,60 +1452,70 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// libvirt states that still have counters. "shut off" and friends do not.
 	const COUNTED = new Set(['running', 'paused', 'blocked', 'pmsuspended'])
 	let inFlight = false
+	function ingestDomstats(text, now, mono) {
+		for (const block of text.split(/\n(?=Domain: )/)) {
+			const name = /Domain: '([^']+)'/.exec(block)?.[1]
+			const m = machines.find((x) => domain(x.id) === name)
+			if (!m) continue
+			const kv = {}
+			for (const line of block.split('\n')) {
+				const mm = /^\s*([\w.]+)=(\d+)/.exec(line)
+				if (mm) kv[mm[1]] = Number(mm[2])
+			}
+			const sum = (re) => Object.entries(kv).reduce((a, [k, v]) => (re.test(k) ? a + v : a), 0)
+			const raw = {t: mono, cpuNs: kv['cpu.time'] ?? 0, rx: sum(/^net\.\d+\.rx\.bytes$/), tx: sum(/^net\.\d+\.tx\.bytes$/), rd: sum(/^block\.\d+\.rd\.bytes$/), wr: sum(/^block\.\d+\.wr\.bytes$/)}
+			const prev = lastRaw.get(m.id)
+			lastRaw.set(m.id, raw)
+			if (!prev || raw.cpuNs < prev.cpuNs || raw.t <= prev.t) continue
+			const secs = (raw.t - prev.t) / 1000
+			const vcpus = (m.sockets ?? 1) * m.cores
+			const point = {
+				t: now,
+				cpu: Math.min(100, Math.round(((raw.cpuNs - prev.cpuNs) / (secs * 1e9 * vcpus)) * 1000) / 10),
+				// What the machine actually holds in the server's memory.
+				memMb: Math.round((kv['balloon.rss'] ?? 0) / 1024),
+				netIn: Math.round((raw.rx - prev.rx) / secs),
+				netOut: Math.round((raw.tx - prev.tx) / secs),
+				diskRead: Math.round((raw.rd - prev.rd) / secs),
+				diskWrite: Math.round((raw.wr - prev.wr) / secs),
+			}
+			lastPoint.set(m.id, point)
+			const list = series.get(m.id) ?? []
+			const keptAt = seriesAt.get(m.id)
+			if (keptAt === undefined || !list.length || mono - keptAt >= seriesIntervalMs) {
+				seriesAt.set(m.id, mono)
+				list.push(point)
+				if (list.length > 360) list.splice(0, list.length - 360)
+				series.set(m.id, list)
+			}
+		}
+	}
 	async function sample() {
 		if (inFlight) return
 		if (!machines.some((m) => !isBusy(m.id))) return
 		inFlight = true
 		try {
 			const states = await domainStates()
-			const live = machines.some((m) => !isBusy(m.id) && COUNTED.has(states.get(domain(m.id))))
-			if (!live) return
+			const texts = []
+			if (machines.some((m) => hostOf(m) === 'server' && !isBusy(m.id) && COUNTED.has(states.get(domain(m.id))))) {
+				try {
+					texts.push(await virsh('domstats', '--list-running', '--cpu-total', '--balloon', '--interface', '--block'))
+				} catch {}
+			}
+			const agents = await listedAgents()
+			for (const hostId of new Set(machines.filter((m) => hostOf(m) !== 'server' && !isBusy(m.id)).map((m) => hostOf(m)))) {
+				if (!agents.find((a) => a.id === hostId)?.online) continue
+				try {
+					const text = await remoteCall(hostId, 'vm-stats', {})
+					if (text) texts.push(String(text))
+				} catch {}
+			}
+			if (!texts.length) return
 			// Counters are read when virsh starts. The rate is divided by the time since the
 			// previous start, not by how long virsh took to return.
 			const now = Date.now()
 			const mono = performance.now()
-			let text = ''
-			try {
-				text = await virsh('domstats', '--list-running', '--cpu-total', '--balloon', '--interface', '--block')
-			} catch {
-				return
-			}
-			for (const block of text.split(/\n(?=Domain: )/)) {
-				const name = /Domain: '([^']+)'/.exec(block)?.[1]
-				const m = machines.find((x) => domain(x.id) === name)
-				if (!m) continue
-				const kv = {}
-				for (const line of block.split('\n')) {
-					const mm = /^\s*([\w.]+)=(\d+)/.exec(line)
-					if (mm) kv[mm[1]] = Number(mm[2])
-				}
-				const sum = (re) => Object.entries(kv).reduce((a, [k, v]) => (re.test(k) ? a + v : a), 0)
-				const raw = {t: mono, cpuNs: kv['cpu.time'] ?? 0, rx: sum(/^net\.\d+\.rx\.bytes$/), tx: sum(/^net\.\d+\.tx\.bytes$/), rd: sum(/^block\.\d+\.rd\.bytes$/), wr: sum(/^block\.\d+\.wr\.bytes$/)}
-				const prev = lastRaw.get(m.id)
-				lastRaw.set(m.id, raw)
-				if (!prev || raw.cpuNs < prev.cpuNs || raw.t <= prev.t) continue
-				const secs = (raw.t - prev.t) / 1000
-				const vcpus = (m.sockets ?? 1) * m.cores
-				const point = {
-					t: now,
-					cpu: Math.min(100, Math.round(((raw.cpuNs - prev.cpuNs) / (secs * 1e9 * vcpus)) * 1000) / 10),
-					// What the machine actually holds in the server's memory.
-					memMb: Math.round((kv['balloon.rss'] ?? 0) / 1024),
-					netIn: Math.round((raw.rx - prev.rx) / secs),
-					netOut: Math.round((raw.tx - prev.tx) / secs),
-					diskRead: Math.round((raw.rd - prev.rd) / secs),
-					diskWrite: Math.round((raw.wr - prev.wr) / secs),
-				}
-				lastPoint.set(m.id, point)
-				const list = series.get(m.id) ?? []
-				const keptAt = seriesAt.get(m.id)
-				if (keptAt === undefined || !list.length || mono - keptAt >= seriesIntervalMs) {
-					seriesAt.set(m.id, mono)
-					list.push(point)
-					if (list.length > 360) list.splice(0, list.length - 360)
-					series.set(m.id, list)
-				}
-			}
+			for (const text of texts) ingestDomstats(text, now, mono)
 		} finally {
 			inFlight = false
 		}
@@ -1360,7 +1551,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 
 	// Machines set to start with the server, in their start order, with each one's delay.
 	async function autostart() {
-		const list = machines.filter((m) => m.options?.onBoot && m.state !== 'error').sort((a, b) => (a.options.startupOrder ?? 999) - (b.options.startupOrder ?? 999) || a.vmid - b.vmid)
+		const list = machines.filter((m) => hostOf(m) === 'server' && m.options?.onBoot && m.state !== 'error').sort((a, b) => (a.options.startupOrder ?? 999) - (b.options.startupOrder ?? 999) || a.vmid - b.vmid)
 		if (!list.length) return
 		const states = await domainStates()
 		for (const m of list) {
@@ -1447,15 +1638,42 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function details(input) {
 		await ready
 		const m = find(input?.id)
-		const live = busy.get(m.id)?.state ?? (m.state === 'error' ? 'error' : await liveState(m))
+		const remote = hostOf(m) !== 'server'
+		let inspect = null
+		if (remote) {
+			const agent = (await listedAgents()).find((a) => a.id === hostOf(m))
+			if (agent?.online) {
+				try {
+					inspect = await remoteCall(hostOf(m), 'vm-inspect', {guestId: m.id})
+					if (typeof inspect === 'string') {
+						try {
+							inspect = JSON.parse(inspect)
+						} catch {
+							inspect = null
+						}
+					}
+				} catch {
+					inspect = null
+				}
+			}
+		}
+		const live = busy.get(m.id)?.state ?? (m.state === 'error' ? 'error' : remote ? (STATE[inspect?.state] ?? m.hostState ?? 'stopped') : await liveState(m))
 		const names = m.layout ? targets(m.layout) : new Map()
 		const disks = []
+		const inspectDisks = Array.isArray(inspect?.disks) ? inspect.disks : []
 		for (const d of m.layout?.disks ?? []) {
-			const info = d.device === 'disk' ? await diskInfo(d.file) : {}
-			disks.push({id: d.id, device: d.device, bus: d.bus, target: names.get(d.id), format: d.format, role: d.role ?? null, cache: d.cache ?? 'default', discard: d.device === 'disk' ? d.discard !== false : undefined, sizeGb: info.virtualGb ?? d.sizeGb ?? null, usedGb: info.usedGb ?? null, media: d.device === 'cdrom' ? await mediaLabel(d.file) : null, inMachineFolder: d.file?.startsWith(join(vmsDir, m.id)) ?? false})
+			let info = {}
+			if (remote) {
+				const hit = inspectDisks.find((x) => basename(String(x.file ?? '')) === basename(String(d.file ?? '')))
+				if (hit) info = {virtualGb: hit.virtualGb, usedGb: hit.usedGb}
+			} else if (d.device === 'disk') {
+				info = await diskInfo(d.file)
+			}
+			const offline = remote && !inspect
+			disks.push({id: d.id, device: d.device, bus: d.bus, target: names.get(d.id), format: d.format, role: d.role ?? null, cache: d.cache ?? 'default', discard: d.device === 'disk' ? d.discard !== false : undefined, sizeGb: offline ? null : (info.virtualGb ?? d.sizeGb ?? null), usedGb: offline ? null : (info.usedGb ?? null), media: d.device === 'cdrom' ? (remote ? (d.file ? basename(d.file) : null) : await mediaLabel(d.file)) : null, inMachineFolder: d.file?.startsWith(join(vmsDir, m.id)) ?? false})
 		}
 		let guestIps = []
-		if (live === 'running' && m.options?.agent) {
+		if (!remote && live === 'running' && m.options?.agent) {
 			const out = await virsh('domifaddr', domain(m.id), '--source', 'agent').catch(() => '')
 			guestIps = [...out.matchAll(/ipv4\s+([\d.]+)\//g)].map((x) => x[1]).filter((ip) => !ip.startsWith('127.'))
 		}
@@ -1464,7 +1682,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			vmid: m.vmid,
 			name: m.name,
 			osId: m.osId,
-			state: live === 'stopped' && m.hibernated ? 'hibernated' : live,
+			state: !remote && live === 'stopped' && m.hibernated ? 'hibernated' : live,
 			pending: !!m.pending && live === 'running',
 			createdAt: m.createdAt,
 			errorMessage: m.state === 'error' ? m.errorMessage : undefined,
@@ -1502,13 +1720,21 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		}
 	}
 
-	async function updateHardware(input = {}) {
+	async function updateHardware(input = {}, ctx) {
 		await ready
 		const m = find(input.id)
+		if (hostOf(m) !== 'server') await requireRemote(m, ctx)
 		writable(m)
 		refuseIfBusy(m)
-		const threads = os.cpus().length || 1
-		const totalMb = Math.floor(os.totalmem() / 1024 ** 2)
+		let threads = os.cpus().length || 1
+		let totalMb = Math.floor(os.totalmem() / 1024 ** 2)
+		let videos = null
+		if (hostOf(m) !== 'server') {
+			const status = readVmStatus(await remoteCall(hostOf(m), 'vm-status', {}))
+			threads = Number(status.threads) || 1
+			totalMb = Number(status.memoryMb) || totalMb
+			videos = Array.isArray(status.videoModels) ? status.videoModels.filter((v) => typeof v === 'string') : []
+		}
 		const sockets = input.sockets ?? m.sockets ?? 1
 		const cores = input.cores ?? m.cores
 		if (!Number.isInteger(sockets) || sockets < 1 || sockets > 4) throw new RpcError('BAD_REQUEST', 'Sockets must be between 1 and 4')
@@ -1523,7 +1749,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const firmware = input.firmware ?? m.layout.firmware
 		if (!['bios', 'efi'].includes(firmware)) throw new RpcError('BAD_REQUEST', 'Firmware must be SeaBIOS (bios) or OVMF (efi)')
 		const video = input.video ?? m.layout.video
-		if (!(await availableVideo()).includes(video)) throw new RpcError('BAD_REQUEST', 'That display isn’t available on this server')
+		if (!(videos ?? await availableVideo()).includes(video)) throw new RpcError('BAD_REQUEST', 'That display isn’t available on this server')
 		const nic = input.nic ?? m.layout.nic
 		if (!NICS.includes(nic)) throw new RpcError('BAD_REQUEST', 'Unknown network model')
 		const mac = String(input.mac ?? m.mac).toLowerCase()
@@ -1541,9 +1767,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 
 	const HARDWARE_OPTION_DEFAULTS = {tablet: true, acpi: true, kvm: true, agent: false, bootMenu: false}
-	async function updateOptions(input = {}) {
+	async function updateOptions(input = {}, ctx) {
 		await ready
 		const m = find(input.id)
+		if (hostOf(m) !== 'server') await requireRemote(m, ctx)
 		refuseIfBusy(m)
 		const o = {...m.options}
 		let nextName
@@ -1595,9 +1822,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		})
 	}
 
-	async function setBootOrder(input = {}) {
+	async function setBootOrder(input = {}, ctx) {
 		await ready
 		const m = find(input.id)
+		if (hostOf(m) !== 'server') await requireRemote(m, ctx)
 		writable(m)
 		refuseIfBusy(m)
 		const ids = new Set([...m.layout.disks.map((d) => d.id), 'net'])
@@ -1626,6 +1854,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const IDE_NEEDS_PC = 'IDE is only available on the i440fx (pc) machine type'
 	async function addDisk(input = {}) {
 		await ready
+		assertLocal(find(input.id))
 		const idArg = find(input.id).id
 		return lock(`drives:${idArg}`, async () => {
 			const m = find(idArg)
@@ -1653,6 +1882,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function updateDisk(input = {}) {
 		await ready
 		const m = find(input.id)
+		assertLocal(m)
 		writable(m)
 		refuseIfBusy(m)
 		const d = findDisk(m, input.diskId)
@@ -1670,6 +1900,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function resizeDisk(input = {}) {
 		await ready
 		const m = find(input.id)
+		assertLocal(m)
 		writable(m)
 		const d = findDisk(m, input.diskId)
 		if (d.device !== 'disk') throw new RpcError('BAD_REQUEST', 'Only disks can be resized')
@@ -1689,6 +1920,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function removeDisk(input = {}) {
 		await ready
 		const m = find(input.id)
+		assertLocal(m)
 		writable(m)
 		const d = findDisk(m, input.diskId)
 		await requireStopped(m, 'remove a drive')
@@ -1706,6 +1938,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 	async function addCdrom(input = {}) {
 		await ready
+		assertLocal(find(input.id))
 		const idArg = find(input.id).id
 		return lock(`drives:${idArg}`, async () => {
 			const m = find(idArg)
@@ -1723,6 +1956,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function setMedia(input = {}) {
 		await ready
 		const m = find(input.id)
+		assertLocal(m)
 		writable(m)
 		refuseIfBusy(m)
 		const d = findDisk(m, input.diskId)
@@ -1763,9 +1997,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// ---- cloud-init -----------------------------------------------------------------------------
 	// A new seed with a new instance id: cloud-init applies it at the machine's next boot. A new
 	// password is written only as a hash; SSH keys must be public keys.
-	async function updateCloudInit(input = {}) {
+	async function updateCloudInit(input = {}, ctx) {
 		await ready
 		const m = find(input.id)
+		if (hostOf(m) !== 'server') await requireRemote(m, ctx)
 		writable(m)
 		refuseIfBusy(m)
 		const seedDisk = m.layout.disks.find((d) => d.role === 'seed')
@@ -1784,6 +2019,16 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const img = (await images().catch(() => [])).find((i) => i.id === m.osId)
 		return task(m, 'cloud-init', null, async () => {
 			const hash = password ? await hashPassword(password) : null
+			if (hostOf(m) !== 'server') {
+				const userData = cloudUserData({host: hostname, username, hash, sshKeys, changePassword: !!hash})
+				await remoteCall(hostOf(m), 'vm-seed', {guestId: m.id, name: 'seed', label: 'cidata', files: {'user-data': userData, 'meta-data': cloudMetaData(hostname)}})
+				seedDisk.file = 'seed.iso'
+				m.cloudInit = {username, hostname, sshKeys}
+				await define(m)
+				if ((await liveState(m)) === 'running') m.pending = true
+				await save()
+				return true
+			}
 			const userData = cloudUserData({host: hostname, username, hash, sshKeys, changePassword: !!hash, cloudInit: connectorCloudInit({familyId: img?.familyId, cloudInit: {adminGroup: img?.adminGroup}})})
 			const iso = await mediaIso(m, 'seed', 'cidata', {'user-data': userData, 'meta-data': cloudMetaData(hostname)})
 			seedDisk.file = iso
@@ -1803,6 +2048,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function snapshot(input = {}) {
 		await ready
 		const m = find(input.id)
+		assertLocal(m)
 		writable(m)
 		const name = String(input.name ?? '').trim()
 		if (!SNAP.test(name)) throw new RpcError('BAD_REQUEST', 'Name the snapshot with letters, numbers, - _ and . (up to 40)')
@@ -1830,6 +2076,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function revertSnapshot(input = {}) {
 		await ready
 		const m = find(input.id)
+		assertLocal(m)
 		writable(m)
 		const snap = (m.snapshots ?? []).find((x) => x.name === input.name)
 		if (!snap) throw new RpcError('NOT_FOUND', 'That snapshot doesn’t exist')
@@ -1880,6 +2127,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function deleteSnapshot(input = {}) {
 		await ready
 		const m = find(input.id)
+		assertLocal(m)
 		const snap = (m.snapshots ?? []).find((x) => x.name === input.name)
 		if (!snap) throw new RpcError('NOT_FOUND', 'That snapshot doesn’t exist')
 		await requireStopped(m, 'delete a snapshot')
@@ -1913,6 +2161,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const BACKUP_ID = /^[\w][\w.-]{0,150}$/
 	async function listBackups(input = {}) {
 		await ready
+		if (input.id) assertLocal(find(input.id))
 		const dir = await backupsDir()
 		const out = []
 		for (const e of await readdir(dir, {withFileTypes: true}).catch(() => [])) {
@@ -1930,6 +2179,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function backup(input = {}) {
 		await ready
 		const m = find(input.id)
+		assertLocal(m)
 		writable(m)
 		if (isBusy(m.id)) throw new RpcError('CONFLICT', `${m.name} is busy`)
 		const notes = String(input.notes ?? '').slice(0, 500)
@@ -2060,6 +2310,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			vmid: undefined,
 			name,
 			mac: undefined,
+			hostId: 'server',
 			createdAt: Date.now(),
 			tasks: [],
 			snapshots: [],
@@ -2170,6 +2421,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			name,
 			importedFrom: requested,
 			osId: 'imported',
+			hostId: 'server',
 			cores: Math.max(1, Math.min(Number(spec.cores) || 2, os.cpus().length || 2)),
 			memoryMb,
 			memoryGb: Math.max(1, Math.round(memoryMb / 1024)),
@@ -2180,6 +2432,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function clone(input = {}) {
 		await ready
 		const m = find(input.id)
+		assertLocal(m)
 		writable(m)
 		await requireStopped(m, 'clone it')
 		const name = input.name ? String(input.name).trim() : uniqueName(`${m.name} copy`)
@@ -2201,6 +2454,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function monitor(input = {}) {
 		await ready
 		const m = find(input.id)
+		assertLocal(m)
 		const command = String(input.command ?? '').trim()
 		if (!command || command.length > 500 || /[\r\n]/.test(command)) throw new RpcError('BAD_REQUEST', 'Enter one monitor command')
 		// Only commands that look at or act on the machine itself: none that read or write files on
@@ -2228,7 +2482,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await ready
 		for (const m of [...machines]) {
 			busy.delete(m.id)
-			await uninstall({id: m.id, force: true}).catch(() => {})
+			await uninstall({id: m.id, force: true}).catch((error) => console.error('[omarchyd] uninstall', m.name, error.message))
 		}
 	}
 
@@ -2249,6 +2503,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const states = await domainStates()
 		const out = []
 		for (const m of machines) {
+			if (hostOf(m) !== 'server') continue
 			const running = STATE[states.get(domain(m.id))] === 'running'
 			let liveIds = m.usbLive ?? []
 			if (running) {
@@ -2266,6 +2521,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function bindUsb(id, rec) {
 		await ready
 		const m = find(id)
+		assertLocal(m)
 		if (!(m.usbDevices ?? []).some((d) => d.id === rec.id)) m.usbDevices = [...(m.usbDevices ?? []), rec]
 		await save()
 		await define(m).catch(() => {})
@@ -2274,6 +2530,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function unbindUsb(id, deviceId) {
 		await ready
 		const m = find(id)
+		assertLocal(m)
 		m.usbDevices = (m.usbDevices ?? []).filter((d) => d.id !== deviceId)
 		m.usbLive = (m.usbLive ?? []).filter((x) => x !== deviceId)
 		await save()
@@ -2283,6 +2540,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function attachHostdev(id, rec) {
 		await ready
 		const m = find(id)
+		assertLocal(m)
 		const file = join(vmsDir, m.id, 'usb-hostdev.xml')
 		await writeFile(file, hostdevXml(rec), {mode: 0o600})
 		try {
@@ -2300,6 +2558,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function detachHostdev(id, rec) {
 		await ready
 		const m = find(id)
+		assertLocal(m)
 		const file = join(vmsDir, m.id, 'usb-hostdev.xml')
 		await writeFile(file, hostdevXml(rec), {mode: 0o600})
 		try {
