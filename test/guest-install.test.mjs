@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
-import {connectorKind, guestReachableUrl} from '../omarchyd/guest-install.mjs'
+import {connectorCloudInit, connectorKind, guestReachableUrl} from '../omarchyd/guest-install.mjs'
 
 test('guestReachableUrl skips loopback and prefers a LAN address', () => {
 	assert.equal(guestReachableUrl({addresses: [], port: 7780}), '')
@@ -32,4 +32,19 @@ test('connectorKind matches Linux systemd and Windows guests', () => {
 	assert.equal(connectorKind('haos'), 'unsupported')
 	assert.equal(connectorKind('home-assistant'), 'unsupported')
 	assert.equal(connectorKind('alpine-3.24.1-amd64'), 'unsupported')
+})
+
+test('connectorCloudInit adds qemu-guest-agent and python without dropping catalog setup', () => {
+	const debian = connectorCloudInit({
+		familyId: 'debian',
+		cloudInit: {packages: ['task-gnome-desktop'], commands: [['systemctl', 'set-default', 'graphical.target']], graphical: true, adminGroup: 'sudo'},
+	})
+	assert.deepEqual(debian.packages, ['qemu-guest-agent', 'python3', 'task-gnome-desktop'])
+	assert.deepEqual(debian.commands[0], ['systemctl', 'enable', '--now', 'qemu-guest-agent'])
+	assert.deepEqual(debian.commands[1], ['systemctl', 'set-default', 'graphical.target'])
+	assert.equal(debian.graphical, true)
+	assert.equal(debian.adminGroup, 'sudo')
+	const arch = connectorCloudInit({familyId: 'arch'})
+	assert.deepEqual(arch.packages, ['qemu-guest-agent', 'python'])
+	assert.deepEqual(arch.commands, [['systemctl', 'enable', '--now', 'qemu-guest-agent']])
 })

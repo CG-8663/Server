@@ -23,6 +23,7 @@ import {pipeline} from 'node:stream/promises'
 import {fileURLToPath} from 'node:url'
 
 import {fetchErrorMessage, httpDownloadErrorMessage, isNetworkError} from './fetch-error.mjs'
+import {connectorCloudInit} from './guest-install.mjs'
 import {PUBLIC_KEY, cloudMetaData, cloudUserData, hostnameFor, isWindowsClientLabel, isWindowsLabel, omarchyConfiguration, omarchyCredentials, windowsAnswerFile} from './machine-media.mjs'
 import {RpcError} from './rpc.mjs'
 import {hostdevXml, parseUsbLive} from './usb.mjs'
@@ -486,7 +487,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function seed(m, img, {username, password}) {
 		const host = hostnameFor(m.name, m.id)
 		const hash = await hashPassword(password)
-		await mediaIso(m, 'seed', 'cidata', {'user-data': cloudUserData({host, username, hash, cloudInit: {adminGroup: img.adminGroup, ...img.cloudInit}}), 'meta-data': cloudMetaData(host)})
+		await mediaIso(m, 'seed', 'cidata', {'user-data': cloudUserData({host, username, hash, cloudInit: connectorCloudInit({...img, cloudInit: {adminGroup: img.adminGroup, ...img.cloudInit}})}), 'meta-data': cloudMetaData(host)})
 	}
 
 	// Your own ISOs: anything ending in .iso in Home (a few folders deep), with its volume label.
@@ -624,7 +625,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			do id = randomBytes(4).toString('hex')
 			while (machines.some((m) => m.id === id))
 			const dir = join(vmsDir, id)
-			const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' || local?.platform === 'windows' ? 'windows' : 'iso', dir, img)})
+			const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', options: {agent: true}, layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' || local?.platform === 'windows' ? 'windows' : 'iso', dir, img)})
 			if (kind === 'cloud') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
 			machines.push(m)
 			try {
@@ -1440,7 +1441,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const img = (await images().catch(() => [])).find((i) => i.id === m.osId)
 		return task(m, 'cloud-init', null, async () => {
 			const hash = password ? await hashPassword(password) : null
-			const userData = cloudUserData({host: hostname, username, hash, sshKeys, changePassword: !!hash, cloudInit: {adminGroup: img?.adminGroup}})
+			const userData = cloudUserData({host: hostname, username, hash, sshKeys, changePassword: !!hash, cloudInit: connectorCloudInit({...img, cloudInit: {adminGroup: img?.adminGroup, ...img?.cloudInit}})})
 			const iso = await mediaIso(m, 'seed', 'cidata', {'user-data': userData, 'meta-data': cloudMetaData(hostname)})
 			seedDisk.file = iso
 			m.cloudInit = {username, hostname, sshKeys}

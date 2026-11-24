@@ -26,3 +26,11 @@ export function connectorKind(osId = '') {
 	if (/macos|osx|darwin|haos|home-?assistant|alpine/.test(id)) return 'unsupported'
 	return 'linux'
 }
+
+export function connectorCloudInit(img = {}) {
+	const python = img.familyId === 'arch' ? 'python' : 'python3'
+	const given = img.cloudInit && typeof img.cloudInit === 'object' ? img.cloudInit : {}
+	const packages = ['qemu-guest-agent', python, ...(Array.isArray(given.packages) ? given.packages : [])]
+	const commands = [['systemctl', 'enable', '--now', 'qemu-guest-agent'], ...(Array.isArray(given.commands) ? given.commands : [])]
+	return {...given, packages, commands}
+}
