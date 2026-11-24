@@ -1383,7 +1383,7 @@ function ContextMenu({menu, onClose}: {menu: Menu; onClose: () => void}) {
 							onClick={() => runAction(it.onClick)}
 						>
 							{it.icon && <Icon name={it.icon} size={16} />}
-							{it.label}
+							<span>{it.label}</span>
 						</button>
 					),
 				)}

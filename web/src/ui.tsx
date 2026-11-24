@@ -431,7 +431,9 @@ export function Sheet({open, onClose, label, children, tall}: {open: boolean; on
 	if (!open) return null
 	// Drag the handle or the header down to dismiss, and only when the page is already at the top.
 	// A drag that starts on the page itself scrolls that page. The close button is the accessible path.
+	// Disabled on centered desktop dialogs so a touch drag cannot drop the centering transform.
 	const onTouchStart = (e: React.TouchEvent) => {
+		if (document.documentElement.classList.contains('desk-mode')) return
 		if ((scrollRef.current?.scrollTop ?? 0) > 0) return
 		const target = e.target as HTMLElement
 		if (target.closest('.logs, .gallery, input, textarea')) return
@@ -723,7 +725,7 @@ export function Providers({children}: {children: ReactNode}) {
 							<div className="prose" style={{marginBottom: 24}}>
 								{pending.body}
 							</div>
-							<div className="stack">
+							<div className="stack confirm-actions">
 								<button className={`btn block ${pending.danger ? 'danger solid' : 'primary'}`} onClick={() => finish(true)}>
 									{pending.confirm}
 								</button>
