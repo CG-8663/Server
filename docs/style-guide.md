@@ -22,7 +22,7 @@ Prefer the existing piece over a new one with the same job.
 
 - A machine uses the machine page. A virtual machine uses that page.
 - A file list uses the file manager. A shorter list still has the path bar, favorites, and recent files.
-- A measure uses the gauge. A shell uses the terminal. A yes-or-no uses the confirm sheet. A short form uses a sheet.
+- A measure on Home uses the gauge. On a machine, the account's saved drawing shows the same readings as one line, three lines, or gauges. A shell uses the terminal. A yes-or-no uses the confirm sheet. A short form uses a sheet.
 - An application uses the app row and the app page.
 
 Give the same action the same name everywhere. Terminal is the command prompt by itself. Desktop is the machine's screen. Storage is the machine's drives. Backups is the machine's backups. A second label for the same action is a defect.
@@ -83,7 +83,7 @@ Every physical machine, with a host's virtual machines available from that host.
 
 ### Machine page
 
-The machine's own place. How it is doing, what it is doing now, its files, its applications, its terminal, its desktop, its storage, its backups, and its power. This server, a joined computer, and a virtual machine share this shape. The lower sections are a tab strip. Host-only controls sit in that same strip, in their own tabs. A joined computer does not get a virtual-machines tab.
+The machine's own place. How it is doing, what it is doing now, its files, its applications, its terminal, its desktop, its storage, its backups, and its power. This server, a joined computer, and a virtual machine share this shape. How it is doing is one line, three lines, or gauges. A tap cycles those drawings. The choice is saved with the account and is the same on every machine. Home does not follow it. The numbers stay the same in each drawing. A gauge with no percent shows the value and no arc. The lower sections are a tab strip. Host-only controls sit in that same strip, in their own tabs. A joined computer does not get a virtual-machines tab.
 
 ### Apps
 
@@ -159,7 +159,7 @@ The repeated unit for a machine, a file, a setting, or an application. Icon, nam
 
 ### Gauge
 
-One component, drawn the same way on Home and on a machine. It can be opened on Home. On a machine page that click is off, and the gauge does not say "Tap for details". The subtitles stay the same: a percentage, or how much is used out of the total. Color follows the same warning and danger thresholds everywhere. A missing reading is a dash. A battery is one shared ring, with each laptop as a mark on it.
+Home uses the gauge for an aggregate. It can be opened. At a warning or a danger it says "Tap for details". On a machine the same readings are one line, three lines, or gauges, and a tap changes the drawing rather than opening a list. A machine gauge does not say "Tap for details". The subtitles stay the same: a percentage, or how much is used out of the total. Color follows the same warning and danger thresholds everywhere. A missing reading is a dash. A battery on Home is one shared ring, with each laptop as a mark on it.
 
 ### Empty
 

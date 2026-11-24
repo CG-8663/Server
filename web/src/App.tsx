@@ -27,6 +27,7 @@ import {InstallerPrompt} from './InstallerPrompt'
 import {consumeReopenAssistant, reopenOnMount} from './assistant'
 import {closeAssistantView, openAssistantView, resetAssistantTurn, useAssistantTurn} from './assistantTurn'
 import {AssistantLookContext, cleanLook, DEFAULT_LOOK, type AssistantLook} from './character/AssistantCharacter'
+import {StatViewProvider} from './fleet/StatRegion'
 import {AssistantCharacterWidget} from './character/widgets'
 
 const Clips = lazy(() => import('./screens/Clips').then((m) => ({default: m.Clips})))
@@ -138,9 +139,11 @@ export function App() {
 		content = (
 			<BootstrapContext.Provider value={b}>
 			<AssistantLookContext.Provider value={lookValue}>
+			<StatViewProvider prefs={prefs} setPrefs={setPrefs}>
 				{layout.desktop ? <Desktop boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} reopenAssistant={reopenAssistant} /> : <Shell boot={b} prefs={prefs} setPrefs={setPrefs} onSignedOut={refresh} reopenAssistant={reopenAssistant} />}
 				{askLayout ? <WelcomeForUser prefs={prefs} setPrefs={setPrefs} onDone={() => setAskLayout(false)} /> : <WhatsNewOnUpdate version={b.touch.version} onDone={() => setWhatsNewDone(true)} />}
 				<InstallerPrompt ready={whatsNewDone} />
+			</StatViewProvider>
 			</AssistantLookContext.Provider>
 			</BootstrapContext.Provider>
 		)

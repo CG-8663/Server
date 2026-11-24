@@ -8,11 +8,11 @@ import {mutate, query} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
-import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
+import {extraDisks, type SwarmBattery} from './gauges'
 import {isGuestAgent, linuxConnectorOs} from './guestLink'
 import {connectorInstallCommand, connectorInstallCommandWindows} from './installCommand'
 import {newlyJoined} from './join'
-import {GaugeCluster} from '../fleet/serverGauges'
+import {LiveStats} from '../fleet/StatRegion'
 import {MachineActions} from '../fleet/machineActions'
 import {MachineShell, MachineTabs, type MachineTab} from '../fleet/MachineTabs'
 import {SheetGroup} from '../fleet/sheetGroup'
@@ -101,7 +101,6 @@ export const ABILITY: Record<Ability, {label: string; icon: IconName; what: stri
 export const agentMay = (a: Agent, k: Ability) => !!(a.allowed[k] && a.on[k])
 const may = agentMay
 const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((100 * u.used) / u.total) : null)
-const rootDisk = (a: Agent) => a.metrics?.disks?.find((d) => d.mount === '/') ?? a.metrics?.disks?.[0]
 const look = (a: Agent) => osLook(a.info?.omarchy ? 'omarchy' : (a.info?.osId ?? ''))
 const ago = (t: number | null) => (!t ? 'never' : Date.now() - t < 60_000 ? 'just now' : `${duration((Date.now() - t) / 1000)} ago`)
 
@@ -273,15 +272,6 @@ export function LocalSwarm({
 	)
 }
 
-function Meter({icon, label, value}: {icon: IconName; label: string; value: number | null}) {
-	if (value === null) return null
-	return (
-		<StatChip icon={icon} label={label}>
-			{value}%
-		</StatChip>
-	)
-}
-
 export function AgentCard({a, onClick, footer, extra, className}: {a: Agent; onClick: () => void; footer?: ReactNode; extra?: ReactNode; className?: string}) {
 	const os = look(a)
 	const m = a.metrics
@@ -304,25 +294,14 @@ export function AgentCard({a, onClick, footer, extra, className}: {a: Agent; onC
 				</button>
 			</span>
 			{a.online && m && (
-				<span className="specs">
-					<Meter icon="cpu" label="CPU" value={m.cpu === null ? null : Math.round(m.cpu)} />
-					<Meter icon="memory" label="Memory" value={pct(m.mem)} />
-					<Meter icon="disk" label="Disk" value={pct(rootDisk(a))} />
-					{(m.gpus ?? []).map((g, i, all) => (
-						<Meter key={g.id} icon="gpu" label={all.length > 1 ? `GPU ${g.index}` : 'GPU'} value={g.used == null ? null : Math.round(g.used)} />
-					))}
-					<Meter icon="battery" label="Battery" value={swarmGaugeItems(m).find((g) => g.k === 'Battery' && g.ready)?.p ?? null} />
-					{typeof m.temp === 'number' && (
-						<StatChip icon="thermo" label="Temperature">
-							{Math.round(m.temp)}°C
-						</StatChip>
-					)}
+				<div className="specs">
+					<LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} />
 					{!!m.updates && (
 						<StatChip icon="update" label="Updates">
 							{m.updates} update{m.updates === 1 ? '' : 's'}
 						</StatChip>
 					)}
-				</span>
+				</div>
 			)}
 			{footer}
 			{extra}
@@ -592,8 +571,8 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, bare}: {a: Agent; onClos
 				onClose={onClose}
 			/>
 			<MachineActions terminal={!offline && may(a, 'terminal')} desktop={!offline && may(a, 'desktop') && desk?.ok !== false} onTerminal={() => onTerminal()} onDesktop={onDesktop} pin={<PinButton pin={{kind: 'machine', id: a.id, computer: ''}} name={a.name} />} />
-			<DesktopHelp a={a} onTerminal={onTerminal} />
-			{a.online && m && <GaugeCluster metrics={m} />}
+<DesktopHelp a={a} onTerminal={onTerminal} />
+			{a.online && m && <LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} />}
 			{a.online && <HistorySparklines agentId={a.id} />}
 			{offline && !!a.info?.macs?.length && (
 				<div style={{marginTop: 12}}>

@@ -239,7 +239,7 @@ test('squares use real readings, and up time replaces last seen', () => {
 	assert.equal(seenFact(false, undefined, null, now), null)
 })
 
-test('gauge or stat mode is kept for the next machine', async () => {
+test('the list uses the account drawing and does not keep a separate dial choice', async () => {
 	assert.equal(MANAGER_DIALS_KEY, 'omarchy-server:mm-dials')
 	assert.equal(loadManagerDials(null), false)
 	assert.equal(loadManagerDials('0'), false)
@@ -247,9 +247,10 @@ test('gauge or stat mode is kept for the next machine', async () => {
 	assert.equal(saveManagerDials(true), '1')
 	assert.equal(saveManagerDials(false), '0')
 	const ui = await read('../web/src/fleet/MachineManager.tsx')
-	assert.match(ui, /MANAGER_DIALS_KEY/)
-	assert.match(ui, /loadManagerDials/)
-	assert.match(ui, /saveManagerDials/)
+	assert.match(ui, /StatRegion/)
+	assert.match(ui, /statReadings/)
+	assert.doesNotMatch(ui, /MANAGER_DIALS_KEY/)
+	assert.doesNotMatch(ui, /setDials/)
 	const openAnother = ui.slice(ui.indexOf('const toggle = (id: string)'), ui.indexOf('return (', ui.indexOf('const toggle = (id: string)')))
 	assert.match(openAnother, /setOpenId/)
 	assert.doesNotMatch(openAnother, /setDials/)

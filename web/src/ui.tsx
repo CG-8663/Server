@@ -780,6 +780,8 @@ export type Prefs = {
 	solidColor?: string | null
 	/** How the assistant looks (character, name, motion); see character/AssistantCharacter. */
 	assistantLook?: AssistantLook | null
+	/** How machine stats are drawn. Null means the one-line default. Saved per account. */
+	statView?: 'line' | 'blocks' | 'gauges' | null
 }
 // New installs start on the Omarchy theme (the Omarchy desktop's own colours and background). Anyone
 // who already chose a theme keeps it: their choice is saved on the server and wins over this default.
@@ -811,7 +813,8 @@ function clean(p: Partial<Prefs> | null | undefined): Prefs {
 	const theme = THEMES.some((t) => t.id === p?.theme) ? p!.theme! : DEFAULT_PREFS.theme
 	const accent = (ACCENTS as readonly string[]).includes(p?.accent as string) ? p!.accent! : DEFAULT_PREFS.accent
 	const omarchyBackground = typeof p?.omarchyBackground === 'string' && /^[0-9a-f]{16}$/.test(p.omarchyBackground) ? p.omarchyBackground : null
-	return {theme, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null}
+	const statView = p?.statView === 'line' || p?.statView === 'blocks' || p?.statView === 'gauges' ? p.statView : null
+	return {theme, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null, statView}
 }
 export function readPrefs(): Prefs {
 	try {
