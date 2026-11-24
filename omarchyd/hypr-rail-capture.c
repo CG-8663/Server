@@ -1983,9 +1983,9 @@ static void *encode_thread(void *arg) {
 				send_json_msg(3, "{\"error\":\"VA-API hardware encoder failed to initialize\"}");
 				fatal = true;
 			} else {
-				char meta[384];
-				snprintf(meta, sizeof(meta), "{\"mode\":\"%s\",\"address\":\"%s\",\"width\":%d,\"height\":%d,\"fps\":%d,\"encoder\":\"%s\",\"codec\":\"%s\"}",
-					ep->window_mode ? "window" : "output", ep->address, enc.even_w, enc.even_h, ep->fps, enc.encoder_name, enc.codec_str);
+				char meta[448];
+				snprintf(meta, sizeof(meta), "{\"mode\":\"%s\",\"address\":\"%s\",\"width\":%d,\"height\":%d,\"fps\":%d,\"bitrate\":%d,\"quality\":%d,\"encoder\":\"%s\",\"codec\":\"%s\"}",
+					ep->window_mode ? "window" : "output", ep->address, enc.even_w, enc.even_h, ep->fps, cur_bitrate, cur_quality, enc.encoder_name, enc.codec_str);
 				send_json_msg(1, meta);
 				want_key = true;
 			}

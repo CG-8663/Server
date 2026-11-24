@@ -2350,10 +2350,10 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 							if (route === 'hyprland') {
 								if (!isBinary) {
 									const s = String(data ?? '')
-									if (s.length <= 256 && s.includes('"reconfig_applied"')) {
+									if (s.length <= 512 && (s.includes('"reconfig_applied"') || s.includes('"meta"'))) {
 										try {
 											const parsed = JSON.parse(s)
-											if (parsed?.type === 'reconfig_applied' && typeof parsed.bitrate === 'number' && Number.isFinite(parsed.bitrate)) {
+											if ((parsed?.type === 'reconfig_applied' || parsed?.type === 'meta') && typeof parsed.bitrate === 'number' && Number.isFinite(parsed.bitrate)) {
 												const kbps = Math.max(1000, Math.min(150000, Math.round(parsed.bitrate)))
 												hyprDeltaDrop = Math.max(384 * 1024, Math.min(4 * 1024 * 1024, Math.round(((kbps * 1000) / 8) * 0.25)))
 												hyprCloseCap = Math.max(4 * 1024 * 1024, hyprDeltaDrop * 6)

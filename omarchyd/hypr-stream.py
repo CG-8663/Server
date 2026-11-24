@@ -321,16 +321,34 @@ class ShmBuffer:
         self.fmt = fmt
         self.size = stride * height
         self.fd = os.memfd_create("hypr-frame", 0)
-        os.ftruncate(self.fd, self.size)
-        self.mm = mmap.mmap(self.fd, self.size, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
-        self.pool_id = wl.alloc_id()
-        wl.send(shm_id, 0, struct.pack("<Ii", self.pool_id, self.size), fds=[self.fd])
-        self.buf_id = wl.alloc_id()
-        wl.send(
-            self.pool_id,
-            0,
-            struct.pack("<IiiiiI", self.buf_id, 0, width, height, stride, fmt),
-        )
+        self.mm = None
+        self.pool_id = None
+        self.buf_id = None
+        try:
+            os.ftruncate(self.fd, self.size)
+            self.mm = mmap.mmap(self.fd, self.size, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
+            self.pool_id = wl.alloc_id()
+            wl.send(shm_id, 0, struct.pack("<Ii", self.pool_id, self.size), fds=[self.fd])
+            self.buf_id = wl.alloc_id()
+            wl.send(
+                self.pool_id,
+                0,
+                struct.pack("<IiiiiI", self.buf_id, 0, width, height, stride, fmt),
+            )
+        except Exception:
+            if self.mm is not None:
+                try:
+                    self.mm.close()
+                except Exception:
+                    pass
+                self.mm = None
+            if self.fd is not None:
+                try:
+                    os.close(self.fd)
+                except Exception:
+                    pass
+                self.fd = None
+            raise
 
     def read_frame_bytes(self, y_invert: bool = False) -> bytes:
         row_bytes = self.width * 4

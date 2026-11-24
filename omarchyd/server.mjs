@@ -321,6 +321,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			run: async (input, {auth}) => {
 				ownerOnly(auth, 'reset this server')
 				await accounts.confirmPassword(auth.userId, input?.password)
+				if (factoryResetInProgress) {
+					throw new RpcError('CONFLICT', 'Factory reset is already in progress')
+				}
 				factoryResetInProgress = true
 				revokeAllHyprStreams()
 				// Answer first; the reset carries on by itself. The next owner must not inherit

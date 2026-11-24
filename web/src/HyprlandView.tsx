@@ -1306,7 +1306,7 @@ export function HyprlandView({
 		})
 		const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
 		const handshakeTier = qualityTierRef.current
-		const handshake444 = chroma444Ref.current
+		const handshake444 = initCodec === 'hevc444'
 		const handshakeCodec = initCodec
 		let appliedTier = handshakeTier
 		let applied444 = handshake444
@@ -1344,6 +1344,20 @@ export function HyprlandView({
 						canvasRectRef.current = null
 						if (typeof msg.codec === 'string' && msg.codec) currentCodec = msg.codec
 						const encStr = String(msg.encoder || 'h264')
+						const actualCodec: StreamCodec = encStr.startsWith('hevc444')
+							? 'hevc444'
+							: encStr.startsWith('hevc10')
+								? 'hevc10'
+								: encStr.startsWith('hevc')
+									? 'hevc'
+									: 'h264'
+						appliedCodec = actualCodec
+						applied444 = actualCodec === 'hevc444'
+						activeCodecRef.current = actualCodec
+						if (!applied444 && chroma444Ref.current) {
+							chroma444Ref.current = false
+							setChroma444State(false)
+						}
 						metaEncName = encStr === 'hevc444_vaapi_dmabuf' ? 'HEVC 4:4:4' : encStr === 'hevc10_vaapi_dmabuf' ? 'HEVC 10-bit' : encStr === 'hevc_vaapi_dmabuf' ? 'HEVC' : 'H.264'
 						metaDim = `${currentW}x${currentH}`
 						setMeta({width: currentW, height: currentH, fps: Number(msg.fps) || activeFps, encoder: encStr})
@@ -1389,6 +1403,10 @@ export function HyprlandView({
 						activeCodecRef.current = appliedCodec
 						setQualityTierState(appliedTier)
 						setChroma444State(applied444)
+						try {
+							localStorage.setItem(QUALITY_TIER_KEY, appliedTier)
+							localStorage.setItem(CHROMA_444_KEY, applied444 ? '1' : '0')
+						} catch {}
 					} else if (msg.type === 'error') {
 						setStatusTracked('error')
 						setError(String(msg.error || 'Hyprland stream error'))

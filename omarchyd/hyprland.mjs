@@ -718,10 +718,6 @@ export function createHyprland({
 			ws.close(1013, 'Too many active Hyprland streams')
 			return
 		}
-		if (disconnectLockRetryTimer) {
-			clearTimeout(disconnectLockRetryTimer)
-			disconnectLockRetryTimer = null
-		}
 		pendingStreams++
 		let closedEarly = false
 		let revoked = false
@@ -833,14 +829,13 @@ export function createHyprland({
 			const nativeBin = await ensureCaptureBinary().catch(() => null)
 			if (revoked || closedEarly || ws.readyState !== ws.OPEN) return
 
+			let pendingReconfigAck = false
 			if (earlyReconfig) {
 				if (nativeBin) {
 					if (earlyReconfig.bitrate !== undefined) curBitrate = earlyReconfig.bitrate
 					if (earlyReconfig.quality !== undefined) curQuality = earlyReconfig.quality
 					if (earlyReconfig.codec !== undefined) curCodec = earlyReconfig.codec
-					try {
-						ws.send(JSON.stringify({type: 'reconfig_applied', bitrate: curBitrate, quality: curQuality, codec: curCodec}))
-					} catch {}
+					pendingReconfigAck = true
 				} else {
 					try {
 						ws.send(JSON.stringify({type: 'reconfig_unsupported'}))
@@ -866,6 +861,10 @@ export function createHyprland({
 			}
 
 			entry = {child, ws, mode: cleanMode, address: cleanAddr, output: resolvedOutput}
+			if (disconnectLockRetryTimer) {
+				clearTimeout(disconnectLockRetryTimer)
+				disconnectLockRetryTimer = null
+			}
 			activeStreams.add(entry)
 			ensureRectSyncTimer()
 			let stderrBuf = ''
@@ -1265,7 +1264,23 @@ export function createHyprland({
 
 					if (msgType === 1) {
 						try {
-							ws.send(JSON.stringify({type: 'meta', ...JSON.parse(payload.toString('utf8'))}))
+							const info = JSON.parse(payload.toString('utf8'))
+							const encName = String(info.encoder || '').toLowerCase()
+							const actualCodec = encName.startsWith('hevc444')
+								? 'hevc444'
+								: encName.startsWith('hevc10')
+									? 'hevc10'
+									: encName.startsWith('hevc')
+										? 'hevc'
+										: 'h264'
+							const actualBitrate = Number.isFinite(Number(info.bitrate)) && Number(info.bitrate) > 0 ? Math.round(Number(info.bitrate)) : curBitrate
+							const actualQuality = Number.isFinite(Number(info.quality)) ? Math.round(Number(info.quality)) : curQuality
+							bp = backpressureBudgets(actualBitrate)
+							ws.send(JSON.stringify({type: 'meta', ...info, bitrate: actualBitrate, quality: actualQuality}))
+							if (pendingReconfigAck) {
+								pendingReconfigAck = false
+								ws.send(JSON.stringify({type: 'reconfig_applied', bitrate: actualBitrate, quality: actualQuality, codec: actualCodec}))
+							}
 						} catch {}
 					} else if (msgType === 3) {
 						try {
@@ -1414,12 +1429,8 @@ export function createHyprland({
 					if (clean.quality !== undefined) curQuality = clean.quality
 					if (clean.codec !== undefined) curCodec = clean.codec
 					bp = backpressureBudgets(curBitrate)
+					pendingReconfigAck = true
 					enqueueControlLine(`R ${curBitrate} ${curQuality} ${curCodec}\n`)
-					if (ws.readyState === ws.OPEN) {
-						try {
-							ws.send(JSON.stringify({type: 'reconfig_applied', bitrate: curBitrate, quality: curQuality, codec: curCodec}))
-						} catch {}
-					}
 					return
 				}
 				if (clean.type === 'unlock_check') {
