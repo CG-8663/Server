@@ -151,7 +151,7 @@ export function AppIcon({
 }
 
 // ---- ring gauge -------------------------------------------------------------
-export function Ring({value, color, children, size = 84, label}: {value: number; color: string; children: ReactNode; size?: number; label: string}) {
+export function Ring({value, color, children, size = 84, label, empty = false}: {value: number; color: string; children: ReactNode; size?: number; label: string; empty?: boolean}) {
 	const stroke = 8
 	const r = (size - stroke) / 2
 	const c = 2 * Math.PI * r
@@ -161,21 +161,31 @@ export function Ring({value, color, children, size = 84, label}: {value: number;
 		return () => cancelAnimationFrame(id)
 	}, [value])
 	return (
-		<div className="ring" style={{width: size, height: size, color}} role="meter" aria-label={label} aria-valuenow={Math.round(value)} aria-valuemin={0} aria-valuemax={100}>
+		<div
+			className={empty ? 'ring is-off' : 'ring'}
+			style={{width: size, height: size, color}}
+			role={empty ? 'img' : 'meter'}
+			aria-label={label}
+			aria-valuenow={empty ? undefined : Math.round(value)}
+			aria-valuemin={empty ? undefined : 0}
+			aria-valuemax={empty ? undefined : 100}
+		>
 			<svg viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
 				<circle className="track" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke} />
-				<circle
-					className="value"
-					cx={size / 2}
-					cy={size / 2}
-					r={r}
-					fill="none"
-					stroke="currentColor"
-					strokeWidth={stroke}
-					strokeLinecap="round"
-					strokeDasharray={c}
-					strokeDashoffset={c * (1 - Math.max(0.005, shown / 100))}
-				/>
+				{!empty && (
+					<circle
+						className="value"
+						cx={size / 2}
+						cy={size / 2}
+						r={r}
+						fill="none"
+						stroke="currentColor"
+						strokeWidth={stroke}
+						strokeLinecap="round"
+						strokeDasharray={c}
+						strokeDashoffset={c * (1 - Math.max(0.005, shown / 100))}
+					/>
+				)}
 			</svg>
 			<div className="center">{children}</div>
 		</div>

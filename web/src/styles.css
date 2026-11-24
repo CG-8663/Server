@@ -607,6 +607,17 @@ h1.title {
 	color: var(--muted);
 	margin-left: 1px;
 }
+.ring.is-off .track {
+	stroke: var(--line);
+}
+.ring .plain {
+	max-width: 64px;
+	color: var(--fg);
+	font-size: 13px;
+	font-weight: 650;
+	line-height: 1.15;
+	text-align: center;
+}
 .gauge .k {
 	display: flex;
 	align-items: center;
