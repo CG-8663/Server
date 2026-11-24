@@ -2348,6 +2348,20 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 						upstream.on('message', (data, isBinary) => {
 							if (client.readyState !== WebSocket.OPEN) return
 							if (route === 'hyprland') {
+								if (!isBinary) {
+									const s = String(data ?? '')
+									if (s.length <= 256 && s.includes('"reconfig_applied"')) {
+										try {
+											const parsed = JSON.parse(s)
+											if (parsed?.type === 'reconfig_applied' && typeof parsed.bitrate === 'number' && Number.isFinite(parsed.bitrate)) {
+												const kbps = Math.max(1000, Math.min(150000, Math.round(parsed.bitrate)))
+												hyprDeltaDrop = Math.max(384 * 1024, Math.min(4 * 1024 * 1024, Math.round(((kbps * 1000) / 8) * 0.25)))
+												hyprCloseCap = Math.max(4 * 1024 * 1024, hyprDeltaDrop * 6)
+												hyprKeyDrain = Math.max(64 * 1024, Math.round(hyprDeltaDrop / 4))
+											}
+										} catch {}
+									}
+								}
 								const buf = isBinary && Buffer.isBuffer(data) ? data : null
 								const isVideoDelta = buf && buf.length > 9 && buf[0] === 0
 								const isVideoKey = buf && buf.length > 9 && buf[0] === 1
@@ -2386,20 +2400,6 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 							client.send(data, {binary: isBinary})
 						})
 						client.on('message', (data, isBinary) => {
-							if (route === 'hyprland' && !isBinary) {
-								const s = String(data ?? '')
-								if (s.length <= 256 && s.includes('"reconfig"')) {
-									try {
-										const parsed = JSON.parse(s)
-										if (parsed?.type === 'reconfig' && typeof parsed.bitrate === 'number' && Number.isFinite(parsed.bitrate)) {
-											const kbps = Math.max(1000, Math.min(150000, Math.round(parsed.bitrate)))
-											hyprDeltaDrop = Math.max(384 * 1024, Math.min(4 * 1024 * 1024, Math.round(((kbps * 1000) / 8) * 0.25)))
-											hyprCloseCap = Math.max(4 * 1024 * 1024, hyprDeltaDrop * 6)
-											hyprKeyDrain = Math.max(64 * 1024, Math.round(hyprDeltaDrop / 4))
-										}
-									} catch {}
-								}
-							}
 							if (upstream.readyState === WebSocket.OPEN) upstream.send(data, {binary: isBinary})
 						})
 						upstream.on('close', (code, reason) => closeBoth(code, reason))

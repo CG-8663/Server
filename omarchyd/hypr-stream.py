@@ -287,8 +287,33 @@ class WaylandClient:
             pass
 
 
+SUPPORTED_SHM_FORMATS = (
+    WL_SHM_FORMAT_ARGB8888,
+    WL_SHM_FORMAT_XRGB8888,
+    WL_SHM_FORMAT_ABGR8888,
+    WL_SHM_FORMAT_XBGR8888,
+)
+MAX_CAPTURE_DIM = 8192
+MAX_SHM_POOL_BYTES = 0x7FFFFFFF
+
+
+def is_valid_shm_layout(fmt: int, width: int, height: int, stride: int) -> bool:
+    if fmt not in SUPPORTED_SHM_FORMATS:
+        return False
+    if width <= 0 or height <= 0 or width > MAX_CAPTURE_DIM or height > MAX_CAPTURE_DIM:
+        return False
+    if stride < width * 4 or stride > MAX_SHM_POOL_BYTES:
+        return False
+    size = stride * height
+    if size <= 0 or size > MAX_SHM_POOL_BYTES:
+        return False
+    return True
+
+
 class ShmBuffer:
     def __init__(self, wl: WaylandClient, shm_id: int, width: int, height: int, stride: int, fmt: int):
+        if not is_valid_shm_layout(fmt, width, height, stride):
+            raise ValueError(f"Unsupported or invalid SHM layout: fmt={fmt} {width}x{height} stride={stride}")
         self.wl = wl
         self.width = width
         self.height = height
@@ -590,13 +615,14 @@ class H264Encoder:
                 handle_nal(bytes(buf[p0:p1]), l0)
             del buf[:last_pos]
 
-        # Drain remaining NALUs and flush the final access unit on EOF
-        codes = find_start_codes(buf)
-        for i in range(len(codes)):
-            p0, l0 = codes[i]
-            p1 = codes[i + 1][0] if i + 1 < len(codes) else len(buf)
-            handle_nal(bytes(buf[p0:p1]), l0)
-        flush_au()
+        # Drain remaining NALUs and flush the final access unit ONLY on clean EOF (never on cancellation, which could emit a truncated picture)
+        if not self.stop_event.is_set():
+            codes = find_start_codes(buf)
+            for i in range(len(codes)):
+                p0, l0 = codes[i]
+                p1 = codes[i + 1][0] if i + 1 < len(codes) else len(buf)
+                handle_nal(bytes(buf[p0:p1]), l0)
+            flush_au()
 
     def write_frame(self, raw: bytes) -> bool:
         if not self.proc or self.proc.poll() is not None:
@@ -624,7 +650,14 @@ class H264Encoder:
                     self.proc.kill()
                 except Exception:
                     pass
+            try:
+                self.proc.stdout.close()
+            except Exception:
+                pass
             self.proc = None
+        rt = getattr(self, "reader_thread", None)
+        if rt is not None and rt.is_alive() and rt is not threading.current_thread():
+            rt.join(timeout=2.0)
 
 
 class InputInjector:
@@ -759,7 +792,8 @@ def capture_once(wl: WaylandClient, shm_id: int, mgr_id: int, mgr_ver: int, mode
     shm_ref = [cached_shm]
 
     def do_copy():
-        if state["copied"] or state["w"] <= 0 or state["h"] <= 0:
+        if state["copied"] or state["fmt"] is None or not is_valid_shm_layout(state["fmt"], state["w"], state["h"], state["stride"]):
+            state["failed"] = True
             return
         state["copied"] = True
         cur = shm_ref[0]
@@ -772,7 +806,12 @@ def capture_once(wl: WaylandClient, shm_id: int, mgr_id: int, mgr_ver: int, mode
         ):
             if cur is not None:
                 cur.destroy()
-            cur = ShmBuffer(wl, shm_id, state["w"], state["h"], state["stride"], state["fmt"])
+            try:
+                cur = ShmBuffer(wl, shm_id, state["w"], state["h"], state["stride"], state["fmt"])
+            except Exception:
+                shm_ref[0] = None
+                state["failed"] = True
+                return
             shm_ref[0] = cur
         if mode == "window":
             wl.send(frame_id, 0, struct.pack("<Ii", cur.buf_id, 1))
@@ -782,13 +821,8 @@ def capture_once(wl: WaylandClient, shm_id: int, mgr_id: int, mgr_ver: int, mode
     def on_frame(op, payload):
         if op == 0 and len(payload) >= 16:
             fmt, w, h, stride = struct.unpack_from("<IIII", payload, 0)
-            # Prefer standard 32-bit RGB/BGR formats
-            if state["fmt"] is None or fmt in (
-                WL_SHM_FORMAT_ARGB8888,
-                WL_SHM_FORMAT_XRGB8888,
-                WL_SHM_FORMAT_ABGR8888,
-                WL_SHM_FORMAT_XBGR8888,
-            ):
+            # Only accept validated 32-bit RGB/BGR SHM layouts within protocol size bounds
+            if is_valid_shm_layout(fmt, w, h, stride):
                 state["fmt"], state["w"], state["h"], state["stride"] = fmt, w, h, stride
             if mode == "output" and mgr_ver < 3:
                 do_copy()

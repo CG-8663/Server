@@ -710,23 +710,41 @@ export function createHyprland({
 		throw new RpcError('BAD_REQUEST', 'Unsupported Hyprland action')
 	}
 
+	let disconnectLockRetryTimer = null
+
 	// Attach an authenticated owner WebSocket to a live 60 FPS GPU H.264/HEVC/HEVC-4:4:4 Hyprland stream (with 10 ms Opus or silence-gated PCM PipeWire audio).
 	async function attachStream(ws, {mode = 'output', address = '', output = '', fps = 60, bitrate = 22000, audio = false, audioCodec = 'pcm', codec = 'h264', quality = 0, compression = 0} = {}) {
 		if (activeStreams.size + pendingStreams >= MAX_STREAMS) {
 			ws.close(1013, 'Too many active Hyprland streams')
 			return
 		}
+		if (disconnectLockRetryTimer) {
+			clearTimeout(disconnectLockRetryTimer)
+			disconnectLockRetryTimer = null
+		}
 		pendingStreams++
 		let closedEarly = false
+		let revoked = false
+		let cleanupRef = null
 		let wantAudio = !!audio
 		let earlyAudioCodec = null
 		let earlyReconfig = null
+		ws.__omarchyRevoke = (code = 1008, reason = 'Session ended') => {
+			revoked = true
+			closedEarly = true
+			try {
+				cleanupRef?.()
+			} catch {}
+			try {
+				ws.close(code, reason)
+			} catch {}
+		}
 		const onEarlyClose = () => {
 			closedEarly = true
 		}
 		// Capture any audio mute/codec or live reconfig sent immediately on ws.onopen while attachStream is still awaiting setup.
 		const onEarlyMessage = (data, isBinary) => {
-			if (isBinary) return
+			if (revoked || isBinary) return
 			const text = String(data ?? '')
 			if (text.length > 512) return
 			try {
@@ -813,12 +831,21 @@ export function createHyprland({
 			}
 
 			const nativeBin = await ensureCaptureBinary().catch(() => null)
-			if (closedEarly || ws.readyState !== ws.OPEN) return
+			if (revoked || closedEarly || ws.readyState !== ws.OPEN) return
 
-			if (earlyReconfig && nativeBin) {
-				if (earlyReconfig.bitrate !== undefined) curBitrate = earlyReconfig.bitrate
-				if (earlyReconfig.quality !== undefined) curQuality = earlyReconfig.quality
-				if (earlyReconfig.codec !== undefined) curCodec = earlyReconfig.codec
+			if (earlyReconfig) {
+				if (nativeBin) {
+					if (earlyReconfig.bitrate !== undefined) curBitrate = earlyReconfig.bitrate
+					if (earlyReconfig.quality !== undefined) curQuality = earlyReconfig.quality
+					if (earlyReconfig.codec !== undefined) curCodec = earlyReconfig.codec
+					try {
+						ws.send(JSON.stringify({type: 'reconfig_applied', bitrate: curBitrate, quality: curQuality, codec: curCodec}))
+					} catch {}
+				} else {
+					try {
+						ws.send(JSON.stringify({type: 'reconfig_unsupported'}))
+					} catch {}
+				}
 			}
 			if (earlyAudioCodec) wantOpus = earlyAudioCodec === 'opus'
 			let bp = backpressureBudgets(curBitrate)
@@ -1000,9 +1027,19 @@ export function createHyprland({
 
 			if (wantAudio) startAudio()
 
+			// Single ordered input writer: synchronous fast path in steady state, strict FIFO + coalesced motion during focus switch or pipe backpressure.
+			let focusing = false
+			let stdinBackpressured = false
+			let pendingMoveLine = null
+			const pendingControl = []
+			const MAX_PENDING_INPUT = 256
+
 			const cleanup = () => {
 				if (cleaned) return
 				cleaned = true
+				focusing = false
+				pendingMoveLine = null
+				pendingControl.length = 0
 				if (keyframeTimer) {
 					clearTimeout(keyframeTimer)
 					keyframeTimer = null
@@ -1012,18 +1049,49 @@ export function createHyprland({
 				const wasLastLocked = lastLockedState === true
 				activeStreams.delete(entry)
 				ensureRectSyncTimer()
-				// If the last viewer closes right after unlocking (before the 1.2s poll tick), check lock state once so remoteSignIn relock still arms, then reset baseline for the next viewing session.
+				// If the last viewer closes right after unlocking (before the 1.2s poll tick), check lock state with bounded retries across transient unknown probes so remoteSignIn relock still arms.
 				if (activeStreams.size === 0) {
+					if (disconnectLockRetryTimer) {
+						clearTimeout(disconnectLockRetryTimer)
+						disconnectLockRetryTimer = null
+					}
 					if (wasLastLocked) {
-						const seq = ++lockProbeSeq
-						isSessionLocked()
-							.then((locked) => {
-								applyLockState(locked, {hadViewer: true, seq})
-								if (activeStreams.size === 0) lastLockedState = null
-							})
-							.catch(() => {
-								if (activeStreams.size === 0) lastLockedState = null
-							})
+						const retryDelays = [0, 300, 700, 1200]
+						const probeAttempt = (idx) => {
+							if (activeStreams.size > 0) return
+							const seq = ++lockProbeSeq
+							isSessionLocked()
+								.then((locked) => {
+									if (activeStreams.size > 0) return
+									if (locked === null) {
+										if (idx + 1 < retryDelays.length) {
+											disconnectLockRetryTimer = setTimeout(() => {
+												disconnectLockRetryTimer = null
+												probeAttempt(idx + 1)
+											}, retryDelays[idx + 1])
+											disconnectLockRetryTimer.unref?.()
+										} else {
+											lastLockedState = null
+										}
+										return
+									}
+									applyLockState(locked, {hadViewer: true, seq})
+									if (activeStreams.size === 0) lastLockedState = null
+								})
+								.catch(() => {
+									if (activeStreams.size > 0) return
+									if (idx + 1 < retryDelays.length) {
+										disconnectLockRetryTimer = setTimeout(() => {
+											disconnectLockRetryTimer = null
+											probeAttempt(idx + 1)
+										}, retryDelays[idx + 1])
+										disconnectLockRetryTimer.unref?.()
+									} else {
+										lastLockedState = null
+									}
+								})
+						}
+						probeAttempt(0)
 					} else {
 						lastLockedState = null
 					}
@@ -1043,16 +1111,14 @@ export function createHyprland({
 					killTimer.unref?.()
 				} catch {}
 			}
+			cleanupRef = cleanup
+			if (revoked) {
+				cleanup()
+				return
+			}
 
 			// Guard against async EPIPE/broken-pipe errors on child.stdin so a crashing worker never crashes omarchyd.
 			child.stdin?.on('error', () => cleanup())
-
-			// Single ordered input writer: synchronous fast path in steady state, strict FIFO + coalesced motion during focus switch or pipe backpressure.
-			let focusing = false
-			let stdinBackpressured = false
-			let pendingMoveLine = null
-			const pendingControl = []
-			const MAX_PENDING_INPUT = 256
 
 			const rawWriteStdin = (line) => {
 				if (cleaned || !child.stdin?.writable) return true
@@ -1349,6 +1415,11 @@ export function createHyprland({
 					if (clean.codec !== undefined) curCodec = clean.codec
 					bp = backpressureBudgets(curBitrate)
 					enqueueControlLine(`R ${curBitrate} ${curQuality} ${curCodec}\n`)
+					if (ws.readyState === ws.OPEN) {
+						try {
+							ws.send(JSON.stringify({type: 'reconfig_applied', bitrate: curBitrate, quality: curQuality, codec: curCodec}))
+						} catch {}
+					}
 					return
 				}
 				if (clean.type === 'unlock_check') {
@@ -1418,6 +1489,8 @@ export function createHyprland({
 		notifyUnlocked,
 		windows,
 		close() {
+			if (disconnectLockRetryTimer) clearTimeout(disconnectLockRetryTimer)
+			disconnectLockRetryTimer = null
 			if (rectSyncTimer) clearInterval(rectSyncTimer)
 			rectSyncTimer = null
 			for (const e of [...activeStreams]) {

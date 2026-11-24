@@ -127,6 +127,18 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).
 	const tickets = new Map()
 	const hyprSocketsBySession = new Map() // sessionId -> Set<WebSocket>
+	let factoryResetInProgress = false
+	function revokeHyprSocket(ws, reason = 'Session ended') {
+		try {
+			if (typeof ws.__omarchyRevoke === 'function') {
+				ws.__omarchyRevoke(1008, reason)
+				return
+			}
+		} catch {}
+		try {
+			ws.close(1008, reason)
+		} catch {}
+	}
 	function revokeSessionStreams(sessionId) {
 		if (!sessionId) return
 		for (const [tk, v] of tickets) {
@@ -135,11 +147,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		const set = hyprSocketsBySession.get(sessionId)
 		if (set) {
 			hyprSocketsBySession.delete(sessionId)
-			for (const ws of set) {
-				try {
-					ws.close(1008, 'Session ended')
-				} catch {}
-			}
+			for (const ws of set) revokeHyprSocket(ws, 'Session ended')
 		}
 	}
 	function revokeAllHyprStreams() {
@@ -147,11 +155,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			if (v.target === 'hyprland') tickets.delete(tk)
 		}
 		for (const set of hyprSocketsBySession.values()) {
-			for (const ws of set) {
-				try {
-					ws.close(1008, 'Session ended')
-				} catch {}
-			}
+			for (const ws of set) revokeHyprSocket(ws, 'Session ended')
 		}
 		hyprSocketsBySession.clear()
 	}
@@ -252,6 +256,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			kind: 'mutation',
 			run: (input, {auth}) => {
 				if (input?.target !== 'machines' && input?.target !== 'terminal' && input?.target !== 'hyprland') throw new RpcError('BAD_REQUEST', 'Unknown console')
+				if (input.target === 'hyprland' && factoryResetInProgress) {
+					throw new RpcError('CONFLICT', 'Factory reset is in progress')
+				}
 				const now = Date.now()
 				for (const [t, v] of tickets) if (v.expires < now) tickets.delete(t)
 				const ticket = randomBytes(24).toString('base64url')
@@ -314,32 +321,39 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			run: async (input, {auth}) => {
 				ownerOnly(auth, 'reset this server')
 				await accounts.confirmPassword(auth.userId, input?.password)
+				factoryResetInProgress = true
+				revokeAllHyprStreams()
 				// Answer first; the reset carries on by itself. The next owner must not inherit
 				// assistant keys and chats, swarm computers, backup secrets or network shares.
 				setTimeout(async () => {
-					const appsLeft = await apps.uninstallAll().catch((e) => console.error('[omarchyd] reset apps', e.message))
-					const machinesLeft = await machines.uninstallAll().catch((e) => console.error('[omarchyd] reset machines', e.message))
-					// undefined is not a count: machines.uninstallAll returns undefined today.
-					const appsRemain = typeof appsLeft === 'number' && appsLeft !== 0
-					const machinesRemain = typeof machinesLeft === 'number' && machinesLeft !== 0
-					if (appsRemain) console.error(`[omarchyd] ${appsLeft} ${appsLeft === 1 ? 'app remains' : 'apps remain'}`)
-					if (machinesRemain) console.error(`[omarchyd] ${machinesLeft} ${machinesLeft === 1 ? 'machine remains' : 'machines remain'}`)
-					await assistant.keys.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
-					await assistant.conversations.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
-					// A clip can be a password or a key. Drop every book even when an app or a machine stays.
-					await clips?.resetAll().catch((e) => console.error('[omarchyd] reset clips', e.message))
-					const agents = await connector.procedures['swarm.list'].run().catch((e) => {
-						console.error('[omarchyd] reset swarm', e.message)
-						return []
-					})
-					for (const agent of agents) await connector.procedures['swarm.remove'].run({id: agent.id}).catch((e) => console.error('[omarchyd] reset swarm', e.message))
-					await backups.clearSettings().catch((e) => console.error('[omarchyd] reset backups', e.message))
-					await storage.clearShares().catch((e) => console.error('[omarchyd] reset shares', e.message))
-					await oidc.reset().catch((e) => console.error('[omarchyd] reset oidc', e.message))
-					revokeAllHyprStreams()
-					if (appsRemain || machinesRemain) return
-					await accounts.reset()
-					console.log('[omarchyd] factory reset done')
+					try {
+						const appsLeft = await apps.uninstallAll().catch((e) => console.error('[omarchyd] reset apps', e.message))
+						const machinesLeft = await machines.uninstallAll().catch((e) => console.error('[omarchyd] reset machines', e.message))
+						// undefined is not a count: machines.uninstallAll returns undefined today.
+						const appsRemain = typeof appsLeft === 'number' && appsLeft !== 0
+						const machinesRemain = typeof machinesLeft === 'number' && machinesLeft !== 0
+						if (appsRemain) console.error(`[omarchyd] ${appsLeft} ${appsLeft === 1 ? 'app remains' : 'apps remain'}`)
+						if (machinesRemain) console.error(`[omarchyd] ${machinesLeft} ${machinesLeft === 1 ? 'machine remains' : 'machines remain'}`)
+						await assistant.keys.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
+						await assistant.conversations.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
+						// A clip can be a password or a key. Drop every book even when an app or a machine stays.
+						await clips?.resetAll().catch((e) => console.error('[omarchyd] reset clips', e.message))
+						const agents = await connector.procedures['swarm.list'].run().catch((e) => {
+							console.error('[omarchyd] reset swarm', e.message)
+							return []
+						})
+						for (const agent of agents) await connector.procedures['swarm.remove'].run({id: agent.id}).catch((e) => console.error('[omarchyd] reset swarm', e.message))
+						await backups.clearSettings().catch((e) => console.error('[omarchyd] reset backups', e.message))
+						await storage.clearShares().catch((e) => console.error('[omarchyd] reset shares', e.message))
+						await oidc.reset().catch((e) => console.error('[omarchyd] reset oidc', e.message))
+						revokeAllHyprStreams()
+						if (appsRemain || machinesRemain) return
+						await accounts.reset()
+						revokeAllHyprStreams()
+						console.log('[omarchyd] factory reset done')
+					} finally {
+						factoryResetInProgress = false
+					}
 				}, 500)
 				return true
 			},
@@ -924,6 +938,7 @@ WantedBy=graphical-session.target
 			if (!t || t.expires < Date.now() || t.target !== route) return refuse('401 Unauthorized')
 			const owner = (t.role ?? accounts.getUser(t.userId)?.role) === 'owner'
 			if (route === 'hyprland') {
+				if (factoryResetInProgress) return refuse('503 Service Unavailable')
 				if (!owner) return refuse('403 Forbidden')
 				if (req.headers.origin) {
 					let originHost = null

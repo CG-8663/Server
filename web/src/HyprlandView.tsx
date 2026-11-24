@@ -742,6 +742,14 @@ export function HyprlandView({
 				ro.observe(canvasEl)
 			}
 		}
+		// Handle idle WebGL context loss immediately even when the desktop is static and draw() is not running.
+		const onWebglContextLost = (e: Event) => {
+			e.preventDefault()
+			if (canvasModeRef.current !== '2d') setCanvasMode('2d')
+		}
+		if (canvasEl && canvasMode === 'webgl2') {
+			canvasEl.addEventListener('webglcontextlost', onWebglContextLost)
+		}
 		// Invalidate cached rect on position-only desktop window moves/drags (style transform/left/top mutations).
 		let mo: MutationObserver | null = null
 		const winEl = hostRef.current?.closest('.win')
@@ -754,6 +762,7 @@ export function HyprlandView({
 			window.removeEventListener('scroll', onWinChange, true)
 			vv?.removeEventListener('resize', onWinChange)
 			vv?.removeEventListener('scroll', onWinChange)
+			if (canvasEl) canvasEl.removeEventListener('webglcontextlost', onWebglContextLost)
 			ro?.disconnect()
 			mo?.disconnect()
 			if (ptrTimerRef.current) {
@@ -1296,12 +1305,21 @@ export function HyprlandView({
 			codec: initCodec,
 		})
 		const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+		const handshakeTier = qualityTierRef.current
+		const handshake444 = chroma444Ref.current
+		const handshakeCodec = initCodec
+		let appliedTier = handshakeTier
+		let applied444 = handshake444
+		let appliedCodec = handshakeCodec
 		const ws = new WebSocket(`${scheme}//${location.host}/api/hyprland/stream?${qs.toString()}`)
 		ws.binaryType = 'arraybuffer'
 		wsRef.current = ws
 		ws.onopen = () => {
 			if (!disposed && ws.readyState === WebSocket.OPEN) {
 				ws.send(JSON.stringify({type: 'audio', enabled: !mutedRef.current}))
+				if (qualityTierRef.current !== handshakeTier || chroma444Ref.current !== handshake444) {
+					sendLiveReconfig(qualityTierRef.current, chroma444Ref.current)
+				}
 				pingBuf[0] = 0x14
 				pingView.setFloat64(1, performance.now(), false)
 				ws.send(pingBuf)
@@ -1358,6 +1376,19 @@ export function HyprlandView({
 						if (canvasRef.current && canvasRef.current.style.cursor !== c) {
 							canvasRef.current.style.cursor = c
 						}
+					} else if (msg.type === 'reconfig_applied') {
+						appliedTier = qualityTierRef.current
+						applied444 = msg.codec === 'hevc444'
+						if (msg.codec === 'h264' || msg.codec === 'hevc' || msg.codec === 'hevc10' || msg.codec === 'hevc444') {
+							appliedCodec = msg.codec
+							activeCodecRef.current = msg.codec
+						}
+					} else if (msg.type === 'reconfig_unsupported') {
+						qualityTierRef.current = appliedTier
+						chroma444Ref.current = applied444
+						activeCodecRef.current = appliedCodec
+						setQualityTierState(appliedTier)
+						setChroma444State(applied444)
 					} else if (msg.type === 'error') {
 						setStatusTracked('error')
 						setError(String(msg.error || 'Hyprland stream error'))

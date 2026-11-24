@@ -884,10 +884,44 @@ test('session revocation closes active streams, lock probe failure does not inve
 		await new Promise((r) => setTimeout(r, 1700))
 		const fCount = stdinLines.join('').split('\n').filter((l) => l === 'F').length
 		assert.ok(fCount >= 2, `expected scheduled 2nd recovery keyframe after cooldown, got ${fCount}`)
-		ws.close()
+		// Calling synchronous __omarchyRevoke must immediately block subsequent input before the 'close' event even fires
+		const beforeRevokeCount = stdinLines.join('').length
+		let closeCalled = false
+		ws.close = () => {
+			closeCalled = true
+		}
+		ws.__omarchyRevoke(1008, 'Session ended')
+		assert.equal(closeCalled, true)
+		ws.emit('message', Buffer.from([0x13, 28, 1, 0]), true)
+		await new Promise((r) => setTimeout(r, 20))
+		assert.equal(stdinLines.join('').length, beforeRevokeCount, 'synchronous revoke must discard input immediately before close event')
+
+		// 2b. Final lock probe transient failure on disconnect must retry and still arm remote unlock
+		lockMode = 'locked'
+		const wsRetry = Object.assign(new EventEmitter(), {
+			OPEN: 1,
+			readyState: 1,
+			bufferedAmount: 0,
+			send() {},
+			close() {
+				this.readyState = 3
+				this.emit('close')
+			},
+		})
+		await hypr.attachStream(wsRetry, {mode: 'output', output: 'RAIL-1', fps: 60, bitrate: 10000})
+		await new Promise((r) => setTimeout(r, 30))
+		// Transient error on first disconnect probe, then unlocked on retry!
+		lockMode = 'error'
+		setTimeout(() => {
+			lockMode = 'unlocked'
+		}, 120)
+		wsRetry.close()
+		await new Promise((r) => setTimeout(r, 520))
+		assert.equal(remoteUnlockCount, 1, 'final disconnect lock probe must retry across unknown result and still arm remote unlock')
 		hypr.close()
 
-		// 3. Python _read_loop assembles multi-slice NALs into 1 Access Unit per picture and flushes final AU at EOF
+		// 3. Python _read_loop assembles multi-slice NALs into 1 Access Unit per picture, flushes at clean EOF,
+		//    discards partial pictures on cancellation, and validates SHM layouts strictly
 		const pyOut = execFileSync(
 			'python3',
 			[
@@ -916,13 +950,41 @@ enc.stop_event = __import__("threading").Event()
 enc.writer = W()
 enc.proc = type("P", (), {"stdout": io.BytesIO(bitstream)})()
 enc._read_loop()
-print(len(out), out[0][0], out[1][0])
+
+# Cancelled mid-IDR must NOT emit a truncated keyframe
+out2 = []
+class W2:
+    def send_video(self, is_key, ts, data):
+        out2.append((is_key, len(data)))
+class CancellingStream:
+    def __init__(self, ev):
+        self.ev = ev
+        self.done = False
+    def read(self, _n):
+        if self.done:
+            return b""
+        self.done = True
+        self.ev.set()
+        return b"\\x00\\x00\\x00\\x01\\x65\\x88\\x01\\x02"
+ev2 = __import__("threading").Event()
+enc2 = object.__new__(mod.H264Encoder)
+enc2.stop_event = ev2
+enc2.writer = W2()
+enc2.proc = type("P", (), {"stdout": CancellingStream(ev2)})()
+enc2._read_loop()
+
+# SHM layout allowlist & bounds
+shm_ok = mod.is_valid_shm_layout(mod.WL_SHM_FORMAT_XRGB8888, 1920, 1080, 1920 * 4)
+shm_bad_fmt = mod.is_valid_shm_layout(0x36314752, 1920, 1080, 1920 * 4)
+shm_bad_stride = mod.is_valid_shm_layout(mod.WL_SHM_FORMAT_XRGB8888, 1920, 1080, 100)
+shm_bad_size = mod.is_valid_shm_layout(mod.WL_SHM_FORMAT_XRGB8888, 8192, 8192, 0x40000000)
+print(len(out), out[0][0], out[1][0], len(out2), shm_ok, shm_bad_fmt, shm_bad_stride, shm_bad_size)
 `,
 				STREAM_PY,
 			],
 			{encoding: 'utf8'},
 		).trim()
-		assert.equal(pyOut, '2 True False', `expected exactly 2 assembled access units (IDR + P) with EOF flush, got: ${pyOut}`)
+		assert.equal(pyOut, '2 True False 0 True False False False', `unexpected Python AU/cancellation/SHM validation result: ${pyOut}`)
 
 		// 4. omarchyd user.logout immediately revokes outstanding tickets and closes an active /hyprland/stream socket
 		const accounts = await openAccounts(data)

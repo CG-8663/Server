@@ -1479,8 +1479,8 @@ static void handle_stdin_line(InputCtx *ic, const char *line) {
 				g_reconfig_bitrate = (int)br;
 				g_reconfig_quality = (int)q;
 				snprintf(g_reconfig_codec, sizeof(g_reconfig_codec), "%s", codec_buf);
-				pthread_mutex_unlock(&g_reconfig_mu);
 				atomic_fetch_add(&g_reconfig_gen, 1);
+				pthread_mutex_unlock(&g_reconfig_mu);
 				wake_wl();
 			}
 		}
@@ -1960,15 +1960,17 @@ static void *encode_thread(void *arg) {
 		bool dmabuf_fallback = false;
 		bool fatal = false;
 		bool reconfig_needed = false;
-		uint32_t cur_gen = atomic_load(&g_reconfig_gen);
-		if (cur_gen != applied_reconfig_gen) {
+		if (atomic_load(&g_reconfig_gen) != applied_reconfig_gen) {
 			pthread_mutex_lock(&g_reconfig_mu);
-			cur_bitrate = g_reconfig_bitrate;
-			cur_quality = g_reconfig_quality;
-			snprintf(cur_codec, sizeof(cur_codec), "%s", g_reconfig_codec);
+			uint32_t cur_gen = atomic_load(&g_reconfig_gen);
+			if (cur_gen != applied_reconfig_gen) {
+				cur_bitrate = g_reconfig_bitrate;
+				cur_quality = g_reconfig_quality;
+				snprintf(cur_codec, sizeof(cur_codec), "%s", g_reconfig_codec);
+				applied_reconfig_gen = cur_gen;
+				reconfig_needed = true;
+			}
 			pthread_mutex_unlock(&g_reconfig_mu);
-			applied_reconfig_gen = cur_gen;
-			reconfig_needed = true;
 		}
 
 		if (!enc_ready || reconfig_needed || enc.width != b->width || enc.height != b->height || enc.dmabuf_mode != b->is_dmabuf || enc.drm_fourcc != b->fmt || enc.y_invert != y_inv) {
