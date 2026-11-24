@@ -13,6 +13,7 @@ import {solidOf, WALLPAPERS, useDeskConfig, wallpaperSrc} from './desktop/config
 import {wallpaperBlocked} from './desktop/wallpaperGate'
 import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
+import {darkenHslForWhite, pickOnAccent, resolveCssColor} from './theme/contrast'
 import {initials as nameInitials} from './initials'
 import {paddingBottomPlus} from './scrollPad'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
@@ -891,19 +892,22 @@ export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 	if (p.accent === 'wallpaper' && p.theme === 'omarchy') {
 		// The Omarchy desktop's own theme colours, once known (see useOmarchyThemes).
 		const c = omarchyColors
-		root.style.setProperty('--accent', c?.accent ?? '#7aa2f7')
-		root.style.setProperty('--accent-text', c?.accent ?? '#7aa2f7')
-		root.style.setProperty('--on-accent', c?.background ?? '#1a1b26')
+		const fill = c?.accent ?? '#7aa2f7'
+		root.style.setProperty('--accent', fill)
+		root.style.setProperty('--accent-text', fill)
+		root.style.setProperty('--on-accent', pickOnAccent(fill, '#111', c?.background ?? '#1a1b26'))
 	} else if (p.accent === 'wallpaper') {
 		const source = p.theme === 'custom' ? (p.customBrandHsl ?? brandHsl) : brandHsl
 		const [h, s, l] = (source ?? FALLBACK_BRAND).split(' ').map((v) => parseFloat(v))
-		root.style.setProperty('--accent', `hsl(${h} ${s}% ${l}%)`)
+		root.style.setProperty('--accent', darkenHslForWhite(h, s, l))
 		root.style.setProperty('--accent-text', `hsl(${h} ${Math.min(s, 95)}% ${light ? Math.min(l, 42) : Math.max(l, 66)}%)`)
 		root.style.setProperty('--on-accent', '#fff')
 	} else {
-		root.style.setProperty('--accent', `var(--${p.accent})`)
-		root.style.setProperty('--accent-text', `var(--${p.accent})`)
-		root.style.setProperty('--on-accent', light ? '#fff' : '#111')
+		const token = `var(--${p.accent})`
+		root.style.setProperty('--accent', token)
+		root.style.setProperty('--accent-text', token)
+		const resolved = resolveCssColor(root, token)
+		root.style.setProperty('--on-accent', pickOnAccent(resolved, light ? '#fff' : '#111'))
 	}
 	const meta = document.querySelector('meta[name="theme-color"]')
 	meta?.setAttribute('content', THEMES.find((t) => t.id === p.theme)?.bg ?? '#111')
