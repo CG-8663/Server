@@ -1281,13 +1281,13 @@ export function createHyprland({
 							bp = backpressureBudgets(actualBitrate)
 							ws.send(JSON.stringify({type: 'meta', ...info, bitrate: actualBitrate, quality: actualQuality}))
 							const matchesEarly = earlyReconfigPending && (metaGen === null || metaGen === 0) && sentReconfigGen === 0
-							const matchesLive = sentReconfigGen > ackedReconfigGen && (metaGen === null || metaGen >= sentReconfigGen)
+							const matchesLive = sentReconfigGen > ackedReconfigGen && metaGen !== null && metaGen >= sentReconfigGen
 							if (matchesEarly) {
 								earlyReconfigPending = false
 								ws.send(JSON.stringify({type: 'reconfig_applied', bitrate: actualBitrate, quality: actualQuality, codec: actualCodec, reconfigGen: 0}))
 							} else if (matchesLive) {
 								earlyReconfigPending = false
-								ackedReconfigGen = metaGen ?? sentReconfigGen
+								ackedReconfigGen = metaGen
 								ws.send(JSON.stringify({type: 'reconfig_applied', bitrate: actualBitrate, quality: actualQuality, codec: actualCodec, reconfigGen: ackedReconfigGen}))
 							}
 						} catch {}

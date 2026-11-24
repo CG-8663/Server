@@ -770,8 +770,9 @@ test('live zero-reconnect reconfig, RTT 0x14/0x04 ping-pong, msgType 5 telemetry
 		ping.writeDoubleBE(1234.5, 1)
 		ws.emit('message', ping, true)
 
-		// Send zero-reconnect live reconfig -> forwards R <bitrate> <quality> <codec>; outstanding startup meta (reconfigGen=0) must NOT consume the pending reconfig_applied ack!
+		// Send zero-reconnect live reconfig -> forwards R <bitrate> <quality> <codec>; unnumbered and startup meta (reconfigGen=0) must NOT consume the pending reconfig_applied ack!
 		ws.emit('message', JSON.stringify({type: 'reconfig', bitrate: 100000, quality: 12, codec: 'hevc444'}), false)
+		videoChild.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, bitrate: 20000, quality: 20, encoder: 'h264_vaapi_dmabuf', codec: 'avc1.640033'}))))
 		videoChild.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, bitrate: 20000, quality: 20, reconfigGen: 0, encoder: 'h264_vaapi_dmabuf', codec: 'avc1.640033'}))))
 		videoChild.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, bitrate: 100000, quality: 12, reconfigGen: 1, encoder: 'hevc444_vaapi_dmabuf', codec: 'hev1.4.10.L153.BE.8'}))))
 		ws.bufferedAmount = 1_800_000 // > 20 Mbps delta cap, but well under 100 Mbps delta cap (~3.1 MB)
@@ -1065,6 +1066,33 @@ print(len(out), out[0][0], out[1][0], len(out2), shm_ok, shm_bad_fmt, shm_bad_st
 		if (d) await d.close()
 		await rm(root, {recursive: true, force: true})
 	}
+})
+
+test('stream control state preserves saved 4:4:4 preference on non-4:4:4 clients and keeps meta-confirmed codec on reconfig_unsupported', async () => {
+	const {
+		createStreamControlState,
+		shouldReplayHandshakeReconfig,
+		applyMetaToStreamControl,
+		applyReconfigUnsupportedToStreamControl,
+	} = await import('../web/src/hyprlandStreamState.mjs')
+
+	// Case A: Saved 4:4:4 preference on a client lacking 4:4:4 decode support must not trigger an onopen reconfig or overwrite the saved preference on rejection
+	const non444 = createStreamControlState({tier: 'high', chroma444Pref: true, effective444: false, codec: 'h264'})
+	assert.equal(shouldReplayHandshakeReconfig(non444, {tier: 'high', chroma444Pref: true, supportsHevc444: false}), false)
+	const rbA = applyReconfigUnsupportedToStreamControl(non444)
+	assert.equal(rbA.tier, 'high')
+	assert.equal(rbA.chroma444Pref, true)
+	assert.equal(rbA.codec, 'h264')
+
+	// Case B: Handshake requests hevc444, fallback reports h264 via meta, later tier-only reconfig is rejected -> confirmed codec stays h264 while preferences stay intact
+	let fallback = createStreamControlState({tier: 'high', chroma444Pref: true, effective444: true, codec: 'hevc444'})
+	const metaRes = applyMetaToStreamControl(fallback, 'h264_python_shm')
+	fallback = metaRes.state
+	assert.equal(metaRes.actualCodec, 'h264')
+	const rbB = applyReconfigUnsupportedToStreamControl(fallback)
+	assert.equal(rbB.tier, 'high')
+	assert.equal(rbB.chroma444Pref, true)
+	assert.equal(rbB.codec, 'h264')
 })
 
 test('native C capture engine compiles cleanly with -Wall -Wextra -Werror when Linux VA-API headers are present', async (t) => {

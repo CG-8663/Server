@@ -3,6 +3,13 @@
 import {useEffect, useRef, useState} from 'react'
 
 import {mutate} from './api'
+import {
+	applyMetaToStreamControl,
+	applyReconfigAppliedToStreamControl,
+	applyReconfigUnsupportedToStreamControl,
+	createStreamControlState,
+	shouldReplayHandshakeReconfig,
+} from './hyprlandStreamState.mjs'
 import {Icon} from './icons'
 
 export type StreamCodec = 'hevc444' | 'hevc' | 'hevc10' | 'h264'
@@ -1308,19 +1315,25 @@ export function HyprlandView({
 			codec: initCodec,
 		})
 		const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
-		const handshakeTier = qualityTierRef.current
-		const handshake444 = initCodec === 'hevc444'
-		const handshakeCodec = initCodec
-		let appliedTier = handshakeTier
-		let applied444 = handshake444
-		let appliedCodec = handshakeCodec
+		let streamControl = createStreamControlState({
+			tier: qualityTierRef.current,
+			chroma444Pref: chroma444Ref.current,
+			effective444: initCodec === 'hevc444',
+			codec: initCodec,
+		})
 		const ws = new WebSocket(`${scheme}//${location.host}/api/hyprland/stream?${qs.toString()}`)
 		ws.binaryType = 'arraybuffer'
 		wsRef.current = ws
 		ws.onopen = () => {
 			if (!disposed && ws.readyState === WebSocket.OPEN) {
 				ws.send(JSON.stringify({type: 'audio', enabled: !mutedRef.current}))
-				if (qualityTierRef.current !== handshakeTier || chroma444Ref.current !== handshake444) {
+				if (
+					shouldReplayHandshakeReconfig(streamControl, {
+						tier: qualityTierRef.current,
+						chroma444Pref: chroma444Ref.current,
+						supportsHevc444: caps.supports444,
+					})
+				) {
 					sendLiveReconfig(qualityTierRef.current, chroma444Ref.current)
 				}
 				pingBuf[0] = 0x14
@@ -1347,15 +1360,10 @@ export function HyprlandView({
 						canvasRectRef.current = null
 						if (typeof msg.codec === 'string' && msg.codec) currentCodec = msg.codec
 						const encStr = String(msg.encoder || 'h264')
-						const actualCodec: StreamCodec = encStr.startsWith('hevc444')
-							? 'hevc444'
-							: encStr.startsWith('hevc10')
-								? 'hevc10'
-								: encStr.startsWith('hevc')
-									? 'hevc'
-									: 'h264'
-						activeCodecRef.current = actualCodec
-						setConfirmedCodec(actualCodec)
+						const metaUpdate = applyMetaToStreamControl(streamControl, encStr)
+						streamControl = metaUpdate.state
+						activeCodecRef.current = metaUpdate.actualCodec
+						setConfirmedCodec(metaUpdate.actualCodec)
 						metaEncName = encStr === 'hevc444_vaapi_dmabuf' ? 'HEVC 4:4:4' : encStr === 'hevc10_vaapi_dmabuf' ? 'HEVC 10-bit' : encStr === 'hevc_vaapi_dmabuf' ? 'HEVC' : 'H.264'
 						metaDim = `${currentW}x${currentH}`
 						setMeta({width: currentW, height: currentH, fps: Number(msg.fps) || activeFps, encoder: encStr})
@@ -1389,23 +1397,27 @@ export function HyprlandView({
 							canvasRef.current.style.cursor = c
 						}
 					} else if (msg.type === 'reconfig_applied') {
-						appliedTier = qualityTierRef.current
-						applied444 = msg.codec === 'hevc444'
-						if (msg.codec === 'h264' || msg.codec === 'hevc' || msg.codec === 'hevc10' || msg.codec === 'hevc444') {
-							appliedCodec = msg.codec
-							activeCodecRef.current = msg.codec
-							setConfirmedCodec(msg.codec)
+						const appliedUpdate = applyReconfigAppliedToStreamControl(streamControl, {
+							codec: msg.codec,
+							tier: qualityTierRef.current,
+							chroma444Pref: chroma444Ref.current,
+						})
+						streamControl = appliedUpdate.state
+						if (appliedUpdate.confirmedCodec) {
+							activeCodecRef.current = appliedUpdate.confirmedCodec
+							setConfirmedCodec(appliedUpdate.confirmedCodec)
 						}
 					} else if (msg.type === 'reconfig_unsupported') {
-						qualityTierRef.current = appliedTier
-						chroma444Ref.current = applied444
-						activeCodecRef.current = appliedCodec
-						setQualityTierState(appliedTier)
-						setChroma444State(applied444)
-						setConfirmedCodec(appliedCodec)
+						const rolledBack = applyReconfigUnsupportedToStreamControl(streamControl)
+						qualityTierRef.current = rolledBack.tier
+						chroma444Ref.current = rolledBack.chroma444Pref
+						activeCodecRef.current = rolledBack.codec
+						setQualityTierState(rolledBack.tier)
+						setChroma444State(rolledBack.chroma444Pref)
+						setConfirmedCodec(rolledBack.codec)
 						try {
-							localStorage.setItem(QUALITY_TIER_KEY, appliedTier)
-							localStorage.setItem(CHROMA_444_KEY, applied444 ? '1' : '0')
+							localStorage.setItem(QUALITY_TIER_KEY, rolledBack.tier)
+							localStorage.setItem(CHROMA_444_KEY, rolledBack.chroma444Pref ? '1' : '0')
 						} catch {}
 					} else if (msg.type === 'error') {
 						setStatusTracked('error')
