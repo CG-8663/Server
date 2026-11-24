@@ -1427,6 +1427,56 @@ test('an imported raw disk is defined as qcow2 only when the copy is qcow2', asy
 	}
 })
 
+test('a second machine made from an image that is already downloading follows its progress', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-share-'))
+	try {
+		const bytes = Buffer.alloc(100_000, 7)
+		const catalog = join(root, 'catalog.json')
+		await writeFile(catalog, JSON.stringify({version: 1, images: [{id: 'testos-amd64', name: 'TestOS', version: '1', arch: 'amd64', kind: 'cloud', url: 'https://example.test/test.qcow2', sha256: createHash('sha256').update(bytes).digest('hex'), sizeMb: 1, adminGroup: 'sudo'}]}))
+		const kvmDevice = join(root, 'kvm')
+		await writeFile(kvmDevice, '')
+		const run = async (cmd, args, opts = {}) => {
+			if (cmd === 'openssl') return execFileSync('openssl', args, {input: opts.input}).toString()
+			if (cmd === 'xorriso') await writeFile(args[args.indexOf('-output') + 1], 'iso')
+			if (cmd === 'qemu-img' && args[0] === 'convert') await writeFile(args.at(-1), 'disk')
+			return ''
+		}
+		const fetchImpl = async () => {
+			let sent = 0
+			const body = new ReadableStream({
+				async pull(controller) {
+					if (sent >= bytes.length) return controller.close()
+					await new Promise((r) => setTimeout(r, 40))
+					controller.enqueue(bytes.subarray(sent, (sent += 10_000)))
+				},
+			})
+			return new Response(body, {headers: {'content-length': String(bytes.length)}})
+		}
+		const machines = createMachines({dataDir: join(root, 'data'), catalogUrl: `file://${catalog}`, fetchImpl, run, kvmDevice})
+		await machines.ready
+		const make = (name) => machines.procedures['machines.create'].run({name, osId: 'testos-amd64', cores: 1, memoryGb: 1, diskSizeGb: 10, username: 'chris', password: 'hunter2'})
+		const {id: a} = await make('a')
+		await new Promise((r) => setTimeout(r, 120))
+		const {id: b} = await make('b')
+		let seenB = []
+		for (;;) {
+			const list = await machines.procedures['machines.list'].run()
+			const mb = list.find((m) => m.id === b)
+			if (mb.state === 'installing' && mb.installProgress !== undefined) seenB.push(mb.installProgress)
+			if (list.every((m) => m.state === 'running' || m.state === 'stopped') && mb.state !== 'installing') break
+			if (list.some((m) => m.state === 'error')) throw new Error(`a machine failed: ${list.map((m) => m.errorMessage)}`)
+			await new Promise((r) => setTimeout(r, 15))
+		}
+		assert.ok(
+			seenB.some((p) => p > 5 && p < 82),
+			`b should move while the shared download runs, saw ${seenB.join(',')}`,
+		)
+		assert.ok(a)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
 test('a machine set to the VirtIO display keeps it across a restart when this server has virtio-vga', async () => {
 	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-video-'))
 	try {

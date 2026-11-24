@@ -114,7 +114,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const busy = new Map() // id -> {state, progress, settling}
 	const lock = createKeyedLock()
 	const isBusy = (id) => busy.has(id) && !busy.get(id).settling
-	const downloads = new Map() // imageId -> {progress, promise}
+	const downloads = new Map() // imageId -> {progress, listeners, promise}
 	const failedImages = new Map() // imageId -> message
 	let catalog = {at: 0, images: null}
 
@@ -215,8 +215,13 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// Download an image once (concurrent callers share it) and verify it against the publisher.
 	function ensureImage(img, onProgress = () => {}) {
 		const running = downloads.get(img.id)
-		if (running) return running.promise
-		const entry = {progress: 0, promise: null}
+		if (running) {
+			// Joining a download that is already going: follow it from where it is.
+			running.listeners.push(onProgress)
+			if (running.progress) onProgress(running.progress)
+			return running.promise
+		}
+		const entry = {progress: 0, listeners: [onProgress], promise: null}
 		entry.promise = (async () => {
 			const target = imagePath(img)
 			if (await exists(target)) return target
@@ -251,7 +256,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				got += chunk.length
 				if (total) {
 					entry.progress = Math.min(99, Math.floor((got / total) * 100))
-					onProgress(entry.progress)
+					for (const listener of entry.listeners) listener(entry.progress)
 				}
 			})
 			try {
