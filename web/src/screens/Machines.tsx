@@ -12,7 +12,7 @@ import {Icon} from '../icons'
 import {osLook} from '../osLook'
 import {Disc} from '../fleet/Disc'
 import {MachineGlance} from '../fleet/MachineGlance'
-import {fleetAbility, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../fleet/list'
+import {computerFleetInput, fleetAbility, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../fleet/list'
 import {OPEN_FLEET, takePendingFleet, type FleetOpen} from '../fleet/openMember'
 import {openStore} from '../fleet/openStore'
 import {GuestLive} from '../fleet/GuestLive'
@@ -56,7 +56,7 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 		() =>
 			fleetList({
 				server: {name: serverName},
-				computers: agents.filter((a) => !isGuestAgent(a)).map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
+				computers: agents.filter((a) => !isGuestAgent(a)).map((a) => computerFleetInput({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on, libvirt: a.libvirt === true})),
 				guests: list.map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state, connector: !!guestAgent(agents, m.id)})),
 			}),
 		[serverName, agents, list],

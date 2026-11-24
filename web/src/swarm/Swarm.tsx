@@ -30,7 +30,7 @@ const Console = lazy(() => import('../Console').then((m) => ({default: m.Console
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 const MachineFiles = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
 
-type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean; services: boolean; files: boolean}
+type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean; services: boolean; files: boolean; vms: boolean}
 export type Ability = keyof Abilities
 export type Agent = {
 	id: string
@@ -63,6 +63,7 @@ export type Agent = {
 		theme?: string
 		desktop?: {kind: string; ok: boolean; why: string}
 	} | null
+	libvirt?: boolean
 	metrics: {
 		cpu: number | null
 		cores?: number
@@ -95,6 +96,7 @@ export const ABILITY: Record<Ability, {label: string; icon: IconName; what: stri
 	backup: {label: 'Backups', icon: 'history', what: 'Back up folders you choose to this server, on a schedule (open this computer and choose Backups). It can add backups, never delete them.'},
 	services: {label: 'Services', icon: 'server', what: 'Inspect logs and start, stop, or restart user systemd services and containers'},
 	files: {label: 'Files', icon: 'folder', what: 'Read and write the home folder of the person who installed the connector. The connector’s own keys stay off limits.'},
+	vms: {label: 'Virtual machines', icon: 'machine', what: 'Create and run virtual machines on this computer'},
 }
 export const agentMay = (a: Agent, k: Ability) => !!(a.allowed[k] && a.on[k])
 const may = agentMay
@@ -698,16 +700,16 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 	const [allow, setAllow] = useState<Abilities>(
 		guest
 			? windowsConnectorOs(guest.osId)
-				? {terminal: true, desktop: false, manage: true, storage: false, backup: false, services: false, files: true}
-				: {terminal: true, desktop: true, manage: true, storage: false, backup: false, services: false, files: true}
-			: {terminal: true, desktop: true, manage: true, storage: false, backup: true, services: false, files: false},
+				? {terminal: true, desktop: false, manage: true, storage: false, backup: false, services: false, files: true, vms: false}
+				: {terminal: true, desktop: true, manage: true, storage: false, backup: false, services: false, files: true, vms: false}
+			: {terminal: true, desktop: true, manage: true, storage: false, backup: true, services: false, files: false, vms: false},
 	)
 	const [pairing, setPairing] = useState<Pairing | null>(null)
 	// One set of permissions for any computer: the same one-time code works from Linux, a Mac or
 	// Windows, and each connector keeps only what it can do there. Only the command differs.
 	const [os, setOs] = useState<'unix' | 'windows'>(() => (/Windows/.test(navigator.userAgent) ? 'windows' : 'unix'))
 	const windows = guest ? windowsConnectorOs(guest.osId) : os === 'windows'
-	const shown = Object.keys(ABILITY) as Ability[]
+	const shown = (Object.keys(ABILITY) as Ability[]).filter((k) => !guest || k !== 'vms')
 	const asked = allow
 	const [host, setHost] = useState('')
 	const [copied, setCopied] = useState('')
@@ -715,7 +717,7 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 	const toast = useToast()
 	const swarm = useSwarm()
 	const pair = useMutation({
-		mutationFn: () => mutate<Pairing>('swarm.pair', guest ? {...allow, machineId: guest.id} : asked),
+		mutationFn: () => mutate<Pairing>('swarm.pair', guest ? {...allow, vms: false, machineId: guest.id} : asked),
 		onSuccess: (p) => {
 			setPairing(p)
 			const here = location.hostname

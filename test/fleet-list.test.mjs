@@ -56,6 +56,27 @@ test('the fleet list is online names, then offline names', () => {
 	assert.equal(fleetAbility(members[0], 'apps').granted, true)
 })
 
+test('vms is granted only when the computer is online, allowed, on, and libvirt is there', () => {
+	const members = fleetList({
+		server: {name: 'Den'},
+		computers: [
+			computerFleetInput({id: 'kitchen', name: 'Kitchen', online: true, allowed: {vms: true}, on: {vms: true}, libvirt: true}),
+			computerFleetInput({id: 'loft', name: 'Loft', online: true, allowed: {vms: true}, on: {vms: true}, libvirt: false}),
+			computerFleetInput({id: 'garage', name: 'Garage', online: false, allowed: {vms: true}, on: {vms: true}, libvirt: true}),
+			computerFleetInput({id: 'nook', name: 'Nook', online: true, allowed: {vms: true}, on: {vms: false}, libvirt: true}),
+		],
+		guests: [guestFleetInput({id: 'box', name: 'Box', state: 'running', hostId: 'kitchen'})],
+	})
+	assert.equal(fleetAbility(members.find((m) => m.id === 'kitchen'), 'vms').granted, true)
+	assert.equal(fleetAbility(members.find((m) => m.id === 'kitchen'), 'vms').reason, '')
+	for (const id of ['loft', 'garage', 'nook', 'box']) {
+		const ability = fleetAbility(members.find((m) => m.id === id), 'vms')
+		assert.equal(ability.granted, false, id)
+		assert.match(ability.reason, /can’t host its own virtual machines/)
+	}
+	assert.equal(members.find((m) => m.id === 'box').hostId, 'kitchen')
+})
+
 test('home rings weight CPU by cores, keep the hottest temperature, and share close batteries', () => {
 	const rings = fleetRings([
 		serverSample({name: 'Den', cores: 4, cpu: 50, memUsed: 4, memTotal: 8, diskUsed: 10, diskTotal: 100, temp: 40, gpus: [{id: 'g', used: 80}], battery: null}),
