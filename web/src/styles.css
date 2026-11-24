@@ -5863,6 +5863,12 @@ html.desk-mode > body > .sheet .confirm-actions .btn.block {
 .pz-section {
 	margin-bottom: 22px;
 }
+.pz-tight {
+	margin-bottom: 14px;
+}
+.pz-tight .pz-note {
+	margin-top: 6px !important;
+}
 /* The theme swatches and the Omarchy theme row are separate cards. */
 .pz-omarchy {
 	margin-top: 12px;
@@ -9529,12 +9535,48 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 .lp-art-tiles .lp-tile-a { left: 6%; top: 21%; width: 43%; bottom: 8%; }
 .lp-art-tiles .lp-tile-b { left: 51%; top: 21%; width: 43%; height: 33%; background: rgba(255, 255, 255, 0.6); }
 .lp-art-tiles .lp-tile-c { left: 51%; top: 58%; width: 43%; bottom: 8%; background: rgba(255, 255, 255, 0.5); }
+.lp-compact { gap: 8px; }
+.lp-compact.lp-cards-2 { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+.lp-compact .lp-card {
+	gap: 8px;
+	padding: 8px;
+	border-radius: 14px;
+}
+.lp-compact .lp-card-hit { gap: 8px; }
+.lp-compact .lp-art { height: 56px; border-radius: 10px; }
+.lp-compact .lp-text { gap: 2px; padding: 0 2px 0; }
+.lp-compact .lp-text b { font-size: 14px; }
+.lp-compact .lp-text > span { font-size: 12px; line-height: 1.35; }
+.lp-compact .lp-readme { min-height: 36px; }
 @media (max-width: 520px) {
 	.lp-cards { grid-template-columns: 1fr; }
 	.lp-card:not(.has-readme),
 	.lp-card-hit { flex-direction: row; align-items: center; }
 	.lp-card .lp-art,
 	.lp-card-hit .lp-art { flex: 0 0 104px; height: 78px; }
+	.lp-compact .lp-card .lp-art,
+	.lp-compact .lp-card-hit .lp-art { flex: 0 0 88px; height: 56px; }
+}
+
+.tile-split {
+	position: absolute;
+	z-index: 99950;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	touch-action: none;
+	-webkit-user-select: none;
+	user-select: none;
+}
+.tile-split-h { cursor: col-resize; }
+.tile-split-v { cursor: row-resize; }
+.tile-split.held {
+	background: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+.tile-split:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: -2px;
 }
 
 /* ---- Welcome setup ---- */
