@@ -394,6 +394,7 @@ Worktree: `/home/joseph/.worktrees/omarchy-server-guest-connector-install` from 
 - [x] Lock design in this file (status → approved)
 - [x] Isolated worktree (`/home/joseph/.worktrees/omarchy-server-guest-connector-install`, `feat/guest-connector-auto-install` from `upstream/main` `f2f41e2` / 0.9.76)
 - [x] Implement Series A slices (Tasks 1–7 on `feat/guest-connector-auto-install`, HEAD `970de8f`)
+- [x] Final-review fixes: wait for guest-ping, root linger prep, and Windows AutoLogon (`0f0adfe`); linger before enroll (`61a227d`); show install failure (`cfa1e07`)
 - [ ] Targeted tests + web typecheck (re-run at finish)
 - [ ] PR (when asked)
 
