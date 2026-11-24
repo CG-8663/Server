@@ -65,6 +65,7 @@ function install(home, bin, args, extra = {}) {
 			FAKE_VM_HELPER: fileURLToPath(new URL('../connector/vm-helper.py', import.meta.url)),
 			FAKE_SUDO_FAILS: extra.FAKE_SUDO_FAILS,
 			OMARCHY_CONNECTOR_NONINTERACTIVE: extra.OMARCHY_CONNECTOR_NONINTERACTIVE,
+			FAKE_UNIT: extra.FAKE_UNIT,
 		},
 		encoding: 'utf8',
 		timeout: 20000,
@@ -205,4 +206,81 @@ test('--user-enroll-only with no python3 exits 1, not 4', {skip}, async () => {
 	} catch (error) {
 		if (error.code !== 'ENOENT') throw error
 	}
+})
+
+async function openrcBin() {
+	const bin = join(root, `openrc-bin-${Math.random().toString(16).slice(2)}`)
+	await mkdir(bin)
+	const put = async (name, body) => (await writeFile(join(bin, name), `#!/bin/bash\n${body}\n`), chmod(join(bin, name), 0o755))
+	await put('uname', 'exec /usr/bin/uname "$@"')
+	await put('id', 'exec /usr/bin/id "$@"')
+	await put(
+		'sudo',
+		`echo "sudo $*" >>"$FAKE_LOG"
+if [ -n "$FAKE_SUDO_FAILS" ]; then
+	echo "sudo: a terminal is required to read the password" >&2
+	exit 1
+fi
+case "$*" in
+	*tee*) cat >"$FAKE_UNIT" ;;
+esac
+exit 0`,
+	)
+	await put('apk', 'echo "apk $*" >>"$FAKE_LOG"; exit 0')
+	await put('rc-service', 'echo "rc-service $*" >>"$FAKE_LOG"; exit 0')
+	await put('rc-update', 'echo "rc-update $*" >>"$FAKE_LOG"; exit 0')
+	await put(
+		'curl',
+		`out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+echo "curl $*" >>"$FAKE_LOG"
+case "$*" in *ca.crt*) printf '%s' "$FAKE_PEM" >"$out" ;; *agent.py*) cp "$FAKE_AGENT" "$out" ;; esac`,
+	)
+	await put(
+		'python3',
+		`if [ "$2" = enroll ]; then echo "enroll $*" >>"$FAKE_LOG"; echo "Alpine box"; exit 0; fi
+exec /usr/bin/python3 "$@"`,
+	)
+	for (const name of ['mktemp', 'mkdir', 'chmod', 'install', 'mv', 'rm', 'cat', 'grep', 'cp', 'tee', 'touch']) {
+		await put(name, `exec /usr/bin/${name} "$@"`)
+	}
+	return bin
+}
+
+test('OpenRC install uses apk and a system service, without linger or systemd', {skip}, async () => {
+	const home = join(root, 'openrc')
+	await mkdir(home)
+	const bin = await openrcBin()
+	const unit = join(home, 'openrc-unit')
+	const r = install(home, bin, ['--server', 'https://192.168.1.20:7780', '--ca', CA, '--token', 'abc123', '--allow', 'terminal,desktop,manage,files'], {
+		path: bin,
+		FAKE_UNIT: unit,
+	})
+	assert.equal(r.status, 0, r.out)
+	const log = await readFile(r.log, 'utf8')
+	assert.match(log, /apk add --no-cache /)
+	assert.doesNotMatch(log, /systemctl/)
+	assert.doesNotMatch(log, /loginctl/)
+	assert.match(log, /sudo tee \/etc\/init\.d\/omarchy-connector|tee \/etc\/init\.d\/omarchy-connector/)
+	assert.match(log, /rc-update add omarchy-connector/)
+	assert.match(log, /rc-service omarchy-connector start/)
+	const written = await readFile(unit, 'utf8')
+	assert.match(written, /command_user=["']?chris/)
+	assert.match(written, /supervise-daemon/)
+	assert.match(written, /\/run\/user\//)
+	assert.match(r.out, /Alpine box" is now in your server/)
+})
+
+test('OpenRC --user-enroll-only enrolls without writing the system service', {skip}, async () => {
+	const home = join(root, 'openrc-enroll')
+	await mkdir(home)
+	const bin = await openrcBin()
+	const unit = join(home, 'openrc-unit')
+	const r = install(home, bin, [...ARGS, '--user-enroll-only'], {path: bin, FAKE_UNIT: unit})
+	assert.equal(r.status, 0, r.out)
+	const log = await readFile(r.log, 'utf8')
+	assert.equal(/sudo/.test(log), false, log)
+	assert.doesNotMatch(log, /rc-update/)
+	assert.doesNotMatch(log, /rc-service/)
+	assert.match(log, /enroll https:\/\/192\.168\.1\.20:7780 abc123 terminal,desktop,manage,storage,files$/m)
+	await assert.rejects(readFile(unit))
 })

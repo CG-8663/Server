@@ -29,7 +29,7 @@ A virtual machine is a machine that runs on a host. Its page matches a physical 
 Two states are part of the product:
 
 - Without a connector, the host can power the guest and open its screen while it is running. Gauges use the host's measurements. The guest's files and shell are not invented.
-- With a connector, the guest is managed like a joined computer, plus the host controls above. The connector is the same Linux connector a physical computer uses, tied to that virtual machine. It runs on Linux with systemd. Windows, macOS, and Home Assistant do not run it.
+- With a connector, the guest is managed like a joined computer, plus the host controls above. The connector is the same Linux connector a physical computer uses, tied to that virtual machine. It runs on Linux with systemd or Alpine OpenRC. Windows, macOS, and Home Assistant do not run it.
 
 ### Applications
 

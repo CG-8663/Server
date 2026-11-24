@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
-import {connectorCloudInit, connectorInstallCommand, connectorKind, guestConnectorExec, guestConnectorPrep, guestReachableUrl} from '../omarchyd/guest-install.mjs'
+import {connectorCloudInit, connectorInstallCommand, connectorKind, guestConnectorExec, guestConnectorPrep, guestDefaultGateway, guestOwnAddresses, guestReachableUrl} from '../omarchyd/guest-install.mjs'
 
 test('guestReachableUrl skips loopback and prefers a LAN address', () => {
 	assert.equal(guestReachableUrl({addresses: [], port: 7780}), '')
@@ -19,6 +19,50 @@ test('guestReachableUrl skips loopback and prefers a LAN address', () => {
 	assert.equal(guestReachableUrl({addresses: [{address: '10.0.0.4'}], port: 8443}), 'https://10.0.0.4:8443')
 })
 
+test('guestReachableUrl skips a passt guest’s own LAN address', () => {
+	assert.equal(
+		guestReachableUrl({
+			addresses: [{address: '100.64.1.2', tailscale: true}, {address: '192.168.84.81'}],
+			port: 7780,
+			exclude: ['192.168.84.81'],
+		}),
+		'https://100.64.1.2:7780',
+	)
+	assert.equal(
+		guestReachableUrl({
+			addresses: [{address: '192.168.84.81'}],
+			port: 7780,
+			exclude: ['192.168.84.81'],
+			gateway: '192.168.86.1',
+		}),
+		'https://192.168.86.1:7780',
+	)
+	assert.equal(
+		guestReachableUrl({
+			addresses: [{address: '192.168.84.81'}],
+			port: 7780,
+			exclude: ['192.168.84.81'],
+		}),
+		'',
+	)
+})
+
+test('guestOwnAddresses and guestDefaultGateway read qemu-ga JSON', () => {
+	assert.deepEqual(guestOwnAddresses(), [])
+	assert.deepEqual(guestOwnAddresses([
+		{name: 'lo', 'ip-addresses': [{ 'ip-address-type': 'ipv4', 'ip-address': '127.0.0.1' }]},
+		{name: 'enp1s0', 'ip-addresses': [
+			{ 'ip-address-type': 'ipv4', 'ip-address': '192.168.84.81' },
+			{ 'ip-address-type': 'ipv6', 'ip-address': 'fe80::1' },
+		]},
+	]), ['192.168.84.81', 'fe80::1'])
+	assert.equal(guestDefaultGateway(), '')
+	assert.equal(guestDefaultGateway([
+		{version: 4, destination: '192.168.84.0', gateway: '0.0.0.0', mask: '255.255.252.0'},
+		{version: 4, destination: '0.0.0.0', gateway: '192.168.86.1', mask: '0.0.0.0'},
+	]), '192.168.86.1')
+})
+
 test('connectorKind matches Linux systemd guests', () => {
 	assert.equal(connectorKind('ubuntu-24.04-server-amd64'), 'linux')
 	assert.equal(connectorKind('debian-13-desktop-amd64'), 'linux')
@@ -31,7 +75,7 @@ test('connectorKind matches Linux systemd guests', () => {
 	assert.equal(connectorKind('macos'), 'unsupported')
 	assert.equal(connectorKind('haos'), 'unsupported')
 	assert.equal(connectorKind('home-assistant'), 'unsupported')
-	assert.equal(connectorKind('alpine-3.24.1-amd64'), 'unsupported')
+	assert.equal(connectorKind('alpine-3.24.1-amd64'), 'linux')
 })
 
 test('connectorCloudInit adds qemu-guest-agent and python without dropping catalog setup', () => {
@@ -63,6 +107,25 @@ test('connectorCloudInit adds qemu-guest-agent and python without dropping catal
 	assert.equal(without.graphical, true)
 })
 
+test('Alpine cloud-init installs qemu-ga, python3 and bash through OpenRC, without linger', () => {
+	const alpine = connectorCloudInit({
+		familyId: 'alpine',
+		username: 'chris',
+		cloudInit: {packages: ['sudo'], shell: '/bin/ash', adminGroup: 'wheel'},
+	})
+	assert.deepEqual(alpine.packages, ['qemu-guest-agent', 'python3', 'bash', 'sudo'])
+	assert.equal(alpine.commands.some((c) => c[0] === 'systemctl'), false)
+	assert.equal(alpine.commands.some((c) => c[0] === 'loginctl'), false)
+	assert.ok(alpine.commands.some((c) => c[0] === 'rc-update' && c.includes('qemu-guest-agent')))
+	assert.ok(alpine.commands.some((c) => c[0] === 'rc-service' && c.includes('qemu-guest-agent') && c.includes('start')))
+	assert.equal(alpine.shell, '/bin/ash')
+	assert.equal(alpine.adminGroup, 'wheel')
+	const debian = connectorCloudInit({familyId: 'debian', username: 'chris'})
+	assert.equal(debian.packages.includes('bash'), false)
+	assert.deepEqual(debian.commands[0], ['systemctl', 'enable', '--now', 'qemu-guest-agent'])
+	assert.deepEqual(debian.commands[1], ['loginctl', 'enable-linger', 'chris'])
+})
+
 test('guestConnectorPrep enables linger as argv and installs python only when it is missing', () => {
 	const prep = guestConnectorPrep({username: 'chris'})
 	assert.equal(prep.length >= 1, true)
@@ -76,6 +139,16 @@ test('guestConnectorPrep enables linger as argv and installs python only when it
 	assert.match(python.args[1], /pacman/)
 	assert.equal(python.args[1].includes('chris'), false)
 	assert.equal(prep[0].args.join(' ').includes('bash'), false)
+	assert.match(python.args[1], /apk add --no-cache python3/)
+})
+
+test('Alpine prep skips linger and still installs python through apk when it is missing', () => {
+	const prep = guestConnectorPrep({username: 'chris', osId: 'alpine-3.24.1-amd64'})
+	assert.equal(prep.some((cmd) => cmd.path === 'loginctl'), false)
+	const python = prep.find((cmd) => cmd.path === 'bash')
+	assert.ok(python, 'python install is a generated bash command')
+	assert.match(python.args[1], /apk add --no-cache python3/)
+	assert.match(python.args[1], /python3/)
 })
 
 test('guest-exec checks this server’s certificate and does not run on Windows', () => {
@@ -94,6 +167,9 @@ test('guest-exec checks this server’s certificate and does not run on Windows'
 	assert.deepEqual(linux.args.slice(0, 5), ['-u', 'chris', '--', 'bash', '-lc'])
 	assert.equal(linux.args[5].includes('-k'), false)
 	assert.equal(linux.args[5].includes('--user-enroll-only'), true)
+	assert.match(linux.args[5], /XDG_RUNTIME_DIR=\/run\/user\/\$\(id -u\)/)
+	assert.match(linux.args[5], /DBUS_SESSION_BUS_ADDRESS/)
+	assert.equal(linux.args[5].includes('/etc/init.d/omarchy-connector'), false)
 	assert.match(linux.args[5], /curl -fsSL --max-time 60 'https:\/\/example\.test\/main\/connector\/install\.sh'/)
 	const local = connectorInstallCommand({source: '/home/x/omarchy-server', server: 'https://10.1.2.3:7780', ca, token: 't', allow: 'terminal', caPem: pem})
 	assert.match(local.command, /curl -fsSL --cacert "\$d\/ca\.crt" --max-time 60 'https:\/\/10\.1\.2\.3:7780\/api\/connector\/install\.sh'/)
@@ -102,4 +178,44 @@ test('guest-exec checks this server’s certificate and does not run on Windows'
 	assert.equal(local.input, pem)
 	assert.throws(() => connectorInstallCommand({source: '/home/x/omarchy-server', server: 'https://10.1.2.3:7780', ca, token: 't', allow: 'terminal'}))
 	assert.throws(() => guestConnectorExec({os: 'windows', username: 'chris', source: 'https://example.test', server: 'https://192.168.84.81:7780', ca, token: 'tok', allow: 'terminal'}))
+})
+
+test('Alpine guest-exec enrolls as the user then starts an OpenRC system service', () => {
+	const ca = 'a'.repeat(64)
+	const pem = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n'
+	const alpine = guestConnectorExec({
+		os: 'linux',
+		osId: 'alpine-3.24.1-amd64',
+		username: 'chris',
+		source: 'https://example.test',
+		server: 'https://192.168.84.81:7780',
+		ca,
+		token: 'tok',
+		allow: 'terminal,desktop,manage,files',
+	})
+	const text = [alpine.path, ...(alpine.args ?? [])].join(' ')
+	assert.match(text, /runuser/)
+	assert.match(text, /-u chris/)
+	assert.match(text, /--user-enroll-only/)
+	assert.equal(text.includes('DBUS_SESSION_BUS_ADDRESS'), false)
+	assert.match(text, /\/etc\/init\.d\/omarchy-connector/)
+	assert.match(text, /rc-update add omarchy-connector/)
+	assert.match(text, /rc-service omarchy-connector start/)
+	assert.match(text, /command_user=["']?chris/)
+	assert.equal(text.indexOf('runuser') < text.indexOf('/etc/init.d/omarchy-connector'), true)
+	const local = guestConnectorExec({
+		os: 'linux',
+		osId: 'alpine-3.24.1-amd64',
+		username: 'chris',
+		source: '/home/x/omarchy-server',
+		server: 'https://10.1.2.3:7780',
+		ca,
+		token: 't',
+		allow: 'terminal',
+		caPem: pem,
+	})
+	assert.equal(local.input, pem)
+	const cmd = [local.path, ...(local.args ?? [])].join(' ')
+	assert.match(cmd, /cat > "\$d\/ca\.crt"/)
+	assert.equal(cmd.indexOf('runuser') < cmd.indexOf('/etc/init.d/omarchy-connector'), true)
 })

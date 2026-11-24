@@ -114,7 +114,7 @@ const until = async (fn, ms = 2000) => {
 	return last
 }
 
-test('alpine, haos, and macos are unsupported and never ping the guest agent', async () => {
+test('haos and macos are unsupported and never ping the guest agent', async () => {
 	const agent = fakeAgent()
 	const virsh = []
 	const run = async (cmd, args) => {
@@ -123,7 +123,6 @@ test('alpine, haos, and macos are unsupported and never ping the guest agent', a
 	}
 	const {root, call} = await open({
 		machines: [
-			record('aaaa0001', {osId: 'alpine-3.24.1-amd64', name: 'Alpine'}),
 			record('aaaa0002', {osId: 'haos', name: 'HAOS'}),
 			record('aaaa0003', {osId: 'macos', name: 'Mac'}),
 		],
@@ -131,7 +130,7 @@ test('alpine, haos, and macos are unsupported and never ping the guest agent', a
 		qemuAgent: agent.qemuAgent,
 	})
 	try {
-		for (const id of ['aaaa0001', 'aaaa0002', 'aaaa0003']) {
+		for (const id of ['aaaa0002', 'aaaa0003']) {
 			const out = await call('machines.installConnector', {id})
 			assert.equal(out.status, 'unsupported')
 			assert.equal(out.os, 'other')
@@ -140,6 +139,45 @@ test('alpine, haos, and macos are unsupported and never ping the guest agent', a
 		}
 		assert.equal(agent.pingCount(), 0)
 		assert.deepEqual(virsh, [])
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('alpine cloud running with qemu-ga enrolls as the user then starts OpenRC', async () => {
+	const id = 'abcd1234'
+	const agent = fakeAgent()
+	const pairCalls = []
+	const {root, call} = await open({
+		machines: [record(id, {osId: 'alpine-3.24.1-amd64'})],
+		run: virshList(new Map([[`omarchy-${id}`, 'running']])),
+		qemuAgent: agent.qemuAgent,
+		connector: {
+			pair: async (input) => {
+				pairCalls.push(input)
+				return fakePair()
+			},
+			list: async () => [{guestOf: id}],
+		},
+	})
+	try {
+		const out = await call('machines.installConnector', {id})
+		assert.equal(out.status, 'started')
+		assert.equal(out.os, 'linux')
+		assert.equal(pairCalls.length, 1)
+		assert.equal(agent.execs.some((cmd) => cmd.path === 'loginctl'), false)
+		const python = agent.execs.find((cmd) => cmd.path === 'bash' && cmd.args?.[1]?.includes?.('apk add --no-cache python3'))
+		assert.ok(python, 'prep installs python through apk')
+		const enroll = agent.execs.find((cmd) => {
+			const text = [cmd.path, ...(cmd.args ?? [])].join(' ')
+			return text.includes('runuser') && text.includes('--user-enroll-only')
+		})
+		assert.ok(enroll, 'enrolls as the guest user')
+		const text = [enroll.path, ...(enroll.args ?? [])].join(' ')
+		assert.match(text, /-u chris/)
+		assert.equal(text.includes('DBUS_SESSION_BUS_ADDRESS'), false)
+		assert.match(text, /\/etc\/init\.d\/omarchy-connector/)
+		assert.match(text, /rc-service omarchy-connector start/)
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}
@@ -237,6 +275,41 @@ test('linux cloud running with qemu-ga starts a connector task through runuser',
 		})
 		assert.equal(done?.type, 'connector')
 		assert.equal(done.status, 'ok')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('installConnector skips the guest’s own LAN address and uses Tailscale', async () => {
+	const id = 'abcd1234'
+	const execs = []
+	const {root, call} = await open({
+		machines: [record(id)],
+		run: virshList(new Map([[`omarchy-${id}`, 'running']])),
+		qemuAgent: () => ({
+			ping: async () => {},
+			interfaces: async () => [{name: 'enp1s0', 'ip-addresses': [{'ip-address': LAN}]}],
+			routes: async () => [{version: 4, destination: '0.0.0.0', gateway: '192.168.86.1'}],
+			exec: async (cmd) => {
+				execs.push(cmd)
+				return {pid: 42}
+			},
+			status: async () => ({exited: true, exitcode: 0, out: '', err: ''}),
+		}),
+		connector: {
+			pair: async () => fakePair({
+				addresses: [{address: '100.64.1.2', tailscale: true}, {address: LAN}],
+			}),
+			list: async () => [{guestOf: id}],
+		},
+	})
+	try {
+		const out = await call('machines.installConnector', {id})
+		assert.equal(out.status, 'started')
+		const enroll = execs.find((cmd) => cmd.path === 'runuser')
+		assert.ok(enroll, 'enroll runs as the guest user')
+		assert.match(enroll.args[5], /--server '?https:\/\/100\.64\.1\.2:7780'?/)
+		assert.equal(enroll.args[5].includes('192.168.84.81'), false)
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}
@@ -671,10 +744,11 @@ test('creating a guest that already enrolled does not mint another token', async
 	}
 })
 
-test('creating an unsupported alpine guest does not pair or exec', async () => {
+test('creating an alpine guest starts a connector install through OpenRC', async () => {
 	const agent = fakeAgent()
 	const pairCalls = []
-	const {root, call} = await openCreate({
+	let id
+	const {root, call, run} = await openCreate({
 		images: [ALPINE_IMAGE],
 		qemuAgent: agent.qemuAgent,
 		connector: {
@@ -682,18 +756,35 @@ test('creating an unsupported alpine guest does not pair or exec', async () => {
 				pairCalls.push(input)
 				return fakePair()
 			},
-			list: async () => [],
+			list: async () => (id && agent.execs.length ? [{guestOf: id}] : []),
 		},
 	})
 	try {
-		const {id} = await call('machines.create', {...createSpec, name: 'Alpine', osId: 'alpine-3.24.1-amd64'})
+		;({id} = await call('machines.create', {...createSpec, name: 'Alpine', osId: 'alpine-3.24.1-amd64'}))
 		await until(async () => (await call('machines.list')).find((x) => x.id === id && x.state === 'running'))
-		await new Promise((r) => setTimeout(r, 80))
-		assert.deepEqual(pairCalls, [])
-		assert.equal(agent.pingCount(), 0)
-		assert.deepEqual(agent.execs, [])
-		const tasks = await call('machines.tasks')
-		assert.equal(tasks.some((row) => row.machineId === id && row.type === 'connector'), false)
+		const done = await until(async () => {
+			const tasks = await call('machines.tasks')
+			const t = tasks.find((row) => row.machineId === id && row.type === 'connector')
+			return t?.status === 'ok' ? t : null
+		})
+		assert.equal(done?.type, 'connector')
+		assert.equal(pairCalls.length, 1)
+		assert.equal(pairCalls[0].machineId, id)
+		assert.equal(agent.pingCount() >= 1, true)
+		assert.equal(agent.execs.some((cmd) => cmd.path === 'loginctl'), false)
+		const enroll = agent.execs.find((cmd) => {
+			const text = [cmd.path, ...(cmd.args ?? [])].join(' ')
+			return text.includes('runuser') && text.includes('--user-enroll-only')
+		})
+		assert.ok(enroll, 'enrolls as the guest user')
+		const text = [enroll.path, ...(enroll.args ?? [])].join(' ')
+		assert.match(text, /\/etc\/init\.d\/omarchy-connector/)
+		assert.match(run.userData, /qemu-guest-agent/)
+		assert.match(run.userData, /python3/)
+		assert.match(run.userData, /bash/)
+		assert.match(run.userData, /rc-update/)
+		assert.doesNotMatch(run.userData, /loginctl/)
+		assert.doesNotMatch(run.userData, /systemctl/)
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}

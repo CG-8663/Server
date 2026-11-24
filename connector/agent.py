@@ -2,7 +2,7 @@
 """My Own Data Center connector: joins this Linux computer to a My Own Data Center's local swarm.
 
 It dials out to the server (wss://, trusting only that server's own certificate authority), so this
-computer opens no ports. It runs as you (a systemd user service), never as root.
+computer opens no ports. It runs as you (a systemd user service, or an Alpine OpenRC service), never as root.
 
 What it does, each only if allowed when it was installed (see ABILITIES in its config, which the
 server can't widen):
@@ -2726,7 +2726,10 @@ def reboot(_args):
     if IS_MAC:
         _mac_power("restart")
         return True
-    run(["systemctl", "reboot"], timeout=30)
+    if shutil.which("systemctl"):
+        run(["systemctl", "reboot"], timeout=30)
+    else:
+        run(["reboot"], timeout=30)
     return True
 
 
@@ -2779,7 +2782,10 @@ def shutdown(_args):
     if IS_MAC:
         _mac_power("shut down")
         return True
-    run(["systemctl", "poweroff"], timeout=30)
+    if shutil.which("systemctl"):
+        run(["systemctl", "poweroff"], timeout=30)
+    else:
+        run(["poweroff"], timeout=30)
     return True
 
 
@@ -2790,8 +2796,10 @@ def suspend(_args):
     if IS_MAC:
         run(["pmset", "sleepnow"], timeout=30)
         return True
-    run(["systemctl", "suspend"], timeout=30)
-    return True
+    if shutil.which("systemctl"):
+        run(["systemctl", "suspend"], timeout=30)
+        return True
+    raise RuntimeError("This computer can’t sleep from here")
 
 
 def _exit_for_restart():
@@ -4286,8 +4294,10 @@ def forget():
             except OSError:
                 pass
             subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{MAC_LABEL}"], capture_output=True, timeout=30)
-        else:
+        elif shutil.which("systemctl"):
             subprocess.run(["systemctl", "--user", "disable", "--now", "--no-block", "omarchy-connector.service"], capture_output=True, timeout=30)
+        elif shutil.which("rc-service"):
+            subprocess.run(["rc-service", "omarchy-connector", "stop"], capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         pass  # not run by systemd (or no systemd): stopping is enough
     _backup_password_dir(True)

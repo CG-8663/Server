@@ -71,6 +71,20 @@ test('guest-exec stdin is input-data base64, not plaintext on the argv', async (
 	assert.equal(body.arguments['input-data'], Buffer.from(secret, 'utf8').toString('base64'))
 })
 
+test('interfaces and routes read qemu-ga network JSON', async () => {
+	const ifaces = [{name: 'enp1s0', 'ip-addresses': [{'ip-address': '192.168.84.81'}]}]
+	const routes = [{version: 4, destination: '0.0.0.0', gateway: '192.168.86.1'}]
+	const {calls, run} = fakeRun([
+		JSON.stringify({return: ifaces}),
+		JSON.stringify({return: routes}),
+	])
+	const agent = createQemuAgent({run, domain: DOMAIN})
+	assert.deepEqual(await agent.interfaces(), ifaces)
+	assert.deepEqual(agentJson(calls[0]), {execute: 'guest-network-get-interfaces'})
+	assert.deepEqual(await agent.routes(), routes)
+	assert.deepEqual(agentJson(calls[1]), {execute: 'guest-network-get-route'})
+})
+
 test('exec leaves capture-output off when capture is false', async () => {
 	const {calls, run} = fakeRun(['{"return":{"pid":3}}'])
 	const agent = createQemuAgent({run, domain: DOMAIN})

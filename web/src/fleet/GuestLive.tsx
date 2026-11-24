@@ -96,7 +96,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 	}
 	const canStorage = !!(agent?.online && agentMay(agent, 'storage'))
 	const storageSub = !linux
-		? 'The connector runs on Linux with systemd. It can’t manage drives here.'
+		? 'The connector runs on Linux with systemd or Alpine OpenRC. It can’t manage drives here.'
 		: !agent
 			? 'Install the connector and allow Storage.'
 			: !agent.online
@@ -125,7 +125,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 					</span>
 				</div>
 			)}
-{swarm.isFetched && !agent && !canInstall && <p className="quiet">This operating system can’t run the connector. It runs on Linux with systemd.</p>}
+{swarm.isFetched && !agent && !canInstall && <p className="quiet">This operating system can’t run the connector. It runs on Linux with systemd or Alpine OpenRC.</p>}
 			{(metrics || host || machine.diskSizeGb) && <LiveStats metrics={metrics ?? host} temp={typeof metrics?.temp === 'number' ? metrics.temp : null} diskSizeGb={machine.diskSizeGb ?? null} />}
 			<SheetGroup title="Now">
 				<Row

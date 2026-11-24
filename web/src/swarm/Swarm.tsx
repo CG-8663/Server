@@ -788,12 +788,12 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 			<SheetHeader
 				icon={<Icon name="devices" size={30} />}
 				title={guest ? 'Install connector' : 'Add a computer'}
-				subtitle={guest ? `Linux with systemd, inside ${guest.name}. Not Windows or Home Assistant.` : 'Linux (any distribution with systemd), a Mac, or Windows 10 or later.'}
+				subtitle={guest ? `Linux with systemd or Alpine OpenRC, inside ${guest.name}. Not Windows or Home Assistant.` : 'Linux (systemd or Alpine OpenRC), a Mac, or Windows 10 or later.'}
 				onClose={onClose}
 			/>
 			{guest && !guestLinux ? (
 				<p className="muted" style={{fontSize: 14, margin: '0 4px 12px'}}>
-					This operating system can’t run the connector. It runs on Linux with systemd.
+					This operating system can’t run the connector. It runs on Linux with systemd or Alpine OpenRC.
 				</p>
 			) : !pairing ? (
 				<>

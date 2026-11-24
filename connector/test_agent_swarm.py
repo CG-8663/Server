@@ -208,6 +208,27 @@ class TelemetryPowerAndSessionsTests(unittest.TestCase):
         self.assertIn("shutdown", agent.ACTIONS)
         self.assertIn("suspend", agent.ACTIONS)
 
+    def test_reboot_uses_reboot_when_systemctl_is_missing(self):
+        ran = []
+        with mock.patch.object(agent, "IS_WINDOWS", False), mock.patch.object(agent, "IS_MAC", False), mock.patch("shutil.which", lambda name: None if name == "systemctl" else "/bin/" + name), mock.patch.object(agent, "run", lambda cmd, **kw: ran.append(cmd) or ""):
+            self.assertTrue(agent.reboot({}))
+        self.assertEqual(ran, [["reboot"]])
+
+    def test_shutdown_uses_poweroff_when_systemctl_is_missing(self):
+        ran = []
+        with mock.patch.object(agent, "IS_WINDOWS", False), mock.patch.object(agent, "IS_MAC", False), mock.patch("shutil.which", lambda name: None if name == "systemctl" else "/bin/" + name), mock.patch.object(agent, "run", lambda cmd, **kw: ran.append(cmd) or ""):
+            self.assertTrue(agent.shutdown({}))
+        self.assertEqual(ran, [["poweroff"]])
+
+    def test_forget_stops_openrc_when_systemctl_is_missing(self):
+        ran = []
+        def which(name):
+            return "/sbin/rc-service" if name == "rc-service" else None
+        with mock.patch.object(agent, "IS_WINDOWS", False), mock.patch.object(agent, "IS_MAC", False), mock.patch("shutil.which", which), mock.patch("subprocess.run", lambda cmd, **kw: ran.append(cmd) or mock.Mock()), mock.patch.object(agent, "_backup_password_dir"), mock.patch("os.unlink"), mock.patch("os._exit") as exited:
+            agent.forget()
+        self.assertTrue(any(cmd[:3] == ["rc-service", "omarchy-connector", "stop"] for cmd in ran))
+        exited.assert_called_with(0)
+
 
 class ServicesAndFilesTests(unittest.TestCase):
     def test_parse_systemd_and_containers(self):

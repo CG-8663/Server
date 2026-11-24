@@ -7,35 +7,80 @@ const HTTPS_BASE = /^https:\/\/[^/?#\s]+/i
 export const GUEST_PAIR_TTL = 6 * 60 * 60_000
 export const LINUX_CONNECTOR_ALLOW = ['terminal', 'desktop', 'manage', 'files']
 
-export function guestReachableUrl({addresses = [], port} = {}) {
+function skipSet(exclude) {
+	const skip = new Set(LOOPBACK)
+	for (const value of Array.isArray(exclude) ? exclude : []) {
+		const address = String(value ?? '').trim().toLowerCase()
+		if (address) skip.add(address)
+	}
+	return skip
+}
+
+function httpsUrl(host, port) {
+	const address = String(host ?? '').trim()
+	if (!address) return ''
+	return address.includes(':') ? `https://[${address}]:${port}` : `https://${address}:${port}`
+}
+
+export function guestReachableUrl({addresses = [], port, exclude = [], gateway} = {}) {
 	const n = Number(port)
 	if (!Number.isInteger(n) || n < 1 || n > 65535) return ''
+	const skip = skipSet(exclude)
 	const rows = (Array.isArray(addresses) ? addresses : []).filter((row) => {
 		const address = String(row?.address ?? '').trim()
-		return address && !LOOPBACK.has(address.toLowerCase())
+		return address && !skip.has(address.toLowerCase())
 	})
 	const lan = rows.find((row) => !row.tailscale)
 	const chosen = lan ?? rows[0]
-	if (!chosen) return ''
-	const host = String(chosen.address)
-	const v6 = host.includes(':')
-	return `https://${v6 ? `[${host}]` : host}:${n}`
+	if (chosen) return httpsUrl(chosen.address, n)
+	const gw = String(gateway ?? '').trim()
+	if (gw && !skip.has(gw.toLowerCase())) return httpsUrl(gw, n)
+	return ''
+}
+
+export function guestOwnAddresses(ifaces = []) {
+	const out = []
+	for (const iface of Array.isArray(ifaces) ? ifaces : []) {
+		for (const row of Array.isArray(iface?.['ip-addresses']) ? iface['ip-addresses'] : []) {
+			const address = String(row?.['ip-address'] ?? '').trim()
+			if (address && !LOOPBACK.has(address.toLowerCase())) out.push(address)
+		}
+	}
+	return out
+}
+
+export function guestDefaultGateway(routes = []) {
+	for (const row of Array.isArray(routes) ? routes : []) {
+		if (Number(row?.version) !== 4 || String(row?.destination ?? '') !== '0.0.0.0') continue
+		const gw = String(row?.gateway ?? '').trim()
+		if (gw && gw !== '0.0.0.0') return gw
+	}
+	return ''
+}
+
+function isAlpine(osId = '', familyId = '') {
+	return /alpine/.test(String(osId).toLowerCase()) || String(familyId).toLowerCase() === 'alpine'
 }
 
 export function connectorKind(osId = '') {
 	const id = String(osId).toLowerCase()
-	// The connector runs on Linux with systemd. Windows, macOS, and Home Assistant do not run it.
-	if (/win|macos|osx|darwin|haos|home-?assistant|alpine/.test(id)) return 'unsupported'
+	// The connector runs on Linux with systemd or Alpine OpenRC. Windows, macOS, and Home Assistant do not run it.
+	if (/win|macos|osx|darwin|haos|home-?assistant/.test(id)) return 'unsupported'
 	return 'linux'
 }
 
 export function connectorCloudInit(img = {}) {
+	const alpine = isAlpine(img.osId, img.familyId)
 	const python = img.familyId === 'arch' ? 'python' : 'python3'
 	const given = img.cloudInit && typeof img.cloudInit === 'object' ? img.cloudInit : {}
-	const packages = ['qemu-guest-agent', python, ...(Array.isArray(given.packages) ? given.packages : [])]
-	const commands = [['systemctl', 'enable', '--now', 'qemu-guest-agent'], ...(Array.isArray(given.commands) ? given.commands : [])]
+	const extra = Array.isArray(given.packages) ? given.packages : []
+	const packages = alpine ? ['qemu-guest-agent', 'python3', 'bash', ...extra] : ['qemu-guest-agent', python, ...extra]
+	const enableGa = alpine
+		? [['rc-update', 'add', 'qemu-guest-agent', 'default'], ['rc-service', 'qemu-guest-agent', 'start']]
+		: [['systemctl', 'enable', '--now', 'qemu-guest-agent']]
+	const commands = [...enableGa, ...(Array.isArray(given.commands) ? given.commands : [])]
 	const username = String(img.username ?? '').trim()
-	if (username) commands.splice(1, 0, ['loginctl', 'enable-linger', username])
+	if (username && !alpine) commands.splice(enableGa.length, 0, ['loginctl', 'enable-linger', username])
 	return {...given, packages, commands}
 }
 
@@ -46,14 +91,15 @@ const PYTHON_IF_MISSING = [
 	'elif command -v dnf >/dev/null 2>&1; then dnf install -y python3',
 	'elif command -v pacman >/dev/null 2>&1; then pacman -S --needed --noconfirm python',
 	'elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive install python3',
+	'elif command -v apk >/dev/null 2>&1; then apk add --no-cache python3',
 	'else exit 1; fi',
 ].join('; ')
 
-export function guestConnectorPrep({username} = {}) {
-	return [
-		{path: 'loginctl', args: ['enable-linger', String(username ?? '')]},
-		{path: 'bash', args: ['-lc', PYTHON_IF_MISSING]},
-	]
+export function guestConnectorPrep({username, osId} = {}) {
+	const cmds = []
+	if (!isAlpine(osId)) cmds.push({path: 'loginctl', args: ['enable-linger', String(username ?? '')]})
+	cmds.push({path: 'bash', args: ['-lc', PYTHON_IF_MISSING]})
+	return cmds
 }
 
 export function defaultConnectorAbilities(os) {
@@ -94,11 +140,48 @@ export function connectorInstallCommand({source, server, ca, token, allow, caPem
 	return {command, input: caPem}
 }
 
-export function guestConnectorExec({os, username, source, server, ca, token, allow, caPem}) {
+function alpineOpenrcFollowup(username) {
+	const user = String(username)
+	const dir = `/home/${user}/.local/share/omarchy-connector`
+	const unit = [
+		'#!/sbin/openrc-run',
+		'name="omarchy-connector"',
+		'command="/usr/bin/env"',
+		`command_args="python3 ${dir}/agent.py"`,
+		`command_user="${user}"`,
+		'supervisor=supervise-daemon',
+		'respawn_delay=5',
+		'pidfile="/run/omarchy-connector.pid"',
+		'start_pre() {',
+		`  uid=$(id -u ${user})`,
+		'  mkdir -p "/run/user/$uid"',
+		`  chown ${user} "/run/user/$uid"`,
+		'}',
+		'',
+	].join('\n')
+	return [
+		`cat > /etc/init.d/omarchy-connector <<'EOF'`,
+		unit,
+		'EOF',
+		'chmod +x /etc/init.d/omarchy-connector',
+		'rc-update add omarchy-connector default',
+		'rc-service omarchy-connector start',
+	].join('\n')
+}
+
+export function guestConnectorExec({os, osId, username, source, server, ca, token, allow, caPem}) {
 	if (os !== 'linux') throw new Error('This operating system can’t run the connector.')
 	if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(String(username ?? '')) || username === 'root') throw new Error('Use a lower-case username')
 	const built = connectorInstallCommand({source, server, ca, token, allow, caPem})
-	const exec = {path: 'runuser', args: ['-u', username, '--', 'bash', '-lc', `${built.command} --user-enroll-only`]}
+	if (isAlpine(osId)) {
+		const enroll = `${built.command} --user-enroll-only`
+		const exec = {path: 'bash', args: ['-lc', `runuser -u ${username} -- bash -lc ${sh(enroll)}; ${alpineOpenrcFollowup(username)}`]}
+		if (built.input) exec.input = built.input
+		return exec
+	}
+	// qemu-ga runuser has no login session, so systemctl --user needs the user bus explicitly.
+	const session = 'export XDG_RUNTIME_DIR=/run/user/$(id -u); export DBUS_SESSION_BUS_ADDRESS=unix:path="$XDG_RUNTIME_DIR/bus"'
+	const exec = {path: 'runuser', args: ['-u', username, '--', 'bash', '-lc', `${session}; ${built.command} --user-enroll-only`]}
 	if (built.input) exec.input = built.input
 	return exec
 }
