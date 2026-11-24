@@ -607,6 +607,17 @@ h1.title {
 	color: var(--muted);
 	margin-left: 1px;
 }
+.ring.is-off .track {
+	stroke: var(--line);
+}
+.ring .plain {
+	max-width: 64px;
+	color: var(--fg);
+	font-size: 13px;
+	font-weight: 650;
+	line-height: 1.15;
+	text-align: center;
+}
 .gauge .k {
 	display: flex;
 	align-items: center;
@@ -889,6 +900,13 @@ h1.title {
 	border-radius: 16px;
 	color: var(--muted);
 	margin-bottom: 12px;
+	transition:
+		border-color 0.2s,
+		box-shadow 0.2s;
+}
+.search:focus-within {
+	border-color: var(--accent-text);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 .search input {
 	flex: 1;
@@ -2080,6 +2098,7 @@ h1.title {
 	gap: 12px;
 	padding: calc(var(--safe-t) + 8px) 12px 8px;
 	background: #111114;
+	color: #fff;
 	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 .console-bar .round-btn {
@@ -2891,6 +2910,7 @@ h1.title {
 .term-paste-card {
 	width: min(100%, 480px);
 	background: #17171c;
+	color: #fff;
 	border: 1px solid rgba(255, 255, 255, 0.1);
 	border-radius: 20px;
 	padding: 14px;
@@ -2928,6 +2948,11 @@ h1.title {
 	grid-template-columns: 1fr 1.6fr;
 	gap: 8px;
 	margin-top: 10px;
+}
+.term-paste-actions .btn:not(.primary) {
+	background: rgba(255, 255, 255, 0.09);
+	border-color: rgba(255, 255, 255, 0.14);
+	color: #fff;
 }
 html.screen-locked,
 html.screen-locked body {
@@ -2969,6 +2994,9 @@ html.screen-locked .auth {
 	.term-host .xterm .xterm-helpers {
 		left: 0;
 		right: 0;
+	}
+	.console.terminal:not(.term-ready) .term-host .xterm .xterm-helper-textarea {
+		pointer-events: none !important;
 	}
 	.term-host .xterm .xterm-helper-textarea {
 		width: 100% !important;
@@ -4098,11 +4126,16 @@ html.desk-mode body {
 .menu-scrim {
 	position: fixed;
 	inset: 0;
-	z-index: 100001;
+	z-index: 100030;
 	background: transparent;
 	border: 0;
 	padding: 0;
 	cursor: default;
+}
+/* The top bar's scrim sits under the bar (same z, earlier in the DOM) and over the dock and windows,
+   so a click anywhere outside the clock or system menu closes it, and bar buttons still switch menus. */
+.menu-scrim.top-scrim {
+	z-index: 100000;
 }
 .top-pop {
 	position: fixed;
@@ -4222,7 +4255,7 @@ html.desk-mode body {
 }
 .cal-day.today {
 	background: var(--accent);
-	color: #fff;
+	color: var(--on-accent, #fff);
 	font-weight: 700;
 }
 .sys-pop {
@@ -4315,7 +4348,7 @@ html.desk-mode body {
 
 .ctx-menu {
 	position: fixed;
-	z-index: 100003;
+	z-index: 100032;
 	min-width: 220px;
 	padding: 6px;
 	border-radius: 14px;
@@ -4704,6 +4737,15 @@ html.desk-mode body {
 	border: 1px solid rgba(255, 255, 255, 0.12);
 	color: #fff;
 	box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+	transition:
+		border-color 0.18s,
+		box-shadow 0.18s;
+}
+.ov-search:focus-within {
+	border-color: var(--accent-text);
+	box-shadow:
+		0 0 0 2px var(--accent-text),
+		0 10px 30px rgba(0, 0, 0, 0.25);
 }
 .ov-search input {
 	flex: 1;
@@ -4747,7 +4789,10 @@ html.desk-mode body {
 .ov-app:hover,
 .ov-app:focus-visible {
 	background: rgba(255, 255, 255, 0.12);
-	outline: none;
+}
+.ov-app:focus-visible {
+	outline: 2px solid var(--accent-text);
+	outline-offset: -2px;
 }
 .ov-app span {
 	max-width: 100%;
@@ -5116,6 +5161,10 @@ html.desk-mode body {
 }
 .dock-item:hover {
 	background: var(--dock-hover);
+}
+.dock-item:focus-visible {
+	outline: 2px solid var(--accent-text);
+	outline-offset: -2px;
 }
 .dock-item.focused {
 	background: var(--dock-focus);
@@ -6244,6 +6293,15 @@ html:not(.desk-mode) .upload-panel {
 	backdrop-filter: blur(30px) saturate(1.4);
 	-webkit-backdrop-filter: blur(30px) saturate(1.4);
 	animation: fv-in 0.22s ease-out;
+	/* Always a dark media/document canvas: pin dark tokens so light themes stay legible. */
+	--fg: #fff;
+	--fg-2: rgba(255, 255, 255, 0.86);
+	--muted: rgba(255, 255, 255, 0.58);
+	--line: rgba(255, 255, 255, 0.12);
+	--line-2: rgba(255, 255, 255, 0.2);
+	--glass: rgba(255, 255, 255, 0.08);
+	--glass-2: rgba(255, 255, 255, 0.14);
+	color-scheme: dark;
 	color: var(--fg);
 }
 @keyframes fv-in {
@@ -6675,8 +6733,8 @@ html:not(.desk-mode) .upload-panel {
 [data-theme='omarchy'] h1,
 [data-theme='omarchy'] h2,
 [data-theme='omarchy'] .title { letter-spacing: -0.03em; }
-[data-theme='omarchy'] .win { background: #1a1b26 !important; }
-[data-theme='omarchy'] .win-bar { background: #16161e; }
+[data-theme='omarchy'] .desk .win-bar { background: color-mix(in srgb, var(--bg-solid) 96%, var(--fg) 4%); }
+[data-theme='omarchy'] .desk .win:not(.active) .win-bar { background: var(--bg-solid); }
 /* Phone console: sized to the visible area by script while the keyboard is up. */
 .console:not(.desk-ui):not(.embedded) { bottom: 0; }
 .console:not(.desk-ui):not(.embedded) .console-input { bottom: auto; top: 0; }
@@ -8031,7 +8089,7 @@ html.page-locked .auth {
 }
 .swarm-steps .chip.on {
 	background: var(--accent);
-	color: #fff;
+	color: var(--on-accent, #fff);
 }
 
 /* ---- Hyprland shell ---- */
@@ -8141,6 +8199,9 @@ html.page-locked .auth {
 	font-size: 16px;
 	padding: 14px 16px;
 	outline: none;
+}
+.hypr-launcher input:focus-visible {
+	box-shadow: inset 0 -2px 0 var(--accent-text);
 }
 .hypr-launcher ul {
 	list-style: none;
@@ -8869,11 +8930,11 @@ html:not(.desk-mode) body:has(.ac-widget) .shell { padding-bottom: calc(var(--do
 	margin-left: 4px;
 	border: 0;
 	border-radius: 50%;
-	background: color-mix(in srgb, var(--fg) 12%, transparent);
-	color: var(--fg);
+	background: rgba(255, 255, 255, 0.14);
+	color: #fff;
 	cursor: pointer;
 }
-.desk-hint-close:hover { background: color-mix(in srgb, var(--fg) 22%, transparent); }
+.desk-hint-close:hover { background: rgba(255, 255, 255, 0.24); }
 
 /* ---- first sign-in on a device: Desktop or Phone & tablet ---- */
 .layout-chooser {

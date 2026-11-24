@@ -792,7 +792,7 @@ test('a rejected key uses the settings message', async () => {
 	const events = []
 	try {
 		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: (e) => events.push(e)})
-		assert.deepEqual(events, [{event: 'error', data: {message: KEY_REJECTED}}])
+		assert.deepEqual(events, [{event: 'error', data: {message: KEY_REJECTED, conversationId: out.conversationId}}])
 		assert.ok(out.conversationId)
 		const raw = await readFile(join(box.dataDir, 'assistant', 'conversations', `${out.conversationId}.json`), 'utf8')
 		assert.equal(raw.includes(SECRET), false)
@@ -811,7 +811,7 @@ test('a provider transport failure becomes an error event', async () => {
 	const events = []
 	try {
 		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: (e) => events.push(e)})
-		assert.deepEqual(events, [{event: 'error', data: {message: describeReachFailure('https://api.x.ai/v1', new Error('socket hang up'))}}])
+		assert.deepEqual(events, [{event: 'error', data: {message: describeReachFailure('https://api.x.ai/v1', new Error('socket hang up')), conversationId: out.conversationId}}])
 		assert.ok(out.conversationId)
 	} finally {
 		await box.close()
@@ -1716,6 +1716,68 @@ test('a built-in tool result is stored already cut at 20000 characters', async (
 		const again = await box.asst.conversations.get('owner', second.conversationId)
 		assert.equal(again.messages.find((m) => m.toolCallId === 'call_disk2').content, exact)
 		assert.equal(seen.length >= 3, true)
+	} finally {
+		await box.close()
+	}
+})
+
+// A provider that answers 200 and then sends only keep-alive comments until its request is aborted.
+function hangingProvider() {
+	const stat = {opened: 0, closed: 0}
+	const fetchImpl = async (_url, opts) => {
+		stat.opened++
+		const body = (async function* () {
+			try {
+				while (!opts.signal?.aborted) {
+					yield new TextEncoder().encode(': keep-alive\n\n')
+					await new Promise((r) => setTimeout(r, 10))
+				}
+			} finally {
+				stat.closed++
+			}
+		})()
+		return {ok: true, status: 200, headers: new Headers({'content-type': 'text/event-stream'}), body}
+	}
+	return {stat, fetchImpl}
+}
+
+test('a reply that never produces anything is cut off and frees the chat', async () => {
+	const hang = hangingProvider()
+	const box = await withAssistant({runProcedure: async () => ({}), fetchImpl: hang.fetchImpl, turnIdleMs: 150, turnMaxMs: 5000})
+	try {
+		const chat = await box.asst.conversations.create('owner', {keyId: box.key.id, title: 'Hang'})
+		const a = streamPair({conversationId: chat.id, message: 'hi'})
+		await box.asst.handleStream(a.req, a.res, {userId: 'owner'})
+		assert.equal(hang.stat.opened, 1)
+		assert.equal(hang.stat.closed, 1, 'the provider connection was closed')
+		assert.match(a.chunks.join(''), /event: error\ndata: \{"message":"The assistant stopped answering/)
+		// The lock is released: the same chat takes a new message instead of "still answering".
+		const again = streamPair({conversationId: chat.id, message: 'again'})
+		const second = box.asst.handleStream(again.req, again.res, {userId: 'owner'})
+		await new Promise((r) => setTimeout(r, 30))
+		assert.doesNotMatch(again.chunks.join(''), /still answering/)
+		await second
+	} finally {
+		await box.close()
+	}
+})
+
+test('the person can stop a running reply with assistant.stop, and only their own', async () => {
+	const hang = hangingProvider()
+	const box = await withAssistant({runProcedure: async () => ({}), fetchImpl: hang.fetchImpl, turnIdleMs: 60_000, turnMaxMs: 60_000})
+	try {
+		const chat = await box.asst.conversations.create('owner', {keyId: box.key.id, title: 'Stop'})
+		const a = streamPair({conversationId: chat.id, message: 'hi'})
+		const running = box.asst.handleStream(a.req, a.res, {userId: 'owner'})
+		await new Promise((r) => setTimeout(r, 50))
+		const stop = box.asst.procedures['assistant.stop'].run
+		assert.equal(stop({conversationId: chat.id}, {auth: {userId: 'sam'}}).stopped, false)
+		assert.equal(hang.stat.closed, 0)
+		assert.equal(stop({conversationId: chat.id}, {auth: {userId: 'owner'}}).stopped, true)
+		await running
+		assert.equal(hang.stat.closed, 1)
+		assert.doesNotMatch(a.chunks.join(''), /event: error/)
+		assert.equal(stop({conversationId: chat.id}, {auth: {userId: 'owner'}}).stopped, false)
 	} finally {
 		await box.close()
 	}

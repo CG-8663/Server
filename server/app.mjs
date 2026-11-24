@@ -167,6 +167,7 @@ export const ALLOWED = {
 	'assistant.conversations': 'query',
 	'assistant.getConversation': 'query',
 	'assistant.deleteConversation': 'mutation',
+	'assistant.stop': 'mutation',
 	'assistant.approve': 'mutation',
 	'assistant.reject': 'mutation',
 	'omarchy.installPlugin': 'mutation',
@@ -348,7 +349,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-export const SLOW = new Set(['unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
+export const SLOW = new Set(['unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'apps.start', 'apps.stop', 'apps.restart', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.start', 'machines.hibernate', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
 export const timeoutFor = (path) => (SLOW.has(path) ? 30 * 60 * 1000 : 20_000)
 
 // An IPv6 address in a URL needs brackets; req.hostname and URL.hostname may already have them.
@@ -407,7 +408,11 @@ const isLoopback = (hostname) => hostname === 'localhost' || hostname === '::1' 
 export function normalizeBackendUrl(input) {
 	let value = String(input ?? '').trim()
 	if (!value) throw new Error('Enter your server’s address')
-	if (!/^https?:\/\//i.test(value)) value = `http://${value}`
+	const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value)?.[1]
+	if (scheme && !/^https?$/i.test(scheme)) throw new Error(`An address can’t start with ${scheme}://. Use an http:// or https:// address, or just the IP address or name`)
+	// A bare IPv6 address (more than one colon, no brackets) needs brackets to be a URL host.
+	if (!scheme && !value.startsWith('[') && !value.includes('/') && (value.match(/:/g) ?? []).length > 1) value = `[${value}]`
+	if (!scheme) value = `http://${value}`
 	const url = new URL(value)
 	if (url.username || url.password) throw new Error('The address must not contain a username or password')
 	return `${url.protocol}//${url.host}`
@@ -645,7 +650,10 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			}
 		}
 		shareAppSession(req, res, store.getSession(req.sid))
-		if (req.sid) keepAppPassFresh(req.sid)
+		if (req.sid) {
+			keepAppPassFresh(req.sid)
+			keepBrowserSessionFresh(req.sid)
+		}
 		// Settings › Devices shows when each device was last used: note it, at most once a minute.
 		const seen = store.getSession(req.sid)
 		if (seen && Date.now() - (seen.lastSeenAt ?? 0) > 60_000) store.updateSession(req.sid, {lastSeenAt: Date.now()}).catch(() => {})
@@ -780,7 +788,12 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const upstream = new URL(backend.baseUrl)
 		const local = isLoopback(upstream.hostname)
 		const host = local ? req.hostname : upstream.hostname
-		const publicUrl = local ? `http://${req.hostname}` : backend.baseUrl
+		// The page was reached on a port as well (7780 by default): keep it, so the link isn't port 80.
+		let pageHost = req.hostname
+		try {
+			pageHost = new URL(`${req.protocol}://${req.headers.host}`).host || pageHost
+		} catch {}
+		const publicUrl = local ? `${req.protocol}://${pageHost}` : backend.baseUrl
 		try {
 			const [version, discovery, accounts] = await Promise.all([
 				backend.query('system.version'),
@@ -1125,7 +1138,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			patch.solidColor = solidColor === null ? null : String(solidColor).toLowerCase()
 		}
 		if (omarchyBackground !== undefined) {
-			if (omarchyBackground !== null && !/^[0-9a-f]{16}$/.test(String(omarchyBackground))) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown background'}})
+			if (omarchyBackground !== null && (typeof omarchyBackground !== 'string' || !/^[0-9a-f]{16}$/.test(omarchyBackground))) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown background'}})
 			patch.omarchyBackground = omarchyBackground
 		}
 		if (theme !== undefined) {
@@ -1137,7 +1150,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			patch.accent = accent
 		}
 		if (customBrandHsl !== undefined) {
-			if (customBrandHsl !== null && !HSL.test(String(customBrandHsl))) {
+			if (customBrandHsl !== null && (typeof customBrandHsl !== 'string' || !HSL.test(customBrandHsl))) {
 				return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad colour'}})
 			}
 			patch.customBrandHsl = customBrandHsl
@@ -1259,11 +1272,35 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		}
 		const auth = {token: session.console.token, cookie: session.console.cookie}
 		// Browser sessions last 7 days from their last renewal; keep ours fresh.
-		if (Date.now() - session.console.renewedAt > 24 * 60 * 60 * 1000) {
-			await backend.mutation('user.renewToken', undefined, auth).catch(() => {})
-			await store.updateSession(sid, {console: {...session.console, renewedAt: Date.now()}})
-		}
+		await renewBrowserSession(sid)
 		return auth
+	}
+	// Renew the browser-style session when the last renewal was over a day ago. renewedAt moves only
+	// when omarchyd accepted the renewal, so a refused or failed one is tried again, not recorded as done.
+	const BROWSER_RENEW_MS = 24 * 60 * 60 * 1000
+	async function renewBrowserSession(sid) {
+		const backend = getClient()
+		const session = store.getSession(sid)
+		if (!backend || !session?.console || Date.now() - session.console.renewedAt <= BROWSER_RENEW_MS) return
+		const {token, cookie} = session.console
+		try {
+			await backend.mutation('user.renewToken', undefined, {token, cookie})
+		} catch {
+			return
+		}
+		const current = store.getSession(sid)
+		if (current?.console) await store.updateSession(sid, {console: {...current.console, renewedAt: Date.now()}})
+	}
+	// Called on every request, so the browser session stays alive for anyone who is still signed in,
+	// not only for someone who opens Files or a console within its 7 days.
+	const renewingBrowser = new Set()
+	function keepBrowserSessionFresh(sid) {
+		const s = store.getSession(sid)
+		if (!s?.console || renewingBrowser.has(sid) || Date.now() - s.console.renewedAt <= BROWSER_RENEW_MS) return
+		renewingBrowser.add(sid)
+		renewBrowserSession(sid)
+			.catch(() => {})
+			.finally(() => renewingBrowser.delete(sid))
 	}
 	const lostBrowserSession = async (sid, error) => {
 		if (error instanceof BackendError && error.code === 'UNAUTHORIZED') {

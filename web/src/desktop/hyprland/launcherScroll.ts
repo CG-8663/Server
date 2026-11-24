@@ -20,3 +20,33 @@ export function scrollSelectedRow(list: ScrollableList, index: number, count: nu
 	row.scrollIntoView({block: 'nearest'})
 	return true
 }
+
+// Yield capture-phase launcher keys (ArrowUp/ArrowDown/Enter/Escape) whenever a context menu is open
+// above the launcher, so the topmost menu owns keyboard navigation and dismissal.
+export function shouldYieldLauncherKey(
+	doc: {querySelector?: (sel: string) => unknown; activeElement?: {closest?: (sel: string) => unknown} | null} | null | undefined,
+	target: EventTarget | null | undefined,
+): boolean {
+	const t = target as {closest?: (sel: string) => unknown} | null | undefined
+	if (t?.closest?.('.ctx-menu')) return true
+	if (doc?.activeElement?.closest?.('.ctx-menu')) return true
+	return Boolean(doc?.querySelector?.('.ctx-menu'))
+}
+
+// Handle capture-phase Enter only when the Filter input owns focus; focused list buttons activate natively.
+export function shouldLauncherCaptureEnter(input: unknown, activeElement: unknown, target: EventTarget | null | undefined): boolean {
+	if (!input) return false
+	return target === input || activeElement === input
+}
+
+// Resolve the 0-based row index containing activeElement when focus is inside the launcher list, or -1 otherwise.
+export function focusedLauncherIndex<T>(
+	list: {children: ArrayLike<{contains?: (node: T) => boolean}>} | null | undefined,
+	activeElement: T,
+): number {
+	if (!list || !activeElement) return -1
+	for (let i = 0; i < list.children.length; i++) {
+		if (list.children[i]?.contains?.(activeElement)) return i
+	}
+	return -1
+}

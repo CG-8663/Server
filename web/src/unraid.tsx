@@ -4,6 +4,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query, type Listing} from './api'
 import {Icon, type IconName} from './icons'
+import {safeSession} from './safeStorage'
 import {Field, Group, Row, Segmented, Switch, haptic, useConfirm, useToast} from './ui'
 import {defaultSelectedVms, formatBytes, formatTotalSize, isKeyChangedError, itemStatusForView, jobSummary, retryActionState, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
 
@@ -64,7 +65,7 @@ export function UnraidPage({onBack}: {onBack: () => void}) {
 	const [scanning, setScanning] = useState(false)
 	const [error, setError] = useState<string | null>(null)
 	// A finished move stays on show until you choose Done (or look again).
-	const [dismissed, setDismissed] = useState<string | null>(() => sessionStorage.getItem('omarchy-server:unraid-dismissed'))
+	const [dismissed, setDismissed] = useState<string | null>(() => safeSession.get('omarchy-server:unraid-dismissed'))
 	const s = status.data
 	const refresh = () => qc.invalidateQueries({queryKey: ['unraid.status']})
 
@@ -84,7 +85,7 @@ export function UnraidPage({onBack}: {onBack: () => void}) {
 	const running = !!s?.job && !s.job.endedAt
 	const showJob = s?.job && (running || s.job.id !== dismissed)
 	function dismiss(id: string) {
-		sessionStorage.setItem('omarchy-server:unraid-dismissed', id)
+		safeSession.set('omarchy-server:unraid-dismissed', id)
 		setDismissed(id)
 	}
 	const disconnect = async () => {

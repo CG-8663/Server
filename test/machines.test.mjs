@@ -13,7 +13,7 @@ import WebSocket from 'ws'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
 import {cloudUserData, isWindowsClientLabel, omarchyConfiguration, windowsAnswerFile} from '../omarchyd/machine-media.mjs'
-import {createMachines, findChecksum} from '../omarchyd/machines.mjs'
+import {backupProgress, createMachines, findChecksum} from '../omarchyd/machines.mjs'
 import {RpcError} from '../omarchyd/rpc.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
@@ -76,6 +76,15 @@ test('install media: desktop cloud-init, Omarchy disk layout, Windows answer fil
 	assert.equal(Buffer.from(/<Value>([^<]+)<\/Value>/.exec(xml)[1], 'base64').toString('utf16le'), 'hunter2 secretPassword')
 })
 
+test('backup progress converts the units virsh prints before dividing', () => {
+	const job = (done, total) => `Job type:         Unbounded   \nOperation:        Backup\nData processed:   ${done}\nData remaining:   1.000 GiB\nData total:       ${total}\n`
+	assert.equal(backupProgress(job('300.000 MiB', '4.000 GiB')), 7)
+	assert.equal(backupProgress(job('1.000 GiB', '4.000 GiB')), 23)
+	assert.equal(backupProgress(job('2.000 GiB', '2.000 GiB')), 90)
+	assert.equal(backupProgress(job('0.000 B', '2.000 GiB')), 0)
+	assert.equal(backupProgress('Job type:         None\n'), null)
+})
+
 describe('omarchyd machines', () => {
 	let root, data, d, fixture, fixtureUrl, auth
 	const doms = new Map()
@@ -104,7 +113,7 @@ describe('omarchyd machines', () => {
 				case 'domifaddr':
 					return ''
 				case 'version':
-					return 'Compiled against library: libvirt 10.0.0\nRunning hypervisor: QEMU 9.0.0\n'
+					return 'Compiled against library: libvirt 10.0.0\nUsing library: libvirt 10.0.0\nUsing API: QEMU 10.0.0\nRunning hypervisor: QEMU 9.0.0\n'
 				case 'qemu-monitor-command':
 					return `VM status: running (${a.at(-1)})\n`
 				case 'backup-begin': {
@@ -148,6 +157,7 @@ describe('omarchyd machines', () => {
 			throw new Error(`virsh ${a[0]} not simulated`)
 		}
 		if (cmd === 'qemu-img') {
+			if (args[0] === 'info' && seen.virtualGb) return JSON.stringify({format: 'qcow2', 'virtual-size': seen.virtualGb * 1024 ** 3, 'actual-size': 4096})
 			if (args[0] === 'convert') await copyFile(args.at(-2), args.at(-1))
 			if (args[0] === 'create') await writeFile(args[3], 'blank')
 			return 'qemu-img version 9.0\n'
@@ -373,6 +383,7 @@ describe('omarchyd machines', () => {
 		const node = await q('machines.node')
 		assert.ok(node.threads >= 1 && node.memoryTotalMb > 0)
 		assert.equal(node.libvirtVersion, '10.0.0')
+		assert.equal(node.qemuVersion, '9.0.0', 'the QEMU version is the running hypervisor, not the libvirt API line')
 		assert.ok(node.videoModels.includes('vga'))
 	})
 
@@ -394,13 +405,21 @@ describe('omarchyd machines', () => {
 		await until(async () => (await q('machines.list')).find((x) => x.id === id).state === 'running')
 	})
 
+	test('drives: the IDE bus is refused on a q35 machine before anything is saved', async () => {
+		const before = (await q('machines.details', {id})).hardware.disks.map((x) => [x.id, x.bus])
+		await assert.rejects(call('machines.addDisk', {id, sizeGb: 1, bus: 'ide'}), /IDE is only available on the i440fx/)
+		await assert.rejects(call('machines.updateDisk', {id, diskId: 'disk0', bus: 'ide'}), /IDE is only available on the i440fx/)
+		assert.deepEqual((await q('machines.details', {id})).hardware.disks.map((x) => [x.id, x.bus]), before)
+	})
+
 	test('options: notes, protection, guest agent, boot menu', async () => {
 		await call('machines.updateOptions', {id, notes: 'Web <server>', protection: true, agent: true, bootMenu: true, onBoot: true, startupOrder: 2, startupDelay: 10})
 		assert.match(seen.xml, /<description>Web &lt;server&gt;<\/description>/)
 		assert.match(seen.xml, /org\.qemu\.guest_agent\.0/)
 		assert.match(seen.xml, /<bootmenu enable='yes'/)
 		await assert.rejects(call('machines.uninstall', {id}), /protected/)
-		await assert.rejects(call('machines.updateOptions', {id, startupDelay: 9999}), /Start delay/)
+		await assert.rejects(call('machines.updateOptions', {id, name: 'Renamed', startupDelay: 9999}), /Start delay/)
+		assert.equal((await q('machines.details', {id})).name, 'Box', 'a rejected request does not rename the machine')
 		await call('machines.updateOptions', {id, protection: false, agent: false, bootMenu: false, onBoot: false, notes: ''})
 		assert.ok(!seen.xml.includes('guest_agent'))
 	})
@@ -456,6 +475,13 @@ describe('omarchyd machines', () => {
 		await call('machines.revertSnapshot', {id, name: 'before'})
 		assert.ok(seen.calls.some((c) => /^qemu-img snapshot -a before /.test(c)))
 		assert.equal((await q('machines.details', {id})).hardware.memoryMb, 1024)
+		const before = (await q('machines.list')).find((x) => x.id === id).diskSizeGb
+		await call('machines.resizeDisk', {id, diskId: 'disk0', sizeGb: before + 5})
+		assert.equal((await q('machines.list')).find((x) => x.id === id).diskSizeGb, before + 5)
+		seen.virtualGb = before
+		await call('machines.revertSnapshot', {id, name: 'before'})
+		seen.virtualGb = undefined
+		assert.equal((await q('machines.list')).find((x) => x.id === id).diskSizeGb, before, 'the list shows the size the image has after the rollback')
 		await call('machines.deleteSnapshot', {id, name: 'before'})
 		assert.deepEqual((await q('machines.details', {id})).snapshots, [])
 	})
@@ -1418,6 +1444,49 @@ test('a machine set to the VirtIO display keeps it across a restart when this se
 		assert.equal(await videoAfterRestart('name "virtio-vga", bus PCI'), 'virtio', 'virtio-vga is available: the owner’s choice stays')
 		assert.equal(await videoAfterRestart('name "virtio-vga", bus PCI'), 'virtio', 'and stays on every later start')
 		assert.equal(await videoAfterRestart(''), 'vga', 'without virtio-vga the old display is still replaced')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('a Windows Server ISO you install by hand gets the SATA disk and e1000e network card Setup can see', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-winiso-'))
+	try {
+		const dataDir = join(root, 'data')
+		await mkdir(join(root, 'home'), {recursive: true})
+		await writeFile(join(root, 'home', 'Win_Server_2022.iso'), 'iso')
+		await writeFile(join(root, 'home', 'archlinux.iso'), 'iso')
+		const kvmDevice = join(root, 'kvm')
+		await writeFile(kvmDevice, '')
+		let xml = ''
+		let name = ''
+		let started = false
+		const run = async (cmd, args) => {
+			if (cmd === 'qemu-img' && args[0] === 'create') await writeFile(args[3], 'blank')
+			if (cmd === 'xorriso') return `Volume Id    : ${/Win_Server/.test(args[1]) ? 'SSS_X64FREE_EN-US_DV9' : 'ARCH_202611'}\n`
+			if (cmd === 'virsh') {
+				const a = args[0] === '-c' ? args.slice(2) : args
+				if (a[0] === 'define') (xml = await readFile(a[1], 'utf8')), (name = /<name>([^<]+)<\/name>/.exec(xml)[1])
+				if (a[0] === 'start') started = true
+				if (a[0] === 'list') return started ? ` Id   Name   State\n------------------\n -    ${name}   running\n` : ' Id   Name   State\n------------------\n'
+				return ''
+			}
+			return ''
+		}
+		const machines = createMachines({dataDir, run, kvmDevice, files: {resolve: async (p) => ({real: p.replace('/Home', join(root, 'home')), top: 'Home'})}})
+		await machines.ready
+		const isos = await machines.procedures['machines.localIsos'].run()
+		const server = isos.find((i) => /Win_Server/.test(i.id))
+		const arch = isos.find((i) => /archlinux/.test(i.id))
+		assert.deepEqual([server.platform, server.requiresCredentials, server.manualSetup], ['windows', false, true])
+		const spec = {cores: 1, memoryGb: 1, diskSizeGb: 10}
+		const {id} = await machines.procedures['machines.create'].run({...spec, name: 'Server', osId: server.id})
+		await untilMachine(machines, id, 'running')
+		assert.match(xml, /<model type='e1000e'\/>/)
+		assert.ok(!/bus='virtio'/.test(xml), 'Setup has no virtio storage driver')
+		const {id: other} = await machines.procedures['machines.create'].run({...spec, name: 'Arch', osId: arch.id})
+		await untilMachine(machines, other, 'running')
+		assert.match(xml, /<target dev='vda' bus='virtio'\/>/, 'other ISOs keep the virtio layout')
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}

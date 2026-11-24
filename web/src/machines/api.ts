@@ -3,6 +3,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query, type PortForward} from '../api'
 import {useToast} from '../ui'
+import {fetchStats, statsQueryKey} from './statsQuery'
 
 export type Drive = {
 	id: string
@@ -68,9 +69,8 @@ export const useMachineDetails = (id: string | null) =>
 export const useNode = () => useQuery({queryKey: ['machines.node'], queryFn: () => query<NodeInfo>('machines.node'), refetchInterval: 15_000, staleTime: 10_000})
 export const useStats = (id: string | null, enabled = true) =>
 	useQuery({
-		queryKey: ['machines.stats'] as const,
-		queryFn: () => query<Record<string, Stats>>('machines.stats'),
-		select: (all) => (id ? all[id] : undefined),
+		queryKey: statsQueryKey(id ?? ''),
+		queryFn: () => fetchStats(id as string),
 		enabled: !!id && enabled,
 		refetchInterval: 3000,
 	})

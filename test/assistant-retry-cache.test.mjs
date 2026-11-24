@@ -142,9 +142,9 @@ test('an overloaded stream that never recovers ends the turn with its error', as
 		const asst = createAssistant({dataDir, accounts: fakeAccounts(), now: () => 1, fetchImpl, sleep, runProcedure: async () => null})
 		await asst.keys.add(OWNER, {provider: 'anthropic', apiKey: 'sk-ant-test', model: 'claude-sonnet-5-5'})
 		const events = []
-		await asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: (e) => events.push(e)})
+		const out = await asst.runTurn({userId: 'owner', role: 'owner', message: 'hi', emit: (e) => events.push(e)})
 		assert.equal(calls.length, 3)
-		assert.deepEqual(events, [{event: 'error', data: {message: 'Overloaded'}}])
+		assert.deepEqual(events, [{event: 'error', data: {message: 'Overloaded', conversationId: out.conversationId}}])
 	} finally {
 		await rm(dataDir, {recursive: true, force: true})
 	}

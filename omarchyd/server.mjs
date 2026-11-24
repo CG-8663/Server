@@ -921,7 +921,17 @@ WantedBy=graphical-session.target
 						viewerJoined()
 						ws.once('close', viewerLeft)
 					}
-					vnc.on('data', (d) => ws.readyState === ws.OPEN && ws.send(d, {binary: true}))
+					vnc.on('data', (d) => {
+						if (ws.readyState !== ws.OPEN) return
+						// A browser that stopped reading (asleep, off Wi-Fi, a frozen tab) would otherwise make the
+						// server keep every frame in memory. Same 1 MiB cap as the connector viewer.
+						if (ws.bufferedAmount > 1024 * 1024) {
+							ws.close(1011, 'The viewer fell behind')
+							vnc.destroy()
+							return
+						}
+						ws.send(d, {binary: true})
+					})
 					ws.on('message', (d) => vnc.write(d))
 					vnc.on('close', () => ws.close(1000))
 					vnc.on('error', () => ws.terminate())

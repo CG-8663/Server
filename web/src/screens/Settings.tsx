@@ -16,7 +16,8 @@ import {UnraidPage} from '../unraid'
 import {OidcSheet} from './Oidc'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 import {clearTotpSetupQuery} from './twoFactorQuery'
-import {PASSWORD_SHEET_SUBTITLE} from './settingsHelpers'
+import {MIN_PASSWORD_LENGTH, PASSWORD_SHEET_SUBTITLE, updateStartFailure} from './settingsHelpers'
+import {safeSession} from '../safeStorage'
 import {setPreRelease, usePreRelease} from '../prerelease'
 
 function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false; staleTime?: number; refetchOnWindowFocus?: boolean; refetchOnReconnect?: boolean} = {}) {
@@ -98,13 +99,13 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const inWindow = useContext(InWindow)
 	type Page = 'main' | 'appearance' | 'storage' | 'unraid' | 'omarchy-themes' | 'assistant'
 	const [page, setPage] = useState<Page>(() => {
-		const saved = sessionStorage.getItem('omarchy-server:settings-page')
+		const saved = safeSession.get('omarchy-server:settings-page')
 		return saved === 'appearance' || saved === 'storage' || saved === 'unraid' || saved === 'omarchy-themes' || saved === 'assistant' ? saved : 'main'
 	})
 	const openPage = (p: Page) => {
 		haptic(5)
-		if (p === 'main') sessionStorage.removeItem('omarchy-server:settings-page')
-		else sessionStorage.setItem('omarchy-server:settings-page', p)
+		if (p === 'main') safeSession.remove('omarchy-server:settings-page')
+		else safeSession.set('omarchy-server:settings-page', p)
 		setPage(p)
 		scrollPhoneToTop()
 	}
@@ -134,8 +135,12 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 		if (!ok) return
 		setUpdateError(null)
 		setUpdating(true)
-		mutate('system.update').catch(() => {
-			/* the server restarts mid-request; progress comes from updateStatus */
+		mutate('system.update').catch((e) => {
+			// A dropped connection is fine (progress comes from updateStatus); a refusal from the server is not.
+			const failure = updateStartFailure(e)
+			if (failure === null) return
+			setUpdateError(failure)
+			setUpdating(false)
 		})
 	}
 	useEffect(() => {
@@ -1116,7 +1121,7 @@ function PasswordSheet({open, onClose}: {open: boolean; onClose: () => void}) {
 			onClose={onClose}
 			submit="Change password"
 			busy={save.isPending}
-			disabled={!oldPassword || newPassword.length < 6 || newPassword !== repeat}
+			disabled={!oldPassword || newPassword.length < MIN_PASSWORD_LENGTH || newPassword !== repeat}
 			onSubmit={() =>
 				save.mutate(
 					{path: 'user.changePassword', input: {oldPassword, newPassword}, done: 'Password changed'},
@@ -1133,7 +1138,7 @@ function PasswordSheet({open, onClose}: {open: boolean; onClose: () => void}) {
 			}
 		>
 			<Field id="old" label="Current password" type="password" autoComplete="current-password" value={oldPassword} onChange={(e) => setOld(e.target.value)} autoFocus />
-			<Field id="new" label="New password" type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNew(e.target.value)} hint="At least 6 characters." />
+			<Field id="new" label="New password" type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNew(e.target.value)} hint={`At least ${MIN_PASSWORD_LENGTH} characters.`} />
 			<Field id="repeat" label="Repeat new password" type="password" autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} error={mismatch ? 'Passwords don’t match.' : undefined} />
 		</FormSheet>
 	)
