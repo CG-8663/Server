@@ -27,7 +27,7 @@ const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((1
  */
 export type GuestSections = {files?: ReactNode; apps?: ReactNode; storage?: ReactNode; backups?: ReactNode; manage?: ReactNode}
 
-export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, onBackups, onOpenTerminal, tabs}: {machine: Machine; onOpenStore?: () => void; onOpenDesktop?: () => void; onOpenStorage: (target: {agentId: string; name: string}) => void; onBackups?: () => void; onOpenTerminal?: (agent: {id: string; name: string}, input?: string) => void; tabs: (sections: GuestSections) => ReactNode}) {
+export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, onBackups, onOpenTerminal, pin, tabs}: {machine: Machine; onOpenStore?: () => void; onOpenDesktop?: () => void; onOpenStorage: (target: {agentId: string; name: string}) => void; onBackups?: () => void; onOpenTerminal?: (agent: {id: string; name: string}, input?: string) => void; pin?: ReactNode; tabs: (sections: GuestSections) => ReactNode}) {
 	const swarm = useSwarm()
 	const agent = guestAgent(swarm.data ?? [], machine.id)
 	const [install, setInstall] = useState(false)
@@ -60,7 +60,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 	const connectorDesktop = live && !!agent && agentMay(agent, 'desktop') && agent.info?.desktop?.ok !== false
 	return (
 		<>
-			<MachineActions terminal={live && !!agent && agentMay(agent, 'terminal')} desktop={hostScreen || connectorDesktop} onTerminal={() => openTerminal()} onDesktop={() => (onOpenDesktop && machine.state === 'running' ? onOpenDesktop() : desk && agent ? desk.openConsole(`agent-${agent.id}`, machine.name) : setDesktop(true))} />
+			<MachineActions terminal={live && !!agent && agentMay(agent, 'terminal')} desktop={hostScreen || connectorDesktop} onTerminal={() => openTerminal()} onDesktop={() => (onOpenDesktop && machine.state === 'running' ? onOpenDesktop() : desk && agent ? desk.openConsole(`agent-${agent.id}`, machine.name) : setDesktop(true))} pin={pin} />
 			{swarm.isFetched && !agent && linux && (
 				<div className="actions">
 					<button type="button" className="btn primary" onClick={() => (haptic(6), setInstall(true))}>

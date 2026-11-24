@@ -6,9 +6,9 @@ import type {ReactNode} from 'react'
 import type {LayoutPref} from './ui'
 import {haptic} from './ui'
 
-function ArtDesktop() {
+function ArtDesktop({stayRound = false}: {stayRound?: boolean} = {}) {
 	return (
-		<span className="lp-art lp-art-desktop" aria-hidden="true">
+		<span className={`lp-art lp-art-desktop${stayRound ? ' lp-art-round' : ''}`} aria-hidden="true">
 			<i className="lp-win" />
 			<i className="lp-win lp-win-2" />
 			<i className="lp-dock" />
@@ -44,9 +44,9 @@ function ArtHyprland() {
 	)
 }
 
-function Card({on, suits, art, title, body, onClick}: {on: boolean; suits?: boolean; art: ReactNode; title: string; body: string; onClick: () => void}) {
-	return (
-		<button type="button" role="radio" aria-checked={on} className={`lp-card${on ? ' on' : ''}`} onClick={onClick}>
+function Card({on, suits, art, title, body, onClick, readme}: {on: boolean; suits?: boolean; art: ReactNode; title: string; body: string; onClick: () => void; readme?: () => void}) {
+	const picture = (
+		<>
 			{art}
 			<span className="lp-text">
 				<b>
@@ -55,7 +55,32 @@ function Card({on, suits, art, title, body, onClick}: {on: boolean; suits?: bool
 				</b>
 				<span>{body}</span>
 			</span>
-		</button>
+		</>
+	)
+	if (!readme) {
+		return (
+			<button type="button" role="radio" aria-checked={on} className={`lp-card${on ? ' on' : ''}`} onClick={onClick}>
+				{picture}
+			</button>
+		)
+	}
+	// The README control sits on the card, beside the choice, so it is not a second press of the radio.
+	return (
+		<div className={`lp-card has-readme${on ? ' on' : ''}`}>
+			<button type="button" role="radio" aria-checked={on} className="lp-card-hit" onClick={onClick}>
+				{picture}
+			</button>
+			<button
+				type="button"
+				className="btn small lp-readme"
+				onClick={() => {
+					haptic(6)
+					readme()
+				}}
+			>
+				README
+			</button>
+		</div>
 	)
 }
 
@@ -75,15 +100,15 @@ export function ScreenLayoutCards({value, detected, onPick, label = 'Screen layo
 }
 
 /** Shape is corners and, on the desktop, how windows are arranged. Round floats. Square tiles. */
-export function DesktopStyleCards<T extends string>({value, onPick, floating, tiling}: {value: T; onPick: (v: T) => void; floating: T; tiling: T}) {
+export function DesktopStyleCards<T extends string>({value, onPick, floating, tiling, onSquareReadme}: {value: T; onPick: (v: T) => void; floating: T; tiling: T; onSquareReadme?: () => void}) {
 	const pick = (v: T) => {
 		haptic(6)
 		onPick(v)
 	}
 	return (
 		<div className="lp-cards lp-cards-2" role="radiogroup" aria-label="Shape">
-			<Card on={value === floating} art={<ArtDesktop />} title="Round" body="Rounded corners. Floating windows, a dock, and Activities." onClick={() => pick(floating)} />
-			<Card on={value === tiling} art={<ArtHyprland />} title="Square" body="Square corners. Tiled windows, workspaces 1–9, and Omarchy’s Super shortcuts." onClick={() => pick(tiling)} />
+			<Card on={value === floating} art={<ArtDesktop stayRound />} title="Round" body="Rounded corners. Floating windows, a dock, and Activities." onClick={() => pick(floating)} />
+			<Card on={value === tiling} art={<ArtHyprland />} title="Square" body="Square corners. Tiled windows over a dock, and workspaces 1–9." onClick={() => pick(tiling)} readme={onSquareReadme} />
 		</div>
 	)
 }

@@ -1,7 +1,7 @@
 // Files: the web app's /Home is the owner's real home folder, and /Trash is the freedesktop trash
 // (~/.local/share/Trash) that Omarchy's own file manager uses, so browser and desktop agree.
 // Every path is resolved and checked to stay inside those folders, symlinks included.
-import {createReadStream, createWriteStream} from 'node:fs'
+import {constants as fsc, createReadStream, createWriteStream} from 'node:fs'
 import {Readable} from 'node:stream'
 import {cp, link, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises'
 import {basename, dirname, extname, join, resolve as pathResolve, sep} from 'node:path'
@@ -137,6 +137,9 @@ async function mapPool(items, n, fn) {
 
 // /External is the drives you mount in Storage: they go under /run/media/<you>, and each one is a
 // folder here. A drive itself can't be moved, renamed or trashed (unmount it in Storage instead).
+// The largest piece of a chunked upload (the browser sends 8 MB).
+const CHUNK_MAX = 64 * 1024 * 1024
+
 export function createFiles({home, dataDir, io, drivesDir = join('/run/media', os.userInfo().username)} = {}) {
 	const mkdirOp = typeof io?.mkdir === 'function' ? io.mkdir : mkdir
 	const trashRoot = join(home, '.local/share/Trash')
@@ -744,6 +747,92 @@ export function createFiles({home, dataDir, io, drivesDir = join('/run/media', o
 		return endJson(res, 200, {path: await toVirtual(target)})
 	}
 
+	// A big file in pieces: each request is one piece (up to CHUNK_MAX), appended in order to a
+	// hidden partial file next to where the file goes. When the last byte is in, the file takes its
+	// name the same way a whole upload does. A piece can be sent again (a dropped connection); one
+	// out of order is refused with how much arrived, so the browser carries on from there. This gets
+	// big files through anything that limits one request (a Cloudflare Tunnel allows 100 MB).
+	async function uploadChunk(req, res, url) {
+		const path = url.searchParams.get('path')
+		const collision = url.searchParams.get('collision') ?? 'keep-both'
+		const id = url.searchParams.get('id') ?? ''
+		const offset = Number(url.searchParams.get('offset'))
+		const total = Number(url.searchParams.get('total'))
+		if (!/^[a-f0-9]{16,64}$/.test(id) || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(total) || total < 0 || offset > total) {
+			return endJson(res, 400, {error: '[bad-chunk]'})
+		}
+		let real
+		try {
+			assertVisibleName(basename(path ?? ''))
+			;({real} = await resolve(path, {mustExist: false}))
+		} catch (e) {
+			return endJson(res, e instanceof RpcError && e.code === 'NOT_FOUND' ? 404 : 400, {error: e.message})
+		}
+		const exists = await lstat(real).then((s) => s, () => null)
+		if (exists?.isDirectory() && collision === 'replace') return endJson(res, 409, {error: '[is-a-directory]'})
+		if (exists && collision === 'error') return endJson(res, 409, {error: '[already-exists]'})
+		const dir = dirname(real)
+		const part = join(dir, `.upload.part.${id}`)
+		return lock(`chunk:${part}`, async () => {
+			const cur = await lstat(part).catch(() => null)
+			if (cur && !cur.isFile()) return endJson(res, 400, {error: '[bad-chunk]'})
+			const have = offset === 0 ? 0 : (cur?.size ?? 0)
+			if (offset !== have) {
+				req.resume()
+				return endJson(res, 409, {error: '[wrong-offset]', received: cur?.size ?? 0})
+			}
+			if (offset === 0) await sweepParts(dir)
+			let got = 0
+			const flags = fsc.O_WRONLY | fsc.O_CREAT | fsc.O_NOFOLLOW | (offset === 0 ? fsc.O_TRUNC : fsc.O_APPEND)
+			try {
+				await pipeline(
+					req,
+					async function* (source) {
+						for await (const c of source) {
+							got += c.length
+							if (got > CHUNK_MAX || offset + got > total) throw new RpcError('BAD_REQUEST', '[bad-chunk]')
+							yield c
+						}
+					},
+					createWriteStream(part, {flags, mode: 0o644}),
+				)
+			} catch (e) {
+				if (e instanceof RpcError) {
+					await rm(part, {force: true}).catch(() => {})
+					return endJson(res, 400, {error: e.message})
+				}
+				const mapped = uploadStatusForFsError(e)
+				// What arrived stays, so the browser can carry on from it.
+				return endJson(res, mapped?.status ?? 500, {error: mapped?.error ?? 'Upload failed', received: (await lstat(part).catch(() => null))?.size ?? 0})
+			}
+			const size = (await lstat(part)).size
+			if (size < total) return endJson(res, 200, {received: size})
+			if (size > total) {
+				await rm(part, {force: true}).catch(() => {})
+				return endJson(res, 400, {error: '[bad-chunk]'})
+			}
+			try {
+				const target = await claimUpload(part, real, collision)
+				return endJson(res, 200, {received: size, path: await toVirtual(target)})
+			} catch (e) {
+				await rm(part, {force: true}).catch(() => {})
+				if (e instanceof RpcError && e.code === 'CONFLICT') return endJson(res, 409, {error: e.message})
+				const mapped = uploadStatusForFsError(e)
+				return endJson(res, mapped?.status ?? 500, {error: mapped?.error ?? 'Upload failed'})
+			}
+		})
+	}
+	// Pieces of uploads given up more than a day ago.
+	async function sweepParts(dir) {
+		const names = await readdir(dir).catch(() => [])
+		const old = Date.now() - 24 * 60 * 60 * 1000
+		for (const n of names) {
+			if (!n.startsWith('.upload.part.')) continue
+			const st = await lstat(join(dir, n)).catch(() => null)
+			if (st?.isFile() && st.mtimeMs < old) await rm(join(dir, n), {force: true}).catch(() => {})
+		}
+	}
+
 	async function describe(virtual) {
 		const {real} = await resolve(virtual)
 		const st = await stat(real)
@@ -820,6 +909,7 @@ export function createFiles({home, dataDir, io, drivesDir = join('/run/media', o
 		},
 		serveFile,
 		upload,
+		uploadChunk,
 		resolve,
 		followShares(fn) {
 			if (typeof fn === 'function') follow = fn

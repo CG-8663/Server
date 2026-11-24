@@ -221,7 +221,7 @@ test('an existing chat falls back to another usable key when its remembered key 
 
 		// Explicit keyId still refuses an unavailable key rather than silently switching.
 		const explicit = await run(OWNER, {conversationId: first.conversationId, keyId: k1.id, message: 'explicit'})
-		assert.deepEqual(explicit.events, [{event: 'error', data: {message: 'That key isn’t available'}}])
+		assert.deepEqual(explicit.events, [{event: 'error', data: {message: 'That key isn’t available', conversationId: first.conversationId}}])
 
 		// Case 2: owner stops sharing a key with a member who still has another key.
 		await asst.keys.update(OWNER, {id: k2.id, sharedWith: ['sam']})
@@ -352,6 +352,44 @@ test('Anthropic requests always start with a user message and never split tool c
 		assert.ok(deepBodies[0].messages.length <= 40, 'deep tool chain stays within 40 messages')
 		assert.equal(deepText.includes('toolu_d0'), false)
 		assert.equal(deepText.includes('toolu_d21'), true)
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
+test('an error in the first reply of a new chat carries the chat id so the next message stays in that chat', async () => {
+	const dataDir = await tmp()
+	try {
+		const bodies = []
+		let n = 0
+		const cutOff = () => ({
+			ok: true,
+			status: 200,
+			headers: new Headers(),
+			body: (async function* () {
+				yield chunk(`data: ${JSON.stringify({choices: [{delta: {content: 'The disk is mostly full, '}, finish_reason: 'length'}]})}\n\ndata: [DONE]\n\n`)
+			})(),
+		})
+		const asst = createAssistant({
+			dataDir,
+			accounts: fakeAccounts(),
+			now: () => 1,
+			fetchImpl: async (_url, init) => {
+				bodies.push(JSON.parse(init.body))
+				return n++ === 0 ? cutOff() : openaiSays('Continuing.')
+			},
+			runProcedure: async () => null,
+		})
+		await asst.keys.add(OWNER, {provider: 'openai', api: 'chat', apiKey: 'sk-test-1234', model: 'm'})
+		const first = []
+		await asst.runTurn({userId: 'owner', role: 'owner', message: 'why is my disk full?', emit: (e) => first.push(e)})
+		const err = first.find((e) => e.event === 'error')
+		assert.ok(err, 'the first reply ends in an error')
+		assert.equal(first.some((e) => e.event === 'done'), false)
+		assert.ok(err.data.conversationId, 'the error event names the chat')
+		await asst.runTurn({userId: 'owner', role: 'owner', conversationId: err.data.conversationId, message: 'please continue', emit: () => {}})
+		assert.equal((await asst.conversations.list('owner')).length, 1)
+		assert.ok(bodies[1].messages.some((m) => m.role === 'user' && /why is my disk full/.test(m.content)))
 	} finally {
 		await rm(dataDir, {recursive: true, force: true})
 	}

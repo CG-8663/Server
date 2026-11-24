@@ -7,7 +7,7 @@ import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {applyPrefsUpdate, prefsAfterPhotoUpload} from '../photoPrefs'
 import {Appearance} from '../screens/More'
-import {Row, Segmented, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, setLayoutPref, useLayout, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
+import {Row, Segmented, Sheet, SheetHeader, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, setLayoutPref, useLayout, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {takeAppearanceFocus} from './settingsPage'
 import {solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
 import {DesktopStyleCards, ScreenLayoutCards} from '../LayoutPicker'
@@ -41,6 +41,9 @@ export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThem
 					Appearance
 				</h1>
 			)}
+			<div id="appearance-layout">
+				<LayoutSettings cfg={cfg} setCfg={setCfg} />
+			</div>
 			<div id="appearance-themes">
 				<Section title="Theme" note="Colours only. Saved to your account, so it follows you to every phone you sign in on.">
 					<Appearance
@@ -54,7 +57,7 @@ export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThem
 					/>
 					{onOpenThemes && (
 						<>
-							<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+							<div className="glass group pz-omarchy" style={{'--inset': '62px'} as CSSProperties}>
 								<Row icon="palette" color="var(--blue)" label="Omarchy theme" value={omarchyTheme.data?.label ?? undefined} onClick={onOpenThemes} />
 							</div>
 							<p className="footer-note pz-note">
@@ -68,9 +71,6 @@ export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThem
 			</div>
 			<div id="appearance-background">
 				<Background cfg={cfg} setCfg={setCfg} prefs={prefs} setPrefs={setPrefs} />
-			</div>
-			<div id="appearance-layout">
-				<LayoutSettings cfg={cfg} setCfg={setCfg} />
 			</div>
 			<div id="appearance-dock">
 				<DockSettings cfg={cfg} setCfg={setCfg} />
@@ -101,6 +101,7 @@ function LayoutSettings({cfg, setCfg}: P) {
 	const layout = useLayout()
 	const secure = typeof window !== 'undefined' && window.isSecureContext
 	const hasLock = typeof navigator !== 'undefined' && !!keyboardLockApi()
+	const [readme, setReadme] = useState(false)
 	const [mode, setMode] = useState<CaptureMode>(() => {
 		try {
 			const v = localStorage.getItem(CAPTURE_KEY)
@@ -125,53 +126,63 @@ function LayoutSettings({cfg, setCfg}: P) {
 			<Section title="Layout" note="Phone, desktop, or automatic. Automatic uses the desktop on a big screen with a pointer.">
 				<ScreenLayoutCards value={layout.pref} detected={layout.detected} onPick={setLayoutPref} />
 			</Section>
-			<Section title="Shape" note="Round and Square change the corners on every screen. On the desktop, Round floats windows over a dock. Square tiles them, with workspaces 1–9 and Omarchy Super shortcuts.">
+			<Section title="Shape" note="Round and Square change the corners on every screen. On the desktop, Round floats windows over a dock. Square tiles windows over a dock, with workspaces 1–9.">
 				<DesktopStyleCards<DeskShell>
 					value={cfg.shell ?? 'gnome'}
 					floating="gnome"
 					tiling="hyprland"
 					onPick={(v) => setCfg((c) => ({...c, shell: v}))}
+					onSquareReadme={() => setReadme(true)}
 				/>
 			</Section>
-			{/* Key capture and the snippet only matter for Square (Round keeps Super for Activities). */}
-			{cfg.shell === 'hyprland' && (
-			<>
-			<Section title="Key capture" note="On an Omarchy computer, Super is taken by the desktop until you pass it through. HTTP can use host passthrough. Fullscreen system keys need https:// in Chrome, Edge or Brave.">
-				<div className="glass group pz-rows">
-					<div className="row static">
-						<span className="main">
-							<b>Capture Super</b>
-						</span>
-						<Segmented<CaptureMode>
-							label="Capture Super"
-							value={mode}
-							options={[
-								{id: 'host', label: 'Host passthrough'},
-								{id: 'keyboard-lock', label: 'Fullscreen'},
-							]}
-							onChange={(v) => {
-								if (v === 'keyboard-lock' && !canUseKeyboardLock(secure, hasLock)) {
-									toast('Open https:// in Chrome, Edge or Brave for fullscreen Super, or stay on host passthrough.')
-									return
-								}
-								setCapture(v)
-							}}
-						/>
-					</div>
+			<Sheet open={readme} onClose={() => setReadme(false)} label="Square">
+				<SheetHeader title="Square" onClose={() => setReadme(false)} />
+				<div className="square-readme">
+					<label className="square-super">
+						<input type="checkbox" checked={cfg.omarchySuperKeys === true} onChange={(e) => setCfg((c) => ({...c, omarchySuperKeys: e.target.checked}))} />
+						<span>Enable Omarchy Super Keybindings</span>
+					</label>
+					{cfg.omarchySuperKeys && (
+						<>
+							<p className="footer-note pz-note square-super-note">These shortcuts use Super on this desktop. Super+Return opens a terminal, Super+1–9 switches workspaces, Super+arrows move focus, and Super+K lists the rest.</p>
+							<Section title="Key capture" note="On an Omarchy computer, Super is taken by the desktop until you pass it through. HTTP can use host passthrough. Fullscreen system keys need https:// in Chrome, Edge or Brave.">
+						<div className="glass group pz-rows">
+							<div className="row static">
+								<span className="main">
+									<b>Capture Super</b>
+								</span>
+								<Segmented<CaptureMode>
+									label="Capture Super"
+									value={mode}
+									options={[
+										{id: 'host', label: 'Host passthrough'},
+										{id: 'keyboard-lock', label: 'Fullscreen'},
+									]}
+									onChange={(v) => {
+										if (v === 'keyboard-lock' && !canUseKeyboardLock(secure, hasLock)) {
+											toast('Open https:// in Chrome, Edge or Brave for fullscreen Super, or stay on host passthrough.')
+											return
+										}
+										setCapture(v)
+									}}
+								/>
+							</div>
+						</div>
+						{!secure && (
+							<p className="footer-note pz-note">
+								<button className="btn" onClick={() => (location.href = `https://${location.host}${location.pathname}${location.search}`)}>
+									Open HTTPS
+								</button>
+							</p>
+						)}
+					</Section>
+							<Section title="Omarchy snippet" note="Paste it at the end of your Hyprland key config on the Omarchy computer you browse from, run hyprctl reload, then press Scroll Lock (or Super+F12) to keep Super in this browser. Press it again to give Super back.">
+								<SnippetBlock />
+							</Section>
+						</>
+					)}
 				</div>
-				{!secure && (
-					<p className="footer-note pz-note">
-						<button className="btn" onClick={() => (location.href = `https://${location.host}${location.pathname}${location.search}`)}>
-							Open HTTPS
-						</button>
-					</p>
-				)}
-			</Section>
-			<Section title="Omarchy snippet" note="Paste it at the end of your Hyprland key config on the Omarchy computer you browse from, run hyprctl reload, then press Scroll Lock (or Super+F12) to keep Super in this browser. Press it again to give Super back.">
-				<SnippetBlock />
-			</Section>
-			</>
-			)}
+			</Sheet>
 		</>
 	)
 }
@@ -269,7 +280,6 @@ function DockSettings({cfg, setCfg}: P) {
 	const {info, appList, machineList, owner} = useItems()
 	const d = cfg.dock
 	const set = (patch: Partial<DeskConfig['dock']>) => setCfg((c) => ({...c, dock: {...c.dock, ...patch}}))
-	const hyprNote = cfg.shell === 'hyprland' ? 'The dock is hidden while Shape is Square. These settings apply when you switch back to Round.' : undefined
 	const move = (k: string, dir: -1 | 1) => {
 		const items = [...d.items]
 		const i = items.indexOf(k)
@@ -281,7 +291,7 @@ function DockSettings({cfg, setCfg}: P) {
 	const candidates = allKeys(appList, machineList, owner).filter((k) => !d.items.includes(k))
 	return (
 		<>
-			<Section title="Position" note={hyprNote}>
+			<Section title="Position">
 				<div className="glass group pz-rows">
 					<div className="row static">
 						<span className="main">
@@ -400,7 +410,6 @@ function DesktopSettings({cfg, setCfg}: P) {
 		...(owner ? [DESKTOP_KEY] : []),
 		...machineList.filter((m) => m.state === 'running').map((m) => `machine:${m.id}`),
 	].filter((k) => !onDesk.has(k))
-	const hyprNote = cfg.shell === 'hyprland' ? 'Desktop icons are hidden while Shape is Square. These settings apply when you switch back to Round.' : undefined
 	return (
 		<>
 			<Section
@@ -424,7 +433,7 @@ function DesktopSettings({cfg, setCfg}: P) {
 					</div>
 				</div>
 			</Section>
-			<Section title="Desktop" note={hyprNote}>
+			<Section title="Desktop">
 				<div className="glass group pz-rows">
 					<ToggleRow label="Show icons on the desktop" on={cfg.showIcons} onChange={(v) => setCfg((c) => ({...c, showIcons: v}))} />
 				</div>

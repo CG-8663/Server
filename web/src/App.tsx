@@ -16,7 +16,8 @@ import {Connect, Login} from './screens/Auth'
 import {Home} from './screens/Home'
 import {Desktop} from './desktop/Desktop'
 import {resetDeskConfig} from './desktop/config'
-import {OPEN_SETTINGS, rememberSettingsPage} from './desktop/settingsPage'
+import {OPEN_SETTINGS} from './desktop/settingsPage'
+import {safeSession} from './safeStorage'
 import {ScreenErrorBoundary} from './screenBoundary'
 import {inAppBackTarget, markInAppHistory, readInAppHistoryFlag} from './inAppHistory'
 import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, scrollPhoneToTop, useLayout, usePrefs, type Prefs} from './ui'
@@ -203,7 +204,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	}, [])
 	useEffect(() => {
 		const onOpen = (e: Event) => {
-			rememberSettingsPage(sessionStorage, String((e as CustomEvent<string>).detail || 'main'))
+			safeSession.set('omarchy-server:settings-page', String((e as CustomEvent<string>).detail || 'main'))
 			setTab('settings')
 			markInAppHistory((key, value) => sessionStorage.setItem(key, value))
 			history.pushState(null, '', '#/settings')
@@ -357,7 +358,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 							setAssistantOpen(false)
 						}}
 						onSettings={() => {
-							sessionStorage.setItem('omarchy-server:settings-page', 'assistant')
+							safeSession.set('omarchy-server:settings-page', 'assistant')
 							closeAssistantView()
 							setAssistantOpen(false)
 							go('settings')
@@ -375,7 +376,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 				onOpen={(n) => {
 					setBellOpen(false)
 					if (n === 'update-available') {
-						sessionStorage.removeItem('omarchy-server:settings-page')
+						safeSession.remove('omarchy-server:settings-page')
 						go('settings')
 					}
 				}}

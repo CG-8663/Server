@@ -587,10 +587,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, bare}: {a: Agent; onClos
 				}
 				onClose={onClose}
 			/>
-			<div style={{display: 'flex', justifyContent: 'flex-end', marginTop: 8}}>
-				<PinButton pin={{kind: 'machine', id: a.id, computer: ''}} name={a.name} />
-			</div>
-			<MachineActions terminal={!offline && may(a, 'terminal')} desktop={!offline && may(a, 'desktop') && desk?.ok !== false} onTerminal={() => onTerminal()} onDesktop={onDesktop} />
+			<MachineActions terminal={!offline && may(a, 'terminal')} desktop={!offline && may(a, 'desktop') && desk?.ok !== false} onTerminal={() => onTerminal()} onDesktop={onDesktop} pin={<PinButton pin={{kind: 'machine', id: a.id, computer: ''}} name={a.name} />} />
 			{a.online && may(a, 'desktop') && desk && !desk.ok && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>{desk.why}</p>}
 			{a.online && m && <GaugeCluster metrics={m} />}
 			{a.online && <HistorySparklines agentId={a.id} />}
@@ -647,7 +644,7 @@ export function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 									className="btn small"
 									disabled={act.isPending}
 									onClick={async () => {
-										if (await confirm({title: `Remove ${id}?`, body: `It’s turned off and removed from ${a.name}.`, confirm: 'Remove', icon: 'trash'}))
+										if (await confirm({title: `Remove ${id}?`, body: `It’s turned off and removed from ${a.name}.`, confirm: 'Remove', danger: true, icon: 'trash'}))
 											act.mutate({path: 'swarm.action', input: {id: a.id, name: 'plugin-remove', pluginId: id}, done: `Removed from ${a.name}`})
 									}}
 								>

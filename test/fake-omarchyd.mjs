@@ -796,6 +796,7 @@ export async function startFakeserverd({
 				return true
 			},
 		},
+		'assistant.stop': {kind: 'mutation', run: () => ({stopped: false})},
 		'assistant.approve': {kind: 'mutation', run: (input, auth) => assistantDecide(input, auth, 'done')},
 		'assistant.reject': {kind: 'mutation', run: (input, auth) => assistantDecide(input, auth, 'rejected')},
 	}

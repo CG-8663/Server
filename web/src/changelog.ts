@@ -4,6 +4,28 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.74',
+		date: '2026-11-23',
+		title: 'Machines, sessions, and the desktop',
+		fixed: [
+			'A Windows ISO you install by hand gets a SATA disk and an e1000e network card, so Setup can see them. An IDE drive is refused on a q35 machine before it is saved.',
+			'Cloning a machine keeps the source’s history until the copy finishes. A rollback shows the disk size the image actually has, and a live backup’s progress follows the units virsh prints.',
+			'The Machine Summary page loads that machine’s chart only. The running count is this server’s machines.',
+			'Using My Own Data Center keeps the sign-in behind Files and consoles alive. A renewal the server refuses is tried again.',
+			'A new chat stays the same chat when the first reply fails. A reply that never finishes is cut off, and you can stop it.',
+			'Files and Settings still open when the browser blocks storage. A new password asks for 8 characters, and a refused update says why.',
+			'An open clock or system menu closes when you click outside it. Accent text stays readable on light and dark themes.',
+		],
+	},
+	{
+		version: '0.9.73',
+		date: '2026-11-23',
+		title: 'Big uploads through a tunnel',
+		fixed: [
+			'Uploading a big file in Files no longer stalls when you reach your server through a Cloudflare Tunnel (or another proxy that limits one request; Cloudflare allows 100 MB). Files over 8 MB go up in 8 MB pieces, and a piece that drops is sent again and carries on where it stopped. The file only appears once all of it has arrived.',
+		],
+	},
+	{
 		version: '0.9.72',
 		date: '2026-11-23',
 		title: 'My Own Data Center on GitHub',
