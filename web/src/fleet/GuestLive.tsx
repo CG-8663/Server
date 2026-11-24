@@ -119,7 +119,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 					</button>
 				</div>
 			)}
-			{swarm.isFetched && !agent && !canInstall && <p className="quiet">The connector runs on Linux with systemd. Alpine, macOS, and Home Assistant can’t install it.</p>}
+			{swarm.isFetched && !agent && !canInstall && <p className="quiet">This operating system can’t run the connector. It runs on Linux with systemd.</p>}
 			{metrics ? <GaugeCluster metrics={metrics} /> : host ? <GaugeCluster metrics={host} /> : null}
 			<SheetGroup title="Now">
 				<Row

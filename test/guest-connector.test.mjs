@@ -137,6 +137,7 @@ test('the machine page runs machines.installConnector and asks for a password', 
 	assert.match(guest, /autoComplete="off"|autocomplete="off"/)
 	assert.match(guest, /onOpenStorage\(\{agentId: agent\.id, name: machine\.name\}\)/)
 	assert.doesNotMatch(guest, /swarm\.isFetched && !agent && linux &&/)
+	assert.match(guest, /This operating system can’t run the connector\. It runs on Linux with systemd\./)
 	const swarm = await readFile(new URL('../web/src/swarm/Swarm.tsx', import.meta.url), 'utf8')
 	assert.match(swarm, /linuxConnectorOs\(guest\.osId/)
 	assert.match(swarm, /can’t run the connector/)
