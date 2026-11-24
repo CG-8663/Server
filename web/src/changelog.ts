@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.77',
+		date: '2026-11-24',
+		title: 'Hyprland 0.57, and stream profiles',
+		fixed: [
+			'Opening an app on this server’s screen, and moving it between workspaces, works on Hyprland 0.57.',
+		],
+		added: [
+			'The screen can try each hardware codec and remember the one that plays smoothly on this device. Only the owner can do that.',
+		],
+	},
+	{
 		version: '0.9.76',
 		date: '2026-11-24',
 		title: 'This server’s screen, and readings from an older server',
