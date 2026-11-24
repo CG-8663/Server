@@ -104,11 +104,26 @@ export function windowsAnswerFile({computerName, username, password, productKey 
 		`<RunSynchronousCommand wcm:action="add"><Order>${order}</Order><Path>reg add ${key} /v ${value} /t REG_DWORD /d 1 /f</Path></RunSynchronousCommand>`
 	const name = computerName.replace(/[^A-Za-z0-9-]/g, '').slice(0, 15) || 'OMARCHY-WIN'
 	const command = typeof windowsCommand === 'string' ? windowsCommand : ''
+	// First logon has to happen by itself: stock Windows has no Python, and FirstLogonCommands wait for a sign-in.
+	const pythonCommand = `powershell.exe -NoProfile -Command "$ok=$false; foreach($c in 'python','python3','py'){ $cmd=Get-Command $c -ErrorAction SilentlyContinue; if($cmd){ $v=& $cmd.Source -c \\"import sys; print(sys.version_info>=(3, 8))\\" 2>$null; if($v -eq 'True'){ $ok=$true; break } } }; if(-not $ok){ winget install --id Python.Python.3.12 -e --accept-package-agreements --accept-source-agreements --disable-interactivity }"`
+	const autoLogon = command
+		? `
+      <AutoLogon>
+        <Password><Value>${windowsPassword(password)}</Value><PlainText>false</PlainText></Password>
+        <Enabled>true</Enabled>
+        <LogonCount>1</LogonCount>
+        <Username>${xmlText(username)}</Username>
+      </AutoLogon>`
+		: ''
 	const firstLogon = command
 		? `
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
+          <CommandLine>${xmlText(pythonCommand)}</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>2</Order>
           <CommandLine>${xmlText(command)}</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>`
@@ -167,7 +182,7 @@ export function windowsAnswerFile({computerName, username, password, productKey 
         <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
         <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
         <ProtectYourPC>3</ProtectYourPC>
-      </OOBE>
+      </OOBE>${autoLogon}
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">

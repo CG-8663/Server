@@ -35,7 +35,26 @@ export function connectorCloudInit(img = {}) {
 	const given = img.cloudInit && typeof img.cloudInit === 'object' ? img.cloudInit : {}
 	const packages = ['qemu-guest-agent', python, ...(Array.isArray(given.packages) ? given.packages : [])]
 	const commands = [['systemctl', 'enable', '--now', 'qemu-guest-agent'], ...(Array.isArray(given.commands) ? given.commands : [])]
+	const username = String(img.username ?? '').trim()
+	if (username) commands.splice(1, 0, ['loginctl', 'enable-linger', username])
 	return {...given, packages, commands}
+}
+
+// qemu-ga is root. Linger is argv, not a shell. Python is installed only when neither name is on PATH.
+const PYTHON_IF_MISSING = [
+	'if command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; then exit 0; fi',
+	'if command -v apt-get >/dev/null 2>&1; then apt-get install -y python3',
+	'elif command -v dnf >/dev/null 2>&1; then dnf install -y python3',
+	'elif command -v pacman >/dev/null 2>&1; then pacman -S --needed --noconfirm python',
+	'elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive install python3',
+	'else exit 1; fi',
+].join('; ')
+
+export function guestConnectorPrep({username} = {}) {
+	return [
+		{path: 'loginctl', args: ['enable-linger', String(username ?? '')]},
+		{path: 'bash', args: ['-lc', PYTHON_IF_MISSING]},
+	]
 }
 
 export function defaultConnectorAbilities(os) {

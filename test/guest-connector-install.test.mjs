@@ -216,12 +216,14 @@ test('linux cloud running with qemu-ga starts a connector task through runuser',
 		assert.equal(pairCalls[0].manage, true)
 		assert.equal(pairCalls[0].files, true)
 		assert.deepEqual(agent.domains, [`omarchy-${id}`])
-		assert.equal(agent.execs.length, 1)
-		assert.equal(agent.execs[0].path, 'runuser')
-		assert.equal(agent.execs[0].args[0], '-u')
-		assert.equal(agent.execs[0].args[1], 'chris')
-		assert.deepEqual(agent.execs[0].args.slice(2, 5), ['--', 'bash', '-lc'])
-		const command = agent.execs[0].args[5]
+		assert.equal(agent.execs.length >= 2, true)
+		const lingerAt = agent.execs.findIndex((cmd) => cmd.path === 'loginctl' && cmd.args[0] === 'enable-linger' && cmd.args[1] === 'chris')
+		const enrollAt = agent.execs.findIndex((cmd) => cmd.path === 'runuser')
+		assert.equal(lingerAt >= 0 && enrollAt > lingerAt, true)
+		assert.equal(agent.execs[enrollAt].args[0], '-u')
+		assert.equal(agent.execs[enrollAt].args[1], 'chris')
+		assert.deepEqual(agent.execs[enrollAt].args.slice(2, 5), ['--', 'bash', '-lc'])
+		const command = agent.execs[enrollAt].args[5]
 		assert.match(command, /--server https:\/\/192\.168\.84\.81:7780/)
 		assert.equal(command.includes('127.0.0.1'), false)
 		assert.match(command, new RegExp(`--token ${TOKEN}`))
@@ -280,10 +282,11 @@ test('windows guests exec powershell with the windows allow list', async () => {
 	}
 })
 
-test('guest-exec exit 4 is needs-password and does not start enroll', async () => {
+test('guest-exec exit 4 does not start enroll and does not return needs-password', async () => {
 	const id = 'abcd1234'
 	const secret = 'secret-pw'
 	const execs = []
+	let listed = false
 	const {root, call} = await open({
 		machines: [record(id)],
 		run: virshList(new Map([[`omarchy-${id}`, 'running']])),
@@ -293,27 +296,27 @@ test('guest-exec exit 4 is needs-password and does not start enroll', async () =
 				execs.push(cmd)
 				return {pid: 42}
 			},
-			status: async () => ({exited: true, exitcode: 4, out: '', err: 'sudo: a terminal is required to read the password'}),
+			status: async () => ({exited: true, exitcode: execs.at(-1)?.path === 'runuser' ? 4 : 0, out: '', err: ''}),
 		}),
 		connector: {
 			pair: async () => fakePair(),
 			list: async () => {
+				listed = true
 				throw new Error('enroll must not start')
 			},
 		},
 	})
 	try {
-		const out = await call('machines.installConnector', {id, sudoPassword: secret})
-		assert.equal(out.status, 'needs-password')
-		assert.equal(out.os, 'linux')
-		assert.equal(typeof out.message, 'string')
-		assert.ok(out.message.length > 0)
-		assert.equal(out.message.includes(secret), false)
-		assert.equal(JSON.stringify(out).includes(secret), false)
-		assert.equal(out.taskId, undefined)
+		await assert.rejects(
+			() => call('machines.installConnector', {id, sudoPassword: secret}),
+			(e) => e instanceof RpcError && e.code === 'PRECONDITION_FAILED' && !String(e.message).includes(secret),
+		)
+		assert.equal(listed, false)
+		assert.equal(execs.some((cmd) => cmd.path === 'loginctl' && cmd.args[0] === 'enable-linger' && cmd.args[1] === 'chris'), true)
+		assert.equal(execs.some((cmd) => cmd.path === 'runuser'), true)
 		const tasks = await call('machines.tasks')
 		assert.equal(tasks.some((row) => row.type === 'connector'), false)
-		assert.equal(execs.length, 1)
+		assert.equal(JSON.stringify(execs).includes(secret), false)
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}
@@ -415,7 +418,7 @@ const ALPINE_IMAGE = {
 	adminGroup: 'wheel',
 }
 
-async function openCreate({qemuAgent, connector, connectorEnrollTimeoutMs = 200, images = [CLOUD_IMAGE], files} = {}) {
+async function openCreate({qemuAgent, connector, connectorEnrollTimeoutMs = 200, connectorAgentWaitMs = 200, images = [CLOUD_IMAGE], files} = {}) {
 	const root = await mkdtemp(join(os.tmpdir(), 'guest-install-create-'))
 	const dataDir = join(root, 'data')
 	const catalog = join(root, 'catalog.json')
@@ -434,6 +437,9 @@ async function openCreate({qemuAgent, connector, connectorEnrollTimeoutMs = 200,
 			if (opts.cwd) {
 				try {
 					run.unattend = await readFile(join(opts.cwd, 'autounattend.xml'), 'utf8')
+				} catch {}
+				try {
+					run.userData = await readFile(join(opts.cwd, 'user-data'), 'utf8')
 				} catch {}
 			}
 			return ''
@@ -481,6 +487,7 @@ async function openCreate({qemuAgent, connector, connectorEnrollTimeoutMs = 200,
 		qemuAgent,
 		connector,
 		connectorEnrollTimeoutMs,
+		connectorAgentWaitMs,
 		files,
 	})
 	await api.ready
@@ -493,14 +500,14 @@ test('creating testos-amd64 starts a connector install after the machine boots',
 	const agent = fakeAgent()
 	const pairCalls = []
 	let id
-	const {root, call} = await openCreate({
+	const {root, call, run} = await openCreate({
 		qemuAgent: agent.qemuAgent,
 		connector: {
 			pair: async (input) => {
 				pairCalls.push(input)
 				return fakePair()
 			},
-			list: async () => (id ? [{guestOf: id}] : []),
+			list: async () => (id && agent.execs.length ? [{guestOf: id}] : []),
 		},
 	})
 	try {
@@ -515,10 +522,138 @@ test('creating testos-amd64 starts a connector install after the machine boots',
 		assert.equal(pairCalls.length, 1)
 		assert.equal(pairCalls[0].machineId, id)
 		assert.equal(agent.pingCount() >= 1, true)
-		assert.equal(agent.execs.length, 1)
-		assert.equal(agent.execs[0].path, 'runuser')
-		assert.equal(agent.execs[0].args[1], 'chris')
-		assert.match(agent.execs[0].args[5], /--server https:\/\/192\.168\.84\.81:7780/)
+		assert.equal(agent.execs.length >= 2, true)
+		const lingerAt = agent.execs.findIndex((cmd) => cmd.path === 'loginctl' && cmd.args[1] === 'chris')
+		const enroll = agent.execs.find((cmd) => cmd.path === 'runuser')
+		assert.equal(lingerAt >= 0 && lingerAt < agent.execs.findIndex((cmd) => cmd.path === 'runuser'), true)
+		assert.equal(enroll.args[1], 'chris')
+		assert.match(enroll.args[5], /--server https:\/\/192\.168\.84\.81:7780/)
+		assert.match(run.userData, /\["loginctl","enable-linger","chris"\]/)
+		assert.match(run.userData, /qemu-guest-agent/)
+		assert.match(run.userData, /python3/)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('creating testos-amd64 pairs after the guest agent misses the first pings', async () => {
+	const execs = []
+	const pairCalls = []
+	let pings = 0
+	let id
+	const {root, call} = await openCreate({
+		connectorAgentWaitMs: 500,
+		qemuAgent: () => ({
+			ping: async () => {
+				pings++
+				if (pings < 3) throw new Error('Guest agent not available for now')
+			},
+			exec: async (cmd) => {
+				execs.push(cmd)
+				return {pid: 42}
+			},
+			status: async () => ({exited: true, exitcode: 0, out: '', err: ''}),
+		}),
+		connector: {
+			pair: async (input) => {
+				pairCalls.push(input)
+				return fakePair()
+			},
+			list: async () => (id && execs.length ? [{guestOf: id}] : []),
+		},
+	})
+	try {
+		;({id} = await call('machines.create', {...createSpec, name: 'Late', osId: 'testos-amd64'}))
+		await until(async () => (await call('machines.list')).find((x) => x.id === id && x.state === 'running'))
+		const done = await until(async () => {
+			const tasks = await call('machines.tasks')
+			const t = tasks.find((row) => row.machineId === id && row.type === 'connector')
+			return t?.status === 'ok' ? t : null
+		}, 3000)
+		assert.equal(done?.type, 'connector')
+		assert.equal(pairCalls.length, 1)
+		assert.equal(pairCalls[0].machineId, id)
+		assert.equal(pings >= 3, true)
+		assert.equal(execs.length >= 1, true)
+		assert.equal(execs.some((cmd) => cmd.path === 'runuser' && cmd.args[1] === 'chris'), true)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('creating testos-amd64 still succeeds when the guest agent never answers', async () => {
+	const execs = []
+	const pairCalls = []
+	let pings = 0
+	const {root, call} = await openCreate({
+		connectorAgentWaitMs: 80,
+		qemuAgent: () => ({
+			ping: async () => {
+				pings++
+				throw new Error('Guest agent not available for now')
+			},
+			exec: async (cmd) => {
+				execs.push(cmd)
+				return {pid: 42}
+			},
+			status: async () => ({exited: true, exitcode: 0, out: '', err: ''}),
+		}),
+		connector: {
+			pair: async (input) => {
+				pairCalls.push(input)
+				return fakePair()
+			},
+			list: async () => [],
+		},
+	})
+	try {
+		const {id} = await call('machines.create', {...createSpec, name: 'Quiet', osId: 'testos-amd64'})
+		const running = await until(async () => (await call('machines.list')).find((x) => x.id === id && x.state === 'running'))
+		assert.equal(running.state, 'running')
+		const settled = await until(async () => {
+			const seen = pings
+			await new Promise((r) => setTimeout(r, 40))
+			return pings === seen && pings > 1 ? pings : null
+		}, 2000)
+		assert.equal(settled > 1, true)
+		assert.deepEqual(pairCalls, [])
+		assert.deepEqual(execs, [])
+		const tasks = await call('machines.tasks')
+		assert.equal(tasks.some((row) => row.machineId === id && row.type === 'connector'), false)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('creating a guest that already enrolled does not mint another token', async () => {
+	const execs = []
+	const pairCalls = []
+	let id
+	const {root, call} = await openCreate({
+		qemuAgent: () => ({
+			ping: async () => {},
+			exec: async (cmd) => {
+				execs.push(cmd)
+				return {pid: 42}
+			},
+			status: async () => ({exited: true, exitcode: 0, out: '', err: ''}),
+		}),
+		connector: {
+			pair: async (input) => {
+				pairCalls.push(input)
+				return fakePair()
+			},
+			list: async () => (id ? [{guestOf: id}] : []),
+		},
+	})
+	try {
+		;({id} = await call('machines.create', {...createSpec, name: 'Joined', osId: 'testos-amd64'}))
+		await until(async () => (await call('machines.list')).find((x) => x.id === id && x.state === 'running'))
+		await new Promise((r) => setTimeout(r, 150))
+		assert.deepEqual(pairCalls, [])
+		assert.deepEqual(execs, [])
+		const tasks = await call('machines.tasks')
+		assert.equal(tasks.some((row) => row.machineId === id && row.type === 'connector'), false)
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}
@@ -590,7 +725,14 @@ test('a Windows create writes FirstLogonCommands from a minted pairing token', a
 		assert.equal(pairCalls[0].terminal, true)
 		assert.equal(pairCalls[0].files, true)
 		assert.equal(pairCalls[0].manage, true)
+		assert.match(run.unattend, /<AutoLogon>/)
+		assert.match(run.unattend, /<LogonCount>1<\/LogonCount>/)
 		assert.match(run.unattend, /<FirstLogonCommands>/)
+		assert.match(run.unattend, /Python\.Python\.3\.12/)
+		assert.match(run.unattend, /winget/)
+		const pythonAt = run.unattend.search(/Python\.Python\.3\.12/)
+		const installAt = run.unattend.search(/install\.ps1/)
+		assert.equal(pythonAt >= 0 && pythonAt < installAt, true)
 		assert.match(run.unattend, /install\.ps1/)
 		assert.match(run.unattend, /powershell\.exe/)
 		assert.match(run.unattend, /192\.168\.84\.81:7780/)

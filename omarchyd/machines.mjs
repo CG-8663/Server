@@ -23,7 +23,7 @@ import {pipeline} from 'node:stream/promises'
 import {fileURLToPath} from 'node:url'
 
 import {fetchErrorMessage, httpDownloadErrorMessage, isNetworkError} from './fetch-error.mjs'
-import {connectorAllowList, connectorCloudInit, connectorKind, defaultConnectorAbilities, guestConnectorExec, guestReachableUrl} from './guest-install.mjs'
+import {connectorAllowList, connectorCloudInit, connectorKind, defaultConnectorAbilities, guestConnectorExec, guestConnectorPrep, guestReachableUrl} from './guest-install.mjs'
 import {PUBLIC_KEY, cloudMetaData, cloudUserData, hostnameFor, isWindowsClientLabel, isWindowsLabel, omarchyConfiguration, omarchyCredentials, windowsAnswerFile} from './machine-media.mjs'
 import {createQemuAgent} from './qemu-agent.mjs'
 import {RpcError} from './rpc.mjs'
@@ -101,7 +101,7 @@ function validCatalog(data) {
 	return ok.length ? ok : null
 }
 
-export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000}) {
+export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000, connectorAgentWaitMs = 15 * 60 * 1000}) {
 	const base = join(dataDir, 'machines')
 	const imagesDir = join(base, 'images')
 	const vmsDir = join(base, 'vms')
@@ -488,7 +488,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function seed(m, img, {username, password}) {
 		const host = hostnameFor(m.name, m.id)
 		const hash = await hashPassword(password)
-		await mediaIso(m, 'seed', 'cidata', {'user-data': cloudUserData({host, username, hash, cloudInit: connectorCloudInit({...img, cloudInit: {adminGroup: img.adminGroup, ...img.cloudInit}})}), 'meta-data': cloudMetaData(host)})
+		await mediaIso(m, 'seed', 'cidata', {'user-data': cloudUserData({host, username, hash, cloudInit: connectorCloudInit({...img, username, cloudInit: {adminGroup: img.adminGroup, ...img.cloudInit}})}), 'meta-data': cloudMetaData(host)})
 	}
 
 	// Your own ISOs: anything ending in .iso in Home (a few folders deep), with its volume label.
@@ -702,7 +702,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					busy.delete(id)
 					await save().catch(() => {})
 				}
-				if (!m.state && connectorKind(osId) !== 'unsupported') installConnector({id, username}).catch(() => {})
+				if (!m.state && connectorKind(osId) !== 'unsupported') waitForGuestConnector(id, username)
 			})()
 			return {id}
 		}
@@ -938,6 +938,38 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return Object.fromEntries(Object.keys(defaults).map((k) => [k, given[k] === true]))
 	}
 
+	// Create returns before cloud-init (and a desktop reboot) can answer guest-ping. The button still pings once.
+	const sleepUnref = (ms) => new Promise((resolve) => {
+		const timer = setTimeout(resolve, ms)
+		timer.unref?.()
+	})
+	function waitForGuestConnector(id, username) {
+		const agent = qemuAgent({run, domain: domain(id)})
+		const deadline = Date.now() + connectorAgentWaitMs
+		const gap = Math.min(2_000, Math.max(20, Math.floor(connectorAgentWaitMs / 8) || 20))
+		const runWait = async () => {
+			while (Date.now() < deadline) {
+				let up = false
+				try {
+					await agent.ping()
+					up = true
+				} catch {
+					up = false
+				}
+				if (up) {
+					const listed = await connector?.list?.().catch(() => [])
+					if ((Array.isArray(listed) ? listed : []).some((a) => a?.guestOf === id)) return
+					await installConnector({id, username}).catch(() => {})
+					return
+				}
+				const left = deadline - Date.now()
+				if (left <= 0) return
+				await sleepUnref(Math.min(gap, left))
+			}
+		}
+		runWait().catch(() => {})
+	}
+
 	async function installConnector(input = {}) {
 		await ready
 		const m = find(input?.id)
@@ -953,22 +985,31 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		}
 		const username = String(input?.username ?? m.cloudInit?.username ?? '').trim()
 		if (os === 'linux' && !username) throw new RpcError('PRECONDITION_FAILED', 'Give the guest account to install as.')
+		const tick = Math.min(1_000, Math.max(25, Math.floor(connectorEnrollTimeoutMs / 4)))
+		const guestExecExit = async (cmd) => {
+			const started = await agent.exec(cmd)
+			if (!started?.pid) throw new RpcError('BAD_GATEWAY', `${m.name} didn’t start the connector installer`)
+			const deadline = Date.now() + connectorEnrollTimeoutMs
+			let result
+			while (Date.now() < deadline) {
+				result = await agent.status(started.pid)
+				if (result?.exited) break
+				await new Promise((r) => setTimeout(r, tick))
+			}
+			if (!result?.exited) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish the connector installer`)
+			return result
+		}
+		if (os === 'linux') {
+			for (const cmd of guestConnectorPrep({username})) {
+				const prepared = await guestExecExit(cmd)
+				if (prepared.exitcode !== 0) throw new RpcError('PRECONDITION_FAILED', `${m.name} couldn’t prepare the connector installer.`)
+			}
+		}
 		const abilities = connectorAbilities(os, input?.abilities)
 		const pair = await connector.pair({machineId: m.id, ...abilities})
 		const url = guestReachableUrl({addresses: pair.addresses, port: pair.port})
 		if (!url) throw new RpcError('PRECONDITION_FAILED', 'This server has no address the guest can reach.')
-		const started = await agent.exec(guestConnectorExec({os, username, source: pair.source, server: url, ca: pair.ca, token: pair.token, allow: connectorAllowList(os, abilities)}))
-		if (!started?.pid) throw new RpcError('BAD_GATEWAY', `${m.name} didn’t start the connector installer`)
-		const deadline = Date.now() + connectorEnrollTimeoutMs
-		const tick = Math.min(1_000, Math.max(25, Math.floor(connectorEnrollTimeoutMs / 4)))
-		let result
-		while (Date.now() < deadline) {
-			result = await agent.status(started.pid)
-			if (result?.exited) break
-			await new Promise((r) => setTimeout(r, tick))
-		}
-		if (!result?.exited) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish the connector installer`)
-		if (result.exitcode === 4) return {status: 'needs-password', os, message: 'This computer needs a password to finish installing.'}
+		const result = await guestExecExit(guestConnectorExec({os, username, source: pair.source, server: url, ca: pair.ca, token: pair.token, allow: connectorAllowList(os, abilities)}))
 		if (result.exitcode !== 0) throw new RpcError('PRECONDITION_FAILED', `${m.name} couldn’t install the connector.`)
 		const poll = async () => {
 			const joinUntil = Date.now() + connectorEnrollTimeoutMs

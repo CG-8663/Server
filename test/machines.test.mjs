@@ -473,6 +473,7 @@ describe('omarchyd machines', () => {
 		assert.match(seen.userData, /python3/)
 		assert.ok(!seen.userData.includes('task-gnome-desktop'), 'a later cloud-init edit must not replay catalog desktop packages')
 		assert.ok(!seen.userData.includes('power_state'), 'a later cloud-init edit must not replay graphical power_state')
+		assert.ok(!seen.userData.includes('enable-linger'), 'a later cloud-init edit must not replay linger')
 		assert.deepEqual((await q('machines.details', {id})).cloudInit, {username: 'chris', hostname: 'web-1', sshKeys: [key]})
 	})
 

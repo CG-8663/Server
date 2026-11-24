@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
-import {connectorCloudInit, connectorInstallCommand, connectorInstallCommandWindows, connectorKind, guestConnectorExec, guestReachableUrl} from '../omarchyd/guest-install.mjs'
+import {connectorCloudInit, connectorInstallCommand, connectorInstallCommandWindows, connectorKind, guestConnectorExec, guestConnectorPrep, guestReachableUrl} from '../omarchyd/guest-install.mjs'
 
 test('guestReachableUrl skips loopback and prefers a LAN address', () => {
 	assert.equal(guestReachableUrl({addresses: [], port: 7780}), '')
@@ -47,6 +47,35 @@ test('connectorCloudInit adds qemu-guest-agent and python without dropping catal
 	const arch = connectorCloudInit({familyId: 'arch'})
 	assert.deepEqual(arch.packages, ['qemu-guest-agent', 'python'])
 	assert.deepEqual(arch.commands, [['systemctl', 'enable', '--now', 'qemu-guest-agent']])
+	const withUser = connectorCloudInit({
+		familyId: 'debian',
+		username: 'chris',
+		cloudInit: {packages: ['task-gnome-desktop'], commands: [['systemctl', 'set-default', 'graphical.target']], graphical: true, adminGroup: 'sudo'},
+	})
+	assert.deepEqual(withUser.packages, ['qemu-guest-agent', 'python3', 'task-gnome-desktop'])
+	assert.deepEqual(withUser.commands[0], ['systemctl', 'enable', '--now', 'qemu-guest-agent'])
+	assert.deepEqual(withUser.commands[1], ['loginctl', 'enable-linger', 'chris'])
+	assert.deepEqual(withUser.commands[2], ['systemctl', 'set-default', 'graphical.target'])
+	assert.equal(withUser.graphical, true)
+	const without = connectorCloudInit({familyId: 'debian', cloudInit: {packages: ['task-gnome-desktop'], commands: [['systemctl', 'set-default', 'graphical.target']], graphical: true}})
+	assert.equal(without.commands.some((c) => c[0] === 'loginctl'), false)
+	assert.deepEqual(without.packages, ['qemu-guest-agent', 'python3', 'task-gnome-desktop'])
+	assert.equal(without.graphical, true)
+})
+
+test('guestConnectorPrep enables linger as argv and installs python only when it is missing', () => {
+	const prep = guestConnectorPrep({username: 'chris'})
+	assert.equal(prep.length >= 1, true)
+	assert.deepEqual(prep[0], {path: 'loginctl', args: ['enable-linger', 'chris']})
+	const python = prep.find((cmd) => cmd.path === 'bash')
+	assert.ok(python, 'python install is a generated bash command')
+	assert.equal(python.args[0], '-lc')
+	assert.match(python.args[1], /python3/)
+	assert.match(python.args[1], /\bpython\b/)
+	assert.match(python.args[1], /apt-get/)
+	assert.match(python.args[1], /pacman/)
+	assert.equal(python.args[1].includes('chris'), false)
+	assert.equal(prep[0].args.join(' ').includes('bash'), false)
 })
 
 test('guest-exec wraps the paste command as runuser or powershell', () => {
