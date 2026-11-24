@@ -1,14 +1,14 @@
 import {useDesktop} from '../desktop/Desktop'
-import {lazy, Suspense, useState, type ReactNode} from 'react'
+import {lazy, Suspense, useEffect, useState, type ReactNode} from 'react'
 
-import type {Machine} from '../api'
+import {ApiError, mutate, type Machine} from '../api'
 import {Icon} from '../icons'
-import {useStats} from '../machines/api'
+import {useMachineDetails, useStats} from '../machines/api'
 import {extraDisks, rootDisk} from '../swarm/gauges'
-import {guestAgent, hostGuestMetrics, linuxConnectorOs} from '../swarm/guestLink'
+import {connectorKind, guestAgent, hostGuestMetrics, linuxConnectorOs} from '../swarm/guestLink'
 import {storageRowSub} from '../swarm/storageHint'
 import {AddComputer, ConnectorControls, agentMay, useSwarm} from '../swarm/Swarm'
-import {Row, Sheet, SheetHeader, bytes, duration, haptic} from '../ui'
+import {Field, Row, Sheet, SheetHeader, bytes, duration, haptic, useToast} from '../ui'
 import {GaugeCluster} from './serverGauges'
 import {MachineActions} from './machineActions'
 import {openStore} from './openStore'
@@ -20,6 +20,12 @@ const MachineFiles = lazy(() => import('../screens/Files').then((m) => ({default
 
 const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((100 * u.used) / u.total) : null)
 
+type ConnectorInstall = {status: 'started' | 'needs-password' | 'needs-agent' | 'unsupported'; message?: string; taskId?: string}
+
+function startFirstError(e: unknown) {
+	return e instanceof ApiError && e.code === 'PRECONDITION_FAILED' && /Start the machine first/.test(e.message)
+}
+
 /**
  * The computer sections of a virtual machine. Power, USB, and snapshots stay with the host page.
  * Terminal is the connector shell. Desktop is the virtual machine's screen.
@@ -30,7 +36,12 @@ export type GuestSections = {files?: ReactNode; apps?: ReactNode; storage?: Reac
 export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, onBackups, onOpenTerminal, pin, tabs}: {machine: Machine; onOpenStore?: () => void; onOpenDesktop?: () => void; onOpenStorage: (target: {agentId: string; name: string}) => void; onBackups?: () => void; onOpenTerminal?: (agent: {id: string; name: string}, input?: string) => void; pin?: ReactNode; tabs: (sections: GuestSections) => ReactNode}) {
 	const swarm = useSwarm()
 	const agent = guestAgent(swarm.data ?? [], machine.id)
+	const toast = useToast()
 	const [install, setInstall] = useState(false)
+	const [busy, setBusy] = useState(false)
+	const [taskId, setTaskId] = useState<string | null>(null)
+	const [askPassword, setAskPassword] = useState(false)
+	const [sudoPassword, setSudoPassword] = useState('')
 	const [terminal, setTerminal] = useState<{input?: string} | null>(null)
 	const [desktop, setDesktop] = useState(false)
 	const desk = useDesktop()
@@ -41,6 +52,46 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 	const host = !metrics && machine.state === 'running' ? hostGuestMetrics(stats.data?.last, machine.memoryMb ?? (machine.memoryGb ? machine.memoryGb * 1024 : 0), machine.cores ?? 0) : null
 	const disk = metrics ? rootDisk(metrics.disks ?? []) : undefined
 	const linux = linuxConnectorOs(machine.osId)
+	const canInstall = connectorKind(machine.osId) !== 'unsupported'
+	const details = useMachineDetails(busy && !agent ? machine.id : null)
+	useEffect(() => {
+		if (!agent) return
+		setBusy(false)
+		setAskPassword(false)
+		setInstall(false)
+	}, [agent])
+	useEffect(() => {
+		if (!busy || agent || taskId === '') return
+		const tasks = details.data?.tasks ?? []
+		const task = taskId ? tasks.find((t) => t.id === taskId && t.type === 'connector') : tasks.find((t) => t.type === 'connector')
+		if (task?.status === 'error') {
+			toast(task.message ?? 'Install failed', true)
+			setBusy(false)
+		}
+	}, [agent, busy, details.data, taskId, toast])
+	const runInstall = (password?: string) => {
+		haptic(6)
+		setBusy(true)
+		// Empty until this attempt has a task id, so an older connector error does not clear the spinner.
+		setTaskId('')
+		setAskPassword(false)
+		const input = password ? {id: machine.id, sudoPassword: password} : {id: machine.id}
+		void mutate<ConnectorInstall>('machines.installConnector', input)
+			.then((out) => {
+				if (out.status === 'started') {
+					setTaskId(out.taskId ?? null)
+					return
+				}
+				if (out.status === 'needs-agent') setInstall(true)
+				else if (out.status === 'needs-password') setAskPassword(true)
+				setBusy(false)
+			})
+			.catch((e) => {
+				toast(e instanceof Error ? e.message : 'Install failed', true)
+				if (!startFirstError(e) && !guestAgent(swarm.data ?? [], machine.id)) setInstall(true)
+				setBusy(false)
+			})
+	}
 	const canStorage = !!(agent?.online && agentMay(agent, 'storage'))
 	const storageSub = !linux
 		? 'The connector runs on Linux with systemd. It can’t manage drives here.'
@@ -61,14 +112,14 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 	return (
 		<>
 			<MachineActions terminal={live && !!agent && agentMay(agent, 'terminal')} desktop={hostScreen || connectorDesktop} onTerminal={() => openTerminal()} onDesktop={() => (onOpenDesktop && machine.state === 'running' ? onOpenDesktop() : desk && agent ? desk.openConsole(`agent-${agent.id}`, machine.name) : setDesktop(true))} pin={pin} />
-			{swarm.isFetched && !agent && linux && (
+			{swarm.isFetched && !agent && canInstall && (
 				<div className="actions">
-					<button type="button" className="btn primary" onClick={() => (haptic(6), setInstall(true))}>
-						<Icon name="plus" size={20} /> Install connector
+					<button type="button" className="btn primary" disabled={busy} onClick={() => runInstall()}>
+						{busy ? <span className="spinner" /> : <Icon name="plus" size={20} />} Install connector
 					</button>
 				</div>
 			)}
-			{swarm.isFetched && !agent && !linux && <p className="quiet">The connector runs on Linux with systemd. It can’t be installed on this guest.</p>}
+			{swarm.isFetched && !agent && !canInstall && <p className="quiet">This operating system can’t run the connector. It runs on Linux with systemd.</p>}
 			{metrics ? <GaugeCluster metrics={metrics} /> : host ? <GaugeCluster metrics={host} /> : null}
 			<SheetGroup title="Now">
 				<Row
@@ -105,15 +156,33 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 						{storageSub}
 					</p>
 					{!agent && linux && (
-						<button type="button" className="btn primary" onClick={() => (setStorageNote(false), setInstall(true))}>
+						<button type="button" className="btn primary" onClick={() => (setStorageNote(false), runInstall())}>
 							<Icon name="plus" size={18} /> Install connector
 						</button>
 					)}
 				</Sheet>
 			)}
+			{askPassword && (
+				<Sheet open onClose={() => (setAskPassword(false), setSudoPassword(''))} label="Password">
+					<SheetHeader title="Password" subtitle={machine.name} onClose={() => (setAskPassword(false), setSudoPassword(''))} />
+					<form
+						onSubmit={(e) => {
+							e.preventDefault()
+							const password = sudoPassword
+							setSudoPassword('')
+							runInstall(password)
+						}}
+					>
+						<Field id="guest-sudo" label="Password in the machine" type="password" autoComplete="off" value={sudoPassword} onChange={(e) => setSudoPassword(e.target.value)} hint="Used once so the installer can finish. It isn’t saved." autoFocus required />
+						<button type="submit" className="btn primary" disabled={busy || !sudoPassword} style={{width: '100%', marginTop: 12}}>
+							{busy ? <span className="spinner" /> : 'Install connector'}
+						</button>
+					</form>
+				</Sheet>
+			)}
 			{install && (
 				<AddComputer
-					guest={{id: machine.id, name: machine.name}}
+					guest={{id: machine.id, name: machine.name, osId: machine.osId}}
 					before={(swarm.data ?? []).map((a) => a.id)}
 					onClose={() => setInstall(false)}
 					onJoined={() => setInstall(false)}

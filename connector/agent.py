@@ -58,7 +58,7 @@ except ImportError:
     fcntl = pty = pwd = termios = None
 
 VERSION = "1"
-ABILITY_NAMES = ("terminal", "desktop", "manage", "storage", "backup", "services", "files")
+ABILITY_NAMES = ("terminal", "desktop", "manage", "storage", "backup", "services", "files", "vms")
 # A file channel sends this much, then waits until the server has that many chunks. The socket
 # read loop stays free to take acks, so a large file cannot stall the terminal or the desktop.
 FILE_CHUNK = 64 * 1024
@@ -537,7 +537,7 @@ def _user_name():
         return os.environ.get("USERNAME", "")
 
 
-def info():
+def info(abilities=None):
     rel = os_release()
     pkg = package_manager()
     om = omarchy_facts()
@@ -556,6 +556,7 @@ def info():
         "updateCommand": update_command(pkg, om.get("omarchy")),
         "desktop": desktop_kind(),
         **om,
+        "libvirt": _info_libvirt(abilities),
     }
 
 
@@ -2154,6 +2155,71 @@ class Screen(Channel):
         vnc_release()
 
 
+class GuestVnc(Channel):
+    def __init__(self, conn, ch, sock):
+        super().__init__(conn, ch)
+        self.sock = sock
+        threading.Thread(target=self.pump, daemon=True).start()
+
+    def pump(self):
+        while not self.closed:
+            try:
+                data = self.sock.recv(65536)
+            except OSError:
+                break
+            if not data:
+                break
+            self.out(data)
+        self.ended("The screen sharing ended")
+
+    def write(self, data):
+        try:
+            self.sock.sendall(data)
+        except OSError:
+            self.ended("The screen sharing ended")
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+_GUEST_ID = re.compile(r"^[a-f0-9]{8}$")
+
+
+def open_guest_vnc(conn, ch, guest, data_dir, run):
+    # Guest id is 8 hex. The path comes from the helper, never from the server.
+    if not isinstance(guest, str) or not _GUEST_ID.match(guest):
+        raise RuntimeError("That virtual machine isn’t valid")
+    try:
+        err, out = run([sys.executable, VM_HELPER, "vnc-path", guest])
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as e:
+        raise RuntimeError((str(e) or "VM helper failed")[:300])
+    err_rest = (err or "").strip()
+    if err_rest:
+        raise RuntimeError(err_rest.split("\n")[-1][:300])
+    printed = (out or "").strip()
+    expected = os.path.join(data_dir, "vms", guest, "vnc.sock")
+    real = os.path.realpath(printed) if printed else ""
+    if real != os.path.realpath(expected):
+        raise RuntimeError("That virtual machine isn’t valid")
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(real)
+    except OSError:
+        sock.close()
+        raise RuntimeError("isn’t running")
+    return sock
+
+
 # ---------------------------------------------------------------------------------------------
 # Files: a channel for the clip book. Paths stay inside the home folder. The connector's own
 # configuration and data (its key and the server certificate) are not part of that folder here,
@@ -2815,6 +2881,7 @@ def supported_abilities(abilities, windows=None, mac=None):
 
 ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "theme-set": theme_set, "reboot": reboot, "shutdown": shutdown, "suspend": suspend}
 HELPER = "/usr/local/libexec/omarchy-connector/helper.py"
+VM_HELPER = os.path.join(DATA_DIR, "vm-helper.py")
 
 
 def helper(verb, *args):
@@ -2930,6 +2997,144 @@ STORAGE_ACTIONS = {
     "storage-scrub": storage_scrub,
     "storage-setSleep": storage_set_sleep,
 }
+
+# Virtual machines (ability "vms"). Session libvirt as this user: no sudo, no shell.
+VM_ACTIONS = {
+    "vm-status": "status",
+    "vm-fetch": "fetch",
+    "vm-disk-create": "disk-create",
+    "vm-seed": "seed",
+    "vm-define": "define",
+    "vm-start": "start",
+    "vm-shutdown": "shutdown",
+    "vm-reboot": "reboot",
+    "vm-destroy": "destroy",
+    "vm-suspend": "suspend",
+    "vm-resume": "resume",
+    "vm-undefine": "undefine",
+    "vm-state": "state",
+    "vm-vnc-path": "vnc-path",
+    "vm-inspect": "inspect",
+    "vm-stats": "stats",
+    "vm-ga-ping": "ga-ping",
+    "vm-ga-exec": "ga-exec",
+    "vm-ga-status": "ga-status",
+}
+_VM_POSITIONALS = {
+    "status": (),
+    "fetch": ("imageId", "catalogUrl"),
+    "disk-create": ("guestId", "sizeGb", "imageId?"),
+    "seed": ("guestId", "name"),
+    "define": ("guestId",),
+    "start": ("guestId",),
+    "shutdown": ("guestId",),
+    "reboot": ("guestId",),
+    "destroy": ("guestId",),
+    "suspend": ("guestId",),
+    "resume": ("guestId",),
+    "undefine": ("guestId",),
+    "state": (),
+    "vnc-path": ("guestId",),
+    "inspect": ("guestId",),
+    "stats": (),
+    "ga-ping": ("guestId",),
+    "ga-exec": ("guestId",),
+    "ga-status": ("guestId", "pid"),
+}
+_VM_JSON = frozenset(("seed", "define", "ga-exec"))
+_PROGRESS = re.compile(r"^PROGRESS (\d+)$")
+
+
+def _process_abilities():
+    try:
+        with open(CONFIG) as f:
+            return supported_abilities(json.load(f).get("abilities", {}))
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _info_libvirt(abilities=None):
+    if abilities is None:
+        abilities = _process_abilities()
+    if not abilities.get("vms"):
+        return False
+    try:
+        out = vm_call("vm-status", {}, allowed=abilities)
+        data = json.loads(out) if isinstance(out, str) else out
+        return isinstance(data, dict) and data.get("libvirt") is True
+    except Exception:
+        return False
+
+
+def _vm_arg(value):
+    if isinstance(value, bool) or value is None:
+        raise RuntimeError("Unknown action")
+    if isinstance(value, int):
+        value = str(value)
+    elif not isinstance(value, str):
+        raise RuntimeError("Unknown action")
+    if len(value) > 500 or any(ch.isspace() for ch in value):
+        raise RuntimeError("That argument isn’t valid")
+    return value
+
+
+def _take_progress(text, progress):
+    kept = []
+    for line in (text or "").splitlines():
+        m = _PROGRESS.match(line.strip())
+        if m:
+            if progress:
+                progress(int(m.group(1)) / 100)
+        elif line.strip():
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def _vm_spawn(argv, stdin=None):
+    verb = argv[2] if len(argv) > 2 else ""
+    timeout = 30 * 60 if verb in ("fetch", "disk-create") else 2 * 60
+    if isinstance(stdin, bytes):
+        stdin = stdin.decode("utf-8")
+    r = subprocess.run(argv, input="" if stdin is None else stdin, capture_output=True, text=True, timeout=timeout)
+    err, out = r.stderr or "", r.stdout or ""
+    if r.returncode and not err.strip():
+        err = (out.strip() or "VM helper failed")
+    return err, out
+
+
+def vm_call(name, args, allowed, spawn=None, stdin=None, progress=None):
+    if not (allowed or {}).get("vms"):
+        raise RuntimeError("This computer doesn’t allow virtual machines")
+    verb = VM_ACTIONS.get(name)
+    if not verb:
+        raise RuntimeError("Unknown action")
+    args = dict(args or {})
+    positionals = []
+    for key in _VM_POSITIONALS[verb]:
+        optional = key.endswith("?")
+        key = key[:-1] if optional else key
+        if key not in args or args[key] is None or args[key] == "":
+            if optional:
+                args.pop(key, None)
+                continue
+            raise RuntimeError("Unknown action")
+        positionals.append(_vm_arg(args.pop(key)))
+    body = stdin
+    if body is None and verb in _VM_JSON:
+        body = args.pop("spec") if verb == "define" and "spec" in args else args
+        if not isinstance(body, str):
+            body = json.dumps(body)
+    argv = [sys.executable, VM_HELPER, verb, *positionals]
+    run = spawn or _vm_spawn
+    try:
+        err, out = run(argv, stdin=body)
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as e:
+        raise RuntimeError((str(e) or "VM helper failed")[:300])
+    err_rest = _take_progress(err, progress)
+    out_rest = _take_progress(out, progress)
+    if err_rest.strip():
+        raise RuntimeError(err_rest.strip().split("\n")[-1][:300])
+    return (out_rest or "").strip()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -3823,6 +4028,36 @@ class Connection:
 
         threading.Thread(target=start, daemon=True).start()
 
+    def _open_guest_vnc(self, ch, guest):
+        token = object()
+        lock, tokens = self._ch_state()
+        with lock:
+            tokens[ch] = token
+
+        def start():
+            sock = None
+            try:
+                sock = open_guest_vnc(self, ch, guest, DATA_DIR, _vm_spawn)
+                obj = GuestVnc(self, ch, sock)
+            except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+                self.send({"op": "closed", "ch": ch, "code": 1011, "reason": str(e)[:200]})
+                return
+            with lock:
+                if tokens.get(ch) is not token:
+                    drop = True
+                else:
+                    self.channels[ch] = obj
+                    drop = False
+            if drop:
+                obj.close()
+
+        threading.Thread(target=start, daemon=True).start()
+
     def _report_step(self, live_sampler, last_hello, now):
         # Push the last snapshot only while someone is reading. Calling metrics()
         # here would count as a read and the sampler would never go idle.
@@ -3836,7 +4071,7 @@ class Connection:
             self.send({"op": "metrics", "metrics": metrics(self.pkg, sampler=live_sampler)})
         # Facts change now and then (plugins, theme, a desktop session starting).
         if now - last_hello >= HELLO_INTERVAL:
-            self.send({"op": "hello", "info": info(), "abilities": self.allowed})
+            self.send({"op": "hello", "info": info(self.allowed), "abilities": self.allowed})
             self._desk_seen, self._desk_at = desktop_kind(), now
             return now
         # Someone signing in to (or out of) the desktop is told straight away, not up to five
@@ -3846,7 +4081,7 @@ class Connection:
             seen = getattr(self, "_desk_seen", None)
             self._desk_seen, self._desk_at = desk, now
             if seen is not None and desk != seen:
-                self.send({"op": "hello", "info": info(), "abilities": self.allowed})
+                self.send({"op": "hello", "info": info(self.allowed), "abilities": self.allowed})
                 return now
         return last_hello
 
@@ -3856,7 +4091,7 @@ class Connection:
         self.ws = WS(url, {"Authorization": f"Bearer {self.cfg['id']}:{self.cfg['key']}", "User-Agent": f"omarchy-connector/{VERSION}"}, CA_FILE)
         self.connected_at = time.monotonic()
         log("connected to", self.cfg["server"])
-        self.send({"op": "hello", "info": info(), "abilities": self.allowed})
+        self.send({"op": "hello", "info": info(self.allowed), "abilities": self.allowed})
         stop = threading.Event()
 
         global _process_sampler
@@ -3908,6 +4143,15 @@ class Connection:
                         raise RuntimeError("Say whether to read or write the file")
                 except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
                     self.send({"op": "closed", "ch": ch, "code": 1011, "reason": str(e)[:200]})
+                return
+            # A guest id is that VM's console. Do not start wayvnc or open the desktop socket.
+            if kind == "vnc" and "guest" in msg:
+                if not self.allowed.get("vms"):
+                    return self.send({"op": "closed", "ch": ch, "code": 1011, "reason": "This computer doesn’t allow virtual machines"})
+                guest = msg.get("guest")
+                if not isinstance(guest, str) or not _GUEST_ID.match(guest):
+                    return self.send({"op": "closed", "ch": ch, "code": 1011, "reason": "That virtual machine isn’t valid"})
+                self._open_guest_vnc(ch, guest)
                 return
             ability = "terminal" if kind == "pty" else "desktop" if kind == "vnc" else None
             if not ability or not self.allowed.get(ability):
@@ -3980,7 +4224,14 @@ class Connection:
                     raise RuntimeError("This computer doesn’t allow backups")
                 data = BACKUP_ACTIONS[name](self, msg.get("id"), msg.get("args") or {}, self.cfg)
                 return self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})
-            if name in STORAGE_ACTIONS or str(name).startswith("storage-"):
+            if name in VM_ACTIONS or str(name).startswith("vm-"):
+                data = vm_call(
+                    name,
+                    msg.get("args") or {},
+                    allowed=self.allowed,
+                    progress=lambda p: self.send({"op": "progress", "id": msg.get("id"), "percent": p, "step": "download"}),
+                )
+            elif name in STORAGE_ACTIONS or str(name).startswith("storage-"):
                 if not self.allowed.get("storage"):
                     raise RuntimeError("This computer doesn’t allow Storage")
                 fn = STORAGE_ACTIONS.get(name)
@@ -4013,7 +4264,7 @@ class Connection:
                     data = fn(msg.get("args") or {})
             self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})
             if name in ("plugin-install", "plugin-remove", "theme-set"):
-                self.send({"op": "hello", "info": info(), "abilities": self.allowed})
+                self.send({"op": "hello", "info": info(self.allowed), "abilities": self.allowed})
         except Exception as e:  # noqa: BLE001
             self.send({"op": "result", "id": msg.get("id"), "ok": False, "error": str(e)[:300]})
 
@@ -4057,7 +4308,7 @@ def enroll(server, token, abilities):
     u = urllib.parse.urlsplit(server)
     if u.scheme != "https" or not u.hostname:
         raise SystemExit("The server address must start with https://")
-    body = json.dumps({"token": token, "info": info(), "abilities": abilities}).encode()
+    body = json.dumps({"token": token, "info": info(abilities), "abilities": abilities}).encode()
     try:
         ctx = _ssl_context(CA_FILE)
     except FileNotFoundError:

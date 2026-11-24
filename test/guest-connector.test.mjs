@@ -8,9 +8,16 @@ import {test} from 'node:test'
 
 import {createConnector} from '../omarchyd/connector.mjs'
 import {RpcError} from '../omarchyd/rpc.mjs'
-import {guestAgent, hostGuestMetrics, isGuestAgent, linuxConnectorOs} from '../web/src/swarm/guestLink.ts'
+import {connectorKind, guestAgent, hostGuestMetrics, isGuestAgent, linuxConnectorOs} from '../web/src/swarm/guestLink.ts'
 
 test('the connector installs on Linux guests, and host stats omit disk use', () => {
+	assert.equal(connectorKind('ubuntu'), 'linux')
+	assert.equal(connectorKind('omarchy'), 'linux')
+	assert.equal(connectorKind(''), 'linux')
+	assert.equal(connectorKind('windows-11'), 'unsupported')
+	assert.equal(connectorKind('macos'), 'unsupported')
+	assert.equal(connectorKind('haos'), 'unsupported')
+	assert.equal(connectorKind('alpine'), 'unsupported')
 	assert.equal(linuxConnectorOs('ubuntu'), true)
 	assert.equal(linuxConnectorOs(''), true)
 	assert.equal(linuxConnectorOs('omarchy'), true)
@@ -18,6 +25,7 @@ test('the connector installs on Linux guests, and host stats omit disk use', () 
 	assert.equal(linuxConnectorOs('macos'), false)
 	assert.equal(linuxConnectorOs('haos'), false)
 	assert.equal(linuxConnectorOs('home-assistant'), false)
+	assert.equal(linuxConnectorOs('alpine'), false)
 	const metrics = hostGuestMetrics({cpu: 12, memMb: 512}, 1024, 2)
 	assert.equal(metrics.cpu, 12)
 	assert.equal(metrics.cores, 2)
@@ -65,6 +73,25 @@ test('pairing a virtual machine keeps the connector off the physical computer li
 	}
 })
 
+test('a guest pairing code lasts six hours; a computer pairing code lasts fifteen minutes', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'guest-pair-ttl-'))
+	try {
+		execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-days', '1', '-subj', '/CN=t'], {cwd: root, stdio: 'ignore'})
+		const now = 1_700_000_000_000
+		const swarm = createConnector({dataDir: root, tlsDir: root, source: async () => 'https://example.test', now: () => now})
+		try {
+			const guest = await swarm.procedures['swarm.pair'].run({machineId: 'abcd1234', terminal: true})
+			assert.equal(guest.expiresAt, now + 6 * 60 * 60_000)
+			const computer = await swarm.procedures['swarm.pair'].run({terminal: true})
+			assert.equal(computer.expiresAt, now + 15 * 60_000)
+		} finally {
+			swarm.close()
+		}
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
 test('an older connector file still loads, and a bad guest id does not hide the computer', async () => {
 	const root = await mkdtemp(join(os.tmpdir(), 'guest-connector-old-'))
 	try {
@@ -92,4 +119,29 @@ test('an older connector file still loads, and a bad guest id does not hide the 
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}
+})
+
+test('the machine page runs machines.installConnector and asks for a password', async () => {
+	const guest = await readFile(new URL('../web/src/fleet/GuestLive.tsx', import.meta.url), 'utf8')
+	assert.match(guest, /machines\.installConnector/)
+	assert.match(guest, /useMachineDetails/)
+	assert.match(guest, /taskId/)
+	assert.match(guest, /type === 'connector'/)
+	assert.match(guest, /status === 'error'/)
+	assert.match(guest, /message \?\? 'Install failed'/)
+	const started = /if \(out\.status === 'started'\) \{[\s\S]*?\n\t{4}\}/.exec(guest)
+	assert.ok(started, 'started branch is its own block')
+	assert.doesNotMatch(started[0], /setBusy\(false\)/)
+	assert.match(started[0], /taskId/)
+	assert.match(guest, /type="password"/)
+	assert.match(guest, /autoComplete="off"|autocomplete="off"/)
+	assert.match(guest, /onOpenStorage\(\{agentId: agent\.id, name: machine\.name\}\)/)
+	assert.doesNotMatch(guest, /swarm\.isFetched && !agent && linux &&/)
+	assert.match(guest, /This operating system can’t run the connector\. It runs on Linux with systemd\./)
+	const swarm = await readFile(new URL('../web/src/swarm/Swarm.tsx', import.meta.url), 'utf8')
+	assert.match(swarm, /linuxConnectorOs\(guest\.osId/)
+	assert.match(swarm, /can’t run the connector/)
+	assert.match(swarm, /osId\?/)
+	const api = await readFile(new URL('../web/src/api.ts', import.meta.url), 'utf8')
+	assert.match(api, /['"]machines\.installConnector['"]/)
 })
