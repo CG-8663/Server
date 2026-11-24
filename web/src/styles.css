@@ -1523,6 +1523,13 @@ h1.title {
 	flex: none;
 	min-height: 54px;
 }
+.primary-row-spacer {
+	flex: 1;
+}
+.primary-row-pin-slot {
+	visibility: hidden;
+	pointer-events: none;
+}
 
 .kv {
 	margin: 18px 0;

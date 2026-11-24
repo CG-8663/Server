@@ -606,7 +606,32 @@ test('creating testos-amd64 still succeeds when the guest agent never answers', 
 		assert.deepEqual(pairCalls, [])
 		assert.deepEqual(execs, [])
 		const tasks = await call('machines.tasks')
-		assert.equal(tasks.some((row) => row.machineId === id && row.type === 'connector'), false)
+		assert.equal(tasks.some((row) => row.machineId === id && row.type === 'connector' && row.status === 'running'), false)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('creating testos-amd64 shows a running connector task while the guest agent is down', async () => {
+	const {root, call} = await openCreate({
+		connectorAgentWaitMs: 800,
+		qemuAgent: () => ({
+			ping: async () => {
+				throw new Error('Guest agent not available for now')
+			},
+			exec: async () => ({pid: 42}),
+			status: async () => ({exited: true, exitcode: 0, out: '', err: ''}),
+		}),
+		connector: {pair: async () => fakePair(), list: async () => []},
+	})
+	try {
+		const {id} = await call('machines.create', {...createSpec, name: 'Trying', osId: 'testos-amd64'})
+		const trying = await until(async () => {
+			const tasks = await call('machines.tasks')
+			return tasks.find((row) => row.machineId === id && row.type === 'connector' && row.status === 'running') ?? null
+		})
+		assert.equal(trying?.type, 'connector')
+		assert.equal(trying?.status, 'running')
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}

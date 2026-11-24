@@ -53,7 +53,9 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 	const disk = metrics ? rootDisk(metrics.disks ?? []) : undefined
 	const linux = linuxConnectorOs(machine.osId)
 	const canInstall = connectorKind(machine.osId) !== 'unsupported'
-	const details = useMachineDetails(busy && !agent ? machine.id : null)
+	const details = useMachineDetails(!agent && canInstall ? machine.id : null)
+	const autoTrying = (details.data?.tasks ?? []).some((t) => t.type === 'connector' && t.status === 'running')
+	const trying = busy || autoTrying
 	useEffect(() => {
 		if (!agent) return
 		setBusy(false)
@@ -113,10 +115,14 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 		<>
 			<MachineActions terminal={live && !!agent && agentMay(agent, 'terminal')} desktop={hostScreen || connectorDesktop} onTerminal={() => openTerminal()} onDesktop={() => (onOpenDesktop && machine.state === 'running' ? onOpenDesktop() : desk && agent ? desk.openConsole(`agent-${agent.id}`, machine.name) : setDesktop(true))} pin={pin} />
 			{swarm.isFetched && !agent && canInstall && (
-				<div className="actions">
-					<button type="button" className="btn primary" disabled={busy} onClick={() => runInstall()}>
-						{busy ? <span className="spinner" /> : <Icon name="plus" size={20} />} Install connector
+				<div className="primary-row">
+					<button type="button" className="btn primary" disabled={trying} onClick={() => runInstall()}>
+						{trying ? <span className="spinner" /> : <Icon name="plus" size={20} />} Install connector
 					</button>
+					<span className="primary-row-spacer" aria-hidden="true" />
+					<span className="btn small primary-row-pin-slot" aria-hidden="true">
+						<Icon name="pin" size={16} /> pin
+					</span>
 				</div>
 			)}
 {swarm.isFetched && !agent && !canInstall && <p className="quiet">This operating system can’t run the connector. It runs on Linux with systemd.</p>}

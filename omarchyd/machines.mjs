@@ -1392,23 +1392,35 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const deadline = Date.now() + connectorAgentWaitMs
 		const gap = Math.min(2_000, Math.max(20, Math.floor(connectorAgentWaitMs / 8) || 20))
 		const runWait = async () => {
-			while (Date.now() < deadline) {
-				let up = false
-				try {
-					await agent.ping()
-					up = true
-				} catch {
-					up = false
+			const t = beginTask(m, 'connector')
+			await save().catch(() => {})
+			let handedOff = false
+			try {
+				while (Date.now() < deadline) {
+					let up = false
+					try {
+						await agent.ping()
+						up = true
+					} catch {
+						up = false
+					}
+					if (up) {
+						const listed = await connector?.list?.().catch(() => [])
+						if ((Array.isArray(listed) ? listed : []).some((a) => a?.guestOf === id)) return
+						handedOff = true
+						await installConnector({id, username}).catch(() => {})
+						return
+					}
+					const left = deadline - Date.now()
+					if (left <= 0) return
+					await sleepUnref(Math.min(gap, left))
 				}
-				if (up) {
-					const listed = await connector?.list?.().catch(() => [])
-					if ((Array.isArray(listed) ? listed : []).some((a) => a?.guestOf === id)) return
-					await installConnector({id, username}).catch(() => {})
-					return
+			} finally {
+				if (t.status === 'running') {
+					if (handedOff) endTask(m, t)
+					else m.tasks = (m.tasks ?? []).filter((row) => row.id !== t.id)
+					await save().catch(() => {})
 				}
-				const left = deadline - Date.now()
-				if (left <= 0) return
-				await sleepUnref(Math.min(gap, left))
 			}
 		}
 		runWait().catch(() => {})
