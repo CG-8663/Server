@@ -1775,7 +1775,15 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 			/Invalid profile ID/,
 		)
 		await assert.rejects(
+			() => hypr.procedures['hyprland.profileSave'].run({id: '   ', codec: 'h264', fps: 60, bitrate: 16000}),
+			/Invalid profile ID/,
+		)
+		await assert.rejects(
 			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: 'ok-id', name: 'Null Dev', codec: 'h264', fps: 60, bitrate: 16000}, deviceId: null}),
+			/Invalid device ID/,
+		)
+		await assert.rejects(
+			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: 'ok-id', name: 'Empty Dev', codec: 'h264', fps: 60, bitrate: 16000}, deviceId: ''}),
 			/Invalid device ID/,
 		)
 		assert.equal(
