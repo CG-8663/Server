@@ -3,7 +3,7 @@ import {lazy, Suspense, useEffect, useState, type ReactNode} from 'react'
 
 import {ApiError, mutate, type Machine} from '../api'
 import {Icon} from '../icons'
-import {useStats} from '../machines/api'
+import {useMachineDetails, useStats} from '../machines/api'
 import {extraDisks, rootDisk} from '../swarm/gauges'
 import {connectorKind, guestAgent, hostGuestMetrics, linuxConnectorOs} from '../swarm/guestLink'
 import {storageRowSub} from '../swarm/storageHint'
@@ -20,7 +20,7 @@ const MachineFiles = lazy(() => import('../screens/Files').then((m) => ({default
 
 const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((100 * u.used) / u.total) : null)
 
-type ConnectorInstall = {status: 'started' | 'needs-password' | 'needs-agent' | 'unsupported'; message?: string}
+type ConnectorInstall = {status: 'started' | 'needs-password' | 'needs-agent' | 'unsupported'; message?: string; taskId?: string}
 
 function startFirstError(e: unknown) {
 	return e instanceof ApiError && e.code === 'PRECONDITION_FAILED' && /Start the machine first/.test(e.message)
@@ -39,6 +39,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 	const toast = useToast()
 	const [install, setInstall] = useState(false)
 	const [busy, setBusy] = useState(false)
+	const [taskId, setTaskId] = useState<string | null>(null)
 	const [askPassword, setAskPassword] = useState(false)
 	const [sudoPassword, setSudoPassword] = useState('')
 	const [terminal, setTerminal] = useState<{input?: string} | null>(null)
@@ -52,20 +53,35 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 	const disk = metrics ? rootDisk(metrics.disks ?? []) : undefined
 	const linux = linuxConnectorOs(machine.osId)
 	const canInstall = connectorKind(machine.osId) !== 'unsupported'
+	const details = useMachineDetails(busy && !agent ? machine.id : null)
 	useEffect(() => {
 		if (!agent) return
 		setBusy(false)
 		setAskPassword(false)
 		setInstall(false)
 	}, [agent])
+	useEffect(() => {
+		if (!busy || agent || taskId === '') return
+		const tasks = details.data?.tasks ?? []
+		const task = taskId ? tasks.find((t) => t.id === taskId && t.type === 'connector') : tasks.find((t) => t.type === 'connector')
+		if (task?.status === 'error') {
+			toast(task.message ?? 'Install failed', true)
+			setBusy(false)
+		}
+	}, [agent, busy, details.data, taskId, toast])
 	const runInstall = (password?: string) => {
 		haptic(6)
 		setBusy(true)
+		// Empty until this attempt has a task id, so an older connector error does not clear the spinner.
+		setTaskId('')
 		setAskPassword(false)
 		const input = password ? {id: machine.id, sudoPassword: password} : {id: machine.id}
 		void mutate<ConnectorInstall>('machines.installConnector', input)
 			.then((out) => {
-				if (out.status === 'started') return
+				if (out.status === 'started') {
+					setTaskId(out.taskId ?? null)
+					return
+				}
 				if (out.status === 'needs-agent') setInstall(true)
 				else if (out.status === 'needs-password') setAskPassword(true)
 				setBusy(false)
