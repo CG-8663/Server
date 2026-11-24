@@ -182,7 +182,7 @@ describe('omarchyd machines', () => {
 				'/catalog.json': JSON.stringify({
 					version: 1,
 					images: [
-						{id: 'testos-amd64', familyId: 'debian', name: 'TestOS', variantName: 'Server', version: '1', arch: 'amd64', kind: 'cloud', url: 'https://fixture.test/img/test.qcow2', checksums: {url: 'https://fixture.test/img/SHA256SUMS', algorithm: 'sha256'}, sizeMb: 1, adminGroup: 'sudo'},
+						{id: 'testos-amd64', familyId: 'debian', name: 'TestOS', variantName: 'Server', version: '1', arch: 'amd64', kind: 'cloud', url: 'https://fixture.test/img/test.qcow2', checksums: {url: 'https://fixture.test/img/SHA256SUMS', algorithm: 'sha256'}, sizeMb: 1, adminGroup: 'sudo', cloudInit: {packages: ['task-gnome-desktop'], commands: [['systemctl', 'set-default', 'graphical.target']], graphical: true}},
 						{id: 'bados-amd64', familyId: 'debian', name: 'BadOS', version: '1', arch: 'amd64', kind: 'cloud', url: 'https://fixture.test/img/bad.qcow2', checksums: {url: 'https://fixture.test/img/SHA256SUMS', algorithm: 'sha256'}, sizeMb: 1},
 						{id: 'omarchy-9-amd64', familyId: 'omarchy', name: 'Omarchy', version: '9', arch: 'amd64', kind: 'iso', install: 'omarchy', url: 'https://fixture.test/img/omarchy.iso', sha256: createHash('sha256').update(image).digest('hex'), sizeMb: 1},
 						{id: 'insecure', name: 'Plain HTTP', version: '1', arch: 'amd64', kind: 'cloud', url: 'http://fixture.test/x.img', checksums: {url: 'https://fixture.test/s', algorithm: 'sha256'}},
@@ -269,6 +269,8 @@ describe('omarchyd machines', () => {
 		assert.match(seen.userData, /qemu-guest-agent/)
 		assert.match(seen.userData, /python3/)
 		assert.match(seen.userData, /\["systemctl","enable","--now","qemu-guest-agent"\]/)
+		assert.match(seen.userData, /task-gnome-desktop/)
+		assert.match(seen.userData, /power_state/)
 		assert.ok(!/\b[0-9a-f]{64}\b/.test(seen.userData), 'pairing fingerprint is not written into cloud-init')
 		assert.equal((await q('machines.details', {id})).options.agent, true)
 		assert.equal((await stat(join(data, 'machines/vms', id, 'disk.qcow2'))).size, image.length)
@@ -467,6 +469,10 @@ describe('omarchyd machines', () => {
 		assert.match(seen.userData, /chpasswd:[\s\S]*password: '\$6\$/)
 		assert.match(seen.userData, /hostname: web-1/)
 		assert.ok(!seen.userData.includes('new secret pw'))
+		assert.match(seen.userData, /qemu-guest-agent/)
+		assert.match(seen.userData, /python3/)
+		assert.ok(!seen.userData.includes('task-gnome-desktop'), 'a later cloud-init edit must not replay catalog desktop packages')
+		assert.ok(!seen.userData.includes('power_state'), 'a later cloud-init edit must not replay graphical power_state')
 		assert.deepEqual((await q('machines.details', {id})).cloudInit, {username: 'chris', hostname: 'web-1', sshKeys: [key]})
 	})
 

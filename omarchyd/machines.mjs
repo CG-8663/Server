@@ -1441,7 +1441,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const img = (await images().catch(() => [])).find((i) => i.id === m.osId)
 		return task(m, 'cloud-init', null, async () => {
 			const hash = password ? await hashPassword(password) : null
-			const userData = cloudUserData({host: hostname, username, hash, sshKeys, changePassword: !!hash, cloudInit: connectorCloudInit({...img, cloudInit: {adminGroup: img?.adminGroup, ...img?.cloudInit}})})
+			const userData = cloudUserData({host: hostname, username, hash, sshKeys, changePassword: !!hash, cloudInit: connectorCloudInit({familyId: img?.familyId, cloudInit: {adminGroup: img?.adminGroup}})})
 			const iso = await mediaIso(m, 'seed', 'cidata', {'user-data': userData, 'meta-data': cloudMetaData(hostname)})
 			seedDisk.file = iso
 			m.cloudInit = {username, hostname, sshKeys}
