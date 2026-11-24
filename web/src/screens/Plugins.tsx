@@ -6,6 +6,7 @@ import {useState} from 'react'
 import {mutate, query} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useUser} from '../data'
+import {CategoryChips} from '../CategoryChips'
 import {Icon} from '../icons'
 import {haptic, useConfirm, useToast} from '../ui'
 
@@ -95,13 +96,15 @@ export function PluginBrowser({q}: {q: string}) {
 					This server’s Omarchy doesn’t support plugins yet. Update Omarchy, then come back.
 				</div>
 			)}
-			<div className="chips" role="tablist" aria-label="Plugin categories">
-				{['', ...(data?.categories ?? [])].map((c) => (
-					<button key={c || 'all'} role="tab" aria-selected={category === c} className={`chip${category === c ? ' on' : ''}`} onClick={() => (haptic(5), setCategory(c))}>
-						{c || 'All'}
-					</button>
-				))}
-				<button className="chip" style={{marginLeft: 'auto'}} onClick={() => (haptic(5), setSort((s) => (s === 'stars' ? 'new' : 'stars')))}>
+			<div className="plugin-chipbar">
+				<CategoryChips label="Plugin categories">
+					{['', ...(data?.categories ?? [])].map((c) => (
+						<button key={c || 'all'} type="button" role="tab" aria-selected={category === c} className={`chip${category === c ? ' on' : ''}`} onClick={() => (haptic(5), setCategory(c))}>
+							{c || 'All'}
+						</button>
+					))}
+				</CategoryChips>
+				<button type="button" className="chip" onClick={() => (haptic(5), setSort((s) => (s === 'stars' ? 'new' : 'stars')))}>
 					<Icon name="sort" size={15} /> {sort === 'stars' ? 'Most starred' : 'Newest'}
 				</button>
 			</div>
