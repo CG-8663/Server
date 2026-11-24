@@ -67,3 +67,33 @@ export function applyReconfigUnsupportedToProfiledStreamState<TTier extends stri
 	codecFallback: StreamCodec | null
 	codec: StreamCodec
 }
+
+export type RttStats = {
+	rttMs: number | null
+	jitterMs: number
+	samples: number
+}
+
+export type NetworkQuality = 'unknown' | 'lan' | 'wan' | 'high-jitter'
+
+export type AudioJitterBudget = {
+	targetSec: number
+	minLeadSec: number
+	maxLeadSec: number
+}
+
+export type VideoDropPolicy = {
+	queueThreshold: number
+	sustainMs: number
+	hardCap: number
+}
+
+export function createRttStats(): RttStats
+export function updateRttStats(prev: RttStats, sampleMs: number): RttStats
+export function computeAudioJitterBudget(opts: {
+	rttMs: number | null
+	jitterMs?: number
+	mode?: 'opus' | 'pcm'
+}): AudioJitterBudget
+export function computeVideoDropPolicy(opts: {rttMs: number | null; jitterMs?: number}): VideoDropPolicy
+export function classifyNetworkQuality(opts: {rttMs: number | null; jitterMs?: number}): NetworkQuality

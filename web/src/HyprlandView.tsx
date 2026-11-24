@@ -8,6 +8,11 @@ import {
 	applyMetaToProfiledStreamState,
 	applyReconfigAppliedToProfiledStreamState,
 	applyReconfigUnsupportedToProfiledStreamState,
+	classifyNetworkQuality,
+	computeAudioJitterBudget,
+	computeVideoDropPolicy,
+	createRttStats,
+	updateRttStats,
 } from './hyprlandStreamState.mjs'
 import {Icon} from './icons'
 import {getRailDeviceId, StreamProfilerSheet, type StreamCodec, type StreamProfile, type StreamProfilesResponse} from './screens/StreamProfiler'
@@ -643,6 +648,8 @@ export function HyprlandView({
 	const audioCtxRef = useRef<AudioContext | null>(null)
 	const audioGainRef = useRef<GainNode | null>(null)
 	const nextAudioTimeRef = useRef(0)
+	const rttStatsRef = useRef<{rttMs: number | null; jitterMs: number; samples: number}>(createRttStats())
+	const audioResyncsRef = useRef(0)
 	const hostRef = useRef<HTMLDivElement>(null)
 	const canvasRef = useRef<HTMLCanvasElement>(null)
 	const fpsSpanRef = useRef<HTMLSpanElement>(null)
@@ -950,9 +957,12 @@ export function HyprlandView({
 		src.buffer = ab
 		src.connect(gain)
 		const now = ac.currentTime
-		// Tight 35 ms jitter cushion; resync automatically if network stalls or resumes from silence gating
-		if (nextAudioTimeRef.current < now + 0.005 || nextAudioTimeRef.current > now + 0.16) {
-			nextAudioTimeRef.current = now + 0.035
+		// Adaptive jitter cushion: 35 ms on LAN, expanding smoothly on WAN/relayed links to prevent audio skips
+		const {targetSec, minLeadSec, maxLeadSec} = computeAudioJitterBudget({...rttStatsRef.current, mode: 'pcm'})
+		if (nextAudioTimeRef.current < now + minLeadSec || nextAudioTimeRef.current > now + maxLeadSec) {
+			// Count only genuine recent underruns, not normal resumes after >200 ms silence gating
+			if (nextAudioTimeRef.current > now - 0.2 && nextAudioTimeRef.current < now + minLeadSec) audioResyncsRef.current++
+			nextAudioTimeRef.current = now + targetSec
 		}
 		src.start(nextAudioTimeRef.current)
 		nextAudioTimeRef.current += ab.duration
@@ -1093,7 +1103,8 @@ export function HyprlandView({
 		let queueHighSince = 0
 		const decodeStartMap = new Map<number, number>()
 		let lastDecMs = 0
-		let lastRttMs: number | null = null
+		rttStatsRef.current = createRttStats()
+		audioResyncsRef.current = 0
 		let lastServerStats: {encMs: number; encP95Ms: number; mbps: number; polish: number; roi: number; slices: number} | null = null
 		let metaEncName = ''
 		let metaDim = ''
@@ -1114,12 +1125,20 @@ export function HyprlandView({
 				if (lastServerStats.roi > 0) parts.push(`ROI ${lastServerStats.roi}`)
 			}
 			if (lastDecMs > 0) parts.push(`Dec ${lastDecMs.toFixed(1)}ms`)
-			if (lastRttMs !== null) parts.push(`RTT ${lastRttMs.toFixed(1)}ms`)
-			parts.push(audioModeLabel)
+			const rttState = rttStatsRef.current
+			if (rttState.rttMs !== null) {
+				const q = classifyNetworkQuality(rttState)
+				const jitterPart = rttState.samples >= 2 ? ` ±${rttState.jitterMs.toFixed(1)}ms` : ''
+				const netTag = q === 'high-jitter' ? ' · High RTT/jitter' : ''
+				parts.push(`RTT ${rttState.rttMs.toFixed(1)}ms${jitterPart}${netTag}`)
+			}
+			const audioBudget = computeAudioJitterBudget({...rttState, mode: audioModeLabel.startsWith('Opus') ? 'opus' : 'pcm'})
+			const resyncPart = audioResyncsRef.current > 0 ? `, ${audioResyncsRef.current} resync` : ''
+			parts.push(`${audioModeLabel} (${Math.round(audioBudget.targetSec * 1000)}ms buf${resyncPart})`)
 			statsOverlayRef.current.textContent = parts.join(' · ')
 		}
 
-		// Schedule decoded WebCodecs AudioData (10 ms Opus) onto WebAudio with tight 25 ms jitter cushion via per-view GainNode.
+		// Schedule decoded WebCodecs AudioData (10 ms Opus) onto WebAudio with RTT-adaptive jitter cushion via per-view GainNode.
 		const scheduleAudioData = (ad: WebAudioDataLike) => {
 			try {
 				if (mutedRef.current) return
@@ -1149,8 +1168,11 @@ export function HyprlandView({
 				src.buffer = ab
 				src.connect(gain)
 				const now = ac.currentTime
-				if (nextAudioTimeRef.current < now + 0.004 || nextAudioTimeRef.current > now + 0.14) {
-					nextAudioTimeRef.current = now + 0.025
+				const {targetSec, minLeadSec, maxLeadSec} = computeAudioJitterBudget({...rttStatsRef.current, mode: 'opus'})
+				if (nextAudioTimeRef.current < now + minLeadSec || nextAudioTimeRef.current > now + maxLeadSec) {
+					// Count only genuine recent underruns, not normal resumes after >200 ms silence gating
+					if (nextAudioTimeRef.current > now - 0.2 && nextAudioTimeRef.current < now + minLeadSec) audioResyncsRef.current++
+					nextAudioTimeRef.current = now + targetSec
 				}
 				src.start(nextAudioTimeRef.current)
 				nextAudioTimeRef.current += ab.duration
@@ -1598,8 +1620,9 @@ export function HyprlandView({
 			if (buf.byteLength === 9 && buf[0] === 0x04) {
 				const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
 				const rtt = performance.now() - dv.getFloat64(1, false)
-				if (rtt >= 0 && rtt < 10000) {
-					lastRttMs = lastRttMs === null ? rtt : lastRttMs * 0.6 + rtt * 0.4
+				const nextRtt = updateRttStats(rttStatsRef.current, rtt)
+				if (nextRtt !== rttStatsRef.current) {
+					rttStatsRef.current = nextRtt
 					renderStatsOverlay()
 				}
 				return
@@ -1639,13 +1662,14 @@ export function HyprlandView({
 			if (decoder && decoder.state === 'configured') {
 				const q = decoder.decodeQueueSize
 				const nowMs = performance.now()
-				if (q >= 4) {
+				const dropPolicy = computeVideoDropPolicy(rttStatsRef.current)
+				if (q >= dropPolicy.queueThreshold) {
 					if (queueHighSince === 0) queueHighSince = nowMs
 				} else {
 					queueHighSince = 0
 				}
-				// Drop to next keyframe only on sustained decode backlog (>=4 frames for >80ms) or hard cap (>12), avoiding false stalls on brief WAN bursts
-				if (!isKey && (q > 12 || (queueHighSince > 0 && nowMs - queueHighSince > 80))) {
+				// Drop to next keyframe only on sustained decode backlog or hard cap, scaling tolerance with WAN RTT/jitter to absorb TCP burst drains
+				if (!isKey && (q > dropPolicy.hardCap || (queueHighSince > 0 && nowMs - queueHighSince > dropPolicy.sustainMs))) {
 					needKey = true
 					queueHighSince = 0
 					scheduleKeyframeReq()

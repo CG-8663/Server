@@ -1115,6 +1115,64 @@ test('stream control state preserves saved 4:4:4 preference on non-4:4:4 clients
 	assert.equal(rbC.codecFallback, null)
 })
 
+test('adaptive WAN RTT/jitter smoothing preserves LAN defaults and expands cushions on high-RTT/jitter links', async () => {
+	const {
+		createRttStats,
+		updateRttStats,
+		computeAudioJitterBudget,
+		computeVideoDropPolicy,
+		classifyNetworkQuality,
+	} = await import('../web/src/hyprlandStreamState.mjs')
+
+	let st = createRttStats()
+	assert.equal(classifyNetworkQuality(st), 'unknown')
+	assert.deepEqual(computeAudioJitterBudget({...st, mode: 'opus'}), {targetSec: 0.025, minLeadSec: 0.004, maxLeadSec: 0.14})
+	assert.deepEqual(computeAudioJitterBudget({...st, mode: 'pcm'}), {targetSec: 0.035, minLeadSec: 0.005, maxLeadSec: 0.16})
+	assert.deepEqual(computeVideoDropPolicy(st), {queueThreshold: 4, sustainMs: 80, hardCap: 12})
+
+	// Invalid samples are ignored without mutating state
+	assert.equal(updateRttStats(st, -5), st)
+	assert.equal(updateRttStats(st, Number.NaN), st)
+	assert.equal(updateRttStats(st, 15000), st)
+
+	// LAN samples keep exact low-latency baseline
+	let lan = updateRttStats(st, 2.0)
+	lan = updateRttStats(lan, 2.4)
+	assert.equal(classifyNetworkQuality(lan), 'lan')
+	assert.deepEqual(computeAudioJitterBudget({...lan, mode: 'opus'}), {targetSec: 0.025, minLeadSec: 0.004, maxLeadSec: 0.14})
+	assert.deepEqual(computeVideoDropPolicy(lan), {queueThreshold: 4, sustainMs: 80, hardCap: 12})
+
+	// Moderate direct WAN link
+	let wan = updateRttStats(st, 28)
+	wan = updateRttStats(wan, 30)
+	assert.equal(classifyNetworkQuality(wan), 'wan')
+	const wanAudio = computeAudioJitterBudget({...wan, mode: 'opus'})
+	assert.ok(wanAudio.targetSec > 0.025 && wanAudio.targetSec < 0.06, `expected moderate WAN cushion, got ${wanAudio.targetSec}`)
+	const wanDrop = computeVideoDropPolicy(wan)
+	assert.equal(wanDrop.hardCap, 14)
+	assert.ok(wanDrop.sustainMs > 80 && wanDrop.sustainMs <= 200)
+
+	// Relayed / DERP high-RTT + jitter link expands cushion and burst tolerance while clamping safely
+	let derp = updateRttStats(st, 45)
+	derp = updateRttStats(derp, 62)
+	derp = updateRttStats(derp, 41)
+	assert.equal(classifyNetworkQuality(derp), 'high-jitter')
+	const derpOpus = computeAudioJitterBudget({...derp, mode: 'opus'})
+	const derpPcm = computeAudioJitterBudget({...derp, mode: 'pcm'})
+	assert.ok(derpOpus.targetSec >= 0.05 && derpOpus.targetSec <= 0.12, `expected 50-120ms Opus cushion, got ${derpOpus.targetSec}`)
+	assert.ok(derpPcm.targetSec >= 0.06 && derpPcm.targetSec <= 0.14, `expected 60-140ms PCM cushion, got ${derpPcm.targetSec}`)
+	assert.ok(derpOpus.maxLeadSec >= derpOpus.targetSec + 0.12)
+	const derpDrop = computeVideoDropPolicy(derp)
+	assert.equal(derpDrop.hardCap, 16)
+	assert.ok(derpDrop.sustainMs >= 120 && derpDrop.sustainMs <= 200)
+
+	// Extreme RTT clamps safely to upper bounds
+	const extreme = {rttMs: 500, jitterMs: 80, samples: 10}
+	assert.equal(computeAudioJitterBudget({...extreme, mode: 'opus'}).targetSec, 0.12)
+	assert.equal(computeAudioJitterBudget({...extreme, mode: 'pcm'}).targetSec, 0.14)
+	assert.equal(computeVideoDropPolicy(extreme).sustainMs, 200)
+})
+
 test('parseDesktopEntry extracts metadata and skips hidden/non-app entries', () => {
 	const ok = parseDesktopEntry(
 		`[Desktop Entry]
