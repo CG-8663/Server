@@ -286,7 +286,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'user.createWebSocketTicket': {
 			kind: 'mutation',
 			run: (input, {auth}) => {
-				if (input?.target !== 'machines' && input?.target !== 'terminal' && input?.target !== 'hyprland') throw new RpcError('BAD_REQUEST', 'Unknown console')
+				if (input?.target !== 'machines' && input?.target !== 'terminal' && input?.target !== 'hyprland') throw new RpcError('BAD_REQUEST', 'Unknown target')
 				if (input.target === 'hyprland' && factoryResetInProgress) {
 					throw new RpcError('CONFLICT', 'Factory reset is in progress')
 				}

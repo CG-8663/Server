@@ -833,7 +833,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						mutate('machines.start', {id})
 							.then(() => {
 								const listUpdatedAt = qc.getQueryState<Machine[]>(['machines.list'])?.dataUpdatedAt ?? 0
-								toast(`Starting ${m.name}. Its console opens when it’s ready.`)
+								toast(`Starting ${m.name}. Desktop opens when it’s ready.`)
 								setStarting((s) => (s.some((w) => w.id === id) ? s : [...s, {id, listUpdatedAt}]))
 							})
 							.catch((e) => {

@@ -4,7 +4,8 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 
-import {mutate, query} from '../api'
+import {mutate, query, type Machine} from '../api'
+import {hostedVms} from '../fleet/hostedVms'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
@@ -126,6 +127,9 @@ export function LocalSwarm({
 	adding: addingProp,
 	onAdding,
 	bare,
+	vms = [],
+	onCreateVm,
+	onOpenVm,
 }: {
 	heading?: boolean
 	/** The phone fleet list owns the rows. Sheets still open for the selected computer. */
@@ -137,6 +141,9 @@ export function LocalSwarm({
 	onAdding?: (open: boolean) => void
 	/** Desktop Machines window: the page sits in the split, not over the screen. */
 	bare?: boolean
+	vms?: Machine[]
+	onCreateVm?: (host: {id: string; name: string}) => void
+	onOpenVm?: (id: string) => void
 } = {}) {
 	const swarm = useSwarm()
 	const browserOnline = useBrowserOnline()
@@ -169,6 +176,9 @@ export function LocalSwarm({
 				<AgentSheet
 					a={selected}
 					bare={bare}
+					vms={hostedVms(vms, selected.id)}
+					onCreateVm={onCreateVm ? () => onCreateVm({id: selected.id, name: selected.name}) : undefined}
+					onOpenVm={onOpenVm}
 					onClose={() => setSelectedId(null)}
 					onTerminal={(input) => setTerminal({agent: selected, input})}
 					onDesktop={() => {
@@ -421,7 +431,25 @@ export function ConnectorControls({a, onTerminal}: {a: Agent; onTerminal: (input
 	)
 }
 
-function AgentSheet({a, onClose, onTerminal, onDesktop, bare}: {a: Agent; onClose: () => void; onTerminal: (input?: string) => void; onDesktop: () => void; bare?: boolean}) {
+function AgentSheet({
+	a,
+	onClose,
+	onTerminal,
+	onDesktop,
+	bare,
+	vms = [],
+	onCreateVm,
+	onOpenVm,
+}: {
+	a: Agent
+	onClose: () => void
+	onTerminal: (input?: string) => void
+	onDesktop: () => void
+	bare?: boolean
+	vms?: Machine[]
+	onCreateVm?: () => void
+	onOpenVm?: (id: string) => void
+}) {
 	const os = look(a)
 	const act = useSwarmAction()
 	const confirm = useConfirm()
@@ -493,6 +521,30 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, bare}: {a: Agent; onClos
 				/>
 			),
 		},
+		...((may(a, 'vms') && a.libvirt) || vms.length
+			? [
+					{
+						id: 'machines',
+						label: 'Virtual machines',
+						body: (
+							<>
+								{vms.length === 0 ? (
+									<p className="quiet">No virtual machines on {a.name}.</p>
+								) : (
+									vms.map((vm) => (
+										<Row key={vm.id} icon="machine" label={vm.name} sub="Virtual machine" onClick={onOpenVm ? () => (haptic(6), onOpenVm(vm.id)) : undefined} />
+									))
+								)}
+								{onCreateVm && may(a, 'vms') && a.libvirt && (
+									<button type="button" className="btn small" style={{margin: '8px 12px 12px'}} onClick={() => (haptic(6), onCreateVm())}>
+										<Icon name="plus" size={15} /> Create VM
+									</button>
+								)}
+							</>
+						),
+					},
+				]
+			: []),
 		{
 			id: 'backups',
 			label: 'Backups',

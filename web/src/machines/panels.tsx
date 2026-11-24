@@ -308,7 +308,7 @@ export function HardwarePanel({d}: {d: MachineDetails}) {
 					<ChoiceEdit
 						value={h.video}
 						options={(node.data?.videoModels ?? ['vga', 'none']).map((v) => ({id: v, label: VIDEO_LABEL[v] ?? v}))}
-						warning="Only adapters this server’s QEMU has are listed. “None” leaves the console blank."
+						warning="Only adapters this server’s QEMU has are listed. “None” leaves Desktop blank."
 						onCancel={() => setOpen(null)}
 						saving={action.isPending}
 						onSave={(video) => save('machines.updateHardware', {video}, 'Display changed')}
@@ -658,7 +658,7 @@ export function OptionsPanel({d}: {d: MachineDetails}) {
 				{flag('onBoot', 'Start at boot', 'Starts with the server, in its start order.')}
 				{flag('protection', 'Protection', 'Prevents deleting this machine until it’s turned off.')}
 				{flag('agent', 'QEMU Guest Agent', 'Lets the server read the machine’s IP addresses and shut it down cleanly. Install qemu-guest-agent inside it.')}
-				{flag('tablet', 'Use tablet for pointer', 'The mouse follows your pointer exactly in the console.')}
+				{flag('tablet', 'Use tablet for pointer', 'The mouse follows your pointer exactly on the Desktop.')}
 				{flag('acpi', 'ACPI support', 'Needed for Shut down to work. Turn off only for very old systems.')}
 				{flag('kvm', 'KVM hardware virtualization', 'Much faster. Turn off only to troubleshoot.')}
 				{flag('bootMenu', 'Boot menu', 'Shows the firmware’s boot menu for 3 seconds at start (press Esc or F12).')}
