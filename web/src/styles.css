@@ -2981,6 +2981,9 @@ html.screen-locked .auth {
 		left: 0;
 		right: 0;
 	}
+	.console.terminal:not(.term-ready) .term-host .xterm .xterm-helper-textarea {
+		pointer-events: none !important;
+	}
 	.term-host .xterm .xterm-helper-textarea {
 		width: 100% !important;
 		height: var(--term-frame, 100%) !important;
