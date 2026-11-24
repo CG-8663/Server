@@ -13,8 +13,12 @@ import {
 	managerHealth,
 	managerPower,
 	managerRows,
+	loadManagerDials,
+	MANAGER_DIALS_KEY,
 	managerStats,
 	matchesName,
+	saveManagerDials,
+	valueDials,
 	mergeMotion,
 	nextFilter,
 	passesFilter,
@@ -215,13 +219,42 @@ test('squares use real readings, and up time replaces last seen', () => {
 		stats.map((s) => [s.label, s.text, s.dial]),
 		[
 			['CPU', '18%', true],
-			['Storage', '32 GB', false],
+			['Storage', '? of 32 GB', true],
 		],
 	)
-	assert.equal(managerStats({gauges: [{k: 'CPU', icon: 'cpu', p: 0, ready: false}], temp: 61.2, diskSizeGb: null})[1].text, '61°')
+	const withTemp = managerStats({gauges: [{k: 'CPU', icon: 'cpu', p: 0, ready: false}], temp: 61.2, diskSizeGb: null})
+	assert.equal(withTemp[1].text, '61°')
+	assert.equal(withTemp[1].dial, true)
+	assert.deepEqual(
+		valueDials(managerStats({gauges: [{k: 'CPU', icon: 'cpu', p: 18.2, ready: true}], temp: 61.2, diskSizeGb: 32})).map((d) => [d.label, d.text]),
+		[
+			['Storage', '? of 32 GB'],
+			['Temperature', '61°'],
+		],
+	)
 	const now = Date.parse('2026-11-23T12:00:00Z')
 	assert.deepEqual(seenFact(true, 9000, null, now), {label: 'Up time', text: '2h 30m'})
 	assert.equal(seenFact(true, undefined, now - 86_400_000, now), null)
 	assert.deepEqual(seenFact(false, undefined, now - 3 * 86_400_000, now), {label: 'Last seen', text: '3d 0h ago'})
 	assert.equal(seenFact(false, undefined, null, now), null)
+})
+
+test('gauge or stat mode is kept for the next machine', async () => {
+	assert.equal(MANAGER_DIALS_KEY, 'omarchy-server:mm-dials')
+	assert.equal(loadManagerDials(null), false)
+	assert.equal(loadManagerDials('0'), false)
+	assert.equal(loadManagerDials('1'), true)
+	assert.equal(saveManagerDials(true), '1')
+	assert.equal(saveManagerDials(false), '0')
+	const ui = await read('../web/src/fleet/MachineManager.tsx')
+	assert.match(ui, /MANAGER_DIALS_KEY/)
+	assert.match(ui, /loadManagerDials/)
+	assert.match(ui, /saveManagerDials/)
+	const openAnother = ui.slice(ui.indexOf('const toggle = (id: string)'), ui.indexOf('return (', ui.indexOf('const toggle = (id: string)')))
+	assert.match(openAnother, /setOpenId/)
+	assert.doesNotMatch(openAnother, /setDials/)
+	const filterCollapse = ui.slice(ui.indexOf('}, [queryText, filter])') - 80, ui.indexOf('}, [queryText, filter])'))
+	assert.doesNotMatch(filterCollapse, /setDials/)
+	const leaveList = ui.slice(ui.indexOf('if (openId && !matched.includes(openId))'), ui.indexOf('}, [rowKey, openId])'))
+	assert.doesNotMatch(leaveList, /setDials/)
 })

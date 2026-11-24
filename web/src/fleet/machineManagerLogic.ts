@@ -15,11 +15,22 @@ export type ManagerStat = {
 	text: string
 	percent: number | null
 	ready: boolean
-	/** A dial can stand in for this square. Temperature and a size-only disk cannot. */
+	/** Every reading has a dial. A percent fills the ring. Anything else leaves the ring empty. */
 	dial: boolean
 }
 
 const ICONS = new Set<ManagerStat['icon']>(['cpu', 'memory', 'disk', 'gpu', 'battery', 'thermo'])
+
+/** Browser-only. Squares are the first visit. Gauges stay chosen across machines. */
+export const MANAGER_DIALS_KEY = 'omarchy-server:mm-dials'
+
+export function loadManagerDials(raw: string | null): boolean {
+	return raw === '1'
+}
+
+export function saveManagerDials(on: boolean): '1' | '0' {
+	return on ? '1' : '0'
+}
 
 export function passesFilter(kind: ManagerKind, filter: ManagerFilter, facts?: {offline?: boolean; online?: boolean; health?: ManagerHealth}): boolean {
 	if (filter === 'all') return true
@@ -240,12 +251,24 @@ export function managerStats(input: {
 		dial: true,
 	}))
 	if (!stats.some((s) => s.label === 'Storage') && input.diskSizeGb != null && input.diskSizeGb > 0) {
-		stats.push({id: 'disk-size', label: 'Storage', icon: 'disk', text: `${input.diskSizeGb} GB`, percent: null, ready: false, dial: false})
+		stats.push({id: 'disk-size', label: 'Storage', icon: 'disk', text: `? of ${input.diskSizeGb} GB`, percent: null, ready: true, dial: true})
 	}
 	if (input.temp != null && Number.isFinite(input.temp)) {
-		stats.push({id: 'temp', label: 'Temperature', icon: 'thermo', text: `${Math.round(input.temp)}°`, percent: null, ready: false, dial: false})
+		stats.push({id: 'temp', label: 'Temperature', icon: 'thermo', text: `${Math.round(input.temp)}°`, percent: null, ready: true, dial: true})
 	}
 	return stats
+}
+
+export type ValueDial = {
+	id: string
+	label: string
+	icon: ManagerStat['icon']
+	text: string
+}
+
+/** Temperature and a size-only disk. The ring stays empty. Percent readings stay on their own gauges. */
+export function valueDials(stats: readonly ManagerStat[]): ValueDial[] {
+	return stats.filter((stat) => stat.id === 'temp' || stat.id === 'disk-size').map((stat) => ({id: stat.id, label: stat.label, icon: stat.icon, text: stat.text}))
 }
 
 export type MotionPhase = 'stay' | 'enter' | 'leave'
