@@ -62,7 +62,16 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 		[serverName, agents, list],
 	)
 	const selected = list.find((m) => m.id === selectedId) ?? null
-	const consoleMachine = consoleId === 'desktop' ? SERVER_DESKTOP : (list.find((m) => m.id === consoleId) ?? null)
+	const consoleAgent = consoleId?.startsWith('agent-') ? agents.find((a) => `agent-${a.id}` === consoleId) : undefined
+	const consoleMachine =
+		consoleId === 'desktop' ? SERVER_DESKTOP : consoleAgent ? {id: `agent-${consoleAgent.id}`, name: consoleAgent.name, state: 'running' as const} : (list.find((m) => m.id === consoleId) ?? null)
+	// A connected computer's screen: the same viewer as a virtual machine's (a window on the desktop,
+	// full screen on a phone).
+	const openComputerDesktop = (a: {id: string; name: string}) => {
+		haptic(8)
+		if (desk) desk.openConsole(`agent-${a.id}`, a.name)
+		else setConsoleId(`agent-${a.id}`)
+	}
 	const online = members.filter((m) => m.online).length
 	const computers = members.filter((m) => m.kind === 'computer')
 	const agentById = new Map(agents.filter((a) => !isGuestAgent(a)).map((a) => [a.id, a]))
@@ -297,6 +306,11 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 						onClick={() => (haptic(6), openMember('computer', agent.id))}
 						footer={
 							<div className="mrow-foot">
+								{agent.online && agent.allowed.desktop && agent.info?.desktop?.ok && (
+									<button type="button" className="btn small" onClick={() => openComputerDesktop(agent)}>
+										<Icon name="window" size={15} /> Desktop
+									</button>
+								)}
 								<PinButton pin={{kind: 'machine', id: agent.id, computer: ''}} name={agent.name} />
 								<Disc open={open} name={agent.name} controls={`glance-${member.id}`} onClick={toggle} />
 							</div>

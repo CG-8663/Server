@@ -1598,3 +1598,86 @@ test('a Windows Server ISO you install by hand gets the SATA disk and e1000e net
 		await rm(root, {recursive: true, force: true})
 	}
 })
+
+test('on an ARM server (Omarchy on Apple Silicon) a machine is an aarch64 "virt" machine with UEFI, SCSI for its seed drive and virtio graphics', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-arm-'))
+	const dataDir = join(root, 'data')
+	const id = 'a9b8c7d6'
+	const vm = join(dataDir, 'machines', 'vms', id)
+	const disk0 = join(vm, 'disk.qcow2')
+	const seed = join(vm, 'seed.iso')
+	const defined = []
+	try {
+		await mkdir(vm, {recursive: true})
+		await writeFile(disk0, 'disk')
+		await writeFile(seed, 'seed')
+		await writeFile(
+			join(dataDir, 'machines', 'machines.json'),
+			JSON.stringify({
+				machines: [{
+					id,
+					name: 'Arm box',
+					osId: 'ubuntu-24.04-server-arm64',
+					cores: 2,
+					memoryGb: 2,
+					diskSizeGb: 10,
+					portForwards: [],
+					createdAt: 1,
+					mac: '52:54:00:11:22:66',
+					boot: ['disk0'],
+					// The layout a cloud machine gets: BIOS, q35, a SATA seed drive and VGA (all x86 things).
+					layout: {
+						firmware: 'bios',
+						machineType: 'q35',
+						nic: 'virtio',
+						video: 'vga',
+						disks: [
+							{id: 'disk0', file: disk0, device: 'disk', bus: 'virtio', format: 'qcow2', sizeGb: 10},
+							{id: 'seed', role: 'seed', file: seed, device: 'cdrom', bus: 'sata', format: 'raw'},
+						],
+					},
+				}],
+			}),
+		)
+		const kvmDevice = join(root, 'kvm')
+		await writeFile(kvmDevice, '')
+		let started = false
+		const run = async (cmd, args) => {
+			if (cmd === 'virsh') {
+				const a = args[0] === '-c' ? args.slice(2) : args
+				if (a[0] === 'define') defined.push(await readFile(a[1], 'utf8'))
+				if (a[0] === 'start') started = true
+				if (a[0] === 'list') return started ? ` Id   Name   State\n------------------\n -    omarchy-${id}   running\n` : ' Id   Name   State\n------------------\n'
+			}
+			return ''
+		}
+		const machines = createMachines({dataDir, run, kvmDevice, arch: 'arm64', catalogUrl: 'https://example.invalid/catalog.json', fetchImpl: async () => new Response('', {status: 503})})
+		await machines.ready
+		await machines.procedures['machines.start'].run({id})
+		const xml = defined[0]
+		assert.match(xml, /<os firmware='efi'><type arch='aarch64' machine='virt'>hvm<\/type>/)
+		assert.doesNotMatch(xml, /x86_64|q35|<apic\/>|bus='sata'|bus='ide'/)
+		assert.match(xml, /disk\.qcow2'\/><target dev='vda' bus='virtio'\/>/)
+		assert.match(xml, /seed\.iso'\/><target dev='sda' bus='scsi'\/>/)
+		assert.match(xml, /<controller type='scsi' model='virtio-scsi'\/>/)
+		assert.match(xml, /<video><model type='virtio'\/><\/video>/)
+		// Only ARM images are offered on an ARM server.
+		const images = await machines.procedures['machines.osImages'].run()
+		assert.ok(images.length > 0 && images.every((i) => i.arch === 'arm64'))
+		assert.ok(images.some((i) => i.id === 'ubuntu-24.04-server-arm64'))
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('an x86 server’s machines are unchanged', async () => {
+	const {readFile: rf} = await import('node:fs/promises')
+	const catalog = JSON.parse(await rf(new URL('../omarchyd/machine-catalog.json', import.meta.url), 'utf8'))
+	const ids = catalog.images.map((i) => i.id)
+	for (const id of ['ubuntu-26.04-desktop-amd64', 'debian-13-server-amd64', 'omarchy-4.0.4-amd64']) assert.ok(ids.includes(id))
+	for (const i of catalog.images.filter((x) => x.arch === 'arm64')) {
+		assert.match(i.url, /arm64/)
+		assert.equal(i.firmware, 'efi')
+		assert.match(i.checksums.url, /^https:\/\/(cloud-images\.ubuntu\.com|cloud\.debian\.org)\//)
+	}
+})

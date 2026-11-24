@@ -375,7 +375,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const useKvm = kvm && o.kvm !== false
 		const boot = m.boot ?? [layout.disks.find((x) => x.device === 'disk')?.id]
 		const order = (id) => (boot.includes(id) ? `<boot order='${boot.indexOf(id) + 1}'/>` : '')
-		const names = targets(layout)
+		// ARM (Omarchy on Apple Silicon, Snapdragon, …): QEMU's "virt" machine, always UEFI, no
+		// SATA/IDE (drives that asked for them go on SCSI) and virtio graphics.
+		const arm = arch === 'arm64'
+		const busOf = (d) => (arm && (d.bus === 'sata' || d.bus === 'ide') ? 'scsi' : d.bus)
+		const names = targets({...layout, disks: layout.disks.map((d) => ({...d, bus: busOf(d)}))})
 		const forwards = (m.portForwards ?? [])
 			.map((f) => `<portForward proto='${f.protocol}'><range start='${f.hostPort}' to='${f.guestPort}'/></portForward>`)
 			.join('')
@@ -385,17 +389,18 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				const cache = d.cache && d.cache !== 'default' ? ` cache='${d.cache}'` : ''
 				const discard = !cdrom && d.discard !== false ? " discard='unmap'" : ''
 				const source = d.file ? `<source ${cdrom ? "startupPolicy='optional' " : ''}file='${xml(d.file)}'/>` : ''
-				return `<disk type='file' device='${d.device}'><driver name='qemu' type='${d.format}'${cache}${discard}/>${source}<target dev='${names.get(d.id)}' bus='${d.bus}'/>${order(d.id)}${cdrom ? '<readonly/>' : ''}</disk>`
+				return `<disk type='file' device='${d.device}'><driver name='qemu' type='${d.format}'${cache}${discard}/>${source}<target dev='${names.get(d.id)}' bus='${busOf(d)}'/>${order(d.id)}${cdrom ? '<readonly/>' : ''}</disk>`
 			})
 			.join('\n    ')
-		const scsi = layout.disks.some((d) => d.bus === 'scsi') ? "\n    <controller type='scsi' model='virtio-scsi'/>" : ''
-		const machine = layout.machineType === 'pc' ? 'pc' : 'q35'
+		const scsi = layout.disks.some((d) => busOf(d) === 'scsi') ? "\n    <controller type='scsi' model='virtio-scsi'/>" : ''
+		const machine = arm ? 'virt' : layout.machineType === 'pc' ? 'pc' : 'q35'
+		const cpuArch = arm ? 'aarch64' : 'x86_64'
 		const bootmenu = o.bootMenu ? "<bootmenu enable='yes' timeout='3000'/>" : ''
 		const nvramEl = layout.nvram ? `<nvram>${xml(layout.nvram)}</nvram>` : ''
 		const os =
-			layout.firmware === 'efi'
-				? `<os firmware='efi'><type arch='x86_64' machine='${machine}'>hvm</type><firmware><feature enabled='no' name='secure-boot'/></firmware>${nvramEl}${bootmenu}</os>`
-				: `<os><type arch='x86_64' machine='${machine}'>hvm</type>${bootmenu}</os>`
+			layout.firmware === 'efi' || arm
+				? `<os firmware='efi'><type arch='${cpuArch}' machine='${machine}'>hvm</type><firmware><feature enabled='no' name='secure-boot'/></firmware>${nvramEl}${bootmenu}</os>`
+				: `<os><type arch='${cpuArch}' machine='${machine}'>hvm</type>${bootmenu}</os>`
 		const sockets = m.sockets ?? 1
 		const topology = `<topology sockets='${sockets}' dies='1' cores='${m.cores}' threads='1'/>`
 		const cpuType = m.cpuType ?? 'host'
@@ -417,7 +422,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
   <memory unit='MiB'>${memoryMb}</memory>
   <vcpu>${sockets * m.cores}</vcpu>
   ${os}
-  <features>${o.acpi === false ? '' : '<acpi/>'}<apic/></features>
+  <features>${o.acpi === false ? '' : '<acpi/>'}${arm ? '' : '<apic/>'}</features>
   ${cpu}
   <on_reboot>restart</on_reboot>
   <devices>
@@ -425,7 +430,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
     ${nic}
     <serial type='pty'/><console type='pty'/>
     <graphics type='vnc' socket='${xml(join(dir, 'vnc.sock'))}'/>
-    <video><model type='${layout.video}'/></video>${o.tablet === false ? '' : "\n    <input type='tablet' bus='usb'/>"}${o.agent ? "\n    <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>" : ''}
+    <video><model type='${arm && layout.video !== 'none' ? 'virtio' : layout.video}'/></video>${o.tablet === false ? '' : "\n    <input type='tablet' bus='usb'/>"}${o.agent ? "\n    <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>" : ''}
     <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
     ${(m.usbDevices ?? []).map((d) => hostdevXml(d)).join('\n    ')}
   </devices>
@@ -572,7 +577,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const runCreate = async () => {
 			const caps = await capabilities()
 			if (!caps.libvirtAvailable) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the installer again to add them.')
-			if (caps.hostArchitecture !== 'amd64') throw new RpcError('PRECONDITION_FAILED', 'Machines currently need an x86-64 server')
+			// x86-64 and ARM servers both run machines of their own kind (an ARM server runs ARM images).
+			if (!['amd64', 'arm64'].includes(caps.hostArchitecture)) throw new RpcError('PRECONDITION_FAILED', 'Machines need an x86-64 or ARM 64-bit server')
 			const osId = String(input.osId ?? '')
 			// What to install from: a catalog image, or one of your own ISOs.
 			let img = null
@@ -586,6 +592,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				if (!img || img.arch !== caps.hostArchitecture) throw new RpcError('BAD_REQUEST', 'That operating system isn’t available here')
 			}
 			const kind = local ? (local.requiresCredentials ? 'windows' : 'manual') : img.kind === 'iso' ? 'omarchy' : 'cloud'
+			// Windows set up from its ISO (and its answer file) is the x86 PC kind.
+			if (kind === 'windows' && caps.hostArchitecture !== 'amd64') throw new RpcError('PRECONDITION_FAILED', 'Installing Windows from its ISO needs an x86-64 server')
 			const name = String(input.name ?? '').trim()
 			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
 			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
@@ -1023,6 +1031,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	let videoModels = null
 	async function availableVideo() {
 		if (videoModels) return videoModels
+		// An ARM machine has no PC display adapters: it always gets virtio graphics.
+		if (arch === 'arm64') return (videoModels = ['virtio', 'none'])
 		const out = await run('qemu-system-x86_64', ['-device', 'help'], {timeout: 15_000}).catch(() => '')
 		const has = (n) => out.includes(`"${n}"`)
 		videoModels = ['vga', ...(has('bochs-display') ? ['bochs'] : []), ...(has('virtio-vga') ? ['virtio'] : []), ...(has('qxl-vga') ? ['qxl'] : []), ...(has('cirrus-vga') ? ['cirrus'] : []), 'none']

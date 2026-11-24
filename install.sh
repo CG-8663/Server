@@ -105,16 +105,26 @@ if ! command -v pacman >/dev/null; then
 	die "This installer is for Omarchy (Arch Linux), but this machine runs $found. Run it on your Omarchy machine."
 fi
 command -v systemctl >/dev/null || die "systemd is required."
-# Omarchy, its packages and the machine images are x86-64 only.
+# x86-64 (Intel, AMD) or ARM 64-bit (Omarchy on Apple Silicon, Snapdragon, …). The only difference
+# here is the firmware virtual machines start from: OVMF on x86-64, the ARM build of EDK2 on ARM
+# (Arch Linux ARM names it qemu-system-arm-firmware; Arch's own package is edk2-aarch64).
 arch=$(uname -m)
-[ "$arch" = x86_64 ] || die "My Own Data Center needs an x86-64 (Intel or AMD 64-bit) computer; this one is $arch."
+case "$arch" in
+x86_64) vm_pkgs="qemu-base edk2-ovmf" ;;
+aarch64)
+	vm_fw=edk2-aarch64
+	pacman -Si "$vm_fw" >/dev/null 2>&1 || pacman -Qi "$vm_fw" >/dev/null 2>&1 || vm_fw=qemu-system-arm-firmware
+	vm_pkgs="qemu-base qemu-system-aarch64 $vm_fw"
+	;;
+*) die "My Own Data Center needs a 64-bit Intel, AMD or ARM computer; this one is $arch." ;;
+esac
 
 # 1. Packages. Machines: QEMU + libvirt (per-user session), passt for their networking, xorriso
 #    (libisoburn) for cloud-init seeds. Apps: rootless Podman driven by docker-compose. NAS: Btrfs,
 #    drive health (smartmontools), drive sleep (hdparm), network shares (samba), and tmux so the
 #    terminal outlives restarts and updates.
 need=()
-for pkg in nodejs npm git openssl wayvnc bubblewrap qemu-base libvirt passt libisoburn edk2-ovmf podman docker-compose btrfs-progs smartmontools hdparm samba rsync openssh tmux; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
+for pkg in nodejs npm git openssl wayvnc bubblewrap $vm_pkgs libvirt passt libisoburn podman docker-compose btrfs-progs smartmontools hdparm samba rsync openssh tmux; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
 # Arch doesn't support installing packages from a newer package list without updating the rest
 # ("partial upgrade"): a new package can need newer libraries than the ones installed. That's how
 # Samba ended up half-updated (samba 4.25 with its libraries, smbclient and libwbclient, at 4.24).

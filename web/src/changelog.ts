@@ -4,6 +4,22 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.75',
+		date: '2026-11-24',
+		title: 'Macs, ARM servers, and a desktop you can open',
+		added: [
+			'Add a computer only asks what this server may do. The same command works on any Linux (it finds the distribution and its package manager itself) and now on a Mac; Windows gets its PowerShell command. Each computer keeps what it can do there.',
+			'Macs can join: terminal, files (with uploads), power, and their CPU, memory, disks and battery. No sudo; it runs while you’re signed in.',
+			'Windows computers can take uploads in Files.',
+			'My Own Data Center installs on ARM (Omarchy on an Apple Silicon Mac, or another 64-bit ARM computer). Machines there run ARM images: Ubuntu 24.04 and 26.04, Debian 13.',
+			'A connected computer’s card has a Desktop button that opens its screen straight away.',
+		],
+		fixed: [
+			'Opening a connected computer’s desktop finds the session you’re actually signed in to, even when an old Hyprland or Wayland session left files behind. When it can’t open, it says why and offers the fix: allow the desktop, or install screen sharing in one tap.',
+			'Updating a Windows computer’s permissions gives you a PowerShell command.',
+		],
+	},
+	{
 		version: '0.9.74',
 		date: '2026-11-23',
 		title: 'Machines, sessions, and the desktop',

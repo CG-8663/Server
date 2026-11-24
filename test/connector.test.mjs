@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import {execFile, execFileSync, spawn} from 'node:child_process'
 import {createHash, randomBytes} from 'node:crypto'
 import {promisify} from 'node:util'
-import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, rm, stat, writeFile, readdir} from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -308,6 +308,47 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		// The VNC server listens only on a socket in the connector's private runtime folder, no port.
 		const sockDir = join(agentHome, 'run/omarchy-connector')
 		assert.equal((await stat(sockDir)).mode & 0o777, 0o700)
+	})
+	// A Wayland desktop (sway, headless) shared through wayvnc, the way Omarchy's Hyprland is.
+	const hasWayland = (() => {
+		try {
+			execFileSync('sh', ['-c', 'command -v sway && command -v wayvnc'])
+			return true
+		} catch {
+			return false
+		}
+	})()
+	test('desktop: a Wayland desktop (wayvnc on a private socket) reaches the browser, even with another wayvnc running', {skip: !hasWayland && 'sway and wayvnc are needed'}, async (t) => {
+		agentProc?.kill()
+		await rm(join(agentHome, '.config/omarchy-connector/config.json'), {force: true})
+		const runtime = join(agentHome, 'run')
+		await mkdir(runtime, {recursive: true, mode: 0o700})
+		const sway = spawn('sway', ['-c', '/dev/null'], {env: {...agentEnv(), WLR_BACKENDS: 'headless', WLR_LIBINPUT_NO_DEVICES: '1', WLR_RENDERER: 'pixman', WAYLAND_DISPLAY: ''}, stdio: 'ignore'})
+		t.after(() => sway.kill())
+		const display = await until(async () => (await readdir(runtime)).find((n) => /^wayland-\d+$/.test(n)))
+		// Someone's own wayvnc already holds the default control socket (MODC's desktop sharing does).
+		const other = spawn('wayvnc', ['--unix-socket', join(runtime, 'other-vnc.sock')], {env: {...agentEnv(), WAYLAND_DISPLAY: display}, stdio: 'ignore'})
+		t.after(() => other.kill())
+		await until(async () => stat(join(runtime, 'other-vnc.sock')).then(() => true))
+		const p = await pair({terminal: false, desktop: true, manage: false})
+		await trust(p.ca)
+		await runAgent(['enroll', server(), p.token, 'desktop'])
+		startAgent()
+		t.after(() => agentProc.kill())
+		const a = await until(async () => {
+			const x = (await q('swarm.list')).find((y) => y.online && y.allowed.desktop)
+			return x?.info?.desktop?.kind === 'wlroots' && x
+		})
+		assert.equal(a.info.desktop.ok, true)
+		assert.equal(await q('swarm.desktopCheck', {id: a.id}), true)
+		for (let i = 0; i < 2; i++) {
+			// Twice: leaving and opening it again works too.
+			const ws = await browserWs('machines', {machineId: `agent-${a.id}`})
+			const first = await new Promise((r, j) => (ws.once('message', (d) => r(Buffer.from(d))), ws.once('close', (c, why) => j(new Error(`closed ${c} ${why}`)))))
+			assert.match(first.toString('latin1'), /^RFB 003\.00\d\n/)
+			ws.close()
+			await new Promise((r) => setTimeout(r, 300))
+		}
 	})
 	test('backups: a computer backs up chosen folders to the server, can’t delete them, and restores into ~/Restored', {skip: !backupIt && 'set OMARCHY_BACKUP_IT=1, OMARCHY_BACKUP_RESTIC and OMARCHY_BACKUP_SMB', timeout: 300_000}, async () => {
 		const [hostport, share, username, password] = String(process.env.OMARCHY_BACKUP_SMB).split(' ')
