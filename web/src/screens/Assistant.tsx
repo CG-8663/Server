@@ -377,6 +377,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 				} else if (e.event === 'error') {
 					failed = true
 					setTurnError(e.data.message)
+					if (e.data.conversationId) setTurnConversationId(e.data.conversationId, since)
 				}
 			}, ac.signal)
 		} catch (err) {
@@ -396,7 +397,10 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 
 	const newSession = () => {
 		haptic(6)
+		const running = assistantTurn().conversationId
 		abortAssistantTurn()
+		// Leaving the chat also stops the reply the server is still writing to it.
+		if (running) void mutate('assistant.stop', {conversationId: running}).catch(() => {})
 		sendGen++
 		followQueued.current = false
 		setTurnConversationId(undefined)

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import http from 'node:http'
 import {chmod, mkdtemp, readdir, readFile, rm, stat} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
@@ -6,7 +7,7 @@ import {after, before, describe, test} from 'node:test'
 
 import WebSocket from 'ws'
 
-import {createApp, SLOW, timeoutFor} from '../server/app.mjs'
+import {createApp, normalizeBackendUrl, SLOW, timeoutFor} from '../server/app.mjs'
 import {createStore} from '../server/store.mjs'
 import {startFakeserverd} from './fake-omarchyd.mjs'
 
@@ -76,13 +77,31 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(r.body.server.reachable, true)
 		// a loopback Server address is reported as the address the phone used to reach Touch
 		assert.equal(r.body.server.host, '127.0.0.1')
-		assert.equal(r.body.server.url, 'http://127.0.0.1')
+		assert.equal(r.body.server.url, touch.base)
 		// before sign-in, not when it last started or its exact build
 		assert.equal(r.body.server.startedAt, undefined)
 		assert.equal(r.body.server.revision, undefined)
 		// before sign-in nothing identifies the accounts; only the backdrop wallpaper is shared
 		assert.deepEqual(r.body.accounts, [{userId: '', name: '', avatar: null, wallpaper: {id: '23', brandColorHsl: '24 90% 50%'}}])
 		assert.equal(r.body.session, null)
+	})
+
+	test('the server address in bootstrap keeps the port the page was opened on (#657)', async () => {
+		const r = await touch.req('GET', '/api/bootstrap', undefined, {})
+		const url = new URL(r.body.server.url)
+		assert.equal(url.port, new URL(touch.base).port)
+		const viaHost = await new Promise((resolve, reject) => {
+			const u = new URL(touch.base)
+			http
+				.get({host: u.hostname, port: u.port, path: '/api/bootstrap', headers: {host: '192.168.1.50:7780'}}, (res) => {
+					let data = ''
+					res.on('data', (c) => (data += c))
+					res.on('end', () => resolve(JSON.parse(data)))
+				})
+				.on('error', reject)
+		})
+		assert.equal(viaHost.server.url, 'http://192.168.1.50:7780')
+		assert.equal(viaHost.server.host, '192.168.1.50')
 	})
 
 	test('signed in, bootstrap says when the server last started and its exact build', async () => {
@@ -193,7 +212,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.73', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.74', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -347,6 +366,13 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(r.body.prefs.theme, 'tokyo', 'the rest is untouched')
 		assert.equal((await touch.req('POST', '/api/prefs', {theme: '<script>'})).status, 400)
 		assert.equal((await touch.req('POST', '/api/prefs', {customBrandHsl: 'red; x'})).status, 400)
+		// Only plain strings are stored: an array or object is a 400, not a stored array or a 500.
+		for (const bad of [['24 90% 50%'], {toString: 1}, 5]) {
+			assert.equal((await touch.req('POST', '/api/prefs', {customBrandHsl: bad})).status, 400)
+			assert.equal((await touch.req('POST', '/api/prefs', {omarchyBackground: bad})).status, 400)
+		}
+		assert.equal((await touch.req('POST', '/api/prefs', {omarchyBackground: ['0123456789abcdef']})).status, 400)
+		assert.equal((await touch.req('GET', '/api/prefs')).body.prefs.customBrandHsl ?? null, null)
 		const anon = await fetch(`${touch.base}/api/prefs`)
 		assert.equal(anon.status, 401)
 	})
@@ -852,6 +878,12 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(timeoutFor('assistant.reject'), 20_000)
 		assert.equal(timeoutFor('assistant.keys'), 20_000)
 	})
+
+	test('app and machine buttons that wait on compose or libvirt use the slow timeout (#787)', () => {
+		for (const path of ['apps.start', 'apps.stop', 'apps.restart', 'machines.start', 'machines.hibernate']) {
+			assert.equal(timeoutFor(path), 30 * 60 * 1000, path)
+		}
+	})
 })
 
 describe('a wrong password is one try', () => {
@@ -977,5 +1009,21 @@ describe('app relays', () => {
 			await touch.close()
 			await fake.close()
 		}
+	})
+})
+
+describe('normalizeBackendUrl (#655)', () => {
+	test('refuses an address that starts with a scheme other than http or https', () => {
+		for (const input of ['ws://10.0.0.5:7780', 'ftp://nas.local', 'smb://nas']) {
+			assert.throws(() => normalizeBackendUrl(input), /can’t start with/)
+		}
+	})
+	test('accepts a bare IPv6 address, bracketed or not, and keeps the usual forms', () => {
+		assert.equal(normalizeBackendUrl('fe80::1'), 'http://[fe80::1]')
+		assert.equal(normalizeBackendUrl('::1'), 'http://[::1]')
+		assert.equal(normalizeBackendUrl('[fe80::1]'), 'http://[fe80::1]')
+		assert.equal(normalizeBackendUrl('10.0.0.5:2021'), 'http://10.0.0.5:2021')
+		assert.equal(normalizeBackendUrl('nas.local'), 'http://nas.local')
+		assert.equal(normalizeBackendUrl('HTTPS://nas.local'), 'https://nas.local')
 	})
 })

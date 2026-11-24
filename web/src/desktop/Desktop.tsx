@@ -1890,8 +1890,23 @@ function TopBar(p: {
 	const closeTopMenu = () => p.setMenu(null)
 	useDialogFocus(p.menu === 'clock', clockRef, closeTopMenu)
 	const runSysAction = useMenuFocus(p.menu === 'system', sysRef, closeTopMenu)
+	// Clicking blank bar space or another bar control (e.g. Activities) also closes an open menu,
+	// while keeping the popover, its switching triggers, and the scrim (which closes on click) intact.
+	useEffect(() => {
+		if (!p.menu) return
+		const onDown = (e: PointerEvent) => {
+			const el = e.target as HTMLElement | null
+			if (el?.closest('.top-pop, .top-clock, .top-bell, .top-sys, .menu-scrim')) return
+			p.setMenu(null)
+		}
+		document.addEventListener('pointerdown', onDown, true)
+		return () => document.removeEventListener('pointerdown', onDown, true)
+	}, [p.menu, p.setMenu])
 	return (
 		<>
+		{/* Outside the header: its backdrop-filter makes it the containing block for fixed children,
+		    which would shrink the scrim to the bar, and its button rules would size it to 26px. */}
+		{p.menu && <button className="menu-scrim top-scrim" aria-label="Close menu" tabIndex={-1} onClick={() => p.setMenu(null)} />}
 		<header className="desk-top">
 			<div className="top-left">
 				{p.left ?? (
@@ -1951,7 +1966,6 @@ function TopBar(p: {
 				</button>
 			</div>
 
-			{p.menu && <button className="menu-scrim" aria-label="Close menu" tabIndex={-1} onClick={() => p.setMenu(null)} />}
 			{p.menu === 'clock' && (
 				<div ref={clockRef} className="top-pop clock-pop" role="dialog" aria-modal="true" aria-label="Notifications and calendar" tabIndex={-1}>
 					<div className="pop-notes">

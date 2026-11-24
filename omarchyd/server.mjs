@@ -37,7 +37,7 @@ import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.73'
+export const OMARCHYD_VERSION = '0.9.74'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -921,7 +921,17 @@ WantedBy=graphical-session.target
 						viewerJoined()
 						ws.once('close', viewerLeft)
 					}
-					vnc.on('data', (d) => ws.readyState === ws.OPEN && ws.send(d, {binary: true}))
+					vnc.on('data', (d) => {
+						if (ws.readyState !== ws.OPEN) return
+						// A browser that stopped reading (asleep, off Wi-Fi, a frozen tab) would otherwise make the
+						// server keep every frame in memory. Same 1 MiB cap as the connector viewer.
+						if (ws.bufferedAmount > 1024 * 1024) {
+							ws.close(1011, 'The viewer fell behind')
+							vnc.destroy()
+							return
+						}
+						ws.send(d, {binary: true})
+					})
 					ws.on('message', (d) => vnc.write(d))
 					vnc.on('close', () => ws.close(1000))
 					vnc.on('error', () => ws.terminate())
