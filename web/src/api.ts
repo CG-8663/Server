@@ -59,6 +59,7 @@ const SLOW_RPC = new Set([
 	'machines.backup',
 	'machines.restoreBackup',
 	'machines.clone',
+	'machines.installConnector',
 	'wifi.connect',
 	'hardware.raid.addDevice',
 	'hardware.raid.addMirror',
@@ -367,6 +368,7 @@ export type Machine = {
 	id: string
 	vmid?: number
 	name: string
+	hostId?: string
 	osId?: string
 	cores?: number
 	memoryGb?: number

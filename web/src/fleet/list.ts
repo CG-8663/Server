@@ -31,8 +31,9 @@ export type ComputerFleetInput = {
 	id: string
 	name: string
 	online: boolean
-	allowed?: Partial<Record<'terminal' | 'desktop' | 'storage' | 'backup' | 'files' | 'apps', boolean>>
-	on?: Partial<Record<'terminal' | 'desktop' | 'storage' | 'backup' | 'files' | 'apps', boolean>>
+	allowed?: Partial<Record<'terminal' | 'desktop' | 'storage' | 'backup' | 'files' | 'apps' | 'vms', boolean>>
+	on?: Partial<Record<'terminal' | 'desktop' | 'storage' | 'backup' | 'files' | 'apps' | 'vms', boolean>>
+	libvirt?: boolean
 }
 
 export type GuestFleetInput = {
@@ -54,7 +55,7 @@ const byName = (a: {name: string}, b: {name: string}) => a.name.localeCompare(b.
 
 const grant = (key: FleetAbilityKey, ok: boolean, reason: string): FleetAbility => ({key, granted: ok, reason: ok ? '' : reason})
 
-function pair(row: ComputerFleetInput, key: 'terminal' | 'desktop' | 'storage' | 'backup' | 'files' | 'apps') {
+function pair(row: ComputerFleetInput, key: 'terminal' | 'desktop' | 'storage' | 'backup' | 'files' | 'apps' | 'vms') {
 	return !!(row.allowed?.[key] && row.on?.[key])
 }
 
@@ -62,7 +63,7 @@ function computerAbilities(row: ComputerFleetInput): FleetAbility[] {
 	const name = row.name
 	return [
 		grant('apps', row.online, `${name} is offline, so it can’t take an install.`),
-		grant('vms', false, `${name} can’t host its own virtual machines.`),
+		grant('vms', !!(row.online && pair(row, 'vms') && row.libvirt), `${name} can’t host its own virtual machines.`),
 		grant('files', pair(row, 'files'), `${name} hasn’t granted Files.`),
 		grant('storage', pair(row, 'storage'), `${name} hasn’t granted Storage.`),
 		grant('terminal', pair(row, 'terminal'), `${name} hasn’t granted Terminal.`),
@@ -93,7 +94,7 @@ function serverAbilities(name: string, vms: boolean): FleetAbility[] {
 }
 
 export function computerFleetInput(row: ComputerFleetInput): ComputerFleetInput {
-	return {id: row.id, name: row.name, online: row.online, allowed: row.allowed, on: row.on}
+	return {id: row.id, name: row.name, online: row.online, allowed: row.allowed, on: row.on, libvirt: row.libvirt === true}
 }
 
 export function guestFleetInput(row: GuestFleetInput): GuestFleetInput {

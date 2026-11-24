@@ -17,7 +17,7 @@ usage() {
 	cat <<'EOF'
 My Own Data Center connector installer
 
-  connector/install.sh --server <https://...> --ca <fingerprint> --token <code> [--allow <list>] [--source <url>]
+  connector/install.sh --server <https://...> --ca <fingerprint> --token <code> [--allow <list>] [--source <url>] [--user-enroll-only]
   connector/install.sh --uninstall
   connector/install.sh -h|--help
 
@@ -27,6 +27,7 @@ Options:
   --token <code>        One-time pairing token from Machines -> Local swarm
   --allow <abilities>   Comma-separated abilities (terminal,desktop,manage,storage,backup,services,files)
   --source <url>        Base URL to download connector files from
+  --user-enroll-only    Skip packages, the storage helper and linger (already installed)
   --uninstall           Remove the connector from this computer
   -h, --help            Show this help
 EOF
@@ -41,7 +42,7 @@ need_value() {
 }
 
 SOURCE="https://raw.githubusercontent.com/MyOwnDataCenter/server"
-SERVER="" CA="" TOKEN="" ALLOW="" UNINSTALL=0
+SERVER="" CA="" TOKEN="" ALLOW="" UNINSTALL=0 USER_ENROLL_ONLY=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--server) need_value "$1" "$#"; SERVER="$2"; shift 2 ;;
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
 		--allow=*) ALLOW="${1#--allow=}"; shift ;;
 		--source) need_value "$1" "$#"; SOURCE="$2"; shift 2 ;;
 		--source=*) SOURCE="${1#--source=}"; shift ;;
+		--user-enroll-only | --user-enroll-only=*) USER_ENROLL_ONLY=1; shift ;;
 		--uninstall) UNINSTALL=1; shift ;;
 		-h | --help) usage; exit 0 ;;
 		*) printf 'Unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -63,6 +65,18 @@ done
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
+need_password() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 4; }
+# curl | bash has no TTY on stdin; the person still has one on stderr. qemu-ga has neither.
+noninteractive() {
+	[ -n "${OMARCHY_CONNECTOR_NONINTERACTIVE:-}" ] || [ "$USER_ENROLL_ONLY" = 1 ] || { [ ! -t 0 ] && [ ! -t 2 ]; }
+}
+as_root() {
+	if noninteractive; then
+		sudo -n "$@"
+	else
+		sudo "$@"
+	fi
+}
 # Syntax only. Parsing does not write bytecode beside the download.
 python_ok() {
 	python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$1"
@@ -158,15 +172,54 @@ if has storage; then
 	sbin mkfs.btrfs || pkgs+=(btrfs-progs)
 	sbin hdparm || pkgs+=(hdparm)
 fi
-if [ ${#pkgs[@]} -gt 0 ]; then
+# Virtual machines: session libvirt, QEMU, passt, and a seed ISO tool. Always install the list;
+# apt-get install -y / pacman -S --needed are the idempotent step, not a PATH check for qemu-img.
+if has vms; then
+	arch=$(uname -m)
+	case "$pm" in
+		pacman)
+			case "$arch" in
+				aarch64 | arm64)
+					vm_fw=edk2-aarch64
+					pacman -Si "$vm_fw" >/dev/null 2>&1 || pacman -Qi "$vm_fw" >/dev/null 2>&1 || vm_fw=qemu-system-arm-firmware
+					pkgs+=(qemu-base qemu-system-aarch64 "$vm_fw" libvirt passt libisoburn)
+					;;
+				*)
+					pkgs+=(qemu-base edk2-ovmf libvirt passt libisoburn)
+					;;
+			esac
+			;;
+		apt-get)
+			case "$arch" in
+				aarch64 | arm64)
+					pkgs+=(qemu-system-arm qemu-utils libvirt-clients libvirt-daemon passt xorriso qemu-efi-aarch64)
+					;;
+				*)
+					pkgs+=(qemu-system-x86 qemu-utils libvirt-clients libvirt-daemon passt xorriso ovmf)
+					;;
+			esac
+			;;
+		dnf)
+			pkgs+=(qemu-kvm qemu-img libvirt-client libvirt-daemon passt xorriso edk2-ovmf)
+			;;
+		zypper)
+			pkgs+=(qemu-x86 qemu-tools libvirt-client libvirt-daemon passt xorriso qemu-ovmf-x86_64)
+			;;
+		mac) ;;
+		*)
+			[ "$USER_ENROLL_ONLY" = 1 ] || warn "Install QEMU and libvirt yourself (no package manager found that I know)"
+			;;
+	esac
+fi
+if [ "$USER_ENROLL_ONLY" != 1 ] && [ ${#pkgs[@]} -gt 0 ]; then
 	say "Installing ${pkgs[*]} (sudo needed)"
 	# One package at a time, so one that a distribution doesn't carry doesn't stop the rest.
 	for p in "${pkgs[@]}"; do
 		case "$pm" in
-			apt-get) sudo apt-get install -y "$p" >/dev/null || warn "Couldn't install $p" ;;
-			dnf) sudo dnf install -y "$p" >/dev/null || warn "Couldn't install $p" ;;
-			pacman) if command -v omarchy >/dev/null; then omarchy pkg add "$p" || warn "Couldn't install $p"; else sudo pacman -S --needed --noconfirm "$p" >/dev/null || warn "Couldn't install $p"; fi ;;
-			zypper) sudo zypper --non-interactive install "$p" >/dev/null || warn "Couldn't install $p" ;;
+			apt-get) as_root apt-get install -y "$p" >/dev/null || warn "Couldn't install $p" ;;
+			dnf) as_root dnf install -y "$p" >/dev/null || warn "Couldn't install $p" ;;
+			pacman) if command -v omarchy >/dev/null; then omarchy pkg add "$p" || warn "Couldn't install $p"; else as_root pacman -S --needed --noconfirm "$p" >/dev/null || warn "Couldn't install $p"; fi ;;
+			zypper) as_root zypper --non-interactive install "$p" >/dev/null || warn "Couldn't install $p" ;;
 			mac) ;;
 			*) warn "Install $p yourself (no package manager found that I know)" ;;
 		esac
@@ -213,14 +266,35 @@ python_ok "$DIR/agent.py.new" || die "The downloaded connector didn't check out.
 mv "$DIR/agent.py.new" "$DIR/agent.py"
 chmod 700 "$DIR/agent.py"
 
-if has storage; then
+if has storage && [ "$USER_ENROLL_ONLY" != 1 ]; then
 	say "Installing the storage helper"
 	fetch_connector "$(connector_url helper.py)" "$tmp.helper.py" || die "Couldn't download the storage helper."
 	python_ok "$tmp.helper.py" || die "The downloaded storage helper didn't check out."
-	sudo install -D -m 755 "$tmp.helper.py" /usr/local/libexec/omarchy-connector/helper.py
+	as_root install -D -m 755 "$tmp.helper.py" /usr/local/libexec/omarchy-connector/helper.py || need_password "This computer needs a password to finish installing."
 	rm -f "$tmp.helper.py"
-	printf '%s ALL=(root) NOPASSWD: /usr/local/libexec/omarchy-connector/helper.py\n' "$USER" | sudo tee /etc/sudoers.d/omarchy-connector >/dev/null
-	sudo chmod 440 /etc/sudoers.d/omarchy-connector
+	as_root tee /etc/sudoers.d/omarchy-connector >/dev/null <<EOF || need_password "This computer needs a password to finish installing."
+${USER} ALL=(root) NOPASSWD: /usr/local/libexec/omarchy-connector/helper.py
+EOF
+	as_root chmod 440 /etc/sudoers.d/omarchy-connector || need_password "This computer needs a password to finish installing."
+fi
+
+if has vms && [ "$USER_ENROLL_ONLY" != 1 ] && [ "$MAC" != 1 ]; then
+	say "Installing the virtual machine helper"
+	fetch_connector "$(connector_url vm-helper.py)" "$tmp.vm-helper.py" || die "Couldn't download the virtual machine helper."
+	python_ok "$tmp.vm-helper.py" || die "The downloaded virtual machine helper didn't check out."
+	install -m 700 "$tmp.vm-helper.py" "$DIR/vm-helper.py"
+	rm -f "$tmp.vm-helper.py"
+fi
+
+# Linger before the pairing code is used. A noninteractive sudo failure must leave that code unused.
+if [ "$MAC" != 1 ] && [ "$USER_ENROLL_ONLY" != 1 ]; then
+	if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q 'Linger=yes'; then
+		if noninteractive; then
+			sudo -n loginctl enable-linger "$USER" || need_password "This computer needs a password to finish installing."
+		else
+			sudo loginctl enable-linger "$USER" 2>/dev/null || true
+		fi
+	fi
 fi
 
 # 4. Join, with this one-time code.
@@ -278,9 +352,9 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable --now omarchy-connector.service
 systemctl --user restart omarchy-connector.service
-# Run even while nobody is signed in (so you can still watch it and open a terminal).
+# Run even while nobody is signed in. Privileged linger already ran, or was skipped for --user-enroll-only.
 if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q 'Linger=yes'; then
-	sudo loginctl enable-linger "$USER" 2>/dev/null || warn "It only runs while you're signed in. To keep it running, run: sudo loginctl enable-linger $USER"
+	warn "It only runs while you're signed in. To keep it running, run: sudo loginctl enable-linger $USER"
 fi
 
 say "Done. \"$name\" is now in your server's Machines → Local swarm."

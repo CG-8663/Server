@@ -23,7 +23,7 @@ import {createMachines} from './machines.mjs'
 import {createOmarchyTheme} from './omarchy-theme.mjs'
 import {createOmarchyPlugins} from './omarchy-plugins.mjs'
 import {createClips} from './clips.mjs'
-import {createConnector} from './connector.mjs'
+import {closeReason, createConnector} from './connector.mjs'
 import {createStorage} from './storage.mjs'
 import {createUsb, listHostUsb} from './usb.mjs'
 import {createTerminalSessions, createTmux} from './terminal.mjs'
@@ -75,7 +75,20 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const files = createFiles({home, dataDir})
 	const defaultStores = storeDir ? [{url: fileUrl(storeDir)}] : undefined
 	const catalogUrl = storeDir ? fileUrl(join(storeDir, 'machines', 'catalog.json')) : undefined
-	const machines = createMachines({dataDir, files, ...(catalogUrl ? {catalogUrl} : {}), ...machineOptions})
+	let connector
+	const machines = createMachines({
+		dataDir,
+		files,
+		...(catalogUrl ? {catalogUrl} : {}),
+		isOwner: (ctx) => accounts.getUser(ctx?.auth?.userId)?.role !== 'member',
+		connector: {
+			pair: (input) => connector.procedures['swarm.pair'].run(input),
+			list: () => connector.procedures['swarm.list'].run(),
+			call: (id, name, args, timeout) => connector.call(id, name, args, timeout),
+			progress: (id) => connector.progress(id),
+		},
+		...machineOptions,
+	})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
 	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, webPort, ...(sourceDir ? {sourceDir} : {}), ...(storeDir ? {appStoreDir: storeDir} : {}), ...updaterOptions})
 	// One certificate context for the app gateways and the Security settings. On a server this is
@@ -259,9 +272,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'omarchy.plugins': {kind: 'query', run: (input) => themeCall(() => omarchyPlugins.list(input ?? {}))},
 		// Local swarm (connector.mjs): owner only.
 		...Object.fromEntries(
-			['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.wake', 'swarm.pair', 'swarm.reauthorize', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'swarm.storage.setSleep', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.list', 'swarm.files.recents', 'swarm.files.mkdir', 'swarm.files.rename', 'swarm.files.trash', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'].map((name) => [
+			['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.wake', 'swarm.pair', 'swarm.reauthorize', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.vms.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'swarm.storage.setSleep', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.list', 'swarm.files.recents', 'swarm.files.mkdir', 'swarm.files.rename', 'swarm.files.trash', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'].map((name) => [
 				name,
-				{kind: ['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.services.list', 'swarm.services.logs', 'swarm.files.list', 'swarm.files.recents'].includes(name) ? 'query' : 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'manage the local swarm'), connector.procedures[name].run(input))},
+				{kind: ['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.vms.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.services.list', 'swarm.services.logs', 'swarm.files.list', 'swarm.files.recents'].includes(name) ? 'query' : 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'manage the local swarm'), connector.procedures[name].run(input))},
 			]),
 		),
 		'omarchy.installPlugin': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'install Omarchy plugins'), themeCall(() => omarchyPlugins.install(input)))},
@@ -498,7 +511,13 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 						: [name, p],
 			),
 		),
-		...machines.procedures,
+		...Object.fromEntries(
+			Object.entries(machines.procedures).map(([name, p]) =>
+				name === 'machines.installConnector'
+					? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'install a guest connector'), p.run(input))}]
+					: [name, p],
+			),
+		),
 		...Object.fromEntries(
 			Object.entries(apps.procedures).map(([name, p]) =>
 				name === 'appStore.addRepository' || name === 'appStore.removeRepository'
@@ -556,7 +575,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const omarchyTheme = createOmarchyTheme({home, ...themeOptions})
 	const omarchyPlugins = createOmarchyPlugins({home, theme: omarchyTheme, ...pluginOptions})
 	// Local swarm: other Linux computers joined through the connector (see connector.mjs).
-	const connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, files, source: () => updater.source(), webPort})
+	connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, files, source: () => updater.source(), webPort, onOnline: (id) => machines.bootRemote(id)})
 	clips = createClips({
 		dataDir,
 		files,
@@ -1203,9 +1222,17 @@ WantedBy=graphical-session.target
 			}
 			// This server's own desktop is the owner's signed-in Omarchy session: owner-only too.
 			if (machineId === 'desktop' && !owner) return refuse('403 Forbidden')
-			const target = machineId === 'desktop' ? await desktopTarget() : await machines.vncSocket(machineId).then((path) => ({path}), () => null)
+			let target
+			try {
+				target = machineId === 'desktop' ? await desktopTarget() : await machines.vncSocket(machineId)
+			} catch (error) {
+				if (!(error instanceof RpcError)) throw error
+				const message = closeReason(error.message)
+				return wss.handleUpgrade(req, socket, head, (ws) => ws.close(1011, message))
+			}
 			if (!target) return refuse('409 Conflict')
-			const vnc = net.connect(target)
+			if (typeof target === 'object' && target.agentId) return wss.handleUpgrade(req, socket, head, (ws) => connector.openChannel(target.agentId, 'vnc', ws, {guest: target.guest}))
+			const vnc = net.connect(typeof target === 'string' ? {path: target} : target)
 			vnc.once('error', () => refuse('502 Bad Gateway'))
 			vnc.once('connect', () => {
 				vnc.removeAllListeners('error')

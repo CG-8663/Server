@@ -1,10 +1,16 @@
 import type {SwarmMetrics} from './gauges'
 
-// The Linux connector (connector/agent.py) is the guest connector. Windows, macOS, and Home Assistant
-// cannot run it. An unknown guest is offered the install command, and the command says Linux only.
+export type ConnectorKind = 'linux' | 'unsupported'
+
+// Same rules as omarchyd/guest-install.mjs connectorKind. The connector runs on Linux with systemd.
+export function connectorKind(osId = ''): ConnectorKind {
+	const id = String(osId).toLowerCase()
+	if (/win|macos|osx|darwin|haos|home-?assistant|alpine/.test(id)) return 'unsupported'
+	return 'linux'
+}
+
 export function linuxConnectorOs(osId = ''): boolean {
-	const id = osId.toLowerCase()
-	return !/win|macos|osx|darwin|haos|home-?assistant/.test(id)
+	return connectorKind(osId) === 'linux'
 }
 
 export function isGuestAgent(agent: {guestOf?: string}): boolean {

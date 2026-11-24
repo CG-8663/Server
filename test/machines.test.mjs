@@ -182,7 +182,7 @@ describe('omarchyd machines', () => {
 				'/catalog.json': JSON.stringify({
 					version: 1,
 					images: [
-						{id: 'testos-amd64', familyId: 'debian', name: 'TestOS', variantName: 'Server', version: '1', arch: 'amd64', kind: 'cloud', url: 'https://fixture.test/img/test.qcow2', checksums: {url: 'https://fixture.test/img/SHA256SUMS', algorithm: 'sha256'}, sizeMb: 1, adminGroup: 'sudo'},
+						{id: 'testos-amd64', familyId: 'debian', name: 'TestOS', variantName: 'Server', version: '1', arch: 'amd64', kind: 'cloud', url: 'https://fixture.test/img/test.qcow2', checksums: {url: 'https://fixture.test/img/SHA256SUMS', algorithm: 'sha256'}, sizeMb: 1, adminGroup: 'sudo', cloudInit: {packages: ['task-gnome-desktop'], commands: [['systemctl', 'set-default', 'graphical.target']], graphical: true}},
 						{id: 'bados-amd64', familyId: 'debian', name: 'BadOS', version: '1', arch: 'amd64', kind: 'cloud', url: 'https://fixture.test/img/bad.qcow2', checksums: {url: 'https://fixture.test/img/SHA256SUMS', algorithm: 'sha256'}, sizeMb: 1},
 						{id: 'omarchy-9-amd64', familyId: 'omarchy', name: 'Omarchy', version: '9', arch: 'amd64', kind: 'iso', install: 'omarchy', url: 'https://fixture.test/img/omarchy.iso', sha256: createHash('sha256').update(image).digest('hex'), sizeMb: 1},
 						{id: 'insecure', name: 'Plain HTTP', version: '1', arch: 'amd64', kind: 'cloud', url: 'http://fixture.test/x.img', checksums: {url: 'https://fixture.test/s', algorithm: 'sha256'}},
@@ -265,6 +265,14 @@ describe('omarchyd machines', () => {
 		assert.match(seen.xml, /<backend type='passt'\/>/)
 		assert.match(seen.xml, /<graphics type='vnc' socket='[^']+vnc\.sock'\/>/)
 		assert.match(seen.xml, /<domain type='kvm'>/)
+		assert.match(seen.xml, /<channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'\/>/)
+		assert.match(seen.userData, /qemu-guest-agent/)
+		assert.match(seen.userData, /python3/)
+		assert.match(seen.userData, /\["systemctl","enable","--now","qemu-guest-agent"\]/)
+		assert.match(seen.userData, /task-gnome-desktop/)
+		assert.match(seen.userData, /power_state/)
+		assert.ok(!/\b[0-9a-f]{64}\b/.test(seen.userData), 'pairing fingerprint is not written into cloud-init')
+		assert.equal((await q('machines.details', {id})).options.agent, true)
 		assert.equal((await stat(join(data, 'machines/vms', id, 'disk.qcow2'))).size, image.length)
 		assert.equal((await q('machines.osImages'))[0].state, 'downloaded')
 		await assert.rejects(call('machines.create', {...spec, name: 'box', osId: 'testos-amd64'}), /already exists/)
@@ -461,6 +469,11 @@ describe('omarchyd machines', () => {
 		assert.match(seen.userData, /chpasswd:[\s\S]*password: '\$6\$/)
 		assert.match(seen.userData, /hostname: web-1/)
 		assert.ok(!seen.userData.includes('new secret pw'))
+		assert.match(seen.userData, /qemu-guest-agent/)
+		assert.match(seen.userData, /python3/)
+		assert.ok(!seen.userData.includes('task-gnome-desktop'), 'a later cloud-init edit must not replay catalog desktop packages')
+		assert.ok(!seen.userData.includes('power_state'), 'a later cloud-init edit must not replay graphical power_state')
+		assert.ok(!seen.userData.includes('enable-linger'), 'a later cloud-init edit must not replay linger')
 		assert.deepEqual((await q('machines.details', {id})).cloudInit, {username: 'chris', hostname: 'web-1', sshKeys: [key]})
 	})
 
@@ -1661,10 +1674,10 @@ test('on an ARM server (Omarchy on Apple Silicon) a machine is an aarch64 "virt"
 		assert.match(xml, /seed\.iso'\/><target dev='sda' bus='scsi'\/>/)
 		assert.match(xml, /<controller type='scsi' model='virtio-scsi'\/>/)
 		assert.match(xml, /<video><model type='virtio'\/><\/video>/)
-		// Only ARM images are offered on an ARM server.
+		// The catalog query keeps both architectures. The form filters to the host.
 		const images = await machines.procedures['machines.osImages'].run()
-		assert.ok(images.length > 0 && images.every((i) => i.arch === 'arm64'))
-		assert.ok(images.some((i) => i.id === 'ubuntu-24.04-server-arm64'))
+		assert.ok(images.some((i) => i.arch === 'arm64' && i.id === 'ubuntu-24.04-server-arm64'))
+		assert.ok(images.some((i) => i.arch === 'amd64'))
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}

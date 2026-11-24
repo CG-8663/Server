@@ -3,7 +3,7 @@
 // server's own certificate authority), so the other computer opens no ports.
 //
 // Joining: the owner makes a one-time pairing code (15 minutes, used once) with the abilities they
-// allow (watching is always on; terminal, desktop, manage, storage, backup and files are optional). The connector trades
+// allow (watching is always on; terminal, desktop, manage, storage, backup, files and virtual machines are optional). The connector trades
 // it for its own id and key; only a hash of the key is kept here.
 //
 // Two limits on what a computer does: the abilities chosen when pairing, which the connector also
@@ -21,6 +21,7 @@ import {fileURLToPath} from 'node:url'
 import {WebSocketServer} from 'ws'
 
 import {writeAtomic} from './atomic.mjs'
+import {GUEST_PAIR_TTL} from './guest-install.mjs'
 import {RpcError} from './rpc.mjs'
 import {parseResize} from './terminal.mjs'
 
@@ -29,7 +30,8 @@ import {parseResize} from './terminal.mjs'
 // storage: see its drives, format extra disks, and manage pools on that computer (connector/helper.py).
 // services: inspect and restart user systemd units and Podman/Docker containers.
 // files: browse, upload, download, and copy files inside /Home and /Pools (and Clip Book home streaming).
-const ABILITIES = ['terminal', 'desktop', 'manage', 'storage', 'backup', 'services', 'files']
+// vms: create and run virtual machines on that computer (connector/vm-helper.py).
+const ABILITIES = ['terminal', 'desktop', 'manage', 'storage', 'backup', 'services', 'files', 'vms']
 const REMOTE_FILE_MAX = 20 * 1024 * 1024
 const PAIR_TTL = 15 * 60_000
 // A viewer that stops reading must not queue connector frames in memory without a bound.
@@ -62,7 +64,7 @@ function closeSocket(ws, code, reason) {
 }
 // Same sentence a refused new connection gets, so an open session ends with that reason too.
 function switchedOff(name, ability) {
-	const what = ability === 'terminal' ? 'The terminal' : ability === 'files' ? 'Files' : 'The desktop'
+	const what = ability === 'terminal' ? 'The terminal' : ability === 'files' ? 'Files' : ability === 'vms' ? 'Virtual machines' : 'The desktop'
 	return `${what} isn’t switched on for ${name}`
 }
 function closeLiveChannel(l, ch, reason) {
@@ -205,6 +207,7 @@ function cleanInfo(i = {}) {
 		themes: Array.isArray(i.themes) ? i.themes.slice(0, 200).map((t) => clip(t, 80)) : [],
 		theme: clip(i.theme, 80),
 		desktop: {kind: clip(i.desktop?.kind, 32), ok: !!i.desktop?.ok, why: clip(i.desktop?.why, 200)},
+		libvirt: i.libvirt === true,
 	}
 }
 
@@ -220,7 +223,7 @@ function serverAddresses() {
 	return out
 }
 
-export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(new URL('../connector', import.meta.url)), plugins = null, files = null, source = async () => 'https://raw.githubusercontent.com/MyOwnDataCenter/server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000, sendWol = sendWolPacket}) {
+export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(new URL('../connector', import.meta.url)), plugins = null, files = null, source = async () => 'https://raw.githubusercontent.com/MyOwnDataCenter/server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000, sendWol = sendWolPacket, onOnline = null}) {
 	const file = join(dataDir, 'swarm.json')
 	let state = {agents: []}
 	// Set when swarm.json exists but cannot be used. Nothing may write it until the owner repairs it.
@@ -329,16 +332,20 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			allowed: a.allowed,
 			on: a.on,
 			info: a.info ?? null,
+			libvirt: a.info?.libvirt === true,
 			metrics: l?.metrics ?? a.metrics ?? null,
 			updateAvailable: Boolean(a.info && bundledShas.agentSha && agentSha !== bundledShas.agentSha),
 			helperUpdateAvailable: Boolean(a.info && a.allowed?.storage && bundledShas.helperSha && helperSha && helperSha !== bundledShas.helperSha),
 		}
 	}
 
-	async function caFingerprint() {
+	async function caCertificate() {
 		const pem = await readFile(join(tlsDir, 'ca.crt'), 'utf8').catch(() => null)
-		if (!pem) throw new RpcError('PRECONDITION_FAILED', 'This server’s secure address (https) isn’t set up yet, and the connector needs it.')
-		return new X509Certificate(pem).fingerprint256.replace(/:/g, '').toLowerCase()
+		if (!pem || !pem.includes('BEGIN CERTIFICATE')) throw new RpcError('PRECONDITION_FAILED', 'This server’s secure address (https) isn’t set up yet, and the connector needs it.')
+		return pem
+	}
+	async function caFingerprint() {
+		return new X509Certificate(await caCertificate()).fingerprint256.replace(/:/g, '').toLowerCase()
 	}
 
 	// ---- owner actions (tRPC) ------------------------------------------------------------------
@@ -354,8 +361,9 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		const linked = pairingGuest(input?.machineId)
 		const token = randomBytes(24).toString('base64url')
 		for (const [k, p] of pairings) if (p.expires < now()) pairings.delete(k)
-		pairings.set(sha(token), {abilities, expires: now() + PAIR_TTL, ...(linked ? {guestOf: linked} : {})})
-		return {token, ca: await caFingerprint(), expiresAt: now() + PAIR_TTL, abilities, source: await source(), port: webPort, addresses: serverAddresses()}
+		const ttl = linked ? GUEST_PAIR_TTL : PAIR_TTL
+		pairings.set(sha(token), {abilities, expires: now() + ttl, ...(linked ? {guestOf: linked} : {})})
+		return {token, ca: await caFingerprint(), expiresAt: now() + ttl, abilities, source: await source(), port: webPort, addresses: serverAddresses()}
 	}
 	// Re-authorize an existing computer in place so its name, id, metrics and backups stay intact.
 	async function reauthorize(input = {}) {
@@ -522,7 +530,7 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		const l = live.get(a.id)
 		if (l) {
 			for (const [ch, channel] of [...l.channels]) {
-				const ability = channel.kind === 'pty' ? 'terminal' : channel.kind === 'vnc' ? 'desktop' : channel.kind === 'file' ? 'files' : null
+				const ability = channel.kind === 'pty' ? 'terminal' : channel.kind === 'vnc' ? (channel.guest ? 'vms' : 'desktop') : channel.kind === 'file' ? 'files' : null
 				if (ability && !may(a, ability)) closeLiveChannel(l, ch, switchedOff(a.name, ability))
 			}
 			if (!may(a, 'terminal') && l.ws.readyState === l.ws.OPEN) {
@@ -729,6 +737,8 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 						} catch {
 							console.error('[omarchyd] couldn’t save swarm.json')
 						}
+						// Not awaited: a vm-start result is a later message on this socket.
+						if (typeof onOnline === 'function') onOnline(a.id)
 					} else if (msg.op === 'metrics') {
 						l.metrics = cleanMetrics(msg.metrics)
 						a.metrics = l.metrics
@@ -794,12 +804,18 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		const l = live.get(agentId)
 		// Only a terminal or a desktop is a browser socket. A file channel is opened by the server
 		// itself (files.pull / files.push). Treating "file" as a desktop would let a browser read it.
-		const ability = kind === 'pty' ? 'terminal' : kind === 'vnc' ? 'desktop' : null
+		// A guest console is VNC on that VM (ability vms). VNC without guest is still the desktop.
+		if (kind === 'vnc' && typeof opts.guest === 'string' && !/^[a-f0-9]{8}$/.test(opts.guest)) {
+			return closeSocket(browserWs, 1011, 'That virtual machine isn’t valid')
+		}
+		const guest = kind === 'vnc' && typeof opts.guest === 'string' ? opts.guest : undefined
+		const ability = kind === 'pty' ? 'terminal' : kind === 'vnc' ? (guest ? 'vms' : 'desktop') : null
 		const why = !a ? 'Unknown computer' : !l ? 'That computer is offline' : !ability ? 'That isn’t a terminal or a desktop' : switchedOff(a.name, ability)
 		if (!a || !l || !ability || !may(a, ability)) return closeSocket(browserWs, 1011, why)
 		const ch = ++l.nextCh
-		l.channels.set(ch, {ws: browserWs, kind})
+		l.channels.set(ch, guest ? {ws: browserWs, kind, guest} : {ws: browserWs, kind})
 		const openMsg = {op: 'open', ch, kind, cols: opts.cols, rows: opts.rows}
+		if (guest) openMsg.guest = guest
 		if (kind === 'pty') {
 			openMsg.session = typeof opts.session === 'string' && /^[A-Za-z0-9._-]{1,40}$/.test(opts.session) ? opts.session : 'main'
 			if (opts.fresh) openMsg.fresh = true
@@ -1203,8 +1219,11 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 	const fleetFiles = {stat: statFile, list: listFiles, pull: pullFile, push: pushFile, copy: (id, from, to) => transferOn(id, from, to, true), move: (id, from, to) => transferOn(id, from, to, false), remove: removeOn, mkdir: mkdirOn, recents: recentsOn, agents: fileAgents}
 
 	return {
+		caCertificate,
 		files: fleetFiles,
 		backup,
+		call,
+		progress: (id) => live.get(id)?.progress ?? null,
 		procedures: {
 			'swarm.list': {kind: 'query', run: list},
 			'swarm.history': {kind: 'query', run: getHistory},
@@ -1231,6 +1250,33 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 					} catch (e) {
 						if (/allow Storage|doesn’t allow/i.test(e.message)) return {helperAvailable: false, zfsAvailable: false, storageAllowed: false}
 						throw storageReadError(e, a.name)
+					}
+				},
+			},
+			'swarm.vms.status': {
+				kind: 'query',
+				run: async (input) => {
+					const a = await requireAgent(input, false)
+					if (!may(a, 'vms')) return {vmsAllowed: false, libvirt: false}
+					try {
+						const raw = await call(a.id, 'vm-status', {}, 30_000)
+						const s = typeof raw === 'string' ? JSON.parse(raw) : raw
+						const libvirt = s?.libvirt === true
+						const kvm = s?.kvm === true
+						const models = Array.isArray(s?.videoModels) ? s.videoModels.filter((m) => m === 'vga' || m === 'virtio' || m === 'bochs' || m === 'qxl' || m === 'cirrus' || m === 'none') : []
+						return {
+							vmsAllowed: true,
+							libvirt,
+							kvm,
+							arch: s?.arch === 'arm64' ? 'arm64' : 'amd64',
+							threads: num(s?.threads),
+							memoryMb: num(s?.memoryMb),
+							freeGb: num(s?.freeGb),
+							videoModels: models,
+							...(libvirt && !kvm ? {performanceWarning: 'Hardware virtualization (KVM) isn’t available, so machines run much slower. Turn on VT-x/AMD-V in the BIOS, or nested virtualization if this is itself a VM.'} : {}),
+						}
+					} catch (e) {
+						throw new RpcError('BAD_GATEWAY', e.message)
 					}
 				},
 			},
