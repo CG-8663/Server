@@ -1094,6 +1094,24 @@ test('stream control state preserves saved 4:4:4 preference on non-4:4:4 clients
 	assert.equal(rbB.tier, 'high')
 	assert.equal(rbB.chroma444Pref, true)
 	assert.equal(rbB.codec, 'h264')
+
+	// Case C (profiled stream): Handshake requests hevc444 with null overrides, fallback meta confirms h264, then tier-only reconfig is rejected -> confirmed codec stays h264 while nullable overrides remain null
+	const {
+		applyMetaToProfiledStreamState,
+		applyReconfigUnsupportedToProfiledStreamState,
+	} = await import('../web/src/hyprlandStreamState.mjs')
+	let profiledCfg = {codec: 'hevc444', bitrate: 100000, quality: 12, tierOverride: null, chromaOverride: null, codecFallback: null}
+	const profiledMeta = applyMetaToProfiledStreamState(profiledCfg, 'h264_python')
+	profiledCfg = profiledMeta.appliedCfg
+	assert.equal(profiledMeta.actualCodec, 'h264')
+	assert.equal(profiledCfg.codec, 'h264')
+	assert.equal(profiledCfg.tierOverride, null)
+	assert.equal(profiledCfg.chromaOverride, null)
+	const rbC = applyReconfigUnsupportedToProfiledStreamState(profiledCfg)
+	assert.equal(rbC.codec, 'h264')
+	assert.equal(rbC.tierOverride, null)
+	assert.equal(rbC.chromaOverride, null)
+	assert.equal(rbC.codecFallback, null)
 })
 
 test('parseDesktopEntry extracts metadata and skips hidden/non-app entries', () => {

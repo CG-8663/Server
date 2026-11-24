@@ -4,6 +4,11 @@ import {useEffect, useMemo, useRef, useState} from 'react'
 import {useQuery} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
+import {
+	applyMetaToProfiledStreamState,
+	applyReconfigAppliedToProfiledStreamState,
+	applyReconfigUnsupportedToProfiledStreamState,
+} from './hyprlandStreamState.mjs'
 import {Icon} from './icons'
 import {getRailDeviceId, type StreamCodec, type StreamProfile, type StreamProfilesResponse} from './screens/StreamProfiler'
 
@@ -1499,15 +1504,10 @@ export function HyprlandView({
 						canvasRectRef.current = null
 						if (typeof msg.codec === 'string' && msg.codec) currentCodec = msg.codec
 						const encStr = String(msg.encoder || 'h264')
-						const actualCodec: StreamCodec = encStr.startsWith('hevc444')
-							? 'hevc444'
-							: encStr.startsWith('hevc10')
-								? 'hevc10'
-								: encStr.startsWith('hevc')
-									? 'hevc'
-									: 'h264'
-						activeCodecRef.current = actualCodec
-						setConfirmedCodec(actualCodec)
+						const metaUpdate = applyMetaToProfiledStreamState(appliedCfg, encStr)
+						appliedCfg = metaUpdate.appliedCfg
+						activeCodecRef.current = metaUpdate.actualCodec
+						setConfirmedCodec(metaUpdate.actualCodec)
 						metaEncName = encStr === 'hevc444_vaapi_dmabuf' ? 'HEVC 4:4:4' : encStr === 'hevc10_vaapi_dmabuf' ? 'HEVC 10-bit' : encStr === 'hevc_vaapi_dmabuf' ? 'HEVC' : 'H.264'
 						metaDim = `${currentW}x${currentH}`
 						setMeta({width: currentW, height: currentH, fps: Number(msg.fps) || activeFps, encoder: encStr})
@@ -1541,32 +1541,33 @@ export function HyprlandView({
 							canvasRef.current.style.cursor = c
 						}
 					} else if (msg.type === 'reconfig_applied') {
-						const appliedCodec: StreamCodec =
-							msg.codec === 'h264' || msg.codec === 'hevc' || msg.codec === 'hevc10' || msg.codec === 'hevc444' ? msg.codec : activeCodecRef.current
-						activeCodecRef.current = appliedCodec
-						setConfirmedCodec(appliedCodec)
-						appliedCfg = {
-							codec: appliedCodec,
-							bitrate: Number(msg.bitrate) || appliedCfg.bitrate,
-							quality: Number.isFinite(Number(msg.quality)) ? Number(msg.quality) : appliedCfg.quality,
+						const appliedUpdate = applyReconfigAppliedToProfiledStreamState(appliedCfg, {
+							msgCodec: msg.codec,
+							msgBitrate: msg.bitrate,
+							msgQuality: msg.quality,
+							activeCodec: activeCodecRef.current,
 							tierOverride: tierOverrideRef.current,
 							chromaOverride: chromaOverrideRef.current,
 							codecFallback: codecFallbackRef.current,
-						}
+						})
+						appliedCfg = appliedUpdate.appliedCfg
+						activeCodecRef.current = appliedUpdate.appliedCodec
+						setConfirmedCodec(appliedUpdate.appliedCodec)
 					} else if (msg.type === 'reconfig_unsupported') {
-						tierOverrideRef.current = appliedCfg.tierOverride
-						chromaOverrideRef.current = appliedCfg.chromaOverride
-						codecFallbackRef.current = appliedCfg.codecFallback
-						activeCodecRef.current = appliedCfg.codec
-						setTierOverrideState(appliedCfg.tierOverride)
-						setChromaOverrideState(appliedCfg.chromaOverride)
-						setCodecFallback(appliedCfg.codecFallback)
-						setConfirmedCodec(appliedCfg.codec)
+						const rolledBack = applyReconfigUnsupportedToProfiledStreamState(appliedCfg)
+						tierOverrideRef.current = rolledBack.tierOverride
+						chromaOverrideRef.current = rolledBack.chromaOverride
+						codecFallbackRef.current = rolledBack.codecFallback
+						activeCodecRef.current = rolledBack.codec
+						setTierOverrideState(rolledBack.tierOverride)
+						setChromaOverrideState(rolledBack.chromaOverride)
+						setCodecFallback(rolledBack.codecFallback)
+						setConfirmedCodec(rolledBack.codec)
 						try {
-							if (appliedCfg.tierOverride === null) localStorage.removeItem(QUALITY_TIER_KEY)
-							else localStorage.setItem(QUALITY_TIER_KEY, appliedCfg.tierOverride)
-							if (appliedCfg.chromaOverride === null) localStorage.removeItem(CHROMA_444_KEY)
-							else localStorage.setItem(CHROMA_444_KEY, appliedCfg.chromaOverride ? '1' : '0')
+							if (rolledBack.tierOverride === null) localStorage.removeItem(QUALITY_TIER_KEY)
+							else localStorage.setItem(QUALITY_TIER_KEY, rolledBack.tierOverride)
+							if (rolledBack.chromaOverride === null) localStorage.removeItem(CHROMA_444_KEY)
+							else localStorage.setItem(CHROMA_444_KEY, rolledBack.chromaOverride ? '1' : '0')
 						} catch {}
 					} else if (msg.type === 'error') {
 						setStatusTracked('error')
