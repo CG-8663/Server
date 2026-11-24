@@ -80,9 +80,12 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		dataDir,
 		files,
 		...(catalogUrl ? {catalogUrl} : {}),
+		isOwner: (ctx) => accounts.getUser(ctx?.auth?.userId)?.role !== 'member',
 		connector: {
 			pair: (input) => connector.procedures['swarm.pair'].run(input),
 			list: () => connector.procedures['swarm.list'].run(),
+			call: (id, name, args, timeout) => connector.call(id, name, args, timeout),
+			progress: (id) => connector.progress(id),
 		},
 		...machineOptions,
 	})

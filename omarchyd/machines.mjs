@@ -101,7 +101,7 @@ function validCatalog(data) {
 	return ok.length ? ok : null
 }
 
-export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000, connectorAgentWaitMs = 15 * 60 * 1000}) {
+export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000, connectorAgentWaitMs = 15 * 60 * 1000, isOwner = () => true}) {
 	const base = join(dataDir, 'machines')
 	const imagesDir = join(base, 'images')
 	const vmsDir = join(base, 'vms')
@@ -147,8 +147,12 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			// extra package: use the built-in standard VGA instead. Only while this server's QEMU lacks it:
 			// where it has virtio-vga, a machine set to VirtIO in the Hardware sheet keeps it.
 			if (!(await availableVideo()).includes('virtio')) for (const m of machines) if (m.layout?.video === 'virtio') m.layout.video = 'vga'
-			for (const m of machines) if (m.state === 'installing') Object.assign(m, {state: 'error', errorMessage: 'Setup was interrupted. Delete this machine and create it again.'})
 			for (const m of machines) normalize(m)
+			for (const m of machines) {
+				if (m.state !== 'installing') continue
+				const interrupted = hostOf(m) === 'server' ? 'Setup was interrupted. Delete this machine and create it again.' : 'Creating it was interrupted. Delete it and create it again.'
+				Object.assign(m, {state: 'error', errorMessage: interrupted})
+			}
 			const interruptedAt = Date.now()
 			for (const m of machines) {
 				for (const t of m.tasks ?? []) {
@@ -295,6 +299,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 
 	async function domainStates() {
 		const out = new Map()
+		if (!machines.some((m) => hostOf(m) === 'server')) return out
 		try {
 			const text = await virsh('list', '--all')
 			for (const line of text.split('\n').slice(2)) {
@@ -321,6 +326,12 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		let n = 100
 		while (machines.some((x) => x.vmid === n)) n++
 		return n
+	}
+	function hostOf(m) {
+		return m?.hostId && m.hostId !== 'server' ? m.hostId : 'server'
+	}
+	function assertOwner(ctx) {
+		if (!isOwner(ctx)) throw new RpcError('FORBIDDEN', 'Only the server’s owner can manage virtual machines on another computer.')
 	}
 	// Machines from earlier versions get the settings newer ones have, unchanged in effect.
 	function normalize(m) {
@@ -573,15 +584,238 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		})
 	}
 
-	async function create(input = {}) {
-		// The connector cannot host a guest yet. Refuse another computer before libvirt runs, and do not create it here instead.
+	function readVmStatus(raw) {
+		if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw
+		try {
+			const parsed = JSON.parse(String(raw ?? ''))
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+		} catch {}
+		throw new RpcError('BAD_GATEWAY', 'That computer didn’t answer with a valid status')
+	}
+	function defineSpec(m, status) {
+		const layout = m.layout
+		const o = m.options ?? {}
+		const disks = (layout.disks ?? []).map((d) => {
+			const disk = {id: d.id, device: d.device, bus: d.bus, format: d.format}
+			if (d.role) disk.role = d.role
+			if (d.cache) disk.cache = d.cache
+			if (typeof d.discard === 'boolean') disk.discard = d.discard
+			if (d.file) disk.file = String(d.file).startsWith('image:') ? d.file : basename(d.file)
+			return disk
+		})
+		return {
+			id: m.id,
+			name: m.name,
+			memoryMb: m.memoryMb,
+			sockets: m.sockets ?? 1,
+			cores: m.cores,
+			cpuType: m.cpuType ?? 'host',
+			mac: m.mac,
+			firmware: layout.firmware === 'efi' ? 'efi' : 'bios',
+			arch: status.arch === 'arm64' ? 'arm64' : 'amd64',
+			machineType: layout.machineType === 'pc' ? 'pc' : 'q35',
+			nic: layout.nic,
+			video: layout.video,
+			kvm: status.kvm === true && o.kvm !== false,
+			tablet: o.tablet !== false,
+			acpi: o.acpi !== false,
+			agent: o.agent === true,
+			bootMenu: !!o.bootMenu,
+			notes: typeof o.notes === 'string' ? o.notes : '',
+			boot: m.boot ?? [layout.disks.find((d) => d.device === 'disk')?.id ?? 'disk0'],
+			disks,
+			portForwards: (m.portForwards ?? []).map((f) => ({protocol: f.protocol, hostPort: f.hostPort, guestPort: f.guestPort})),
+		}
+	}
+	function layoutBasenames(kind, img) {
+		const layout = layoutFor(kind, '', img)
+		for (const d of layout.disks) if (d.file) d.file = basename(d.file)
+		return layout
+	}
+	async function hostCall(hostId, guestId, name, args) {
+		const timeout = name === 'vm-fetch' || name === 'vm-disk-create' ? 30 * 60_000 : name === 'vm-status' ? 30_000 : 120_000
+		const apply = () => {
+			if (!guestId) return
+			const p = connector?.progress?.(hostId)
+			if (p && typeof p.percent === 'number') busy.set(guestId, {state: 'installing', progress: Math.round((p.percent ?? 0) * 100)})
+		}
+		apply()
+		const timer = setInterval(apply, 200)
+		timer.unref?.()
+		try {
+			return await connector.call(hostId, name, args, timeout)
+		} finally {
+			clearInterval(timer)
+			apply()
+		}
+	}
+
+	async function createOnHost(input, ctx, hostId) {
+		assertOwner(ctx)
+		await ready
+		const nameKey = String(input.name ?? '').trim().toLowerCase()
+		const runCreate = async () => {
+			let listed = []
+			try {
+				listed = await connector?.list?.()
+			} catch {}
+			const agents = Array.isArray(listed) ? listed : []
+			const agent = agents.find((a) => a.id === hostId)
+			if (!agent) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+			const hostName = agent.name || 'that computer'
+			if (!agent.online) throw new RpcError('PRECONDITION_FAILED', `${hostName} is offline right now`)
+			if (!agent.allowed?.vms || !agent.on?.vms) throw new RpcError('FORBIDDEN', `Pair ${hostName} again with Virtual machines switched on.`)
+			let status
+			try {
+				status = readVmStatus(await hostCall(hostId, '', 'vm-status', {}))
+			} catch (error) {
+				if (error instanceof RpcError) throw error
+				throw new RpcError('BAD_GATEWAY', String(error.message ?? error))
+			}
+			if (status.libvirt !== true) throw new RpcError('PRECONDITION_FAILED', `Virtual machines need libvirt and QEMU on ${hostName}. Run the connector install again with Virtual machines switched on.`)
+			const osId = String(input.osId ?? '')
+			if (osId.startsWith('local:')) throw new RpcError('PRECONDITION_FAILED', 'That ISO is on this server. Create this machine here.')
+			const hostArch = status.arch === 'arm64' ? 'arm64' : 'amd64'
+			const img = (await images()).find((i) => i.id === osId)
+			if (!img || img.arch !== hostArch) throw new RpcError('BAD_REQUEST', `That operating system isn’t available on ${hostName}`)
+			const kind = img.kind === 'iso' ? 'omarchy' : img.kind === 'windows' ? 'windows' : 'cloud'
+			if (kind === 'windows' && hostArch !== 'amd64') throw new RpcError('PRECONDITION_FAILED', `Installing Windows from its ISO needs an x86-64 computer`)
+			const name = String(input.name ?? '').trim()
+			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
+			if (machines.some((m) => m.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
+			const threads = Number(status.threads) || 1
+			const totalGb = Math.max(1, Math.floor(Number(status.memoryMb) / 1024) - 1)
+			const cores = Number(input.cores)
+			const memoryGb = Number(input.memoryGb)
+			const diskSizeGb = Number(input.diskSizeGb)
+			const minDisk = kind === 'windows' ? 64 : kind === 'omarchy' ? 20 : 4
+			if (!Number.isInteger(cores) || cores < 1 || cores > threads) throw new RpcError('BAD_REQUEST', `Cores must be between 1 and ${threads}`)
+			if (!Number.isInteger(memoryGb) || memoryGb < 1 || memoryGb > totalGb) throw new RpcError('BAD_REQUEST', `Not enough memory on ${hostName} for that`)
+			if (!Number.isInteger(diskSizeGb) || diskSizeGb < minDisk || diskSizeGb > 4096) throw new RpcError('BAD_REQUEST', `Disk size must be between ${minDisk} and 4096 GB`)
+			const username = String(input.username ?? '').trim()
+			const password = String(input.password ?? '')
+			const userOk = kind === 'windows' ? /^[A-Za-z0-9][A-Za-z0-9_.-]{0,19}$/.test(username) && !/^(administrator|guest)$/i.test(username) : /^[a-z_][a-z0-9_-]{0,31}$/.test(username) && username !== 'root'
+			if (!userOk) throw new RpcError('BAD_REQUEST', kind === 'windows' ? 'Use a username of letters, numbers, - and _ (up to 20)' : 'Use a lower-case username: letters, numbers, - and _ (not root)')
+			if (password.length < 1 || password.length > 256 || /[\x00-\x1f\x7f]/.test(password)) throw new RpcError('BAD_REQUEST', 'Enter a password for the machine')
+			const freeGb = Number(status.freeGb) || 0
+			const needGb = ((Number(img.sizeMb) || 1024) * 3) / 1024 + 2
+			if (freeGb < needGb) throw new RpcError('PRECONDITION_FAILED', `Not enough free space: about ${Math.ceil(needGb)} GB is needed to set it up`)
+
+			let id
+			do id = randomBytes(4).toString('hex')
+			while (machines.some((m) => m.id === id))
+			const layout = layoutBasenames(kind === 'cloud' ? 'cloud' : kind === 'windows' ? 'windows' : 'iso', img)
+			if (kind === 'omarchy' || kind === 'windows') {
+				layout.disks.splice(1, 0, {id: 'cd0', file: `image:${img.id}`, device: 'cdrom', bus: 'sata', format: 'raw'})
+				if (kind === 'omarchy') layout.disks.push({id: 'seed', role: 'seed', file: 'seed.iso', device: 'cdrom', bus: 'sata', format: 'raw'})
+				else layout.disks.push({id: 'answer', role: 'answer', file: 'answer.iso', device: 'cdrom', bus: 'sata', format: 'raw'})
+			}
+			const m = normalize({
+				id,
+				name,
+				osId,
+				hostId,
+				cores,
+				memoryGb,
+				memoryMb: memoryGb * 1024,
+				diskSizeGb,
+				portForwards: [],
+				createdAt: Date.now(),
+				state: 'installing',
+				options: {agent: true},
+				layout,
+				...(kind === 'omarchy' || kind === 'windows' ? {boot: ['disk0', 'cd0']} : {}),
+			})
+			if (kind === 'cloud') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
+			machines.push(m)
+			try {
+				await save()
+			} catch (error) {
+				machines = machines.filter((x) => x.id !== m.id)
+				throw error
+			}
+			busy.set(id, {state: 'installing', progress: 0})
+			const step = (progress) => busy.set(id, {state: 'installing', progress})
+			const host = hostnameFor(name, id)
+			const t = beginTask(m, 'create')
+
+			;(async () => {
+				try {
+					const hash = kind === 'windows' ? null : await hashPassword(password)
+					if (kind === 'cloud') {
+						await hostCall(hostId, id, 'vm-seed', {
+							guestId: id,
+							name: 'seed',
+							label: 'cidata',
+							files: {
+								'user-data': cloudUserData({host, username, hash, cloudInit: {adminGroup: img.adminGroup, ...(img.cloudInit && typeof img.cloudInit === 'object' ? img.cloudInit : {})}}),
+								'meta-data': cloudMetaData(host),
+							},
+						})
+						step(5)
+						await hostCall(hostId, id, 'vm-fetch', {imageId: img.id, catalogUrl})
+						step(80)
+						await hostCall(hostId, id, 'vm-disk-create', {guestId: id, sizeGb: diskSizeGb, imageId: img.id})
+					} else if (kind === 'omarchy') {
+						await hostCall(hostId, id, 'vm-seed', {
+							guestId: id,
+							name: 'seed',
+							label: 'cidata',
+							files: {
+								'user_configuration.json': JSON.stringify(omarchyConfiguration({host, diskSizeGb})),
+								'user_credentials.json': JSON.stringify(omarchyCredentials({username, hash})),
+							},
+						})
+						step(5)
+						await hostCall(hostId, id, 'vm-fetch', {imageId: img.id, catalogUrl})
+						step(80)
+						await hostCall(hostId, id, 'vm-disk-create', {guestId: id, sizeGb: diskSizeGb})
+					} else {
+						await hostCall(hostId, id, 'vm-seed', {
+							guestId: id,
+							name: 'answer',
+							label: 'OMARCHY_ANSWER',
+							files: {'autounattend.xml': windowsAnswerFile({computerName: host.toUpperCase(), username, password})},
+						})
+						step(5)
+						await hostCall(hostId, id, 'vm-fetch', {imageId: img.id, catalogUrl})
+						step(80)
+						await hostCall(hostId, id, 'vm-disk-create', {guestId: id, sizeGb: diskSizeGb})
+					}
+					step(90)
+					await hostCall(hostId, id, 'vm-define', {guestId: id, spec: defineSpec(m, status)})
+					step(96)
+					await hostCall(hostId, id, 'vm-start', {guestId: id})
+					step(100)
+					m.liveForwards = (m.portForwards ?? []).map(forwardKey)
+					delete m.state
+					delete m.errorMessage
+					endTask(m, t)
+				} catch (error) {
+					Object.assign(m, {state: 'error', errorMessage: error.message})
+					endTask(m, t, error)
+				} finally {
+					busy.delete(id)
+					await save().catch(() => {})
+				}
+			})()
+			return {id}
+		}
+		return nameKey ? lock(`create:${nameKey}`, runCreate) : runCreate()
+	}
+
+	async function create(input = {}, ctx) {
 		const hostId = String(input.hostId ?? '').trim()
-		if (hostId && hostId !== 'server') throw new RpcError('PRECONDITION_FAILED', 'That computer has to host this virtual machine itself. It was not created on this server.')
+		if (hostId && hostId !== 'server') {
+			if (!/^[0-9a-f]{12}$/.test(hostId)) throw new RpcError('BAD_REQUEST', 'That computer isn’t valid.')
+			return createOnHost(input, ctx, hostId)
+		}
 		await ready
 		const nameKey = String(input.name ?? '').trim().toLowerCase()
 		const runCreate = async () => {
 			const caps = await capabilities()
-			if (!caps.libvirtAvailable) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the installer again to add them.')
+			if (!caps.libvirtAvailable && !(await run('qemu-img', ['--version']).then(() => true, () => false))) throw new RpcError('PRECONDITION_FAILED', 'Virtual machines need libvirt and QEMU. Run the installer again to add them.')
 			// x86-64 and ARM servers both run machines of their own kind (an ARM server runs ARM images).
 			if (!['amd64', 'arm64'].includes(caps.hostArchitecture)) throw new RpcError('PRECONDITION_FAILED', 'Machines need an x86-64 or ARM 64-bit server')
 			const osId = String(input.osId ?? '')

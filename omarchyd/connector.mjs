@@ -1210,6 +1210,8 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 	return {
 		files: fleetFiles,
 		backup,
+		call,
+		progress: (id) => live.get(id)?.progress ?? null,
 		procedures: {
 			'swarm.list': {kind: 'query', run: list},
 			'swarm.history': {kind: 'query', run: getHistory},
