@@ -152,6 +152,32 @@ test('Windows answer file: names are cleaned, text is escaped and the password i
 	for (const bypass of ['BypassTPMCheck', 'BypassSecureBootCheck', 'BypassRAMCheck', 'BypassNRO']) assert.match(xml, new RegExp(bypass))
 	assert.equal(xml.match(/<component /g).length, xml.match(/<\/component>/g).length, 'every component is closed')
 	assert.equal(xml.match(/<settings /g).length, 3)
+	assert.doesNotMatch(xml, /FirstLogonCommands/)
+})
+
+test('Windows answer file: FirstLogonCommands run windowsCommand when it is set', () => {
+	const none = windowsAnswerFile({computerName: 'pc', username: 'chris', password: 'hunter2 secret'})
+	assert.doesNotMatch(none, /FirstLogonCommands/)
+	assert.ok(!none.includes('hunter2'), 'password not in plain text')
+
+	const ca = 'a'.repeat(64)
+	const cmd = `$s = irm 'https://example.test/main/connector/install.ps1'; & ([scriptblock]::Create($s)) -Server 'https://192.168.84.81:7780' -Ca '${ca}' -Token 'pair-token' -Allow 'terminal,files,manage'`
+	const xml = windowsAnswerFile({computerName: 'pc', username: 'chris', password: 'hunter2 secret', windowsCommand: cmd})
+	assert.match(xml, /<FirstLogonCommands>/)
+	assert.match(xml, /<SynchronousCommand wcm:action="add">/)
+	assert.match(xml, /<CommandLine>/)
+	assert.match(xml, /install\.ps1/)
+	assert.match(xml, /192\.168\.84\.81:7780/)
+	assert.match(xml, /pair-token/)
+	assert.match(xml, new RegExp(ca))
+	assert.match(xml, /&amp; \(\[scriptblock\]::Create\(\$s\)\)/, 'PowerShell call operator is XML-escaped')
+	assert.ok(!xml.includes('hunter2'), 'password not in plain text when a command is set')
+	const [, b64] = xml.match(/<Password><Value>([^<]+)<\/Value><PlainText>false<\/PlainText><\/Password>/)
+	assert.equal(Buffer.from(b64, 'base64').toString('utf16le'), 'hunter2 secretPassword')
+	assert.doesNotMatch(windowsAnswerFile({computerName: 'pc', username: 'u', password: 'p', windowsCommand: ''}), /FirstLogonCommands/)
+
+	const odd = windowsAnswerFile({computerName: 'pc', username: 'u', password: 'p', windowsCommand: `a<b>&"'c`})
+	assert.match(odd, /<CommandLine>a&lt;b&gt;&amp;&quot;&apos;c<\/CommandLine>/)
 })
 
 test('a catalog entry whose commands isn’t a list is ignored, not a crash', () => {

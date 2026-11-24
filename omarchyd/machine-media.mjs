@@ -98,11 +98,21 @@ const windowsPassword = (pw) => Buffer.from(`${pw}Password`, 'utf16le').toString
 // Answer file for Windows 10/11 x64 on UEFI: wipes the machine's one disk, skips the TPM/Secure Boot/
 // RAM checks (the VM has neither TPM nor Secure Boot), creates a local administrator, and skips the
 // online-account and privacy screens.
-export function windowsAnswerFile({computerName, username, password, productKey = WINDOWS_PRO_SETUP_KEY}) {
+export function windowsAnswerFile({computerName, username, password, productKey = WINDOWS_PRO_SETUP_KEY, windowsCommand}) {
 	const c = (name) => `<component name="${name}" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">`
 	const reg = (order, key, value) =>
 		`<RunSynchronousCommand wcm:action="add"><Order>${order}</Order><Path>reg add ${key} /v ${value} /t REG_DWORD /d 1 /f</Path></RunSynchronousCommand>`
 	const name = computerName.replace(/[^A-Za-z0-9-]/g, '').slice(0, 15) || 'OMARCHY-WIN'
+	const command = typeof windowsCommand === 'string' ? windowsCommand : ''
+	const firstLogon = command
+		? `
+      <FirstLogonCommands>
+        <SynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <CommandLine>${xmlText(command)}</CommandLine>
+        </SynchronousCommand>
+      </FirstLogonCommands>`
+		: ''
 	return `<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
   <settings pass="windowsPE">
@@ -167,7 +177,7 @@ export function windowsAnswerFile({computerName, username, password, productKey 
             <Password><Value>${windowsPassword(password)}</Value><PlainText>false</PlainText></Password>
           </LocalAccount>
         </LocalAccounts>
-      </UserAccounts>
+      </UserAccounts>${firstLogon}
     </component>
   </settings>
 </unattend>

@@ -350,3 +350,218 @@ test('a member cannot call machines.installConnector', async () => {
 	assert.equal(r.status, 403)
 	assert.match(body.error.message, /Only the server’s owner can install a guest connector/)
 })
+
+const CLOUD_IMAGE = {
+	id: 'testos-amd64',
+	familyId: 'debian',
+	name: 'TestOS',
+	version: '1',
+	arch: 'amd64',
+	kind: 'cloud',
+	url: 'https://example.test/test.qcow2',
+	sha256: 'a'.repeat(64),
+	sizeMb: 1,
+	adminGroup: 'sudo',
+}
+const ALPINE_IMAGE = {
+	id: 'alpine-3.24.1-amd64',
+	familyId: 'alpine',
+	name: 'Alpine',
+	version: '3.24.1',
+	arch: 'amd64',
+	kind: 'cloud',
+	url: 'https://example.test/alpine.qcow2',
+	sha256: 'b'.repeat(64),
+	sizeMb: 1,
+	adminGroup: 'wheel',
+}
+
+async function openCreate({qemuAgent, connector, connectorEnrollTimeoutMs = 200, images = [CLOUD_IMAGE], files} = {}) {
+	const root = await mkdtemp(join(os.tmpdir(), 'guest-install-create-'))
+	const dataDir = join(root, 'data')
+	const catalog = join(root, 'catalog.json')
+	await mkdir(join(dataDir, 'machines', 'images'), {recursive: true})
+	await writeFile(catalog, JSON.stringify({version: 1, images}))
+	for (const img of images) await writeFile(join(dataDir, 'machines', 'images', `${img.id}.qcow2`), 'cloud-image-bytes')
+	const kvmDevice = join(root, 'kvm')
+	await writeFile(kvmDevice, '')
+	const domains = new Map()
+	const run = async (cmd, args, opts = {}) => {
+		if (cmd === 'qemu-system-x86_64') return ''
+		if (cmd === 'openssl') return '$6$salt$fakehash\n'
+		if (cmd === 'xorriso') {
+			if (args.includes('-pvd_info')) return `Volume Id    : ${/Win11/i.test(args[1] ?? '') ? 'CCCOMA_X64FRE_EN-US_DV9' : 'ARCH_202611'}\n`
+			await writeFile(args[args.indexOf('-output') + 1], 'iso')
+			if (opts.cwd) {
+				try {
+					run.unattend = await readFile(join(opts.cwd, 'autounattend.xml'), 'utf8')
+				} catch {}
+			}
+			return ''
+		}
+		if (cmd === 'qemu-img') {
+			if (args[0] === '--version') return 'qemu-img version 9.0\n'
+			if (args[0] === 'convert') await writeFile(args.at(-1), 'disk')
+			if (args[0] === 'create') await writeFile(args[3], 'blank')
+			return ''
+		}
+		if (cmd === 'virsh') {
+			const a = args[0] === '-c' ? args.slice(2) : args
+			if (a[0] === '--version') return '10.0.0\n'
+			if (a[0] === 'qemu-agent-command') throw new Error('Guest agent not available for now')
+			if (a[0] === 'list') {
+				const rows = [...domains].map(([name, state]) => ` -    ${name}   ${state}`).join('\n')
+				return ` Id   Name   State\n------------------\n${rows}\n`
+			}
+			if (a[0] === 'define') {
+				const xml = await readFile(a[1], 'utf8')
+				const name = /<name>(.+?)<\/name>/.exec(xml)[1]
+				if (!domains.has(name)) domains.set(name, 'shut off')
+				return ''
+			}
+			if (a[0] === 'start') {
+				domains.set(a[1], 'running')
+				return ''
+			}
+			if (a[0] === 'domuuid') throw new Error(`failed to get domain '${a[1]}'`)
+			return ''
+		}
+		throw new Error(`unexpected ${cmd}`)
+	}
+	const api = createMachines({
+		dataDir,
+		catalogUrl: `file://${catalog}`,
+		fetchImpl: async () => {
+			throw new Error('catalog image should already be on disk')
+		},
+		run,
+		kvmDevice,
+		arch: 'amd64',
+		statsIntervalMs: 60_000,
+		watchIdleMs: 1,
+		qemuAgent,
+		connector,
+		connectorEnrollTimeoutMs,
+		files,
+	})
+	await api.ready
+	return {root, dataDir, api, run, call: (name, input) => api.procedures[name].run(input)}
+}
+
+const createSpec = {cores: 1, memoryGb: 1, diskSizeGb: 10, username: 'chris', password: 'hunter2'}
+
+test('creating testos-amd64 starts a connector install after the machine boots', async () => {
+	const agent = fakeAgent()
+	const pairCalls = []
+	let id
+	const {root, call} = await openCreate({
+		qemuAgent: agent.qemuAgent,
+		connector: {
+			pair: async (input) => {
+				pairCalls.push(input)
+				return fakePair()
+			},
+			list: async () => (id ? [{guestOf: id}] : []),
+		},
+	})
+	try {
+		;({id} = await call('machines.create', {...createSpec, name: 'Box', osId: 'testos-amd64'}))
+		await until(async () => (await call('machines.list')).find((x) => x.id === id && x.state === 'running'))
+		const done = await until(async () => {
+			const tasks = await call('machines.tasks')
+			const t = tasks.find((row) => row.machineId === id && row.type === 'connector')
+			return t?.status === 'ok' ? t : null
+		})
+		assert.equal(done?.type, 'connector')
+		assert.equal(pairCalls.length, 1)
+		assert.equal(pairCalls[0].machineId, id)
+		assert.equal(agent.pingCount() >= 1, true)
+		assert.equal(agent.execs.length, 1)
+		assert.equal(agent.execs[0].path, 'runuser')
+		assert.equal(agent.execs[0].args[1], 'chris')
+		assert.match(agent.execs[0].args[5], /--server https:\/\/192\.168\.84\.81:7780/)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('creating an unsupported alpine guest does not pair or exec', async () => {
+	const agent = fakeAgent()
+	const pairCalls = []
+	const {root, call} = await openCreate({
+		images: [ALPINE_IMAGE],
+		qemuAgent: agent.qemuAgent,
+		connector: {
+			pair: async (input) => {
+				pairCalls.push(input)
+				return fakePair()
+			},
+			list: async () => [],
+		},
+	})
+	try {
+		const {id} = await call('machines.create', {...createSpec, name: 'Alpine', osId: 'alpine-3.24.1-amd64'})
+		await until(async () => (await call('machines.list')).find((x) => x.id === id && x.state === 'running'))
+		await new Promise((r) => setTimeout(r, 80))
+		assert.deepEqual(pairCalls, [])
+		assert.equal(agent.pingCount(), 0)
+		assert.deepEqual(agent.execs, [])
+		const tasks = await call('machines.tasks')
+		assert.equal(tasks.some((row) => row.machineId === id && row.type === 'connector'), false)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('a Windows create writes FirstLogonCommands from a minted pairing token', async () => {
+	const pairCalls = []
+	const rootHome = await mkdtemp(join(os.tmpdir(), 'guest-install-win-home-'))
+	const home = join(rootHome, 'Home')
+	await mkdir(join(home, 'Downloads'), {recursive: true})
+	await writeFile(join(home, 'Downloads', 'Win11_25H2_English_x64.iso'), 'win')
+	const {root, call, run} = await openCreate({
+		images: [],
+		connector: {
+			pair: async (input) => {
+				pairCalls.push(input)
+				return fakePair()
+			},
+			list: async () => [],
+		},
+		qemuAgent: () => ({
+			ping: async () => {
+				throw new Error('Guest agent not available for now')
+			},
+			exec: async () => {
+				throw new Error('exec must not run')
+			},
+		}),
+		files: {
+			resolve: async (p) => ({real: join(home, String(p).replace(/^\/Home\/?/, ''))}),
+		},
+	})
+	try {
+		const isos = await call('machines.localIsos')
+		const win = isos.find((i) => /Win11/.test(i.id))
+		assert.ok(win, 'the Windows ISO is offered')
+		const {id} = await call('machines.create', {...createSpec, name: 'Win', osId: win.id, diskSizeGb: 64})
+		await until(async () => (await call('machines.list')).find((x) => x.id === id && x.state === 'running'))
+		assert.equal(pairCalls.length, 1)
+		assert.equal(pairCalls[0].machineId, id)
+		assert.equal(pairCalls[0].terminal, true)
+		assert.equal(pairCalls[0].files, true)
+		assert.equal(pairCalls[0].manage, true)
+		assert.match(run.unattend, /<FirstLogonCommands>/)
+		assert.match(run.unattend, /install\.ps1/)
+		assert.match(run.unattend, /powershell\.exe/)
+		assert.match(run.unattend, /192\.168\.84\.81:7780/)
+		assert.equal(run.unattend.includes('127.0.0.1'), false)
+		assert.match(run.unattend, new RegExp(`-Token &apos;${TOKEN}&apos;`))
+		assert.match(run.unattend, new RegExp(`-Ca &apos;${CA}&apos;`))
+		assert.ok(!run.unattend.includes('hunter2'), 'password is not plaintext in the answer file')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+		await rm(rootHome, {recursive: true, force: true})
+	}
+})
+

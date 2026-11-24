@@ -654,7 +654,17 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 						})
 						m.layout.disks.push({id: 'seed', role: 'seed', file: seedIso, device: 'cdrom', bus: 'sata', format: 'raw'})
 					} else if (kind === 'windows') {
-						const answer = await mediaIso(m, 'answer', 'OMARCHY_ANSWER', {'autounattend.xml': windowsAnswerFile({computerName: host.toUpperCase(), username, password})})
+						let windowsCommand = ''
+						try {
+							const abilities = defaultConnectorAbilities('windows')
+							const pair = await connector.pair({machineId: id, ...abilities})
+							const url = guestReachableUrl({addresses: pair.addresses, port: pair.port})
+							if (url) {
+								const exec = guestConnectorExec({os: 'windows', source: pair.source, server: url, ca: pair.ca, token: pair.token, allow: connectorAllowList('windows', abilities)})
+								windowsCommand = [exec.path, ...exec.args].join(' ')
+							}
+						} catch {}
+						const answer = await mediaIso(m, 'answer', 'OMARCHY_ANSWER', {'autounattend.xml': windowsAnswerFile({computerName: host.toUpperCase(), username, password, ...(windowsCommand ? {windowsCommand} : {})})})
 						m.layout.disks.push({id: 'answer', role: 'answer', file: answer, device: 'cdrom', bus: 'sata', format: 'raw'})
 						m.answerIso = answer
 					}
@@ -692,6 +702,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					busy.delete(id)
 					await save().catch(() => {})
 				}
+				if (!m.state && connectorKind(osId) !== 'unsupported') installConnector({id, username}).catch(() => {})
 			})()
 			return {id}
 		}
