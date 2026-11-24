@@ -11,6 +11,7 @@ class ReportHelloInterval(unittest.TestCase):
     # #432: refresh hello once every 5 minutes, not 3-4 times per 10s window.
     def test_hello_sent_once_per_300_seconds(self):
         conn = agent.Connection({"abilities": {}})
+        conn._watched = True  # a server that already sent watch
         sent = []
         conn.send = sent.append
         sampler = mock.Mock()
@@ -25,6 +26,7 @@ class ReportHelloInterval(unittest.TestCase):
 
     def test_no_burst_after_300_second_mark(self):
         conn = agent.Connection({"abilities": {}})
+        conn._watched = True  # a server that already sent watch
         sent = []
         conn.send = sent.append
         sampler = mock.Mock()
@@ -45,6 +47,7 @@ class DesktopSessionReported(unittest.TestCase):
     # Signing in to the desktop after the connector started is reported within seconds.
     def test_hello_when_the_desktop_appears(self):
         conn = agent.Connection({"abilities": {"desktop": True}})
+        conn._watched = True  # a server that already sent watch
         sent = []
         conn.send = sent.append
         sampler = mock.Mock()
@@ -59,6 +62,7 @@ class DesktopSessionReported(unittest.TestCase):
 
     def test_nothing_extra_without_the_desktop_ability(self):
         conn = agent.Connection({"abilities": {}})
+        conn._watched = True  # a server that already sent watch
         sent = []
         conn.send = sent.append
         sampler = mock.Mock()
