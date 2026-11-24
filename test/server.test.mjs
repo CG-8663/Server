@@ -871,6 +871,12 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(timeoutFor('assistant.reject'), 20_000)
 		assert.equal(timeoutFor('assistant.keys'), 20_000)
 	})
+
+	test('app and machine buttons that wait on compose or libvirt use the slow timeout (#787)', () => {
+		for (const path of ['apps.start', 'apps.stop', 'apps.restart', 'machines.start', 'machines.hibernate']) {
+			assert.equal(timeoutFor(path), 30 * 60 * 1000, path)
+		}
+	})
 })
 
 describe('a wrong password is one try', () => {
