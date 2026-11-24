@@ -368,12 +368,12 @@ Worktree: `/home/joseph/.worktrees/omarchy-server-guest-connector-install` from 
 
 **Series A — auto-install on this server** (worktree `omarchy-server-guest-connector-install`):
 
-1. Guest URL picker + guest pairing token (bound to `machineId`, 6h / until enroll). Tests first.
-2. Default-on qemu-ga channel; cloud-init packages `qemu-guest-agent` + python3; Windows unattend FirstLogonCommands for Python + `install.ps1` trigger.
-3. Host qemu-agent wrapper: ping, exec, status (fake virsh). Keep the function shape that series C will call through the connector.
-4. `install.sh` `--user-enroll-only` / noninteractive.
-5. `machines.installConnector` Linux + Windows + task. Owner-only. `needs-agent` → paste fallback. Password sheet when sudo is required.
-6. Create-time starts that task for supported OS on this server. Guest UI allows Windows.
+1. [x] Guest URL picker + guest pairing token (bound to `machineId`, 6h / until enroll). Tests first. (`3e22e25`)
+2. [x] Default-on qemu-ga channel; cloud-init packages `qemu-guest-agent` + python3. Windows unattend FirstLogonCommands stay in create-time. (`9c013b2`, `55eee91`)
+3. [x] Host qemu-agent wrapper: ping, exec, status (fake virsh). Keep the function shape that series C will call through the connector. (`f20c8e8`)
+4. [x] `install.sh` `--user-enroll-only` / noninteractive. (`cc1c61e`, `970de8f`)
+5. [x] `machines.installConnector` Linux + Windows + task. Owner-only. `needs-agent` → paste fallback. Password sheet when sudo is required. (`e598199`)
+6. [x] Create-time starts that task for supported OS on this server. Guest UI allows Windows. (`d900d62`, `550c8dd`)
 
 **Series B — swarm VM hosting** (own spec under `docs/superpowers/specs/`, own worktree):
 
@@ -393,8 +393,8 @@ Worktree: `/home/joseph/.worktrees/omarchy-server-guest-connector-install` from 
 - [x] Approve sequence (A then B then C) and remote helper shape
 - [x] Lock design in this file (status → approved)
 - [x] Isolated worktree (`/home/joseph/.worktrees/omarchy-server-guest-connector-install`, `feat/guest-connector-auto-install` from `upstream/main` `f2f41e2` / 0.9.76)
-- [ ] Implement slices
-- [ ] Targeted tests + web typecheck
+- [x] Implement Series A slices (Tasks 1–7 on `feat/guest-connector-auto-install`, HEAD `970de8f`)
+- [ ] Targeted tests + web typecheck (re-run at finish)
 - [ ] PR (when asked)
 
 ## Constraints to keep
