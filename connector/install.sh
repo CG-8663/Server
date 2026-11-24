@@ -239,6 +239,17 @@ EOF
 	as_root chmod 440 /etc/sudoers.d/omarchy-connector || need_password "This computer needs a password to finish installing."
 fi
 
+# Linger before the pairing code is used. A noninteractive sudo failure must leave that code unused.
+if [ "$MAC" != 1 ] && [ "$USER_ENROLL_ONLY" != 1 ]; then
+	if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q 'Linger=yes'; then
+		if noninteractive; then
+			sudo -n loginctl enable-linger "$USER" || need_password "This computer needs a password to finish installing."
+		else
+			sudo loginctl enable-linger "$USER" 2>/dev/null || true
+		fi
+	fi
+fi
+
 # 4. Join, with this one-time code.
 say "Joining your server"
 name=$(python3 "$DIR/agent.py" enroll "$SERVER" "$TOKEN" "$ALLOW") || die "Joining didn't work (see above)."
@@ -294,15 +305,9 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable --now omarchy-connector.service
 systemctl --user restart omarchy-connector.service
-# Run even while nobody is signed in (so you can still watch it and open a terminal).
+# Run even while nobody is signed in. Privileged linger already ran, or was skipped for --user-enroll-only.
 if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q 'Linger=yes'; then
-	if [ "$USER_ENROLL_ONLY" = 1 ]; then
-		warn "It only runs while you're signed in. To keep it running, run: sudo loginctl enable-linger $USER"
-	elif noninteractive; then
-		sudo -n loginctl enable-linger "$USER" || need_password "This computer needs a password to finish installing."
-	else
-		sudo loginctl enable-linger "$USER" 2>/dev/null || warn "It only runs while you're signed in. To keep it running, run: sudo loginctl enable-linger $USER"
-	fi
+	warn "It only runs while you're signed in. To keep it running, run: sudo loginctl enable-linger $USER"
 fi
 
 say "Done. \"$name\" is now in your server's Machines → Local swarm."

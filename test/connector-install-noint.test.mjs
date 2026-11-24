@@ -98,9 +98,33 @@ test('noninteractive sudo that needs a terminal exits 4 instead of hanging', {sk
 	assert.equal(r.status, 4, r.out)
 	const log = await readFile(r.log, 'utf8')
 	assert.match(log, /sudo -n /)
+	assert.doesNotMatch(log, /enroll /, log)
 	assert.doesNotMatch(r.out, /Done\./)
 	assert.match(r.out, /password to finish installing|administrator permission/i)
 	assert.doesNotMatch(r.out, /secret-pw|hunter2/)
+})
+
+test('noninteractive linger sudo -n failure before enroll exits 4 with no enroll line', {skip}, async () => {
+	const home = join(root, 'linger-before')
+	await mkdir(home)
+	const bin = await stubs()
+	const put = async (name, body) => (await writeFile(join(bin, name), `#!/bin/bash\n${body}\n`), chmod(join(bin, name), 0o755))
+	await put(
+		'sudo',
+		`echo "sudo $*" >>"$FAKE_LOG"
+case "$*" in
+	*loginctl*) echo "sudo: a terminal is required to read the password" >&2; exit 1 ;;
+esac
+exit 0`,
+	)
+	await put('loginctl', 'echo Linger=no')
+	const r = install(home, bin, ['--server', 'https://192.168.1.20:7780', '--ca', CA, '--token', 'abc123', '--allow', 'terminal,desktop,manage,files'], {OMARCHY_CONNECTOR_NONINTERACTIVE: '1'})
+	assert.equal(r.error, undefined, r.out)
+	assert.equal(r.status, 4, r.out)
+	const log = await readFile(r.log, 'utf8')
+	assert.match(log, /sudo -n loginctl enable-linger /)
+	assert.doesNotMatch(log, /enroll /, log)
+	assert.doesNotMatch(r.out, /Done\./)
 })
 
 test('a failed package install warns and still enrolls', {skip}, async () => {
