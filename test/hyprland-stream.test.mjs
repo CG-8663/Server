@@ -1526,10 +1526,19 @@ test('scoreProfileCandidate ranks 60 FPS HEVC above stuttery 10-bit and rewards 
 		{ok: true, fps: 59.8, targetFps: 60, p95Ms: 17.4, keyKb: 720, codec: 'hevc', quality: 20, bitrate: 34000},
 		{rttMs: 60},
 	)
+	const ultraLanOnLan = scoreProfileCandidate(
+		{ok: true, fps: 60.5, targetFps: 60, p95Ms: 17.3, keyKb: 1550, codec: 'hevc', quality: 14, bitrate: 80000},
+		{rttMs: 3},
+	)
+	const lowBitrateOnLan = scoreProfileCandidate(
+		{ok: true, fps: 60.5, targetFps: 60, p95Ms: 17.3, keyKb: 300, codec: 'hevc', quality: 21, bitrate: 16000},
+		{rttMs: 3},
+	)
 
 	assert.ok(hevc60Wan > hevc10Slow + 20, `locked 60 FPS HEVC (${hevc60Wan}) must beat 42.9 FPS HEVC10 (${hevc10Slow})`)
 	assert.ok(hevc60Wan > h26460Wan, `HEVC (${hevc60Wan}) should beat H.264 (${h26460Wan}) at matched FPS`)
 	assert.ok(hevc60Wan > bloatedWan, `WAN-sized stream (${hevc60Wan}) should beat oversized bitrate/keyframe (${bloatedWan}) on high RTT`)
+	assert.ok(ultraLanOnLan > lowBitrateOnLan, `Ultra LAN 80 Mbps QP 14 (${ultraLanOnLan}) must beat 16 Mbps QP 21 (${lowBitrateOnLan}) on low-RTT LAN`)
 })
 
 test('stream profiler runs benchmarks safely, handles encoder fallback, serializes concurrent saves, and rejects corrupted stores', async () => {
@@ -1647,7 +1656,7 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 
 		await Promise.all([
 			hypr.procedures['hyprland.profileSave'].run({
-				profile: {id: 'lan-a', name: 'LAN A', codec: 'hevc', fps: 60, bitrate: 28000, quality: 18, compression: 7},
+				profile: {id: 'lan-a', name: 'LAN Ultra', codec: 'hevc', fps: 60, bitrate: 120000, quality: 12, compression: 7},
 				deviceId: 'dev-a',
 				activate: true,
 			}),
@@ -1658,7 +1667,10 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 			}),
 		])
 		const listed = await hypr.procedures['hyprland.profiles'].run()
-		assert.ok(listed.profiles.some((p) => p.id === 'lan-a') && listed.profiles.some((p) => p.id === 'lan-b'))
+		const lanA = listed.profiles.find((p) => p.id === 'lan-a')
+		assert.ok(lanA && listed.profiles.some((p) => p.id === 'lan-b'))
+		assert.equal(lanA.bitrate, 120000)
+		assert.equal(lanA.quality, 12)
 		assert.equal(listed.activeByDevice['dev-a'], 'lan-a')
 		assert.equal(listed.activeByDevice['dev-b'], 'lan-b')
 

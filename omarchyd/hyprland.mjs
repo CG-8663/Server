@@ -54,17 +54,17 @@ export function scoreProfileCandidate(cand, {rttMs = 15} = {}) {
 	else if (p95 <= budgetMs * 1.45) score += 16
 	else if (p95 <= budgetMs * 1.9) score += 7
 
-	// 3. Visual sharpness & codec efficiency (0..20 pts)
+	// 3. Visual sharpness & codec efficiency (0..21 pts)
 	const codecBonus = codec === 'hevc' ? 12 : codec === 'hevc10' ? 13 : 8
-	const sharpBonus = quality <= 20 ? 8 : quality <= 22 ? 6 : quality <= 25 ? 4 : 2
+	const sharpBonus = quality <= 14 ? 9 : quality <= 17 ? 8 : quality <= 20 ? 7 : quality <= 22 ? 5 : quality <= 25 ? 3 : 1
 	score += codecBonus + sharpBonus
 
-	// 4. Network-aware WAN/LAN fit (0..10 pts) - penalize oversized keyframes & excessive bitrate on high-RTT WAN links
-	const idealMaxBitrate = rtt >= 45 ? 18000 : rtt >= 18 ? 24000 : 32000
-	const idealMinBitrate = rtt >= 45 ? 12000 : rtt >= 18 ? 16000 : 20000
+	// 4. Network-aware WAN/LAN fit (0..10 pts) - reward high-bitrate presets on LAN while penalizing oversized WAN streams
+	const idealMaxBitrate = rtt >= 45 ? 18000 : rtt >= 18 ? 28000 : 100000
+	const idealMinBitrate = rtt >= 45 ? 12000 : rtt >= 18 ? 16000 : 24000
 	let netScore = 10
-	if (bitrate > idealMaxBitrate) netScore -= Math.min(6, (bitrate - idealMaxBitrate) / 3000)
-	if (bitrate < idealMinBitrate) netScore -= Math.min(4, (idealMinBitrate - bitrate) / 3000)
+	if (bitrate > idealMaxBitrate) netScore -= Math.min(6, (bitrate - idealMaxBitrate) / 4000)
+	if (bitrate < idealMinBitrate) netScore -= Math.min(4, (idealMinBitrate - bitrate) / 4000)
 	if (rtt >= 25 && keyKb > 450) netScore -= Math.min(4, (keyKb - 450) / 120)
 	score += Math.max(0, netScore)
 
@@ -1592,8 +1592,8 @@ export function createHyprland({
 		if (!PROFILE_ID_RE.test(id)) return null
 		const codec = raw?.codec === 'hevc10' || raw?.codec === 'hevc' ? raw.codec : 'h264'
 		const fps = Math.max(15, Math.min(60, Math.round(Number(raw?.fps) || 60)))
-		const bitrate = Math.max(4000, Math.min(45000, Math.round(Number(raw?.bitrate) || 22000)))
-		const quality = Math.max(16, Math.min(34, Math.round(Number(raw?.quality) || 20)))
+		const bitrate = Math.max(4000, Math.min(150000, Math.round(Number(raw?.bitrate) || 22000)))
+		const quality = Math.max(10, Math.min(34, Math.round(Number(raw?.quality) || 20)))
 		const compression = Math.max(1, Math.min(7, Math.round(Number(raw?.compression) || 7)))
 		return {
 			id,
@@ -1873,45 +1873,65 @@ export function createHyprland({
 			const rail = await ensureRailOutput().catch(() => null)
 			const outputName = rail?.name || RAIL_OUTPUT
 
-			// Tailor candidate matrix to client RTT + supported WebCodecs hardware decoders
+			// Tailor candidate matrix to client RTT + supported WebCodecs hardware decoders (including Ultra LAN on local links)
 			const isHighWan = rttMs >= 45
 			const isModWan = rttMs >= 18 && rttMs < 45
+			const isLan = rttMs < 12
 			const candidates = []
 			if (clientCodecs.includes('hevc')) {
-				candidates.push({
-					label: 'HEVC Crisp Low-Latency 60',
-					codec: 'hevc',
-					fps: 60,
-					bitrate: isHighWan ? 16000 : isModWan ? 22000 : 26000,
-					quality: isHighWan ? 21 : 20,
-					compression: 7,
-				})
-				candidates.push({
-					label: 'HEVC Balanced 60',
-					codec: 'hevc',
-					fps: 60,
-					bitrate: isHighWan ? 14000 : 18000,
-					quality: 22,
-					compression: 5,
-				})
+				if (isLan) {
+					candidates.push({
+						label: 'HEVC Ultra LAN 60',
+						codec: 'hevc',
+						fps: 60,
+						bitrate: 80000,
+						quality: 14,
+						compression: 7,
+					})
+					candidates.push({
+						label: 'HEVC High LAN 60',
+						codec: 'hevc',
+						fps: 60,
+						bitrate: 45000,
+						quality: 16,
+						compression: 7,
+					})
+				} else {
+					candidates.push({
+						label: 'HEVC Crisp Low-Latency 60',
+						codec: 'hevc',
+						fps: 60,
+						bitrate: isHighWan ? 16000 : isModWan ? 22000 : 28000,
+						quality: isHighWan ? 21 : 20,
+						compression: 7,
+					})
+					candidates.push({
+						label: 'HEVC Balanced 60',
+						codec: 'hevc',
+						fps: 60,
+						bitrate: isHighWan ? 14000 : 18000,
+						quality: 22,
+						compression: 5,
+					})
+				}
 			}
 			if (clientCodecs.includes('hevc10')) {
 				candidates.push({
 					label: 'HEVC 10-bit Deep Color',
 					codec: 'hevc10',
 					fps: 60,
-					bitrate: isHighWan ? 16000 : 24000,
-					quality: 21,
+					bitrate: isHighWan ? 16000 : isLan ? 60000 : 24000,
+					quality: isLan ? 16 : 21,
 					compression: 7,
 				})
 			}
 			if (clientCodecs.includes('h264') || !candidates.length) {
 				candidates.push({
-					label: 'H.264 High Universal',
+					label: isLan ? 'H.264 High LAN 60' : 'H.264 High Universal',
 					codec: 'h264',
 					fps: 60,
-					bitrate: isHighWan ? 16000 : 22000,
-					quality: 21,
+					bitrate: isHighWan ? 16000 : isLan ? 60000 : 22000,
+					quality: isLan ? 16 : 21,
 					compression: 7,
 				})
 			}

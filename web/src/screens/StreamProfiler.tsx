@@ -205,16 +205,17 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 	})
 
 	const startNewProfile = () => {
+		const isLan = liveRtt !== null && liveRtt < 12
 		const base = activeProfile ?? {
 			codec: (clientCodecs[0] ?? 'hevc') as StreamCodec,
 			fps: 60,
-			bitrate: liveRtt && liveRtt >= 45 ? 16000 : 22000,
-			quality: 20,
-			compression: 5,
+			bitrate: liveRtt && liveRtt >= 45 ? 16000 : isLan ? 48000 : 24000,
+			quality: isLan ? 16 : 20,
+			compression: 7,
 		}
 		setEditing({
 			id: `custom-${Date.now().toString(36)}`,
-			name: `${deviceInfo.name} Custom`,
+			name: `${deviceInfo.name} ${isLan ? 'LAN' : 'Custom'}`,
 			deviceHint: deviceInfo.hint,
 			codec: base.codec,
 			fps: base.fps,
@@ -361,21 +362,40 @@ export function StreamProfilerPage({onBack}: {onBack: () => void}) {
 								]}
 							/>
 						</Field>
+						<Field label="Quick bitrate preset">
+							<div style={{display: 'flex', gap: 6, flexWrap: 'wrap'}}>
+								{[
+									{label: 'WAN (16 Mbps)', bitrate: 16000, quality: 21, compression: 7},
+									{label: 'Balanced (24 Mbps)', bitrate: 24000, quality: 20, compression: 7},
+									{label: 'High LAN (48 Mbps)', bitrate: 48000, quality: 16, compression: 7},
+									{label: 'Ultra LAN (100 Mbps)', bitrate: 100000, quality: 12, compression: 7},
+								].map((p) => (
+									<button
+										key={p.label}
+										type="button"
+										className="btn small"
+										onClick={() => setEditing({...editing, bitrate: p.bitrate, quality: p.quality, compression: p.compression})}
+									>
+										{p.label}
+									</button>
+								))}
+							</div>
+						</Field>
 						<Field label={`Target bitrate (${Math.round(editing.bitrate / 1000)} Mbps)`}>
 							<input
 								type="range"
 								min={8000}
-								max={35000}
-								step={2000}
-								value={editing.bitrate}
+								max={120000}
+								step={4000}
+								value={Math.min(120000, editing.bitrate)}
 								onChange={(e) => setEditing({...editing, bitrate: Number(e.target.value)})}
 								style={{width: '100%'}}
 							/>
 						</Field>
-						<Field label={`QVBR Sharpness (QP ${editing.quality}, lower is sharper)`}>
+						<Field label={`QVBR Sharpness (QP ${editing.quality}, lower is sharper; 12-14 = near-lossless LAN)`}>
 							<input
 								type="range"
-								min={17}
+								min={10}
 								max={28}
 								step={1}
 								value={editing.quality}
