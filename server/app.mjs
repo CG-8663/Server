@@ -167,6 +167,7 @@ export const ALLOWED = {
 	'assistant.conversations': 'query',
 	'assistant.getConversation': 'query',
 	'assistant.deleteConversation': 'mutation',
+	'assistant.stop': 'mutation',
 	'assistant.approve': 'mutation',
 	'assistant.reject': 'mutation',
 	'omarchy.installPlugin': 'mutation',

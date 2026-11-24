@@ -60,7 +60,7 @@ function ownerMessage(toolName) {
 	return 'Only the server’s owner can change the desktop’s theme'
 }
 
-export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl, mcpTargets, sleep, chatgptOptions = {}}) {
+export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl, mcpTargets, sleep, chatgptOptions = {}, turnIdleMs = 600_000, turnMaxMs = 1_800_000}) {
 	const keys = createKeyStore({dataDir, now})
 	const conversations = createConversations({dataDir, now, recoverRunning: true})
 	const chatgpt = createChatGpt({dataDir, keys, fetchImpl: fetchImpl ?? fetch, ...(now ? {now} : {}), ...chatgptOptions})
@@ -260,17 +260,32 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 	// Closing the chat window (Super+W) hangs up SSE; lookups must still finish and be saved.
 	// A reply now keeps running after the chat closes, so a reload could start a second turn on the
 	// same chat while the first is still writing to it. Only one turn runs per chat at a time.
-	const turning = new Set()
+	// A turn that stops producing anything for turnIdleMs, or runs longer than turnMaxMs, is cut off,
+	// so a model that never finishes cannot hold the chat's lock for good. The person can also stop it.
+	const turning = new Map()
 	async function handleStream(req, res, auth) {
 		const who = actor(auth)
 		const ac = new AbortController()
 		let lock = null
+		let timedOut = false
+		let idle = null
+		let total = null
+		const cutOff = () => {
+			timedOut = true
+			ac.abort()
+		}
+		const watchIdle = () => {
+			clearTimeout(idle)
+			idle = setTimeout(cutOff, turnIdleMs)
+			idle.unref?.()
+		}
 		try {
 			const body = await readJson(req, 100_000)
 			if (ac.signal.aborted) return
 			req.socket?.setNoDelay(true)
 			res.writeHead(200, {'content-type': 'text/event-stream', 'cache-control': 'no-store'})
 			const emit = ({event, data}) => {
+				watchIdle()
 				if (res.writableEnded || res.destroyed) return
 				try {
 					res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
@@ -285,11 +300,14 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 					emit({event: 'error', data: {message: 'This chat is still answering. Wait for it to finish, then try again.'}})
 					return
 				}
-				turning.add(key)
+				turning.set(key, ac)
 				lock = key
 			}
+			watchIdle()
+			total = setTimeout(cutOff, turnMaxMs)
+			total.unref?.()
 			const turn = body.continue === true ? runTurnContinue : runTurn
-			await turn({
+			const out = await turn({
 				userId: who.userId,
 				role: who.role,
 				message: body.message,
@@ -298,7 +316,10 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 				signal: ac.signal,
 				emit,
 			})
+			if (timedOut) emit({event: 'error', data: {message: 'The assistant stopped answering, so this reply was cut off. Try again.', ...(out?.conversationId ? {conversationId: out.conversationId} : {})}})
 		} finally {
+			clearTimeout(idle)
+			clearTimeout(total)
 			if (lock) turning.delete(lock)
 			if (res.headersSent && !res.writableEnded && !res.destroyed) {
 				try {
@@ -390,6 +411,16 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			'assistant.conversations': {kind: 'query', run: (_i, {auth}) => conversations.list(userIdOf(auth))},
 			'assistant.getConversation': {kind: 'query', run: (input, {auth}) => conversations.get(userIdOf(auth), String(input?.id ?? ''))},
 			'assistant.deleteConversation': {kind: 'mutation', run: (input, {auth}) => conversations.remove(userIdOf(auth), String(input?.id ?? ''))},
+			// Stop the reply a chat is still writing. Only the person it belongs to can; nothing running is a no-op.
+			'assistant.stop': {
+				kind: 'mutation',
+				run: (input, {auth}) => {
+					const who = actor(auth)
+					const ac = turning.get(`${who.userId}\u0000${String(input?.conversationId ?? '')}`)
+					ac?.abort()
+					return {stopped: Boolean(ac)}
+				},
+			},
 			'assistant.approve': {kind: 'mutation', run: (input, ctx) => approve(input, ctx)},
 			'assistant.reject': {kind: 'mutation', run: (input, ctx) => reject(input, ctx)},
 		},
