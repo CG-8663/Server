@@ -218,3 +218,142 @@ test('an unsupported remote guest does not ask the host', async () => {
 		await rm(root, {recursive: true, force: true})
 	}
 })
+
+async function openCreate(calls, {fail} = {}) {
+	const root = await mkdtemp(join(os.tmpdir(), 'remote-guest-create-'))
+	const arch = os.arch() === 'arm64' ? 'arm64' : 'amd64'
+	const catalog = {version: 1, images: [
+		{id: 'debian-12', familyId: 'debian', name: 'Debian', version: '12', arch, kind: 'cloud', url: 'https://example.test/os.qcow2', sha256: 'ab'.repeat(32), sizeMb: 1, adminGroup: 'sudo'},
+		{id: 'alpine-3.24.1-amd64', familyId: 'alpine', name: 'Alpine', version: '3.24.1', arch, kind: 'cloud', url: 'https://example.test/alpine.qcow2', sha256: 'cd'.repeat(32), sizeMb: 1, adminGroup: 'wheel'},
+	]}
+	let createResolved = false
+	let pingAfterCreate = false
+	let pingBeforeCreate = false
+	const pairCalls = []
+	const machines = createMachines({
+		dataDir: join(root, 'data'),
+		catalogUrl: 'https://example.test/catalog.json',
+		fetchImpl: async () => ({ok: true, json: async () => catalog}),
+		run: async (cmd) => {
+			if (cmd === 'openssl') return '$6$salt$hash\n'
+			if (cmd === 'virsh') throw new Error('local virsh')
+			return ''
+		},
+		kvmDevice: join(root, 'no-kvm'),
+		isOwner: (ctx) => ctx?.auth?.role === 'owner',
+		statsIntervalMs: 60_000,
+		watchIdleMs: 1,
+		connectorEnrollTimeoutMs: 400,
+		connectorAgentWaitMs: 400,
+		connector: {
+			pair: async (input) => {
+				pairCalls.push(input)
+				return {token: TOKEN, ca: CA, source: 'https://example.test', port: 7780, addresses: [{address: LAN}]}
+			},
+			list: async () => {
+				const joined = pairCalls.length ? [{guestOf: pairCalls[0].machineId}] : []
+				return [{id: HOST, name: 'PC', online: true, allowed: {vms: true}, on: {vms: true}}, ...joined]
+			},
+			progress: () => null,
+			call: async (id, name, args) => {
+				if (name === fail) throw new Error('define failed')
+				calls.push({id, name, args})
+				if (name === 'vm-status') return {libvirt: true, kvm: true, arch, threads: 4, memoryMb: 8192, freeGb: 40, videoModels: ['vga']}
+				if (name === 'vm-ga-ping') {
+					if (createResolved) pingAfterCreate = true
+					else pingBeforeCreate = true
+					return '{"return":{}}'
+				}
+				if (name === 'vm-ga-exec') return JSON.stringify({pid: 42})
+				if (name === 'vm-ga-status') return JSON.stringify({exited: true, exitcode: 0, out: '', err: ''})
+				if (name === 'vm-state') return {}
+				return 'ok'
+			},
+		},
+	})
+	await machines.ready
+	return {
+		root,
+		machines,
+		pairCalls,
+		flags: () => ({pingAfterCreate, pingBeforeCreate}),
+		resolveCreate: () => {
+			createResolved = true
+		},
+	}
+}
+
+const auth = {auth: {role: 'owner'}}
+
+test('remote cloud create returns before enroll and then installs through vm-ga', async () => {
+	const calls = []
+	const opened = await openCreate(calls)
+	const {root, machines, pairCalls, flags, resolveCreate} = opened
+	try {
+		const pending = machines.procedures['machines.create'].run(
+			{hostId: HOST, name: 'Box', osId: 'debian-12', cores: 1, memoryGb: 1, diskSizeGb: 8, username: 'chris', password: 'hunter2'},
+			auth,
+		)
+		pending.then(() => resolveCreate(), () => {})
+		const {id} = await pending
+		assert.match(id, /^[a-f0-9]{8}$/)
+		// create() resolved while the background function was still on its first await, so enroll has not started.
+		assert.equal(pairCalls.length, 0)
+		const done = await until(async () => {
+			const task = (await machines.procedures['machines.tasks'].run()).find((row) => row.machineId === id && row.type === 'connector' && row.status === 'ok')
+			return task ?? null
+		}, 3000)
+		assert.equal(done?.type, 'connector')
+		const seed = calls.find((c) => c.name === 'vm-seed')
+		const seedText = JSON.stringify(seed.args)
+		assert.match(seedText, /qemu-guest-agent/)
+		assert.match(seedText, /python3/)
+		assert.match(seed.args.files['user-data'], /\["loginctl","enable-linger","chris"\]/)
+		assert.equal(seedText.includes('install.sh'), false)
+		assert.equal(seedText.includes('--token'), false)
+		assert.equal(seedText.includes('hunter2'), false)
+		assert.equal(flags().pingBeforeCreate, false)
+		assert.equal(flags().pingAfterCreate, true)
+		assert.equal(pairCalls[0].machineId, id)
+		const enroll = calls.filter((c) => c.name === 'vm-ga-exec').find((c) => c.args.path === 'runuser')
+		assert.match(enroll.args.args[5], /--server https:\/\/192\.168\.84\.81:7780/)
+		assert.equal(calls.some((c) => c.name === 'vm-ga-ping' && c.id === HOST), true)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('a failed remote create does not ping the guest agent', async () => {
+	const calls = []
+	const {root, machines} = await openCreate(calls, {fail: 'vm-start'})
+	try {
+		const {id} = await machines.procedures['machines.create'].run(
+			{hostId: HOST, name: 'Bad', osId: 'debian-12', cores: 1, memoryGb: 1, diskSizeGb: 8, username: 'chris', password: 'hunter2'},
+			auth,
+		)
+		await until(async () => (await machines.procedures['machines.list'].run()).find((m) => m.id === id)?.state === 'error')
+		await new Promise((r) => setTimeout(r, 50))
+		assert.equal(calls.some((c) => c.name === 'vm-ga-ping'), false)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('remote Alpine create does not enroll', async () => {
+	const calls = []
+	const {root, machines} = await openCreate(calls)
+	try {
+		const {id} = await machines.procedures['machines.create'].run(
+			{hostId: HOST, name: 'Al', osId: 'alpine-3.24.1-amd64', cores: 1, memoryGb: 1, diskSizeGb: 8, username: 'chris', password: 'hunter2'},
+			auth,
+		)
+		await until(async () => (await machines.procedures['machines.list'].run()).find((m) => m.id === id)?.state !== 'installing')
+		await new Promise((r) => setTimeout(r, 50))
+		assert.equal(calls.some((c) => c.name === 'vm-ga-ping'), false)
+		const seedText = JSON.stringify(calls.find((c) => c.name === 'vm-seed')?.args ?? {})
+		assert.match(seedText, /qemu-guest-agent/)
+		assert.equal(seedText.includes('install.sh'), false)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})

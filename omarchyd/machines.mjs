@@ -402,6 +402,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	async function remoteLive(m) {
 		try {
 			const word = parseVmState(await remoteCall(hostOf(m), 'vm-state', {}))[domain(m.id)]
+			if (word == null) return m.hostState ?? 'stopped'
 			const live = STATE[word] ?? 'stopped'
 			m.hostState = live
 			return live
@@ -850,7 +851,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 							name: 'seed',
 							label: 'cidata',
 							files: {
-								'user-data': cloudUserData({host, username, hash, cloudInit: {adminGroup: img.adminGroup, ...(img.cloudInit && typeof img.cloudInit === 'object' ? img.cloudInit : {})}}),
+								'user-data': cloudUserData({host, username, hash, cloudInit: connectorCloudInit({...img, username, cloudInit: {adminGroup: img.adminGroup, ...img.cloudInit}})}),
 								'meta-data': cloudMetaData(host),
 							},
 						})
@@ -892,6 +893,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					m.liveForwards = (m.portForwards ?? []).map(forwardKey)
 					delete m.state
 					delete m.errorMessage
+					m.hostState = 'running'
 					endTask(m, t)
 				} catch (error) {
 					Object.assign(m, {state: 'error', errorMessage: error.message})
@@ -900,6 +902,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					busy.delete(id)
 					await save().catch(() => {})
 				}
+				if (!m.state && connectorKind(osId) !== 'unsupported') waitForGuestConnector(id, username)
 			})()
 			return {id}
 		}
@@ -1393,7 +1396,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		timer.unref?.()
 	})
 	function waitForGuestConnector(id, username) {
-		const agent = qemuAgent({run, domain: domain(id)})
+		const m = machines.find((row) => row.id === id)
+		if (!m) return
+		const agent = qemuAgentFor(m)
 		const deadline = Date.now() + connectorAgentWaitMs
 		const gap = Math.min(2_000, Math.max(20, Math.floor(connectorAgentWaitMs / 8) || 20))
 		const runWait = async () => {
