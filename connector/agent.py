@@ -3830,6 +3830,10 @@ class Connection:
             snap = dict(live_sampler.peek())
             snap["updates"] = updates_waiting(self.pkg)
             self.send({"op": "metrics", "metrics": snap})
+        elif not getattr(self, "_watched", False):
+            # A server older than 0.9.52 never sends `watch`. Until one arrives, read and push
+            # on the old schedule so a connector newer than its server still reports.
+            self.send({"op": "metrics", "metrics": metrics(self.pkg, sampler=live_sampler)})
         # Facts change now and then (plugins, theme, a desktop session starting).
         if now - last_hello >= HELLO_INTERVAL:
             self.send({"op": "hello", "info": info(), "abilities": self.allowed})
@@ -3951,6 +3955,7 @@ class Connection:
                 existing.close()
         elif op == "watch":
             # The server asks while a screen is open. Return the last snapshot now and refresh.
+            self._watched = True
             if getattr(self, "sampler", None) is not None:
                 self.send({"op": "metrics", "metrics": metrics(self.pkg, sampler=self.sampler)})
         elif op == "call":
