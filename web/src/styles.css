@@ -1646,6 +1646,15 @@ h1.title {
 		0 16px 40px color-mix(in srgb, var(--accent) 45%, transparent),
 		inset 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
+.logo.logo-modc {
+	display: block;
+	width: 96px;
+	height: 96px;
+	border-radius: 24px;
+	background: none;
+	object-fit: contain;
+	box-shadow: 0 16px 44px rgba(57, 255, 20, 0.22);
+}
 .field {
 	display: flex;
 	flex-direction: column;
