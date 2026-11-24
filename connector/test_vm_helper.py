@@ -110,7 +110,8 @@ class Lifecycle(unittest.TestCase):
             # seed.iso is the xorriso output; fake run doesn't write it
             open(os.path.join(d, "vms", "abcd1234", "seed.iso"), "wb").close()
             handle("define", ["abcd1234"], stdin=json.dumps(spec), run=run, data_dir=d, uid=1000, uname="x86_64", kvm_path=os.path.join(d, "no-kvm"))
-            xml = open(os.path.join(d, "vms", "abcd1234", "domain.xml"), encoding="utf-8").read()
+            with open(os.path.join(d, "vms", "abcd1234", "domain.xml"), encoding="utf-8") as xml_file:
+                xml = xml_file.read()
             self.assertIn("<backend type='passt'/>", xml)
             self.assertIn("vnc.sock", xml)
             self.assertNotIn("port=", xml.split("<graphics")[1].split("/>")[0])
@@ -131,6 +132,35 @@ class Lifecycle(unittest.TestCase):
             self.assertEqual(body["execute"], "guest-exec")
             import base64
             self.assertEqual(base64.b64decode(body["arguments"]["input-data"]).decode(), secret)
+
+
+class GuestExecPath(unittest.TestCase):
+    def test_basename_commands_and_rejections(self):
+        log = []
+
+        def run(cmd, args, input=None):
+            log.append(args[-1] if args else "")
+            if cmd == "virsh" and "qemu-agent-command" in args:
+                return '{"return":{"pid":7}}'
+            return ""
+
+        with tempfile.TemporaryDirectory() as d:
+            for path in ("loginctl", "bash", "runuser", "powershell.exe", "/usr/bin/sudo"):
+                out = handle(
+                    "ga-exec",
+                    ["abcd1234"],
+                    stdin=json.dumps({"path": path, "args": ["-n"]}),
+                    run=run,
+                    data_dir=d,
+                    uid=1000,
+                )
+                self.assertEqual(json.loads(out)["pid"], 7)
+                body = json.loads(log[-1])
+                self.assertEqual(body["arguments"]["path"], path)
+            for path in ("../bin/sh", "bash -c", "", "/tmp/foo bar", ".", "..", "C:\\Windows\\System32\\powershell.exe"):
+                with self.assertRaises(HelperError) as err:
+                    handle("ga-exec", ["abcd1234"], stdin=json.dumps({"path": path}), run=run, data_dir=d, uid=1000)
+                self.assertIn("Invalid path", str(err.exception))
 
 
 if __name__ == "__main__":
