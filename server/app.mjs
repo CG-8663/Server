@@ -649,7 +649,10 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			}
 		}
 		shareAppSession(req, res, store.getSession(req.sid))
-		if (req.sid) keepAppPassFresh(req.sid)
+		if (req.sid) {
+			keepAppPassFresh(req.sid)
+			keepBrowserSessionFresh(req.sid)
+		}
 		// Settings › Devices shows when each device was last used: note it, at most once a minute.
 		const seen = store.getSession(req.sid)
 		if (seen && Date.now() - (seen.lastSeenAt ?? 0) > 60_000) store.updateSession(req.sid, {lastSeenAt: Date.now()}).catch(() => {})
@@ -1268,11 +1271,35 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		}
 		const auth = {token: session.console.token, cookie: session.console.cookie}
 		// Browser sessions last 7 days from their last renewal; keep ours fresh.
-		if (Date.now() - session.console.renewedAt > 24 * 60 * 60 * 1000) {
-			await backend.mutation('user.renewToken', undefined, auth).catch(() => {})
-			await store.updateSession(sid, {console: {...session.console, renewedAt: Date.now()}})
-		}
+		await renewBrowserSession(sid)
 		return auth
+	}
+	// Renew the browser-style session when the last renewal was over a day ago. renewedAt moves only
+	// when omarchyd accepted the renewal, so a refused or failed one is tried again, not recorded as done.
+	const BROWSER_RENEW_MS = 24 * 60 * 60 * 1000
+	async function renewBrowserSession(sid) {
+		const backend = getClient()
+		const session = store.getSession(sid)
+		if (!backend || !session?.console || Date.now() - session.console.renewedAt <= BROWSER_RENEW_MS) return
+		const {token, cookie} = session.console
+		try {
+			await backend.mutation('user.renewToken', undefined, {token, cookie})
+		} catch {
+			return
+		}
+		const current = store.getSession(sid)
+		if (current?.console) await store.updateSession(sid, {console: {...current.console, renewedAt: Date.now()}})
+	}
+	// Called on every request, so the browser session stays alive for anyone who is still signed in,
+	// not only for someone who opens Files or a console within its 7 days.
+	const renewingBrowser = new Set()
+	function keepBrowserSessionFresh(sid) {
+		const s = store.getSession(sid)
+		if (!s?.console || renewingBrowser.has(sid) || Date.now() - s.console.renewedAt <= BROWSER_RENEW_MS) return
+		renewingBrowser.add(sid)
+		renewBrowserSession(sid)
+			.catch(() => {})
+			.finally(() => renewingBrowser.delete(sid))
 	}
 	const lostBrowserSession = async (sid, error) => {
 		if (error instanceof BackendError && error.code === 'UNAUTHORIZED') {
