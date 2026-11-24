@@ -635,4 +635,48 @@ describe('swarm close reasons', () => {
 			assert.equal(row.on.vms, true)
 		})
 	})
+
+	test('a guest console channel asks for vms and passes the guest id', async () => {
+		const allowed = {...abilities, vms: true, desktop: false}
+		await withAgent({name: 'pc', allowed, on: {...allowed}}, async ({c, id, agentWs}) => {
+			const bad = await browserSocket()
+			try {
+				const badClosed = closedAs(bad.client)
+				c.openChannel(id, 'vnc', bad.serverSide, {guest: '../etc'})
+				const badGot = await badClosed
+				assert.equal(badGot.code, 1011)
+			} finally {
+				await bad.close()
+			}
+			const browser = await browserSocket()
+			try {
+				const opened = new Promise((r) => agentWs.on('message', function onOpen(d) {
+					const m = JSON.parse(String(d))
+					if (m.op === 'open') (agentWs.off('message', onOpen), r(m))
+				}))
+				c.openChannel(id, 'vnc', browser.serverSide, {guest: 'abcd1234'})
+				const open = await opened
+				assert.equal(open.kind, 'vnc')
+				assert.equal(open.guest, 'abcd1234')
+			} finally {
+				// An open socket keeps the browser's server from finishing close, so the failure never reports.
+				browser.client.terminate()
+				browser.serverSide.terminate()
+				await browser.close()
+			}
+		})
+		const desktopOnly = {...abilities, desktop: true, vms: false}
+		await withAgent({name: 'pc', allowed: desktopOnly, on: {...desktopOnly}}, async ({c, id}) => {
+			const browser = await browserSocket()
+			try {
+				const closed = closedAs(browser.client)
+				c.openChannel(id, 'vnc', browser.serverSide, {guest: 'abcd1234'})
+				const got = await closed
+				assert.equal(got.code, 1011)
+				assert.equal(got.reason.toString('utf8'), 'Virtual machines isn’t switched on for pc')
+			} finally {
+				await browser.close()
+			}
+		})
+	})
 })

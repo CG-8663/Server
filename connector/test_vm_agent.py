@@ -1,7 +1,8 @@
 import json
+import os
 import unittest
 
-from agent import ABILITY_NAMES, supported_abilities, vm_call
+from agent import ABILITY_NAMES, open_guest_vnc, supported_abilities, vm_call
 
 
 class VmAgent(unittest.TestCase):
@@ -35,6 +36,38 @@ class VmAgent(unittest.TestCase):
             vm_call("vm-fetch", {"imageId": "debian-12", "catalogUrl": "https://evil.test/a b"}, allowed={"vms": True}, spawn=spawn)
         with self.assertRaises(RuntimeError):
             vm_call("vm-nope", {}, allowed={"vms": True}, spawn=spawn)
+
+    def test_guest_vnc_uses_the_helper_socket_not_the_desktop(self):
+        import socket
+        import tempfile
+        d = tempfile.mkdtemp()
+        guest = "abcd1234"
+        sock_dir = os.path.join(d, "vms", guest)
+        os.makedirs(sock_dir)
+        path = os.path.join(sock_dir, "vnc.sock")
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(1)
+        seen = []
+
+        def run(argv, stdin=None):
+            seen.append(argv)
+            return "", path + "\n"
+
+        class Conn:
+            sent = []
+            def send(self, msg):
+                self.sent.append(msg)
+
+        conn = Conn()
+        # open_guest_vnc returns the connected client socket or raises
+        client = open_guest_vnc(conn, 7, "abcd1234", d, run)
+        self.assertTrue(any(a[-2:] == ["vnc-path", "abcd1234"] for a in seen))
+        self.assertFalse(any("wayvnc" in " ".join(a) for a in seen))
+        with self.assertRaises(RuntimeError):
+            open_guest_vnc(conn, 8, "../abcd1234", d, run)
+        client.close()
+        srv.close()
 
 
 if __name__ == "__main__":

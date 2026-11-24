@@ -64,7 +64,7 @@ function closeSocket(ws, code, reason) {
 }
 // Same sentence a refused new connection gets, so an open session ends with that reason too.
 function switchedOff(name, ability) {
-	const what = ability === 'terminal' ? 'The terminal' : ability === 'files' ? 'Files' : 'The desktop'
+	const what = ability === 'terminal' ? 'The terminal' : ability === 'files' ? 'Files' : ability === 'vms' ? 'Virtual machines' : 'The desktop'
 	return `${what} isn’t switched on for ${name}`
 }
 function closeLiveChannel(l, ch, reason) {
@@ -527,7 +527,7 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		const l = live.get(a.id)
 		if (l) {
 			for (const [ch, channel] of [...l.channels]) {
-				const ability = channel.kind === 'pty' ? 'terminal' : channel.kind === 'vnc' ? 'desktop' : channel.kind === 'file' ? 'files' : null
+				const ability = channel.kind === 'pty' ? 'terminal' : channel.kind === 'vnc' ? (channel.guest ? 'vms' : 'desktop') : channel.kind === 'file' ? 'files' : null
 				if (ability && !may(a, ability)) closeLiveChannel(l, ch, switchedOff(a.name, ability))
 			}
 			if (!may(a, 'terminal') && l.ws.readyState === l.ws.OPEN) {
@@ -799,12 +799,18 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		const l = live.get(agentId)
 		// Only a terminal or a desktop is a browser socket. A file channel is opened by the server
 		// itself (files.pull / files.push). Treating "file" as a desktop would let a browser read it.
-		const ability = kind === 'pty' ? 'terminal' : kind === 'vnc' ? 'desktop' : null
+		// A guest console is VNC on that VM (ability vms). VNC without guest is still the desktop.
+		if (kind === 'vnc' && typeof opts.guest === 'string' && !/^[a-f0-9]{8}$/.test(opts.guest)) {
+			return closeSocket(browserWs, 1011, 'That virtual machine isn’t valid')
+		}
+		const guest = kind === 'vnc' && typeof opts.guest === 'string' ? opts.guest : undefined
+		const ability = kind === 'pty' ? 'terminal' : kind === 'vnc' ? (guest ? 'vms' : 'desktop') : null
 		const why = !a ? 'Unknown computer' : !l ? 'That computer is offline' : !ability ? 'That isn’t a terminal or a desktop' : switchedOff(a.name, ability)
 		if (!a || !l || !ability || !may(a, ability)) return closeSocket(browserWs, 1011, why)
 		const ch = ++l.nextCh
-		l.channels.set(ch, {ws: browserWs, kind})
+		l.channels.set(ch, guest ? {ws: browserWs, kind, guest} : {ws: browserWs, kind})
 		const openMsg = {op: 'open', ch, kind, cols: opts.cols, rows: opts.rows}
+		if (guest) openMsg.guest = guest
 		if (kind === 'pty') {
 			openMsg.session = typeof opts.session === 'string' && /^[A-Za-z0-9._-]{1,40}$/.test(opts.session) ? opts.session : 'main'
 			if (opts.fresh) openMsg.fresh = true

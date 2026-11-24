@@ -2155,6 +2155,71 @@ class Screen(Channel):
         vnc_release()
 
 
+class GuestVnc(Channel):
+    def __init__(self, conn, ch, sock):
+        super().__init__(conn, ch)
+        self.sock = sock
+        threading.Thread(target=self.pump, daemon=True).start()
+
+    def pump(self):
+        while not self.closed:
+            try:
+                data = self.sock.recv(65536)
+            except OSError:
+                break
+            if not data:
+                break
+            self.out(data)
+        self.ended("The screen sharing ended")
+
+    def write(self, data):
+        try:
+            self.sock.sendall(data)
+        except OSError:
+            self.ended("The screen sharing ended")
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+_GUEST_ID = re.compile(r"^[a-f0-9]{8}$")
+
+
+def open_guest_vnc(conn, ch, guest, data_dir, run):
+    # Guest id is 8 hex. The path comes from the helper, never from the server.
+    if not isinstance(guest, str) or not _GUEST_ID.match(guest):
+        raise RuntimeError("That virtual machine isn’t valid")
+    try:
+        err, out = run([sys.executable, VM_HELPER, "vnc-path", guest])
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as e:
+        raise RuntimeError((str(e) or "VM helper failed")[:300])
+    err_rest = (err or "").strip()
+    if err_rest:
+        raise RuntimeError(err_rest.split("\n")[-1][:300])
+    printed = (out or "").strip()
+    expected = os.path.join(data_dir, "vms", guest, "vnc.sock")
+    real = os.path.realpath(printed) if printed else ""
+    if real != os.path.realpath(expected):
+        raise RuntimeError("That virtual machine isn’t valid")
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(real)
+    except OSError:
+        sock.close()
+        raise RuntimeError("isn’t running")
+    return sock
+
+
 # ---------------------------------------------------------------------------------------------
 # Files: a channel for the clip book. Paths stay inside the home folder. The connector's own
 # configuration and data (its key and the server certificate) are not part of that folder here,
@@ -3963,6 +4028,36 @@ class Connection:
 
         threading.Thread(target=start, daemon=True).start()
 
+    def _open_guest_vnc(self, ch, guest):
+        token = object()
+        lock, tokens = self._ch_state()
+        with lock:
+            tokens[ch] = token
+
+        def start():
+            sock = None
+            try:
+                sock = open_guest_vnc(self, ch, guest, DATA_DIR, _vm_spawn)
+                obj = GuestVnc(self, ch, sock)
+            except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+                self.send({"op": "closed", "ch": ch, "code": 1011, "reason": str(e)[:200]})
+                return
+            with lock:
+                if tokens.get(ch) is not token:
+                    drop = True
+                else:
+                    self.channels[ch] = obj
+                    drop = False
+            if drop:
+                obj.close()
+
+        threading.Thread(target=start, daemon=True).start()
+
     def _report_step(self, live_sampler, last_hello, now):
         # Push the last snapshot only while someone is reading. Calling metrics()
         # here would count as a read and the sampler would never go idle.
@@ -4048,6 +4143,15 @@ class Connection:
                         raise RuntimeError("Say whether to read or write the file")
                 except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
                     self.send({"op": "closed", "ch": ch, "code": 1011, "reason": str(e)[:200]})
+                return
+            # A guest id is that VM's console. Do not start wayvnc or open the desktop socket.
+            if kind == "vnc" and "guest" in msg:
+                if not self.allowed.get("vms"):
+                    return self.send({"op": "closed", "ch": ch, "code": 1011, "reason": "This computer doesn’t allow virtual machines"})
+                guest = msg.get("guest")
+                if not isinstance(guest, str) or not _GUEST_ID.match(guest):
+                    return self.send({"op": "closed", "ch": ch, "code": 1011, "reason": "That virtual machine isn’t valid"})
+                self._open_guest_vnc(ch, guest)
                 return
             ability = "terminal" if kind == "pty" else "desktop" if kind == "vnc" else None
             if not ability or not self.allowed.get(ability):
