@@ -515,10 +515,19 @@ export function createHyprland({
 	}
 
 	// Size & position a floating window strictly inside RAIL-1's usable rect.
-	async function placeOnRail(addr, reqW, reqH, {strict = false} = {}) {
+	async function placeOnRail(addr, reqW, reqH, {strict = false, expectedWorkspace = null} = {}) {
+		const checkOwnership = async () => {
+			if (!Number.isInteger(expectedWorkspace)) return true
+			const cur = await windows({strict: true}).catch(() => [])
+			const found = cur.find((w) => w.address.toLowerCase() === String(addr).toLowerCase())
+			return !!found && found.workspace === expectedWorkspace
+		}
 		const rail = await ensureRailOutput().catch(() => null)
 		if (strict && !rail) {
 			throw new RpcError('BAD_GATEWAY', 'Headless RAIL-1 display disappeared during window placement')
+		}
+		if (Number.isInteger(expectedWorkspace) && !(await checkOwnership())) {
+			return null
 		}
 		const padL = rail?.reserved?.[0] ?? 0
 		const padT = rail?.reserved?.[1] ?? 0
@@ -535,6 +544,9 @@ export function createHyprland({
 		if (strict) await resizeP
 		else await resizeP.catch(() => {})
 		if (rail) {
+			if (Number.isInteger(expectedWorkspace) && !(await checkOwnership())) {
+				return null
+			}
 			const tx = rail.x + padL
 			const ty = rail.y + padT
 			const moveP = hyprDispatch(null, ['dispatch', 'movewindowpixel', `exact ${tx} ${ty},address:${addr}`])
@@ -1358,21 +1370,23 @@ export function createHyprland({
 				return {launched: true, app, window: null, ...(ambiguous ? {ambiguous: true} : {})}
 			}
 
+			// Wake RAIL-1 BEFORE checking ownership, then revalidate RAIL workspace immediately before every mutation so a window moved to a physical workspace is never touched.
+			await wakeRailOutput()
 			const list = await windows({strict: true}).catch(() => [])
 			const win = list.find((w) => w.address.toLowerCase() === openedAddr.toLowerCase())
-			// Revalidate RAIL workspace ownership before touching the window; never pull a window off a physical workspace.
 			if (!win || win.workspace !== railWs) {
 				return {launched: true, app, window: null}
 			}
-
-			await wakeRailOutput()
 			if (!win.floating) {
 				await hyprDispatch(
 					`hl.dispatch(hl.dsp.window.float({window = "address:${win.address}", state = true}))`,
 					['dispatch', 'setfloating', `address:${win.address}`],
 				)
 			}
-			await placeOnRail(win.address, reqW, reqH, {strict: true})
+			const placed = await placeOnRail(win.address, reqW, reqH, {strict: true, expectedWorkspace: railWs})
+			if (!placed) {
+				return {launched: true, app, window: null}
+			}
 			await new Promise((r) => setTimeout(r, 150))
 			const [freshMons, freshWins] = await Promise.all([monitorsInfo(), windows({strict: true}).catch(() => [])])
 			const freshRail = freshMons.find((m) => m.name === RAIL_OUTPUT)

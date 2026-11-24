@@ -1160,6 +1160,8 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		let railMissing = false
 		let clientsFail = false
 		let spawnMode = 'ok'
+		let moveOffRailOnWake = false
+		const mutatedAddrs = []
 		let betaLaunchSeq = 0
 		const clients = [{address: '0x55a1b2c3d4e0', title: 'Demo', class: 'demo', workspace: {id: 1}, at: [0, 0], size: [640, 480], mapped: true}]
 
@@ -1181,6 +1183,14 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 				}
 				if (cmd === 'hyprctl' && args[0] === 'output') {
 					return railMissing ? {ok: false, stdout: '', stderr: 'cannot create headless output'} : {ok: true, stdout: 'ok', stderr: ''}
+				}
+				if (cmd === 'hyprctl' && moveOffRailOnWake && (args.join(' ').includes('dpms'))) {
+					// Simulate user moving the newly launched window onto physical workspace 1 during wakeRailOutput()
+					const target = clients.find((c) => c.address === '0x55a1000000cc')
+					if (target) target.workspace = {id: 1}
+				}
+				if (cmd === 'hyprctl' && /float|resize|movewindowpixel/.test(args.join(' '))) {
+					mutatedAddrs.push(args.join(' '))
 				}
 				if (cmd === 'wl-copy') {
 					if (failCopy) return {ok: false, stdout: '', stderr: 'wl-copy failed'}
@@ -1215,9 +1225,9 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 						}, 80)
 					} else if (args[0] === 'beta') {
 						const seq = ++betaLaunchSeq
-						const addr = seq === 1 ? '0x55a1000000bb' : `0x55a1000000b${seq}`
+						const addr = moveOffRailOnWake ? '0x55a1000000cc' : seq === 1 ? '0x55a1000000bb' : `0x55a1000000b${seq}`
 						setTimeout(() => {
-							clients.push({address: addr, title: `Beta Main ${seq}`, class: 'beta-app', workspace: {id: 11}, at: [0, 0], size: [900, 600], mapped: true, floating: true})
+							clients.push({address: addr, title: `Beta Main ${seq}`, class: 'beta-app', workspace: {id: 11}, at: [0, 0], size: [900, 600], mapped: true, floating: !moveOffRailOnWake})
 						}, 40)
 					}
 				}
@@ -1282,6 +1292,18 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		assert.equal(dup2.ambiguous, true)
 		assert.equal(dup1.window, null)
 		assert.equal(dup2.window, null)
+
+		// If a window moves to a physical workspace during wakeRailOutput(), launch must NOT float, resize, or move it
+		mutatedAddrs.length = 0
+		moveOffRailOnWake = true
+		const movedRes = await hypr.procedures['hyprland.launch'].run({id: 'beta'})
+		moveOffRailOnWake = false
+		assert.equal(movedRes.window, null)
+		assert.equal(
+			mutatedAddrs.some((s) => s.includes('0x55a1000000cc')),
+			false,
+			`must not float/resize/move window after it moved off RAIL-1, saw: ${mutatedAddrs.join('; ')}`,
+		)
 
 		// Synchronous 8-launch cap must reject the 9th concurrent launch immediately before any await
 		spawnMode = 'exit1'
