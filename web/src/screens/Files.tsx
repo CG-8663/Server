@@ -34,6 +34,7 @@ import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, scrollPhoneToTop, us
 import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
+import { safeLocal, safeSession } from "../safeStorage";
 import { MachineTrees, TreeChildren, type TreeActions, type TreeMachine } from "../fleet/FileTree";
 import { actionsForItems, asFileSearch, batchToast, copyTextOrToast, FILES_LIST_PAGE, filesListMoreLeft, filesPathToStore, nice, offersDownload, readStoredFilesPath, searchMatchNote, selectionAfterQuery, viewerAfterPathChange, type BatchKind } from "./filesRules";
 import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, emptyFolderUploadHint, type FavoriteItem, favoritePath, fileKindLabel, filesSearching, filterUnsyncedPhotos, folderPickerRoots, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
@@ -504,14 +505,14 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   const disk = useDisk();
   const storageId = windowId ?? (scope ? `machine:${scope.kind === "computer" ? scope.id : "server"}` : undefined);
   const [nav, setNav] = useState(() => {
-    const start = withinScope(scope, readStoredFilesPath(storageId, initialPath ?? (scope ? scopeRoot(scope) : undefined), (key) => sessionStorage.getItem(key)));
+    const start = withinScope(scope, readStoredFilesPath(storageId, initialPath ?? (scope ? scopeRoot(scope) : undefined), (key) => safeSession.get(key)));
     return {entries: [start] as (string | null)[], index: 0};
   });
   const path = nav.entries[nav.index] ?? null;
   const [listLimit, setListLimit] = useState(FILES_LIST_PAGE);
   const [sort, setSort] = useState<"name" | "modified" | "size">("name");
   const [grid, setGrid] = useState(
-    () => localStorage.getItem("omarchy-server:files-grid") === "1",
+    () => safeLocal.get("omarchy-server:files-grid") === "1",
   );
   const [q, setQ] = useState("");
   const searching = filesSearching(q);
@@ -565,8 +566,8 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
 
   useEffect(() => {
     const stored = filesPathToStore(storageId, path);
-    if (stored.value === null) sessionStorage.removeItem(stored.key);
-    else sessionStorage.setItem(stored.key, stored.value);
+    if (stored.value === null) safeSession.remove(stored.key);
+    else safeSession.set(stored.key, stored.value);
     setSelected(new Set());
     setOpenFolders(new Set());
     setListLimit(FILES_LIST_PAGE);
@@ -979,7 +980,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   const serverPlacesView = path === SERVER_FILES && !searching;
   const setFileMode = (next: boolean) => {
     haptic(5);
-    localStorage.setItem("omarchy-server:files-grid", next ? "1" : "0");
+    safeLocal.set("omarchy-server:files-grid", next ? "1" : "0");
     setGrid(next);
   };
   const rootItems: NuItem[] = [
