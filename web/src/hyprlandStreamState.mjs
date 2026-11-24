@@ -58,3 +58,41 @@ export function applyReconfigUnsupportedToStreamControl(state) {
 		codec: state.appliedCodec,
 	}
 }
+
+export function applyMetaToProfiledStreamState(appliedCfg, encoderStr) {
+	const actualCodec = parseActualCodec(encoderStr)
+	return {
+		appliedCfg: {
+			...appliedCfg,
+			codec: actualCodec,
+		},
+		actualCodec,
+	}
+}
+
+export function applyReconfigAppliedToProfiledStreamState(
+	appliedCfg,
+	{msgCodec, msgBitrate, msgQuality, activeCodec, tierOverride, chromaOverride, codecFallback},
+) {
+	const appliedCodec = isStreamCodec(msgCodec) ? msgCodec : activeCodec
+	return {
+		appliedCfg: {
+			codec: appliedCodec,
+			bitrate: Number(msgBitrate) || appliedCfg.bitrate,
+			quality: Number.isFinite(Number(msgQuality)) ? Number(msgQuality) : appliedCfg.quality,
+			tierOverride,
+			chromaOverride,
+			codecFallback,
+		},
+		appliedCodec,
+	}
+}
+
+export function applyReconfigUnsupportedToProfiledStreamState(appliedCfg) {
+	return {
+		tierOverride: appliedCfg.tierOverride,
+		chromaOverride: appliedCfg.chromaOverride,
+		codecFallback: appliedCfg.codecFallback,
+		codec: appliedCfg.codec,
+	}
+}

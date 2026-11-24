@@ -7,6 +7,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {SERVER_DESKTOP, logout, mutate, query, type Bootstrap, type Machine, type UserApp} from '../api'
 import {HyprlandView, supportsWebCodecs, type HyprlandApp, type HyprlandStatus, type HyprlandWindow} from '../HyprlandView'
+import {StreamProfilerSheet} from '../screens/StreamProfiler'
 import {AppSheet} from '../AppSheet'
 import {askApp, explainProbe} from '../openApp'
 import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory, useNotifications, useUpdates, useUser} from '../data'
@@ -415,6 +416,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const [launcher, setLauncher] = useState(false)
 	// Single shared desktop audio mute state: PipeWire @DEFAULT_MONITOR@ is global, so at most one RAIL window streams PCM audio.
 	const [railAudioMuted, setRailAudioMuted] = useState(false)
+	const [streamProfilerOpen, setStreamProfilerOpen] = useState(false)
 	const toggleRailMute = useCallback(() => {
 		setRailAudioMuted((m) => !m)
 	}, [])
@@ -1529,6 +1531,15 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 							<span className="top-win-ctrls" role="group" aria-label="Window controls">
 								<button
 									type="button"
+									className={`top-win-btn${streamProfilerOpen ? ' on' : ''}`}
+									aria-label="Stream profiles"
+									title="Stream profiles"
+									onClick={() => setStreamProfilerOpen(true)}
+								>
+									<Icon name="gpu" size={12} />
+								</button>
+								<button
+									type="button"
 									className={`top-win-btn${railAudioMuted ? ' muted' : ''}`}
 									aria-label={railAudioMuted ? 'Unmute desktop audio' : 'Mute desktop audio'}
 									title={railAudioMuted ? 'Unmute desktop audio' : 'Mute desktop audio'}
@@ -1593,6 +1604,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						hidden={hypr && (w.workspace ?? 1) !== hyprWs}
 						muted={railAudioMuted}
 						onToggleMute={toggleRailMute}
+						onOpenProfiles={w.kind === 'rail' ? () => setStreamProfilerOpen(true) : undefined}
 					>
 						<WindowContent win={w} prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} owner={owner} muted={railAudioMuted || w.id !== primaryRailAudioId} onToggleMute={toggleRailMute} />
 					</WindowFrame>
@@ -1689,6 +1701,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					/>
 				)}
 				{superKeys && cheatsheet && <Cheatsheet onClose={() => setCheatsheet(false)} />}
+				<StreamProfilerSheet open={streamProfilerOpen} onClose={() => setStreamProfilerOpen(false)} />
 				{superKeys && onboard && (
 					<Onboarding
 						onDismiss={() => {
@@ -2808,6 +2821,7 @@ function WindowFrame({
 	hidden,
 	muted,
 	onToggleMute,
+	onOpenProfiles,
 	children,
 }: {
 	win: Win
@@ -2828,6 +2842,7 @@ function WindowFrame({
 	hidden?: boolean
 	muted?: boolean
 	onToggleMute?: () => void
+	onOpenProfiles?: () => void
 	children: ReactNode
 }) {
 	const el = useRef<HTMLDivElement>(null)
@@ -2968,6 +2983,20 @@ function WindowFrame({
 									<i />
 									<i />
 								</span>
+							)}
+							{onOpenProfiles && (
+								<button
+									type="button"
+									className="rail-pill-btn"
+									aria-label="Stream profiles"
+									title="Stream profiles"
+									onClick={(e) => {
+										e.stopPropagation()
+										onOpenProfiles()
+									}}
+								>
+									<Icon name="gpu" size={12} />
+								</button>
 							)}
 							{onToggleMute && (
 								<button

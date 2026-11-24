@@ -70,6 +70,7 @@ const SLOW_RPC = new Set([
 	'clips.addFile',
 	'clips.fleetList',
 	'hyprland.launch',
+	'hyprland.profileRun',
 ])
 
 const RESTARTING_MESSAGE = 'My Own Data Center is restarting or not answering. Wait a moment and try again.'

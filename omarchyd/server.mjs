@@ -367,8 +367,13 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 						await backups.clearSettings().catch((e) => console.error('[omarchyd] reset backups', e.message))
 						await storage.clearShares().catch((e) => console.error('[omarchyd] reset shares', e.message))
 						await oidc.reset().catch((e) => console.error('[omarchyd] reset oidc', e.message))
+						let profilesResetOk = true
+						await hyprland.resetProfiles().catch((e) => {
+							profilesResetOk = false
+							console.error('[omarchyd] reset hyprland profiles', e.message)
+						})
 						revokeAllHyprStreams()
-						if (appsRemain || machinesRemain) return
+						if (appsRemain || machinesRemain || !profilesResetOk) return
 						await accounts.reset()
 						revokeAllHyprStreams()
 						console.log('[omarchyd] factory reset done')
@@ -641,7 +646,21 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	})
 	Object.assign(
 		procedures,
-		Object.fromEntries(Object.entries(hyprland.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'render the Hyprland desktop'), p.run(input))}])),
+		Object.fromEntries(
+			Object.entries(hyprland.procedures).map(([name, p]) => [
+				name,
+				{
+					kind: p.kind,
+					run: (input, {auth}) => {
+						ownerOnly(auth, 'render the Hyprland desktop')
+						if (factoryResetInProgress && p.kind === 'mutation') {
+							throw new RpcError('CONFLICT', 'Factory reset is in progress')
+						}
+						return p.run(input)
+					},
+				},
+			]),
+		),
 	)
 	async function lockDesktop() {
 		if (machineOptions.lockDesktop) return machineOptions.lockDesktop()

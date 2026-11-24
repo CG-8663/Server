@@ -31,3 +31,39 @@ export function applyReconfigAppliedToStreamControl<TTier extends string>(
 export function applyReconfigUnsupportedToStreamControl<TTier extends string>(
 	state: StreamControlState<TTier>,
 ): {tier: TTier; chroma444Pref: boolean; codec: StreamCodec}
+
+export type ProfiledStreamAppliedCfg<TTier extends string> = {
+	codec: StreamCodec
+	bitrate: number
+	quality: number
+	tierOverride: TTier | null
+	chromaOverride: boolean | null
+	codecFallback: StreamCodec | null
+}
+
+export function applyMetaToProfiledStreamState<TTier extends string>(
+	appliedCfg: ProfiledStreamAppliedCfg<TTier>,
+	encoderStr: unknown,
+): {appliedCfg: ProfiledStreamAppliedCfg<TTier>; actualCodec: StreamCodec}
+
+export function applyReconfigAppliedToProfiledStreamState<TTier extends string>(
+	appliedCfg: ProfiledStreamAppliedCfg<TTier>,
+	opts: {
+		msgCodec: unknown
+		msgBitrate: unknown
+		msgQuality: unknown
+		activeCodec: StreamCodec
+		tierOverride: TTier | null
+		chromaOverride: boolean | null
+		codecFallback: StreamCodec | null
+	},
+): {appliedCfg: ProfiledStreamAppliedCfg<TTier>; appliedCodec: StreamCodec}
+
+export function applyReconfigUnsupportedToProfiledStreamState<TTier extends string>(
+	appliedCfg: ProfiledStreamAppliedCfg<TTier>,
+): {
+	tierOverride: TTier | null
+	chromaOverride: boolean | null
+	codecFallback: StreamCodec | null
+	codec: StreamCodec
+}
