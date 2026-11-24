@@ -9,7 +9,7 @@ import {queryProblem, useBrowserOnline} from '../connection'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, type SwarmBattery} from './gauges'
-import {isGuestAgent} from './guestLink'
+import {isGuestAgent, linuxConnectorOs} from './guestLink'
 import {connectorInstallCommand, connectorInstallCommandWindows} from './installCommand'
 import {newlyJoined} from './join'
 import {LiveStats} from '../fleet/StatRegion'
@@ -30,7 +30,7 @@ const Console = lazy(() => import('../Console').then((m) => ({default: m.Console
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 const MachineFiles = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
 
-type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean; services: boolean; files: boolean}
+type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean; services: boolean; files: boolean; vms: boolean}
 export type Ability = keyof Abilities
 export type Agent = {
 	id: string
@@ -63,6 +63,7 @@ export type Agent = {
 		theme?: string
 		desktop?: {kind: string; ok: boolean; why: string}
 	} | null
+	libvirt?: boolean
 	metrics: {
 		cpu: number | null
 		cores?: number
@@ -82,8 +83,10 @@ type Pairing = {token: string; ca: string; expiresAt: number; abilities: Abiliti
 type SwarmAlert = {id: string; agentId: string; name: string; kind: string; severity: 'info' | 'warning' | 'critical'; message: string}
 type HistoryPoint = {at: number; cpu: number | null; memPct: number | null; diskPct: number | null; gpuPct: number | null; temp: number | null; netRx: number | null; netTx: number | null}
 
-// What a Windows computer's connector can do (connector/agent.py WINDOWS_ABILITIES).
+// What a Windows computer's or a Mac's connector can do (connector/agent.py WINDOWS_ABILITIES,
+// MAC_ABILITIES). The rest needs Linux; the connector on the other computer drops what it can't do.
 export const WINDOWS_ABILITIES: Ability[] = ['terminal', 'files', 'manage']
+const EVERYWHERE: Ability[] = WINDOWS_ABILITIES
 
 export const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = {
 	terminal: {label: 'Terminal', icon: 'terminal', what: 'A shell on it, as the person who installed the connector'},
@@ -93,6 +96,7 @@ export const ABILITY: Record<Ability, {label: string; icon: IconName; what: stri
 	backup: {label: 'Backups', icon: 'history', what: 'Back up folders you choose to this server, on a schedule (open this computer and choose Backups). It can add backups, never delete them.'},
 	services: {label: 'Services', icon: 'server', what: 'Inspect logs and start, stop, or restart user systemd services and containers'},
 	files: {label: 'Files', icon: 'folder', what: 'Read and write the home folder of the person who installed the connector. The connector’s own keys stay off limits.'},
+	vms: {label: 'Virtual machines', icon: 'machine', what: 'Create and run virtual machines on this computer'},
 }
 export const agentMay = (a: Agent, k: Ability) => !!(a.allowed[k] && a.on[k])
 const may = agentMay
@@ -567,7 +571,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, bare}: {a: Agent; onClos
 				onClose={onClose}
 			/>
 			<MachineActions terminal={!offline && may(a, 'terminal')} desktop={!offline && may(a, 'desktop') && desk?.ok !== false} onTerminal={() => onTerminal()} onDesktop={onDesktop} pin={<PinButton pin={{kind: 'machine', id: a.id, computer: ''}} name={a.name} />} />
-			{a.online && may(a, 'desktop') && desk && !desk.ok && <p className="muted" style={{fontSize: 13, margin: '8px 4px 0'}}>{desk.why}</p>}
+<DesktopHelp a={a} onTerminal={onTerminal} />
 			{a.online && m && <LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} />}
 			{a.online && <HistorySparklines agentId={a.id} />}
 			{offline && !!a.info?.macs?.length && (
@@ -667,24 +671,30 @@ export function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 }
 
 // ---- Add a computer: what it may do → the command → step by step → it appears. ----------------
-export function AddComputer({before, onClose, onJoined, guest}: {before: string[]; onClose: () => void; onJoined: (id: string) => void; guest?: {id: string; name: string}}) {
+export function AddComputer({before, onClose, onJoined, guest}: {before: string[]; onClose: () => void; onJoined: (id: string) => void; guest?: {id: string; name: string; osId?: string}}) {
 	const [beforeIds] = useState(before)
 	// Storage can format disks there, so it's a choice you make. A guest watches, and can open files,
 	// a terminal, and a desktop. Backups stay off: a guest does not back up through this yet.
-	const [allow, setAllow] = useState<Abilities>(guest ? {terminal: true, desktop: true, manage: true, storage: false, backup: false, services: false, files: true} : {terminal: true, desktop: true, manage: true, storage: false, backup: true, services: false, files: false})
+	const [allow, setAllow] = useState<Abilities>(
+		guest
+			? {terminal: true, desktop: true, manage: true, storage: false, backup: false, services: false, files: true, vms: false}
+			: {terminal: true, desktop: true, manage: true, storage: false, backup: true, services: false, files: false, vms: false},
+	)
 	const [pairing, setPairing] = useState<Pairing | null>(null)
-	// A Windows computer can have its terminal, files and power; the rest needs Linux.
-	const [os, setOs] = useState<'linux' | 'windows'>('linux')
-	const windows = !guest && os === 'windows'
-	const shown = (Object.keys(ABILITY) as Ability[]).filter((k) => !windows || WINDOWS_ABILITIES.includes(k))
-	const asked = windows ? (Object.fromEntries((Object.keys(allow) as Ability[]).map((k) => [k, allow[k] && WINDOWS_ABILITIES.includes(k)])) as Abilities) : allow
+	// One set of permissions for any computer: the same one-time code works from Linux, a Mac or
+	// Windows, and each connector keeps only what it can do there. Only the command differs.
+	const [os, setOs] = useState<'unix' | 'windows'>(() => (/Windows/.test(navigator.userAgent) ? 'windows' : 'unix'))
+	const windows = guest ? false : os === 'windows'
+	const guestLinux = !guest || linuxConnectorOs(guest.osId ?? '')
+	const shown = (Object.keys(ABILITY) as Ability[]).filter((k) => !guest || k !== 'vms')
+	const asked = allow
 	const [host, setHost] = useState('')
 	const [copied, setCopied] = useState('')
 	const [now, setNow] = useState(Date.now())
 	const toast = useToast()
 	const swarm = useSwarm()
 	const pair = useMutation({
-		mutationFn: () => mutate<Pairing>('swarm.pair', guest ? {...allow, machineId: guest.id} : asked),
+		mutationFn: () => mutate<Pairing>('swarm.pair', guest ? {...allow, vms: false, machineId: guest.id} : asked),
 		onSuccess: (p) => {
 			setPairing(p)
 			const here = location.hostname
@@ -726,32 +736,22 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 			<SheetHeader
 				icon={<Icon name="devices" size={30} />}
 				title={guest ? 'Install connector' : 'Add a computer'}
-				subtitle={guest ? `Linux with systemd, inside ${guest.name}. Not Windows or Home Assistant.` : 'A Linux computer with systemd, or Windows 10 or later. Not macOS.'}
+				subtitle={guest ? `Linux with systemd, inside ${guest.name}. Not Windows or Home Assistant.` : 'Linux (any distribution with systemd), a Mac, or Windows 10 or later.'}
 				onClose={onClose}
 			/>
-			{!pairing ? (
+			{guest && !guestLinux ? (
+				<p className="muted" style={{fontSize: 14, margin: '0 4px 12px'}}>
+					This operating system can’t run the connector. It runs on Linux with systemd.
+				</p>
+			) : !pairing ? (
 				<>
-					{!guest && (
-						<div className="chips" role="radiogroup" aria-label="Operating system" style={{margin: '0 4px 12px'}}>
-							{(['linux', 'windows'] as const).map((o) => (
-								<button key={o} type="button" role="radio" aria-checked={os === o} className={`chip${os === o ? ' on' : ''}`} onClick={() => (haptic(5), setOs(o))}>
-									{o === 'linux' ? 'Linux' : 'Windows'}
-								</button>
-							))}
-						</div>
-					)}
-					{windows && (
-						<p className="muted" style={{fontSize: 13.5, margin: '0 4px 12px'}}>
-							On Windows the connector gives you the terminal (PowerShell), files and power. Sharing the screen, disks, backups and services need Linux. It needs Python 3.8 or later.
-						</p>
-					)}
 					<p className="muted" style={{fontSize: 14, margin: '0 4px 12px'}}>
 						Choose what this server may do on the new computer. The connector there enforces it too, and you can switch these off later (but not on again without adding it again).
 					</p>
 					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 						<Row icon="sparkle" color="#2fbf71" label="Watch" sub="Always: CPU, memory, disks, temperature, updates waiting" />
 						{shown.map((k) => (
-							<Row key={k} icon={ABILITY[k].icon} label={ABILITY[k].label} sub={ABILITY[k].what} trailing={<Switch on={allow[k]} label={ABILITY[k].label} onChange={(v) => setAllow({...allow, [k]: v})} />} />
+							<Row key={k} icon={ABILITY[k].icon} label={ABILITY[k].label} sub={guest || EVERYWHERE.includes(k) ? ABILITY[k].what : `${ABILITY[k].what} · Linux`} trailing={<Switch on={allow[k]} label={ABILITY[k].label} onChange={(v) => setAllow({...allow, [k]: v})} />} />
 						))}
 					</div>
 					<button className="btn primary" style={{width: '100%', marginTop: 18}} disabled={pair.isPending} onClick={() => pair.mutate()}>
@@ -771,10 +771,19 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 				</div>
 			) : (
 				<>
+					{!guest && (
+						<div className="chips" role="radiogroup" aria-label="The other computer runs" style={{margin: '0 4px 12px'}}>
+							{(['unix', 'windows'] as const).map((o) => (
+								<button key={o} type="button" role="radio" aria-checked={os === o} className={`chip${os === o ? ' on' : ''}`} onClick={() => (haptic(5), setOs(o))}>
+									{o === 'unix' ? 'Linux or Mac' : 'Windows'}
+								</button>
+							))}
+						</div>
+					)}
 					<ol className="swarm-steps">
 						<li>
-							<b>{guest ? 'On this virtual machine, open a terminal' : windows ? 'On the Windows computer, open PowerShell' : 'On the other computer, open a terminal'}</b>
-							<span>{guest ? 'Signed in as the person who uses it, not root. The guest has to reach this server on the network.' : windows ? 'Signed in as the person who uses it; no Administrator needed. It needs Python 3.8 or later (winget install Python.Python.3.12) and to reach this server on your network (or your tailnet).' : 'Signed in as the person who uses it, not root. It needs to reach this server on your network (or your tailnet).'}</span>
+							<b>{windows ? (guest ? 'On this virtual machine, open PowerShell' : 'On the Windows computer, open PowerShell') : guest ? 'On this virtual machine, open a terminal' : 'On the other computer, open a terminal (on a Mac: Terminal)'}</b>
+							<span>{windows ? (guest ? 'Signed in as the person who uses it; no Administrator needed. The guest has to reach this server on the network.' : 'Signed in as the person who uses it; no Administrator needed. It needs Python 3.8 or later (winget install Python.Python.3.12) and to reach this server on your network (or your tailnet).') : guest ? 'Signed in as the person who uses it, not root. The guest has to reach this server on the network.' : 'Signed in as the person who uses it, not root. It finds the Linux distribution (or macOS) itself and needs to reach this server on your network (or your tailnet).'}</span>
 						</li>
 						{hosts.length > 1 && (
 							<li>
@@ -1180,6 +1189,41 @@ export function AgentFiles({a, onClose}: {a: Agent; onClose: () => void}) {
 	)
 }
 
+// Why Desktop can't be used on a computer, with the fix one tap away: allow it (the computer runs a
+// command that updates its permissions), or install its screen sharing in its own terminal.
+const INSTALL: Record<string, string> = {pacman: 'sudo pacman -S --needed', apt: 'sudo apt install -y', dnf: 'sudo dnf install -y', zypper: 'sudo zypper install -y'}
+export function desktopFix(a: Agent): {why: string; install?: string} | null {
+	if (!a.online) return null
+	if (!a.allowed.desktop) return {why: `Seeing ${a.name}’s screen wasn’t allowed when it joined.`}
+	const d = a.info?.desktop
+	if (!d || d.ok) return null
+	const pkg = d.kind === 'wlroots' ? 'wayvnc' : d.kind === 'x11' ? 'x11vnc' : null
+	const missing = pkg && /isn’t installed/.test(d.why ?? '')
+	const cmd = missing && a.info?.pkg ? INSTALL[a.info.pkg] : undefined
+	return {why: d.why ?? 'Its screen can’t be shared right now.', install: cmd && pkg ? `${cmd} ${pkg}` : undefined}
+}
+function DesktopHelp({a, onTerminal}: {a: Agent; onTerminal: (input?: string) => void}) {
+	const [reauth, setReauth] = useState(false)
+	const fix = desktopFix(a)
+	if (!fix) return null
+	return (
+		<div className="desk-help" role="status">
+			<Icon name="window" size={18} />
+			<span>{fix.why}</span>
+			{!a.allowed.desktop ? (
+				<button type="button" className="btn small" onClick={() => (haptic(6), setReauth(true))}>
+					Allow the desktop
+				</button>
+			) : fix.install && a.allowed.terminal ? (
+				<button type="button" className="btn small" title={fix.install} onClick={() => (haptic(6), onTerminal(fix.install))}>
+					Install screen sharing
+				</button>
+			) : null}
+			{reauth && <ReauthorizeComputer a={a} onClose={() => setReauth(false)} />}
+		</div>
+	)
+}
+
 function ReauthorizeComputer({a, onClose}: {a: Agent; onClose: () => void}) {
 	const [allow, setAllow] = useState<Abilities>({...a.allowed})
 	const [before] = useState(() => JSON.stringify(a.allowed))
@@ -1210,9 +1254,10 @@ function ReauthorizeComputer({a, onClose}: {a: Agent; onClose: () => void}) {
 	const command = useMemo(() => {
 		if (!pairing) return ''
 		const server = `https://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${pairing.port}`
-		const src = pairing.source.replace(/\/+$/, '')
-		return `curl -fsSL ${src}/main/connector/install.sh | bash -s -- --server ${server} --ca ${pairing.ca} --token ${pairing.token}${list ? ` --allow ${list}` : ''} --source ${src}`
-	}, [pairing, host, list])
+		// A Windows computer updates from PowerShell; Linux and a Mac from their terminal.
+		const make = a.info?.osId === 'windows' ? connectorInstallCommandWindows : connectorInstallCommand
+		return make({source: pairing.source, server, ca: pairing.ca, token: pairing.token, allow: list}).command
+	}, [pairing, host, list, a.info?.osId])
 	const hosts = pairing ? [...new Set([location.hostname, ...pairing.addresses.map((x) => x.address)].filter((h) => h && h !== 'localhost' && h !== '127.0.0.1'))] : []
 	const updated = Boolean(pairing && JSON.stringify(liveAgent.allowed) !== before)
 	const copy = async (text: string) => {

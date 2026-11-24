@@ -293,3 +293,69 @@ class FileChannelTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WindowsUploadTest(unittest.TestCase):
+    """Uploads to a Windows computer: no folder descriptors there, so a hidden temporary file and a
+    rename that never replaces (Windows' os.rename refuses an existing name)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.join(self.tmp.name, "home")
+        self.config = os.path.join(self.home, ".config", "omarchy-connector")
+        self.data = os.path.join(self.home, ".local", "share", "omarchy-connector")
+        os.makedirs(self.config)
+        os.makedirs(self.data)
+        os.makedirs(os.path.join(self.home, "Documents"))
+        self.roots = {"home": self.home, "config": self.config, "data": self.data}
+        self.was = agent.IS_WINDOWS
+        agent.IS_WINDOWS = True
+
+    def tearDown(self):
+        agent.IS_WINDOWS = self.was
+        self.tmp.cleanup()
+
+    def leftovers(self, d):
+        return [n for n in os.listdir(d) if n.startswith(".incoming.")]
+
+    def test_a_file_arrives_in_the_folder(self):
+        prep = agent.prepare_write("Documents/report.pdf", 5, **self.roots)
+        os.write(prep["fd"], b"hello")
+        agent.commit_write(prep)
+        d = os.path.join(self.home, "Documents")
+        self.assertEqual(open(os.path.join(d, "report.pdf"), "rb").read(), b"hello")
+        self.assertEqual(self.leftovers(d), [])
+
+    def test_an_existing_file_is_never_replaced(self):
+        taken = os.path.join(self.home, "Documents", "taken.txt")
+        with open(taken, "w", encoding="utf-8") as fh:
+            fh.write("keep")
+        with self.assertRaises(RuntimeError) as raised:
+            agent.prepare_write("Documents/taken.txt", 3, **self.roots)
+        self.assertIn("already there", str(raised.exception))
+        # Losing a race at the end: Windows' rename raises, and the temporary file goes.
+        prep = agent.prepare_write("Documents/race.txt", 2, **self.roots)
+        os.write(prep["fd"], b"ab")
+        real_rename = os.rename
+
+        def refuse(_a, _b):
+            raise FileExistsError(17, "exists")
+
+        os.rename = refuse
+        try:
+            with self.assertRaises(RuntimeError) as raised:
+                agent.commit_write(prep)
+        finally:
+            os.rename = real_rename
+        self.assertIn("already there", str(raised.exception))
+        self.assertEqual(self.leftovers(os.path.join(self.home, "Documents")), [])
+        self.assertEqual(open(taken, encoding="utf-8").read(), "keep")
+
+    def test_abort_cleans_up_and_the_connector_keys_stay_off_limits(self):
+        prep = agent.prepare_write("Documents/gone.txt", 2, **self.roots)
+        agent.abort_write(prep)
+        agent.abort_write(prep)
+        self.assertEqual(self.leftovers(os.path.join(self.home, "Documents")), [])
+        for rel in (".config/omarchy-connector/new.json", "../outside.txt"):
+            with self.assertRaises(RuntimeError):
+                agent.prepare_write(rel, 1, **self.roots)

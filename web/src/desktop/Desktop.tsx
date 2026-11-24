@@ -1,11 +1,13 @@
 // Desktop mode: Ubuntu (GNOME) by default — top bar, dock, icons, floating windows, Activities.
 // Square tiles those same windows over the dock. Omarchy Super chords stay off until enabled.
-import {createContext, lazy, memo, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
+import {createContext, lazy, memo, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 import {useAppTab} from '../appTab'
 import {createPortal} from 'react-dom'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {SERVER_DESKTOP, logout, mutate, query, type Bootstrap, type Machine, type UserApp} from '../api'
+import {HyprlandView, supportsWebCodecs, type HyprlandApp, type HyprlandStatus, type HyprlandWindow} from '../HyprlandView'
+import {StreamProfilerSheet} from '../screens/StreamProfiler'
 import {AppSheet} from '../AppSheet'
 import {askApp, explainProbe} from '../openApp'
 import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory, useNotifications, useUpdates, useUser} from '../data'
@@ -35,7 +37,7 @@ import {injectConsoleKey, keysymFromEvent, lastMinimizedOn, releaseConsoleSuper,
 import {CAPTURE_KEY, ONBOARDING_KEY, canUseKeyboardLock, chipIntent, grabToggleReleasesKeyboardLock, keyboardLockApi, onCaptureModeChange, onFullscreenChange, releaseKeyboardLock, resolveMode, toggleLock, type GrabState} from './hyprland/grab'
 import {isSuper, resolveHyprKey, type Action} from './hyprland/keymap'
 import {Launcher} from './hyprland/Launcher'
-import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, moveWorkspace, reconcile, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
+import {GAP, MIN_PANE, collapse, contains, dividers, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, moveWorkspace, ratioAt, reconcile, rects as tileRectsOf, remove as removeTile, setRatio, swapDir, type Divider, type Node, type Path} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
 import {loadWallpaper} from './wallpaperLoader'
 import {overviewEnterOpensApp} from './overviewEnter'
@@ -69,12 +71,13 @@ function WinFallback() {
 }
 
 // ---- model ---------------------------------------------------------------------------------
-type Kind = 'home' | 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app'
-type Payload = {appId?: string; machineId?: string; name?: string; path?: string; tab?: string; page?: string; pageNonce?: number; term?: {id: string; name?: string; icon?: string}; input?: string; store?: StoreBinding}
+type RailPayload = {address: string; title: string; appId?: string; class?: string; hasIcon?: boolean}
+type Kind = 'home' | 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app' | 'rail'
+type Payload = {appId?: string; machineId?: string; name?: string; rail?: RailPayload; path?: string; tab?: string; page?: string; pageNonce?: number; term?: {id: string; name?: string; icon?: string}; input?: string; store?: StoreBinding}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
 type Win = Rect & {id: string; kind: Kind; key: string; payload?: Payload; z: number; min: boolean; snap: Snap; born: number; workspace?: number; float?: boolean; minAt?: number}
-type SysKind = Exclude<Kind, 'app' | 'console'>
+type SysKind = Exclude<Kind, 'app' | 'console' | 'rail'>
 
 const TOP = 34 // top bar height
 const MIN_W = 380
@@ -98,9 +101,17 @@ export const SYS: Record<SysKind, {title: string; icon?: IconName; bg?: string; 
 	clips: {title: 'Clip book', icon: 'clipboard', bg: 'linear-gradient(150deg,#5eead4,#0f766e 70%)', tone: 'var(--teal)', w: 760, h: 720},
 }
 const isSys = (k: string): k is SysKind => Object.hasOwn(SYS, k)
-const keyOf = (kind: Kind, p?: Payload) => (kind === 'app' ? `app:${p?.appId}` : kind === 'console' ? `console:${p?.machineId}` : kind)
-// Dock/desktop items and windows: machines run as console windows, everything else as itself.
-const itemOfWin = (w: Win) => (w.kind === 'console' ? `machine:${w.payload?.machineId}` : w.key)
+const keyOf = (kind: Kind, p?: Payload) =>
+	kind === 'app' ? `app:${p?.appId}` : kind === 'console' ? `console:${p?.machineId}` : kind === 'rail' ? `rail:${p?.rail?.address}` : kind
+// Dock/desktop items and windows: machines run as console windows, RAIL windows map to their native Linux app or address.
+const itemOfWin = (w: Win) =>
+	w.kind === 'console'
+		? `machine:${w.payload?.machineId}`
+		: w.kind === 'rail'
+			? w.payload?.rail?.appId
+				? `rail-app:${w.payload.rail.appId}`
+				: `rail-win:${w.payload?.rail?.address}`
+			: w.key
 
 // The usable area (between the top bar and the dock). Updated as the dock moves or resizes.
 let AREA = {t: TOP, l: 74, r: 0, b: 0}
@@ -163,6 +174,27 @@ export function MachineIcon({m, size}: {m?: Machine; size: number}) {
 		</span>
 	)
 }
+function RailAppIcon({appId, name, hasIcon, size}: {appId?: string; name: string; hasIcon?: boolean; size: number}) {
+	const [broken, setBroken] = useState(false)
+	if (appId && hasIcon && !broken) {
+		return (
+			<img
+				className="app-icon"
+				src={`/api/hyprland/app-icon?id=${encodeURIComponent(appId)}`}
+				alt={name}
+				width={size}
+				height={size}
+				style={{width: size, height: size, objectFit: 'contain', borderRadius: Math.round(size * 0.22)}}
+				onError={() => setBroken(true)}
+			/>
+		)
+	}
+	return (
+		<span className="app-icon sys-ico" style={{width: size, height: size, '--grad': 'linear-gradient(150deg,#38bdf8,#4f46e5 70%)', '--tone': 'var(--accent)'} as CSSProperties}>
+			<Icon name="gpu" size={size * 0.52} stroke={1.8} />
+		</span>
+	)
+}
 
 // ---- items: the things a dock slot or a desktop icon can point at ----------------------------------
 export type ItemInfo = {key: string; label: string; icon: (size: number) => ReactNode; status?: 'running' | 'stopped' | 'busy'; missing?: boolean}
@@ -171,8 +203,34 @@ export function useItems() {
 	const machines = useMachines()
 	const user = useUser()
 	const owner = user.data?.role !== 'member'
+	const canRail = owner && supportsWebCodecs()
+	const hyprStatus = useQuery({
+		queryKey: ['hyprland.status'],
+		queryFn: () => query<HyprlandStatus>('hyprland.status'),
+		enabled: canRail,
+		staleTime: 60_000,
+		retry: false,
+	})
+	const railReady = !!(canRail && hyprStatus.data?.available)
+	const railAppsQ = useQuery({
+		queryKey: ['hyprland.apps'],
+		queryFn: () => query<HyprlandApp[]>('hyprland.apps'),
+		enabled: railReady,
+		staleTime: 60_000,
+		retry: false,
+	})
+	const railWinsQ = useQuery({
+		queryKey: ['hyprland.windows'],
+		queryFn: () => query<HyprlandWindow[]>('hyprland.windows'),
+		enabled: railReady,
+		staleTime: 5_000,
+		refetchInterval: 10_000,
+		retry: false,
+	})
 	const appList = useMemo(() => apps.data ?? [], [apps.data])
 	const machineList = useMemo(() => machines.data ?? [], [machines.data])
+	const railApps = useMemo(() => railAppsQ.data ?? [], [railAppsQ.data])
+	const railWindows = useMemo(() => railWinsQ.data ?? [], [railWinsQ.data])
 	const info = useCallback(
 		(key: string): ItemInfo => {
 			if (isSys(key)) return {key, label: SYS[key].title, icon: (s) => <SysIcon kind={key} size={s} />, missing: key === 'terminal' && !owner}
@@ -185,6 +243,27 @@ export function useItems() {
 					icon: (s) => <AppIcon src={a?.icon} name={a?.name ?? key.slice(4)} size={s} dim={!!a && !up} />,
 					status: !a ? undefined : up ? 'running' : a.state === 'stopped' ? 'stopped' : 'busy',
 					missing: apps.isSuccess && !a,
+				}
+			}
+			if (key.startsWith('rail-app:')) {
+				const id = key.slice(9)
+				const a = railApps.find((x) => x.id === id)
+				return {
+					key,
+					label: a?.name ?? id,
+					icon: (s) => <RailAppIcon appId={id} name={a?.name ?? id} hasIcon={a?.hasIcon} size={s} />,
+					missing: !owner || (railAppsQ.isSuccess && !a),
+				}
+			}
+			if (key.startsWith('rail-win:')) {
+				const addr = key.slice(9)
+				const rw = railWindows.find((x) => x.address === addr)
+				const matchedApp = rw ? railApps.find((a) => a.wmClass && a.wmClass.toLowerCase() === rw.class.toLowerCase()) : undefined
+				return {
+					key,
+					label: rw?.title ?? 'Linux Window',
+					icon: (s) => <RailAppIcon appId={matchedApp?.id} name={rw?.title ?? 'Linux Window'} hasIcon={matchedApp?.hasIcon} size={s} />,
+					status: rw ? 'running' : undefined,
 				}
 			}
 			// The server's own Omarchy desktop (Machines → Consoles), for a quick icon or dock slot.
@@ -206,9 +285,9 @@ export function useItems() {
 			}
 			return {key, label: key, icon: (s) => <SysIcon kind="window" size={s} />, missing: true}
 		},
-		[appList, machineList, owner, apps.isSuccess, machines.isSuccess],
+		[appList, machineList, railApps, railWindows, owner, apps.isSuccess, machines.isSuccess, railAppsQ.isSuccess],
 	)
-	return {info, appList, machineList, owner}
+	return {info, appList, machineList, railApps, railWindows, railReady, owner}
 }
 
 // ---- can an app be shown inside a window? --------------------------------------------------------
@@ -305,8 +384,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	useViewport()
 	const user = useUser()
 	const [cfg, setCfg] = useDeskConfig()
-	const {info, appList, machineList, owner} = useItems()
-	const [wins, setWins] = useState<Win[]>(() => load<Win[]>(STORE_KEY, []).filter((w) => w.kind !== 'terminal' && w.kind !== 'console'))
+	const {info, appList, machineList, railApps, railWindows, railReady, owner} = useItems()
+	const [wins, setWins] = useState<Win[]>(() => load<Win[]>(STORE_KEY, []).filter((w) => w.kind !== 'terminal' && w.kind !== 'console' && w.kind !== 'rail'))
 	const [overview, setOverview] = useState<null | 'windows' | 'apps'>(null)
 	const [topMenu, setTopMenu] = useState<null | 'clock' | 'system'>(null)
 	const [menu, setMenu] = useState<Menu | null>(null)
@@ -335,6 +414,19 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		return {keysLocked: false, method: 'none', mode: resolveMode(stored, secure, hasLock)}
 	})
 	const [launcher, setLauncher] = useState(false)
+	// Single shared desktop audio mute state: PipeWire @DEFAULT_MONITOR@ is global, so at most one RAIL window streams PCM audio.
+	const [railAudioMuted, setRailAudioMuted] = useState(false)
+	const [streamProfilerOpen, setStreamProfilerOpen] = useState(false)
+	const toggleRailMute = useCallback(() => {
+		setRailAudioMuted((m) => !m)
+	}, [])
+	const primaryRailAudioId = useMemo(() => {
+		if (railAudioMuted) return null
+		const railWins = wins.filter((w) => w.kind === 'rail' && !w.min)
+		if (!railWins.length) return null
+		railWins.sort((a, b) => b.z - a.z)
+		return railWins[0].id
+	}, [wins, railAudioMuted])
 	const [cheatsheet, setCheatsheet] = useState(false)
 	const [onboard, setOnboard] = useState(() => {
 		try {
@@ -381,7 +473,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const reserve = cfg.dock.autohide ? 0 : thick
 	AREA = {t: TOP + (cfg.dock.position === 'top' ? reserve : 0), l: cfg.dock.position === 'left' ? reserve : 0, r: cfg.dock.position === 'right' ? reserve : 0, b: cfg.dock.position === 'bottom' ? reserve : 0}
 
-	useEffect(() => save(STORE_KEY, wins.filter((w) => w.kind !== 'terminal' && w.kind !== 'console')), [wins])
+	useEffect(() => save(STORE_KEY, wins.filter((w) => w.kind !== 'terminal' && w.kind !== 'console' && w.kind !== 'rail')), [wins])
 	useEffect(() => {
 		try {
 			localStorage.setItem(LAYOUT_KEY, JSON.stringify({workspace: hyprWs, trees}))
@@ -488,19 +580,43 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	}
 	const scheduleRestoreRef = useRef(scheduleRestore)
 	scheduleRestoreRef.current = scheduleRestore
-	const close = useCallback((id: string) => {
-		const w = winsRef.current.find((x) => x.id === id)
+	const lastHyprInstanceRef = useRef<string | null>(null)
+	const removeWinLocally = useCallback((id: string) => {
 		scheduleRestoreRef.current(id)
+		winOpenersRef.current.delete(id)
+		dropFromTrees(id)
+		setWins((ws) => ws.filter((x) => x.id !== id))
+	}, [])
+	const close = useCallback((id: string, opts?: {remote?: boolean}) => {
+		const w = winsRef.current.find((x) => x.id === id)
 		if (w && keepAssistantWindow(w.kind)) {
+			scheduleRestoreRef.current(id)
 			minSeq.current += 1
 			update(id, {min: true, minAt: minSeq.current})
 			closeAssistantView()
 			return
 		}
-		winOpenersRef.current.delete(id)
-		dropFromTrees(id)
-		setWins((ws) => ws.filter((x) => x.id !== id))
-	}, [update])
+		if (w?.kind === 'rail' && w.payload?.rail?.address && !opts?.remote) {
+			const addr = w.payload.rail.address
+			// Keep wrapper alive until Hyprland confirms close (via closewindow SSE or strict inventory) so unsaved-changes prompts or dispatch errors never orphan the native window.
+			mutate('hyprland.dispatch', {action: 'close', address: addr})
+				.then(() => {
+					window.setTimeout(() => {
+						if (!winsRef.current.some((x) => x.id === id)) return
+						query<HyprlandWindow[]>('hyprland.windows', {strict: true})
+							.then((list) => {
+								if (!list.some((rw) => rw.address.toLowerCase() === addr.toLowerCase())) {
+									removeWinLocally(id)
+								}
+							})
+							.catch(() => {})
+					}, 350)
+				})
+				.catch((e: Error) => toast(e.message, true))
+			return
+		}
+		removeWinLocally(id)
+	}, [update, removeWinLocally, toast])
 	const minimize = useCallback((id: string) => {
 		const w = winsRef.current.find((x) => x.id === id)
 		if (w?.kind === 'assistant') closeAssistantView()
@@ -560,7 +676,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				focus(existing.id, {moveFocus: true})
 				return
 			}
-			const def = kind === 'app' ? {w: 1140, h: 760} : kind === 'console' ? {w: 1060, h: 720} : SYS[kind]
+			const def = kind === 'app' ? {w: 1140, h: 760} : kind === 'console' ? {w: 1060, h: 720} : kind === 'rail' ? {w: 1120, h: 740} : SYS[kind]
 			const a = area()
 			const w = Math.max(MIN_W, Math.min(def.w, a.w - 48))
 			const h = Math.max(MIN_H, Math.min(def.h, a.h - 40))
@@ -658,6 +774,50 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					return
 				}
 				if (key === DESKTOP_KEY) return openConsole('desktop')
+				if (key.startsWith('rail-win:')) {
+					const addr = key.slice(9)
+					const rw = railWindows.find((x) => x.address === addr)
+					const matchedApp = rw ? railApps.find((a) => a.wmClass && a.wmClass.toLowerCase() === rw.class.toLowerCase()) : undefined
+					open('rail', {
+						rail: {
+							address: addr,
+							title: rw?.title ?? 'Linux Window',
+							appId: matchedApp?.id,
+							class: rw?.class,
+							hasIcon: matchedApp?.hasIcon,
+						},
+					})
+					return
+				}
+				if (key.startsWith('rail-app:')) {
+					const id = key.slice(9)
+					const a = railApps.find((x) => x.id === id)
+					setOverview(null)
+					setMenu(null)
+					const areaBox = area()
+					const reqW = Math.max(480, Math.min(1120, areaBox.w - 64))
+					const reqH = Math.max(360, Math.min(740, areaBox.h - 64))
+					toast(`Launching ${a?.name ?? id}…`)
+					mutate<{launched: boolean; app?: HyprlandApp; window: HyprlandWindow | null}>('hyprland.launch', {id, width: reqW, height: reqH})
+						.then((res) => {
+							qc.invalidateQueries({queryKey: ['hyprland.windows']})
+							if (res.window) {
+								open('rail', {
+									rail: {
+										address: res.window.address,
+										title: res.window.title || a?.name || id,
+										appId: id,
+										class: res.window.class,
+										hasIcon: a?.hasIcon ?? res.app?.hasIcon,
+									},
+								})
+							} else {
+								toast(`${a?.name ?? id} launched on Hyprland`)
+							}
+						})
+						.catch((e: Error) => toast(e.message, true))
+					return
+				}
 				if (key.startsWith('machine:')) {
 					const id = key.slice(8)
 					const m = machineList.find((x) => x.id === id)
@@ -695,7 +855,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			pin: (key) => setCfg((c) => (c.dock.items.includes(key) ? c : {...c, dock: {...c.dock, items: [...c.dock.items, key]}})),
 			unpin: (key) => setCfg((c) => ({...c, dock: {...c.dock, items: c.dock.items.filter((k) => k !== key)}})),
 		}
-	}, [open, close, appList, machineList, setCfg, toast, boot.server, qc])
+	}, [open, close, appList, machineList, railApps, railWindows, setCfg, toast, boot.server, qc])
 	// "Open Terminal" buttons elsewhere (e.g. a one-time fix for network shares): a new terminal window.
 	useEffect(() => {
 		const onOpen = (e: Event) => api.openTerminal(undefined, (e as CustomEvent<string>).detail)
@@ -897,19 +1057,76 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			sorted.forEach((w, idx) => focus(w.id, {moveFocus: idx === sorted.length - 1}))
 		}
 	}
+	const railWinsForApp = (id: string) => {
+		const a = railApps.find((x) => x.id === id)
+		const idLow = id.toLowerCase()
+		const wmLow = a?.wmClass?.toLowerCase() ?? ''
+		const nameLow = a?.name?.toLowerCase() ?? ''
+		const openAddrs = new Set(wins.filter((w) => w.kind === 'rail' && w.payload?.rail?.appId === id && w.payload?.rail?.address).map((w) => w.payload!.rail!.address.toLowerCase()))
+		return railWindows.filter((rw) => {
+			if (openAddrs.has(rw.address.toLowerCase())) return true
+			const cls = rw.class.toLowerCase()
+			return (!!wmLow && cls === wmLow) || cls === idLow || (!!cls && (cls.endsWith(`.${idLow}`) || idLow.endsWith(`.${cls}`))) || (!!nameLow && cls === nameLow)
+		})
+	}
+	const closeRailAddress = (addr: string) => {
+		const target = addr.toLowerCase()
+		const local = winsRef.current.filter((w) => w.kind === 'rail' && w.payload?.rail?.address?.toLowerCase() === target)
+		if (local.length) {
+			local.forEach((w) => close(w.id))
+		} else {
+			mutate('hyprland.dispatch', {action: 'close', address: addr}).catch((e) => toast((e as Error).message, true))
+		}
+		window.setTimeout(() => qc.invalidateQueries({queryKey: ['hyprland.windows']}), 150)
+	}
 	const itemMenu = (key: string, x: number, y: number, where: 'dock' | 'desktop' | 'overview', opener?: HTMLElement | null) => {
 		const it = info(key)
+		if (key.startsWith('rail-win:')) {
+			const addr = key.slice(9)
+			const local = wins.filter((w) => w.kind === 'rail' && w.payload?.rail?.address?.toLowerCase() === addr.toLowerCase())
+			const items: MenuItem[] = [
+				{
+					label: local.length ? 'Show window' : 'Pull window',
+					icon: 'open',
+					onClick: () => {
+						setLauncher(false)
+						api.openItem(key)
+					},
+				},
+				'sep',
+				{
+					label: 'Close window',
+					icon: 'close',
+					danger: true,
+					onClick: () => closeRailAddress(addr),
+				},
+			]
+			setMenu({x, y, title: it.label, items, opener})
+			return
+		}
 		const app = key.startsWith('app:') ? appList.find((a) => a.id === key.slice(4)) : undefined
 		const machine = key.startsWith('machine:') ? machineList.find((m) => m.id === key.slice(8)) : undefined
 		const mine = winsOf(key)
-		const items: MenuItem[] = [{label: mine.length && where === 'dock' && !key.startsWith('folder:') ? 'Show' : 'Open', icon: 'open', onClick: () => (mine.length && where === 'dock' ? dockClick(key) : api.openItem(key))}]
+		const items: MenuItem[] = [
+			{
+				label: mine.length && where === 'dock' && !key.startsWith('folder:') ? 'Show' : 'Open',
+				icon: 'open',
+				onClick: () => {
+					setLauncher(false)
+					if (mine.length && where === 'dock') dockClick(key)
+					else api.openItem(key)
+				},
+			},
+		]
 		if (key.startsWith('folder:/Home/') && owner) items.push({label: 'Share on your home LAN…', icon: 'folder-share', onClick: () => setShareFor({path: key.slice(7), name: it.label})})
-		if (key === 'files' || key === 'terminal')
+		if (key === 'files' || key === 'terminal' || key.startsWith('rail-app:'))
 			items.push({
 				label: 'New window',
 				icon: 'plus',
 				onClick: () => {
+					setLauncher(false)
 					if (key === 'terminal') return api.openTerminal()
+					if (key.startsWith('rail-app:')) return api.openItem(key)
 					const action = extraWindowAction('files', winsRef.current.some((w) => w.kind === 'files'))
 					open('files', undefined, {newWindow: action === 'open'})
 				},
@@ -930,9 +1147,49 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		items.push('sep')
 		items.push(cfg.dock.items.includes(key) ? {label: 'Remove from dock', icon: 'close', onClick: () => api.unpin(key)} : {label: 'Pin to dock', icon: 'star', onClick: () => api.pin(key)})
 		items.push(cfg.icons.some((i) => i.key === key) ? {label: 'Remove from desktop', icon: 'close', onClick: () => api.removeIcon(key)} : {label: 'Add to desktop', icon: 'plus', onClick: () => api.addIcon(key)})
-		if (mine.length && !key.startsWith('folder:'))
+		if (key.startsWith('rail-app:')) {
+			// Scope bulk close strictly to explicitly associated RAIL browser wrappers for this app (never sweeping unmatched physical windows by class).
+			if (mine.length) {
+				items.push('sep', {
+					label: mine.length > 1 ? `Close ${mine.length} windows` : 'Close window',
+					icon: 'close',
+					danger: true,
+					onClick: () => {
+						mine.forEach((w) => close(w.id))
+					},
+				})
+			}
+		} else if (mine.length && !key.startsWith('folder:')) {
 			items.push('sep', {label: mine.length > 1 ? `Close ${mine.length} windows` : 'Close window', icon: 'close', danger: true, onClick: () => mine.forEach((w) => close(w.id))})
+		}
 		setMenu({x, y, title: it.label, items, opener})
+	}
+	const windowMenu = (id: string, x: number, y: number, opener?: HTMLElement | null) => {
+		const w = winsRef.current.find((win) => win.id === id)
+		if (!w) return
+		setMenu({
+			x,
+			y,
+			title: winTitle(w, appList, machineList),
+			opener,
+			items: [
+				{
+					label: 'Show window',
+					icon: 'open',
+					onClick: () => {
+						focus(id, {moveFocus: true})
+						setOverview(null)
+					},
+				},
+				'sep',
+				{
+					label: 'Close window',
+					icon: 'close',
+					danger: true,
+					onClick: () => close(id),
+				},
+			],
+		})
 	}
 
 	const power = async (kind: 'restart' | 'shutdown') => {
@@ -1117,6 +1374,69 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		}
 	}, [wins, hyprWs, hypr])
 
+	// Real-time Hyprland .socket2.sock SSE lifecycle sync for RAIL windows (title updates, closes, child dialogs).
+	useEffect(() => {
+		if (!railReady || typeof EventSource === 'undefined') return
+		const es = new EventSource('/api/hyprland/events')
+		es.onmessage = (ev) => {
+			try {
+				const msg = JSON.parse(ev.data)
+				if (msg.type === 'windows' && msg.authoritative === true && Array.isArray(msg.windows)) {
+					// If the compositor restarted with a new instanceId, invalidate all open RAIL wrappers from the previous instance immediately.
+					const nextInst = typeof msg.instanceId === 'string' && msg.instanceId ? msg.instanceId : null
+					const instanceChanged = !!(nextInst && lastHyprInstanceRef.current && nextInst !== lastHyprInstanceRef.current)
+					if (nextInst) lastHyprInstanceRef.current = nextInst
+					const liveAddrs = new Set(
+						msg.windows
+							.map((w: {address?: unknown}) => String(w?.address ?? '').toLowerCase())
+							.filter(Boolean),
+					)
+					for (const localWin of winsRef.current) {
+						if (localWin.kind !== 'rail') continue
+						const addr = localWin.payload?.rail?.address?.toLowerCase()
+						if (instanceChanged || (addr && !liveAddrs.has(addr))) close(localWin.id, {remote: true})
+					}
+					qc.invalidateQueries({queryKey: ['hyprland.windows']})
+				} else if (msg.type === 'windowtitle' && msg.address) {
+					const target = String(msg.address).toLowerCase()
+					setWins((ws) =>
+						ws.map((w) =>
+							w.kind === 'rail' && w.payload?.rail?.address.toLowerCase() === target
+								? {...w, payload: {...w.payload, rail: {...w.payload.rail, title: String(msg.title || w.payload.rail.title)}}}
+								: w,
+						),
+					)
+				} else if (msg.type === 'closewindow' && msg.address) {
+					const target = String(msg.address).toLowerCase()
+					const match = winsRef.current.find((w) => w.kind === 'rail' && w.payload?.rail?.address.toLowerCase() === target)
+					if (match) close(match.id, {remote: true})
+					qc.invalidateQueries({queryKey: ['hyprland.windows']})
+				} else if (msg.type === 'openwindow' && msg.address) {
+					qc.invalidateQueries({queryKey: ['hyprland.windows']})
+					const addr = String(msg.address)
+					const cls = String(msg.class ?? '').toLowerCase()
+					const railMonWs = qc.getQueryData<HyprlandStatus>(['hyprland.status'])?.monitors?.find((m) => m.name === 'RAIL-1')?.activeWorkspace
+					const msgWs = Number(msg.workspace)
+					const onRailWs = railMonWs != null && Number.isInteger(msgWs) && msgWs === railMonWs
+					const alreadyOpen = winsRef.current.some((w) => w.kind === 'rail' && w.payload?.rail?.address.toLowerCase() === addr.toLowerCase())
+					const parent = onRailWs && !alreadyOpen && cls ? winsRef.current.find((w) => w.kind === 'rail' && w.payload?.rail?.class?.toLowerCase() === cls) : undefined
+					if (parent) {
+						open('rail', {
+							rail: {
+								address: addr,
+								title: String(msg.title || parent.payload?.rail?.title || 'Window'),
+								appId: parent.payload?.rail?.appId,
+								class: String(msg.class || ''),
+								hasIcon: parent.payload?.rail?.hasIcon,
+							},
+						})
+					}
+				}
+			} catch {}
+		}
+		return () => es.close()
+	}, [railReady, close, open, qc])
+
 	const occupied = new Set(wins.filter((w) => !w.min).map((w) => w.workspace ?? 1))
 	const minimizedWs = new Set(wins.filter((w) => w.min).map((w) => w.workspace ?? 1))
 	const onLockChip = async () => {
@@ -1206,6 +1526,45 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						) : undefined
 					}
 					lockChip={superKeys ? <LockChip locked={grab.keysLocked} onClick={onLockChip} title={lockTitle} /> : undefined}
+					winControls={
+						active?.kind === 'rail' && !overview ? (
+							<span className="top-win-ctrls" role="group" aria-label="Window controls">
+								<button
+									type="button"
+									className={`top-win-btn${streamProfilerOpen ? ' on' : ''}`}
+									aria-label="Stream profiles"
+									title="Stream profiles"
+									onClick={() => setStreamProfilerOpen(true)}
+								>
+									<Icon name="gpu" size={12} />
+								</button>
+								<button
+									type="button"
+									className={`top-win-btn${railAudioMuted ? ' muted' : ''}`}
+									aria-label={railAudioMuted ? 'Unmute desktop audio' : 'Mute desktop audio'}
+									title={railAudioMuted ? 'Unmute desktop audio' : 'Mute desktop audio'}
+									onClick={toggleRailMute}
+								>
+									<AudioGlyph muted={railAudioMuted} size={12} />
+								</button>
+								<button type="button" className="top-win-btn" aria-label="Minimize" title="Minimize" onClick={() => minimize(active.id)}>
+									<Icon name="win-min" size={12} stroke={2.4} />
+								</button>
+								<button
+									type="button"
+									className="top-win-btn"
+									aria-label={active.snap === 'max' ? 'Restore' : 'Maximize'}
+									title={active.snap === 'max' ? 'Restore' : 'Maximize'}
+									onClick={() => update(active.id, {snap: nextMaximizeSnap(active.snap)})}
+								>
+									<Icon name={active.snap === 'max' ? 'win-restore' : 'win-max'} size={11} stroke={2.4} />
+								</button>
+								<button type="button" className="top-win-btn close" aria-label="Close" title="Close" onClick={() => close(active.id)}>
+									<Icon name="close" size={12} stroke={2.6} />
+								</button>
+							</span>
+						) : undefined
+					}
 				/>
 
 				<DesktopIcons
@@ -1243,10 +1602,31 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						onMountEl={registerWinEl}
 						tile={hypr && !w.float && !w.min && w.snap !== 'max' ? tiled[w.id] ?? null : null}
 						hidden={hypr && (w.workspace ?? 1) !== hyprWs}
+						muted={railAudioMuted}
+						onToggleMute={toggleRailMute}
+						onOpenProfiles={w.kind === 'rail' ? () => setStreamProfilerOpen(true) : undefined}
 					>
-						<WindowContent win={w} prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} owner={owner} />
+						<WindowContent win={w} prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} owner={owner} muted={railAudioMuted || w.id !== primaryRailAudioId} onToggleMute={toggleRailMute} />
 					</WindowFrame>
 				))}
+
+				{hypr && !overview && (
+					<TileSplits
+						tree={isNode(trees[hyprWs]) ? trees[hyprWs] : null}
+						area={usable()}
+						hidden={hiddenIds(hyprWs, wins)}
+						blockers={wins.filter((w) => !w.min && onWs(w) && (w.float || w.snap === 'max')).map(rectOf)}
+						onRatio={(path, ratio) => {
+							const ws = hyprWsRef.current
+							setTrees((ts) => {
+								const cur = ts[ws] ?? null
+								const next = setRatio(cur, path, ratio)
+								return next === cur ? ts : {...ts, [ws]: next}
+							})
+						}}
+						onDragging={setDragging}
+					/>
+				)}
 
 				{preview && <div className="snap-preview" style={{left: preview.x, top: preview.y, width: preview.w, height: preview.h}} />}
 
@@ -1289,6 +1669,9 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						info={info}
 						appList={appList}
 						machineList={machineList}
+						railApps={railApps}
+						railWindows={railWindows}
+						railReady={railReady}
 						owner={owner}
 						hasWindows={visible.length > 0}
 						windows={overviewWindows}
@@ -1296,6 +1679,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 							focus(id, {moveFocus: true})
 							setOverview(null)
 						}}
+						onWindowMenu={windowMenu}
+						isRunning={(key) => (key.startsWith('rail-app:') ? railWinsForApp(key.slice(9)).length > 0 : winsOf(key).length > 0)}
 						onOpen={(key) => api.openItem(key)}
 						onMenu={(k, x, y, opener) => itemMenu(k, x, y, 'overview', opener)}
 					/>
@@ -1313,12 +1698,28 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					<Launcher
 						onClose={() => setLauncher(false)}
 						onOpen={(key) => api.openItem(key)}
-						items={['files', 'apps', 'store', 'terminal', 'machines', 'system', 'settings', 'assistant', 'personalize', ...appList.map((a) => `app:${a.id}`), ...machineList.map((m) => `machine:${m.id}`)]
+						onMenu={(k, x, y, opener) => itemMenu(k, x, y, 'overview', opener)}
+						items={[
+							'files',
+							'apps',
+							'store',
+							'terminal',
+							'machines',
+							'system',
+							'settings',
+							'assistant',
+							'personalize',
+							...appList.map((a) => `app:${a.id}`),
+							...(railReady ? railApps.map((a) => `rail-app:${a.id}`) : []),
+							...(railReady ? railWindows.map((w) => `rail-win:${w.address}`) : []),
+							...machineList.map((m) => `machine:${m.id}`),
+						]
 							.map((key) => info(key))
 							.filter((it) => !it.missing)}
 					/>
 				)}
 				{superKeys && cheatsheet && <Cheatsheet onClose={() => setCheatsheet(false)} />}
+				<StreamProfilerSheet open={streamProfilerOpen} onClose={() => setStreamProfilerOpen(false)} />
 				{superKeys && onboard && (
 					<Onboarding
 						onDismiss={() => {
@@ -1383,7 +1784,7 @@ function ContextMenu({menu, onClose}: {menu: Menu; onClose: () => void}) {
 							onClick={() => runAction(it.onClick)}
 						>
 							{it.icon && <Icon name={it.icon} size={16} />}
-							{it.label}
+							<span>{it.label}</span>
 						</button>
 					),
 				)}
@@ -1392,39 +1793,102 @@ function ContextMenu({menu, onClose}: {menu: Menu; onClose: () => void}) {
 	)
 }
 
-// ---- tooltips (rendered at the top level so nothing can clip them) -------------------------------------
+// ---- tooltips (rendered at the desktop root so nothing can clip them) ---------------------------------
 type TipSide = 'right' | 'left' | 'top' | 'bottom'
-function useTooltip() {
-	const [tip, setTip] = useState<{label: string; x: number; y: number; side: TipSide} | null>(null)
+type TipPoint = {x: number; y: number}
+function useTooltip(root: React.RefObject<HTMLElement>, side: TipSide, measure: (item: HTMLElement) => TipPoint, layoutKey: string) {
+	const [tip, setTip] = useState<({label: string; side: TipSide} & TipPoint) | null>(null)
 	const t = useRef<number>()
 	const showing = useRef(false)
-	const show = (label: string, el: HTMLElement, side: TipSide) => {
+	const el = useRef<HTMLDivElement>(null)
+	const anchorEl = useRef<HTMLElement | null>(null)
+	const live = useRef({side, measure})
+	live.current = {side, measure}
+	const open = Boolean(tip)
+	const clamp = useCallback((anchor?: {x: number; y: number; side: TipSide} | null) => {
+		const node = el.current
+		if (!node) return
+		const m = 8
+		const curSide = anchor?.side ?? live.current.side
+		const ax = anchor?.x ?? parseFloat(node.style.left)
+		// On side docks, bound tooltip width to the remaining space between the artwork edge and viewport edge
+		// before clamping so long labels ellipsize instead of shifting back over a magnified icon.
+		if (curSide === 'right' && Number.isFinite(ax)) {
+			node.style.maxWidth = `${Math.max(64, Math.min(320, Math.floor(window.innerWidth - m - ax)))}px`
+		} else if (curSide === 'left' && Number.isFinite(ax)) {
+			node.style.maxWidth = `${Math.max(64, Math.min(320, Math.floor(ax - m)))}px`
+		} else {
+			node.style.maxWidth = ''
+		}
+		node.style.translate = ''
+		const r = node.getBoundingClientRect()
+		const dx = r.left < m ? m - r.left : r.right > window.innerWidth - m ? window.innerWidth - m - r.right : 0
+		const dy = r.top < m ? m - r.top : r.bottom > window.innerHeight - m ? window.innerHeight - m - r.bottom : 0
+		if (dx || dy) node.style.translate = `${dx}px ${dy}px`
+	}, [])
+	const refresh = useCallback(() => {
+		const item = anchorEl.current
+		if (!item || !item.isConnected) return
+		const {side: curSide, measure: curMeasure} = live.current
+		const next = curMeasure(item)
+		setTip((cur) => (cur && (cur.x !== next.x || cur.y !== next.y || cur.side !== curSide) ? {...cur, ...next, side: curSide} : cur))
+		clamp({x: next.x, y: next.y, side: curSide})
+	}, [clamp])
+	// Measured when the tip appears, after any hover scale or dock reveal has settled.
+	const show = (label: string, item: HTMLElement) => {
 		window.clearTimeout(t.current)
-		const r = el.getBoundingClientRect()
-		const pos = side === 'right' ? {x: r.right + 10, y: r.top + r.height / 2} : side === 'left' ? {x: r.left - 10, y: r.top + r.height / 2} : side === 'bottom' ? {x: r.left + r.width / 2, y: r.bottom + 8} : {x: r.left + r.width / 2, y: r.top - 8}
+		anchorEl.current = item
 		// The first tooltip waits a moment; moving along the dock then switches instantly.
 		t.current = window.setTimeout(
 			() => {
 				showing.current = true
-				setTip({label, ...pos, side})
+				const curItem = anchorEl.current ?? item
+				const {side: curSide, measure: curMeasure} = live.current
+				setTip({label, ...curMeasure(curItem), side: curSide})
 			},
 			showing.current ? 0 : 250,
 		)
 	}
 	const hide = () => {
 		window.clearTimeout(t.current)
+		anchorEl.current = null
 		setTip(null)
 		t.current = window.setTimeout(() => (showing.current = false), 300)
 	}
+	useEffect(() => () => window.clearTimeout(t.current), [])
+	// Remeasure and re-clamp when viewport resizes, dock scrolls/moves/reconfigures, or auto-hidden dock reveals.
+	useEffect(() => {
+		if (!open) return
+		const dock = root.current
+		const onTransition = (e: TransitionEvent) => {
+			if (e.target === dock && e.propertyName === 'transform') refresh()
+		}
+		window.addEventListener('resize', refresh)
+		window.addEventListener('scroll', refresh, true)
+		dock?.addEventListener('transitionend', onTransition)
+		const raf = requestAnimationFrame(refresh)
+		return () => {
+			cancelAnimationFrame(raf)
+			window.removeEventListener('resize', refresh)
+			window.removeEventListener('scroll', refresh, true)
+			dock?.removeEventListener('transitionend', onTransition)
+		}
+	}, [open, layoutKey, side, refresh, root])
+	// Keep the tip on screen: a long label at the end of a full dock would otherwise run off the edge.
+	useLayoutEffect(() => {
+		clamp(tip)
+	}, [tip, layoutKey, side, clamp])
+	// Inside .desk (not <body>) so the desktop style's tooltip colours apply.
+	const host = root.current?.closest('.desk') ?? document.body
 	const node = tip
 		? createPortal(
-				<div className={`dock-tip tip-${tip.side}`} style={{left: tip.x, top: tip.y}} role="tooltip">
+				<div ref={el} className={`dock-tip tip-${tip.side}`} style={{left: tip.x, top: tip.y}} role="tooltip">
 					{tip.label}
 				</div>,
-				document.body,
+				host,
 			)
 		: null
-	return {show, hide, node}
+	return {show, hide, refresh, node}
 }
 
 // ---- dock ------------------------------------------------------------------------------------------
@@ -1446,12 +1910,27 @@ function Dock(p: {
 	const pos = p.cfg.dock.position
 	const vertical = pos === 'left' || pos === 'right'
 	const side: TipSide = pos === 'left' ? 'right' : pos === 'right' ? 'left' : pos === 'top' ? 'bottom' : 'top'
-	const tip = useTooltip()
 	const ref = useRef<HTMLElement>(null)
 	const [drag, setDrag] = useState<{key: string; x: number; y: number; order: string[]; outside: boolean} | null>(null)
 	const [hover, setHover] = useState(false)
+	const [focusWithin, setFocusWithin] = useState(false)
 	const suppressClick = useRef(false)
 	const size = p.cfg.dock.iconSize
+	const hidden = p.cfg.dock.autohide && !hover && !focusWithin && !p.forceShow && !drag
+	// Tooltips sit a fixed gap off the dock's edge (or the rendered artwork's edge if magnified past it).
+	const tipAt = (item: HTMLElement): TipPoint => {
+		const gap = 10
+		const d = ref.current?.getBoundingClientRect() ?? item.getBoundingClientRect()
+		const r = item.getBoundingClientRect()
+		const art = item.querySelector<HTMLElement>('.dock-art, .show-apps')?.getBoundingClientRect() ?? r
+		const cx = r.left + r.width / 2
+		const cy = r.top + r.height / 2
+		if (side === 'right') return {x: Math.max(d.right, art.right) + gap, y: cy}
+		if (side === 'left') return {x: Math.min(d.left, art.left) - gap, y: cy}
+		if (side === 'bottom') return {x: cx, y: Math.max(d.bottom, art.bottom) + gap}
+		return {x: cx, y: Math.min(d.top, art.top) - gap}
+	}
+	const tip = useTooltip(ref, side, tipAt, `${pos}:${p.cfg.dock.floating}:${size}:${hidden}`)
 	// Bounce: an app that wasn't open bounces while it opens.
 	const [bouncing, setBouncing] = useState<string | null>(null)
 	const open = (k: string) => {
@@ -1463,6 +1942,17 @@ function Dock(p: {
 	}
 	// Magnify: icons near the pointer grow (and push their neighbours apart), like macOS.
 	const magnifyOn = p.cfg.dock.hover === 'magnify' && !reducedMotion()
+	const tipProps = (label: string) => ({
+		onPointerEnter: (e: React.PointerEvent<HTMLElement>) => {
+			if (e.pointerType === 'mouse') tip.show(label, e.currentTarget)
+		},
+		onPointerLeave: (e: React.PointerEvent<HTMLElement>) => {
+			if (e.pointerType === 'mouse' && !e.currentTarget.matches(':focus-visible')) tip.hide()
+		},
+		// Keyboard focus gets the label too; a click that only moves focus doesn't.
+		onFocus: (e: React.FocusEvent<HTMLElement>) => e.currentTarget.matches(':focus-visible') && tip.show(label, e.currentTarget),
+		onBlur: tip.hide,
+	})
 	const frame = useRef(0)
 	const magnifyAt = (x: number | null, y: number | null) => {
 		cancelAnimationFrame(frame.current)
@@ -1483,6 +1973,7 @@ function Dock(p: {
 				const grow = ((scale - 1) * size) / 2
 				el.style.margin = grow ? (vertical ? `${grow.toFixed(1)}px 0` : `0 ${grow.toFixed(1)}px`) : ''
 			}
+			tip.refresh()
 		})
 	}
 	useEffect(() => {
@@ -1540,7 +2031,6 @@ function Dock(p: {
 	}
 
 	const keys = drag && !drag.outside ? drag.order : p.keys
-	const hidden = p.cfg.dock.autohide && !hover && !p.forceShow && !drag
 	return (
 		<>
 			{p.cfg.dock.autohide && <div className={`dock-hotzone hz-${pos}`} onPointerEnter={() => setHover(true)} onPointerLeave={() => setHover(false)} />}
@@ -1548,6 +2038,10 @@ function Dock(p: {
 				ref={ref}
 				className={`desk-dock${hidden ? ' hidden' : ''}${magnifyOn ? ' magnify' : ''}`}
 				aria-label="Dock"
+				onFocus={() => setFocusWithin(true)}
+				onBlur={(e) => {
+					if (!(e.relatedTarget instanceof globalThis.Node) || !e.currentTarget.contains(e.relatedTarget)) setFocusWithin(false)
+				}}
 				onPointerEnter={() => setHover(true)}
 				onPointerMove={(e) => magnifyOn && !drag && e.pointerType === 'mouse' && magnifyAt(e.clientX, e.clientY)}
 				onPointerLeave={() => {
@@ -1573,10 +2067,12 @@ function Dock(p: {
 									data-key={k}
 									className={`dock-item${p.focusedKey === k ? ' focused' : ''}${count ? ' running' : ''}${drag?.key === k ? ' dragging' : ''}${bouncing === k ? ' bouncing' : ''}`}
 									aria-label={it.label}
-									onPointerDown={startDrag(k)}
+									onPointerDown={(e) => {
+										tip.hide()
+										startDrag(k)(e)
+									}}
 									onClick={() => !suppressClick.current && open(k)}
-									onMouseEnter={(e) => tip.show(it.label + (it.status === 'stopped' ? ' · stopped' : ''), e.currentTarget, side)}
-									onMouseLeave={tip.hide}
+									{...tipProps(it.label + (it.status === 'stopped' ? ' · stopped' : ''))}
 									onContextMenu={(e) => {
 										e.preventDefault()
 										tip.hide()
@@ -1602,9 +2098,9 @@ function Dock(p: {
 				<button
 					className={`dock-item show-apps-btn${p.showAppsOn ? ' focused' : ''}`}
 					aria-label="Show Applications"
+					onPointerDown={tip.hide}
 					onClick={p.onShowApps}
-					onMouseEnter={(e) => tip.show('Show Applications', e.currentTarget, side)}
-					onMouseLeave={tip.hide}
+					{...tipProps('Show Applications')}
 				>
 					<span className="show-apps" style={{width: size, height: size}}>
 						<Icon name="show-apps" size={size * 0.55} />
@@ -1873,6 +2369,7 @@ function TopBar(p: {
 	onPersonalize: () => void
 	left?: ReactNode
 	lockChip?: ReactNode
+	winControls?: ReactNode
 }) {
 	const now = useClock()
 	const notes = useNotifications().data ?? []
@@ -1890,8 +2387,23 @@ function TopBar(p: {
 	const closeTopMenu = () => p.setMenu(null)
 	useDialogFocus(p.menu === 'clock', clockRef, closeTopMenu)
 	const runSysAction = useMenuFocus(p.menu === 'system', sysRef, closeTopMenu)
+	// Clicking blank bar space or another bar control (e.g. Activities) also closes an open menu,
+	// while keeping the popover, its switching triggers, and the scrim (which closes on click) intact.
+	useEffect(() => {
+		if (!p.menu) return
+		const onDown = (e: PointerEvent) => {
+			const el = e.target as HTMLElement | null
+			if (el?.closest('.top-pop, .top-clock, .top-bell, .top-sys, .menu-scrim')) return
+			p.setMenu(null)
+		}
+		document.addEventListener('pointerdown', onDown, true)
+		return () => document.removeEventListener('pointerdown', onDown, true)
+	}, [p.menu, p.setMenu])
 	return (
 		<>
+		{/* Outside the header: its backdrop-filter makes it the containing block for fixed children,
+		    which would shrink the scrim to the bar, and its button rules would size it to 26px. */}
+		{p.menu && <button className="menu-scrim top-scrim" aria-label="Close menu" tabIndex={-1} onClick={() => p.setMenu(null)} />}
 		<header className="desk-top">
 			<div className="top-left">
 				{p.left ?? (
@@ -1905,6 +2417,7 @@ function TopBar(p: {
 					</button>
 				)}
 				{p.activeTitle && !p.overview && <span className="top-title">{p.activeTitle}</span>}
+				{p.winControls}
 			</div>
 			<button className={`top-clock${p.menu === 'clock' ? ' on' : ''}`} onClick={() => p.setMenu(p.menu === 'clock' ? null : 'clock')}>
 				{now.toLocaleDateString(undefined, {weekday: 'short', month: 'short', day: 'numeric'})}
@@ -1951,7 +2464,6 @@ function TopBar(p: {
 				</button>
 			</div>
 
-			{p.menu && <button className="menu-scrim" aria-label="Close menu" tabIndex={-1} onClick={() => p.setMenu(null)} />}
 			{p.menu === 'clock' && (
 				<div ref={clockRef} className="top-pop clock-pop" role="dialog" aria-modal="true" aria-label="Notifications and calendar" tabIndex={-1}>
 					<div className="pop-notes">
@@ -2120,10 +2632,15 @@ function Overview({
 	info,
 	appList,
 	machineList,
+	railApps,
+	railWindows,
+	railReady,
 	owner,
 	hasWindows,
 	windows,
 	onPickWindow,
+	onWindowMenu,
+	isRunning,
 	onOpen,
 	onMenu,
 }: {
@@ -2132,19 +2649,25 @@ function Overview({
 	info: (k: string) => ItemInfo
 	appList: UserApp[]
 	machineList: Machine[]
+	railApps: HyprlandApp[]
+	railWindows: HyprlandWindow[]
+	railReady: boolean
 	owner: boolean
 	hasWindows: boolean
 	windows: {id: string; title: string; rect: {left: number; top: number; width: number; height: number}}[]
 	onPickWindow: (id: string) => void
+	onWindowMenu: (id: string, x: number, y: number, opener?: HTMLElement | null) => void
+	isRunning: (key: string) => boolean
 	onOpen: (key: string) => void
 	onMenu: (key: string, x: number, y: number, opener?: HTMLElement | null) => void
 }) {
 	const [q, setQ] = useState('')
+	const [tab, setTab] = useState<'all' | 'web' | 'linux'>('all')
 	const ref = useRef<HTMLInputElement>(null)
 	const layerRef = useRef<HTMLDivElement>(null)
 	useDialogFocus(true, layerRef, () => setMode(null), {initialFocus: ref})
 	const showApps = mode === 'apps' || q.trim() !== '' || !hasWindows
-	const keys = [
+	const webKeys = [
 		...SYSTEM_DOCK.filter((k) => k !== 'terminal' || owner),
 		'assistant',
 		'personalize',
@@ -2152,6 +2675,8 @@ function Overview({
 		...(owner ? [DESKTOP_KEY] : []),
 		...machineList.map((m) => `machine:${m.id}`),
 	]
+	const linuxKeys = railReady ? railApps.filter((a) => !a.terminal).map((a) => `rail-app:${a.id}`) : []
+	const keys = tab === 'web' ? webKeys : tab === 'linux' ? linuxKeys : [...webKeys, ...linuxKeys]
 	const items = keys.map(info).filter((x) => !q.trim() || x.label.toLowerCase().includes(q.trim().toLowerCase()))
 	return (
 		<>
@@ -2171,13 +2696,47 @@ function Overview({
 						ref={ref}
 						value={q}
 						onChange={(e) => setQ(e.target.value)}
-						placeholder="Type to search"
+						placeholder={railReady ? 'Search web & native Linux apps…' : 'Type to search'}
 						aria-label="Search apps"
 						onKeyDown={(e) => {
 							if (overviewEnterOpensApp(e.key, showApps, items.length)) onOpen(items[0].key)
 						}}
 					/>
 				</div>
+				{showApps && railReady && (
+					<>
+						<div className="ov-tabs" role="tablist" aria-label="App category">
+							<button type="button" role="tab" aria-selected={tab === 'all'} className={`ov-tab${tab === 'all' ? ' on' : ''}`} onClick={() => setTab('all')}>
+								All ({webKeys.length + linuxKeys.length})
+							</button>
+							<button type="button" role="tab" aria-selected={tab === 'linux'} className={`ov-tab${tab === 'linux' ? ' on' : ''}`} onClick={() => setTab('linux')}>
+								Linux Apps (60 FPS GPU · {linuxKeys.length})
+							</button>
+							<button type="button" role="tab" aria-selected={tab === 'web'} className={`ov-tab${tab === 'web' ? ' on' : ''}`} onClick={() => setTab('web')}>
+								Server & Web ({webKeys.length})
+							</button>
+						</div>
+						{railWindows.length > 0 && tab !== 'web' && !q.trim() && (
+							<div className="ov-running-rail" aria-label="Running Hyprland windows">
+								{railWindows.map((rw) => (
+									<button
+										key={rw.address}
+										type="button"
+										className="ov-rail-chip"
+										onClick={() => onOpen(`rail-win:${rw.address}`)}
+										onContextMenu={(e) => {
+											e.preventDefault()
+											onMenu(`rail-win:${rw.address}`, e.clientX, e.clientY, e.currentTarget)
+										}}
+									>
+										<Icon name="gpu" size={14} />
+										<span>Pull window: {rw.title}</span>
+									</button>
+								))}
+							</div>
+						)}
+					</>
+				)}
 				{!showApps && windows.length > 0 && (
 					<div className="ov-windows" role="group" aria-label="Open windows">
 						{windows.map((w) => (
@@ -2187,6 +2746,10 @@ function Overview({
 								aria-label={`Switch to ${w.title}`}
 								style={{left: w.rect.left, top: w.rect.top, width: w.rect.width, height: w.rect.height}}
 								onClick={() => onPickWindow(w.id)}
+								onContextMenu={(e) => {
+									e.preventDefault()
+									onWindowMenu(w.id, e.clientX, e.clientY, e.currentTarget)
+								}}
 							/>
 						))}
 					</div>
@@ -2205,7 +2768,7 @@ function Overview({
 							>
 								<span className="desk-icon-art">
 									{x.icon(72)}
-									{x.status === 'running' && x.key.startsWith('machine:') && <span className="state-dot running" />}
+									{((x.status === 'running' && x.key.startsWith('machine:')) || isRunning(x.key)) && <span className="state-dot running" />}
 								</span>
 								<span>{x.label}</span>
 							</button>
@@ -2213,8 +2776,76 @@ function Overview({
 						{items.length === 0 && <p className="muted">Nothing matches “{q}”</p>}
 					</div>
 				)}
-				{showApps && <p className="ov-tip">Right-click an app to pin it to the dock or add it to the desktop.</p>}
+				{showApps && <p className="ov-tip">Right-click an app or running window to pin, add to desktop, or close it.</p>}
 			</div>
+		</>
+	)
+}
+
+function rectsOverlap(a: Rect, b: Rect) {
+	return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+}
+
+function TileSplits({
+	tree,
+	area,
+	hidden,
+	blockers,
+	onRatio,
+	onDragging,
+}: {
+	tree: Node | null
+	area: Rect
+	hidden: Iterable<string>
+	blockers: Rect[]
+	onRatio: (path: Path, ratio: number) => void
+	onDragging: (v: boolean) => void
+}) {
+	const list = dividers(tree, area, GAP, MIN_PANE, hidden).filter((d) => !blockers.some((b) => rectsOverlap(d.hit, b)))
+	const [heldKey, setHeldKey] = useState<string | null>(null)
+	const start = (d: Divider) => (e: React.PointerEvent<HTMLButtonElement>) => {
+		if (e.button !== 0) return
+		e.preventDefault()
+		e.stopPropagation()
+		const key = d.path.join('') || 'root'
+		setHeldKey(key)
+		onDragging(true)
+		try {
+			e.currentTarget.setPointerCapture(e.pointerId)
+		} catch {
+			/* capture is best-effort */
+		}
+		const move = (ev: PointerEvent) => {
+			onRatio(d.path, ratioAt(d, ev.clientX, ev.clientY))
+		}
+		const up = () => {
+			setHeldKey(null)
+			window.removeEventListener('pointermove', move)
+			window.removeEventListener('pointerup', up)
+			window.removeEventListener('pointercancel', up)
+			onDragging(false)
+		}
+		window.addEventListener('pointermove', move)
+		window.addEventListener('pointerup', up)
+		window.addEventListener('pointercancel', up)
+	}
+	return (
+		<>
+			{list.map((d) => {
+				const key = d.path.join('') || 'root'
+				const r = d.hit
+				return (
+					<button
+						key={key}
+						type="button"
+						tabIndex={-1}
+						className={`tile-split tile-split-${d.axis}${heldKey === key ? ' held' : ''}`}
+						aria-label={d.axis === 'h' ? 'Resize panes left and right' : 'Resize panes up and down'}
+						style={{left: r.x, top: r.y, width: r.w, height: r.h}}
+						onPointerDown={start(d)}
+					/>
+				)
+			})}
 		</>
 	)
 }
@@ -2230,12 +2861,32 @@ function winTitle(w: Win, appList: UserApp[], machineList: Machine[]) {
 		const name = m?.name ?? w.payload?.name
 		return name ? `${name} — Desktop` : 'Desktop'
 	}
+	if (w.kind === 'rail') return w.payload?.rail?.title || 'Linux App'
 	if (w.kind === 'terminal' && w.payload?.term) return `Terminal — ${w.payload.term.name ?? w.payload.term.id}`
 	return SYS[w.kind].title
 }
 
 type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 const EDGES: Edge[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']
+
+function AudioGlyph({muted, size = 13}: {muted: boolean; size?: number}) {
+	return (
+		<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+			<path d="M11 5L6 9H2v6h4l5 4V5z" />
+			{muted ? (
+				<>
+					<line x1="22" y1="9" x2="16" y2="15" />
+					<line x1="16" y1="9" x2="22" y2="15" />
+				</>
+			) : (
+				<>
+					<path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+					<path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+				</>
+			)}
+		</svg>
+	)
+}
 
 function WindowFrame({
 	win,
@@ -2254,6 +2905,9 @@ function WindowFrame({
 	onMountEl,
 	tile,
 	hidden,
+	muted,
+	onToggleMute,
+	onOpenProfiles,
 	children,
 }: {
 	win: Win
@@ -2272,6 +2926,9 @@ function WindowFrame({
 	onMountEl: (id: string, el: HTMLDivElement | null) => void
 	tile?: Rect | null
 	hidden?: boolean
+	muted?: boolean
+	onToggleMute?: () => void
+	onOpenProfiles?: () => void
 	children: ReactNode
 }) {
 	const el = useRef<HTMLDivElement>(null)
@@ -2380,47 +3037,143 @@ function WindowFrame({
 		window.addEventListener('pointerup', up)
 	}
 
+	const seamless = win.kind === 'rail'
 	const style: CSSProperties = {left: r.x, top: r.y, width: r.w, height: r.h, zIndex: win.z, transform: overviewSlot ?? undefined}
 	return (
 		<div
 			ref={el}
 			data-id={win.id}
-			className={`win${active ? ' active' : ''}${win.snap ? ` snapped snap-${win.snap}` : ''}${win.min ? ' minimized' : ''}${overviewSlot ? ' in-overview' : ''}${tile ? ' tiled' : ''}${hidden ? ' off-workspace' : ''}${win.float ? ' floated' : ''}`}
+			className={`win${seamless ? ' rail-seamless' : ''}${active ? ' active' : ''}${win.snap ? ` snapped snap-${win.snap}` : ''}${win.min ? ' minimized' : ''}${overviewSlot ? ' in-overview' : ''}${tile ? ' tiled' : ''}${hidden ? ' off-workspace' : ''}${win.float ? ' floated' : ''}`}
 			style={style}
 			role="dialog"
 			aria-label={title}
 			tabIndex={-1}
-			onPointerDownCapture={() => onFocus(win.id)}
+			onPointerDownCapture={(e) => {
+				onFocus(win.id)
+				if (seamless && e.altKey && e.button === 0 && !tile) startMove(e)
+			}}
 		>
-			<div className="win-bar" onPointerDown={startMove} onDoubleClick={(e) => !(e.target as HTMLElement).closest('button') && toggleMax()}>
-				<span className="win-ico">
-					{app ? <AppIcon src={app.icon} name={title} size={20} /> : win.kind === 'console' ? <MachineIcon m={machine} size={20} /> : <SysIcon kind={win.kind} size={20} />}
-				</span>
-				<span className="win-title">{title}</span>
-				<span className="win-tools">
-					{win.kind === 'app' && (
-						<>
-							<button className="win-btn ghost" aria-label="Reload" data-tip="Reload" onClick={() => setReload((n) => n + 1)}>
-								<Icon name="restart" size={15} />
-							</button>
-							{url && (
-								<button className="win-btn ghost" aria-label="Open in a browser tab" data-tip="Open in a browser tab" onClick={() => app && openTab(app)}>
-									<Icon name="open" size={15} />
+			{seamless ? (
+				!overviewSlot && (
+					<div
+						className={`win-rail-grab${win.snap === 'max' ? ' maxed' : ''}`}
+						onPointerDown={startMove}
+						onDoubleClick={(e) => !(e.target as HTMLElement).closest('button') && toggleMax()}
+						title="Drag to move · Hover for window controls · Double-click to maximize"
+					>
+						<span className="rail-grab-bar" aria-hidden="true" />
+						<span className="rail-grab-actions" role="group" aria-label={`${title} window controls`}>
+							{!tile && (
+								<span className="rail-grab-grip" aria-hidden="true">
+									<i />
+									<i />
+									<i />
+								</span>
+							)}
+							{onOpenProfiles && (
+								<button
+									type="button"
+									className="rail-pill-btn"
+									aria-label="Stream profiles"
+									title="Stream profiles"
+									onClick={(e) => {
+										e.stopPropagation()
+										onOpenProfiles()
+									}}
+								>
+									<Icon name="gpu" size={12} />
 								</button>
 							)}
-						</>
-					)}
-					<button className="win-btn" aria-label="Minimize" data-tip="Minimize" onClick={() => onMinimize(win.id)}>
-						<Icon name="win-min" size={14} stroke={2.4} />
-					</button>
-					<button className="win-btn" aria-label={win.snap === 'max' ? 'Restore' : 'Maximize'} data-tip={win.snap === 'max' ? 'Restore' : 'Maximize'} onClick={toggleMax}>
-						<Icon name={win.snap === 'max' ? 'win-restore' : 'win-max'} size={13} stroke={2.4} />
-					</button>
-					<button className="win-btn close" aria-label="Close" data-tip="Close" onClick={() => onClose(win.id)}>
-						<Icon name="close" size={14} stroke={2.6} />
-					</button>
-				</span>
-			</div>
+							{onToggleMute && (
+								<button
+									type="button"
+									className={`rail-pill-btn${muted ? ' muted' : ''}`}
+									aria-label={muted ? 'Unmute audio' : 'Mute audio'}
+									title={muted ? 'Unmute audio' : 'Mute audio'}
+									onClick={(e) => {
+										e.stopPropagation()
+										onToggleMute()
+									}}
+								>
+									<AudioGlyph muted={!!muted} size={12} />
+								</button>
+							)}
+							<button
+								type="button"
+								className="rail-pill-btn"
+								aria-label="Minimize"
+								title="Minimize"
+								onClick={(e) => {
+									e.stopPropagation()
+									onMinimize(win.id)
+								}}
+							>
+								<Icon name="win-min" size={12} stroke={2.4} />
+							</button>
+							<button
+								type="button"
+								className="rail-pill-btn"
+								aria-label={win.snap === 'max' ? 'Restore' : 'Maximize'}
+								title={win.snap === 'max' ? 'Restore' : 'Maximize'}
+								onClick={(e) => {
+									e.stopPropagation()
+									toggleMax()
+								}}
+							>
+								<Icon name={win.snap === 'max' ? 'win-restore' : 'win-max'} size={11} stroke={2.4} />
+							</button>
+							<button
+								type="button"
+								className="rail-pill-btn close"
+								aria-label="Close"
+								title="Close"
+								onClick={(e) => {
+									e.stopPropagation()
+									onClose(win.id)
+								}}
+							>
+								<Icon name="close" size={12} stroke={2.6} />
+							</button>
+						</span>
+					</div>
+				)
+			) : (
+				<div className="win-bar" onPointerDown={startMove} onDoubleClick={(e) => !(e.target as HTMLElement).closest('button') && toggleMax()}>
+					<span className="win-ico">
+						{app ? (
+							<AppIcon src={app.icon} name={title} size={20} />
+						) : win.kind === 'console' ? (
+							<MachineIcon m={machine} size={20} />
+						) : (
+							<SysIcon kind={win.kind} size={20} />
+						)}
+					</span>
+					<span className="win-title">{title}</span>
+					<span className="win-tools">
+						{win.kind === 'app' && (
+							<>
+								<button className="win-btn ghost" aria-label="Reload" data-tip="Reload" onClick={() => setReload((n) => n + 1)}>
+									<Icon name="restart" size={15} />
+								</button>
+								{url && (
+									<button className="win-btn ghost" aria-label="Open in a browser tab" data-tip="Open in a browser tab" onClick={() => app && openTab(app)}>
+										<Icon name="open" size={15} />
+									</button>
+								)}
+							</>
+						)}
+						<button className="win-btn" aria-label="Minimize" data-tip="Minimize" onClick={() => onMinimize(win.id)}>
+							<Icon name="win-min" size={14} stroke={2.4} />
+						</button>
+						<button className="win-btn" aria-label={win.snap === 'max' ? 'Restore' : 'Maximize'} data-tip={win.snap === 'max' ? 'Restore' : 'Maximize'} onClick={toggleMax}>
+							<Icon name={win.snap === 'max' ? 'win-restore' : 'win-max'} size={13} stroke={2.4} />
+						</button>
+						<button className="win-btn close" aria-label="Close" data-tip="Close" onClick={() => onClose(win.id)}>
+							<Icon name="close" size={14} stroke={2.6} />
+						</button>
+					</span>
+				</div>
+			)}
 			<div className="win-body">
 				<PortalRoot.Provider value={portal}>
 					<InWindow.Provider value={true}>{portal && (win.kind === 'app' ? <AppFrame key={reload} app={app} url={url} onClose={() => onClose(win.id)} /> : children)}</InWindow.Provider>
@@ -2806,7 +3559,7 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 
 // ---- what goes inside a window ----------------------------------------------------------------------
 const WindowContent = memo(
-	function WindowContent({win, prefs, setPrefs, onSignedOut, owner}: {win: Win; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; owner: boolean}) {
+	function WindowContent({win, prefs, setPrefs, onSignedOut, owner, muted, onToggleMute}: {win: Win; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; owner: boolean; muted?: boolean; onToggleMute?: () => void}) {
 		const desk = useDesktop()!
 		const scrollRef = useRef<HTMLDivElement>(null)
 		const settingsKey = win.kind === 'settings' ? settingsRemountKey(win.payload) : ''
@@ -2854,6 +3607,24 @@ const WindowContent = memo(
 					return owner ? <TerminalScreen embedded app={win.payload?.term} input={win.payload?.input} onClose={close} /> : <div className="win-empty">Only the server’s owner can open a terminal.</div>
 				case 'console':
 					return <ConsoleWindow machineId={win.payload!.machineId!} windowId={win.id} onClose={close} />
+				case 'rail':
+					return win.payload?.rail?.address ? (
+						<HyprlandView
+							key={win.payload.rail.address}
+							mode="window"
+							address={win.payload.rail.address}
+							fps={60}
+							bitrate={22000}
+							chrome="rail"
+							muted={muted}
+							onToggleMute={onToggleMute}
+							title={win.payload.rail.title}
+							onResize={(w, h) => {
+								mutate('hyprland.dispatch', {action: 'resize', address: win.payload!.rail!.address, width: w, height: h}).catch(() => {})
+							}}
+							onClose={close}
+						/>
+					) : null
 				case 'clips':
 					return <Clips />
 				default:
@@ -2865,7 +3636,7 @@ const WindowContent = memo(
 				<Suspense fallback={<WinFallback />}>{body}</Suspense>
 			</ScreenErrorBoundary>
 		)
-		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'assistant') return content
+		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'rail' || win.kind === 'assistant') return content
 		return (
 			<div className="win-scroll" ref={scrollRef}>
 				<main className="screen win-screen">{content}</main>
@@ -2878,8 +3649,11 @@ const WindowContent = memo(
 		a.win.payload?.tab === b.win.payload?.tab &&
 		a.win.payload?.page === b.win.payload?.page &&
 		a.win.payload?.pageNonce === b.win.payload?.pageNonce &&
+		a.win.payload?.rail?.address === b.win.payload?.rail?.address &&
+		a.win.payload?.rail?.title === b.win.payload?.rail?.title &&
 		a.prefs === b.prefs &&
-		a.owner === b.owner,
+		a.owner === b.owner &&
+		a.muted === b.muted,
 )
 
 function AppsWindow() {

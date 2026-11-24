@@ -137,6 +137,78 @@
       "url": "https://iso.omarchy.org/omarchy-4.0.4.iso",
       "sha256": "ddeded2758c48318d201dfdac905ecb28f570441883f0c052ea3cd5d05acf92d",
       "sizeMb": 6186
+    },
+    {
+      "id": "ubuntu-26.04-desktop-arm64",
+      "familyId": "ubuntu",
+      "name": "Ubuntu",
+      "variantName": "Desktop",
+      "version": "26.04 LTS",
+      "arch": "arm64",
+      "kind": "cloud",
+      "url": "https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-arm64.img",
+      "checksums": {"url": "https://cloud-images.ubuntu.com/releases/resolute/release/SHA256SUMS", "algorithm": "sha256"},
+      "sizeMb": 860,
+      "adminGroup": "sudo",
+      "cloudInit": {"packages": ["ubuntu-desktop-minimal"], "commands": [["systemctl", "set-default", "graphical.target"]], "graphical": true},
+      "firmware": "efi"
+    },
+    {
+      "id": "ubuntu-26.04-server-arm64",
+      "familyId": "ubuntu",
+      "name": "Ubuntu",
+      "variantName": "Server",
+      "version": "26.04 LTS",
+      "arch": "arm64",
+      "kind": "cloud",
+      "url": "https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-arm64.img",
+      "checksums": {"url": "https://cloud-images.ubuntu.com/releases/resolute/release/SHA256SUMS", "algorithm": "sha256"},
+      "sizeMb": 860,
+      "adminGroup": "sudo",
+      "firmware": "efi"
+    },
+    {
+      "id": "ubuntu-24.04-server-arm64",
+      "familyId": "ubuntu",
+      "name": "Ubuntu",
+      "variantName": "Server",
+      "version": "24.04 LTS",
+      "arch": "arm64",
+      "kind": "cloud",
+      "url": "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img",
+      "checksums": {"url": "https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS", "algorithm": "sha256"},
+      "sizeMb": 600,
+      "adminGroup": "sudo",
+      "firmware": "efi"
+    },
+    {
+      "id": "debian-13-desktop-arm64",
+      "familyId": "debian",
+      "name": "Debian",
+      "variantName": "Desktop",
+      "version": "13",
+      "arch": "arm64",
+      "kind": "cloud",
+      "url": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-arm64.qcow2",
+      "checksums": {"url": "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS", "algorithm": "sha512"},
+      "sizeMb": 420,
+      "adminGroup": "sudo",
+      "cloudInit": {"packages": ["task-gnome-desktop"], "commands": [["systemctl", "set-default", "graphical.target"]], "graphical": true},
+      "firmware": "efi"
+    },
+    {
+      "id": "debian-13-server-arm64",
+      "familyId": "debian",
+      "name": "Debian",
+      "variantName": "Server",
+      "version": "13",
+      "arch": "arm64",
+      "kind": "cloud",
+      "url": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-arm64.qcow2",
+      "checksums": {"url": "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS", "algorithm": "sha512"},
+      "sizeMb": 420,
+      "adminGroup": "sudo",
+      "firmware": "efi"
     }
   ]
 }

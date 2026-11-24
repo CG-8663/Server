@@ -22,7 +22,7 @@ import {linkProxy} from '../omarchyd/proxy-link.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.73'
+export const VERSION = '0.9.78'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -134,6 +134,7 @@ export const ALLOWED = {
 	'swarm.setAbilities': 'mutation',
 	'swarm.action': 'mutation',
 	'swarm.storage.status': 'query',
+	'swarm.vms.status': 'query',
 	'swarm.storage.disks': 'query',
 	'swarm.storage.pools': 'query',
 	'swarm.storage.importable': 'query',
@@ -167,10 +168,22 @@ export const ALLOWED = {
 	'assistant.conversations': 'query',
 	'assistant.getConversation': 'query',
 	'assistant.deleteConversation': 'mutation',
+	'assistant.stop': 'mutation',
 	'assistant.approve': 'mutation',
 	'assistant.reject': 'mutation',
 	'omarchy.installPlugin': 'mutation',
 	'omarchy.removePlugin': 'mutation',
+	'hyprland.status': 'query',
+	'hyprland.windows': 'query',
+	'hyprland.apps': 'query',
+	'hyprland.launch': 'mutation',
+	'hyprland.dispatch': 'mutation',
+	'hyprland.clipboardRead': 'query',
+	'hyprland.clipboardWrite': 'mutation',
+	'hyprland.profiles': 'query',
+	'hyprland.profileRun': 'mutation',
+	'hyprland.profileSave': 'mutation',
+	'hyprland.profileDelete': 'mutation',
 	'apps.uninstall': 'mutation',
 	'apps.trackOpen': 'mutation',
 	'machines.start': 'mutation',
@@ -185,6 +198,7 @@ export const ALLOWED = {
 	'machines.osImages': 'query',
 	'machines.localIsos': 'query',
 	'machines.create': 'mutation',
+	'machines.installConnector': 'mutation',
 	'machines.uninstall': 'mutation',
 	'machines.updateSettings': 'mutation',
 	'machines.pause': 'mutation',
@@ -348,7 +362,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-export const SLOW = new Set(['unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
+export const SLOW = new Set(['hyprland.launch', 'hyprland.profileRun', 'unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'apps.start', 'apps.stop', 'apps.restart', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.installConnector', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.start', 'machines.hibernate', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
 export const timeoutFor = (path) => (SLOW.has(path) ? 30 * 60 * 1000 : 20_000)
 
 // An IPv6 address in a URL needs brackets; req.hostname and URL.hostname may already have them.
@@ -407,7 +421,11 @@ const isLoopback = (hostname) => hostname === 'localhost' || hostname === '::1' 
 export function normalizeBackendUrl(input) {
 	let value = String(input ?? '').trim()
 	if (!value) throw new Error('Enter your server’s address')
-	if (!/^https?:\/\//i.test(value)) value = `http://${value}`
+	const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value)?.[1]
+	if (scheme && !/^https?$/i.test(scheme)) throw new Error(`An address can’t start with ${scheme}://. Use an http:// or https:// address, or just the IP address or name`)
+	// A bare IPv6 address (more than one colon, no brackets) needs brackets to be a URL host.
+	if (!scheme && !value.startsWith('[') && !value.includes('/') && (value.match(/:/g) ?? []).length > 1) value = `[${value}]`
+	if (!scheme) value = `http://${value}`
 	const url = new URL(value)
 	if (url.username || url.password) throw new Error('The address must not contain a username or password')
 	return `${url.protocol}//${url.host}`
@@ -632,7 +650,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		req.pipe(up)
 	})
 	const api = express.Router()
-	api.use(express.json({limit: '64kb'}))
+	const json64k = express.json({limit: '64kb'})
+	const jsonClipboard = express.json({limit: '256kb'})
+	api.use((req, res, next) => (req.path === '/rpc/hyprland.clipboardWrite' ? jsonClipboard(req, res, next) : json64k(req, res, next)))
 	api.use((req, res, next) => {
 		res.set('Cache-Control', 'no-store')
 		req.sid = parseCookies(req.headers.cookie)[COOKIE]
@@ -645,7 +665,10 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			}
 		}
 		shareAppSession(req, res, store.getSession(req.sid))
-		if (req.sid) keepAppPassFresh(req.sid)
+		if (req.sid) {
+			keepAppPassFresh(req.sid)
+			keepBrowserSessionFresh(req.sid)
+		}
 		// Settings › Devices shows when each device was last used: note it, at most once a minute.
 		const seen = store.getSession(req.sid)
 		if (seen && Date.now() - (seen.lastSeenAt ?? 0) > 60_000) store.updateSession(req.sid, {lastSeenAt: Date.now()}).catch(() => {})
@@ -780,7 +803,12 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const upstream = new URL(backend.baseUrl)
 		const local = isLoopback(upstream.hostname)
 		const host = local ? req.hostname : upstream.hostname
-		const publicUrl = local ? `http://${req.hostname}` : backend.baseUrl
+		// The page was reached on a port as well (7780 by default): keep it, so the link isn't port 80.
+		let pageHost = req.hostname
+		try {
+			pageHost = new URL(`${req.protocol}://${req.headers.host}`).host || pageHost
+		} catch {}
+		const publicUrl = local ? `${req.protocol}://${pageHost}` : backend.baseUrl
 		try {
 			const [version, discovery, accounts] = await Promise.all([
 				backend.query('system.version'),
@@ -839,7 +867,10 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			const probe = createBackendClient({baseUrl: url, fetchImpl, timeoutMs: 8000})
 			const version = await probe.query('system.version')
 			if (!version?.version) throw new BackendError('That address answered, but not like My Own Data Center', {status: 502})
-			if (configured && url !== store.getConfig().backendUrl) await store.clearSessions()
+			if (configured && url !== store.getConfig().backendUrl) {
+				closeAllSessionStreams()
+				await store.clearSessions()
+			}
 			await store.setConfig({backendUrl: url})
 			res.json({ok: true, url, version: version.version, name: version.name})
 		} catch (error) {
@@ -1125,7 +1156,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			patch.solidColor = solidColor === null ? null : String(solidColor).toLowerCase()
 		}
 		if (omarchyBackground !== undefined) {
-			if (omarchyBackground !== null && !/^[0-9a-f]{16}$/.test(String(omarchyBackground))) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown background'}})
+			if (omarchyBackground !== null && (typeof omarchyBackground !== 'string' || !/^[0-9a-f]{16}$/.test(omarchyBackground))) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown background'}})
 			patch.omarchyBackground = omarchyBackground
 		}
 		if (theme !== undefined) {
@@ -1137,7 +1168,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			patch.accent = accent
 		}
 		if (customBrandHsl !== undefined) {
-			if (customBrandHsl !== null && !HSL.test(String(customBrandHsl))) {
+			if (customBrandHsl !== null && (typeof customBrandHsl !== 'string' || !HSL.test(customBrandHsl))) {
 				return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad colour'}})
 			}
 			patch.customBrandHsl = customBrandHsl
@@ -1264,11 +1295,35 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		}
 		const auth = {token: session.console.token, cookie: session.console.cookie}
 		// Browser sessions last 7 days from their last renewal; keep ours fresh.
-		if (Date.now() - session.console.renewedAt > 24 * 60 * 60 * 1000) {
-			await backend.mutation('user.renewToken', undefined, auth).catch(() => {})
-			await store.updateSession(sid, {console: {...session.console, renewedAt: Date.now()}})
-		}
+		await renewBrowserSession(sid)
 		return auth
+	}
+	// Renew the browser-style session when the last renewal was over a day ago. renewedAt moves only
+	// when omarchyd accepted the renewal, so a refused or failed one is tried again, not recorded as done.
+	const BROWSER_RENEW_MS = 24 * 60 * 60 * 1000
+	async function renewBrowserSession(sid) {
+		const backend = getClient()
+		const session = store.getSession(sid)
+		if (!backend || !session?.console || Date.now() - session.console.renewedAt <= BROWSER_RENEW_MS) return
+		const {token, cookie} = session.console
+		try {
+			await backend.mutation('user.renewToken', undefined, {token, cookie})
+		} catch {
+			return
+		}
+		const current = store.getSession(sid)
+		if (current?.console) await store.updateSession(sid, {console: {...current.console, renewedAt: Date.now()}})
+	}
+	// Called on every request, so the browser session stays alive for anyone who is still signed in,
+	// not only for someone who opens Files or a console within its 7 days.
+	const renewingBrowser = new Set()
+	function keepBrowserSessionFresh(sid) {
+		const s = store.getSession(sid)
+		if (!s?.console || renewingBrowser.has(sid) || Date.now() - s.console.renewedAt <= BROWSER_RENEW_MS) return
+		renewingBrowser.add(sid)
+		renewBrowserSession(sid)
+			.catch(() => {})
+			.finally(() => renewingBrowser.delete(sid))
 	}
 	const lostBrowserSession = async (sid, error) => {
 		if (error instanceof BackendError && error.code === 'UNAUTHORIZED') {
@@ -1296,6 +1351,39 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	// omarchyd serves file bytes over plain HTTP, authorised by the browser cookie plus
 	// a session-wide URL token. We fetch both server-side and stream the bytes through.
 	const urlTokens = new Map() // sid -> {token, at}
+	const sessionStreamsByKey = new Map() // hashId(sid) -> Set<() => void>
+	const registerSessionStream = (key, closeFn) => {
+		let set = sessionStreamsByKey.get(key)
+		if (!set) {
+			set = new Set()
+			sessionStreamsByKey.set(key, set)
+		}
+		set.add(closeFn)
+		return () => {
+			set.delete(closeFn)
+			if (set.size === 0) sessionStreamsByKey.delete(key)
+		}
+	}
+	const closeSessionStreams = (key) => {
+		const set = sessionStreamsByKey.get(key)
+		if (!set) return
+		sessionStreamsByKey.delete(key)
+		for (const fn of [...set]) {
+			try {
+				fn()
+			} catch {}
+		}
+	}
+	const closeAllSessionStreams = () => {
+		for (const set of [...sessionStreamsByKey.values()]) {
+			for (const fn of [...set]) {
+				try {
+					fn()
+				} catch {}
+			}
+		}
+		sessionStreamsByKey.clear()
+	}
 	// Cookie ids are not stored on the session (the file is keyed by their hash). Remember the
 	// ones this process has seen so a removed session can drop its URL token.
 	const sidByKey = new Map()
@@ -1303,8 +1391,12 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		if (typeof sid === 'string' && sid) sidByKey.set(hashId(sid), sid)
 	}
 	const forgetUrlToken = (sid) => {
-		if (typeof sid === 'string' && sid) urlTokens.delete(sid)
-		if (typeof sid === 'string' && sid) sidByKey.delete(hashId(sid))
+		if (typeof sid === 'string' && sid) {
+			const key = hashId(sid)
+			urlTokens.delete(sid)
+			sidByKey.delete(key)
+			closeSessionStreams(key)
+		}
 	}
 	async function fileUrlToken(sid) {
 		rememberSid(sid)
@@ -2065,13 +2157,26 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		for (const r of relays.values()) r.server?.destroyConnections?.()
 	}
 	app.attachConsole = (server) => {
-		const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024})
+		const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false})
 		consoles.add(wss)
 		server.on('upgrade', async (req, socket, head) => {
 			if (app.relayUpgrade(req, socket, head)) return
 			const refuse = (status) => {
+				if (socket.destroyed) return
 				socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`)
 				socket.destroy()
+			}
+			// Until the upgrade completes nothing else watches the browser's socket: if the tab goes away
+			// first, drop the connection to omarchyd too. The returned function stops watching.
+			const dropWithBrowser = (upstream) => {
+				const gone = () => upstream.terminate()
+				socket.once('close', gone)
+				socket.once('error', gone)
+				if (socket.destroyed) gone()
+				return () => {
+					socket.off('close', gone)
+					socket.off('error', gone)
+				}
 			}
 			try {
 				const url = new URL(req.url, 'http://x')
@@ -2084,9 +2189,11 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					const upstream = new WebSocket(target, {headers: {authorization: String(req.headers.authorization ?? '')}, handshakeTimeout: 10_000, maxPayload: 16 * 1024 * 1024, autoPong: false})
 					upstream.once('unexpected-response', (_q, r) => refuse(`${r.statusCode === 401 ? '401 Unauthorized' : '502 Bad Gateway'}`))
 					upstream.once('error', () => refuse('502 Bad Gateway'))
+					const stopWatching = dropWithBrowser(upstream)
 					upstream.once('open', () => {
 						upstream.removeAllListeners('error')
 						wss.handleUpgrade(req, socket, head, (client) => {
+							stopWatching()
 							upstream.on('message', (data, isBinary) => client.readyState === WebSocket.OPEN && client.send(data, {binary: isBinary}))
 							client.on('message', (data, isBinary) => upstream.readyState === WebSocket.OPEN && upstream.send(data, {binary: isBinary}))
 							upstream.on('close', (code) => {
@@ -2104,13 +2211,23 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					})
 					return
 				}
-				const route = {'/api/console': 'machines', '/api/terminal': 'terminal'}[url.pathname]
+				const route = {'/api/console': 'machines', '/api/terminal': 'terminal', '/api/hyprland/stream': 'hyprland'}[url.pathname]
 				if (!route) return refuse('404 Not Found')
-				// Browsers always send Origin on WebSocket handshakes: refuse other sites.
+				// Browsers always send Origin on WebSocket handshakes: refuse other sites and scheme mismatches.
 				const origin = req.headers.origin
-				if (!origin || hostOf(origin) !== req.headers.host) return refuse('403 Forbidden')
+				let originOk = false
+				if (origin) {
+					try {
+						const ou = new URL(origin)
+						const expectedProto = req.socket?.encrypted || req.headers['x-forwarded-proto'] === 'https' ? 'https:' : 'http:'
+						originOk = ou.host === req.headers.host && ou.protocol === expectedProto
+					} catch {}
+				}
+				if (!originOk) return refuse('403 Forbidden')
 				const sid = parseCookies(req.headers.cookie)[COOKIE]
 				if (!store.getSession(sid)) return refuse('401 Unauthorized')
+				const sidKey = hashId(sid)
+				rememberSid(sid)
 				const target = new URL(getClient().baseUrl)
 				target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:'
 				let params
@@ -2119,6 +2236,33 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					if (!/^[A-Za-z0-9_-]{1,64}$/.test(machineId)) return refuse('400 Bad Request')
 					target.pathname = '/machines/console'
 					params = {machineId, sessionId: randomUUID()}
+				} else if (route === 'hyprland') {
+					const mode = url.searchParams.get('mode') === 'window' ? 'window' : 'output'
+					const address = mode === 'window' ? (url.searchParams.get('address') ?? '') : ''
+					if (mode === 'window' && !/^0x[0-9a-f]{4,16}$/i.test(address)) return refuse('400 Bad Request')
+					const output = mode === 'output' ? (url.searchParams.get('output') ?? '') : ''
+					if (output && !/^[A-Za-z0-9_.-]{1,32}$/.test(output)) return refuse('400 Bad Request')
+					const fps = Math.max(5, Math.min(120, Math.round(Number(url.searchParams.get('fps')) || 60)))
+					const bitrate = Math.max(1000, Math.min(150000, Math.round(Number(url.searchParams.get('bitrate')) || 22000)))
+					const audio = url.searchParams.get('audio') === '1' ? '1' : '0'
+					const audioCodec = url.searchParams.get('audioCodec') === 'opus' ? 'opus' : 'pcm'
+					const rawCodec = url.searchParams.get('codec') ?? 'h264'
+					const codec = rawCodec === 'hevc444' || rawCodec === 'hevc10' || rawCodec === 'hevc' ? rawCodec : 'h264'
+					const rawQ = Number(url.searchParams.get('quality') ?? 0)
+					const rawComp = Number(url.searchParams.get('compression') ?? 0)
+					target.pathname = '/hyprland/stream'
+					params = {
+						mode,
+						...(address ? {address} : {}),
+						...(output ? {output} : {}),
+						fps: String(fps),
+						bitrate: String(bitrate),
+						audio,
+						audioCodec,
+						codec,
+						...(rawQ >= 10 && rawQ <= 34 ? {quality: String(Math.round(rawQ))} : {}),
+						...(rawComp >= 1 && rawComp <= 7 ? {compression: String(Math.round(rawComp))} : {}),
+					}
 				} else {
 					const appId = url.searchParams.get('appId') ?? ''
 					const agentId = url.searchParams.get('agentId') ?? ''
@@ -2132,7 +2276,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					if (session && !/^[A-Za-z0-9._-]{1,40}$/.test(session)) return refuse('400 Bad Request')
 					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), ...(session ? {session} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
 				}
-				const needsOwner = route === 'terminal' || params.machineId === 'desktop' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
+				const needsOwner = route === 'terminal' || route === 'hyprland' || params.machineId === 'desktop' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
 				if (needsOwner) {
 					let owner
 					try {
@@ -2144,22 +2288,127 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				}
 				const ticket = await consoleTicket(sid, route)
 				target.search = new URLSearchParams({...params, ticket}).toString()
-				const upstream = new WebSocket(target, route === 'machines' ? ['binary'] : [], {handshakeTimeout: 10_000})
+				const upstream = new WebSocket(target, route === 'machines' ? ['binary'] : [], {handshakeTimeout: 10_000, perMessageDeflate: false})
 				upstream.once('unexpected-response', (_q, r) => {
 					r.resume()
 					upstream.removeAllListeners('error')
 					refuse(r.statusCode === 403 ? '403 Forbidden' : r.statusCode === 401 ? '401 Unauthorized' : '502 Bad Gateway')
 				})
 				upstream.once('error', () => refuse('502 Bad Gateway'))
+				const stopWatching = dropWithBrowser(upstream)
+				const unregisterPending = registerSessionStream(sidKey, () => {
+					try {
+						upstream.terminate()
+					} catch {}
+					refuse('401 Unauthorized')
+				})
+				upstream.once('close', unregisterPending)
+				upstream.once('error', unregisterPending)
 				upstream.once('open', () => {
+					unregisterPending()
 					upstream.removeAllListeners('error')
+					if (!store.getSession(sid)) {
+						upstream.close(1008, 'Signed out')
+						return refuse('401 Unauthorized')
+					}
 					wss.handleUpgrade(req, socket, head, (client) => {
+						stopWatching()
+						try {
+							socket.setNoDelay?.(true)
+							upstream._socket?.setNoDelay?.(true)
+						} catch {}
+						let proxyKeyTimer = null
+						let unregisterActive = () => {}
 						const closeBoth = (code, reason) => {
+							unregisterActive()
+							if (proxyKeyTimer) {
+								clearTimeout(proxyKeyTimer)
+								proxyKeyTimer = null
+							}
 							const safe = typeof code === 'number' && (code === 1000 || (code >= 3000 && code <= 4999)) ? code : 1000
 							for (const ws of [client, upstream]) if (ws.readyState === WebSocket.OPEN) ws.close(safe, reason)
 						}
+						unregisterActive = registerSessionStream(sidKey, () => closeBoth(1008, 'Signed out'))
+						const hyprBitrateKbps = route === 'hyprland' ? Math.max(1000, Math.min(150000, Number(params.bitrate) || 22000)) : 22000
+						let hyprDeltaDrop = Math.max(384 * 1024, Math.min(4 * 1024 * 1024, Math.round(((hyprBitrateKbps * 1000) / 8) * 0.25)))
+						let hyprCloseCap = Math.max(4 * 1024 * 1024, hyprDeltaDrop * 6)
+						let hyprKeyDrain = Math.max(64 * 1024, Math.round(hyprDeltaDrop / 4))
+						let dropUntilKey = false
+						let pendingKeyReq = false
+						let lastKeyReqAt = 0
+						const scheduleProxyKeyReq = () => {
+							if (!pendingKeyReq || client.readyState !== WebSocket.OPEN || upstream.readyState !== WebSocket.OPEN) return
+							const nowMs = Date.now()
+							const cooldownLeft = Math.max(0, 1500 - (nowMs - lastKeyReqAt))
+							if (client.bufferedAmount <= hyprKeyDrain && cooldownLeft === 0) {
+								lastKeyReqAt = nowMs
+								upstream.send('{"type":"keyframe"}')
+								if (proxyKeyTimer) {
+									clearTimeout(proxyKeyTimer)
+									proxyKeyTimer = null
+								}
+								proxyKeyTimer = setTimeout(() => {
+									proxyKeyTimer = null
+									if (dropUntilKey && pendingKeyReq) scheduleProxyKeyReq()
+								}, 1500)
+								proxyKeyTimer.unref?.()
+								return
+							}
+							if (!proxyKeyTimer) {
+								proxyKeyTimer = setTimeout(() => {
+									proxyKeyTimer = null
+									scheduleProxyKeyReq()
+								}, cooldownLeft > 0 ? cooldownLeft : 120)
+								proxyKeyTimer.unref?.()
+							}
+						}
 						upstream.on('message', (data, isBinary) => {
 							if (client.readyState !== WebSocket.OPEN) return
+							if (route === 'hyprland') {
+								if (!isBinary) {
+									const s = String(data ?? '')
+									if (s.length <= 512 && (s.includes('"reconfig_applied"') || s.includes('"meta"'))) {
+										try {
+											const parsed = JSON.parse(s)
+											if ((parsed?.type === 'reconfig_applied' || parsed?.type === 'meta') && typeof parsed.bitrate === 'number' && Number.isFinite(parsed.bitrate)) {
+												const kbps = Math.max(1000, Math.min(150000, Math.round(parsed.bitrate)))
+												hyprDeltaDrop = Math.max(384 * 1024, Math.min(4 * 1024 * 1024, Math.round(((kbps * 1000) / 8) * 0.25)))
+												hyprCloseCap = Math.max(4 * 1024 * 1024, hyprDeltaDrop * 6)
+												hyprKeyDrain = Math.max(64 * 1024, Math.round(hyprDeltaDrop / 4))
+											}
+										} catch {}
+									}
+								}
+								const buf = isBinary && Buffer.isBuffer(data) ? data : null
+								const isVideoDelta = buf && buf.length > 9 && buf[0] === 0
+								const isVideoKey = buf && buf.length > 9 && buf[0] === 1
+								if (client.bufferedAmount > hyprCloseCap) {
+									closeBoth(1011, 'The viewer fell behind')
+									return
+								}
+								// Bitrate-proportional delta-drop ceiling (~250 ms) prevents WAN bufferbloat while allowing 100+ Mbps LAN near-lossless frames
+								if (client.bufferedAmount > hyprDeltaDrop && isVideoDelta) {
+									dropUntilKey = true
+									pendingKeyReq = true
+									scheduleProxyKeyReq()
+									return
+								}
+								// Only request recovery IDR once TCP send queue drains below hyprKeyDrain so keyframes do not pile onto congestion
+								if (pendingKeyReq && client.bufferedAmount <= hyprKeyDrain) {
+									scheduleProxyKeyReq()
+								}
+								if (dropUntilKey && isVideoDelta) return
+								if (isVideoKey) {
+									dropUntilKey = false
+									pendingKeyReq = false
+									if (proxyKeyTimer) {
+										clearTimeout(proxyKeyTimer)
+										proxyKeyTimer = null
+									}
+								}
+								client.send(data, {binary: isBinary})
+								return
+							}
 							// Same 1 MiB cap as the connector viewer. The connector passthrough above does not use it.
 							if (client.bufferedAmount > 1024 * 1024) {
 								closeBoth(1011, 'The viewer fell behind')
@@ -2167,7 +2416,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 							}
 							client.send(data, {binary: isBinary})
 						})
-						client.on('message', (data, isBinary) => upstream.readyState === WebSocket.OPEN && upstream.send(data, {binary: isBinary}))
+						client.on('message', (data, isBinary) => {
+							if (upstream.readyState === WebSocket.OPEN) upstream.send(data, {binary: isBinary})
+						})
 						upstream.on('close', (code, reason) => closeBoth(code, reason))
 						client.on('close', () => closeBoth(1000))
 						upstream.on('error', () => client.terminate())
@@ -2192,6 +2443,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			if (fresh?.accessToken) await backend.mutation('user.logout', undefined, {token: fresh.accessToken}).catch(() => {})
 		}
 		forgetUrlToken(sidByKey.get(key))
+		closeSessionStreams(key)
 		await store.deleteSessionByKey(key)
 	}
 	// Signing a device out ends every app pass this person holds (passes have one generation per
@@ -2271,6 +2523,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			await rm(join(store.dataDir, 'backgrounds'), {recursive: true, force: true})
 			urlTokens.clear()
 			sidByKey.clear()
+			closeAllSessionStreams()
 			await store.clearSessions()
 			setCookie(res, '', 0)
 			res.append('Set-Cookie', 'OMARCHY_APP_SESSION=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0')
@@ -2356,6 +2609,98 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				return
 			}
 			sendError(res, error)
+		}
+	})
+
+	api.get('/hyprland/app-icon', async (req, res) => {
+		const backend = getClient()
+		const session = store.getSession(req.sid)
+		if (!backend || !session) return res.status(401).end()
+		const id = String(req.query.id ?? '')
+		if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/.test(id)) return res.status(400).end()
+		try {
+			const token = await accessTokenFor(req.sid, session)
+			const up = await fetchImpl(`${backend.baseUrl}/hyprland/app-icon?id=${encodeURIComponent(id)}`, {
+				headers: {authorization: `Bearer ${token}`},
+				signal: AbortSignal.timeout(8000),
+			})
+			if (!up.ok) return res.status(up.status).end()
+			const rawCt = String(up.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
+			if (rawCt !== 'image/svg+xml' && rawCt !== 'image/png') return res.status(502).end()
+			const MAX_ICON_BYTES = 2 * 1024 * 1024
+			const declaredLen = Number(up.headers.get('content-length') || 0)
+			if (Number.isFinite(declaredLen) && declaredLen > MAX_ICON_BYTES) return res.status(502).end()
+			const chunks = []
+			let total = 0
+			if (up.body) {
+				const reader = up.body.getReader()
+				for (;;) {
+					const {done, value} = await reader.read()
+					if (done) break
+					if (value) {
+						total += value.byteLength
+						if (total > MAX_ICON_BYTES) {
+							await reader.cancel().catch(() => {})
+							return res.status(502).end()
+						}
+						chunks.push(Buffer.from(value))
+					}
+				}
+			}
+			const buf = Buffer.concat(chunks, total)
+			res.setHeader('Content-Type', rawCt)
+			res.setHeader('Content-Security-Policy', 'sandbox')
+			res.setHeader('X-Content-Type-Options', 'nosniff')
+			res.setHeader('Cache-Control', 'private, max-age=3600')
+			res.send(buf)
+		} catch {
+			res.status(502).end()
+		}
+	})
+
+	api.get('/hyprland/events', async (req, res) => {
+		const backend = getClient()
+		const session = store.getSession(req.sid)
+		if (!backend || !session) return res.status(401).end()
+		const ac = new AbortController()
+		const sidKey = hashId(req.sid)
+		rememberSid(req.sid)
+		const unregister = registerSessionStream(sidKey, () => {
+			ac.abort()
+			try {
+				if (!res.writableEnded) res.end()
+			} catch {}
+		})
+		res.on('close', () => {
+			unregister()
+			if (!res.writableEnded) ac.abort()
+		})
+		try {
+			const token = await accessTokenFor(req.sid, session)
+			const upstream = await fetchImpl(`${backend.baseUrl}/hyprland/events`, {
+				headers: {authorization: `Bearer ${token}`, accept: 'text/event-stream'},
+				signal: ac.signal,
+			})
+			if (!upstream.ok || !upstream.body) {
+				unregister()
+				return res.status(upstream.status || 502).end()
+			}
+			res.status(200)
+			res.setHeader('Content-Type', 'text/event-stream')
+			res.setHeader('Cache-Control', 'no-store')
+			res.socket?.setNoDelay(true)
+			const {Readable} = await import('node:stream')
+			const body = Readable.fromWeb(upstream.body)
+			body.on('end', unregister)
+			body.on('close', unregister)
+			body.on('error', () => {
+				unregister()
+				if (!res.writableEnded) res.destroy()
+			})
+			body.pipe(res)
+		} catch {
+			unregister()
+			if (!res.headersSent) res.status(502).end()
 		}
 	})
 

@@ -30,7 +30,7 @@ test('every view is given the same readings, including temperature and a size-on
 	)
 	assert.deepEqual(
 		readings.map((r) => r.text),
-		['12%', '40%', '–', '80%', '120 GB', '61°C'],
+		['12%', '40%', '–', '80%', '? of 120 GB', '61°C'],
 	)
 	// The list does not depend on which drawing is showing. Faces only choose an arc or the value.
 	assert.deepEqual(readings.map(readingFace), ['arc', 'arc', 'value', 'arc', 'value', 'value'])

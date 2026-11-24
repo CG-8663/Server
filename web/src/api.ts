@@ -59,6 +59,7 @@ const SLOW_RPC = new Set([
 	'machines.backup',
 	'machines.restoreBackup',
 	'machines.clone',
+	'machines.installConnector',
 	'wifi.connect',
 	'hardware.raid.addDevice',
 	'hardware.raid.addMirror',
@@ -69,6 +70,8 @@ const SLOW_RPC = new Set([
 	'clips.paste',
 	'clips.addFile',
 	'clips.fleetList',
+	'hyprland.launch',
+	'hyprland.profileRun',
 ])
 
 const RESTARTING_MESSAGE = 'My Own Data Center is restarting or not answering. Wait a moment and try again.'
@@ -365,13 +368,14 @@ export type Machine = {
 	id: string
 	vmid?: number
 	name: string
+	hostId?: string
 	osId?: string
 	cores?: number
 	memoryGb?: number
 	memoryMb?: number
 	diskSizeGb?: number
 	ipAddress?: string
-	state: 'installing' | 'stopped' | 'starting' | 'running' | 'stopping' | 'restarting' | 'suspended' | 'hibernated' | 'error'
+	state: 'installing' | 'stopped' | 'starting' | 'running' | 'stopping' | 'restarting' | 'pausing' | 'resuming' | 'suspended' | 'hibernated' | 'error'
 	pending?: boolean
 	protected?: boolean
 	onBoot?: boolean

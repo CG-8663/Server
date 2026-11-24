@@ -23,7 +23,7 @@ import {createMachines} from './machines.mjs'
 import {createOmarchyTheme} from './omarchy-theme.mjs'
 import {createOmarchyPlugins} from './omarchy-plugins.mjs'
 import {createClips} from './clips.mjs'
-import {createConnector} from './connector.mjs'
+import {closeReason, createConnector} from './connector.mjs'
 import {createStorage} from './storage.mjs'
 import {createUsb, listHostUsb} from './usb.mjs'
 import {createTerminalSessions, createTmux} from './terminal.mjs'
@@ -31,15 +31,16 @@ import {createUpdater} from './updater.mjs'
 import {createSystemApps} from './system-apps.mjs'
 import {createTailscale} from './tailscale.mjs'
 import {createOidc} from './oidc.mjs'
+import {createHyprland} from './hyprland.mjs'
 import {authorityInfo, readPolicy, rotateAuthority, tlsContext, writePolicy} from './tls.mjs'
 import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.73'
+export const OMARCHYD_VERSION = '0.9.78'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
 	const storeDir = localGitDir('OMARCHY_SERVER_APP_STORE', process.env.OMARCHY_SERVER_APP_STORE)
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
@@ -74,7 +75,20 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const files = createFiles({home, dataDir})
 	const defaultStores = storeDir ? [{url: fileUrl(storeDir)}] : undefined
 	const catalogUrl = storeDir ? fileUrl(join(storeDir, 'machines', 'catalog.json')) : undefined
-	const machines = createMachines({dataDir, files, ...(catalogUrl ? {catalogUrl} : {}), ...machineOptions})
+	let connector
+	const machines = createMachines({
+		dataDir,
+		files,
+		...(catalogUrl ? {catalogUrl} : {}),
+		isOwner: (ctx) => accounts.getUser(ctx?.auth?.userId)?.role !== 'member',
+		connector: {
+			pair: (input) => connector.procedures['swarm.pair'].run(input),
+			list: () => connector.procedures['swarm.list'].run(),
+			call: (id, name, args, timeout) => connector.call(id, name, args, timeout),
+			progress: (id) => connector.progress(id),
+		},
+		...machineOptions,
+	})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
 	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, webPort, ...(sourceDir ? {sourceDir} : {}), ...(storeDir ? {appStoreDir: storeDir} : {}), ...updaterOptions})
 	// One certificate context for the app gateways and the Security settings. On a server this is
@@ -125,6 +139,57 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	})
 	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).
 	const tickets = new Map()
+	const hyprSocketsBySession = new Map() // sessionId -> Set<WebSocket>
+	const hyprSseBySession = new Map() // sessionId -> Set<() => void>
+	const allHyprSse = new Set() // Set<() => void>
+	let factoryResetInProgress = false
+	function revokeHyprSocket(ws, reason = 'Session ended') {
+		try {
+			if (typeof ws.__omarchyRevoke === 'function') {
+				ws.__omarchyRevoke(1008, reason)
+				return
+			}
+		} catch {}
+		try {
+			ws.close(1008, reason)
+		} catch {}
+	}
+	function revokeSessionStreams(sessionId) {
+		if (!sessionId) return
+		for (const [tk, v] of tickets) {
+			if (v.sessionId === sessionId) tickets.delete(tk)
+		}
+		const set = hyprSocketsBySession.get(sessionId)
+		if (set) {
+			hyprSocketsBySession.delete(sessionId)
+			for (const ws of set) revokeHyprSocket(ws, 'Session ended')
+		}
+		const sseSet = hyprSseBySession.get(sessionId)
+		if (sseSet) {
+			hyprSseBySession.delete(sessionId)
+			for (const stop of [...sseSet]) {
+				try {
+					stop()
+				} catch {}
+			}
+		}
+	}
+	function revokeAllHyprStreams() {
+		for (const [tk, v] of tickets) {
+			if (v.target === 'hyprland') tickets.delete(tk)
+		}
+		for (const set of hyprSocketsBySession.values()) {
+			for (const ws of set) revokeHyprSocket(ws, 'Session ended')
+		}
+		hyprSocketsBySession.clear()
+		for (const stop of [...allHyprSse]) {
+			try {
+				stop()
+			} catch {}
+		}
+		allHyprSse.clear()
+		hyprSseBySession.clear()
+	}
 	const release = await system.osRelease()
 	const settings = {hostname: os.hostname()}
 
@@ -195,7 +260,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			},
 		},
 		'user.renewToken': {kind: 'mutation', run: async (_i, {auth}) => (auth.kind === 'browser' && (await accounts.renewBrowser(auth.bearer)), 'renewed')},
-		'user.logout': {kind: 'mutation', run: async (_i, {auth}) => (await accounts.logout(auth), true)},
+		'user.logout': {kind: 'mutation', run: async (_i, {auth}) => (revokeSessionStreams(auth.sessionId), await accounts.logout(auth), true)},
 		// ---- the Omarchy desktop's themes (Settings → Appearance → Omarchy) ---------------------------
 		'omarchy.themes': {kind: 'query', run: () => omarchyTheme.themes()},
 		'omarchy.backgrounds': {kind: 'query', run: (input) => omarchyTheme.backgrounds(input ?? {})},
@@ -207,9 +272,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'omarchy.plugins': {kind: 'query', run: (input) => themeCall(() => omarchyPlugins.list(input ?? {}))},
 		// Local swarm (connector.mjs): owner only.
 		...Object.fromEntries(
-			['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.wake', 'swarm.pair', 'swarm.reauthorize', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'swarm.storage.setSleep', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.list', 'swarm.files.recents', 'swarm.files.mkdir', 'swarm.files.rename', 'swarm.files.trash', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'].map((name) => [
+			['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.wake', 'swarm.pair', 'swarm.reauthorize', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.remove', 'swarm.rename', 'swarm.setAbilities', 'swarm.action', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.vms.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'swarm.storage.setSleep', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.list', 'swarm.files.recents', 'swarm.files.mkdir', 'swarm.files.rename', 'swarm.files.trash', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'].map((name) => [
 				name,
-				{kind: ['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.services.list', 'swarm.services.logs', 'swarm.files.list', 'swarm.files.recents'].includes(name) ? 'query' : 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'manage the local swarm'), connector.procedures[name].run(input))},
+				{kind: ['swarm.list', 'swarm.history', 'swarm.alerts', 'swarm.desktopCheck', 'swarm.storage.status', 'swarm.vms.status', 'swarm.storage.disks', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.services.list', 'swarm.services.logs', 'swarm.files.list', 'swarm.files.recents'].includes(name) ? 'query' : 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'manage the local swarm'), connector.procedures[name].run(input))},
 			]),
 		),
 		'omarchy.installPlugin': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'install Omarchy plugins'), themeCall(() => omarchyPlugins.install(input)))},
@@ -221,11 +286,14 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'user.createWebSocketTicket': {
 			kind: 'mutation',
 			run: (input, {auth}) => {
-				if (input?.target !== 'machines' && input?.target !== 'terminal') throw new RpcError('BAD_REQUEST', 'Unknown console')
+				if (input?.target !== 'machines' && input?.target !== 'terminal' && input?.target !== 'hyprland') throw new RpcError('BAD_REQUEST', 'Unknown console')
+				if (input.target === 'hyprland' && factoryResetInProgress) {
+					throw new RpcError('CONFLICT', 'Factory reset is in progress')
+				}
 				const now = Date.now()
 				for (const [t, v] of tickets) if (v.expires < now) tickets.delete(t)
 				const ticket = randomBytes(24).toString('base64url')
-				tickets.set(ticket, {userId: auth.userId, role: accounts.getUser(auth.userId)?.role, target: input.target, expires: now + 30_000})
+				tickets.set(ticket, {userId: auth.userId, sessionId: auth.sessionId ?? null, role: accounts.getUser(auth.userId)?.role, target: input.target, expires: now + 30_000})
 				return ticket
 			},
 		},
@@ -284,31 +352,47 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			run: async (input, {auth}) => {
 				ownerOnly(auth, 'reset this server')
 				await accounts.confirmPassword(auth.userId, input?.password)
+				if (factoryResetInProgress) {
+					throw new RpcError('CONFLICT', 'Factory reset is already in progress')
+				}
+				factoryResetInProgress = true
+				revokeAllHyprStreams()
 				// Answer first; the reset carries on by itself. The next owner must not inherit
 				// assistant keys and chats, swarm computers, backup secrets or network shares.
 				setTimeout(async () => {
-					const appsLeft = await apps.uninstallAll().catch((e) => console.error('[omarchyd] reset apps', e.message))
-					const machinesLeft = await machines.uninstallAll().catch((e) => console.error('[omarchyd] reset machines', e.message))
-					// undefined is not a count: machines.uninstallAll returns undefined today.
-					const appsRemain = typeof appsLeft === 'number' && appsLeft !== 0
-					const machinesRemain = typeof machinesLeft === 'number' && machinesLeft !== 0
-					if (appsRemain) console.error(`[omarchyd] ${appsLeft} ${appsLeft === 1 ? 'app remains' : 'apps remain'}`)
-					if (machinesRemain) console.error(`[omarchyd] ${machinesLeft} ${machinesLeft === 1 ? 'machine remains' : 'machines remain'}`)
-					await assistant.keys.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
-					await assistant.conversations.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
-					// A clip can be a password or a key. Drop every book even when an app or a machine stays.
-					await clips?.resetAll().catch((e) => console.error('[omarchyd] reset clips', e.message))
-					const agents = await connector.procedures['swarm.list'].run().catch((e) => {
-						console.error('[omarchyd] reset swarm', e.message)
-						return []
-					})
-					for (const agent of agents) await connector.procedures['swarm.remove'].run({id: agent.id}).catch((e) => console.error('[omarchyd] reset swarm', e.message))
-					await backups.clearSettings().catch((e) => console.error('[omarchyd] reset backups', e.message))
-					await storage.clearShares().catch((e) => console.error('[omarchyd] reset shares', e.message))
-					await oidc.reset().catch((e) => console.error('[omarchyd] reset oidc', e.message))
-					if (appsRemain || machinesRemain) return
-					await accounts.reset()
-					console.log('[omarchyd] factory reset done')
+					try {
+						const appsLeft = await apps.uninstallAll().catch((e) => console.error('[omarchyd] reset apps', e.message))
+						const machinesLeft = await machines.uninstallAll().catch((e) => console.error('[omarchyd] reset machines', e.message))
+						// undefined is not a count: machines.uninstallAll returns undefined today.
+						const appsRemain = typeof appsLeft === 'number' && appsLeft !== 0
+						const machinesRemain = typeof machinesLeft === 'number' && machinesLeft !== 0
+						if (appsRemain) console.error(`[omarchyd] ${appsLeft} ${appsLeft === 1 ? 'app remains' : 'apps remain'}`)
+						if (machinesRemain) console.error(`[omarchyd] ${machinesLeft} ${machinesLeft === 1 ? 'machine remains' : 'machines remain'}`)
+						await assistant.keys.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
+						await assistant.conversations.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
+						// A clip can be a password or a key. Drop every book even when an app or a machine stays.
+						await clips?.resetAll().catch((e) => console.error('[omarchyd] reset clips', e.message))
+						const agents = await connector.procedures['swarm.list'].run().catch((e) => {
+							console.error('[omarchyd] reset swarm', e.message)
+							return []
+						})
+						for (const agent of agents) await connector.procedures['swarm.remove'].run({id: agent.id}).catch((e) => console.error('[omarchyd] reset swarm', e.message))
+						await backups.clearSettings().catch((e) => console.error('[omarchyd] reset backups', e.message))
+						await storage.clearShares().catch((e) => console.error('[omarchyd] reset shares', e.message))
+						await oidc.reset().catch((e) => console.error('[omarchyd] reset oidc', e.message))
+						let profilesResetOk = true
+						await hyprland.resetProfiles().catch((e) => {
+							profilesResetOk = false
+							console.error('[omarchyd] reset hyprland profiles', e.message)
+						})
+						revokeAllHyprStreams()
+						if (appsRemain || machinesRemain || !profilesResetOk) return
+						await accounts.reset()
+						revokeAllHyprStreams()
+						console.log('[omarchyd] factory reset done')
+					} finally {
+						factoryResetInProgress = false
+					}
 				}, 500)
 				return true
 			},
@@ -393,8 +477,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 				ownerOnly(auth)
 				await accounts.confirmPassword(auth.userId, input?.password)
 				const r = await storage.helper('desktop-sign-in')
-				signedInAt = Date.now()
-				remoteSignIn = true
+				markRemoteSignIn()
+				hyprland.notifyUnlocked?.().catch(() => {})
 				return {result: r}
 			},
 		},
@@ -427,7 +511,13 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 						: [name, p],
 			),
 		),
-		...machines.procedures,
+		...Object.fromEntries(
+			Object.entries(machines.procedures).map(([name, p]) =>
+				name === 'machines.installConnector'
+					? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'install a guest connector'), p.run(input))}]
+					: [name, p],
+			),
+		),
 		...Object.fromEntries(
 			Object.entries(apps.procedures).map(([name, p]) =>
 				name === 'appStore.addRepository' || name === 'appStore.removeRepository'
@@ -485,7 +575,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const omarchyTheme = createOmarchyTheme({home, ...themeOptions})
 	const omarchyPlugins = createOmarchyPlugins({home, theme: omarchyTheme, ...pluginOptions})
 	// Local swarm: other Linux computers joined through the connector (see connector.mjs).
-	const connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, files, source: () => updater.source(), webPort})
+	connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, files, source: () => updater.source(), webPort, onOnline: (id) => machines.bootRemote(id)})
 	clips = createClips({
 		dataDir,
 		files,
@@ -537,19 +627,14 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		},
 	})
 	let signedInAt = 0
-	// After a sign-in from the web, lock the desktop again once nobody is viewing it (Settings →
+	// After a sign-in or remote unlock from the web, lock the desktop again once nobody is viewing it (Settings ->
 	// Security), so the screen isn't left signed in at the server itself. A short wait lets a page
 	// reload or a reconnect keep the session.
 	let remoteSignIn = false
 	let desktopViewers = 0
 	let lockTimer = null
 	const lockGraceMs = machineOptions.lockGraceMs ?? 60_000
-	const viewerJoined = () => {
-		desktopViewers++
-		clearTimeout(lockTimer)
-	}
-	const viewerLeft = () => {
-		desktopViewers = Math.max(0, desktopViewers - 1)
+	const scheduleRelockIfIdle = () => {
 		if (desktopViewers || !remoteSignIn || security.lockAfterRemote === false) return
 		clearTimeout(lockTimer)
 		lockTimer = setTimeout(() => {
@@ -559,6 +644,43 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		}, lockGraceMs)
 		lockTimer.unref?.()
 	}
+	const markRemoteSignIn = () => {
+		signedInAt = Date.now()
+		remoteSignIn = true
+		scheduleRelockIfIdle()
+	}
+	const viewerJoined = () => {
+		desktopViewers++
+		clearTimeout(lockTimer)
+	}
+	const viewerLeft = () => {
+		desktopViewers = Math.max(0, desktopViewers - 1)
+		scheduleRelockIfIdle()
+	}
+	const hyprland = createHyprland({
+		dataDir,
+		home,
+		onRemoteUnlock: markRemoteSignIn,
+		...hyprlandOptions,
+	})
+	Object.assign(
+		procedures,
+		Object.fromEntries(
+			Object.entries(hyprland.procedures).map(([name, p]) => [
+				name,
+				{
+					kind: p.kind,
+					run: (input, {auth}) => {
+						ownerOnly(auth, 'render the Hyprland desktop')
+						if (factoryResetInProgress && p.kind === 'mutation') {
+							throw new RpcError('CONFLICT', 'Factory reset is in progress')
+						}
+						return p.run(input)
+					},
+				},
+			]),
+		),
+	)
 	async function lockDesktop() {
 		if (machineOptions.lockDesktop) return machineOptions.lockDesktop()
 		// The owner's own graphical session on this machine: logind tells Omarchy's lock screen.
@@ -848,6 +970,151 @@ WantedBy=graphical-session.target
 			if (url.pathname === '/api/clips/text' && req.method === 'POST') return await clips.httpText(req, res, url)
 			if (url.pathname === '/api/clips/image' && req.method === 'POST') return await clips.httpImage(req, res, url)
 			if (url.pathname === '/api/clips/item' && req.method === 'GET') return await clips.httpItem(req, res, url)
+			if (url.pathname === '/hyprland/app-icon' && req.method === 'GET') {
+				const auth = accounts.authenticate(req) || accounts.checkUrlToken(url.searchParams.get('token'), req)
+				if (!auth) return sendJson(res, 401, {error: 'unauthorized'})
+				ownerOnly(auth, 'read native Linux app icons')
+				const icon = await hyprland.readAppIcon(url.searchParams.get('id') ?? '')
+				if (!icon) return sendJson(res, 404, {error: 'not found'})
+				res.writeHead(200, {
+					'content-type': icon.contentType,
+					'content-length': icon.data.length,
+					'content-security-policy': 'sandbox',
+					'x-content-type-options': 'nosniff',
+					'cache-control': 'private, max-age=3600',
+				})
+				return res.end(icon.data)
+			}
+			if (url.pathname === '/hyprland/events' && req.method === 'GET') {
+				const auth = accounts.authenticate(req)
+				if (!auth) return sendJson(res, 401, {error: 'unauthorized'})
+				ownerOnly(auth, 'subscribe to Hyprland window events')
+				if (allHyprSse.size >= 32) return sendJson(res, 503, {error: 'Too many active Hyprland event subscribers'})
+				let closed = false
+				let unsub = null
+				let keepalive = null
+				let buffering = true
+				let bufferOverflow = false
+				const buffered = []
+				const sidKey = auth.sessionId || null
+				const cleanup = () => {
+					if (closed) return
+					closed = true
+					allHyprSse.delete(stopStream)
+					if (sidKey) {
+						const set = hyprSseBySession.get(sidKey)
+						if (set) {
+							set.delete(stopStream)
+							if (set.size === 0) hyprSseBySession.delete(sidKey)
+						}
+					}
+					if (keepalive) clearInterval(keepalive)
+					keepalive = null
+					if (unsub) unsub()
+					unsub = null
+				}
+				const stopStream = () => {
+					cleanup()
+					try {
+						if (!res.writableEnded) res.end()
+					} catch {}
+				}
+				let lastSentSnapSeq = 0
+				const writeEvt = (evt) => {
+					if (closed || res.writableEnded) return
+					if (evt?.type === 'windows' && typeof evt.seq === 'number') {
+						if (evt.seq < lastSentSnapSeq) return
+						lastSentSnapSeq = evt.seq
+					}
+					if (res.writableLength > 256 * 1024) {
+						stopStream()
+						return
+					}
+					res.write(`data: ${JSON.stringify(evt)}\n\n`)
+				}
+				// Subscribe BEFORE taking the initial snapshot (buffering events until an authoritative snapshot is written; if the buffer overflows, re-snapshot before resuming).
+				unsub = hyprland.subscribeEvents((evt) => {
+					if (closed) return
+					if (buffering) {
+						if (buffered.length >= 256) bufferOverflow = true
+						else buffered.push(evt)
+					} else {
+						writeEvt(evt)
+					}
+				})
+				if (!unsub) return sendJson(res, 503, {error: 'Too many active Hyprland event subscribers'})
+				res.writeHead(200, {'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive'})
+				res.socket?.setNoDelay?.(true)
+				allHyprSse.add(stopStream)
+				if (sidKey) {
+					let set = hyprSseBySession.get(sidKey)
+					if (!set) {
+						set = new Set()
+						hyprSseBySession.set(sidKey, set)
+					}
+					set.add(stopStream)
+				}
+				req.on('close', cleanup)
+				res.on('close', cleanup)
+				const sockReady = await hyprland.waitForEventSocketReady?.(1500).catch(() => false)
+				if (!sockReady || closed || req.destroyed || res.writableEnded) {
+					stopStream()
+					return
+				}
+				let snapOk = false
+				for (let attempt = 0; attempt < 3; attempt++) {
+					bufferOverflow = false
+					buffered.length = 0
+					const initSeq = hyprland.nextEventSnapSeq?.() ?? 0
+					const [initial, instanceId] = await Promise.all([
+						hyprland.windowsSnapshot().catch(() => null),
+						hyprland.currentInstanceId().catch(() => null),
+					])
+					if (closed || req.destroyed || res.writableEnded) {
+						cleanup()
+						return
+					}
+					if (!Array.isArray(initial)) {
+						stopStream()
+						return
+					}
+					if (bufferOverflow) continue
+					// If the socket's own syncAuthoritative() already buffered a newer snapshot while we queried, drop the stale initSeq snapshot and start from the newer one.
+					const newerSnapIdx = buffered.findIndex((e) => e?.type === 'windows' && e.authoritative && typeof e.seq === 'number' && e.seq > initSeq)
+					if (newerSnapIdx >= 0) {
+						buffered.splice(0, newerSnapIdx)
+					} else {
+						writeEvt({type: 'windows', instanceId, windows: initial, authoritative: true, seq: initSeq})
+					}
+					snapOk = true
+					break
+				}
+				if (!snapOk || closed || req.destroyed || res.writableEnded) {
+					stopStream()
+					return
+				}
+				buffering = false
+				for (const evt of buffered.splice(0)) writeEvt(evt)
+				if (closed || req.destroyed || res.writableEnded) {
+					cleanup()
+					return
+				}
+				keepalive = setInterval(() => {
+					if (closed || res.writableEnded) return
+					const stillAuthed = accounts.authenticate(req)
+					if (!stillAuthed || accounts.getUser(stillAuthed.userId)?.role !== 'owner') {
+						stopStream()
+						return
+					}
+					if (res.writableLength > 256 * 1024) {
+						stopStream()
+						return
+					}
+					res.write(': ping\n\n')
+				}, 20_000)
+				keepalive.unref?.()
+				return
+			}
 			sendJson(res, 404, {error: 'not found'})
 		} catch (error) {
 			if (!res.headersSent) sendError(res, error)
@@ -858,7 +1125,7 @@ WantedBy=graphical-session.target
 	// VNC unix socket. Only reachable on localhost, and only with a fresh ticket.
 	// Your shell runs in tmux, when it's installed, so it survives omarchyd restarts and updates.
 	const terminals = createTerminalSessions({tmux: terminalTmux === undefined ? createTmux({conf: join(dataDir, 'terminal', 'tmux.conf')}) : terminalTmux})
-	const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024})
+	const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false})
 	server.on('upgrade', async (req, socket, head) => {
 		const refuse = (status) => {
 			socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`)
@@ -868,12 +1135,57 @@ WantedBy=graphical-session.target
 			const url = new URL(req.url ?? '/', 'http://localhost')
 			// A connector on another computer (it signs in with its own key, checked in connector.mjs).
 			if (url.pathname === '/connector/ws') return await connector.upgradeAgent(req, socket, head)
-			const route = {'/machines/console': 'machines', '/terminal': 'terminal'}[url.pathname]
+			const route = {'/machines/console': 'machines', '/terminal': 'terminal', '/hyprland/stream': 'hyprland'}[url.pathname]
 			if (!route) return refuse('404 Not Found')
 			const t = tickets.get(url.searchParams.get('ticket') ?? '')
 			tickets.delete(url.searchParams.get('ticket') ?? '')
 			if (!t || t.expires < Date.now() || t.target !== route) return refuse('401 Unauthorized')
 			const owner = (t.role ?? accounts.getUser(t.userId)?.role) === 'owner'
+			if (route === 'hyprland') {
+				if (factoryResetInProgress) return refuse('503 Service Unavailable')
+				if (!owner) return refuse('403 Forbidden')
+				if (req.headers.origin) {
+					let originHost = null
+					try {
+						originHost = new URL(req.headers.origin).host
+					} catch {}
+					if (!originHost || originHost !== req.headers.host) return refuse('403 Forbidden')
+				}
+				const mode = url.searchParams.get('mode') === 'window' ? 'window' : 'output'
+				const address = mode === 'window' ? (url.searchParams.get('address') ?? '') : ''
+				if (mode === 'window' && !/^0x[0-9a-f]{4,16}$/i.test(address)) return refuse('400 Bad Request')
+				const output = mode === 'output' ? (url.searchParams.get('output') ?? '') : ''
+				if (output && !/^[A-Za-z0-9_.-]{1,32}$/.test(output)) return refuse('400 Bad Request')
+				const fps = Number(url.searchParams.get('fps') ?? 60)
+				const bitrate = Number(url.searchParams.get('bitrate') ?? 22000)
+				const audio = url.searchParams.get('audio') === '1'
+				const audioCodec = url.searchParams.get('audioCodec') === 'opus' ? 'opus' : 'pcm'
+				const rawCodec = url.searchParams.get('codec') ?? 'h264'
+				const codec = rawCodec === 'hevc444' || rawCodec === 'hevc10' || rawCodec === 'hevc' ? rawCodec : 'h264'
+				const quality = Number(url.searchParams.get('quality') ?? 0)
+				const compression = Number(url.searchParams.get('compression') ?? 0)
+				const sidKey = t.sessionId || null
+				return wss.handleUpgrade(req, socket, head, (ws) => {
+					try {
+						socket.setNoDelay?.(true)
+					} catch {}
+					if (sidKey) {
+						let set = hyprSocketsBySession.get(sidKey)
+						if (!set) {
+							set = new Set()
+							hyprSocketsBySession.set(sidKey, set)
+						}
+						set.add(ws)
+						ws.once('close', () => {
+							set.delete(ws)
+							if (set.size === 0) hyprSocketsBySession.delete(sidKey)
+						})
+					}
+					viewerJoined()
+					ws.once('close', viewerLeft)
+					hyprland.attachStream(ws, {mode, address, output, fps, bitrate, audio, audioCodec, codec, quality, compression}).catch(() => ws.close(1011, 'Hyprland stream failed'))
+				})
+			}
 			// A shell: your own, or one inside an installed app's container.
 			if (route === 'terminal') {
 				// This process runs as the owner’s user, and a swarm computer’s terminal is the
@@ -910,9 +1222,17 @@ WantedBy=graphical-session.target
 			}
 			// This server's own desktop is the owner's signed-in Omarchy session: owner-only too.
 			if (machineId === 'desktop' && !owner) return refuse('403 Forbidden')
-			const target = machineId === 'desktop' ? await desktopTarget() : await machines.vncSocket(machineId).then((path) => ({path}), () => null)
+			let target
+			try {
+				target = machineId === 'desktop' ? await desktopTarget() : await machines.vncSocket(machineId)
+			} catch (error) {
+				if (!(error instanceof RpcError)) throw error
+				const message = closeReason(error.message)
+				return wss.handleUpgrade(req, socket, head, (ws) => ws.close(1011, message))
+			}
 			if (!target) return refuse('409 Conflict')
-			const vnc = net.connect(target)
+			if (typeof target === 'object' && target.agentId) return wss.handleUpgrade(req, socket, head, (ws) => connector.openChannel(target.agentId, 'vnc', ws, {guest: target.guest}))
+			const vnc = net.connect(typeof target === 'string' ? {path: target} : target)
 			vnc.once('error', () => refuse('502 Bad Gateway'))
 			vnc.once('connect', () => {
 				vnc.removeAllListeners('error')
@@ -921,7 +1241,17 @@ WantedBy=graphical-session.target
 						viewerJoined()
 						ws.once('close', viewerLeft)
 					}
-					vnc.on('data', (d) => ws.readyState === ws.OPEN && ws.send(d, {binary: true}))
+					vnc.on('data', (d) => {
+						if (ws.readyState !== ws.OPEN) return
+						// A browser that stopped reading (asleep, off Wi-Fi, a frozen tab) would otherwise make the
+						// server keep every frame in memory. Same 1 MiB cap as the connector viewer.
+						if (ws.bufferedAmount > 1024 * 1024) {
+							ws.close(1011, 'The viewer fell behind')
+							vnc.destroy()
+							return
+						}
+						ws.send(d, {binary: true})
+					})
 					ws.on('message', (d) => vnc.write(d))
 					vnc.on('close', () => ws.close(1000))
 					vnc.on('error', () => ws.terminate())
@@ -959,7 +1289,7 @@ WantedBy=graphical-session.target
 		}
 	}, 20_000).unref?.()
 
-	return {url: `http://${host}:${server.address().port}`, accounts, terminals, close: () => (sampler.stop(), apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), assistant.chatgpt.close(), terminals.close(), new Promise((r) => server.close(r)))}
+	return {url: `http://${host}:${server.address().port}`, accounts, terminals, hyprland, close: () => (sampler.stop(), apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), revokeAllHyprStreams(), hyprland.close(), assistant.chatgpt.close(), terminals.close(), new Promise((r) => server.close(r)))}
 }
 
 // The "always use the secure address" choice made while omarchyd kept its own certificate folder.

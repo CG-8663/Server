@@ -12,7 +12,8 @@ import {Icon} from '../icons'
 import {osLook} from '../osLook'
 import {Disc} from '../fleet/Disc'
 import {MachineGlance} from '../fleet/MachineGlance'
-import {fleetAbility, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../fleet/list'
+import {hostedVms} from '../fleet/hostedVms'
+import {computerFleetInput, fleetAbility, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../fleet/list'
 import {OPEN_FLEET, takePendingFleet, type FleetOpen} from '../fleet/openMember'
 import {openStore} from '../fleet/openStore'
 import {GuestLive} from '../fleet/GuestLive'
@@ -50,19 +51,29 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 	const [expanded, setExpanded] = useState<string | null>(null)
 	const apps = useApps()
 	const list = machines.data ?? []
+	const serverVms = hostedVms(list, SERVER_FLEET_ID)
 	const serverName = boot.server?.device || 'This server'
 	const agents = swarm.data ?? []
 	const members = useMemo(
 		() =>
 			fleetList({
 				server: {name: serverName},
-				computers: agents.filter((a) => !isGuestAgent(a)).map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
-				guests: list.map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state, connector: !!guestAgent(agents, m.id)})),
+				computers: agents.filter((a) => !isGuestAgent(a)).map((a) => computerFleetInput({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on, libvirt: a.libvirt === true})),
+				guests: list.map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state, hostId: m.hostId, connector: !!guestAgent(agents, m.id)})),
 			}),
 		[serverName, agents, list],
 	)
 	const selected = list.find((m) => m.id === selectedId) ?? null
-	const consoleMachine = consoleId === 'desktop' ? SERVER_DESKTOP : (list.find((m) => m.id === consoleId) ?? null)
+	const consoleAgent = consoleId?.startsWith('agent-') ? agents.find((a) => `agent-${a.id}` === consoleId) : undefined
+	const consoleMachine =
+		consoleId === 'desktop' ? SERVER_DESKTOP : consoleAgent ? {id: `agent-${consoleAgent.id}`, name: consoleAgent.name, state: 'running' as const} : (list.find((m) => m.id === consoleId) ?? null)
+	// A connected computer's screen: the same viewer as a virtual machine's (a window on the desktop,
+	// full screen on a phone).
+	const openComputerDesktop = (a: {id: string; name: string}) => {
+		haptic(8)
+		if (desk) desk.openConsole(`agent-${a.id}`, a.name)
+		else setConsoleId(`agent-${a.id}`)
+	}
 	const online = members.filter((m) => m.online).length
 	const computers = members.filter((m) => m.kind === 'computer')
 	const agentById = new Map(agents.filter((a) => !isGuestAgent(a)).map((a) => [a.id, a]))
@@ -100,7 +111,7 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 				name={memberName}
 				apps={appsAbility.granted ? (kind === 'server' ? (apps.data ?? []) : []) : null}
 				appsReason={appsAbility.reason}
-				vms={vmsAbility.granted ? (kind === 'server' ? list : []) : null}
+				vms={vmsAbility.granted ? hostedVms(list, memberId) : null}
 				vmsReason={vmsAbility.reason}
 				onOpenApp={openApp}
 				onOpenVm={(id) => (haptic(6), openMember('guest', id))}
@@ -146,7 +157,7 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 					bare={wide}
 					name={serverName}
 					owner={owner}
-					vms={list}
+					vms={hostedVms(list, SERVER_FLEET_ID)}
 					onClose={() => setServerOpen(false)}
 					onDesktop={openDesktop}
 					onTerminal={openServerTerminal}
@@ -215,9 +226,9 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 				<>
 					<div className="section-head machines-section">
 						<h2>Virtual machines</h2>
-						<span className="quiet">{list.length ? `${list.filter((m) => m.state === 'running').length} of ${list.length} running` : 'On this server'}</span>
+						<span className="quiet">{serverVms.length ? `${serverVms.filter((m) => m.state === 'running').length} of ${serverVms.length} running` : 'On this server'}</span>
 					</div>
-					{list.length === 0 ? (
+					{serverVms.length === 0 ? (
 						<div className="glass machines-empty">
 							<p className="quiet">No virtual machines on {serverName} yet.</p>
 							<button type="button" className="btn small" onClick={() => (haptic(6), setCreateHost({id: SERVER_FLEET_ID, name: serverName}))}>
@@ -225,7 +236,7 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 							</button>
 						</div>
 					) : (
-						list.map((m) => (
+						serverVms.map((m) => (
 							<VmCard
 								key={m.id}
 								m={m}
@@ -297,6 +308,11 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 						onClick={() => (haptic(6), openMember('computer', agent.id))}
 						footer={
 							<div className="mrow-foot">
+								{agent.online && agent.allowed.desktop && agent.info?.desktop?.ok && (
+									<button type="button" className="btn small" onClick={() => openComputerDesktop(agent)}>
+										<Icon name="window" size={15} /> Desktop
+									</button>
+								)}
 								<PinButton pin={{kind: 'machine', id: agent.id, computer: ''}} name={agent.name} />
 								<Disc open={open} name={agent.name} controls={`glance-${member.id}`} onClick={toggle} />
 							</div>

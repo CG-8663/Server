@@ -8,6 +8,7 @@ import {appUrl, useAction, useApps, useBootstrap, useMachines, useRegistry, useU
 import {computerInstallInput, confirmInstallTarget, guestInstallInput, installKindLabel, installTargets, installsOf, machineCountLabel} from '../fleet/installTargets'
 import {type StoreBinding} from '../fleet/openStore'
 import {BeforeInstall} from '../beforeInstall'
+import {CategoryChips} from '../CategoryChips'
 import {useDesktop} from '../desktop/Desktop'
 import {explainProbe, openApp} from '../openApp'
 import {Icon, hasIcon} from '../icons'
@@ -149,7 +150,7 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 				</div>
 			)}
 			<SearchField value={q} onChange={setQ} placeholder={oneStore ? `Search ${oneStore.name}` : 'Search apps'} />
-			<div className="chips" role="tablist" aria-label="Categories">
+			<CategoryChips label="Categories">
 				{['all', ...(oneStore ? [] : [PLUGINS]), ...categories].map((c) => (
 					<button
 						key={c}
@@ -165,7 +166,7 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 						{c === 'all' ? 'Discover' : c === PLUGINS ? 'Omarchy plugins' : label(c)}
 					</button>
 				))}
-			</div>
+			</CategoryChips>
 			{problem && (
 				<div className="error" role="alert">
 					<Icon name="alert" size={18} />

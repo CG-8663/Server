@@ -163,8 +163,6 @@ function snaps(metrics: SwarmMetrics | null | undefined) {
 	return swarmGaugeItems(metrics).map((g) => ({name: g.k, percent: g.p, ready: g.ready}))
 }
 
-
-
 function ActionRow({
 	kind,
 	access,

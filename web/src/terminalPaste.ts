@@ -1,5 +1,7 @@
 // A clipboard paste must be taken once. xterm clears its hidden field but does not cancel the
 // paste, so the browser inserts the text there anyway and then keeps delivering the last character.
+// An empty or missing clipboard is cancelled too: some phones fire paste on focus with no text,
+// and leaving that event alone still inserts a character and then repeats it.
 // Insert clipboard text in place of the selection, keeping whatever sits after the caret.
 export function pasteInto(value: string, start: number, end: number, text: string): string {
 	const len = value.length
@@ -10,6 +12,6 @@ export function pasteInto(value: string, start: number, end: number, text: strin
 }
 
 export function terminalPasteDecision(clipboardText: string | null): {prevent: boolean; text: string} {
-	if (clipboardText == null || clipboardText === '') return {prevent: false, text: ''}
+	if (clipboardText == null || clipboardText === '') return {prevent: true, text: ''}
 	return {prevent: true, text: clipboardText}
 }

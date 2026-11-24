@@ -73,7 +73,7 @@ Sign-in, devices, appearance, and updating My Own Data Center belong to the prod
 
 ### Alerts
 
-When a measure crosses a warning or a danger, Home shows it. Opening it names the machines. The interface does not hide a full disk, a hot CPU, or a low battery behind a separate tool. The gauge is one component. On Home it can be opened. On a machine page the same gauge is shown and that click is off.
+When a measure crosses a warning or a danger, Home shows it on the gauge. Opening it names the machines. The interface does not hide a full disk, a hot CPU, or a low battery behind a separate tool. Home's gauges stay aggregates. On a machine, a tap cycles the same readings through one line, three lines, and gauges. That choice belongs to the account. A machine does not say "Tap for details".
 
 The desktop has a Home window with that same screen. The Machines window is the same Machines screen the phone uses. When the window is wide enough, the list stays beside the open machine. The lower part of every machine page is a tab strip, on the phone and on the desktop. A tab is there only when that machine can do the job.
 

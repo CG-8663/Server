@@ -337,9 +337,14 @@ for bad in ("../", "Docs/../../x"):
         raise SystemExit("escaped " + bad)
     except RuntimeError:
         pass
+# Uploads work on Windows too (a temporary file, then a rename that never replaces).
+prep = agent.prepare_write("Docs/b.txt", 3, home={home!r})
+os.write(prep["fd"], b"new")
+agent.commit_write(prep)
+assert open(os.path.join({home!r}, "Docs", "b.txt"), "rb").read() == b"new"
 try:
-    agent.prepare_write("Docs/b.txt", 3, home={home!r})
-    raise SystemExit("upload should be refused")
+    agent.prepare_write("Docs/a.txt", 3, home={home!r})
+    raise SystemExit("an existing file was about to be replaced")
 except RuntimeError:
     pass
 print("ok")

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import {execFile, execFileSync, spawn} from 'node:child_process'
 import {createHash, randomBytes} from 'node:crypto'
 import {promisify} from 'node:util'
-import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, rm, stat, writeFile, readdir} from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -147,6 +147,13 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		assert.equal(p.abilities.storage, true)
 	})
 
+	test('pairing can allow virtual machines', async () => {
+		const on = await pair({terminal: false, desktop: false, manage: false, vms: true})
+		assert.equal(on.abilities.vms, true)
+		const off = await pair({terminal: true})
+		assert.equal(off.abilities.vms, false)
+	})
+
 	test('a computer joins with the code (once), with what both sides allow', async () => {
 		const p = await pair({terminal: true, desktop: true, manage: true})
 		await trust(p.ca)
@@ -155,12 +162,22 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		assert.equal(name, os.hostname())
 		const cfg = JSON.parse(await readFile(join(agentHome, '.config/omarchy-connector/config.json'), 'utf8'))
 		assert.equal((await stat(join(agentHome, '.config/omarchy-connector/config.json'))).mode & 0o777, 0o600)
-		assert.deepEqual(cfg.abilities, {terminal: true, desktop: false, manage: true, storage: false, backup: false, services: false, files: false})
+		assert.deepEqual(cfg.abilities, {terminal: true, desktop: false, manage: true, storage: false, backup: false, services: false, files: false, vms: false})
 		// The same code again: refused.
 		await assert.rejects(runAgent(['enroll', server(), p.token, 'terminal']), /isn’t valid any more|already used|expired/)
 		const [a] = await q('swarm.list')
-		assert.deepEqual(a.allowed, {terminal: true, desktop: false, manage: true, storage: false, backup: false, services: false, files: false})
+		assert.deepEqual(a.allowed, {terminal: true, desktop: false, manage: true, storage: false, backup: false, services: false, files: false, vms: false})
 		assert.equal(a.online, false)
+	})
+
+	test('setAbilities cannot grant vms that was not allowed at join', async () => {
+		const [a] = await q('swarm.list')
+		assert.equal(a.allowed.vms, false)
+		await assert.rejects(call('swarm.setAbilities', {id: a.id, vms: true}), /wasn’t allowed vms/)
+	})
+
+	test('swarm.vms.status refuses an unknown computer', async () => {
+		await assert.rejects(q('swarm.vms.status', {id: 'abcdefabcdef'}), /isn’t in your swarm/)
 	})
 
 	test('it connects, says what it is, and reports every few seconds', async () => {
@@ -308,6 +325,47 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		// The VNC server listens only on a socket in the connector's private runtime folder, no port.
 		const sockDir = join(agentHome, 'run/omarchy-connector')
 		assert.equal((await stat(sockDir)).mode & 0o777, 0o700)
+	})
+	// A Wayland desktop (sway, headless) shared through wayvnc, the way Omarchy's Hyprland is.
+	const hasWayland = (() => {
+		try {
+			execFileSync('sh', ['-c', 'command -v sway && command -v wayvnc'])
+			return true
+		} catch {
+			return false
+		}
+	})()
+	test('desktop: a Wayland desktop (wayvnc on a private socket) reaches the browser, even with another wayvnc running', {skip: !hasWayland && 'sway and wayvnc are needed'}, async (t) => {
+		agentProc?.kill()
+		await rm(join(agentHome, '.config/omarchy-connector/config.json'), {force: true})
+		const runtime = join(agentHome, 'run')
+		await mkdir(runtime, {recursive: true, mode: 0o700})
+		const sway = spawn('sway', ['-c', '/dev/null'], {env: {...agentEnv(), WLR_BACKENDS: 'headless', WLR_LIBINPUT_NO_DEVICES: '1', WLR_RENDERER: 'pixman', WAYLAND_DISPLAY: ''}, stdio: 'ignore'})
+		t.after(() => sway.kill())
+		const display = await until(async () => (await readdir(runtime)).find((n) => /^wayland-\d+$/.test(n)))
+		// Someone's own wayvnc already holds the default control socket (MODC's desktop sharing does).
+		const other = spawn('wayvnc', ['--unix-socket', join(runtime, 'other-vnc.sock')], {env: {...agentEnv(), WAYLAND_DISPLAY: display}, stdio: 'ignore'})
+		t.after(() => other.kill())
+		await until(async () => stat(join(runtime, 'other-vnc.sock')).then(() => true))
+		const p = await pair({terminal: false, desktop: true, manage: false})
+		await trust(p.ca)
+		await runAgent(['enroll', server(), p.token, 'desktop'])
+		startAgent()
+		t.after(() => agentProc.kill())
+		const a = await until(async () => {
+			const x = (await q('swarm.list')).find((y) => y.online && y.allowed.desktop)
+			return x?.info?.desktop?.kind === 'wlroots' && x
+		})
+		assert.equal(a.info.desktop.ok, true)
+		assert.equal(await q('swarm.desktopCheck', {id: a.id}), true)
+		for (let i = 0; i < 2; i++) {
+			// Twice: leaving and opening it again works too.
+			const ws = await browserWs('machines', {machineId: `agent-${a.id}`})
+			const first = await new Promise((r, j) => (ws.once('message', (d) => r(Buffer.from(d))), ws.once('close', (c, why) => j(new Error(`closed ${c} ${why}`)))))
+			assert.match(first.toString('latin1'), /^RFB 003\.00\d\n/)
+			ws.close()
+			await new Promise((r) => setTimeout(r, 300))
+		}
 	})
 	test('backups: a computer backs up chosen folders to the server, can’t delete them, and restores into ~/Restored', {skip: !backupIt && 'set OMARCHY_BACKUP_IT=1, OMARCHY_BACKUP_RESTIC and OMARCHY_BACKUP_SMB', timeout: 300_000}, async () => {
 		const [hostport, share, username, password] = String(process.env.OMARCHY_BACKUP_SMB).split(' ')
@@ -562,6 +620,62 @@ describe('swarm close reasons', () => {
 				vnc.serverSide.terminate()
 				await pty.close()
 				await vnc.close()
+			}
+		})
+	})
+
+	test('vms allowed at join can be switched off and back on', async () => {
+		const allowed = {terminal: false, desktop: false, manage: false, storage: false, backup: false, services: false, files: false, vms: true}
+		await withAgent({name: 'pc', allowed, on: {...allowed}}, async ({c, id}) => {
+			await c.procedures['swarm.setAbilities'].run({id, vms: false})
+			let row = (await c.procedures['swarm.list'].run()).find((a) => a.id === id)
+			assert.equal(row.on.vms, false)
+			await c.procedures['swarm.setAbilities'].run({id, vms: true})
+			row = (await c.procedures['swarm.list'].run()).find((a) => a.id === id)
+			assert.equal(row.on.vms, true)
+		})
+	})
+
+	test('a guest console channel asks for vms and passes the guest id', async () => {
+		const allowed = {...abilities, vms: true, desktop: false}
+		await withAgent({name: 'pc', allowed, on: {...allowed}}, async ({c, id, agentWs}) => {
+			const bad = await browserSocket()
+			try {
+				const badClosed = closedAs(bad.client)
+				c.openChannel(id, 'vnc', bad.serverSide, {guest: '../etc'})
+				const badGot = await badClosed
+				assert.equal(badGot.code, 1011)
+			} finally {
+				await bad.close()
+			}
+			const browser = await browserSocket()
+			try {
+				const opened = new Promise((r) => agentWs.on('message', function onOpen(d) {
+					const m = JSON.parse(String(d))
+					if (m.op === 'open') (agentWs.off('message', onOpen), r(m))
+				}))
+				c.openChannel(id, 'vnc', browser.serverSide, {guest: 'abcd1234'})
+				const open = await opened
+				assert.equal(open.kind, 'vnc')
+				assert.equal(open.guest, 'abcd1234')
+			} finally {
+				// An open socket keeps the browser's server from finishing close, so the failure never reports.
+				browser.client.terminate()
+				browser.serverSide.terminate()
+				await browser.close()
+			}
+		})
+		const desktopOnly = {...abilities, desktop: true, vms: false}
+		await withAgent({name: 'pc', allowed: desktopOnly, on: {...desktopOnly}}, async ({c, id}) => {
+			const browser = await browserSocket()
+			try {
+				const closed = closedAs(browser.client)
+				c.openChannel(id, 'vnc', browser.serverSide, {guest: 'abcd1234'})
+				const got = await closed
+				assert.equal(got.code, 1011)
+				assert.equal(got.reason.toString('utf8'), 'Virtual machines isn’t switched on for pc')
+			} finally {
+				await browser.close()
 			}
 		})
 	})

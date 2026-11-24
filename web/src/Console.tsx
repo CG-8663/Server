@@ -13,7 +13,8 @@ import {useCallback, useEffect, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
-import {mutate, type Machine} from './api'
+import {mutate, query, type Machine} from './api'
+import {HyprlandView, supportsWebCodecs, type HyprlandStatus, type HyprlandWindow} from './HyprlandView'
 import {clipImage, clipText} from './clips'
 import {consoleShouldTakeFocus} from './consoleFocus'
 import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, consoleFailureMessage, effectiveConsoleScale, handleConsoleWheel, keysymOfChar, mouseButtonFromEvent, PASTE_STEP_MS, pasteKeySequence, pasteKeySteps, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, shouldSendConsoleInput, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
@@ -144,6 +145,53 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	const lastSuperTap = useRef(0)
 	const remoteClip = useRef('') // what the machine's clipboard holds, as far as we know
 	const [attempt, setAttempt] = useState(0)
+	const [hyprStatus, setHyprStatus] = useState<HyprlandStatus | null>(null)
+	const [hyprWindows, setHyprWindows] = useState<HyprlandWindow[]>([])
+	const [hyprTarget, setHyprTarget] = useState<{mode: 'output' | 'window'; address: string; title: string}>({mode: 'output', address: '', title: 'Full Desktop'})
+	const [renderMode, setRenderMode] = useState<'auto' | 'direct' | 'vnc'>(() => {
+		try {
+			const v = localStorage.getItem('omarchy-server:desktop-render')
+			return v === 'vnc' || v === 'direct' ? v : 'auto'
+		} catch {
+			return 'auto'
+		}
+	})
+	const canDirectGpu = machine.id === 'desktop' && supportsWebCodecs() && !!hyprStatus?.available
+	const directGpu = canDirectGpu && renderMode !== 'vnc'
+	const switchRenderMode = (next: 'direct' | 'vnc') => {
+		setRenderMode(next)
+		try {
+			localStorage.setItem('omarchy-server:desktop-render', next)
+		} catch {}
+	}
+	useEffect(() => {
+		if (machine.id !== 'desktop' || !supportsWebCodecs()) return
+		let gone = false
+		query<HyprlandStatus>('hyprland.status')
+			.then((st) => {
+				if (!gone) setHyprStatus(st)
+			})
+			.catch(() => {})
+		return () => {
+			gone = true
+		}
+	}, [machine.id])
+	useEffect(() => {
+		if (!directGpu) return
+		let gone = false
+		const load = () =>
+			query<HyprlandWindow[]>('hyprland.windows')
+				.then((list) => {
+					if (!gone) setHyprWindows(list)
+				})
+				.catch(() => {})
+		load()
+		const t = window.setInterval(load, 5000)
+		return () => {
+			gone = true
+			window.clearInterval(t)
+		}
+	}, [directGpu])
 	const [mode, setModeState] = useState<Mode>(readMode)
 	const [zoomLabel, setZoomLabel] = useState(100)
 	const [keyboardOpen, setKeyboardOpen] = useState(false)
@@ -165,6 +213,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 
 	// ---- connection ---------------------------------------------------------------
 	useEffect(() => {
+		if (directGpu) return
 		let disposed = false
 		let retry: number | undefined
 		let rfb: InstanceType<RFBClass> | undefined
@@ -287,7 +336,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			rfbRef.current = undefined
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [machine.id, attempt])
+	}, [machine.id, attempt, directGpu])
 
 	// ---- desktop console ---------------------------------------------------------------
 	function applyScale(r: InstanceType<RFBClass>, sc: Scale) {
@@ -1207,6 +1256,31 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	]
 	const live = state === 'connected'
 
+	if (directGpu) {
+		return createPortal(
+			<div
+				ref={rootRef}
+				className={`console${embedded ? ' embedded' : ''}${deskUi ? ' desk-ui' : ''}${fullscreen ? ' fs' : ''}`}
+				role="dialog"
+				aria-modal={!embedded}
+				aria-label={`${machine.name} direct GPU console`}
+			>
+				<HyprlandView
+					mode={hyprTarget.mode}
+					address={hyprTarget.address}
+					fps={60}
+					bitrate={10000}
+					title={hyprTarget.title}
+					windows={hyprWindows}
+					onSelectTarget={(next) => setHyprTarget(next)}
+					onFallbackVnc={() => switchRenderMode('vnc')}
+					onClose={embedded ? undefined : onClose}
+				/>
+			</div>,
+			portalRoot,
+		)
+	}
+
 	return createPortal(
 		<div
 			ref={rootRef}
@@ -1243,6 +1317,12 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 						</button>
 					</div>
 					<span className="ct-spacer" />
+					{canDirectGpu && (
+						<button className="ct-btn" onClick={() => switchRenderMode('direct')} title="Render Hyprland directly with GPU WebCodecs instead of VNC">
+							<Icon name="gpu" size={16} />
+							Direct GPU
+						</button>
+					)}
 					<div className="ct-menu-wrap">
 						<button className={`ct-btn${keysOpen ? ' on' : ''}`} disabled={!live} onClick={() => setKeysOpen((o) => !o)} aria-expanded={keysOpen}>
 							<Icon name="keyboard" size={17} />

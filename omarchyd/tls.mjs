@@ -338,7 +338,8 @@ export function dualProtocolServer(server, getContext) {
 	// Every connection, so a restart can end them (net.Server.close() waits for all of them to close,
 	// and an open WebSocket never does).
 	const sockets = new Set()
-	const front = net.createServer((socket) => {
+	const front = net.createServer({noDelay: true}, (socket) => {
+		socket.setNoDelay(true)
 		sockets.add(socket)
 		socket.once('close', () => sockets.delete(socket))
 		socket.once('error', () => socket.destroy())
@@ -355,6 +356,16 @@ export function dualProtocolServer(server, getContext) {
 					write(chunk, enc, cb) {
 						socket.write(chunk, enc, cb)
 					},
+					writev(chunks, cb) {
+						socket.cork()
+						for (let i = 0; i < chunks.length - 1; i++) {
+							socket.write(chunks[i].chunk, chunks[i].encoding)
+						}
+						const last = chunks[chunks.length - 1]
+						if (last) socket.write(last.chunk, last.encoding, cb)
+						else cb()
+						process.nextTick(() => socket.uncork())
+					},
 					final(cb) {
 						socket.end(cb)
 					},
@@ -370,6 +381,7 @@ export function dualProtocolServer(server, getContext) {
 				socket.on('close', () => stream.destroy())
 				const secure = new tls.TLSSocket(stream, {isServer: true, secureContext: ctx, ALPNProtocols: ['http/1.1']})
 				for (const k of ['remoteAddress', 'remotePort', 'remoteFamily', 'localAddress', 'localPort']) Object.defineProperty(secure, k, {get: () => socket[k]})
+				secure.setNoDelay = (noDelay = true) => (socket.setNoDelay(noDelay), secure)
 				secure.on('error', () => secure.destroy())
 				stream.push(first)
 				socket.resume()

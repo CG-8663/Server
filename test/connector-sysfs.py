@@ -480,6 +480,24 @@ class Sampler(unittest.TestCase):
         self.assertEqual(n["cpu"], 1)
         self.assertTrue(s.active())
 
+    def test_metrics_are_pushed_until_the_server_first_sends_watch(self):
+        # A server older than 0.9.52 never sends watch; the connector must still report.
+        s = agent.create_sampler(now=lambda: 0, read={"cpu": lambda: 1.0}, spawn=lambda target: object())
+        conn = agent.Connection({"abilities": {}})
+        conn.pkg = "pacman"
+        sent = []
+        conn.send = sent.append
+        conn._report_step(s, 0, 1)
+        self.assertEqual([m["op"] for m in sent], ["metrics"])
+        self.assertTrue(s.active())
+        # Once the server has asked with watch, pushing is driven by its reads again.
+        conn.sampler = s
+        conn.handle({"op": "watch"})
+        sent.clear()
+        s.stop()
+        conn._report_step(s, 0, 1)
+        self.assertEqual(sent, [])
+
     def test_failing_read_waits_for_its_interval(self):
         n = {"temp": 0}
 

@@ -11,6 +11,7 @@ class ReportHelloInterval(unittest.TestCase):
     # #432: refresh hello once every 5 minutes, not 3-4 times per 10s window.
     def test_hello_sent_once_per_300_seconds(self):
         conn = agent.Connection({"abilities": {}})
+        conn._watched = True  # a server that already sent watch
         sent = []
         conn.send = sent.append
         sampler = mock.Mock()
@@ -25,6 +26,7 @@ class ReportHelloInterval(unittest.TestCase):
 
     def test_no_burst_after_300_second_mark(self):
         conn = agent.Connection({"abilities": {}})
+        conn._watched = True  # a server that already sent watch
         sent = []
         conn.send = sent.append
         sampler = mock.Mock()
@@ -45,6 +47,7 @@ class DesktopSessionReported(unittest.TestCase):
     # Signing in to the desktop after the connector started is reported within seconds.
     def test_hello_when_the_desktop_appears(self):
         conn = agent.Connection({"abilities": {"desktop": True}})
+        conn._watched = True  # a server that already sent watch
         sent = []
         conn.send = sent.append
         sampler = mock.Mock()
@@ -59,6 +62,7 @@ class DesktopSessionReported(unittest.TestCase):
 
     def test_nothing_extra_without_the_desktop_ability(self):
         conn = agent.Connection({"abilities": {}})
+        conn._watched = True  # a server that already sent watch
         sent = []
         conn.send = sent.append
         sampler = mock.Mock()
@@ -111,3 +115,77 @@ class ScreenSharingStarts(unittest.TestCase):
             self._fake(d, "print('ERROR: Failed to connect to the Wayland display', file=sys.stderr)\nprint(\"Use the '-S' option\", file=sys.stderr)\nsys.exit(1)\n")
             with self.assertRaisesRegex(RuntimeError, "wayvnc.*Failed to connect to the Wayland display"):
                 self._start(d)
+
+
+class FindsTheLiveDesktop(unittest.TestCase):
+    # A stale Hyprland folder and an old wayland-0 (from before a restart) aren't picked over the
+    # session that's running: that made Desktop fail on Omarchy.
+    def test_live_hyprland_and_its_socket(self):
+        import tempfile
+        import time
+        with tempfile.TemporaryDirectory() as run:
+            for name in ("wayland-0", "wayland-1", "wayland-1.lock"):
+                open(os.path.join(run, name), "w").close()
+            old = os.path.join(run, "hypr", "old_sig")
+            live = os.path.join(run, "hypr", "live_sig")
+            os.makedirs(old)
+            os.makedirs(live)
+            with open(os.path.join(old, "hyprland.lock"), "w") as f:
+                f.write("999999999\nwayland-0\n")
+            with open(os.path.join(live, "hyprland.lock"), "w") as f:
+                f.write(f"{os.getpid()}\nwayland-1\n")
+            now = time.time()
+            os.utime(old, (now, now))  # the stale one is even the newest folder
+            os.utime(live, (now - 60, now - 60))
+            with mock.patch.object(agent, "RUNTIME", run):
+                self.assertEqual(agent._hypr_signature(), "live_sig")
+                self.assertEqual(agent._wayland_display(), "wayland-1")
+                self.assertEqual(agent.desktop_kind()["kind"], "wlroots")
+
+    def test_without_hyprland_the_newest_locked_socket(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as run:
+            for name in ("wayland-0", "wayland-2", "wayland-2.lock"):
+                open(os.path.join(run, name), "w").close()
+            with mock.patch.object(agent, "RUNTIME", run):
+                self.assertEqual(agent._wayland_display(), "wayland-2")
+                self.assertIsNone(agent._hypr_signature())
+
+    def test_an_older_hyprland_without_a_lock_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as run:
+            open(os.path.join(run, "wayland-1"), "w").close()
+            os.makedirs(os.path.join(run, "hypr", "sig"))
+            with mock.patch.object(agent, "RUNTIME", run):
+                self.assertEqual(agent._hypr_signature(), "sig")
+                self.assertEqual(agent._wayland_display(), "wayland-1")
+
+
+class MacReadings(unittest.TestCase):
+    """A Mac has no /proc or /sys: the connector reads sysctl, vm_stat, ifconfig and pmset."""
+
+    def test_memory_matches_activity_monitor(self):
+        vm = 'Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                               10000.\nPages active:                            200000.\nPages inactive:                          150000.\nPages wired down:                        100000.\n"Translation faults":                   9.\nPages occupied by compressor:             50000.\n'
+        mem, swap = agent._mac_meminfo(vm_stat=vm, memsize=str(16 * 1024**3), swap="total = 2048.00M  used = 512.50M  free = 1535.50M  (encrypted)")
+        self.assertEqual(mem, {"total": 16 * 1024**3, "used": 350000 * 16384})
+        self.assertEqual(swap, {"total": 2048 * 1024**2, "used": int(512.5 * 1024**2)})
+
+    def test_wake_addresses_come_from_the_real_adapters(self):
+        out = "lo0: flags=8049<UP>\n\tinet 127.0.0.1\nen0: flags=8863<UP>\n\tether a8:20:66:12:34:56\nawdl0: flags=8943<UP>\n\tether 3e:11:22:33:44:55\nbridge0: flags=8863\n\tether 36:00:00:00:00:01\nen1: flags=8963\n\tether a8:20:66:12:34:57\n"
+        self.assertEqual(agent._mac_macs(out), ["a8:20:66:12:34:56", "a8:20:66:12:34:57"])
+
+    def test_uptime_battery_and_cpu(self):
+        now = int(agent.time.time())
+        self.assertAlmostEqual(agent._mac_uptime(f"{{ sec = {now - 3600}, usec = 0 }} Mon Nov 23 09:00:00 2026"), 3600, delta=5)
+        batt = agent._mac_batteries("Now drawing from 'Battery Power'\n -InternalBattery-0 (id=123)\t82%; discharging; 4:31 remaining present: true\n")
+        self.assertEqual((batt[0]["percent"], batt[0]["status"], batt[0]["secondsRemaining"]), (82, "discharging", 4 * 3600 + 31 * 60))
+        self.assertEqual(agent._mac_batteries(" -InternalBattery-0\t100%; charged; 0:00 remaining\n")[0]["status"], "full")
+        agent._mac_cpu_last = None
+        self.assertIsNone(agent._mac_cpu_percent((100, 50, 850, 0)))
+        self.assertEqual(agent._mac_cpu_percent((130, 70, 900, 0)), 50.0)
+
+    def test_a_mac_offers_terminal_files_and_power(self):
+        everything = {k: True for k in agent.ABILITY_NAMES}
+        got = agent.supported_abilities(everything, windows=False, mac=True)
+        self.assertEqual(sorted(k for k, v in got.items() if v), ["files", "manage", "terminal"])
+        self.assertEqual(agent.supported_abilities(everything, windows=False, mac=False), everything)

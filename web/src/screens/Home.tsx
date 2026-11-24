@@ -5,7 +5,7 @@ import {batteryColor, batteryGaugeItem, combineBatteries} from '../battery'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useApps, useBattery, useBootstrap, useCpu, useDisk, useGpus, useMachines, useMemory, useTemp, useUptime, useUser} from '../data'
 import {computerSample, fleetRings, samplePercent, serverSample, type FleetRings, type GaugeKind} from '../fleet/aggregate'
-import {fleetList, guestFleetInput, type FleetMember} from '../fleet/list'
+import {computerFleetInput, fleetList, guestFleetInput, type FleetMember} from '../fleet/list'
 import {openFleetMember} from '../fleet/openMember'
 import {usePins} from '../fleet/PinButton'
 import {pinKey, type DashboardPin} from '../fleet/pins'
@@ -118,8 +118,8 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 		() =>
 			fleetList({
 				server: {name: serverName},
-				computers: (swarm.data ?? []).filter((a) => !isGuestAgent(a)).map((a) => ({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})),
-				guests: (machines.data ?? []).map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state, connector: !!guestAgent(swarm.data ?? [], m.id)})),
+				computers: (swarm.data ?? []).filter((a) => !isGuestAgent(a)).map((a) => computerFleetInput({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on, libvirt: a.libvirt === true})),
+				guests: (machines.data ?? []).map((m) => guestFleetInput({id: m.id, name: m.name, state: m.state, hostId: m.hostId, connector: !!guestAgent(swarm.data ?? [], m.id)})),
 			}),
 		[serverName, swarm.data, machines.data],
 	)

@@ -4,6 +4,74 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.78',
+		date: '2026-11-24',
+		title: 'Linux guests, Square panes, and a steadier stream',
+		added: [
+			'A Linux guest can install the connector, on this server or on a joined computer. It runs on Linux with systemd. Windows, macOS, and Home Assistant do not run it.',
+			'Square panes resize when you drag the gap between them.',
+		],
+		fixed: [
+			'The guest installer checks this server’s certificate.',
+			'A machine’s usage rate is taken when the reading starts, so a slow reading does not shrink the percentage.',
+			'On a slow connection, the desktop stream gives audio a little more room, and the stats line shows the jitter. A local network keeps the short cushion.',
+		],
+	},
+	{
+		version: '0.9.77',
+		date: '2026-11-24',
+		title: 'Hyprland 0.57, and stream profiles',
+		fixed: [
+			'Opening an app on this server’s screen, and moving it between workspaces, works on Hyprland 0.57.',
+		],
+		added: [
+			'The screen can try each hardware codec and remember the one that plays smoothly on this device. Only the owner can do that.',
+		],
+	},
+	{
+		version: '0.9.76',
+		date: '2026-11-24',
+		title: 'This server’s screen, and readings from an older server',
+		added: [
+			'This server’s screen can be drawn from the Hyprland session you are signed in to. Only the owner can open it.',
+			'An installed desktop app can open on that screen. A launch that cannot be shown there is refused. The clipboard on that screen is the desktop’s clipboard.',
+		],
+		fixed: [
+			'A connector newer than its server keeps sending readings until that server asks it to watch. After that, it sends only while a screen is open.',
+			'Store and plugin categories stay on one line. The arrows move what does not fit, and a chip cut by the edge fades out.',
+		],
+	},
+	{
+		version: '0.9.75',
+		date: '2026-11-24',
+		title: 'Macs, ARM servers, and a desktop you can open',
+		added: [
+			'Add a computer only asks what this server may do. The same command works on any Linux (it finds the distribution and its package manager itself) and now on a Mac; Windows gets its PowerShell command. Each computer keeps what it can do there.',
+			'Macs can join: terminal, files (with uploads), power, and their CPU, memory, disks and battery. No sudo; it runs while you’re signed in.',
+			'Windows computers can take uploads in Files.',
+			'My Own Data Center installs on ARM (Omarchy on an Apple Silicon Mac, or another 64-bit ARM computer). Machines there run ARM images: Ubuntu 24.04 and 26.04, Debian 13.',
+			'A connected computer’s card has a Desktop button that opens its screen straight away.',
+		],
+		fixed: [
+			'Opening a connected computer’s desktop finds the session you’re actually signed in to, even when an old Hyprland or Wayland session left files behind. When it can’t open, it says why and offers the fix: allow the desktop, or install screen sharing in one tap.',
+			'Updating a Windows computer’s permissions gives you a PowerShell command.',
+		],
+	},
+	{
+		version: '0.9.74',
+		date: '2026-11-23',
+		title: 'Machines, sessions, and the desktop',
+		fixed: [
+			'A Windows ISO you install by hand gets a SATA disk and an e1000e network card, so Setup can see them. An IDE drive is refused on a q35 machine before it is saved.',
+			'Cloning a machine keeps the source’s history until the copy finishes. A rollback shows the disk size the image actually has, and a live backup’s progress follows the units virsh prints.',
+			'The Machine Summary page loads that machine’s chart only. The running count is this server’s machines.',
+			'Using My Own Data Center keeps the sign-in behind Files and consoles alive. A renewal the server refuses is tried again.',
+			'A new chat stays the same chat when the first reply fails. A reply that never finishes is cut off, and you can stop it.',
+			'Files and Settings still open when the browser blocks storage. A new password asks for 8 characters, and a refused update says why.',
+			'An open clock or system menu closes when you click outside it. Accent text stays readable on light and dark themes.',
+		],
+	},
+	{
 		version: '0.9.73',
 		date: '2026-11-23',
 		title: 'Big uploads through a tunnel',
