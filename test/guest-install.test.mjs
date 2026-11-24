@@ -64,9 +64,9 @@ test('guest-exec wraps the paste command as runuser or powershell', () => {
 	assert.deepEqual(linux.args.slice(0, 5), ['-u', 'chris', '--', 'bash', '-lc'])
 	assert.equal(
 		linux.args[5],
-		`curl -fsSL https://example.test/main/connector/install.sh | bash -s -- --server https://192.168.84.81:7780 --ca ${ca} --token tok --allow terminal,desktop,manage,files --source https://example.test`,
+		`curl -fsSL https://example.test/main/connector/install.sh | bash -s -- --server https://192.168.84.81:7780 --ca ${ca} --token tok --allow terminal,desktop,manage,files --source https://example.test --user-enroll-only`,
 	)
-	assert.equal(linux.args[5].includes('--user-enroll-only'), false)
+	assert.equal(linux.args[5].includes('--user-enroll-only'), true)
 	assert.match(
 		connectorInstallCommand({source: '/home/x/omarchy-server', server: 'https://10.1.2.3:7780', ca, token: 't', allow: 'terminal'}),
 		/^curl -fsSLk https:\/\/10\.1\.2\.3:7780\/api\/connector\/install\.sh \| bash -s -- /,

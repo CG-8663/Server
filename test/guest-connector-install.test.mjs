@@ -71,7 +71,7 @@ function fakeAgent() {
 				execs.push(cmd)
 				return {pid: 42}
 			},
-			status: async () => ({exited: false, out: '', err: ''}),
+			status: async () => ({exited: true, exitcode: 0, out: '', err: ''}),
 		}
 	}
 	return {
@@ -227,7 +227,7 @@ test('linux cloud running with qemu-ga starts a connector task through runuser',
 		assert.match(command, new RegExp(`--token ${TOKEN}`))
 		assert.match(command, new RegExp(`--ca ${CA}`))
 		assert.match(command, /--allow terminal,desktop,manage,files/)
-		assert.equal(command.includes('--user-enroll-only'), false)
+		assert.equal(command.includes('--user-enroll-only'), true)
 		const done = await until(async () => {
 			const tasks = await call('machines.tasks')
 			const t = tasks.find((row) => row.id === out.taskId)
@@ -275,6 +275,45 @@ test('windows guests exec powershell with the windows allow list', async () => {
 			const t = tasks.find((row) => row.id === out.taskId)
 			return t?.status === 'ok' ? t : null
 		})
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('guest-exec exit 4 is needs-password and does not start enroll', async () => {
+	const id = 'abcd1234'
+	const secret = 'secret-pw'
+	const execs = []
+	const {root, call} = await open({
+		machines: [record(id)],
+		run: virshList(new Map([[`omarchy-${id}`, 'running']])),
+		qemuAgent: () => ({
+			ping: async () => {},
+			exec: async (cmd) => {
+				execs.push(cmd)
+				return {pid: 42}
+			},
+			status: async () => ({exited: true, exitcode: 4, out: '', err: 'sudo: a terminal is required to read the password'}),
+		}),
+		connector: {
+			pair: async () => fakePair(),
+			list: async () => {
+				throw new Error('enroll must not start')
+			},
+		},
+	})
+	try {
+		const out = await call('machines.installConnector', {id, sudoPassword: secret})
+		assert.equal(out.status, 'needs-password')
+		assert.equal(out.os, 'linux')
+		assert.equal(typeof out.message, 'string')
+		assert.ok(out.message.length > 0)
+		assert.equal(out.message.includes(secret), false)
+		assert.equal(JSON.stringify(out).includes(secret), false)
+		assert.equal(out.taskId, undefined)
+		const tasks = await call('machines.tasks')
+		assert.equal(tasks.some((row) => row.type === 'connector'), false)
+		assert.equal(execs.length, 1)
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}

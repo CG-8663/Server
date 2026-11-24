@@ -959,10 +959,20 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (!url) throw new RpcError('PRECONDITION_FAILED', 'This server has no address the guest can reach.')
 		const started = await agent.exec(guestConnectorExec({os, username, source: pair.source, server: url, ca: pair.ca, token: pair.token, allow: connectorAllowList(os, abilities)}))
 		if (!started?.pid) throw new RpcError('BAD_GATEWAY', `${m.name} didn’t start the connector installer`)
+		const deadline = Date.now() + connectorEnrollTimeoutMs
+		const tick = Math.min(1_000, Math.max(25, Math.floor(connectorEnrollTimeoutMs / 4)))
+		let result
+		while (Date.now() < deadline) {
+			result = await agent.status(started.pid)
+			if (result?.exited) break
+			await new Promise((r) => setTimeout(r, tick))
+		}
+		if (!result?.exited) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish the connector installer`)
+		if (result.exitcode === 4) return {status: 'needs-password', os, message: 'This computer needs a password to finish installing.'}
+		if (result.exitcode !== 0) throw new RpcError('PRECONDITION_FAILED', `${m.name} couldn’t install the connector.`)
 		const poll = async () => {
-			const deadline = Date.now() + connectorEnrollTimeoutMs
-			const tick = Math.min(1_000, Math.max(25, Math.floor(connectorEnrollTimeoutMs / 4)))
-			while (Date.now() < deadline) {
+			const joinUntil = Date.now() + connectorEnrollTimeoutMs
+			while (Date.now() < joinUntil) {
 				const agents = await connector.list().catch(() => [])
 				if ((Array.isArray(agents) ? agents : []).some((a) => a?.guestOf === m.id)) return
 				await new Promise((r) => setTimeout(r, tick))

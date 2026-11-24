@@ -74,5 +74,5 @@ export function connectorInstallCommandWindows({source, server, ca, token, allow
 
 export function guestConnectorExec({os, username, source, server, ca, token, allow}) {
 	if (os === 'windows') return {path: 'powershell.exe', args: ['-NoProfile', '-Command', connectorInstallCommandWindows({source, server, ca, token, allow})]}
-	return {path: 'runuser', args: ['-u', username, '--', 'bash', '-lc', connectorInstallCommand({source, server, ca, token, allow})]}
+	return {path: 'runuser', args: ['-u', username, '--', 'bash', '-lc', `${connectorInstallCommand({source, server, ca, token, allow})} --user-enroll-only`]}
 }
