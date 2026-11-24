@@ -48,7 +48,7 @@ done
 
 # Raise this when a change needs the installer run again (packages, the storage helper, services,
 # firewall rules). While My Own Data Center is in beta, the app asks the owner to run it at their next sign-in.
-INSTALLER_REVISION=4
+INSTALLER_REVISION=5
 # Started from the app's "run the installer" prompt, in its own terminal: that terminal runs inside
 # omarchyd, so restarting omarchyd here would stop this script partway. Restart once it's done instead.
 FROM_APP="${OMARCHY_SERVER_FROM_APP:-0}"
@@ -407,6 +407,8 @@ ExecStart=$NODE $APP/omarchyd/cli.mjs serve --port 2021 --web-port $PORT --data 
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=10
+# virsh/qemu/passt stay in this cgroup; kill only node so guests survive a restart.
+KillMode=process
 
 [Install]
 WantedBy=default.target
