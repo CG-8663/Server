@@ -15,11 +15,22 @@ export type ManagerStat = {
 	text: string
 	percent: number | null
 	ready: boolean
-	/** A dial can stand in for this square. Temperature and a size-only disk cannot. */
+	/** Every reading has a dial. A percent fills the ring. A temperature or a size uses the reading itself. */
 	dial: boolean
 }
 
 const ICONS = new Set<ManagerStat['icon']>(['cpu', 'memory', 'disk', 'gpu', 'battery', 'thermo'])
+
+/** Browser-only. Squares are the first visit. Gauges stay chosen across machines. */
+export const MANAGER_DIALS_KEY = 'omarchy-server:mm-dials'
+
+export function loadManagerDials(raw: string | null): boolean {
+	return raw === '1'
+}
+
+export function saveManagerDials(on: boolean): '1' | '0' {
+	return on ? '1' : '0'
+}
 
 export function passesFilter(kind: ManagerKind, filter: ManagerFilter, facts?: {offline?: boolean; online?: boolean; health?: ManagerHealth}): boolean {
 	if (filter === 'all') return true
@@ -240,12 +251,56 @@ export function managerStats(input: {
 		dial: true,
 	}))
 	if (!stats.some((s) => s.label === 'Storage') && input.diskSizeGb != null && input.diskSizeGb > 0) {
-		stats.push({id: 'disk-size', label: 'Storage', icon: 'disk', text: `${input.diskSizeGb} GB`, percent: null, ready: false, dial: false})
+		stats.push({id: 'disk-size', label: 'Storage', icon: 'disk', text: `${input.diskSizeGb} GB`, percent: null, ready: true, dial: true})
 	}
 	if (input.temp != null && Number.isFinite(input.temp)) {
-		stats.push({id: 'temp', label: 'Temperature', icon: 'thermo', text: `${Math.round(input.temp)}°`, percent: null, ready: false, dial: false})
+		stats.push({id: 'temp', label: 'Temperature', icon: 'thermo', text: `${Math.round(input.temp)}°`, percent: null, ready: true, dial: true})
 	}
 	return stats
+}
+
+export type ValueDial = {
+	id: string
+	label: string
+	icon: ManagerStat['icon']
+	value: string
+	unit: string
+	/** 0–100. Temperature uses degrees, capped at 100. A size fills the ring because it is not a usage percent. */
+	fill: number
+	sub: string
+}
+
+/** Temperature and a size-only disk. Percent readings stay on the gauge row they already have. */
+export function valueDials(stats: readonly ManagerStat[]): ValueDial[] {
+	const out: ValueDial[] = []
+	for (const stat of stats) {
+		if (stat.id === 'temp') {
+			const n = Number.parseFloat(stat.text)
+			const rounded = Number.isFinite(n) ? Math.round(n) : null
+			out.push({
+				id: stat.id,
+				label: stat.label,
+				icon: stat.icon,
+				value: rounded == null ? '–' : String(rounded),
+				unit: '°',
+				fill: rounded == null ? 0 : Math.max(0, Math.min(100, rounded)),
+				sub: stat.text,
+			})
+			continue
+		}
+		if (stat.id !== 'disk-size') continue
+		const split = stat.text.lastIndexOf(' ')
+		out.push({
+			id: stat.id,
+			label: stat.label,
+			icon: stat.icon,
+			value: split > 0 ? stat.text.slice(0, split) : stat.text,
+			unit: split > 0 ? stat.text.slice(split + 1) : '',
+			fill: 100,
+			sub: stat.text,
+		})
+	}
+	return out
 }
 
 export type MotionPhase = 'stay' | 'enter' | 'leave'
