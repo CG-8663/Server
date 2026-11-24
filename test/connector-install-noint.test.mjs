@@ -90,9 +90,7 @@ test('--user-enroll-only enrolls without sudo and enables the user unit', {skip}
 test('noninteractive sudo that needs a terminal exits 4 instead of hanging', {skip}, async () => {
 	const home = join(root, 'need-sudo')
 	await mkdir(home)
-	const bin = await stubs({python3: false})
-	const r = install(home, bin, ARGS, {
-		path: bin,
+	const r = install(home, await stubs(), ['--server', 'https://192.168.1.20:7780', '--ca', CA, '--token', 'abc123', '--allow', 'terminal,desktop,manage,files'], {
 		FAKE_SUDO_FAILS: '1',
 		OMARCHY_CONNECTOR_NONINTERACTIVE: '1',
 	})
@@ -103,6 +101,39 @@ test('noninteractive sudo that needs a terminal exits 4 instead of hanging', {sk
 	assert.doesNotMatch(r.out, /Done\./)
 	assert.match(r.out, /password to finish installing|administrator permission/i)
 	assert.doesNotMatch(r.out, /secret-pw|hunter2/)
+})
+
+test('a failed package install warns and still enrolls', {skip}, async () => {
+	const home = join(root, 'pkg-warn')
+	await mkdir(home)
+	const bin = await stubs()
+	const put = async (name, body) => (await writeFile(join(bin, name), `#!/bin/bash\n${body}\n`), chmod(join(bin, name), 0o755))
+	await put(
+		'sudo',
+		`echo "sudo $*" >>"$FAKE_LOG"
+case "$*" in
+	*apt-get*) echo "E: Unable to locate package" >&2; exit 100 ;;
+esac
+exit 0`,
+	)
+	await put('loginctl', 'echo Linger=yes')
+	for (const name of ['mktemp', 'mkdir', 'chmod', 'install', 'mv', 'rm', 'cat', 'grep', 'cp']) {
+		await put(name, `exec /usr/bin/${name} "$@"`)
+	}
+	const r = install(
+		home,
+		bin,
+		['--server', 'https://192.168.1.20:7780', '--ca', CA, '--token', 'abc123', '--allow', 'terminal,desktop,manage,files'],
+		{path: bin, OMARCHY_CONNECTOR_NONINTERACTIVE: '1'},
+	)
+	assert.equal(r.error, undefined, r.out)
+	assert.equal(r.status, 0, r.out)
+	assert.match(r.out, /Couldn't install/)
+	assert.doesNotMatch(r.out, /password to finish installing/)
+	const log = await readFile(r.log, 'utf8')
+	assert.match(log, /sudo -n /)
+	assert.match(log, /enroll https:\/\/192\.168\.1\.20:7780 abc123 terminal,desktop,manage,files$/m)
+	assert.match(log, /systemctl --user enable --now omarchy-connector\.service/)
 })
 
 test('--user-enroll-only with no python3 exits 1, not 4', {skip}, async () => {

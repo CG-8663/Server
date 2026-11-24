@@ -72,7 +72,7 @@ noninteractive() {
 }
 as_root() {
 	if noninteractive; then
-		sudo -n "$@" || need_password "This computer needs a password to finish installing."
+		sudo -n "$@"
 	else
 		sudo "$@"
 	fi
@@ -231,12 +231,12 @@ if has storage && [ "$USER_ENROLL_ONLY" != 1 ]; then
 	say "Installing the storage helper"
 	fetch_connector "$(connector_url helper.py)" "$tmp.helper.py" || die "Couldn't download the storage helper."
 	python_ok "$tmp.helper.py" || die "The downloaded storage helper didn't check out."
-	as_root install -D -m 755 "$tmp.helper.py" /usr/local/libexec/omarchy-connector/helper.py
+	as_root install -D -m 755 "$tmp.helper.py" /usr/local/libexec/omarchy-connector/helper.py || need_password "This computer needs a password to finish installing."
 	rm -f "$tmp.helper.py"
-	as_root tee /etc/sudoers.d/omarchy-connector >/dev/null <<EOF
+	as_root tee /etc/sudoers.d/omarchy-connector >/dev/null <<EOF || need_password "This computer needs a password to finish installing."
 ${USER} ALL=(root) NOPASSWD: /usr/local/libexec/omarchy-connector/helper.py
 EOF
-	as_root chmod 440 /etc/sudoers.d/omarchy-connector
+	as_root chmod 440 /etc/sudoers.d/omarchy-connector || need_password "This computer needs a password to finish installing."
 fi
 
 # 4. Join, with this one-time code.
