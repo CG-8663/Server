@@ -1427,6 +1427,19 @@ test('an imported raw disk is defined as qcow2 only when the copy is qcow2', asy
 	}
 })
 
+test('your own ISOs: a folder with more than 50 ISOs lists only 50', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-isos-'))
+	try {
+		await mkdir(join(root, 'home'), {recursive: true})
+		for (let i = 0; i < 70; i++) await writeFile(join(root, 'home', `disc-${String(i).padStart(2, '0')}.iso`), 'iso')
+		const machines = createMachines({dataDir: join(root, 'data'), run: async (cmd) => (cmd === 'xorriso' ? 'Volume Id    : DISC\n' : ''), kvmDevice: join(root, 'kvm'), files: {resolve: async (p) => ({real: p.replace('/Home', join(root, 'home')), top: 'Home'})}})
+		await machines.ready
+		assert.equal((await machines.procedures['machines.localIsos'].run()).length, 50)
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
 test('a second machine made from an image that is already downloading follows its progress', async () => {
 	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-share-'))
 	try {
