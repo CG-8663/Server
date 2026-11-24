@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 
-import {PRERELEASE_KEY} from '../web/src/prerelease.ts'
 import {
 	filterLabel,
 	filterSlot,
@@ -28,14 +27,18 @@ import {
 
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8')
 
-test('pre-release is a browser switch, and the phone list is the only screen it replaces', async () => {
-	assert.equal(PRERELEASE_KEY, 'omarchy-server:prerelease')
+test('Machines uses the manager list on phone and desktop, and Manage opens the split on desktop', async () => {
 	const settings = await read('../web/src/screens/Settings.tsx')
-	assert.match(settings, /Enable pre-release features/)
-	assert.match(settings, /usePreRelease/)
+	assert.doesNotMatch(settings, /Enable pre-release features/)
+	assert.doesNotMatch(settings, /usePreRelease/)
 	const machines = await read('../web/src/screens/Machines.tsx')
-	assert.match(machines, /usePreRelease\(\) && !useLayout\(\)\.desktop/)
+	assert.doesNotMatch(machines, /usePreRelease/)
+	assert.doesNotMatch(machines, /phoneManager/)
 	assert.match(machines, /<MachineManager/)
+	assert.match(machines, /wide && \(selected \|\| computerId \|\| serverOpen\)/)
+	assert.match(machines, /className="machines-split"/)
+	assert.match(machines, /className="machines-list"/)
+	assert.match(machines, /className="machines-detail"/)
 	const ui = await read('../web/src/fleet/MachineManager.tsx')
 	assert.match(ui, /icon="vm"/)
 	assert.doesNotMatch(ui, /osLook/)
@@ -258,4 +261,13 @@ test('the list uses the account drawing and does not keep a separate dial choice
 	assert.doesNotMatch(filterCollapse, /setDials/)
 	const leaveList = ui.slice(ui.indexOf('if (openId && !matched.includes(openId))'), ui.indexOf('}, [rowKey, openId])'))
 	assert.doesNotMatch(leaveList, /setDials/)
+})
+
+test('a joined computer’s manage page can create a virtual machine', async () => {
+	const swarm = await read('../web/src/swarm/Swarm.tsx')
+	assert.match(swarm, /onCreateVm/)
+	assert.match(swarm, /Create VM/)
+	assert.match(swarm, /Virtual machines/)
+	const machines = await read('../web/src/screens/Machines.tsx')
+	assert.match(machines, /LocalSwarm[\s\S]*onCreateVm=\{setCreateHost\}/)
 })

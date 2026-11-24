@@ -1,4 +1,4 @@
-// Phone Machines list used while pre-release is on. The desktop list is unchanged.
+// Machines list. Manage opens the existing machine page: a sheet on the phone, a split pane on the desktop.
 import {lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode} from 'react'
 import {useQuery} from '@tanstack/react-query'
 

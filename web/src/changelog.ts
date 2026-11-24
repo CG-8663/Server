@@ -73,7 +73,7 @@ export const CHANGELOG: Release[] = [
 			'A Windows ISO you install by hand gets a SATA disk and an e1000e network card, so Setup can see them. An IDE drive is refused on a q35 machine before it is saved.',
 			'Cloning a machine keeps the source’s history until the copy finishes. A rollback shows the disk size the image actually has, and a live backup’s progress follows the units virsh prints.',
 			'The Machine Summary page loads that machine’s chart only. The running count is this server’s machines.',
-			'Using My Own Data Center keeps the sign-in behind Files and consoles alive. A renewal the server refuses is tried again.',
+			'Using My Own Data Center keeps the sign-in behind Files, Terminal, and Desktop alive. A renewal the server refuses is tried again.',
 			'A new chat stays the same chat when the first reply fails. A reply that never finishes is cut off, and you can stop it.',
 			'Files and Settings still open when the browser blocks storage. A new password asks for 8 characters, and a refused update says why.',
 			'An open clock or system menu closes when you click outside it. Accent text stays readable on light and dark themes.',
@@ -148,7 +148,7 @@ export const CHANGELOG: Release[] = [
 		date: '2026-11-22',
 		title: 'Virtual machine controls are back',
 		fixed: [
-			'Each virtual machine in Machines has its controls on its row again: Start or Resume when it’s off, and Console, Shut down, Reboot and Pause when it’s running. Opening a machine that isn’t running goes straight to Power.',
+			'Each virtual machine in Machines has its controls on its row again: Start or Resume when it’s off, and Desktop, Shut down, Reboot and Pause when it’s running. Opening a machine that isn’t running goes straight to Power.',
 			'In Files, the machine you’re browsing from is called Host server.',
 		],
 	},
@@ -181,7 +181,7 @@ export const CHANGELOG: Release[] = [
 		fixed: [
 			'Signing out returns to the signed-out page, and only after sign-out succeeds.',
 			'Opening Terminal again focuses the shell you already have.',
-			'Pasting into the terminal inserts at the cursor. Option keys type the character. On a phone, Back closes a full-screen terminal or console.',
+			'Pasting into the terminal inserts at the cursor. Option keys type the character. On a phone, Back closes a full-screen Terminal or Desktop.',
 			'The phone layout scrolls across the width of the screen. A confirmation sits above the terminal. Files search waits until two characters are typed.',
 			'A request with no body is answered, instead of failing as an internal error. When this computer has no address, that address is left out. A pool on another computer is described as ~/Pools on that computer.',
 		],
@@ -786,8 +786,8 @@ export const CHANGELOG: Release[] = [
 		title: 'The Super key reaches your desktop',
 		added: [
 			'Your Windows / ⌘ / Super key now always reaches the Omarchy desktop and your machines as Super, from any browser that receives it.',
-			'Computers that keep Super for themselves (an Omarchy or Windows desktop): in the console’s Keys menu, choose Right Alt or Right Ctrl to work as Super instead. Your choice is remembered on that browser.',
-			'A Super button in the console toolbar holds Super down until you click it again, so Super + Enter, Super + Space and the rest work from any keyboard.',
+			'Computers that keep Super for themselves (an Omarchy or Windows desktop): in Desktop’s Keys menu, choose Right Alt or Right Ctrl to work as Super instead. Your choice is remembered on that browser.',
+			'A Super button in the Desktop toolbar holds Super down until you click it again, so Super + Enter, Super + Space and the rest work from any keyboard.',
 			'Keys menu shortcuts for the Omarchy desktop: app launcher, Omarchy menu, terminal, close window and all shortcuts.',
 			'On a phone or tablet, the super key works like ctrl and alt: tap it, then the next key. Double tap it for Super on its own.',
 		],
@@ -844,7 +844,7 @@ export const CHANGELOG: Release[] = [
 		date: '2026-11-13',
 		title: 'Machines, the Proxmox way',
 		added: [
-			'On the desktop, Machines looks like Proxmox: a server and machine tree, a toolbar (Start, Shutdown, Reboot, Stop, Pause, Hibernate, Console, Clone, Remove), settings panels and a task log.',
+			'On the desktop, Machines looks like Proxmox: a server and machine tree, a toolbar (Start, Shutdown, Reboot, Stop, Pause, Hibernate, Desktop, Clone, Remove), settings panels and a task log.',
 			'Summary with live CPU, memory, network and disk graphs, plus notes for each machine.',
 			'Hardware: memory in MiB, sockets and cores, CPU type, BIOS (SeaBIOS or UEFI), display, chipset, network model, MAC address and disconnect; add, grow, tune and remove disks; add CD/DVD drives and insert or eject ISOs from your Home folder.',
 			'Options: rename, start at boot with order and delay, boot order (disks, CD/DVD, network), boot menu, protection against deletion, QEMU Guest Agent, tablet pointer, ACPI and KVM.',
@@ -938,7 +938,7 @@ export const CHANGELOG: Release[] = [
 		date: '2026-11-13',
 		title: 'Sign in the desktop from anywhere',
 		added: [
-			'When the Omarchy desktop is at its sign-in screen, its console in Machines now offers “Sign in to the desktop”. Confirm your Omarchy Server password and the desktop signs you in once, the same way Omarchy’s own first boot does. It also clears a lockout after too many wrong passwords.',
+			'When the Omarchy desktop is at its sign-in screen, Desktop in Machines now offers “Sign in to the desktop”. Confirm your Omarchy Server password and the desktop signs you in once, the same way Omarchy’s own first boot does. It also clears a lockout after too many wrong passwords.',
 			'Open waits for an app that’s still starting (Home Assistant often takes a minute), then goes to it, instead of landing on a page that doesn’t load.',
 		],
 	},
@@ -1091,7 +1091,7 @@ export const CHANGELOG: Release[] = [
 			'Desktops: Ubuntu Desktop, Debian Desktop and Fedora Desktop install with one tap and start into their desktop.',
 			'More systems: Ubuntu 26.04, Fedora Server and Alpine Linux.',
 			'Omarchy as a machine: it downloads the official ISO and installs itself with your username and password.',
-			'Your own ISO: any .iso in Files shows up under New machine. Windows 10 and 11 install by themselves with your account; other ISOs boot their installer in the console.',
+			'Your own ISO: any .iso in Files shows up under New machine. Windows 10 and 11 install by themselves with your account; other ISOs boot their installer on the Desktop.',
 		],
 	},
 	{

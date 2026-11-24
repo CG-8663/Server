@@ -184,7 +184,7 @@ function LocalCreateMachine({open, onClose, host}: {open: boolean; onClose: () =
 								)}
 								<p className="footer-note" style={{textAlign: 'left'}}>
 									{(ownIsos.data ?? []).length ? 'ISOs found in your Home folder. ' : 'Put an .iso file anywhere in Files (Downloads is fine) and it shows up here. '}
-									Windows 10 and 11 install by themselves with your account: get the ISO from microsoft.com/software-download. Other ISOs boot their installer in the console for you to finish.
+									Windows 10 and 11 install by themselves with your account: get the ISO from microsoft.com/software-download. Other ISOs boot their installer on the Desktop for you to finish.
 								</p>
 							</>
 						)}
@@ -348,13 +348,13 @@ function ConfigureForm({os, hostArch, host, onBack, onDone, threads, memory, max
 				)}
 				{(() => {
 					const note = os.manualSetup
-						? 'This ISO boots its own installer. When the machine is running, open its console and install it there; afterwards it starts from its own disk.'
+						? 'This ISO boots its own installer. When the machine is running, open Desktop and install it there; afterwards it starts from its own disk.'
 						: windows
 							? 'Windows installs by itself with this account (about 20–40 minutes; it restarts a few times). It installs as Windows Pro without activation: enter your own key in Windows Settings → Activation.'
 							: os.familyId === 'omarchy'
 								? 'Omarchy installs by itself from its official ISO. When it restarts, sign in with this username and password.'
 								: os.variantName === 'Desktop'
-									? 'The first start installs the desktop from the internet (10–30 minutes), then the machine restarts into it. Watch it in the console.'
+									? 'The first start installs the desktop from the internet (10–30 minutes), then the machine restarts into it. Watch it on the Desktop.'
 									: null
 					return note ? (
 						<p className="hint" style={{margin: '0 4px 14px', color: 'var(--muted)', fontSize: 13}}>

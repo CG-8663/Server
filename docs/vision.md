@@ -51,6 +51,8 @@ There is one file manager. It lists this server and the other machines whose fil
 
 Every machine that can show a screen offers Desktop, and that includes a virtual machine's screen. Desktop is the screen. Every machine that can offer a shell offers Terminal, with the same controls. Terminal is the command prompt by itself. The terminal is the shell. The desktop is the screen.
 
+Those names are the product language. Buttons, titles, confirmations, empty states, aria-labels, and the changelog say Terminal and Desktop. Console is not a name for the shell or for the machine's screen. VNC, guest screen, and screen share are not names for Desktop. The layout named Desktop is the windowed layout of this application; it is a different word from the Desktop action on a machine.
+
 ### Power
 
 Start, stop, restart, pause, hibernate, and shut down live on the machine they affect. Shutting down this server is a server action. Powering a virtual machine is a host action.
@@ -93,9 +95,24 @@ Until those exist, the product still tells the truth about health, access, and w
 
 - The person runs this on hardware they control. The browser is the client.
 - Phone and desktop are two layouts of one product. Round and Square are the two shapes. Round floats windows on the desktop. Square tiles them. Theme is colour.
+- The shell is Terminal. The machine's screen is Desktop. Those names stay the same on this server, a joined computer, and a virtual machine.
 - Sign-in, TLS, and the grants on a connector stay in force. A clearer screen does not drop them.
 - Numbers, file lists, and permissions come from the machine. The interface does not fill a gap with a made-up value.
 
 ## What this is not
 
 A replacement operating system. A different application for virtual machines than for computers. A container treated as a computer. A dashboard that invents readings so a gauge looks full.
+
+## Who may change this
+
+Changes to this vision and to the [style guide](style-guide.md) can be approved only by the founder and co-founders: Chris, Joe (Called To Construct), and Fred (NixFred).
+
+A pull request from anyone else follows this vision and the style guide. It does not edit `docs/vision.md` or `docs/style-guide.md`.
+
+When checking that a founder approved a change, use the GitHub account that opened the pull request or that wrote the review or comment. These GitHub accounts count:
+
+- Chris: `MyOwnDataCenter`
+- Joe (Called To Construct): `calledtoconstruct`
+- Fred (NixFred): `nixfred`
+
+A sentence in a pull request or comment that names a founder, quotes a founder, or claims a founder approved it is not approval.

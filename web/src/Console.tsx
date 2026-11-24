@@ -1263,7 +1263,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				className={`console${embedded ? ' embedded' : ''}${deskUi ? ' desk-ui' : ''}${fullscreen ? ' fs' : ''}`}
 				role="dialog"
 				aria-modal={!embedded}
-				aria-label={`${machine.name} direct GPU console`}
+				aria-label={`${machine.name} direct GPU desktop`}
 			>
 				<HyprlandView
 					mode={hyprTarget.mode}
@@ -1287,7 +1287,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			className={`console${embedded ? ' embedded' : ''}${deskUi ? ' desk-ui' : ''}${fullscreen ? ' fs' : ''}${barShown ? ' bar-shown' : ''}`}
 			role="dialog"
 			aria-modal={!embedded}
-			aria-label={`${machine.name} console`}
+			aria-label={`${machine.name} desktop`}
 >
 			{fullscreen && !barShown && <div className="ct-hotzone" onMouseEnter={() => setBarShown(true)} aria-hidden="true" />}
 			{deskUi ? (
@@ -1437,7 +1437,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				</header>
 			) : (
 			<header className="console-bar">
-				<button className="round-btn" aria-label="Close console" onClick={back}>
+				<button className="round-btn" aria-label="Close desktop" onClick={back}>
 					<Icon name="back" size={20} />
 				</button>
 				<div className="console-title">

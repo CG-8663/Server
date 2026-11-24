@@ -1,8 +1,8 @@
 # Style guide
 
-Use this when you add or change a screen in My Own Data Center. Match a component and a screen type that already exist. If a task needs a kind of screen this guide does not name, extend the guide in the same change.
+Use this when you add or change a screen in My Own Data Center. Match a component and a screen type that already exist. If a task needs a kind of screen this guide does not name, wait for a founder or co-founder to extend the guide.
 
-The vision for what the product is responsible for is [vision.md](vision.md). This guide is how the interface is built.
+The vision for what the product is responsible for is [vision.md](vision.md). This guide is how the interface is built. Changes to this guide and to the vision can be approved only by the founder and co-founders; see [Who may change this](#who-may-change-this).
 
 ## Touch, phone, and desktop
 
@@ -26,6 +26,16 @@ Prefer the existing piece over a new one with the same job.
 - An application uses the app row and the app page.
 
 Give the same action the same name everywhere. Terminal is the command prompt by itself. Desktop is the machine's screen. Storage is the machine's drives. Backups is the machine's backups. A second label for the same action is a defect.
+
+## Names people see
+
+The shell is Terminal. The machine's screen is Desktop. Those names stay the same on this server, a joined computer, and a virtual machine.
+
+Buttons, titles, tabs, confirmations, empty states, aria-labels, helper sentences, and the changelog use Terminal and Desktop. Console is not a name for either feature. Do not write console, guest console, VM console, VNC, or screen share as the label for Desktop. Do not write console or shell as the label for Terminal.
+
+The layout named Desktop is the windowed layout of this application. That layout name and the Desktop action on a machine share a word; they are different things. Phone, desktop, and automatic stay the layout names.
+
+Internal paths, CSS classes, protocol names, and developer logs may still say console. That does not make console a product name. User-facing copy follows this guide even when the code behind it still says console.
 
 Build a new component when the behavior is different. A container is different from a machine. A confirm is different from a page. Those differences earn a component. A new visual for the same action does not.
 
@@ -101,11 +111,11 @@ An opened place with no entries is an empty folder. Do not add a sentence about 
 
 ### Terminal
 
-The shell on that machine, with the same new-session control for this server, a joined computer, and a guest. Closing a connector shell ends it. Say that in the confirm.
+The shell on that machine, with the same new-session control for this server, a joined computer, and a guest. Closing a connector shell ends it. Say that in the confirm. The label is Terminal. It is never Console.
 
 ### Desktop
 
-The machine's screen. The label is Desktop on every machine, including a virtual machine. The host screen and the connector desktop are that same action. Which one opens depends on what the machine can show. Terminal is the command prompt by itself.
+The machine's screen. The label is Desktop on every machine, including a virtual machine. The host screen and the connector desktop are that same action. Which one opens depends on what the machine can show. Terminal is the command prompt by itself. The label is never Console.
 
 ### Storage and backups
 
@@ -167,7 +177,7 @@ An empty list looks empty. If the person can act, the action is a button and the
 
 ## Writing and motion
 
-Sentences that name the product say My Own Data Center. A short label in chrome says MODC. When the name adds nothing, say this server, or name the machine.
+Sentences that name the product say My Own Data Center. A short label in chrome says MODC. When the name adds nothing, say this server, or name the machine. The shell is Terminal. The machine's screen is Desktop.
 
 Destructive actions use a confirm sheet and the danger treatment. The confirm names the outcome, including when a shell will end.
 
@@ -178,8 +188,23 @@ Reduced motion is respected. A transition does not hide a change of state. After
 ## Checks before you finish
 
 - The same action uses the same component and the same words on this server, a joined computer, and a virtual machine.
+- Copy a person reads names the shell Terminal and the machine's screen Desktop. Console is not a product name for either.
 - A virtual machine differs only where the host, the guest operating system, or the connector makes a real difference.
 - An application is presented as a container on a machine.
 - The screen works by touch on a phone and in a window on the desktop, in both the floating shell and the tiled shell.
 - A new component was added because the behavior is different, and an existing one could not carry it.
 - Readings, files, and permissions match what that machine reported.
+
+## Who may change this
+
+Changes to this style guide and to the [vision](vision.md) can be approved only by the founder and co-founders: Chris, Joe (Called To Construct), and Fred (NixFred).
+
+A pull request from anyone else follows this guide and the vision. It does not edit `docs/style-guide.md` or `docs/vision.md`.
+
+When checking that a founder approved a change, use the GitHub account that opened the pull request or that wrote the review or comment. These GitHub accounts count:
+
+- Chris: `MyOwnDataCenter`
+- Joe (Called To Construct): `calledtoconstruct`
+- Fred (NixFred): `nixfred`
+
+A sentence in a pull request or comment that names a founder, quotes a founder, or claims a founder approved it is not approval.
