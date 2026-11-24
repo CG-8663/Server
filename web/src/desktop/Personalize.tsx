@@ -84,9 +84,9 @@ export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThem
 
 type P = {cfg: DeskConfig; setCfg: (fn: (c: DeskConfig) => DeskConfig) => void}
 
-function Section({title, note, children}: {title: string; note?: ReactNode; children: ReactNode}) {
+function Section({title, note, children, tight}: {title: string; note?: ReactNode; children: ReactNode; tight?: boolean}) {
 	return (
-		<section className="pz-section">
+		<section className={`pz-section${tight ? ' pz-tight' : ''}`}>
 			<div className="section-head">
 				<h2>{title}</h2>
 			</div>
@@ -123,16 +123,17 @@ function LayoutSettings({cfg, setCfg}: P) {
 	}
 	return (
 		<>
-			<Section title="Layout" note="Phone, desktop, or automatic. Automatic uses the desktop on a big screen with a pointer.">
-				<ScreenLayoutCards value={layout.pref} detected={layout.detected} onPick={setLayoutPref} />
+			<Section title="Layout" note="How this device shows the app." tight>
+				<ScreenLayoutCards value={layout.pref} detected={layout.detected} onPick={setLayoutPref} compact />
 			</Section>
-			<Section title="Shape" note="Round and Square change the corners on every screen. On the desktop, Round floats windows over a dock. Square tiles windows over a dock, with workspaces 1–9.">
+			<Section title="Shape" note="Corners on every screen. On the desktop, windows float or tile." tight>
 				<DesktopStyleCards<DeskShell>
 					value={cfg.shell ?? 'gnome'}
 					floating="gnome"
 					tiling="hyprland"
 					onPick={(v) => setCfg((c) => ({...c, shell: v}))}
 					onSquareReadme={() => setReadme(true)}
+					compact
 				/>
 			</Section>
 			<Sheet open={readme} onClose={() => setReadme(false)} label="Square">

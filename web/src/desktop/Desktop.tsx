@@ -37,7 +37,7 @@ import {injectConsoleKey, keysymFromEvent, lastMinimizedOn, releaseConsoleSuper,
 import {CAPTURE_KEY, ONBOARDING_KEY, canUseKeyboardLock, chipIntent, grabToggleReleasesKeyboardLock, keyboardLockApi, onCaptureModeChange, onFullscreenChange, releaseKeyboardLock, resolveMode, toggleLock, type GrabState} from './hyprland/grab'
 import {isSuper, resolveHyprKey, type Action} from './hyprland/keymap'
 import {Launcher} from './hyprland/Launcher'
-import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, moveWorkspace, reconcile, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
+import {GAP, MIN_PANE, collapse, contains, dividers, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, moveWorkspace, ratioAt, reconcile, rects as tileRectsOf, remove as removeTile, setRatio, swapDir, type Divider, type Node, type Path} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
 import {loadWallpaper} from './wallpaperLoader'
 import {overviewEnterOpensApp} from './overviewEnter'
@@ -1610,6 +1610,24 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					</WindowFrame>
 				))}
 
+				{hypr && !overview && (
+					<TileSplits
+						tree={isNode(trees[hyprWs]) ? trees[hyprWs] : null}
+						area={usable()}
+						hidden={hiddenIds(hyprWs, wins)}
+						blockers={wins.filter((w) => !w.min && onWs(w) && (w.float || w.snap === 'max')).map(rectOf)}
+						onRatio={(path, ratio) => {
+							const ws = hyprWsRef.current
+							setTrees((ts) => {
+								const cur = ts[ws] ?? null
+								const next = setRatio(cur, path, ratio)
+								return next === cur ? ts : {...ts, [ws]: next}
+							})
+						}}
+						onDragging={setDragging}
+					/>
+				)}
+
 				{preview && <div className="snap-preview" style={{left: preview.x, top: preview.y, width: preview.w, height: preview.h}} />}
 
 				<Dock
@@ -2760,6 +2778,74 @@ function Overview({
 				)}
 				{showApps && <p className="ov-tip">Right-click an app or running window to pin, add to desktop, or close it.</p>}
 			</div>
+		</>
+	)
+}
+
+function rectsOverlap(a: Rect, b: Rect) {
+	return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+}
+
+function TileSplits({
+	tree,
+	area,
+	hidden,
+	blockers,
+	onRatio,
+	onDragging,
+}: {
+	tree: Node | null
+	area: Rect
+	hidden: Iterable<string>
+	blockers: Rect[]
+	onRatio: (path: Path, ratio: number) => void
+	onDragging: (v: boolean) => void
+}) {
+	const list = dividers(tree, area, GAP, MIN_PANE, hidden).filter((d) => !blockers.some((b) => rectsOverlap(d.hit, b)))
+	const [heldKey, setHeldKey] = useState<string | null>(null)
+	const start = (d: Divider) => (e: React.PointerEvent<HTMLButtonElement>) => {
+		if (e.button !== 0) return
+		e.preventDefault()
+		e.stopPropagation()
+		const key = d.path.join('') || 'root'
+		setHeldKey(key)
+		onDragging(true)
+		try {
+			e.currentTarget.setPointerCapture(e.pointerId)
+		} catch {
+			/* capture is best-effort */
+		}
+		const move = (ev: PointerEvent) => {
+			onRatio(d.path, ratioAt(d, ev.clientX, ev.clientY))
+		}
+		const up = () => {
+			setHeldKey(null)
+			window.removeEventListener('pointermove', move)
+			window.removeEventListener('pointerup', up)
+			window.removeEventListener('pointercancel', up)
+			onDragging(false)
+		}
+		window.addEventListener('pointermove', move)
+		window.addEventListener('pointerup', up)
+		window.addEventListener('pointercancel', up)
+	}
+	return (
+		<>
+			{list.map((d) => {
+				const key = d.path.join('') || 'root'
+				const r = d.hit
+				return (
+					<button
+						key={key}
+						type="button"
+						tabIndex={-1}
+						className={`tile-split tile-split-${d.axis}${heldKey === key ? ' held' : ''}`}
+						aria-label={d.axis === 'h' ? 'Resize panes left and right' : 'Resize panes up and down'}
+						style={{left: r.x, top: r.y, width: r.w, height: r.h}}
+						onPointerDown={start(d)}
+					/>
+				)
+			})}
 		</>
 	)
 }
