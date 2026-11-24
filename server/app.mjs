@@ -2102,8 +2102,21 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		server.on('upgrade', async (req, socket, head) => {
 			if (app.relayUpgrade(req, socket, head)) return
 			const refuse = (status) => {
+				if (socket.destroyed) return
 				socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`)
 				socket.destroy()
+			}
+			// Until the upgrade completes nothing else watches the browser's socket: if the tab goes away
+			// first, drop the connection to omarchyd too. The returned function stops watching.
+			const dropWithBrowser = (upstream) => {
+				const gone = () => upstream.terminate()
+				socket.once('close', gone)
+				socket.once('error', gone)
+				if (socket.destroyed) gone()
+				return () => {
+					socket.off('close', gone)
+					socket.off('error', gone)
+				}
 			}
 			try {
 				const url = new URL(req.url, 'http://x')
@@ -2116,9 +2129,11 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					const upstream = new WebSocket(target, {headers: {authorization: String(req.headers.authorization ?? '')}, handshakeTimeout: 10_000, maxPayload: 16 * 1024 * 1024, autoPong: false})
 					upstream.once('unexpected-response', (_q, r) => refuse(`${r.statusCode === 401 ? '401 Unauthorized' : '502 Bad Gateway'}`))
 					upstream.once('error', () => refuse('502 Bad Gateway'))
+					const stopWatching = dropWithBrowser(upstream)
 					upstream.once('open', () => {
 						upstream.removeAllListeners('error')
 						wss.handleUpgrade(req, socket, head, (client) => {
+							stopWatching()
 							upstream.on('message', (data, isBinary) => client.readyState === WebSocket.OPEN && client.send(data, {binary: isBinary}))
 							client.on('message', (data, isBinary) => upstream.readyState === WebSocket.OPEN && upstream.send(data, {binary: isBinary}))
 							upstream.on('close', (code) => {
@@ -2183,9 +2198,11 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					refuse(r.statusCode === 403 ? '403 Forbidden' : r.statusCode === 401 ? '401 Unauthorized' : '502 Bad Gateway')
 				})
 				upstream.once('error', () => refuse('502 Bad Gateway'))
+				const stopWatching = dropWithBrowser(upstream)
 				upstream.once('open', () => {
 					upstream.removeAllListeners('error')
 					wss.handleUpgrade(req, socket, head, (client) => {
+						stopWatching()
 						const closeBoth = (code, reason) => {
 							const safe = typeof code === 'number' && (code === 1000 || (code >= 3000 && code <= 4999)) ? code : 1000
 							for (const ws of [client, upstream]) if (ws.readyState === WebSocket.OPEN) ws.close(safe, reason)
