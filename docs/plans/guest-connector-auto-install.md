@@ -402,7 +402,8 @@ Worktree: `/home/joseph/.worktrees/omarchy-server-guest-connector-install` from 
 - [x] Targeted tests + web typecheck (93 pass, 0 fail on swarm-vms/console/machines/fleet-list/connector-install-noint; `tsc --noEmit -p web` exit 0; Python VM helper and agent suites OK)
 - [x] PR Series B stacked on A: https://github.com/MyOwnDataCenter/Server/pull/952 (`feat/swarm-vm-hosting` → `main`, land after #951)
 - [x] Series C spec and plan on `feat/remote-guest-connector-install`: `docs/superpowers/specs/2026-11-24-remote-guest-connector-design.md` and `docs/superpowers/plans/2026-11-24-remote-guest-connector.md`
-- [ ] Series C: remote `installConnector` when `hostId !== 'server'`, and create-time auto-install on a remote guest
+- [x] Series C: remote `installConnector` when `hostId !== 'server'`, and create-time auto-install on a remote guest (HEAD `b25f482`)
+- [x] PR Series C stacked on B: https://github.com/MyOwnDataCenter/Server/pull/954 (`feat/remote-guest-connector-install` → `main`, land after #952)
 
 ## Constraints to keep
 
