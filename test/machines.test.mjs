@@ -1407,3 +1407,46 @@ test('an imported raw disk is defined as qcow2 only when the copy is qcow2', asy
 		await rm(root, {recursive: true, force: true})
 	}
 })
+
+test('a Windows Server ISO you install by hand gets the SATA disk and e1000e network card Setup can see', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-winiso-'))
+	try {
+		const dataDir = join(root, 'data')
+		await mkdir(join(root, 'home'), {recursive: true})
+		await writeFile(join(root, 'home', 'Win_Server_2022.iso'), 'iso')
+		await writeFile(join(root, 'home', 'archlinux.iso'), 'iso')
+		const kvmDevice = join(root, 'kvm')
+		await writeFile(kvmDevice, '')
+		let xml = ''
+		let name = ''
+		let started = false
+		const run = async (cmd, args) => {
+			if (cmd === 'qemu-img' && args[0] === 'create') await writeFile(args[3], 'blank')
+			if (cmd === 'xorriso') return `Volume Id    : ${/Win_Server/.test(args[1]) ? 'SSS_X64FREE_EN-US_DV9' : 'ARCH_202611'}\n`
+			if (cmd === 'virsh') {
+				const a = args[0] === '-c' ? args.slice(2) : args
+				if (a[0] === 'define') (xml = await readFile(a[1], 'utf8')), (name = /<name>([^<]+)<\/name>/.exec(xml)[1])
+				if (a[0] === 'start') started = true
+				if (a[0] === 'list') return started ? ` Id   Name   State\n------------------\n -    ${name}   running\n` : ' Id   Name   State\n------------------\n'
+				return ''
+			}
+			return ''
+		}
+		const machines = createMachines({dataDir, run, kvmDevice, files: {resolve: async (p) => ({real: p.replace('/Home', join(root, 'home')), top: 'Home'})}})
+		await machines.ready
+		const isos = await machines.procedures['machines.localIsos'].run()
+		const server = isos.find((i) => /Win_Server/.test(i.id))
+		const arch = isos.find((i) => /archlinux/.test(i.id))
+		assert.deepEqual([server.platform, server.requiresCredentials, server.manualSetup], ['windows', false, true])
+		const spec = {cores: 1, memoryGb: 1, diskSizeGb: 10}
+		const {id} = await machines.procedures['machines.create'].run({...spec, name: 'Server', osId: server.id})
+		await untilMachine(machines, id, 'running')
+		assert.match(xml, /<model type='e1000e'\/>/)
+		assert.ok(!/bus='virtio'/.test(xml), 'Setup has no virtio storage driver')
+		const {id: other} = await machines.procedures['machines.create'].run({...spec, name: 'Arch', osId: arch.id})
+		await untilMachine(machines, other, 'running')
+		assert.match(xml, /<target dev='vda' bus='virtio'\/>/, 'other ISOs keep the virtio layout')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
