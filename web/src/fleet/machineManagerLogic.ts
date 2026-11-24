@@ -15,7 +15,7 @@ export type ManagerStat = {
 	text: string
 	percent: number | null
 	ready: boolean
-	/** Every reading has a dial. A percent fills the ring. A temperature or a size uses the reading itself. */
+	/** Every reading has a dial. A percent fills the ring. Anything else leaves the ring empty. */
 	dial: boolean
 }
 
@@ -251,7 +251,7 @@ export function managerStats(input: {
 		dial: true,
 	}))
 	if (!stats.some((s) => s.label === 'Storage') && input.diskSizeGb != null && input.diskSizeGb > 0) {
-		stats.push({id: 'disk-size', label: 'Storage', icon: 'disk', text: `${input.diskSizeGb} GB`, percent: null, ready: true, dial: true})
+		stats.push({id: 'disk-size', label: 'Storage', icon: 'disk', text: `? of ${input.diskSizeGb} GB`, percent: null, ready: true, dial: true})
 	}
 	if (input.temp != null && Number.isFinite(input.temp)) {
 		stats.push({id: 'temp', label: 'Temperature', icon: 'thermo', text: `${Math.round(input.temp)}°`, percent: null, ready: true, dial: true})
@@ -263,44 +263,12 @@ export type ValueDial = {
 	id: string
 	label: string
 	icon: ManagerStat['icon']
-	value: string
-	unit: string
-	/** 0–100. Temperature uses degrees, capped at 100. A size fills the ring because it is not a usage percent. */
-	fill: number
-	sub: string
+	text: string
 }
 
-/** Temperature and a size-only disk. Percent readings stay on the gauge row they already have. */
+/** Temperature and a size-only disk. The ring stays empty. Percent readings stay on their own gauges. */
 export function valueDials(stats: readonly ManagerStat[]): ValueDial[] {
-	const out: ValueDial[] = []
-	for (const stat of stats) {
-		if (stat.id === 'temp') {
-			const n = Number.parseFloat(stat.text)
-			const rounded = Number.isFinite(n) ? Math.round(n) : null
-			out.push({
-				id: stat.id,
-				label: stat.label,
-				icon: stat.icon,
-				value: rounded == null ? '–' : String(rounded),
-				unit: '°',
-				fill: rounded == null ? 0 : Math.max(0, Math.min(100, rounded)),
-				sub: stat.text,
-			})
-			continue
-		}
-		if (stat.id !== 'disk-size') continue
-		const split = stat.text.lastIndexOf(' ')
-		out.push({
-			id: stat.id,
-			label: stat.label,
-			icon: stat.icon,
-			value: split > 0 ? stat.text.slice(0, split) : stat.text,
-			unit: split > 0 ? stat.text.slice(split + 1) : '',
-			fill: 100,
-			sub: stat.text,
-		})
-	}
-	return out
+	return stats.filter((stat) => stat.id === 'temp' || stat.id === 'disk-size').map((stat) => ({id: stat.id, label: stat.label, icon: stat.icon, text: stat.text}))
 }
 
 export type MotionPhase = 'stay' | 'enter' | 'leave'

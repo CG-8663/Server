@@ -9,7 +9,7 @@ import {usePowerActions} from '../machines/panels'
 import {guestAgent, hostGuestMetrics, isGuestAgent} from '../swarm/guestLink'
 import {swarmGaugeItems, type SwarmMetrics} from '../swarm/gauges'
 import {agentMay, useSwarmAction, type Agent} from '../swarm/Swarm'
-import {levelColor, Segmented, StatusPill, haptic, useConfirm} from '../ui'
+import {Segmented, StatusPill, haptic, useConfirm} from '../ui'
 import {PinButton} from './PinButton'
 import {SERVER_FLEET_ID, type FleetMember} from './list'
 import {
@@ -180,12 +180,11 @@ function dialItems(metrics: SwarmMetrics | null | undefined, stats: readonly Man
 	const values = valueDials(stats).map((d) => ({
 		k: d.label,
 		icon: d.icon,
-		p: d.fill,
-		sub: d.sub,
+		p: 0,
+		sub: '',
 		ready: true,
 		key: d.id,
-		color: d.unit === '°' ? levelColor(d.fill) : 'var(--fg)',
-		reading: {value: d.value, unit: d.unit},
+		reading: {text: d.text},
 	}))
 	return [...percent, ...values]
 }

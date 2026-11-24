@@ -219,20 +219,19 @@ test('squares use real readings, and up time replaces last seen', () => {
 		stats.map((s) => [s.label, s.text, s.dial]),
 		[
 			['CPU', '18%', true],
-			['Storage', '32 GB', true],
+			['Storage', '? of 32 GB', true],
 		],
 	)
 	const withTemp = managerStats({gauges: [{k: 'CPU', icon: 'cpu', p: 0, ready: false}], temp: 61.2, diskSizeGb: null})
 	assert.equal(withTemp[1].text, '61°')
 	assert.equal(withTemp[1].dial, true)
 	assert.deepEqual(
-		valueDials(managerStats({gauges: [{k: 'CPU', icon: 'cpu', p: 18.2, ready: true}], temp: 61.2, diskSizeGb: 32})).map((d) => [d.label, d.value, d.unit, d.fill]),
+		valueDials(managerStats({gauges: [{k: 'CPU', icon: 'cpu', p: 18.2, ready: true}], temp: 61.2, diskSizeGb: 32})).map((d) => [d.label, d.text]),
 		[
-			['Storage', '32', 'GB', 100],
-			['Temperature', '61', '°', 61],
+			['Storage', '? of 32 GB'],
+			['Temperature', '61°'],
 		],
 	)
-	assert.deepEqual(valueDials(managerStats({gauges: [{k: 'CPU', icon: 'cpu', p: 105, ready: true}], temp: 105, diskSizeGb: null})).map((d) => d.fill), [100])
 	const now = Date.parse('2026-11-23T12:00:00Z')
 	assert.deepEqual(seenFact(true, 9000, null, now), {label: 'Up time', text: '2h 30m'})
 	assert.equal(seenFact(true, undefined, now - 86_400_000, now), null)
