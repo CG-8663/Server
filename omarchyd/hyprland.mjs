@@ -9,7 +9,8 @@
 //     session lock-state reporting wired into Lock-after-viewing-remotely.
 import {execFile, spawn} from 'node:child_process'
 import {createHash} from 'node:crypto'
-import {access, chmod, mkdir, readFile, readdir, realpath, rename, rm, stat} from 'node:fs/promises'
+import {constants as fsConstants} from 'node:fs'
+import {access, chmod, lstat, mkdir, open as fsOpen, readFile, readdir, realpath, rename, rm, stat} from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import {dirname, extname, join, resolve} from 'node:path'
@@ -24,6 +25,9 @@ const ADDRESS_RE = /^0x[0-9a-f]{4,16}$/i
 const DESKTOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/
 const OUTPUT_NAME_RE = /^[A-Za-z0-9_.-]{1,32}$/
 const MAX_STREAMS = 12
+const MAX_SSE_SUBSCRIBERS = 32
+const MAX_PENDING_LAUNCHES = 8
+const MAX_CLIPBOARD_BYTES = 128 * 1024
 const RAIL_OUTPUT = 'RAIL-1'
 
 // O(1)-amortized chunk queue for framed stdout streams ([u8 type][u32be len][payload]), avoiding O(N^2) Buffer.concat and Array.shift().
@@ -135,16 +139,39 @@ export function backpressureBudgets(bitrateKbps = 22000) {
 
 const exists = (p) => access(p).then(() => true, () => false)
 
-function execOut(cmd, args, {env, timeout = 5000, input = null} = {}) {
+function execOut(cmd, args, {env, timeout = 5000, input = null, maxBuffer = 4 * 1024 * 1024} = {}) {
 	return new Promise((resolveDone) => {
-		const child = execFile(cmd, args, {env, timeout, maxBuffer: 4 * 1024 * 1024}, (err, stdout, stderr) => {
-			resolveDone({ok: !err, stdout: String(stdout ?? ''), stderr: String(stderr ?? err?.message ?? '')})
+		const child = execFile(cmd, args, {env, timeout, maxBuffer}, (err, stdout, stderr) => {
+			resolveDone({ok: !err, code: err?.code ?? null, stdout: String(stdout ?? ''), stderr: String(stderr ?? err?.message ?? '')})
 		})
 		if (input != null && child.stdin) {
 			child.stdin.on('error', () => {})
 			child.stdin.end(input)
 		}
 	})
+}
+
+async function readBoundedRegularFile(filePath, maxBytes) {
+	let fh = null
+	try {
+		fh = await fsOpen(filePath, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0))
+		const st = await fh.stat()
+		if (!st.isFile() || st.size > maxBytes) return null
+		const cap = Math.min(maxBytes, Math.max(0, st.size))
+		const buf = Buffer.allocUnsafe(cap + 1)
+		let total = 0
+		while (total <= maxBytes) {
+			const {bytesRead} = await fh.read(buf, total, buf.length - total, null)
+			if (bytesRead <= 0) break
+			total += bytesRead
+			if (total > maxBytes) return null
+		}
+		return buf.subarray(0, total)
+	} catch {
+		return null
+	} finally {
+		await fh?.close().catch(() => {})
+	}
 }
 
 export function parseDesktopEntry(text, id) {
@@ -198,25 +225,28 @@ export function createHyprland({
 	const activeStreams = new Set()
 	let pendingStreams = 0
 	const eventListeners = new Set()
+	let busClosed = false
 	let eventSock = null
 	let eventSockConnecting = false
 	let eventReconnectTimer = null
+	let currentEventInstance = null
 	let rectSyncTimer = null
 	let lastLockedState = null
 	let lockProbeSeq = 0
 	let lastAppliedLockSeq = 0
 	let lastFocusedAddr = ''
 	let appsCache = {at: 0, list: [], iconPaths: new Map()}
+	let appsScanPromise = null
 	let compilePromise = null
 	let compiledBin = captureBin || null
 	let compileFailedAt = 0
 
 	const iconRoots = [
-		'/usr/share/icons',
-		'/usr/share/pixmaps',
-		'/usr/local/share/icons',
-		join(home, '.local/share/icons'),
-		join(home, '.icons'),
+		{path: '/usr/share/icons', userOwned: false},
+		{path: '/usr/share/pixmaps', userOwned: false},
+		{path: '/usr/local/share/icons', userOwned: false},
+		{path: join(home, '.local/share/icons'), userOwned: true},
+		{path: join(home, '.icons'), userOwned: true},
 	]
 
 	async function cleanGuiEnv(env) {
@@ -497,10 +527,19 @@ export function createHyprland({
 	async function isAllowedIconPath(real) {
 		const ext = extname(real).toLowerCase()
 		if (ext !== '.svg' && ext !== '.png') return false
-		if (real.startsWith('/usr/share/')) return true
+		const realHome = await realpath(home).catch(() => null)
 		for (const root of iconRoots) {
-			const realRoot = await realpath(root).catch(() => root)
-			if (real.startsWith(`${realRoot}/`)) return true
+			if (root.userOwned) {
+				// Reject user-writable icon roots that are themselves symlinks escaping home
+				const lst = await lstat(root.path).catch(() => null)
+				if (!lst || lst.isSymbolicLink() || !lst.isDirectory()) continue
+				const realRoot = await realpath(root.path).catch(() => null)
+				if (!realRoot || (realHome && realRoot !== realHome && !realRoot.startsWith(`${realHome}/`))) continue
+				if (real.startsWith(`${realRoot}/`)) return true
+			} else {
+				const realRoot = await realpath(root.path).catch(() => null)
+				if (realRoot && real.startsWith(`${realRoot}/`)) return true
+			}
 		}
 		return false
 	}
@@ -530,44 +569,73 @@ export function createHyprland({
 		for (const dir of subdirs) {
 			for (const ext of exts) {
 				const cand = join(dir, `${iconName}${ext}`)
-				if (await exists(cand)) return cand
+				if (await exists(cand)) {
+					const real = await realpath(cand).catch(() => null)
+					if (real && (await isAllowedIconPath(real))) return real
+				}
 			}
 		}
 		return null
+	}
+
+	function resolveDesktopAppDirs() {
+		if (appDirs) return appDirs
+		const dirs = []
+		const dataHome = process.env.XDG_DATA_HOME && process.env.XDG_DATA_HOME.startsWith('/') ? process.env.XDG_DATA_HOME : join(home, '.local/share')
+		dirs.push(join(dataHome, 'applications'))
+		const dataDirs = (process.env.XDG_DATA_DIRS || '/usr/local/share:/usr/share')
+			.split(':')
+			.map((d) => d.trim())
+			.filter((d) => d.startsWith('/'))
+		for (const d of dataDirs) {
+			const p = join(d, 'applications')
+			if (!dirs.includes(p)) dirs.push(p)
+		}
+		return dirs
 	}
 
 	async function apps({refresh = false} = {}) {
 		if (!refresh && appsCache.list.length && Date.now() - appsCache.at < 60_000) {
 			return appsCache.list
 		}
-		const dirs = appDirs ?? [join(home, '.local/share/applications'), '/usr/local/share/applications', '/usr/share/applications']
-		const seen = new Map()
-		const iconMap = new Map()
-		for (const dir of dirs) {
-			const files = await readdir(dir).catch(() => [])
-			for (const file of files) {
-				if (!file.endsWith('.desktop')) continue
-				const id = file.slice(0, -'.desktop'.length)
-				if (!DESKTOP_ID_RE.test(id) || seen.has(id)) continue
-				const text = await readFile(join(dir, file), 'utf8').catch(() => '')
-				const parsed = parseDesktopEntry(text, id)
-				if (!parsed) continue
-				const iconPath = await resolveIconPath(parsed.icon)
-				if (iconPath) iconMap.set(id, iconPath)
-				seen.set(id, {
-					id: parsed.id,
-					name: parsed.name,
-					comment: parsed.comment,
-					categories: parsed.categories,
-					terminal: parsed.terminal,
-					wmClass: parsed.wmClass,
-					hasIcon: !!iconPath,
-				})
+		if (appsScanPromise) return appsScanPromise
+		appsScanPromise = (async () => {
+			const dirs = resolveDesktopAppDirs()
+			const reservedIds = new Set()
+			const seen = new Map()
+			const iconMap = new Map()
+			for (const dir of dirs) {
+				const files = await readdir(dir).catch(() => [])
+				for (const file of files) {
+					if (!file.endsWith('.desktop')) continue
+					const id = file.slice(0, -'.desktop'.length)
+					if (!DESKTOP_ID_RE.test(id) || reservedIds.has(id)) continue
+					const rawBuf = await readBoundedRegularFile(join(dir, file), 64 * 1024)
+					if (!rawBuf) continue
+					// Reserve ID on the highest-priority desktop file so Hidden=true / NoDisplay=true properly shadows lower-priority system entries.
+					reservedIds.add(id)
+					const parsed = parseDesktopEntry(rawBuf.toString('utf8'), id)
+					if (!parsed) continue
+					const iconPath = await resolveIconPath(parsed.icon)
+					if (iconPath) iconMap.set(id, iconPath)
+					seen.set(id, {
+						id: parsed.id,
+						name: parsed.name,
+						comment: parsed.comment,
+						categories: parsed.categories,
+						terminal: parsed.terminal,
+						wmClass: parsed.wmClass,
+						hasIcon: !!iconPath,
+					})
+				}
 			}
-		}
-		const list = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
-		appsCache = {at: Date.now(), list, iconPaths: iconMap}
-		return list
+			const list = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
+			appsCache = {at: Date.now(), list, iconPaths: iconMap}
+			return list
+		})().finally(() => {
+			appsScanPromise = null
+		})
+		return appsScanPromise
 	}
 
 	async function readAppIcon(id) {
@@ -578,11 +646,30 @@ export function createHyprland({
 		if (!file) return null
 		const real = await realpath(resolve(file)).catch(() => null)
 		if (!real || !(await isAllowedIconPath(real))) return null
-		const data = await readFile(real).catch(() => null)
-		if (!data || data.length > 2 * 1024 * 1024) return null
-		const ext = extname(real).toLowerCase()
-		const contentType = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : 'application/octet-stream'
-		return {data, contentType}
+		// Verify canonical target and read directly via one non-blocking descriptor with a 2 MiB byte ceiling
+		let fh = null
+		try {
+			fh = await fsOpen(real, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0))
+			const st = await fh.stat()
+			if (!st.isFile() || st.size > 2 * 1024 * 1024) return null
+			const buf = Buffer.allocUnsafe(st.size + 1)
+			let total = 0
+			while (total <= 2 * 1024 * 1024) {
+				const {bytesRead} = await fh.read(buf, total, buf.length - total, null)
+				if (bytesRead <= 0) break
+				total += bytesRead
+				if (total > 2 * 1024 * 1024) return null
+			}
+			const data = buf.subarray(0, total)
+			const ext = extname(real).toLowerCase()
+			const contentType = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : null
+			if (!contentType) return null
+			return {data, contentType}
+		} catch {
+			return null
+		} finally {
+			await fh?.close().catch(() => {})
+		}
 	}
 
 	// ---- Real-time Hyprland .socket2.sock IPC event bus -----------------------------------------
@@ -625,7 +712,7 @@ export function createHyprland({
 	}
 
 	function scheduleEventReconnect() {
-		if (eventListeners.size === 0 || eventReconnectTimer || eventSock) return
+		if (busClosed || eventListeners.size === 0 || eventReconnectTimer || eventSock) return
 		eventReconnectTimer = setTimeout(() => {
 			eventReconnectTimer = null
 			ensureEventSocket().catch(() => {})
@@ -634,40 +721,76 @@ export function createHyprland({
 	}
 
 	async function ensureEventSocket() {
-		if (eventSock || eventSockConnecting || eventListeners.size === 0) return
+		if (busClosed || eventSock || eventSockConnecting || eventListeners.size === 0) return
 		eventSockConnecting = true
 		try {
 			const env = await discoverEnv()
-			if (eventListeners.size === 0 || eventSock) return
+			if (busClosed || eventListeners.size === 0 || eventSock) return
 			if (!env?.HYPRLAND_INSTANCE_SIGNATURE) {
 				scheduleEventReconnect()
 				return
 			}
-			const sockPath = join(env.XDG_RUNTIME_DIR, 'hypr', env.HYPRLAND_INSTANCE_SIGNATURE, '.socket2.sock')
+			const instanceId = env.HYPRLAND_INSTANCE_SIGNATURE
+			const sockPath = join(env.XDG_RUNTIME_DIR, 'hypr', instanceId, '.socket2.sock')
 			if (!(await exists(sockPath))) {
 				scheduleEventReconnect()
 				return
 			}
-			if (eventListeners.size === 0 || eventSock) return
+			if (busClosed || eventListeners.size === 0 || eventSock) return
+			const isReconnect = currentEventInstance !== null
+			currentEventInstance = instanceId
 			const sock = net.connect(sockPath)
 			eventSock = sock
 			let buf = ''
+			let buffering = isReconnect
+			const bufferedEvts = []
+			const dispatchParsed = (evt) => {
+				if (evt.type === 'layoutchange') {
+					if (activeStreams.size > 0) syncAllStreamRects().catch(() => {})
+				} else {
+					if (evt.type === 'activewindow') lastFocusedAddr = String(evt.address || '').toLowerCase()
+					emitEvent(evt)
+				}
+			}
 			sock.setEncoding('utf8')
 			sock.on('data', (chunk) => {
 				buf += chunk
+				if (buf.length > 64 * 1024 && !buf.includes('\n')) {
+					buf = ''
+					return
+				}
 				const lines = buf.split('\n')
 				buf = lines.pop() ?? ''
+				if (buf.length > 64 * 1024) buf = ''
 				for (const line of lines) {
+					if (line.length > 16 * 1024) continue
 					const evt = parseSocket2Line(line.trim())
 					if (!evt) continue
-					if (evt.type === 'layoutchange') {
-						if (activeStreams.size > 0) syncAllStreamRects().catch(() => {})
+					if (buffering) {
+						if (bufferedEvts.length < 256) bufferedEvts.push(evt)
 					} else {
-						if (evt.type === 'activewindow') lastFocusedAddr = String(evt.address || '').toLowerCase()
-						emitEvent(evt)
+						dispatchParsed(evt)
 					}
 				}
 			})
+			if (isReconnect) {
+				// On reconnect / compositor restart, emit a fresh authoritative snapshot with instanceId, then replay buffered socket2 events.
+				sock.once('connect', () => {
+					windowsSnapshot()
+						.then((snap) => {
+							if (!busClosed && eventSock === sock) {
+								emitEvent({type: 'windows', instanceId, windows: snap, authoritative: true})
+							}
+						})
+						.catch(() => {})
+						.finally(() => {
+							buffering = false
+							for (const evt of bufferedEvts.splice(0)) {
+								if (!busClosed && eventSock === sock) dispatchParsed(evt)
+							}
+						})
+				})
+			}
 			const onEnd = () => {
 				if (eventSock === sock) eventSock = null
 				scheduleEventReconnect()
@@ -680,6 +803,7 @@ export function createHyprland({
 	}
 
 	function subscribeEvents(listener) {
+		if (busClosed || eventListeners.size >= MAX_SSE_SUBSCRIBERS) return null
 		eventListeners.add(listener)
 		ensureEventSocket().catch(() => {})
 		return () => {
@@ -952,14 +1076,19 @@ export function createHyprland({
 	}
 
 	const claimedLaunchAddrs = new Map() // lowercase address -> timestamp
+	const pendingLaunches = new Set() // {app}
 
 	function matchesLaunchedApp(app, winClass, winTitle = '') {
 		const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
 		const cls = norm(winClass)
 		const title = norm(winTitle)
 		if (!cls && !title) return false
+		// When the desktop entry declares StartupWMClass, require an exact normalized class match.
+		if (app.wmClass) {
+			const expected = norm(app.wmClass)
+			return !!cls && !!expected && cls === expected
+		}
 		const targets = new Set()
-		if (app.wmClass) targets.add(norm(app.wmClass))
 		if (app.id) {
 			const idLeaf = app.id.includes('.') ? app.id.split('.').at(-1) : app.id
 			targets.add(norm(app.id))
@@ -967,19 +1096,15 @@ export function createHyprland({
 		}
 		if (app.name) targets.add(norm(app.name))
 		targets.delete('')
-		// When the window reports a WM class, match strictly against the class so a terminal titled "Firefox build log" is never misidentified as Firefox.
 		if (cls) {
 			for (const t of targets) {
-				if (t.length < 3) continue
-				if (cls === t) return true
-				if (t.length >= 4 && cls.length >= 4 && (cls.startsWith(t) || t.startsWith(cls))) return true
+				if (t.length >= 3 && cls === t) return true
 			}
 			return false
 		}
-		// Only fall back to title matching when the window has no WM class and the desktop entry has no explicit StartupWMClass.
-		if (!app.wmClass && title) {
+		if (title) {
 			for (const t of targets) {
-				if (t.length >= 4 && title.includes(t)) return true
+				if (t.length >= 4 && title === t) return true
 			}
 		}
 		return false
@@ -989,6 +1114,9 @@ export function createHyprland({
 	async function launch(input = {}) {
 		const id = String(input.id ?? '').trim()
 		if (!DESKTOP_ID_RE.test(id)) throw new RpcError('BAD_REQUEST', 'Invalid application ID')
+		if (pendingLaunches.size >= MAX_PENDING_LAUNCHES) {
+			throw new RpcError('TOO_MANY_REQUESTS', 'Too many applications are launching at once; wait a moment and try again')
+		}
 		const catalog = await apps()
 		const app = catalog.find((a) => a.id === id)
 		if (!app) throw new RpcError('NOT_FOUND', `Application “${id}” is not installed`)
@@ -997,7 +1125,10 @@ export function createHyprland({
 			throw new RpcError('PRECONDITION_FAILED', 'Hyprland desktop session isn’t running right now')
 		}
 		const railMon = await ensureRailOutput()
-		const railWs = Number.isInteger(railMon?.activeWorkspace) && railMon.activeWorkspace >= 1 && railMon.activeWorkspace <= 99 ? railMon.activeWorkspace : 11
+		if (!railMon || !Number.isInteger(railMon.activeWorkspace) || railMon.activeWorkspace < 1 || railMon.activeWorkspace > 99) {
+			throw new RpcError('PRECONDITION_FAILED', 'Headless RAIL-1 display is unavailable; refusing to launch on physical display')
+		}
+		const railWs = railMon.activeWorkspace
 		const reqW = Math.max(360, Math.min(3840, Math.round(Number(input.width) || 1100)))
 		const reqH = Math.max(260, Math.min(2160, Math.round(Number(input.height) || 740)))
 
@@ -1007,10 +1138,33 @@ export function createHyprland({
 			if (nowMs - ts > 30_000) claimedLaunchAddrs.delete(k)
 		}
 
-		const beforeAddrs = new Set((await windows().catch(() => [])).map((w) => w.address.toLowerCase()))
+		// Require a strict window baseline BEFORE spawning so a failed inventory can never treat existing windows as new.
+		const baselineWins = await windows({strict: true})
+		const beforeAddrs = new Set(baselineWins.map((w) => w.address.toLowerCase()))
+
+		let settled = false
 		let openedAddr = null
+		let ambiguous = false
+		let launchErr = null
 		let resolveOpen
 		const openPromise = new Promise((r) => (resolveOpen = r))
+		const markAmbiguous = () => {
+			if (settled) return
+			settled = true
+			ambiguous = true
+			resolveOpen(null)
+		}
+		const launchEntry = {app, markAmbiguous}
+		pendingLaunches.add(launchEntry)
+
+		const findAmbiguousPeers = (winClass, winTitle) => {
+			const peers = []
+			for (const peer of pendingLaunches) {
+				if (peer === launchEntry) continue
+				if (matchesLaunchedApp(peer.app, winClass, winTitle)) peers.push(peer)
+			}
+			return peers
+		}
 
 		const canClaim = (addr, winClass, winTitle) => {
 			const lower = String(addr || '').toLowerCase()
@@ -1018,91 +1172,155 @@ export function createHyprland({
 			return matchesLaunchedApp(app, winClass, winTitle)
 		}
 
+		const tryClaim = (addr, winClass, winTitle) => {
+			if (settled) return false
+			if (!canClaim(addr, winClass, winTitle)) return false
+			const peers = findAmbiguousPeers(winClass, winTitle)
+			if (peers.length > 0) {
+				markAmbiguous()
+				for (const peer of peers) peer.markAmbiguous()
+				return false
+			}
+			settled = true
+			openedAddr = addr
+			claimedLaunchAddrs.set(String(addr).toLowerCase(), Date.now())
+			resolveOpen(addr)
+			return true
+		}
+
 		const unsub = subscribeEvents((evt) => {
-			if (openedAddr) return
-			if (evt.type === 'openwindow' && canClaim(evt.address, evt.class, evt.title)) {
-				openedAddr = evt.address
-				claimedLaunchAddrs.set(evt.address.toLowerCase(), Date.now())
-				resolveOpen(evt.address)
+			if (settled) return
+			if (evt.type === 'openwindow') {
+				tryClaim(evt.address, evt.class, evt.title)
 			}
 		})
 
 		let pollTimer = null
+		let deadlineTimer = null
 		try {
-			await hyprDispatch(`hl.dispatch(hl.dsp.workspace.change_id({id = ${railWs}}))`, ['dispatch', 'workspace', String(railWs)]).catch(() => {})
+			await hyprDispatch(`hl.dispatch(hl.dsp.workspace.change_id({id = ${railWs}}))`, ['dispatch', 'workspace', String(railWs)])
 			const launchEnv = await cleanGuiEnv(env)
 			const child = spawnImpl('gtk-launch', [id], {env: launchEnv, detached: true, stdio: 'ignore'})
-			child.on('error', () => {})
+			child.once('error', (err) => {
+				if (!settled) {
+					settled = true
+					launchErr = new RpcError('BAD_GATEWAY', `Failed to launch “${id}”: ${err?.message || 'gtk-launch unavailable'}`)
+					resolveOpen(null)
+				}
+			})
+			child.once('exit', (code) => {
+				if (!settled && typeof code === 'number' && code !== 0) {
+					settled = true
+					launchErr = new RpcError('BAD_GATEWAY', `Application launcher exited with status ${code}`)
+					resolveOpen(null)
+				}
+			})
 			child.unref?.()
 
-			pollTimer = setInterval(async () => {
-				if (openedAddr) return
-				const cur = await windows().catch(() => [])
-				const found = cur.find((w) => canClaim(w.address, w.class, w.title))
-				if (found) {
-					openedAddr = found.address
-					claimedLaunchAddrs.set(found.address.toLowerCase(), Date.now())
-					resolveOpen(found.address)
+			// Sequential poll loop (never overlapping hyprctl calls); checks settled immediately before claiming.
+			const schedulePoll = () => {
+				if (settled) return
+				pollTimer = setTimeout(async () => {
+					pollTimer = null
+					if (settled) return
+					const cur = await windows({strict: true}).catch(() => null)
+					if (settled || !Array.isArray(cur)) {
+						if (!settled) schedulePoll()
+						return
+					}
+					const matches = cur.filter((w) => canClaim(w.address, w.class, w.title))
+					if (matches.length > 1) {
+						markAmbiguous()
+						for (const m of matches) {
+							for (const peer of findAmbiguousPeers(m.class, m.title)) peer.markAmbiguous()
+						}
+						return
+					}
+					if (matches.length === 1) {
+						tryClaim(matches[0].address, matches[0].class, matches[0].title)
+						return
+					}
+					schedulePoll()
+				}, 450)
+				pollTimer.unref?.()
+			}
+			schedulePoll()
+			deadlineTimer = setTimeout(() => {
+				if (!settled) {
+					settled = true
+					resolveOpen(null)
 				}
-			}, 450)
-			pollTimer.unref?.()
-			const timer = setTimeout(() => resolveOpen(null), 15_000)
+			}, 15_000)
 			await openPromise
-			clearTimeout(timer)
-			clearInterval(pollTimer)
-			pollTimer = null
+			if (deadlineTimer) {
+				clearTimeout(deadlineTimer)
+				deadlineTimer = null
+			}
+			if (pollTimer) {
+				clearTimeout(pollTimer)
+				pollTimer = null
+			}
+			if (launchErr) throw launchErr
+			if (ambiguous || !openedAddr) {
+				return {launched: true, app, window: null, ...(ambiguous ? {ambiguous: true} : {})}
+			}
 
-			let list = await windows().catch(() => [])
-			let win = openedAddr ? list.find((w) => w.address.toLowerCase() === openedAddr.toLowerCase()) : null
-			let isNewWindow = !!win
-			if (!win) {
-				const matched = list.find((w) => canClaim(w.address, w.class, w.title))
-				if (matched) {
-					claimedLaunchAddrs.set(matched.address.toLowerCase(), Date.now())
-					win = matched
-					isNewWindow = true
-				}
-			}
-			if (!win && app.wmClass) {
-				win = list.find((w) => w.class.toLowerCase() === app.wmClass.toLowerCase())
-			}
+			const list = await windows({strict: true}).catch(() => [])
+			const win = list.find((w) => w.address.toLowerCase() === openedAddr.toLowerCase())
 			if (!win) {
 				return {launched: true, app, window: null}
 			}
 
-			if (isNewWindow) {
-				await wakeRailOutput()
+			await wakeRailOutput()
+			await hyprDispatch(
+				`hl.dispatch(hl.dsp.window.move({window = "address:${win.address}", workspace = "${railWs}", silent = true}))`,
+				['dispatch', 'movetoworkspacesilent', `${railWs},address:${win.address}`],
+			)
+			if (!win.floating) {
 				await hyprDispatch(
-					`hl.dispatch(hl.dsp.window.move({window = "address:${win.address}", workspace = "${railWs}", silent = true}))`,
-					['dispatch', 'movetoworkspacesilent', `${railWs},address:${win.address}`],
-				).catch(() => {})
-				if (!win.floating) {
-					await hyprDispatch(
-						`hl.dispatch(hl.dsp.window.float({window = "address:${win.address}", state = true}))`,
-						['dispatch', 'setfloating', `address:${win.address}`],
-					).catch(() => {})
-				}
-				await placeOnRail(win.address, reqW, reqH)
-				await new Promise((r) => setTimeout(r, 150))
+					`hl.dispatch(hl.dsp.window.float({window = "address:${win.address}", state = true}))`,
+					['dispatch', 'setfloating', `address:${win.address}`],
+				)
 			}
-			const updated = (await windows().catch(() => [])).find((w) => w.address.toLowerCase() === win.address.toLowerCase()) ?? win
+			await placeOnRail(win.address, reqW, reqH)
+			await new Promise((r) => setTimeout(r, 150))
+			const updated = (await windows({strict: true}).catch(() => [])).find((w) => w.address.toLowerCase() === win.address.toLowerCase())
+			if (!updated || updated.workspace !== railWs) {
+				throw new RpcError('BAD_GATEWAY', 'Launched window could not be verified on the RAIL-1 workspace')
+			}
 			return {launched: true, app, window: updated}
 		} finally {
-			if (pollTimer) clearInterval(pollTimer)
-			unsub()
+			settled = true
+			pendingLaunches.delete(launchEntry)
+			if (deadlineTimer) clearTimeout(deadlineTimer)
+			if (pollTimer) clearTimeout(pollTimer)
+			unsub?.()
 		}
 	}
 
 	async function clipboardRead() {
 		const env = await discoverEnv()
-		if (!env?.WAYLAND_DISPLAY) return {text: ''}
-		const r = await exec('wl-paste', ['--no-newline', '--type', 'text/plain;charset=utf-8'], {env, timeout: 2000})
-		return {text: r.ok ? r.stdout.slice(0, 128 * 1024) : ''}
+		if (!env?.WAYLAND_DISPLAY) throw new RpcError('PRECONDITION_FAILED', 'Wayland display unavailable')
+		const r = await exec('wl-paste', ['--no-newline', '--type', 'text/plain;charset=utf-8'], {env, timeout: 2000, maxBuffer: MAX_CLIPBOARD_BYTES + 4096})
+		if (!r.ok) {
+			if (r.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+				throw new RpcError('PAYLOAD_TOO_LARGE', 'Wayland clipboard text exceeds 128 KiB limit')
+			}
+			const msg = r.stderr.trim().toLowerCase()
+			if (msg.includes('nothing is copied') || msg.includes('no selection') || msg.includes('clipboard is empty') || msg.includes('no matching type')) {
+				return {text: ''}
+			}
+			throw new RpcError('INTERNAL_SERVER_ERROR', r.stderr.trim() || 'Failed to read Wayland clipboard')
+		}
+		if (Buffer.byteLength(r.stdout, 'utf8') > MAX_CLIPBOARD_BYTES) {
+			throw new RpcError('PAYLOAD_TOO_LARGE', 'Wayland clipboard text exceeds 128 KiB limit')
+		}
+		return {text: r.stdout}
 	}
 
 	async function clipboardWrite(input = {}) {
 		const text = String(input.text ?? '')
-		if (text.length > 128 * 1024) throw new RpcError('BAD_REQUEST', 'Clipboard text too large')
+		if (Buffer.byteLength(text, 'utf8') > MAX_CLIPBOARD_BYTES) throw new RpcError('BAD_REQUEST', 'Clipboard text too large')
 		const env = await discoverEnv()
 		if (!env?.WAYLAND_DISPLAY) throw new RpcError('PRECONDITION_FAILED', 'Wayland display unavailable')
 		const r = await exec('wl-copy', [], {env, timeout: 2000, input: text})
@@ -1973,10 +2191,16 @@ export function createHyprland({
 		notifyUnlocked,
 		windows,
 		windowsSnapshot,
+		async currentInstanceId() {
+			const env = await discoverEnv()
+			return env?.HYPRLAND_INSTANCE_SIGNATURE ?? null
+		},
 		close() {
+			busClosed = true
 			if (disconnectLockRetryTimer) clearTimeout(disconnectLockRetryTimer)
 			disconnectLockRetryTimer = null
 			if (eventReconnectTimer) clearTimeout(eventReconnectTimer)
+			eventReconnectTimer = null
 			if (rectSyncTimer) clearInterval(rectSyncTimer)
 			rectSyncTimer = null
 			if (eventSock) {
@@ -1985,6 +2209,7 @@ export function createHyprland({
 				} catch {}
 				eventSock = null
 			}
+			eventListeners.clear()
 			for (const e of [...activeStreams]) {
 				try {
 					e.child.kill('SIGTERM')

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {execFileSync, spawn} from 'node:child_process'
 import {EventEmitter} from 'node:events'
 import {mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises'
+import net from 'node:net'
 import os from 'node:os'
 import {dirname, join} from 'node:path'
 import {PassThrough} from 'node:stream'
@@ -1132,49 +1133,79 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 	const home = join(root, 'home')
 	const data = join(root, 'data')
 	const appsDir = join(root, 'apps')
+	const lowAppsDir = join(root, 'apps-low')
 	const iconDir = join(home, '.local', 'share', 'icons', 'hicolor', 'scalable', 'apps')
 	let d
 	try {
 		await mkdir(appsDir, {recursive: true})
+		await mkdir(lowAppsDir, {recursive: true})
 		await mkdir(iconDir, {recursive: true})
 		await writeFile(join(iconDir, 'demo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>')
-		await writeFile(join(root, 'secret.txt'), 'not-an-icon')
-		await symlink(join(root, 'secret.txt'), join(iconDir, 'escaped.svg'))
+		await writeFile(join(root, 'outside.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>')
+		await symlink(join(root, 'outside.svg'), join(iconDir, 'escaped.svg'))
 		await writeFile(join(appsDir, 'demo.desktop'), '[Desktop Entry]\nType=Application\nName=Demo\nExec=/usr/bin/demo\nIcon=demo\nStartupWMClass=demo\n')
-		await writeFile(join(appsDir, 'evil.desktop'), `[Desktop Entry]\nType=Application\nName=Evil\nExec=/usr/bin/evil\nIcon=${join(root, 'secret.txt')}\n`)
+		await writeFile(join(appsDir, 'evil.desktop'), `[Desktop Entry]\nType=Application\nName=Evil\nExec=/usr/bin/evil\nIcon=${join(root, 'outside.svg')}\n`)
 		await writeFile(join(appsDir, 'sym.desktop'), '[Desktop Entry]\nType=Application\nName=Sym\nExec=/usr/bin/sym\nIcon=escaped\n')
 		await writeFile(join(appsDir, 'alpha.desktop'), '[Desktop Entry]\nType=Application\nName=Alpha\nExec=/usr/bin/alpha\nStartupWMClass=alpha-app\n')
 		await writeFile(join(appsDir, 'beta.desktop'), '[Desktop Entry]\nType=Application\nName=Beta\nExec=/usr/bin/beta\nStartupWMClass=beta-app\n')
+		await writeFile(join(appsDir, 'shadowed.desktop'), '[Desktop Entry]\nType=Application\nName=Shadowed\nExec=/usr/bin/shadowed\nHidden=true\n')
+		await writeFile(join(lowAppsDir, 'shadowed.desktop'), '[Desktop Entry]\nType=Application\nName=Shadowed Visible\nExec=/usr/bin/shadowed\n')
 		await writeFile(join(root, 'wayland-1'), '')
 		await mkdir(join(root, 'hypr', 'sig123'), {recursive: true})
 		await writeFile(join(root, 'hypr', 'sig123', '.socket.sock'), '')
 
 		let clipText = ''
 		let failCopy = false
+		let pasteMode = 'ok'
+		let railMissing = false
+		let clientsFail = false
+		let spawnMode = 'ok'
+		let betaLaunchSeq = 0
 		const clients = [{address: '0x55a1b2c3d4e0', title: 'Demo', class: 'demo', workspace: {id: 1}, at: [0, 0], size: [640, 480], mapped: true}]
 
 		const hypr = createHyprland({
 			dataDir: join(root, 'd1'),
 			home,
 			runtimeDir: root,
-			appDirs: [appsDir],
+			appDirs: [appsDir, lowAppsDir],
 			vaapiDevice: join(root, 'nonexistent'),
 			async exec(cmd, args, opts) {
 				if (cmd === 'pkg-config') return {ok: false, stdout: '', stderr: ''}
 				if (cmd === 'hyprctl' && args[0] === 'monitors') {
+					if (railMissing) return {ok: true, stdout: JSON.stringify([{id: 0, name: 'DP-1', x: 0, y: 0, width: 1920, height: 1080, scale: 1, refreshRate: 60, dpmsStatus: true, activeWorkspace: {id: 1}}]), stderr: ''}
 					return {ok: true, stdout: JSON.stringify([{id: 1, name: 'RAIL-1', x: 0, y: 0, width: 3840, height: 2160, scale: 1, refreshRate: 60, dpmsStatus: true, activeWorkspace: {id: 11}}]), stderr: ''}
 				}
-				if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: JSON.stringify(clients), stderr: ''}
+				if (cmd === 'hyprctl' && args[0] === 'clients') {
+					if (clientsFail) return {ok: false, stdout: '', stderr: 'hyprctl failed'}
+					return {ok: true, stdout: JSON.stringify(clients), stderr: ''}
+				}
+				if (cmd === 'hyprctl' && args[0] === 'output') {
+					return railMissing ? {ok: false, stdout: '', stderr: 'cannot create headless output'} : {ok: true, stdout: 'ok', stderr: ''}
+				}
 				if (cmd === 'wl-copy') {
 					if (failCopy) return {ok: false, stdout: '', stderr: 'wl-copy failed'}
 					clipText = opts?.input ?? ''
 					return {ok: true, stdout: '', stderr: ''}
 				}
-				if (cmd === 'wl-paste') return {ok: true, stdout: clipText, stderr: ''}
+				if (cmd === 'wl-paste') {
+					if (pasteMode === 'empty') return {ok: false, stdout: '', stderr: 'Nothing is copied'}
+					if (pasteMode === 'error') return {ok: false, stdout: '', stderr: 'Failed to connect to a compositor'}
+					return {ok: true, stdout: clipText, stderr: ''}
+				}
 				return {ok: true, stdout: 'ok', stderr: ''}
 			},
 			spawnImpl(cmd, args) {
+				const p = new EventEmitter()
+				p.unref = () => {}
 				if (cmd === 'gtk-launch') {
+					if (spawnMode === 'enoent') {
+						setTimeout(() => p.emit('error', Object.assign(new Error('spawn gtk-launch ENOENT'), {code: 'ENOENT'})), 5)
+						return p
+					}
+					if (spawnMode === 'exit1') {
+						setTimeout(() => p.emit('exit', 1, null), 5)
+						return p
+					}
 					if (args[0] === 'alpha') {
 						setTimeout(() => {
 							clients.push({address: '0x55a100000001', title: 'Alpha build log', class: 'foot', workspace: {id: 1}, at: [0, 0], size: [400, 300], mapped: true, floating: true})
@@ -1183,37 +1214,74 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 							clients.push({address: '0x55a1000000aa', title: 'Alpha Main', class: 'alpha-app', workspace: {id: 11}, at: [0, 0], size: [900, 600], mapped: true, floating: true})
 						}, 80)
 					} else if (args[0] === 'beta') {
+						const seq = ++betaLaunchSeq
+						const addr = seq === 1 ? '0x55a1000000bb' : `0x55a1000000b${seq}`
 						setTimeout(() => {
-							clients.push({address: '0x55a1000000bb', title: 'Beta Main', class: 'beta-app', workspace: {id: 11}, at: [0, 0], size: [900, 600], mapped: true, floating: true})
+							clients.push({address: addr, title: `Beta Main ${seq}`, class: 'beta-app', workspace: {id: 11}, at: [0, 0], size: [900, 600], mapped: true, floating: true})
 						}, 40)
 					}
 				}
-				const p = new EventEmitter()
-				p.unref = () => {}
 				return p
 			},
 		})
 
 		const catalog = await hypr.procedures['hyprland.apps'].run()
 		assert.equal(catalog.find((a) => a.id === 'demo')?.hasIcon, true)
-		assert.equal(catalog.find((a) => a.id === 'evil')?.hasIcon, false)
-		assert.equal(await hypr.readAppIcon('evil'), null)
-		assert.equal(await hypr.readAppIcon('sym'), null, 'symlinks escaping iconRoots must be refused')
-		assert.equal(await hypr.readAppIcon('../secret'), null)
+		assert.equal(catalog.find((a) => a.id === 'evil')?.hasIcon, false, 'outside .svg path must be rejected by icon jail')
+		assert.equal(catalog.find((a) => a.id === 'shadowed'), undefined, 'Hidden=true in higher-priority dir must shadow lower-priority .desktop')
+		assert.ok((await hypr.readAppIcon('demo'))?.data.toString('utf8').includes('<svg'), 'inside .svg positive control must succeed')
+		assert.equal(await hypr.readAppIcon('evil'), null, 'outside .svg must be refused by readAppIcon')
+		assert.equal(await hypr.readAppIcon('sym'), null, 'symlinks escaping iconRoots to an outside .svg must be refused')
+		assert.equal(await hypr.readAppIcon('../outside'), null)
 
 		await hypr.procedures['hyprland.clipboardWrite'].run({text: 'hello-rail'})
 		assert.equal((await hypr.procedures['hyprland.clipboardRead'].run()).text, 'hello-rail')
+		pasteMode = 'empty'
+		assert.equal((await hypr.procedures['hyprland.clipboardRead'].run()).text, '', 'empty clipboard stderr should return empty text')
+		pasteMode = 'error'
+		await assert.rejects(() => hypr.procedures['hyprland.clipboardRead'].run(), /Failed to connect to a compositor/)
+		pasteMode = 'ok'
+		await assert.rejects(() => hypr.procedures['hyprland.clipboardWrite'].run({text: '\u{1F600}'.repeat(40_000)}), /Clipboard text too large/)
 		failCopy = true
 		await assert.rejects(() => hypr.procedures['hyprland.clipboardWrite'].run({text: 'fail'}), /wl-copy failed/)
+		failCopy = false
 
 		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: '../evil'}), /Invalid application ID/)
 		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: 'not-installed'}), /not installed/)
+
+		// Failed RAIL-1 setup must refuse launch before spawning
+		railMissing = true
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: 'alpha'}), /RAIL-1/)
+		railMissing = false
+
+		// Failed baseline inventory must refuse launch rather than claiming physical windows
+		clientsFail = true
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: 'alpha'}), /hyprctl/)
+		clientsFail = false
+
+		// Missing gtk-launch and non-zero exit must fail fast
+		spawnMode = 'enoent'
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: 'alpha'}), /Failed to launch/)
+		spawnMode = 'exit1'
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: 'alpha'}), /exited with status 1/)
+		spawnMode = 'ok'
+
 		const [resA, resB] = await Promise.all([
 			hypr.procedures['hyprland.launch'].run({id: 'alpha'}),
 			hypr.procedures['hyprland.launch'].run({id: 'beta'}),
 		])
 		assert.equal(resA.window?.address, '0x55a1000000aa')
 		assert.equal(resB.window?.address, '0x55a1000000bb')
+
+		// Concurrent indistinguishable same-class launches must return ambiguous instead of swapping windows
+		const [dup1, dup2] = await Promise.all([
+			hypr.procedures['hyprland.launch'].run({id: 'beta'}),
+			hypr.procedures['hyprland.launch'].run({id: 'beta'}),
+		])
+		assert.equal(dup1.ambiguous, true)
+		assert.equal(dup2.ambiguous, true)
+		assert.equal(dup1.window, null)
+		assert.equal(dup2.window, null)
 
 		// windowsSnapshot() must reject empty stdout
 		const hyprEmpty = createHyprland({
@@ -1230,13 +1298,43 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		hyprEmpty.close()
 		hypr.close()
 
-		// HTTP owner-only auth + CSP sandbox icon + authoritative SSE snapshot
+		// Real Unix .socket2.sock reconnect + HTTP owner-only auth + CSP sandbox icon + SSE logout revocation + clean shutdown
+		const sock2Path = join(root, 'hypr', 'sig123', '.socket2.sock')
+		const sock2Sockets = []
+		const sock2Server = net.createServer((c) => {
+			sock2Sockets.push(c)
+		})
+		await new Promise((resolve) => sock2Server.listen(sock2Path, resolve))
+
 		const accounts = await openAccounts(data)
 		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
 		const state = JSON.parse(await readFile(join(data, 'accounts.json'), 'utf8'))
 		state.users.push({...state.users[0], userId: 'member', name: 'Pat', role: 'member'})
 		await writeFile(join(data, 'accounts.json'), JSON.stringify(state, null, '\t'))
 
+		const readNextSseEvent = async (reader, bufRef, timeoutMs = 4000) => {
+			const deadline = Date.now() + timeoutMs
+			while (true) {
+				const sep = bufRef.buf.indexOf('\n\n')
+				if (sep >= 0) {
+					const block = bufRef.buf.slice(0, sep)
+					bufRef.buf = bufRef.buf.slice(sep + 2)
+					const dataLines = block.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim())
+					if (dataLines.length) return JSON.parse(dataLines.join('\n'))
+					continue
+				}
+				const rem = deadline - Date.now()
+				if (rem <= 0) throw new Error('Timed out waiting for SSE event')
+				const next = await Promise.race([
+					reader.read(),
+					new Promise((_, rej) => setTimeout(() => rej(new Error('SSE read timeout')), rem)),
+				])
+				if (next.done) return null
+				bufRef.buf += Buffer.from(next.value).toString('utf8')
+			}
+		}
+
+		let liveWindows = [{address: '0x55a1b2c3d4e0', title: 'Demo', class: 'demo', workspace: {id: 1}, at: [0, 0], size: [640, 480], mapped: true}]
 		d = await startOmarchyd({
 			port: 0,
 			dataDir: data,
@@ -1249,7 +1347,7 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 				async exec(cmd, args) {
 					if (cmd === 'pkg-config') return {ok: false, stdout: '', stderr: ''}
 					if (cmd === 'hyprctl' && args[0] === 'monitors') return {ok: true, stdout: '[]', stderr: ''}
-					if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: JSON.stringify([{address: '0x55a1b2c3d4e0', title: 'Demo', class: 'demo', workspace: {id: 1}, at: [0, 0], size: [640, 480], mapped: true}]), stderr: ''}
+					if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: JSON.stringify(liveWindows), stderr: ''}
 					return {ok: false, stdout: '', stderr: ''}
 				},
 			},
@@ -1277,11 +1375,43 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		const sseRes = await fetch(`${d.url}/hyprland/events`, {headers: owner, signal: ac.signal})
 		assert.equal(sseRes.status, 200)
 		const reader = sseRes.body.getReader()
-		const first = await reader.read()
-		const chunk = Buffer.from(first.value).toString('utf8')
-		assert.ok(chunk.includes('"type":"windows"') && chunk.includes('"authoritative":true') && chunk.includes('0x55a1b2c3d4e0'))
+		const bufRef = {buf: ''}
+		const firstEvt = await readNextSseEvent(reader, bufRef)
+		assert.equal(firstEvt?.type, 'windows')
+		assert.equal(firstEvt?.authoritative, true)
+		assert.equal(firstEvt?.instanceId, 'sig123')
+		assert.equal(firstEvt?.windows?.[0]?.address, '0x55a1b2c3d4e0')
+
+		// Drop the .socket2.sock connection and verify reconnect sends a fresh authoritative snapshot
+		liveWindows = [{address: '0x55a1b2c3d4ff', title: 'After Reconnect', class: 'demo', workspace: {id: 11}, at: [0, 0], size: [800, 600], mapped: true}]
+		for (const s of sock2Sockets) s.destroy()
+		const reconnectedEvt = await readNextSseEvent(reader, bufRef, 5000)
+		assert.equal(reconnectedEvt?.type, 'windows')
+		assert.equal(reconnectedEvt?.authoritative, true)
+		assert.equal(reconnectedEvt?.windows?.[0]?.address, '0x55a1b2c3d4ff')
+
+		// user.logout must terminate the live SSE stream immediately
+		await fetch(`${d.url}/trpc/user.logout`, {method: 'POST', headers: {...owner, 'content-type': 'application/json'}, body: '{}'})
+		const afterLogout = await readNextSseEvent(reader, bufRef, 2000)
+		assert.equal(afterLogout, null, 'user.logout must end active /hyprland/events SSE response')
 		ac.abort()
 		await reader.cancel().catch(() => {})
+
+		// Open a fresh SSE subscriber and verify d.close() completes cleanly without hanging
+		const owner2 = await login('owner')
+		const sseRes2 = await fetch(`${d.url}/hyprland/events`, {headers: owner2})
+		assert.equal(sseRes2.status, 200)
+		const reader2 = sseRes2.body.getReader()
+		const bufRef2 = {buf: ''}
+		await readNextSseEvent(reader2, bufRef2)
+		const closedOk = await Promise.race([
+			d.close().then(() => true),
+			new Promise((r) => setTimeout(() => r(false), 3000)),
+		])
+		d = null
+		assert.equal(closedOk, true, 'daemon close() must complete promptly with an active SSE subscriber')
+		await reader2.cancel().catch(() => {})
+		await new Promise((resolve) => sock2Server.close(resolve))
 	} finally {
 		if (d) await d.close()
 		await rm(root, {recursive: true, force: true})

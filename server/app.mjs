@@ -2612,8 +2612,30 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				signal: AbortSignal.timeout(8000),
 			})
 			if (!up.ok) return res.status(up.status).end()
-			const buf = Buffer.from(await up.arrayBuffer())
-			res.setHeader('Content-Type', up.headers.get('content-type') || 'image/png')
+			const rawCt = String(up.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
+			if (rawCt !== 'image/svg+xml' && rawCt !== 'image/png') return res.status(502).end()
+			const MAX_ICON_BYTES = 2 * 1024 * 1024
+			const declaredLen = Number(up.headers.get('content-length') || 0)
+			if (Number.isFinite(declaredLen) && declaredLen > MAX_ICON_BYTES) return res.status(502).end()
+			const chunks = []
+			let total = 0
+			if (up.body) {
+				const reader = up.body.getReader()
+				for (;;) {
+					const {done, value} = await reader.read()
+					if (done) break
+					if (value) {
+						total += value.byteLength
+						if (total > MAX_ICON_BYTES) {
+							await reader.cancel().catch(() => {})
+							return res.status(502).end()
+						}
+						chunks.push(Buffer.from(value))
+					}
+				}
+			}
+			const buf = Buffer.concat(chunks, total)
+			res.setHeader('Content-Type', rawCt)
 			res.setHeader('Content-Security-Policy', 'sandbox')
 			res.setHeader('X-Content-Type-Options', 'nosniff')
 			res.setHeader('Cache-Control', 'private, max-age=3600')
@@ -2628,7 +2650,16 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const session = store.getSession(req.sid)
 		if (!backend || !session) return res.status(401).end()
 		const ac = new AbortController()
+		const sidKey = hashId(req.sid)
+		rememberSid(req.sid)
+		const unregister = registerSessionStream(sidKey, () => {
+			ac.abort()
+			try {
+				if (!res.writableEnded) res.end()
+			} catch {}
+		})
 		res.on('close', () => {
+			unregister()
 			if (!res.writableEnded) ac.abort()
 		})
 		try {
@@ -2637,18 +2668,25 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				headers: {authorization: `Bearer ${token}`, accept: 'text/event-stream'},
 				signal: ac.signal,
 			})
-			if (!upstream.ok || !upstream.body) return res.status(upstream.status || 502).end()
+			if (!upstream.ok || !upstream.body) {
+				unregister()
+				return res.status(upstream.status || 502).end()
+			}
 			res.status(200)
 			res.setHeader('Content-Type', 'text/event-stream')
 			res.setHeader('Cache-Control', 'no-store')
 			res.socket?.setNoDelay(true)
 			const {Readable} = await import('node:stream')
 			const body = Readable.fromWeb(upstream.body)
+			body.on('end', unregister)
+			body.on('close', unregister)
 			body.on('error', () => {
+				unregister()
 				if (!res.writableEnded) res.destroy()
 			})
 			body.pipe(res)
 		} catch {
+			unregister()
 			if (!res.headersSent) res.status(502).end()
 		}
 	})

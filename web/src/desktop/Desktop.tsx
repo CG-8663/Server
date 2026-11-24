@@ -578,22 +578,43 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	}
 	const scheduleRestoreRef = useRef(scheduleRestore)
 	scheduleRestoreRef.current = scheduleRestore
+	const lastHyprInstanceRef = useRef<string | null>(null)
+	const removeWinLocally = useCallback((id: string) => {
+		scheduleRestoreRef.current(id)
+		winOpenersRef.current.delete(id)
+		dropFromTrees(id)
+		setWins((ws) => ws.filter((x) => x.id !== id))
+	}, [])
 	const close = useCallback((id: string, opts?: {remote?: boolean}) => {
 		const w = winsRef.current.find((x) => x.id === id)
-		scheduleRestoreRef.current(id)
 		if (w && keepAssistantWindow(w.kind)) {
+			scheduleRestoreRef.current(id)
 			minSeq.current += 1
 			update(id, {min: true, minAt: minSeq.current})
 			closeAssistantView()
 			return
 		}
 		if (w?.kind === 'rail' && w.payload?.rail?.address && !opts?.remote) {
-			mutate('hyprland.dispatch', {action: 'close', address: w.payload.rail.address}).catch(() => {})
+			const addr = w.payload.rail.address
+			// Keep wrapper alive until Hyprland confirms close (via closewindow SSE or strict inventory) so unsaved-changes prompts or dispatch errors never orphan the native window.
+			mutate('hyprland.dispatch', {action: 'close', address: addr})
+				.then(() => {
+					window.setTimeout(() => {
+						if (!winsRef.current.some((x) => x.id === id)) return
+						query<HyprlandWindow[]>('hyprland.windows')
+							.then((list) => {
+								if (!list.some((rw) => rw.address.toLowerCase() === addr.toLowerCase())) {
+									removeWinLocally(id)
+								}
+							})
+							.catch(() => {})
+					}, 350)
+				})
+				.catch((e: Error) => toast(e.message, true))
+			return
 		}
-		winOpenersRef.current.delete(id)
-		dropFromTrees(id)
-		setWins((ws) => ws.filter((x) => x.id !== id))
-	}, [update])
+		removeWinLocally(id)
+	}, [update, removeWinLocally, toast])
 	const minimize = useCallback((id: string) => {
 		const w = winsRef.current.find((x) => x.id === id)
 		if (w?.kind === 'assistant') closeAssistantView()
@@ -1084,7 +1105,6 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		const app = key.startsWith('app:') ? appList.find((a) => a.id === key.slice(4)) : undefined
 		const machine = key.startsWith('machine:') ? machineList.find((m) => m.id === key.slice(8)) : undefined
 		const mine = winsOf(key)
-		const matchingRailWins = key.startsWith('rail-app:') ? railWinsForApp(key.slice(9)) : []
 		const items: MenuItem[] = [
 			{
 				label: mine.length && where === 'dock' && !key.startsWith('folder:') ? 'Show' : 'Open',
@@ -1126,16 +1146,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		items.push(cfg.dock.items.includes(key) ? {label: 'Remove from dock', icon: 'close', onClick: () => api.unpin(key)} : {label: 'Pin to dock', icon: 'star', onClick: () => api.pin(key)})
 		items.push(cfg.icons.some((i) => i.key === key) ? {label: 'Remove from desktop', icon: 'close', onClick: () => api.removeIcon(key)} : {label: 'Add to desktop', icon: 'plus', onClick: () => api.addIcon(key)})
 		if (key.startsWith('rail-app:')) {
-			const addrs = [...new Set([...mine.map((w) => w.payload?.rail?.address).filter((a): a is string => !!a), ...matchingRailWins.map((rw) => rw.address)])]
-			if (addrs.length || mine.length) {
-				const count = Math.max(addrs.length, mine.length)
+			// Scope bulk close strictly to explicitly associated RAIL browser wrappers for this app (never sweeping unmatched physical windows by class).
+			if (mine.length) {
 				items.push('sep', {
-					label: count > 1 ? `Close ${count} windows` : 'Close window',
+					label: mine.length > 1 ? `Close ${mine.length} windows` : 'Close window',
 					icon: 'close',
 					danger: true,
 					onClick: () => {
-						addrs.forEach((addr) => closeRailAddress(addr))
-						mine.filter((w) => !w.payload?.rail?.address).forEach((w) => close(w.id))
+						mine.forEach((w) => close(w.id))
 					},
 				})
 			}
@@ -1362,7 +1380,10 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			try {
 				const msg = JSON.parse(ev.data)
 				if (msg.type === 'windows' && msg.authoritative === true && Array.isArray(msg.windows)) {
-					// Reconcile open RAIL wrappers only against an authoritative snapshot on SSE (re)connect.
+					// If the compositor restarted with a new instanceId, invalidate all open RAIL wrappers from the previous instance immediately.
+					const nextInst = typeof msg.instanceId === 'string' && msg.instanceId ? msg.instanceId : null
+					const instanceChanged = !!(nextInst && lastHyprInstanceRef.current && nextInst !== lastHyprInstanceRef.current)
+					if (nextInst) lastHyprInstanceRef.current = nextInst
 					const liveAddrs = new Set(
 						msg.windows
 							.map((w: {address?: unknown}) => String(w?.address ?? '').toLowerCase())
@@ -1371,7 +1392,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					for (const localWin of winsRef.current) {
 						if (localWin.kind !== 'rail') continue
 						const addr = localWin.payload?.rail?.address?.toLowerCase()
-						if (addr && !liveAddrs.has(addr)) close(localWin.id, {remote: true})
+						if (instanceChanged || (addr && !liveAddrs.has(addr))) close(localWin.id, {remote: true})
 					}
 					qc.invalidateQueries({queryKey: ['hyprland.windows']})
 				} else if (msg.type === 'windowtitle' && msg.address) {

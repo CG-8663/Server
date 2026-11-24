@@ -127,6 +127,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).
 	const tickets = new Map()
 	const hyprSocketsBySession = new Map() // sessionId -> Set<WebSocket>
+	const hyprSseBySession = new Map() // sessionId -> Set<() => void>
+	const allHyprSse = new Set() // Set<() => void>
 	let factoryResetInProgress = false
 	function revokeHyprSocket(ws, reason = 'Session ended') {
 		try {
@@ -149,6 +151,15 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			hyprSocketsBySession.delete(sessionId)
 			for (const ws of set) revokeHyprSocket(ws, 'Session ended')
 		}
+		const sseSet = hyprSseBySession.get(sessionId)
+		if (sseSet) {
+			hyprSseBySession.delete(sessionId)
+			for (const stop of [...sseSet]) {
+				try {
+					stop()
+				} catch {}
+			}
+		}
 	}
 	function revokeAllHyprStreams() {
 		for (const [tk, v] of tickets) {
@@ -158,6 +169,13 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			for (const ws of set) revokeHyprSocket(ws, 'Session ended')
 		}
 		hyprSocketsBySession.clear()
+		for (const stop of [...allHyprSse]) {
+			try {
+				stop()
+			} catch {}
+		}
+		allHyprSse.clear()
+		hyprSseBySession.clear()
 	}
 	const release = await system.osRelease()
 	const settings = {hostname: os.hostname()}
@@ -933,30 +951,89 @@ WantedBy=graphical-session.target
 				const auth = accounts.authenticate(req)
 				if (!auth) return sendJson(res, 401, {error: 'unauthorized'})
 				ownerOnly(auth, 'subscribe to Hyprland window events')
-				res.writeHead(200, {'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive'})
-				res.socket?.setNoDelay?.(true)
+				if (allHyprSse.size >= 32) return sendJson(res, 503, {error: 'Too many active Hyprland event subscribers'})
 				let closed = false
 				let unsub = null
 				let keepalive = null
+				let buffering = true
+				const buffered = []
+				const sidKey = auth.sessionId || null
 				const cleanup = () => {
 					if (closed) return
 					closed = true
+					allHyprSse.delete(stopStream)
+					if (sidKey) {
+						const set = hyprSseBySession.get(sidKey)
+						if (set) {
+							set.delete(stopStream)
+							if (set.size === 0) hyprSseBySession.delete(sidKey)
+						}
+					}
 					if (keepalive) clearInterval(keepalive)
 					keepalive = null
 					if (unsub) unsub()
 					unsub = null
 				}
+				const stopStream = () => {
+					cleanup()
+					try {
+						if (!res.writableEnded) res.end()
+					} catch {}
+				}
+				const writeEvt = (evt) => {
+					if (closed || res.writableEnded) return
+					if (res.writableLength > 256 * 1024) {
+						stopStream()
+						return
+					}
+					res.write(`data: ${JSON.stringify(evt)}\n\n`)
+				}
+				// Subscribe BEFORE taking the initial snapshot (buffering events until snapshot is written so no close event is missed in between).
+				unsub = hyprland.subscribeEvents((evt) => {
+					if (closed) return
+					if (buffering) {
+						if (buffered.length < 256) buffered.push(evt)
+					} else {
+						writeEvt(evt)
+					}
+				})
+				if (!unsub) return sendJson(res, 503, {error: 'Too many active Hyprland event subscribers'})
+				res.writeHead(200, {'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive'})
+				res.socket?.setNoDelay?.(true)
+				allHyprSse.add(stopStream)
+				if (sidKey) {
+					let set = hyprSseBySession.get(sidKey)
+					if (!set) {
+						set = new Set()
+						hyprSseBySession.set(sidKey, set)
+					}
+					set.add(stopStream)
+				}
 				req.on('close', cleanup)
 				res.on('close', cleanup)
-				const writeEvt = (evt) => {
-					if (!closed && !res.writableEnded) res.write(`data: ${JSON.stringify(evt)}\n\n`)
+				const [initial, instanceId] = await Promise.all([
+					hyprland.windowsSnapshot().catch(() => null),
+					hyprland.currentInstanceId().catch(() => null),
+				])
+				if (closed || req.destroyed || res.writableEnded) {
+					cleanup()
+					return
 				}
-				const initial = await hyprland.windowsSnapshot().catch(() => null)
-				if (closed || req.destroyed || res.writableEnded) return
-				if (Array.isArray(initial)) writeEvt({type: 'windows', windows: initial, authoritative: true})
-				unsub = hyprland.subscribeEvents(writeEvt)
+				if (Array.isArray(initial)) writeEvt({type: 'windows', instanceId, windows: initial, authoritative: true})
+				buffering = false
+				for (const evt of buffered.splice(0)) writeEvt(evt)
 				keepalive = setInterval(() => {
-					if (!closed && !res.writableEnded) res.write(': ping\n\n')
+					if (closed || res.writableEnded) return
+					const stillAuthed = accounts.authenticate(req)
+					if (!stillAuthed || accounts.getUser(stillAuthed.userId)?.role !== 'owner') {
+						stopStream()
+						return
+					}
+					if (res.writableLength > 256 * 1024) {
+						stopStream()
+						return
+					}
+					res.write(': ping\n\n')
 				}, 20_000)
 				keepalive.unref?.()
 				return
@@ -1127,7 +1204,7 @@ WantedBy=graphical-session.target
 		}
 	}, 20_000).unref?.()
 
-	return {url: `http://${host}:${server.address().port}`, accounts, terminals, hyprland, close: () => (sampler.stop(), apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), hyprland.close(), assistant.chatgpt.close(), terminals.close(), new Promise((r) => server.close(r)))}
+	return {url: `http://${host}:${server.address().port}`, accounts, terminals, hyprland, close: () => (sampler.stop(), apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), revokeAllHyprStreams(), hyprland.close(), assistant.chatgpt.close(), terminals.close(), new Promise((r) => server.close(r)))}
 }
 
 // The "always use the secure address" choice made while omarchyd kept its own certificate folder.
