@@ -989,6 +989,91 @@ h1.title {
 .chips::-webkit-scrollbar {
 	display: none;
 }
+/* Category rows stay one line. The arrows move what does not fit, and go quiet at each end. */
+.category-chips {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	margin: 0 0 14px;
+}
+.category-chips-arrow {
+	width: 28px;
+	height: 28px;
+	flex: none;
+	padding: 0;
+	border-radius: 50%;
+	border: 1px solid var(--line);
+	background: var(--glass);
+	color: var(--fg);
+	display: grid;
+	place-items: center;
+}
+.category-chips-arrow:disabled {
+	color: var(--muted);
+	opacity: 0.38;
+}
+.category-chips-arrow:not(:disabled):active {
+	transform: scale(0.92);
+}
+@media (hover: hover) {
+	.category-chips-arrow:not(:disabled):hover {
+		background: color-mix(in srgb, var(--fg) 8%, transparent);
+	}
+}
+.category-chips-scroller {
+	flex: 1;
+	min-width: 0;
+	overflow-x: auto;
+	scrollbar-width: none;
+	scroll-behavior: smooth;
+}
+.category-chips-scroller::-webkit-scrollbar {
+	display: none;
+}
+/* Dissolve a chip that the edge cuts, and leave a whole chip solid. */
+.category-chips-scroller.fade-start {
+	--chip-fade: linear-gradient(to right, transparent, #000 32px);
+}
+.category-chips-scroller.fade-end {
+	--chip-fade: linear-gradient(to left, transparent, #000 32px);
+}
+.category-chips-scroller.fade-start.fade-end {
+	--chip-fade: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+}
+.category-chips-scroller.fade-start,
+.category-chips-scroller.fade-end {
+	-webkit-mask-image: var(--chip-fade);
+	mask-image: var(--chip-fade);
+	-webkit-mask-repeat: no-repeat;
+	mask-repeat: no-repeat;
+	-webkit-mask-size: 100% 100%;
+	mask-size: 100% 100%;
+}
+@media (prefers-reduced-motion: reduce) {
+	.category-chips-scroller {
+		scroll-behavior: auto;
+	}
+}
+.category-chips-track {
+	display: flex;
+	gap: 8px;
+	width: max-content;
+}
+.plugin-chipbar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	margin-bottom: 14px;
+}
+.plugin-chipbar .category-chips {
+	flex: 1;
+	margin-bottom: 0;
+}
+.plugin-chipbar > .chip {
+	flex: none;
+}
 .chip {
 	flex: none;
 	display: inline-flex;
