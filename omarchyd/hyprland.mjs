@@ -1597,6 +1597,7 @@ export function createHyprland({
 
 	function sanitizeProfile(raw, fallbackId = '', {strict = false} = {}) {
 		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+		if (strict && raw.id !== undefined && raw.id !== null && typeof raw.id !== 'string') return null
 		const hasExplicitId = raw.id !== undefined && raw.id !== null && String(raw.id).trim() !== ''
 		let id
 		if (hasExplicitId) {
@@ -1689,14 +1690,26 @@ export function createHyprland({
 			if (raw.defaultProfileId !== undefined && raw.defaultProfileId !== null && typeof raw.defaultProfileId !== 'string') {
 				if (strict) throw new Error('defaultProfileId must be a string or null')
 			}
+			const validIds = new Set(list.map((p) => p.id))
 			const activeByDevice = {}
 			if (raw.activeByDevice && typeof raw.activeByDevice === 'object' && !Array.isArray(raw.activeByDevice)) {
-				const validIds = new Set(list.map((p) => p.id))
 				for (const [dev, pid] of Object.entries(raw.activeByDevice)) {
-					if (PROFILE_ID_RE.test(dev) && typeof pid === 'string' && validIds.has(pid)) activeByDevice[dev] = pid
+					if (PROFILE_ID_RE.test(dev) && typeof pid === 'string' && validIds.has(pid)) {
+						activeByDevice[dev] = pid
+					} else if (strict) {
+						throw new Error('Invalid activeByDevice reference in store')
+					}
 				}
 			}
-			const defaultProfileId = typeof raw.defaultProfileId === 'string' && list.some((p) => p.id === raw.defaultProfileId) ? raw.defaultProfileId : (list[0]?.id ?? null)
+			if (strict && raw.defaultProfileId !== undefined && raw.defaultProfileId !== null && !validIds.has(raw.defaultProfileId)) {
+				throw new Error('Dangling defaultProfileId in store')
+			}
+			const defaultProfileId =
+				typeof raw.defaultProfileId === 'string' && validIds.has(raw.defaultProfileId)
+					? raw.defaultProfileId
+					: strict
+						? null
+						: (list[0]?.id ?? null)
 			return {profiles: list, activeByDevice, defaultProfileId}
 		} catch {
 			if (strict) throw new RpcError('INTERNAL_SERVER_ERROR', 'Saved stream profiles file is corrupted; refusing to overwrite')
@@ -1717,7 +1730,7 @@ export function createHyprland({
 	}
 
 	async function profiles() {
-		const store = await readProfilesStore()
+		const store = await readProfilesStore({strict: true})
 		const hasVaapi = await exists(vaapiDevice)
 		const hasNative = !!(compiledBin && (await exists(compiledBin)))
 		return {...store, vaapi: hasVaapi, nativeEngine: hasNative}
@@ -1732,11 +1745,18 @@ export function createHyprland({
 			if (!rawProf || typeof rawProf !== 'object' || Array.isArray(rawProf)) {
 				throw new RpcError('BAD_REQUEST', 'Invalid stream profile')
 			}
-			const explicitId = rawProf.id !== undefined && rawProf.id !== null && String(rawProf.id).trim() !== ''
-				? String(rawProf.id).trim()
-				: input?.id !== undefined && input?.id !== null && String(input.id).trim() !== ''
-					? String(input.id).trim()
-					: null
+			if (rawProf.id !== undefined && rawProf.id !== null && typeof rawProf.id !== 'string') {
+				throw new RpcError('BAD_REQUEST', 'Invalid profile ID')
+			}
+			if (input?.id !== undefined && input?.id !== null && typeof input.id !== 'string') {
+				throw new RpcError('BAD_REQUEST', 'Invalid profile ID')
+			}
+			const explicitId =
+				typeof rawProf.id === 'string' && rawProf.id.trim() !== ''
+					? rawProf.id.trim()
+					: typeof input?.id === 'string' && input.id.trim() !== ''
+						? input.id.trim()
+						: null
 			if (explicitId !== null && !PROFILE_ID_RE.test(explicitId)) {
 				throw new RpcError('BAD_REQUEST', 'Invalid profile ID')
 			}
@@ -1745,9 +1765,10 @@ export function createHyprland({
 			}
 			const rawDev = input?.deviceId
 			let dev = ''
-			if (rawDev !== undefined && rawDev !== null && String(rawDev).trim() !== '') {
-				dev = String(rawDev).trim()
-				if (!PROFILE_ID_RE.test(dev)) throw new RpcError('BAD_REQUEST', 'Invalid device ID')
+			if (rawDev !== undefined && rawDev !== null) {
+				if (typeof rawDev !== 'string') throw new RpcError('BAD_REQUEST', 'Invalid device ID')
+				dev = rawDev.trim()
+				if (dev !== '' && !PROFILE_ID_RE.test(dev)) throw new RpcError('BAD_REQUEST', 'Invalid device ID')
 			}
 			const store = await readProfilesStore({strict: true})
 			const candidate = explicitId !== null ? {...rawProf, id: explicitId} : rawProf
@@ -1765,7 +1786,8 @@ export function createHyprland({
 
 	function profileDelete(input = {}) {
 		return withProfileStoreLock(async () => {
-			const id = String(input?.id ?? '').trim()
+			if (typeof input?.id !== 'string') throw new RpcError('BAD_REQUEST', 'Invalid profile ID')
+			const id = input.id.trim()
 			if (!PROFILE_ID_RE.test(id)) throw new RpcError('BAD_REQUEST', 'Invalid profile ID')
 			const store = await readProfilesStore({strict: true})
 			store.profiles = store.profiles.filter((p) => p.id !== id)
@@ -1831,22 +1853,25 @@ export function createHyprland({
 				if (sampleTimer) clearTimeout(sampleTimer)
 				if (killTimer) clearTimeout(killTimer)
 				if (closeWaitTimer) clearTimeout(closeWaitTimer)
-				// Measure sustained FPS across the full observation window (including any trailing stall after the last frame).
+				// Measure sustained FPS across the full observation window and reject streams that stalled before the window ended.
 				const endAt = windowEndAt || performance.now()
 				const observedMs = firstFrameAt > 0 && endAt > firstFrameAt ? Math.max(durationMs * 0.95, endAt - firstFrameAt) : 0
 				const spanSec = observedMs / 1000
 				const measuredFps = frames > 1 && spanSec > 0.05 ? (frames - 1) / spanSec : 0
+				const trailingGapMs = lastFrameAt > 0 ? Math.max(0, endAt - lastFrameAt) : durationMs
+				const maxTrailingGapMs = Math.max(250, Math.round((1000 / Math.max(15, fps)) * 8))
+				const stalled = frames > 0 && trailingGapMs > maxTrailingGapMs
 				const allDts = [...dts]
-				if (lastFrameAt > 0 && endAt - lastFrameAt > 50) allDts.push(endAt - lastFrameAt)
+				if (lastFrameAt > 0 && trailingGapMs > 50) allDts.push(trailingGapMs)
 				allDts.sort((a, b) => a - b)
 				const p50Ms = allDts.length ? allDts[Math.floor(allDts.length / 2)] : 0
 				const p95Ms = allDts.length ? allDts[Math.min(allDts.length - 1, Math.floor(allDts.length * 0.95))] : 0
 				const mbps = spanSec > 0.05 ? (totalBytes * 8) / spanSec / 1e6 : 0
-				const cleanTermination = !stuck && !hadError && !framingError && !prematureExit
+				const cleanTermination = !stuck && !hadError && !framingError && !prematureExit && !stalled
 				resolveDone({
 					ok: cleanTermination && frames >= 6 && !!meta,
 					stuck,
-					...(errorMsg || framingError || prematureExit || stuck
+					...(errorMsg || framingError || prematureExit || stalled || stuck
 						? {
 								error:
 									errorMsg ||
@@ -1854,7 +1879,9 @@ export function createHyprland({
 										? 'Malformed capture wire framing'
 										: prematureExit
 											? 'Capture worker exited unexpectedly'
-											: 'Capture worker timed out on shutdown'),
+											: stalled
+												? 'Capture encoder stalled before benchmark window ended'
+												: 'Capture worker timed out on shutdown'),
 							}
 						: {}),
 					frames,
@@ -2071,15 +2098,17 @@ export function createHyprland({
 				})
 			}
 
+			const CODEC_DISPLAY = {hevc444: 'HEVC 4:4:4', hevc10: 'HEVC 10-bit', hevc: 'HEVC', h264: 'H.264'}
 			const results = []
 			for (const c of candidates) {
 				if (runGen !== profileResetGen) break
 				const m = await runCaptureBenchmark(bin, env, {...c, outputName})
-				// Score the codec the encoder ACTUALLY used (in case hardware fell back from HEVC -> H.264).
+				// Score the codec the encoder ACTUALLY used (in case hardware fell back from HEVC -> H.264), and reflect any codec fallback in the displayed label.
 				const actualCodec = m.ok ? codecFromEncoderName(m.encoder, c.codec) : c.codec
+				const label = m.ok && actualCodec !== c.codec ? `${CODEC_DISPLAY[actualCodec] || actualCodec} (fallback from ${CODEC_DISPLAY[c.codec] || c.codec})` : c.label
 				const clientSupportsActual = clientCodecs.includes(actualCodec)
 				const score = clientSupportsActual ? scoreProfileCandidate({...c, ...m, codec: actualCodec, targetFps: c.fps}, {rttMs: effectiveRttMs}) : 0
-				results.push({...c, ...m, codec: actualCodec, targetFps: c.fps, score})
+				results.push({...c, ...m, label, codec: actualCodec, targetFps: c.fps, score})
 				if (m.stuck) break
 			}
 			if (runGen !== profileResetGen) {

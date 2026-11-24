@@ -1653,7 +1653,7 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 						ch.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, encoder: `${reqCodec}_vaapi_dmabuf`, codec: 'hev1'}))))
 						let count = 0
 						const iv = setInterval(() => {
-							if (ch.killed || ch.exitCode !== null || count >= 10) {
+							if (ch.killed || ch.exitCode !== null || count >= 24) {
 								clearInterval(iv)
 								return
 							}
@@ -1720,16 +1720,17 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 		assert.equal(crashRun.winner, null, 'worker exiting prematurely before benchmark window must be rejected')
 		assert.equal(crashRun.results[0]?.ok, false)
 
-		// Short burst followed by stall must NOT score as sustained 60 FPS
+		// 24-frame burst followed by silence through the 750ms window must FAIL (never win/activate even as sole codec!)
 		modeScenario = 'bench-burst-stall'
 		const stallRun = await hypr.procedures['hyprland.profileRun'].run({
-			deviceId: 'stall-dev',
-			clientCodecs: ['hevc'],
+			deviceId: 'mac-studio-chrome',
+			clientCodecs: ['h264'],
 			clientRttMs: 20,
-			saveAsActive: false,
+			saveAsActive: true,
 		})
-		assert.ok((stallRun.results[0]?.fps ?? 99) < 25, `burst+stall must not report sustained 60 FPS, got ${stallRun.results[0]?.fps}`)
-		assert.ok((stallRun.results[0]?.p95Ms ?? 0) >= 400, `burst+stall p95 must reflect trailing stall, got ${stallRun.results[0]?.p95Ms}`)
+		assert.equal(stallRun.winner, null, 'stalled encoder must not win or replace existing active profile')
+		assert.equal(stallRun.results[0]?.ok, false, 'stalled encoder candidate must be marked ok=false')
+		assert.equal(stallRun.activeByDevice['mac-studio-chrome'], 'mac-studio-chrome')
 
 		modeScenario = 'bench-fallback-h264'
 		const unadvertisedFallback = await hypr.procedures['hyprland.profileRun'].run({
@@ -1749,6 +1750,7 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 			saveAsActive: true,
 		})
 		assert.equal(advertisedFallback.winner?.codec, 'h264')
+		assert.ok(advertisedFallback.winner?.name.includes('H.264'), `fallback winner label must reflect actual codec H.264, got ${advertisedFallback.winner?.name}`)
 
 		modeScenario = 'bench-fail'
 		const failedRun = await hypr.procedures['hyprland.profileRun'].run({
@@ -1760,7 +1762,17 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 		assert.equal(failedRun.winner, null)
 		assert.equal(failedRun.activeByDevice['mac-studio-chrome'], 'mac-studio-chrome')
 
-		// Strict validation on profileSave: reject invalid IDs and unsupported codecs instead of silently rewriting/coercing
+		// Strict validation on profileSave: reject invalid string IDs, non-string numeric IDs, and unsupported codecs
+		await hypr.procedures['hyprland.profileSave'].run({profile: {id: '7', name: 'String Seven', codec: 'hevc', fps: 60, bitrate: 20000}})
+		await assert.rejects(
+			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: 7, name: 'Numeric Seven', codec: 'h264', fps: 60, bitrate: 16000}}),
+			/Invalid profile ID/,
+		)
+		assert.equal(
+			(await hypr.procedures['hyprland.profiles'].run()).profiles.find((p) => p.id === '7')?.name,
+			'String Seven',
+			'numeric id: 7 must not overwrite existing string id "7"',
+		)
 		await assert.rejects(
 			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: '../bad/id', name: 'Bad', codec: 'hevc', fps: 60, bitrate: 20000}}),
 			/Invalid profile ID/,
@@ -1805,7 +1817,20 @@ test('stream profiler runs benchmarks safely, handles encoder fallback, serializ
 		assert.equal(listed.activeByDevice['dev-a'], 'lan-a')
 		assert.equal(listed.activeByDevice['dev-b'], 'lan-b')
 
-		// Both malformed JSON and wrong-shape valid JSON must be rejected in strict mode (refusing to overwrite)
+		// Malformed JSON, wrong-shape JSON, and invalid activeByDevice/defaultProfileId references must fail strict reads & list RPC
+		await writeFile(
+			join(root, 'data', 'hyprland-profiles.json'),
+			JSON.stringify({
+				profiles: [{id: '7', name: 'Seven', codec: 'h264', fps: 60, bitrate: 20000, quality: 20, compression: 7}],
+				activeByDevice: {laptop: 7},
+				defaultProfileId: '7',
+			}),
+		)
+		await assert.rejects(() => hypr.procedures['hyprland.profiles'].run(), /corrupted/i)
+		await assert.rejects(
+			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: 'should-fail', name: 'X', codec: 'h264', fps: 60, bitrate: 16000}}),
+			/corrupted/i,
+		)
 		await writeFile(join(root, 'data', 'hyprland-profiles.json'), '{"profiles":"not-an-array"}')
 		await assert.rejects(
 			() => hypr.procedures['hyprland.profileSave'].run({profile: {id: 'should-fail', name: 'X', codec: 'h264', fps: 60, bitrate: 16000}}),
