@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {execFileSync, spawn} from 'node:child_process'
 import {EventEmitter} from 'node:events'
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises'
 import os from 'node:os'
 import {dirname, join} from 'node:path'
 import {PassThrough} from 'node:stream'
@@ -9,7 +9,7 @@ import {test} from 'node:test'
 import {fileURLToPath} from 'node:url'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
-import {backpressureBudgets, createFrameReader, createHyprland, isPcmSilent} from '../omarchyd/hyprland.mjs'
+import {backpressureBudgets, createFrameReader, createHyprland, isPcmSilent, parseDesktopEntry} from '../omarchyd/hyprland.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -1093,6 +1093,199 @@ test('stream control state preserves saved 4:4:4 preference on non-4:4:4 clients
 	assert.equal(rbB.tier, 'high')
 	assert.equal(rbB.chroma444Pref, true)
 	assert.equal(rbB.codec, 'h264')
+})
+
+test('parseDesktopEntry extracts metadata and skips hidden/non-app entries', () => {
+	const ok = parseDesktopEntry(
+		`[Desktop Entry]
+Type=Application
+Name=Chromium Web Browser
+Name[fr]=Navigateur Chromium
+Comment=Access the Internet
+Exec=/usr/bin/chromium %U
+Icon=chromium
+Categories=Network;WebBrowser;
+StartupWMClass=chromium
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/usr/bin/chromium --new-window
+`,
+		'chromium',
+	)
+	assert.deepEqual(ok, {
+		id: 'chromium',
+		name: 'Chromium Web Browser',
+		comment: 'Access the Internet',
+		icon: 'chromium',
+		categories: ['Network', 'WebBrowser'],
+		terminal: false,
+		wmClass: 'chromium',
+	})
+
+	assert.equal(parseDesktopEntry('[Desktop Entry]\nType=Application\nName=Hidden\nExec=foo\nNoDisplay=true\n', 'h'), null)
+	assert.equal(parseDesktopEntry('[Desktop Entry]\nType=Link\nName=Link\nURL=https://example.com\n', 'l'), null)
+})
+
+test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and simultaneous WM-class launch correlation', async () => {
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchy-hypr-rail-'))
+	const home = join(root, 'home')
+	const data = join(root, 'data')
+	const appsDir = join(root, 'apps')
+	const iconDir = join(home, '.local', 'share', 'icons', 'hicolor', 'scalable', 'apps')
+	let d
+	try {
+		await mkdir(appsDir, {recursive: true})
+		await mkdir(iconDir, {recursive: true})
+		await writeFile(join(iconDir, 'demo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>')
+		await writeFile(join(root, 'secret.txt'), 'not-an-icon')
+		await symlink(join(root, 'secret.txt'), join(iconDir, 'escaped.svg'))
+		await writeFile(join(appsDir, 'demo.desktop'), '[Desktop Entry]\nType=Application\nName=Demo\nExec=/usr/bin/demo\nIcon=demo\nStartupWMClass=demo\n')
+		await writeFile(join(appsDir, 'evil.desktop'), `[Desktop Entry]\nType=Application\nName=Evil\nExec=/usr/bin/evil\nIcon=${join(root, 'secret.txt')}\n`)
+		await writeFile(join(appsDir, 'sym.desktop'), '[Desktop Entry]\nType=Application\nName=Sym\nExec=/usr/bin/sym\nIcon=escaped\n')
+		await writeFile(join(appsDir, 'alpha.desktop'), '[Desktop Entry]\nType=Application\nName=Alpha\nExec=/usr/bin/alpha\nStartupWMClass=alpha-app\n')
+		await writeFile(join(appsDir, 'beta.desktop'), '[Desktop Entry]\nType=Application\nName=Beta\nExec=/usr/bin/beta\nStartupWMClass=beta-app\n')
+		await writeFile(join(root, 'wayland-1'), '')
+		await mkdir(join(root, 'hypr', 'sig123'), {recursive: true})
+		await writeFile(join(root, 'hypr', 'sig123', '.socket.sock'), '')
+
+		let clipText = ''
+		let failCopy = false
+		const clients = [{address: '0x55a1b2c3d4e0', title: 'Demo', class: 'demo', workspace: {id: 1}, at: [0, 0], size: [640, 480], mapped: true}]
+
+		const hypr = createHyprland({
+			dataDir: join(root, 'd1'),
+			home,
+			runtimeDir: root,
+			appDirs: [appsDir],
+			vaapiDevice: join(root, 'nonexistent'),
+			async exec(cmd, args, opts) {
+				if (cmd === 'pkg-config') return {ok: false, stdout: '', stderr: ''}
+				if (cmd === 'hyprctl' && args[0] === 'monitors') {
+					return {ok: true, stdout: JSON.stringify([{id: 1, name: 'RAIL-1', x: 0, y: 0, width: 3840, height: 2160, scale: 1, refreshRate: 60, dpmsStatus: true, activeWorkspace: {id: 11}}]), stderr: ''}
+				}
+				if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: JSON.stringify(clients), stderr: ''}
+				if (cmd === 'wl-copy') {
+					if (failCopy) return {ok: false, stdout: '', stderr: 'wl-copy failed'}
+					clipText = opts?.input ?? ''
+					return {ok: true, stdout: '', stderr: ''}
+				}
+				if (cmd === 'wl-paste') return {ok: true, stdout: clipText, stderr: ''}
+				return {ok: true, stdout: 'ok', stderr: ''}
+			},
+			spawnImpl(cmd, args) {
+				if (cmd === 'gtk-launch') {
+					if (args[0] === 'alpha') {
+						setTimeout(() => {
+							clients.push({address: '0x55a100000001', title: 'Alpha build log', class: 'foot', workspace: {id: 1}, at: [0, 0], size: [400, 300], mapped: true, floating: true})
+						}, 15)
+						setTimeout(() => {
+							clients.push({address: '0x55a1000000aa', title: 'Alpha Main', class: 'alpha-app', workspace: {id: 11}, at: [0, 0], size: [900, 600], mapped: true, floating: true})
+						}, 80)
+					} else if (args[0] === 'beta') {
+						setTimeout(() => {
+							clients.push({address: '0x55a1000000bb', title: 'Beta Main', class: 'beta-app', workspace: {id: 11}, at: [0, 0], size: [900, 600], mapped: true, floating: true})
+						}, 40)
+					}
+				}
+				const p = new EventEmitter()
+				p.unref = () => {}
+				return p
+			},
+		})
+
+		const catalog = await hypr.procedures['hyprland.apps'].run()
+		assert.equal(catalog.find((a) => a.id === 'demo')?.hasIcon, true)
+		assert.equal(catalog.find((a) => a.id === 'evil')?.hasIcon, false)
+		assert.equal(await hypr.readAppIcon('evil'), null)
+		assert.equal(await hypr.readAppIcon('sym'), null, 'symlinks escaping iconRoots must be refused')
+		assert.equal(await hypr.readAppIcon('../secret'), null)
+
+		await hypr.procedures['hyprland.clipboardWrite'].run({text: 'hello-rail'})
+		assert.equal((await hypr.procedures['hyprland.clipboardRead'].run()).text, 'hello-rail')
+		failCopy = true
+		await assert.rejects(() => hypr.procedures['hyprland.clipboardWrite'].run({text: 'fail'}), /wl-copy failed/)
+
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: '../evil'}), /Invalid application ID/)
+		await assert.rejects(() => hypr.procedures['hyprland.launch'].run({id: 'not-installed'}), /not installed/)
+		const [resA, resB] = await Promise.all([
+			hypr.procedures['hyprland.launch'].run({id: 'alpha'}),
+			hypr.procedures['hyprland.launch'].run({id: 'beta'}),
+		])
+		assert.equal(resA.window?.address, '0x55a1000000aa')
+		assert.equal(resB.window?.address, '0x55a1000000bb')
+
+		// windowsSnapshot() must reject empty stdout
+		const hyprEmpty = createHyprland({
+			dataDir: join(root, 'd2'),
+			home,
+			runtimeDir: root,
+			vaapiDevice: join(root, 'nonexistent'),
+			async exec(cmd, args) {
+				if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: '', stderr: ''}
+				return {ok: true, stdout: 'ok', stderr: ''}
+			},
+		})
+		await assert.rejects(() => hyprEmpty.windowsSnapshot())
+		hyprEmpty.close()
+		hypr.close()
+
+		// HTTP owner-only auth + CSP sandbox icon + authoritative SSE snapshot
+		const accounts = await openAccounts(data)
+		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+		const state = JSON.parse(await readFile(join(data, 'accounts.json'), 'utf8'))
+		state.users.push({...state.users[0], userId: 'member', name: 'Pat', role: 'member'})
+		await writeFile(join(data, 'accounts.json'), JSON.stringify(state, null, '\t'))
+
+		d = await startOmarchyd({
+			port: 0,
+			dataDir: data,
+			home,
+			updaterOptions: {autoCheck: false, installerCheck: true},
+			hyprlandOptions: {
+				runtimeDir: root,
+				appDirs: [appsDir],
+				vaapiDevice: join(root, 'nonexistent'),
+				async exec(cmd, args) {
+					if (cmd === 'pkg-config') return {ok: false, stdout: '', stderr: ''}
+					if (cmd === 'hyprctl' && args[0] === 'monitors') return {ok: true, stdout: '[]', stderr: ''}
+					if (cmd === 'hyprctl' && args[0] === 'clients') return {ok: true, stdout: JSON.stringify([{address: '0x55a1b2c3d4e0', title: 'Demo', class: 'demo', workspace: {id: 1}, at: [0, 0], size: [640, 480], mapped: true}]), stderr: ''}
+					return {ok: false, stdout: '', stderr: ''}
+				},
+			},
+		})
+		const login = async (userId) => {
+			const r = await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId, password: 'correct horse', client: {id: 't'}})})
+			const body = await r.json()
+			return {authorization: `Bearer ${body.result.data.accessToken}`}
+		}
+		const owner = await login('owner')
+		const member = await login('member')
+
+		assert.equal((await fetch(`${d.url}/hyprland/app-icon?id=demo`)).status, 401)
+		assert.equal((await fetch(`${d.url}/hyprland/events`)).status, 401)
+		assert.equal((await fetch(`${d.url}/hyprland/app-icon?id=demo`, {headers: member})).status, 403)
+		assert.equal((await fetch(`${d.url}/hyprland/events`, {headers: member})).status, 403)
+
+		const iconRes = await fetch(`${d.url}/hyprland/app-icon?id=demo`, {headers: owner})
+		assert.equal(iconRes.status, 200)
+		assert.equal(iconRes.headers.get('content-type'), 'image/svg+xml')
+		assert.equal(iconRes.headers.get('content-security-policy'), 'sandbox')
+		assert.equal(iconRes.headers.get('x-content-type-options'), 'nosniff')
+
+		const ac = new AbortController()
+		const sseRes = await fetch(`${d.url}/hyprland/events`, {headers: owner, signal: ac.signal})
+		assert.equal(sseRes.status, 200)
+		const reader = sseRes.body.getReader()
+		const first = await reader.read()
+		const chunk = Buffer.from(first.value).toString('utf8')
+		assert.ok(chunk.includes('"type":"windows"') && chunk.includes('"authoritative":true') && chunk.includes('0x55a1b2c3d4e0'))
+		ac.abort()
+		await reader.cancel().catch(() => {})
+	} finally {
+		if (d) await d.close()
+		await rm(root, {recursive: true, force: true})
+	}
 })
 
 test('native C capture engine compiles cleanly with -Wall -Wextra -Werror when Linux VA-API headers are present', async (t) => {

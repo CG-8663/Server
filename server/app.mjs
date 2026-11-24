@@ -174,7 +174,11 @@ export const ALLOWED = {
 	'omarchy.removePlugin': 'mutation',
 	'hyprland.status': 'query',
 	'hyprland.windows': 'query',
+	'hyprland.apps': 'query',
+	'hyprland.launch': 'mutation',
 	'hyprland.dispatch': 'mutation',
+	'hyprland.clipboardRead': 'query',
+	'hyprland.clipboardWrite': 'mutation',
 	'apps.uninstall': 'mutation',
 	'apps.trackOpen': 'mutation',
 	'machines.start': 'mutation',
@@ -352,7 +356,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-export const SLOW = new Set(['unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'apps.start', 'apps.stop', 'apps.restart', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.start', 'machines.hibernate', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
+export const SLOW = new Set(['hyprland.launch', 'unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'apps.start', 'apps.stop', 'apps.restart', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.start', 'machines.hibernate', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
 export const timeoutFor = (path) => (SLOW.has(path) ? 30 * 60 * 1000 : 20_000)
 
 // An IPv6 address in a URL needs brackets; req.hostname and URL.hostname may already have them.
@@ -2592,6 +2596,60 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				return
 			}
 			sendError(res, error)
+		}
+	})
+
+	api.get('/hyprland/app-icon', async (req, res) => {
+		const backend = getClient()
+		const session = store.getSession(req.sid)
+		if (!backend || !session) return res.status(401).end()
+		const id = String(req.query.id ?? '')
+		if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/.test(id)) return res.status(400).end()
+		try {
+			const token = await accessTokenFor(req.sid, session)
+			const up = await fetchImpl(`${backend.baseUrl}/hyprland/app-icon?id=${encodeURIComponent(id)}`, {
+				headers: {authorization: `Bearer ${token}`},
+				signal: AbortSignal.timeout(8000),
+			})
+			if (!up.ok) return res.status(up.status).end()
+			const buf = Buffer.from(await up.arrayBuffer())
+			res.setHeader('Content-Type', up.headers.get('content-type') || 'image/png')
+			res.setHeader('Content-Security-Policy', 'sandbox')
+			res.setHeader('X-Content-Type-Options', 'nosniff')
+			res.setHeader('Cache-Control', 'private, max-age=3600')
+			res.send(buf)
+		} catch {
+			res.status(502).end()
+		}
+	})
+
+	api.get('/hyprland/events', async (req, res) => {
+		const backend = getClient()
+		const session = store.getSession(req.sid)
+		if (!backend || !session) return res.status(401).end()
+		const ac = new AbortController()
+		res.on('close', () => {
+			if (!res.writableEnded) ac.abort()
+		})
+		try {
+			const token = await accessTokenFor(req.sid, session)
+			const upstream = await fetchImpl(`${backend.baseUrl}/hyprland/events`, {
+				headers: {authorization: `Bearer ${token}`, accept: 'text/event-stream'},
+				signal: ac.signal,
+			})
+			if (!upstream.ok || !upstream.body) return res.status(upstream.status || 502).end()
+			res.status(200)
+			res.setHeader('Content-Type', 'text/event-stream')
+			res.setHeader('Cache-Control', 'no-store')
+			res.socket?.setNoDelay(true)
+			const {Readable} = await import('node:stream')
+			const body = Readable.fromWeb(upstream.body)
+			body.on('error', () => {
+				if (!res.writableEnded) res.destroy()
+			})
+			body.pipe(res)
+		} catch {
+			if (!res.headersSent) res.status(502).end()
 		}
 	})
 

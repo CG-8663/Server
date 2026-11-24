@@ -9,9 +9,10 @@
 //     session lock-state reporting wired into Lock-after-viewing-remotely.
 import {execFile, spawn} from 'node:child_process'
 import {createHash} from 'node:crypto'
-import {access, chmod, mkdir, readFile, readdir, rename, rm, stat} from 'node:fs/promises'
+import {access, chmod, mkdir, readFile, readdir, realpath, rename, rm, stat} from 'node:fs/promises'
+import net from 'node:net'
 import os from 'node:os'
-import {dirname, join} from 'node:path'
+import {dirname, extname, join, resolve} from 'node:path'
 import {fileURLToPath} from 'node:url'
 
 import {RpcError} from './rpc.mjs'
@@ -20,6 +21,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const STREAM_SCRIPT = join(HERE, 'hypr-stream.py')
 const CAPTURE_SOURCE = join(HERE, 'hypr-rail-capture.c')
 const ADDRESS_RE = /^0x[0-9a-f]{4,16}$/i
+const DESKTOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/
 const OUTPUT_NAME_RE = /^[A-Za-z0-9_.-]{1,32}$/
 const MAX_STREAMS = 12
 const RAIL_OUTPUT = 'RAIL-1'
@@ -145,8 +147,44 @@ function execOut(cmd, args, {env, timeout = 5000, input = null} = {}) {
 	})
 }
 
+export function parseDesktopEntry(text, id) {
+	let inMain = false
+	const fields = {}
+	for (const rawLine of String(text ?? '').split('\n')) {
+		const line = rawLine.trim()
+		if (!line || line.startsWith('#')) continue
+		if (line.startsWith('[')) {
+			inMain = line === '[Desktop Entry]'
+			continue
+		}
+		if (!inMain) continue
+		const eq = line.indexOf('=')
+		if (eq <= 0) continue
+		const k = line.slice(0, eq).trim()
+		if (k.includes('[')) continue // skip localized duplicates; keep base English/default keys
+		if (!Object.hasOwn(fields, k)) fields[k] = line.slice(eq + 1).trim()
+	}
+	if (fields.Type !== 'Application') return null
+	if (fields.NoDisplay === 'true' || fields.Hidden === 'true') return null
+	if (!fields.Name || !fields.Exec) return null
+	const cats = String(fields.Categories ?? '')
+		.split(';')
+		.map((s) => s.trim())
+		.filter(Boolean)
+	return {
+		id,
+		name: fields.Name.slice(0, 80),
+		comment: String(fields.Comment || fields.GenericName || '').slice(0, 140),
+		icon: String(fields.Icon || '').slice(0, 160),
+		categories: cats.slice(0, 6),
+		terminal: fields.Terminal === 'true',
+		wmClass: String(fields.StartupWMClass || '').slice(0, 80),
+	}
+}
+
 export function createHyprland({
 	dataDir = join(os.tmpdir(), 'omarchy-hypr'),
+	home = os.homedir(),
 	runtimeDir = process.env.XDG_RUNTIME_DIR || (typeof process.getuid === 'function' ? `/run/user/${process.getuid()}` : ''),
 	exec = execOut,
 	spawnImpl = spawn,
@@ -154,18 +192,80 @@ export function createHyprland({
 	captureSource = CAPTURE_SOURCE,
 	captureBin = null,
 	vaapiDevice = '/dev/dri/renderD128',
+	appDirs = null,
 	onRemoteUnlock = null,
 } = {}) {
 	const activeStreams = new Set()
 	let pendingStreams = 0
+	const eventListeners = new Set()
+	let eventSock = null
+	let eventSockConnecting = false
+	let eventReconnectTimer = null
 	let rectSyncTimer = null
 	let lastLockedState = null
 	let lockProbeSeq = 0
 	let lastAppliedLockSeq = 0
 	let lastFocusedAddr = ''
+	let appsCache = {at: 0, list: [], iconPaths: new Map()}
 	let compilePromise = null
 	let compiledBin = captureBin || null
 	let compileFailedAt = 0
+
+	const iconRoots = [
+		'/usr/share/icons',
+		'/usr/share/pixmaps',
+		'/usr/local/share/icons',
+		join(home, '.local/share/icons'),
+		join(home, '.icons'),
+	]
+
+	async function cleanGuiEnv(env) {
+		const keep = [
+			'HOME',
+			'USER',
+			'LOGNAME',
+			'PATH',
+			'SHELL',
+			'LANG',
+			'LC_ALL',
+			'TERM',
+			'XDG_RUNTIME_DIR',
+			'XDG_DATA_DIRS',
+			'XDG_CONFIG_DIRS',
+			'XDG_CONFIG_HOME',
+			'XDG_CACHE_HOME',
+			'XDG_STATE_HOME',
+			'WAYLAND_DISPLAY',
+			'HYPRLAND_INSTANCE_SIGNATURE',
+			'DBUS_SESSION_BUS_ADDRESS',
+			'QT_QPA_PLATFORM',
+			'GDK_BACKEND',
+			'MOZ_ENABLE_WAYLAND',
+			'ELECTRON_OZONE_PLATFORM_HINT',
+		]
+		const out = {}
+		for (const k of keep) {
+			if (env[k] != null) out[k] = env[k]
+		}
+		// Ensure Wayland/Electron/GTK/Qt/D-Bus vars are always present even when omarchyd runs as a minimal systemd user service
+		if (!out.DBUS_SESSION_BUS_ADDRESS && env.XDG_RUNTIME_DIR) {
+			const bus = join(env.XDG_RUNTIME_DIR, 'bus')
+			if (await exists(bus)) out.DBUS_SESSION_BUS_ADDRESS = `unix:path=${bus}`
+		}
+		out.XDG_SESSION_TYPE = 'wayland'
+		out.XDG_CURRENT_DESKTOP = 'Hyprland'
+		out.ELECTRON_OZONE_PLATFORM_HINT = out.ELECTRON_OZONE_PLATFORM_HINT || 'wayland'
+		out.GDK_BACKEND = out.GDK_BACKEND || 'wayland,x11,*'
+		out.QT_QPA_PLATFORM = out.QT_QPA_PLATFORM || 'wayland;xcb'
+		out.MOZ_ENABLE_WAYLAND = out.MOZ_ENABLE_WAYLAND || '1'
+		out.SDL_VIDEODRIVER = 'wayland'
+		// Only forward DISPLAY if Xwayland is actually live (a stale DISPLAY=:0 socket causes Electron/AppImage apps to hang!)
+		if (env.DISPLAY) {
+			const xw = await exec('pgrep', ['-x', 'Xwayland'], {timeout: 1500})
+			if (xw.ok && xw.stdout.trim()) out.DISPLAY = env.DISPLAY
+		}
+		return out
+	}
 
 	async function discoverEnv() {
 		if (!runtimeDir) return null
@@ -393,6 +493,206 @@ export function createHyprland({
 		return {w, h}
 	}
 
+	// ---- Native .desktop application catalog & icon resolver ------------------------------------
+	async function isAllowedIconPath(real) {
+		const ext = extname(real).toLowerCase()
+		if (ext !== '.svg' && ext !== '.png') return false
+		if (real.startsWith('/usr/share/')) return true
+		for (const root of iconRoots) {
+			const realRoot = await realpath(root).catch(() => root)
+			if (real.startsWith(`${realRoot}/`)) return true
+		}
+		return false
+	}
+
+	async function resolveIconPath(iconName) {
+		if (!iconName || iconName.includes('..') || iconName.includes('\0')) return null
+		if (iconName.startsWith('/')) {
+			if (!(await exists(iconName))) return null
+			const real = await realpath(iconName).catch(() => null)
+			if (!real) return null
+			return (await isAllowedIconPath(real)) ? real : null
+		}
+		const exts = /\.(svg|png)$/i.test(iconName) ? [''] : ['.svg', '.png']
+		const subdirs = [
+			'/usr/share/icons/hicolor/scalable/apps',
+			'/usr/share/icons/hicolor/256x256/apps',
+			'/usr/share/icons/hicolor/128x128/apps',
+			'/usr/share/icons/hicolor/64x64/apps',
+			'/usr/share/icons/hicolor/48x48/apps',
+			'/usr/share/icons/Adwaita/scalable/apps',
+			'/usr/share/icons/Adwaita/48x48/apps',
+			'/usr/share/pixmaps',
+			join(home, '.local/share/icons/hicolor/scalable/apps'),
+			join(home, '.local/share/icons/hicolor/128x128/apps'),
+			join(home, '.local/share/icons'),
+		]
+		for (const dir of subdirs) {
+			for (const ext of exts) {
+				const cand = join(dir, `${iconName}${ext}`)
+				if (await exists(cand)) return cand
+			}
+		}
+		return null
+	}
+
+	async function apps({refresh = false} = {}) {
+		if (!refresh && appsCache.list.length && Date.now() - appsCache.at < 60_000) {
+			return appsCache.list
+		}
+		const dirs = appDirs ?? [join(home, '.local/share/applications'), '/usr/local/share/applications', '/usr/share/applications']
+		const seen = new Map()
+		const iconMap = new Map()
+		for (const dir of dirs) {
+			const files = await readdir(dir).catch(() => [])
+			for (const file of files) {
+				if (!file.endsWith('.desktop')) continue
+				const id = file.slice(0, -'.desktop'.length)
+				if (!DESKTOP_ID_RE.test(id) || seen.has(id)) continue
+				const text = await readFile(join(dir, file), 'utf8').catch(() => '')
+				const parsed = parseDesktopEntry(text, id)
+				if (!parsed) continue
+				const iconPath = await resolveIconPath(parsed.icon)
+				if (iconPath) iconMap.set(id, iconPath)
+				seen.set(id, {
+					id: parsed.id,
+					name: parsed.name,
+					comment: parsed.comment,
+					categories: parsed.categories,
+					terminal: parsed.terminal,
+					wmClass: parsed.wmClass,
+					hasIcon: !!iconPath,
+				})
+			}
+		}
+		const list = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))
+		appsCache = {at: Date.now(), list, iconPaths: iconMap}
+		return list
+	}
+
+	async function readAppIcon(id) {
+		const clean = String(id ?? '')
+		if (!DESKTOP_ID_RE.test(clean)) return null
+		if (!appsCache.list.length) await apps()
+		const file = appsCache.iconPaths.get(clean)
+		if (!file) return null
+		const real = await realpath(resolve(file)).catch(() => null)
+		if (!real || !(await isAllowedIconPath(real))) return null
+		const data = await readFile(real).catch(() => null)
+		if (!data || data.length > 2 * 1024 * 1024) return null
+		const ext = extname(real).toLowerCase()
+		const contentType = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : 'application/octet-stream'
+		return {data, contentType}
+	}
+
+	// ---- Real-time Hyprland .socket2.sock IPC event bus -----------------------------------------
+	function emitEvent(evt) {
+		for (const fn of [...eventListeners]) {
+			try {
+				fn(evt)
+			} catch {}
+		}
+	}
+
+	function parseSocket2Line(line) {
+		const sep = line.indexOf('>>')
+		if (sep <= 0) return null
+		const kind = line.slice(0, sep)
+		const rest = line.slice(sep + 2)
+		if (kind === 'openwindow') {
+			const p = rest.split(',')
+			if (p.length >= 4) {
+				const addr = p[0].startsWith('0x') ? p[0] : `0x${p[0]}`
+				return {type: 'openwindow', address: addr, workspace: p[1], class: p[2], title: p.slice(3).join(',')}
+			}
+		} else if (kind === 'closewindow') {
+			const addr = rest.startsWith('0x') ? rest : `0x${rest}`
+			return {type: 'closewindow', address: addr}
+		} else if (kind === 'windowtitlev2') {
+			const c = rest.indexOf(',')
+			if (c > 0) {
+				const rawAddr = rest.slice(0, c)
+				const addr = rawAddr.startsWith('0x') ? rawAddr : `0x${rawAddr}`
+				return {type: 'windowtitle', address: addr, title: rest.slice(c + 1)}
+			}
+		} else if (kind === 'activewindowv2') {
+			const addr = rest.startsWith('0x') ? rest : `0x${rest}`
+			return {type: 'activewindow', address: addr}
+		} else if (kind === 'movewindowv2' || kind === 'changefloatingmode' || kind === 'fullscreen') {
+			return {type: 'layoutchange'}
+		}
+		return null
+	}
+
+	function scheduleEventReconnect() {
+		if (eventListeners.size === 0 || eventReconnectTimer || eventSock) return
+		eventReconnectTimer = setTimeout(() => {
+			eventReconnectTimer = null
+			ensureEventSocket().catch(() => {})
+		}, 2000)
+		eventReconnectTimer.unref?.()
+	}
+
+	async function ensureEventSocket() {
+		if (eventSock || eventSockConnecting || eventListeners.size === 0) return
+		eventSockConnecting = true
+		try {
+			const env = await discoverEnv()
+			if (eventListeners.size === 0 || eventSock) return
+			if (!env?.HYPRLAND_INSTANCE_SIGNATURE) {
+				scheduleEventReconnect()
+				return
+			}
+			const sockPath = join(env.XDG_RUNTIME_DIR, 'hypr', env.HYPRLAND_INSTANCE_SIGNATURE, '.socket2.sock')
+			if (!(await exists(sockPath))) {
+				scheduleEventReconnect()
+				return
+			}
+			if (eventListeners.size === 0 || eventSock) return
+			const sock = net.connect(sockPath)
+			eventSock = sock
+			let buf = ''
+			sock.setEncoding('utf8')
+			sock.on('data', (chunk) => {
+				buf += chunk
+				const lines = buf.split('\n')
+				buf = lines.pop() ?? ''
+				for (const line of lines) {
+					const evt = parseSocket2Line(line.trim())
+					if (!evt) continue
+					if (evt.type === 'layoutchange') {
+						if (activeStreams.size > 0) syncAllStreamRects().catch(() => {})
+					} else {
+						if (evt.type === 'activewindow') lastFocusedAddr = String(evt.address || '').toLowerCase()
+						emitEvent(evt)
+					}
+				}
+			})
+			const onEnd = () => {
+				if (eventSock === sock) eventSock = null
+				scheduleEventReconnect()
+			}
+			sock.on('error', onEnd)
+			sock.on('close', onEnd)
+		} finally {
+			eventSockConnecting = false
+		}
+	}
+
+	function subscribeEvents(listener) {
+		eventListeners.add(listener)
+		ensureEventSocket().catch(() => {})
+		return () => {
+			eventListeners.delete(listener)
+			if (eventListeners.size === 0 && eventSock) {
+				try {
+					eventSock.destroy()
+				} catch {}
+				eventSock = null
+			}
+		}
+	}
+
 	// Detect whether Wayland ext_session_lock_v1 (e.g. Omarchy shell lockscreen) is holding pointer/keyboard input.
 	// Returns true (locked), false (unlocked), or null (unknown/probe failed) so transient hyprctl failures never fabricate an unlock.
 	async function isSessionLocked() {
@@ -436,6 +736,7 @@ export function createHyprland({
 			wayland: env?.WAYLAND_DISPLAY ?? null,
 			vaapi: hasVaapi,
 			nativeEngine: hasNativeCapture,
+			railReady: available,
 			sessionLocked,
 			encoder: hasNativeCapture ? 'h264_vaapi_dmabuf' : hasVaapi ? 'h264_vaapi' : hasFfmpeg ? 'libx264' : null,
 			monitors,
@@ -470,6 +771,8 @@ export function createHyprland({
 			}))
 			.sort((a, b) => a.workspace - b.workspace || a.title.localeCompare(b.title))
 	}
+
+	const windowsSnapshot = () => windows({strict: true})
 
 	// Push updated window or monitor logical rect straight to live streams so pointer clicks stay pixel-perfect across multi-monitor layouts.
 	function writeRectForEntry(entry, mons, wins) {
@@ -646,6 +949,165 @@ export function createHyprland({
 			return out
 		}
 		return null
+	}
+
+	const claimedLaunchAddrs = new Map() // lowercase address -> timestamp
+
+	function matchesLaunchedApp(app, winClass, winTitle = '') {
+		const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+		const cls = norm(winClass)
+		const title = norm(winTitle)
+		if (!cls && !title) return false
+		const targets = new Set()
+		if (app.wmClass) targets.add(norm(app.wmClass))
+		if (app.id) {
+			const idLeaf = app.id.includes('.') ? app.id.split('.').at(-1) : app.id
+			targets.add(norm(app.id))
+			if (idLeaf) targets.add(norm(idLeaf))
+		}
+		if (app.name) targets.add(norm(app.name))
+		targets.delete('')
+		// When the window reports a WM class, match strictly against the class so a terminal titled "Firefox build log" is never misidentified as Firefox.
+		if (cls) {
+			for (const t of targets) {
+				if (t.length < 3) continue
+				if (cls === t) return true
+				if (t.length >= 4 && cls.length >= 4 && (cls.startsWith(t) || t.startsWith(cls))) return true
+			}
+			return false
+		}
+		// Only fall back to title matching when the window has no WM class and the desktop entry has no explicit StartupWMClass.
+		if (!app.wmClass && title) {
+			for (const t of targets) {
+				if (t.length >= 4 && title.includes(t)) return true
+			}
+		}
+		return false
+	}
+
+	// Launch an allowlisted installed `.desktop` app onto the headless RAIL output and return its newly mapped window.
+	async function launch(input = {}) {
+		const id = String(input.id ?? '').trim()
+		if (!DESKTOP_ID_RE.test(id)) throw new RpcError('BAD_REQUEST', 'Invalid application ID')
+		const catalog = await apps()
+		const app = catalog.find((a) => a.id === id)
+		if (!app) throw new RpcError('NOT_FOUND', `Application “${id}” is not installed`)
+		const env = await discoverEnv()
+		if (!env?.WAYLAND_DISPLAY || !env?.HYPRLAND_INSTANCE_SIGNATURE) {
+			throw new RpcError('PRECONDITION_FAILED', 'Hyprland desktop session isn’t running right now')
+		}
+		const railMon = await ensureRailOutput()
+		const railWs = Number.isInteger(railMon?.activeWorkspace) && railMon.activeWorkspace >= 1 && railMon.activeWorkspace <= 99 ? railMon.activeWorkspace : 11
+		const reqW = Math.max(360, Math.min(3840, Math.round(Number(input.width) || 1100)))
+		const reqH = Math.max(260, Math.min(2160, Math.round(Number(input.height) || 740)))
+
+		// Prune stale claims older than 30s
+		const nowMs = Date.now()
+		for (const [k, ts] of claimedLaunchAddrs) {
+			if (nowMs - ts > 30_000) claimedLaunchAddrs.delete(k)
+		}
+
+		const beforeAddrs = new Set((await windows().catch(() => [])).map((w) => w.address.toLowerCase()))
+		let openedAddr = null
+		let resolveOpen
+		const openPromise = new Promise((r) => (resolveOpen = r))
+
+		const canClaim = (addr, winClass, winTitle) => {
+			const lower = String(addr || '').toLowerCase()
+			if (!lower || beforeAddrs.has(lower) || claimedLaunchAddrs.has(lower)) return false
+			return matchesLaunchedApp(app, winClass, winTitle)
+		}
+
+		const unsub = subscribeEvents((evt) => {
+			if (openedAddr) return
+			if (evt.type === 'openwindow' && canClaim(evt.address, evt.class, evt.title)) {
+				openedAddr = evt.address
+				claimedLaunchAddrs.set(evt.address.toLowerCase(), Date.now())
+				resolveOpen(evt.address)
+			}
+		})
+
+		let pollTimer = null
+		try {
+			await hyprDispatch(`hl.dispatch(hl.dsp.workspace.change_id({id = ${railWs}}))`, ['dispatch', 'workspace', String(railWs)]).catch(() => {})
+			const launchEnv = await cleanGuiEnv(env)
+			const child = spawnImpl('gtk-launch', [id], {env: launchEnv, detached: true, stdio: 'ignore'})
+			child.on('error', () => {})
+			child.unref?.()
+
+			pollTimer = setInterval(async () => {
+				if (openedAddr) return
+				const cur = await windows().catch(() => [])
+				const found = cur.find((w) => canClaim(w.address, w.class, w.title))
+				if (found) {
+					openedAddr = found.address
+					claimedLaunchAddrs.set(found.address.toLowerCase(), Date.now())
+					resolveOpen(found.address)
+				}
+			}, 450)
+			pollTimer.unref?.()
+			const timer = setTimeout(() => resolveOpen(null), 15_000)
+			await openPromise
+			clearTimeout(timer)
+			clearInterval(pollTimer)
+			pollTimer = null
+
+			let list = await windows().catch(() => [])
+			let win = openedAddr ? list.find((w) => w.address.toLowerCase() === openedAddr.toLowerCase()) : null
+			let isNewWindow = !!win
+			if (!win) {
+				const matched = list.find((w) => canClaim(w.address, w.class, w.title))
+				if (matched) {
+					claimedLaunchAddrs.set(matched.address.toLowerCase(), Date.now())
+					win = matched
+					isNewWindow = true
+				}
+			}
+			if (!win && app.wmClass) {
+				win = list.find((w) => w.class.toLowerCase() === app.wmClass.toLowerCase())
+			}
+			if (!win) {
+				return {launched: true, app, window: null}
+			}
+
+			if (isNewWindow) {
+				await wakeRailOutput()
+				await hyprDispatch(
+					`hl.dispatch(hl.dsp.window.move({window = "address:${win.address}", workspace = "${railWs}", silent = true}))`,
+					['dispatch', 'movetoworkspacesilent', `${railWs},address:${win.address}`],
+				).catch(() => {})
+				if (!win.floating) {
+					await hyprDispatch(
+						`hl.dispatch(hl.dsp.window.float({window = "address:${win.address}", state = true}))`,
+						['dispatch', 'setfloating', `address:${win.address}`],
+					).catch(() => {})
+				}
+				await placeOnRail(win.address, reqW, reqH)
+				await new Promise((r) => setTimeout(r, 150))
+			}
+			const updated = (await windows().catch(() => [])).find((w) => w.address.toLowerCase() === win.address.toLowerCase()) ?? win
+			return {launched: true, app, window: updated}
+		} finally {
+			if (pollTimer) clearInterval(pollTimer)
+			unsub()
+		}
+	}
+
+	async function clipboardRead() {
+		const env = await discoverEnv()
+		if (!env?.WAYLAND_DISPLAY) return {text: ''}
+		const r = await exec('wl-paste', ['--no-newline', '--type', 'text/plain;charset=utf-8'], {env, timeout: 2000})
+		return {text: r.ok ? r.stdout.slice(0, 128 * 1024) : ''}
+	}
+
+	async function clipboardWrite(input = {}) {
+		const text = String(input.text ?? '')
+		if (text.length > 128 * 1024) throw new RpcError('BAD_REQUEST', 'Clipboard text too large')
+		const env = await discoverEnv()
+		if (!env?.WAYLAND_DISPLAY) throw new RpcError('PRECONDITION_FAILED', 'Wayland display unavailable')
+		const r = await exec('wl-copy', [], {env, timeout: 2000, input: text})
+		if (!r.ok) throw new RpcError('INTERNAL_SERVER_ERROR', r.stderr.trim() || 'Failed to update Wayland clipboard')
+		return true
 	}
 
 	// Strict allowlisted Hyprland window controls (never arbitrary exec/shell).
@@ -1506,13 +1968,23 @@ export function createHyprland({
 
 	return {
 		attachStream,
+		readAppIcon,
+		subscribeEvents,
 		notifyUnlocked,
 		windows,
+		windowsSnapshot,
 		close() {
 			if (disconnectLockRetryTimer) clearTimeout(disconnectLockRetryTimer)
 			disconnectLockRetryTimer = null
+			if (eventReconnectTimer) clearTimeout(eventReconnectTimer)
 			if (rectSyncTimer) clearInterval(rectSyncTimer)
 			rectSyncTimer = null
+			if (eventSock) {
+				try {
+					eventSock.destroy()
+				} catch {}
+				eventSock = null
+			}
 			for (const e of [...activeStreams]) {
 				try {
 					e.child.kill('SIGTERM')
@@ -1526,7 +1998,11 @@ export function createHyprland({
 		procedures: {
 			'hyprland.status': {kind: 'query', run: status},
 			'hyprland.windows': {kind: 'query', run: windows},
+			'hyprland.apps': {kind: 'query', run: (input) => apps({refresh: input?.refresh === true})},
+			'hyprland.launch': {kind: 'mutation', run: launch},
 			'hyprland.dispatch': {kind: 'mutation', run: dispatch},
+			'hyprland.clipboardRead': {kind: 'query', run: clipboardRead},
+			'hyprland.clipboardWrite': {kind: 'mutation', run: clipboardWrite},
 		},
 	}
 }

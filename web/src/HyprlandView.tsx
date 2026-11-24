@@ -26,11 +26,22 @@ export type HyprlandWindow = {
 	pid: number
 }
 
+export type HyprlandApp = {
+	id: string
+	name: string
+	comment: string
+	categories: string[]
+	terminal: boolean
+	wmClass: string
+	hasIcon: boolean
+}
+
 export type HyprlandStatus = {
 	available: boolean
 	wayland: string | null
 	vaapi: boolean
 	nativeEngine?: boolean
+	railReady?: boolean
 	sessionLocked?: boolean
 	encoder: string | null
 	monitors: {id: number; name: string; width: number; height: number; refreshRate: number; activeWorkspace: number; dpmsStatus?: boolean}[]

@@ -11,7 +11,17 @@ import {
 
 export type LaunchItem = {key: string; label: string; icon: (size: number) => ReactNode}
 
-export function Launcher({onClose, onOpen, items}: {onClose: () => void; onOpen: (key: string) => void; items: LaunchItem[]}) {
+export function Launcher({
+	onClose,
+	onOpen,
+	onMenu,
+	items,
+}: {
+	onClose: () => void
+	onOpen: (key: string) => void
+	onMenu?: (key: string, x: number, y: number, opener?: HTMLElement | null) => void
+	items: LaunchItem[]
+}) {
 	const [q, setQ] = useState('')
 	const [sel, setSel] = useState(0)
 	const input = useRef<HTMLInputElement>(null)
@@ -76,6 +86,12 @@ export function Launcher({onClose, onOpen, items}: {onClose: () => void; onOpen:
 									setSel(i)
 								}}
 								onFocus={() => setSel(i)}
+								onContextMenu={(e) => {
+									if (!onMenu) return
+									e.preventDefault()
+									e.stopPropagation()
+									onMenu(r.key, e.clientX, e.clientY, e.currentTarget)
+								}}
 							>
 								<span className="hypr-launch-ico">{r.icon(22)}</span>
 								{r.label}

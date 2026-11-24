@@ -914,6 +914,53 @@ WantedBy=graphical-session.target
 			if (url.pathname === '/api/clips/text' && req.method === 'POST') return await clips.httpText(req, res, url)
 			if (url.pathname === '/api/clips/image' && req.method === 'POST') return await clips.httpImage(req, res, url)
 			if (url.pathname === '/api/clips/item' && req.method === 'GET') return await clips.httpItem(req, res, url)
+			if (url.pathname === '/hyprland/app-icon' && req.method === 'GET') {
+				const auth = accounts.authenticate(req) || accounts.checkUrlToken(url.searchParams.get('token'), req)
+				if (!auth) return sendJson(res, 401, {error: 'unauthorized'})
+				ownerOnly(auth, 'read native Linux app icons')
+				const icon = await hyprland.readAppIcon(url.searchParams.get('id') ?? '')
+				if (!icon) return sendJson(res, 404, {error: 'not found'})
+				res.writeHead(200, {
+					'content-type': icon.contentType,
+					'content-length': icon.data.length,
+					'content-security-policy': 'sandbox',
+					'x-content-type-options': 'nosniff',
+					'cache-control': 'private, max-age=3600',
+				})
+				return res.end(icon.data)
+			}
+			if (url.pathname === '/hyprland/events' && req.method === 'GET') {
+				const auth = accounts.authenticate(req)
+				if (!auth) return sendJson(res, 401, {error: 'unauthorized'})
+				ownerOnly(auth, 'subscribe to Hyprland window events')
+				res.writeHead(200, {'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive'})
+				res.socket?.setNoDelay?.(true)
+				let closed = false
+				let unsub = null
+				let keepalive = null
+				const cleanup = () => {
+					if (closed) return
+					closed = true
+					if (keepalive) clearInterval(keepalive)
+					keepalive = null
+					if (unsub) unsub()
+					unsub = null
+				}
+				req.on('close', cleanup)
+				res.on('close', cleanup)
+				const writeEvt = (evt) => {
+					if (!closed && !res.writableEnded) res.write(`data: ${JSON.stringify(evt)}\n\n`)
+				}
+				const initial = await hyprland.windowsSnapshot().catch(() => null)
+				if (closed || req.destroyed || res.writableEnded) return
+				if (Array.isArray(initial)) writeEvt({type: 'windows', windows: initial, authoritative: true})
+				unsub = hyprland.subscribeEvents(writeEvt)
+				keepalive = setInterval(() => {
+					if (!closed && !res.writableEnded) res.write(': ping\n\n')
+				}, 20_000)
+				keepalive.unref?.()
+				return
+			}
 			sendJson(res, 404, {error: 'not found'})
 		} catch (error) {
 			if (!res.headersSent) sendError(res, error)
