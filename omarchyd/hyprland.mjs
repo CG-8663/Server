@@ -829,13 +829,15 @@ export function createHyprland({
 			const nativeBin = await ensureCaptureBinary().catch(() => null)
 			if (revoked || closedEarly || ws.readyState !== ws.OPEN) return
 
-			let pendingReconfigAck = false
+			let earlyReconfigPending = false
+			let sentReconfigGen = 0
+			let ackedReconfigGen = 0
 			if (earlyReconfig) {
 				if (nativeBin) {
 					if (earlyReconfig.bitrate !== undefined) curBitrate = earlyReconfig.bitrate
 					if (earlyReconfig.quality !== undefined) curQuality = earlyReconfig.quality
 					if (earlyReconfig.codec !== undefined) curCodec = earlyReconfig.codec
-					pendingReconfigAck = true
+					earlyReconfigPending = true
 				} else {
 					try {
 						ws.send(JSON.stringify({type: 'reconfig_unsupported'}))
@@ -1275,11 +1277,18 @@ export function createHyprland({
 										: 'h264'
 							const actualBitrate = Number.isFinite(Number(info.bitrate)) && Number(info.bitrate) > 0 ? Math.round(Number(info.bitrate)) : curBitrate
 							const actualQuality = Number.isFinite(Number(info.quality)) ? Math.round(Number(info.quality)) : curQuality
+							const metaGen = Number.isInteger(info.reconfigGen) ? info.reconfigGen : null
 							bp = backpressureBudgets(actualBitrate)
 							ws.send(JSON.stringify({type: 'meta', ...info, bitrate: actualBitrate, quality: actualQuality}))
-							if (pendingReconfigAck) {
-								pendingReconfigAck = false
-								ws.send(JSON.stringify({type: 'reconfig_applied', bitrate: actualBitrate, quality: actualQuality, codec: actualCodec}))
+							const matchesEarly = earlyReconfigPending && (metaGen === null || metaGen === 0) && sentReconfigGen === 0
+							const matchesLive = sentReconfigGen > ackedReconfigGen && (metaGen === null || metaGen >= sentReconfigGen)
+							if (matchesEarly) {
+								earlyReconfigPending = false
+								ws.send(JSON.stringify({type: 'reconfig_applied', bitrate: actualBitrate, quality: actualQuality, codec: actualCodec, reconfigGen: 0}))
+							} else if (matchesLive) {
+								earlyReconfigPending = false
+								ackedReconfigGen = metaGen ?? sentReconfigGen
+								ws.send(JSON.stringify({type: 'reconfig_applied', bitrate: actualBitrate, quality: actualQuality, codec: actualCodec, reconfigGen: ackedReconfigGen}))
 							}
 						} catch {}
 					} else if (msgType === 3) {
@@ -1429,7 +1438,7 @@ export function createHyprland({
 					if (clean.quality !== undefined) curQuality = clean.quality
 					if (clean.codec !== undefined) curCodec = clean.codec
 					bp = backpressureBudgets(curBitrate)
-					pendingReconfigAck = true
+					sentReconfigGen++
 					enqueueControlLine(`R ${curBitrate} ${curQuality} ${curCodec}\n`)
 					return
 				}

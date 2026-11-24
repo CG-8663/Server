@@ -615,6 +615,7 @@ export function HyprlandView({
 	const [codecFallback, setCodecFallback] = useState<StreamCodec | null>(null)
 	const [qualityTier, setQualityTierState] = useState<StreamQualityTier>(readQualityTier)
 	const [chroma444, setChroma444State] = useState<boolean>(readChroma444)
+	const [confirmedCodec, setConfirmedCodec] = useState<StreamCodec | null>(null)
 	const [showStats, setShowStats] = useState(false)
 	const showStatsRef = useRef(false)
 	showStatsRef.current = showStats
@@ -651,9 +652,11 @@ export function HyprlandView({
 	}
 
 	const toggleChroma444 = () => {
-		const next = !chroma444Ref.current
+		const curDisplay = confirmedCodec !== null ? confirmedCodec === 'hevc444' : chroma444Ref.current
+		const next = !curDisplay
 		setChroma444State(next)
 		chroma444Ref.current = next
+		setConfirmedCodec(null)
 		try {
 			localStorage.setItem(CHROMA_444_KEY, next ? '1' : '0')
 		} catch {}
@@ -1351,13 +1354,8 @@ export function HyprlandView({
 								: encStr.startsWith('hevc')
 									? 'hevc'
 									: 'h264'
-						appliedCodec = actualCodec
-						applied444 = actualCodec === 'hevc444'
 						activeCodecRef.current = actualCodec
-						if (!applied444 && chroma444Ref.current) {
-							chroma444Ref.current = false
-							setChroma444State(false)
-						}
+						setConfirmedCodec(actualCodec)
 						metaEncName = encStr === 'hevc444_vaapi_dmabuf' ? 'HEVC 4:4:4' : encStr === 'hevc10_vaapi_dmabuf' ? 'HEVC 10-bit' : encStr === 'hevc_vaapi_dmabuf' ? 'HEVC' : 'H.264'
 						metaDim = `${currentW}x${currentH}`
 						setMeta({width: currentW, height: currentH, fps: Number(msg.fps) || activeFps, encoder: encStr})
@@ -1396,6 +1394,7 @@ export function HyprlandView({
 						if (msg.codec === 'h264' || msg.codec === 'hevc' || msg.codec === 'hevc10' || msg.codec === 'hevc444') {
 							appliedCodec = msg.codec
 							activeCodecRef.current = msg.codec
+							setConfirmedCodec(msg.codec)
 						}
 					} else if (msg.type === 'reconfig_unsupported') {
 						qualityTierRef.current = appliedTier
@@ -1403,6 +1402,7 @@ export function HyprlandView({
 						activeCodecRef.current = appliedCodec
 						setQualityTierState(appliedTier)
 						setChroma444State(applied444)
+						setConfirmedCodec(appliedCodec)
 						try {
 							localStorage.setItem(QUALITY_TIER_KEY, appliedTier)
 							localStorage.setItem(CHROMA_444_KEY, applied444 ? '1' : '0')
@@ -1762,7 +1762,7 @@ export function HyprlandView({
 						{caps?.supports444 && (
 							<button
 								type="button"
-								className={`btn small${chroma444 ? ' primary' : ''}`}
+								className={`btn small${(confirmedCodec !== null ? confirmedCodec === 'hevc444' : chroma444) ? ' primary' : ''}`}
 								onClick={toggleChroma444}
 								title="Toggle hardware HEVC 4:4:4 full chroma for razor-sharp colored text (instant, zero reconnect)"
 							>

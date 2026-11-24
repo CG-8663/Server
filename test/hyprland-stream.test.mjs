@@ -770,8 +770,10 @@ test('live zero-reconnect reconfig, RTT 0x14/0x04 ping-pong, msgType 5 telemetry
 		ping.writeDoubleBE(1234.5, 1)
 		ws.emit('message', ping, true)
 
-		// Send zero-reconnect live reconfig -> forwards R <bitrate> <quality> <codec> and raises backpressure budget to 100 Mbps
+		// Send zero-reconnect live reconfig -> forwards R <bitrate> <quality> <codec>; outstanding startup meta (reconfigGen=0) must NOT consume the pending reconfig_applied ack!
 		ws.emit('message', JSON.stringify({type: 'reconfig', bitrate: 100000, quality: 12, codec: 'hevc444'}), false)
+		videoChild.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, bitrate: 20000, quality: 20, reconfigGen: 0, encoder: 'h264_vaapi_dmabuf', codec: 'avc1.640033'}))))
+		videoChild.stdout.write(framePacket(1, Buffer.from(JSON.stringify({width: 1920, height: 1080, fps: 60, bitrate: 100000, quality: 12, reconfigGen: 1, encoder: 'hevc444_vaapi_dmabuf', codec: 'hev1.4.10.L153.BE.8'}))))
 		ws.bufferedAmount = 1_800_000 // > 20 Mbps delta cap, but well under 100 Mbps delta cap (~3.1 MB)
 		const deltaPayload = Buffer.concat([Buffer.from([0]), Buffer.alloc(8), Buffer.from([0, 0, 0, 1, 0x02, 0x01])])
 		videoChild.stdout.write(framePacket(2, deltaPayload))
@@ -784,6 +786,11 @@ test('live zero-reconnect reconfig, RTT 0x14/0x04 ping-pong, msgType 5 telemetry
 		assert.ok(pongPkt && pongPkt.data.length === 9 && pongPkt.data.readDoubleBE(1) === 1234.5, 'should echo 0x04 RTT pong immediately')
 		const statsMsg = sent.find((m) => !m.binary && JSON.parse(m.data).type === 'stats')
 		assert.ok(statsMsg && JSON.parse(statsMsg.data).slices === 4, 'should forward msgType 5 telemetry stats')
+		const ackMsgs = sent.filter((m) => !m.binary).map((m) => JSON.parse(m.data)).filter((m) => m.type === 'reconfig_applied')
+		assert.equal(ackMsgs.length, 1, 'startup meta (reconfigGen=0) must not consume live reconfig_applied ack')
+		assert.equal(ackMsgs[0].codec, 'hevc444')
+		assert.equal(ackMsgs[0].bitrate, 100000)
+		assert.equal(ackMsgs[0].reconfigGen, 1)
 		assert.ok(stdinChunks.join('').includes('R 100000 12 hevc444\n'), 'reconfig should write compact R line to capture stdin')
 		assert.ok(sent.some((m) => m.binary && m.data[0] === 0), 'live reconfig to 100 Mbps should raise backpressure budget immediately')
 
