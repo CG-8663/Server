@@ -61,6 +61,13 @@ function xmlChars(s) {
 	}
 	return true
 }
+// Backup progress (0-90) from `virsh domjobinfo`. virsh prints each figure in its own most readable unit, so convert both to bytes first.
+const UNIT_BYTES = {B: 1, KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3, TiB: 1024 ** 4}
+export function backupProgress(info) {
+	const m = /Data processed:\s+([\d.]+)\s*(\w+)[\s\S]*Data total:\s+([\d.]+)\s*(\w+)/.exec(info)
+	if (!m || !UNIT_BYTES[m[2]] || !UNIT_BYTES[m[4]]) return null
+	return Math.min(90, Math.round(((Number(m[1]) * UNIT_BYTES[m[2]]) / Math.max(1, Number(m[3]) * UNIT_BYTES[m[4]])) * 90))
+}
 const hostArch = () => (os.arch() === 'arm64' ? 'arm64' : 'amd64')
 
 // Find the expected hash for `file` in a checksum file. Handles GNU (`hash  file`, `hash *file`)
@@ -107,7 +114,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const busy = new Map() // id -> {state, progress, settling}
 	const lock = createKeyedLock()
 	const isBusy = (id) => busy.has(id) && !busy.get(id).settling
-	const downloads = new Map() // imageId -> {progress, promise}
+	const downloads = new Map() // imageId -> {progress, listeners, promise}
 	const failedImages = new Map() // imageId -> message
 	let catalog = {at: 0, images: null}
 
@@ -135,8 +142,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (loaded) {
 			// A create that was interrupted by a restart can't resume: show it as failed.
 			// Machines from before 0.6.1 asked for a virtio display, which QEMU on Arch only has with an
-			// extra package: use the built-in standard VGA instead.
-			for (const m of machines) if (m.layout?.video === 'virtio') m.layout.video = 'vga'
+			// extra package: use the built-in standard VGA instead. Only while this server's QEMU lacks it:
+			// where it has virtio-vga, a machine set to VirtIO in the Hardware sheet keeps it.
+			if (!(await availableVideo()).includes('virtio')) for (const m of machines) if (m.layout?.video === 'virtio') m.layout.video = 'vga'
 			for (const m of machines) if (m.state === 'installing') Object.assign(m, {state: 'error', errorMessage: 'Setup was interrupted. Delete this machine and create it again.'})
 			for (const m of machines) normalize(m)
 			const interruptedAt = Date.now()
@@ -207,8 +215,13 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// Download an image once (concurrent callers share it) and verify it against the publisher.
 	function ensureImage(img, onProgress = () => {}) {
 		const running = downloads.get(img.id)
-		if (running) return running.promise
-		const entry = {progress: 0, promise: null}
+		if (running) {
+			// Joining a download that is already going: follow it from where it is.
+			running.listeners.push(onProgress)
+			if (running.progress) onProgress(running.progress)
+			return running.promise
+		}
+		const entry = {progress: 0, listeners: [onProgress], promise: null}
 		entry.promise = (async () => {
 			const target = imagePath(img)
 			if (await exists(target)) return target
@@ -243,7 +256,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				got += chunk.length
 				if (total) {
 					entry.progress = Math.min(99, Math.floor((got / total) * 100))
-					onProgress(entry.progress)
+					for (const listener of entry.listeners) listener(entry.progress)
 				}
 			})
 			try {
@@ -297,7 +310,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	function layoutFor(kind, dir, img) {
 		const disk = {id: 'disk0', file: join(dir, 'disk.qcow2'), device: 'disk', bus: 'virtio', format: 'qcow2'}
 		if (kind === 'cloud') return {firmware: img?.firmware === 'efi' ? 'efi' : 'bios', machineType: 'q35', nic: 'virtio', video: 'vga', disks: [disk, {id: 'seed', role: 'seed', file: join(dir, 'seed.iso'), device: 'cdrom', bus: 'sata', format: 'raw'}]}
-		// Windows installs without extra drivers on SATA, e1000e and a standard display.
+		// Windows (set up automatically, or an ISO you install by hand) installs without extra drivers on SATA, e1000e and a standard display.
 		if (kind === 'windows') return {firmware: 'efi', machineType: 'q35', nic: 'e1000e', video: 'vga', disks: [{...disk, bus: 'sata'}]}
 		return {firmware: 'efi', machineType: 'q35', nic: 'virtio', video: 'vga', disks: [disk]}
 	}
@@ -478,7 +491,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const key = `${real}:${st.mtimeMs}`
 		if (!labels.has(key)) {
 			const out = await run('xorriso', ['-indev', real, '-pvd_info'], {timeout: 30_000}).catch(() => '')
-			labels.set(key, /Volume Id\s*:\s*(\S+)/i.exec(out)?.[1] ?? '')
+			labels.set(key, (/Volume Id\s*:\s*(.+?)\s*$/im.exec(out)?.[1] ?? '').replace(/^'(.*)'$/, '$1'))
 		}
 		return {label: labels.get(key), size: st.size}
 	}
@@ -492,7 +505,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'Pools') continue
 				const full = join(dir, e.name)
 				if (e.isDirectory()) await walk(full, depth + 1)
-				else if (e.isFile() && /\.iso$/i.test(e.name)) found.push(full)
+				else if (e.isFile() && /\.iso$/i.test(e.name) && found.length < 50) found.push(full)
 			}
 		}
 		await walk(home, 0)
@@ -603,7 +616,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			do id = randomBytes(4).toString('hex')
 			while (machines.some((m) => m.id === id))
 			const dir = join(vmsDir, id)
-			const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' ? 'windows' : 'iso', dir, img)})
+			const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' || local?.platform === 'windows' ? 'windows' : 'iso', dir, img)})
 			if (kind === 'cloud') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
 			machines.push(m)
 			try {
@@ -900,6 +913,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 
 	// Live usage: sampled often for the last reading; the hour chart keeps a coarser series.
 	const series = new Map() // id -> [{t, cpu, memMb, netIn, netOut, diskRead, diskWrite}]
+	const seriesAt = new Map() // id -> monotonic time of the newest stored point
 	const lastPoint = new Map()
 	const lastRaw = new Map() // id -> {t, cpuNs, rx, tx, rd, wr}
 	// libvirt states that still have counters. "shut off" and friends do not.
@@ -916,6 +930,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			// Counters are read when virsh starts. The rate is divided by the time since the
 			// previous start, not by how long virsh took to return.
 			const now = Date.now()
+			const mono = performance.now()
 			let text = ''
 			try {
 				text = await virsh('domstats', '--list-running', '--cpu-total', '--balloon', '--interface', '--block')
@@ -932,10 +947,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					if (mm) kv[mm[1]] = Number(mm[2])
 				}
 				const sum = (re) => Object.entries(kv).reduce((a, [k, v]) => (re.test(k) ? a + v : a), 0)
-				const raw = {t: now, cpuNs: kv['cpu.time'] ?? 0, rx: sum(/^net\.\d+\.rx\.bytes$/), tx: sum(/^net\.\d+\.tx\.bytes$/), rd: sum(/^block\.\d+\.rd\.bytes$/), wr: sum(/^block\.\d+\.wr\.bytes$/)}
+				const raw = {t: mono, cpuNs: kv['cpu.time'] ?? 0, rx: sum(/^net\.\d+\.rx\.bytes$/), tx: sum(/^net\.\d+\.tx\.bytes$/), rd: sum(/^block\.\d+\.rd\.bytes$/), wr: sum(/^block\.\d+\.wr\.bytes$/)}
 				const prev = lastRaw.get(m.id)
 				lastRaw.set(m.id, raw)
-				if (!prev || raw.cpuNs < prev.cpuNs) continue
+				if (!prev || raw.cpuNs < prev.cpuNs || raw.t <= prev.t) continue
 				const secs = (raw.t - prev.t) / 1000
 				const vcpus = (m.sockets ?? 1) * m.cores
 				const point = {
@@ -950,8 +965,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				}
 				lastPoint.set(m.id, point)
 				const list = series.get(m.id) ?? []
-				const kept = list.at(-1)
-				if (!kept || now - kept.t >= seriesIntervalMs) {
+				const keptAt = seriesAt.get(m.id)
+				if (keptAt === undefined || !list.length || mono - keptAt >= seriesIntervalMs) {
+					seriesAt.set(m.id, mono)
 					list.push(point)
 					if (list.length > 360) list.splice(0, list.length - 360)
 					series.set(m.id, list)
@@ -1020,6 +1036,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const fs = await statfs(base).catch(() => null)
 		const cpus = os.cpus()
 		const versions = await run('virsh', ['-c', LIBVIRT, 'version']).catch(() => '')
+		const states = await domainStates()
 		return {
 			hostname: os.hostname(),
 			cpuModel: cpus[0]?.model?.trim() ?? '',
@@ -1030,14 +1047,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			uptimeSeconds: Math.round(os.uptime()),
 			storage: fs ? {totalGb: Math.round((fs.blocks * fs.bsize) / 1024 ** 3), freeGb: Math.round((fs.bavail * fs.bsize) / 1024 ** 3)} : null,
 			libvirtVersion: /libvirt[^\d]*([\d.]+)/i.exec(versions)?.[1] ?? null,
-			qemuVersion: /QEMU[^\d]*([\d.]+)/i.exec(versions)?.[1] ?? null,
+			qemuVersion: /Running hypervisor:\s*QEMU\s+([\d.]+)/i.exec(versions)?.[1] ?? null,
 			...caps,
 			videoModels: await availableVideo(),
 			cpuTypes: CPU_TYPES,
 			nicModels: NICS,
 			diskBuses: BUSES,
 			diskCaches: CACHES,
-			counts: {total: machines.length, running: [...(await domainStates()).values()].filter((s) => s === 'running').length},
+			counts: {total: machines.length, running: machines.filter((m) => states.get(domain(m.id)) === 'running').length},
 		}
 	}
 
@@ -1148,6 +1165,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (!CPU_TYPES.includes(cpuType)) throw new RpcError('BAD_REQUEST', 'Unknown CPU type')
 		const machineType = input.machineType ?? m.layout.machineType
 		if (!['q35', 'pc'].includes(machineType)) throw new RpcError('BAD_REQUEST', 'Machine type must be q35 or i440fx (pc)')
+		if (machineType !== 'pc' && machineType !== m.layout.machineType && m.layout.disks.some((d) => d.bus === 'ide')) throw new RpcError('BAD_REQUEST', 'Move the IDE drives to another bus before switching to q35: it has no IDE controller')
 		const firmware = input.firmware ?? m.layout.firmware
 		if (!['bios', 'efi'].includes(firmware)) throw new RpcError('BAD_REQUEST', 'Firmware must be SeaBIOS (bios) or OVMF (efi)')
 		const video = input.video ?? m.layout.video
@@ -1250,6 +1268,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		while (m.layout.disks.some((d) => d.id === `${prefix}${n}`)) n++
 		return `${prefix}${n}`
 	}
+	// The q35 machine type has no IDE controller, so libvirt refuses to define a domain with an IDE drive.
+	const IDE_NEEDS_PC = 'IDE is only available on the i440fx (pc) machine type'
 	async function addDisk(input = {}) {
 		await ready
 		const idArg = find(input.id).id
@@ -1261,6 +1281,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const bus = input.bus ?? 'virtio'
 			if (!Number.isInteger(sizeGb) || sizeGb < 1 || sizeGb > 4096) throw new RpcError('BAD_REQUEST', 'Disk size must be between 1 and 4096 GB')
 			if (!BUSES.includes(bus)) throw new RpcError('BAD_REQUEST', 'Unknown disk bus')
+			if (bus === 'ide' && m.layout.machineType !== 'pc') throw new RpcError('BAD_REQUEST', IDE_NEEDS_PC)
 			if (input.cache !== undefined && !CACHES.includes(input.cache)) throw new RpcError('BAD_REQUEST', 'Unknown cache mode')
 			if (m.layout.disks.length >= 16) throw new RpcError('BAD_REQUEST', 'A machine can have up to 16 drives here')
 			const fs = await statfs(base)
@@ -1282,6 +1303,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		refuseIfBusy(m)
 		const d = findDisk(m, input.diskId)
 		if (input.bus !== undefined && !BUSES.includes(input.bus)) throw new RpcError('BAD_REQUEST', 'Unknown disk bus')
+		if (input.bus === 'ide' && m.layout.machineType !== 'pc') throw new RpcError('BAD_REQUEST', IDE_NEEDS_PC)
 		if (input.cache !== undefined && !CACHES.includes(input.cache)) throw new RpcError('BAD_REQUEST', 'Unknown cache mode')
 		return task(m, 'edit-disk', d.id, async () => {
 			if (input.bus !== undefined) d.bus = input.bus
@@ -1488,6 +1510,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const c = snap.config
 			Object.assign(m, {sockets: c.sockets, cores: c.cores, memoryMb: c.memoryMb, memoryGb: Math.max(1, Math.round(c.memoryMb / 1024)), cpuType: c.cpuType})
 			Object.assign(m.layout, c.layout)
+			// The rollback also restores each image's virtual size, so re-read it instead of keeping a size from before.
+			for (const t of targets) {
+				const d = m.layout.disks.find((x) => x.id === t.id)
+				const {virtualGb} = await diskInfo(t.file)
+				if (!d || virtualGb === undefined) continue
+				d.sizeGb = virtualGb
+				if (d.id === 'disk0') m.diskSizeGb = virtualGb
+			}
 			m.hibernated = false
 			await markChanged(m)
 			return true
@@ -1587,8 +1617,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 							await abortJob()
 							throw error
 						}
-						const pct = /Data processed:\s+([\d.]+)\s*(\w+)[\s\S]*Data total:\s+([\d.]+)\s*(\w+)/.exec(info)
-						if (pct) busy.set(m.id, {state: 'running', progress: Math.min(90, Math.round((Number(pct[1]) / Math.max(1, Number(pct[3]))) * 90))})
+						const progress = backupProgress(info)
+						if (progress !== null) busy.set(m.id, {state: 'running', progress})
 						// A failed query is not "job finished". Only a real reply that the job is idle ends the wait.
 						if (!/Job type:\s+(Unbounded|Bounded)/.test(info)) break
 						if (Date.now() > end) {
@@ -1665,7 +1695,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		}
 	}
 	// A new machine from copied disks and settings (used by restore and clone).
-	async function adopt(source, {name, copyDisk, keepIds}) {
+	async function adopt(source, {name, copyDisk, keepIds, sourceTask}) {
 		let id
 		do id = randomBytes(4).toString('hex')
 		while (machines.some((x) => x.id === id))
@@ -1744,9 +1774,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				await define(m)
 				delete m.state
 				endTask(m, t)
+				if (sourceTask) endTask(sourceTask.m, sourceTask.t)
 			} catch (error) {
 				Object.assign(m, {state: 'error', errorMessage: error.message})
 				endTask(m, t, error)
+				if (sourceTask) endTask(sourceTask.m, sourceTask.t, error)
 			} finally {
 				busy.delete(id)
 				if (sourceHold && busy.get(liveSource.id) === sourceHold) busy.delete(liveSource.id)
@@ -1798,9 +1830,16 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await requireStopped(m, 'clone it')
 		const name = input.name ? String(input.name).trim() : uniqueName(`${m.name} copy`)
 		if (!name || name.length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
-		const out = await adopt(m, {name, keepIds: false, copyDisk: (d, dst) => run('qemu-img', ['convert', '-O', 'qcow2', d.file, dst], {timeout: 6 * 60 * 60_000})})
-		await task(m, 'clone', name, async () => true)
-		return out
+		// The source's history entry stays running until the copy ends, then follows its result.
+		const sourceTask = beginTask(m, 'clone', name)
+		await save().catch(() => {})
+		try {
+			return await adopt(m, {name, keepIds: false, sourceTask: {m, t: sourceTask}, copyDisk: (d, dst) => run('qemu-img', ['convert', '-O', 'qcow2', d.file, dst], {timeout: 6 * 60 * 60_000})})
+		} catch (error) {
+			endTask(m, sourceTask, error)
+			await save().catch(() => {})
+			throw error
+		}
 	}
 
 	// QEMU's own monitor (HMP), for the commands Proxmox's Monitor tab offers ("info status"…).

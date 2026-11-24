@@ -13,6 +13,7 @@ import {solidOf, WALLPAPERS, useDeskConfig, wallpaperSrc} from './desktop/config
 import {wallpaperBlocked} from './desktop/wallpaperGate'
 import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
+import {darkenHslForWhite, pickOnAccent, resolveCssColor} from './theme/contrast'
 import {initials as nameInitials} from './initials'
 import {paddingBottomPlus} from './scrollPad'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
@@ -151,7 +152,7 @@ export function AppIcon({
 }
 
 // ---- ring gauge -------------------------------------------------------------
-export function Ring({value, color, children, size = 84, label}: {value: number; color: string; children: ReactNode; size?: number; label: string}) {
+export function Ring({value, color, children, size = 84, label, empty = false}: {value: number; color: string; children: ReactNode; size?: number; label: string; empty?: boolean}) {
 	const stroke = 8
 	const r = (size - stroke) / 2
 	const c = 2 * Math.PI * r
@@ -161,21 +162,31 @@ export function Ring({value, color, children, size = 84, label}: {value: number;
 		return () => cancelAnimationFrame(id)
 	}, [value])
 	return (
-		<div className="ring" style={{width: size, height: size, color}} role="meter" aria-label={label} aria-valuenow={Math.round(value)} aria-valuemin={0} aria-valuemax={100}>
+		<div
+			className={empty ? 'ring is-off' : 'ring'}
+			style={{width: size, height: size, color}}
+			role={empty ? 'img' : 'meter'}
+			aria-label={label}
+			aria-valuenow={empty ? undefined : Math.round(value)}
+			aria-valuemin={empty ? undefined : 0}
+			aria-valuemax={empty ? undefined : 100}
+		>
 			<svg viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
 				<circle className="track" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke} />
-				<circle
-					className="value"
-					cx={size / 2}
-					cy={size / 2}
-					r={r}
-					fill="none"
-					stroke="currentColor"
-					strokeWidth={stroke}
-					strokeLinecap="round"
-					strokeDasharray={c}
-					strokeDashoffset={c * (1 - Math.max(0.005, shown / 100))}
-				/>
+				{!empty && (
+					<circle
+						className="value"
+						cx={size / 2}
+						cy={size / 2}
+						r={r}
+						fill="none"
+						stroke="currentColor"
+						strokeWidth={stroke}
+						strokeLinecap="round"
+						strokeDasharray={c}
+						strokeDashoffset={c * (1 - Math.max(0.005, shown / 100))}
+					/>
+				)}
 			</svg>
 			<div className="center">{children}</div>
 		</div>
@@ -420,7 +431,9 @@ export function Sheet({open, onClose, label, children, tall}: {open: boolean; on
 	if (!open) return null
 	// Drag the handle or the header down to dismiss, and only when the page is already at the top.
 	// A drag that starts on the page itself scrolls that page. The close button is the accessible path.
+	// Disabled on centered desktop dialogs so a touch drag cannot drop the centering transform.
 	const onTouchStart = (e: React.TouchEvent) => {
+		if (document.documentElement.classList.contains('desk-mode')) return
 		if ((scrollRef.current?.scrollTop ?? 0) > 0) return
 		const target = e.target as HTMLElement
 		if (target.closest('.logs, .gallery, input, textarea')) return
@@ -712,7 +725,7 @@ export function Providers({children}: {children: ReactNode}) {
 							<div className="prose" style={{marginBottom: 24}}>
 								{pending.body}
 							</div>
-							<div className="stack">
+							<div className="stack confirm-actions">
 								<button className={`btn block ${pending.danger ? 'danger solid' : 'primary'}`} onClick={() => finish(true)}>
 									{pending.confirm}
 								</button>
@@ -881,19 +894,22 @@ export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 	if (p.accent === 'wallpaper' && p.theme === 'omarchy') {
 		// The Omarchy desktop's own theme colours, once known (see useOmarchyThemes).
 		const c = omarchyColors
-		root.style.setProperty('--accent', c?.accent ?? '#7aa2f7')
-		root.style.setProperty('--accent-text', c?.accent ?? '#7aa2f7')
-		root.style.setProperty('--on-accent', c?.background ?? '#1a1b26')
+		const fill = c?.accent ?? '#7aa2f7'
+		root.style.setProperty('--accent', fill)
+		root.style.setProperty('--accent-text', fill)
+		root.style.setProperty('--on-accent', pickOnAccent(fill, '#111', c?.background ?? '#1a1b26'))
 	} else if (p.accent === 'wallpaper') {
 		const source = p.theme === 'custom' ? (p.customBrandHsl ?? brandHsl) : brandHsl
 		const [h, s, l] = (source ?? FALLBACK_BRAND).split(' ').map((v) => parseFloat(v))
-		root.style.setProperty('--accent', `hsl(${h} ${s}% ${l}%)`)
+		root.style.setProperty('--accent', darkenHslForWhite(h, s, l))
 		root.style.setProperty('--accent-text', `hsl(${h} ${Math.min(s, 95)}% ${light ? Math.min(l, 42) : Math.max(l, 66)}%)`)
 		root.style.setProperty('--on-accent', '#fff')
 	} else {
-		root.style.setProperty('--accent', `var(--${p.accent})`)
-		root.style.setProperty('--accent-text', `var(--${p.accent})`)
-		root.style.setProperty('--on-accent', light ? '#fff' : '#111')
+		const token = `var(--${p.accent})`
+		root.style.setProperty('--accent', token)
+		root.style.setProperty('--accent-text', token)
+		const resolved = resolveCssColor(root, token)
+		root.style.setProperty('--on-accent', pickOnAccent(resolved, light ? '#fff' : '#111'))
 	}
 	const meta = document.querySelector('meta[name="theme-color"]')
 	meta?.setAttribute('content', THEMES.find((t) => t.id === p.theme)?.bg ?? '#111')

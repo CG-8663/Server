@@ -607,6 +607,17 @@ h1.title {
 	color: var(--muted);
 	margin-left: 1px;
 }
+.ring.is-off .track {
+	stroke: var(--line);
+}
+.ring .plain {
+	max-width: 64px;
+	color: var(--fg);
+	font-size: 13px;
+	font-weight: 650;
+	line-height: 1.15;
+	text-align: center;
+}
 .gauge .k {
 	display: flex;
 	align-items: center;
@@ -889,6 +900,13 @@ h1.title {
 	border-radius: 16px;
 	color: var(--muted);
 	margin-bottom: 12px;
+	transition:
+		border-color 0.2s,
+		box-shadow 0.2s;
+}
+.search:focus-within {
+	border-color: var(--accent-text);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 .search input {
 	flex: 1;
@@ -1018,6 +1036,14 @@ h1.title {
 }
 .row:active:not(:disabled):not(.static) {
 	background: var(--glass-press);
+}
+@media (hover: hover) {
+	:is(button, a).row:not(.static):not(:disabled):not(:active):hover {
+		background: color-mix(in srgb, var(--fg) 6%, transparent);
+	}
+	[data-theme='latte'] :is(button, a).row:not(.static):not(:disabled):not(:active):hover {
+		background: color-mix(in srgb, var(--fg) 4%, transparent);
+	}
 }
 .group .row + .row::before {
 	content: '';
@@ -1364,7 +1390,7 @@ h1.title {
 	color: var(--red);
 }
 .btn.danger.solid {
-	background: var(--red);
+	background: color-mix(in srgb, var(--red) 60%, #240004);
 	color: #fff;
 }
 .btn.block {
@@ -1527,7 +1553,8 @@ h1.title {
 	color: var(--fg-2);
 	padding-left: 4px;
 }
-.field input {
+.field input,
+.field textarea {
 	height: 56px;
 	padding: 0 18px;
 	border-radius: var(--r-md);
@@ -1535,16 +1562,27 @@ h1.title {
 	background: var(--glass);
 	backdrop-filter: blur(24px) saturate(1.6);
 	-webkit-backdrop-filter: blur(24px) saturate(1.6);
+	color: var(--fg);
+	font: inherit;
 	font-size: 17px;
 	outline: none;
 	transition:
 		border-color 0.2s,
 		box-shadow 0.2s;
 }
-.field input::placeholder {
+.field textarea {
+	height: auto;
+	min-height: 96px;
+	padding: 14px 18px;
+	font-size: 15px;
+	line-height: 1.45;
+}
+.field input::placeholder,
+.field textarea::placeholder {
 	color: var(--muted);
 }
-.field input:focus {
+.field input:focus,
+.field textarea:focus {
 	border-color: var(--accent-text);
 	box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
 }
@@ -2080,6 +2118,7 @@ h1.title {
 	gap: 12px;
 	padding: calc(var(--safe-t) + 8px) 12px 8px;
 	background: #111114;
+	color: #fff;
 	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 .console-bar .round-btn {
@@ -2621,6 +2660,9 @@ h1.title {
 	font-weight: 560;
 	animation: drop 0.5s var(--spring);
 }
+html.desk-mode .toast {
+	top: calc(var(--top-h, 34px) + 12px);
+}
 .toast .ico {
 	width: 24px;
 	height: 24px;
@@ -2891,6 +2933,7 @@ h1.title {
 .term-paste-card {
 	width: min(100%, 480px);
 	background: #17171c;
+	color: #fff;
 	border: 1px solid rgba(255, 255, 255, 0.1);
 	border-radius: 20px;
 	padding: 14px;
@@ -2928,6 +2971,11 @@ h1.title {
 	grid-template-columns: 1fr 1.6fr;
 	gap: 8px;
 	margin-top: 10px;
+}
+.term-paste-actions .btn:not(.primary) {
+	background: rgba(255, 255, 255, 0.09);
+	border-color: rgba(255, 255, 255, 0.14);
+	color: #fff;
 }
 html.screen-locked,
 html.screen-locked body {
@@ -2969,6 +3017,9 @@ html.screen-locked .auth {
 	.term-host .xterm .xterm-helpers {
 		left: 0;
 		right: 0;
+	}
+	.console.terminal:not(.term-ready) .term-host .xterm .xterm-helper-textarea {
+		pointer-events: none !important;
 	}
 	.term-host .xterm .xterm-helper-textarea {
 		width: 100% !important;
@@ -4000,7 +4051,7 @@ html.desk-mode body {
 .top-right {
 	justify-content: flex-end;
 }
-.desk-top button {
+:where(.desk-top > button, .top-left > button, .top-right > button) {
 	border: 0;
 	background: transparent;
 	color: inherit;
@@ -4014,8 +4065,8 @@ html.desk-mode body {
 	cursor: default;
 	transition: background 0.15s;
 }
-.desk-top button:hover,
-.desk-top button.on {
+:where(.desk-top > button, .top-left > button, .top-right > button):hover,
+:where(.desk-top > button, .top-left > button, .top-right > button).on {
 	background: rgba(255, 255, 255, 0.16);
 }
 .act-dots {
@@ -4098,11 +4149,16 @@ html.desk-mode body {
 .menu-scrim {
 	position: fixed;
 	inset: 0;
-	z-index: 100001;
+	z-index: 100030;
 	background: transparent;
 	border: 0;
 	padding: 0;
 	cursor: default;
+}
+/* The top bar's scrim sits under the bar (same z, earlier in the DOM) and over the dock and windows,
+   so a click anywhere outside the clock or system menu closes it, and bar buttons still switch menus. */
+.menu-scrim.top-scrim {
+	z-index: 100000;
 }
 .top-pop {
 	position: fixed;
@@ -4127,12 +4183,27 @@ html.desk-mode body {
 .clock-pop {
 	left: 50%;
 	translate: -50% 0;
-	width: 640px;
+	width: min(640px, calc(100vw - 16px));
 	display: grid;
 	grid-template-columns: 1fr 268px;
 	gap: 0;
 	padding: 0;
 	overflow: hidden;
+}
+@media (max-width: 600px) {
+	.clock-pop {
+		grid-template-columns: 1fr;
+		max-height: calc(100dvh - var(--top-h, 34px) - 16px);
+		overflow-y: auto;
+	}
+	.clock-pop .pop-notes {
+		min-height: 0;
+		border-right: 0;
+		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	}
+	.style-daylight .clock-pop .pop-notes {
+		border-bottom-color: rgba(0, 0, 0, 0.08);
+	}
 }
 .pop-notes {
 	padding: 16px;
@@ -4194,6 +4265,16 @@ html.desk-mode body {
 	margin-bottom: 6px;
 	font-size: 13.5px;
 }
+.top-pop .icon-btn {
+	background: transparent;
+	color: inherit;
+}
+.top-pop .icon-btn:hover {
+	background: rgba(255, 255, 255, 0.14);
+}
+.style-daylight .top-pop .icon-btn:hover {
+	background: rgba(0, 0, 0, 0.08);
+}
 .desk .cal-nav .icon-btn {
 	width: 28px;
 	height: 28px;
@@ -4222,7 +4303,7 @@ html.desk-mode body {
 }
 .cal-day.today {
 	background: var(--accent);
-	color: #fff;
+	color: var(--on-accent, #fff);
 	font-weight: 700;
 }
 .sys-pop {
@@ -4289,7 +4370,7 @@ html.desk-mode body {
 	height: 36px;
 	padding: 0 12px;
 	border: 0;
-	border-radius: 10px;
+	border-radius: 8px;
 	background: transparent;
 	color: inherit;
 	font: inherit;
@@ -4297,10 +4378,10 @@ html.desk-mode body {
 	text-align: left;
 	cursor: default;
 }
-.sys-pop button:hover,
-.sys-pop button:focus-visible,
-.ctx-menu button:hover,
-.ctx-menu button:focus-visible {
+.sys-pop button:not(:disabled):hover,
+.sys-pop button:not(:disabled):focus-visible,
+.ctx-menu button:not(:disabled):hover,
+.ctx-menu button:not(:disabled):focus-visible {
 	background: rgba(255, 255, 255, 0.1);
 }
 .sys-pop button.danger,
@@ -4315,8 +4396,9 @@ html.desk-mode body {
 
 .ctx-menu {
 	position: fixed;
-	z-index: 100003;
+	z-index: 100032;
 	min-width: 220px;
+	max-width: min(340px, calc(100vw - 16px));
 	padding: 6px;
 	border-radius: 14px;
 	background: rgba(30, 30, 34, 0.95) !important;
@@ -4333,10 +4415,20 @@ html.desk-mode body {
 	font-size: 12.5px;
 	color: rgba(255, 255, 255, 0.55);
 	font-weight: 650;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.ctx-menu button > span {
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 .snap-preview {
 	position: fixed;
-	z-index: 99998;
+	z-index: 99997;
 	border-radius: 12px;
 	background: color-mix(in srgb, var(--accent) 22%, transparent);
 	border: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
@@ -4468,20 +4560,36 @@ html.desk-mode body {
 .win-btn.ghost:hover {
 	background: var(--glass);
 }
-.win-btn[data-tip]:hover::after {
+.win-btn.ghost + .win-btn:not(.ghost) {
+	margin-left: 5px;
+}
+.win-btn[data-tip]::after {
 	content: attr(data-tip);
 	position: absolute;
 	top: calc(100% + 8px);
 	right: 0;
 	white-space: nowrap;
-	padding: 5px 9px;
-	border-radius: 8px;
-	background: rgba(20, 20, 24, 0.94);
-	color: #fff;
-	font-size: 12px;
-	font-weight: 560;
+	padding: 6px 11px;
+	border-radius: 9px;
+	background: var(--tip-bg, rgba(20, 20, 24, 0.95));
+	border: 1px solid var(--tip-line, rgba(255, 255, 255, 0.1));
+	color: var(--tip-fg, #fff);
+	font-size: 13px;
+	font-weight: 550;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 	pointer-events: none;
 	z-index: 5;
+	opacity: 0;
+	visibility: hidden;
+	transition:
+		opacity 0.12s,
+		visibility 0s 0.12s;
+}
+.win-btn[data-tip]:hover::after,
+.win-btn[data-tip]:focus-visible::after {
+	opacity: 1;
+	visibility: visible;
+	transition-delay: 0.25s, 0.25s;
 }
 .win-body {
 	--dock-h: 0px;
@@ -4619,7 +4727,7 @@ html.desk-mode body {
 	max-height: min(calc(100% - 40px), 780px);
 	border-radius: 22px;
 	border-bottom: 1px solid var(--line);
-	padding: 8px 20px 20px;
+	padding: 20px;
 	box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
 	animation: sheet-pop 0.22s var(--ease);
 }
@@ -4628,6 +4736,42 @@ html.desk-mode body {
 }
 .desk .sheet .grabber {
 	display: none;
+}
+/* Global body-level sheets (Confirm) open as centred desktop dialogs without touching in-window sheets. */
+html.desk-mode > body > .sheet {
+	top: 50%;
+	bottom: auto;
+	transform: translate(-50%, -50%);
+	width: min(calc(100% - 40px), 440px);
+	max-height: min(calc(100% - 40px), 780px);
+	border-radius: 22px;
+	border-bottom: 1px solid var(--line);
+	padding: 20px;
+	box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+	animation: sheet-pop 0.22s var(--ease);
+}
+html.desk-mode > body > .sheet .grabber {
+	display: none;
+}
+html.desk-mode > body > .sheet .confirm-actions {
+	flex-direction: row-reverse;
+	justify-content: flex-end;
+	gap: 10px;
+}
+html.desk-mode > body > .sheet .confirm-actions .btn.block {
+	width: auto;
+	min-width: 104px;
+	min-height: 40px;
+	height: 40px;
+	padding: 0 18px;
+}
+@media (max-width: 420px) {
+	html.desk-mode > body > .sheet .confirm-actions {
+		flex-direction: column-reverse;
+	}
+	html.desk-mode > body > .sheet .confirm-actions .btn.block {
+		width: 100%;
+	}
 }
 @keyframes sheet-pop {
 	from {
@@ -4704,6 +4848,15 @@ html.desk-mode body {
 	border: 1px solid rgba(255, 255, 255, 0.12);
 	color: #fff;
 	box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+	transition:
+		border-color 0.18s,
+		box-shadow 0.18s;
+}
+.ov-search:focus-within {
+	border-color: var(--accent-text);
+	box-shadow:
+		0 0 0 2px var(--accent-text),
+		0 10px 30px rgba(0, 0, 0, 0.25);
 }
 .ov-search input {
 	flex: 1;
@@ -4747,7 +4900,10 @@ html.desk-mode body {
 .ov-app:hover,
 .ov-app:focus-visible {
 	background: rgba(255, 255, 255, 0.12);
-	outline: none;
+}
+.ov-app:focus-visible {
+	outline: 2px solid var(--accent-text);
+	outline-offset: -2px;
 }
 .ov-app span {
 	max-width: 100%;
@@ -4914,7 +5070,7 @@ html.desk-mode body {
 	--dock-focus: rgba(255, 255, 255, 0.17);
 	--dock-dot: #fff;
 	position: fixed;
-	z-index: 99999;
+	z-index: 99998;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -4932,7 +5088,7 @@ html.desk-mode body {
 	bottom: 0;
 	width: var(--dock-thick);
 	flex-direction: column;
-	padding: 10px 0 12px;
+	padding: 10px 0;
 }
 .dock-left .desk-dock {
 	left: 0;
@@ -4948,7 +5104,7 @@ html.desk-mode body {
 	right: 0;
 	height: var(--dock-thick);
 	flex-direction: row;
-	padding: 0 14px 0 10px;
+	padding: 0 10px;
 	justify-content: center;
 }
 .dock-bottom .desk-dock {
@@ -4967,11 +5123,11 @@ html.desk-mode body {
 }
 .dock-floating.dock-left .desk-dock,
 .dock-floating.dock-right .desk-dock {
-	top: 50%;
+	top: calc(50% + var(--top-h) / 2);
 	bottom: auto;
 	transform: translateY(-50%);
 	width: calc(var(--dock-thick) - 14px);
-	max-height: calc(100vh - var(--top-h) - 20px);
+	max-height: calc(100vh - var(--top-h) - 16px);
 	padding: 10px 0;
 }
 .dock-floating.dock-left .desk-dock {
@@ -5022,7 +5178,7 @@ html.desk-mode body {
 }
 .dock-hotzone {
 	position: fixed;
-	z-index: 99998;
+	z-index: 99997;
 }
 .hz-left {
 	left: 0;
@@ -5117,6 +5273,10 @@ html.desk-mode body {
 .dock-item:hover {
 	background: var(--dock-hover);
 }
+.dock-item:focus-visible {
+	outline: 2px solid var(--accent-text);
+	outline-offset: -2px;
+}
 .dock-item.focused {
 	background: var(--dock-focus);
 }
@@ -5185,7 +5345,8 @@ html.desk-mode body {
 	place-items: center;
 	border-radius: 12px;
 	color: inherit;
-	background: rgba(127, 127, 127, 0.22);
+	/* A bare glyph: the dock item's hover/focus pad is the only tile, as in GNOME. */
+	background: transparent;
 }
 .desk-dock .show-apps-btn {
 	color: #fff;
@@ -5194,7 +5355,10 @@ html.desk-mode body {
 .dock-tip {
 	position: fixed;
 	z-index: 100005;
+	max-width: min(320px, calc(100vw - 16px));
 	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	padding: 6px 11px;
 	border-radius: 9px;
 	background: rgba(20, 20, 24, 0.95);
@@ -5272,7 +5436,8 @@ html.desk-mode body {
 	.dock-item.bouncing .dock-art {
 		animation: none;
 	}
-	.dock-hover-lift .dock-item:hover .dock-art {
+	.dock-hover-lift .dock-item:hover .dock-art,
+	.dock-hover-lift .dock-item:hover .show-apps {
 		transform: none;
 	}
 }
@@ -5434,7 +5599,11 @@ html.desk-mode body {
 	margin: 5px 6px;
 }
 .ctx-menu button:disabled {
-	opacity: 0.4;
+	opacity: 0.45;
+}
+.ctx-menu button:disabled:hover,
+.ctx-menu button:disabled:focus-visible {
+	background: transparent;
 }
 
 /* ---- panel styles ---- */
@@ -5508,11 +5677,20 @@ html.desk-mode body {
 	backdrop-filter: none;
 	border-radius: 10px;
 }
+.style-graphite .sys-pop button,
+.style-graphite .ctx-menu button {
+	border-radius: 4px;
+}
 .style-graphite .dock-item,
 .style-graphite .show-apps {
 	border-radius: 9px;
 }
 /* Daylight: light top bar, dock and menus */
+.style-daylight {
+	--tip-bg: rgba(250, 250, 252, 0.96);
+	--tip-fg: #1c1c1e;
+	--tip-line: rgba(0, 0, 0, 0.08);
+}
 .style-daylight .desk-top {
 	background: rgba(248, 248, 250, 0.82);
 	color: #1c1c1e;
@@ -5520,8 +5698,12 @@ html.desk-mode body {
 	-webkit-backdrop-filter: blur(24px) saturate(1.6);
 	border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 }
-.style-daylight .desk-top button:hover,
-.style-daylight .desk-top button.on {
+.style-daylight :where(.desk-top > button, .top-left > button, .top-right > button):hover,
+.style-daylight :where(.desk-top > button, .top-left > button, .top-right > button).on {
+	background: rgba(0, 0, 0, 0.08);
+}
+.style-daylight .desk-top .top-bell:hover,
+.style-daylight .desk-top .top-bell.on {
 	background: rgba(0, 0, 0, 0.08);
 }
 .style-daylight .top-title,
@@ -5562,10 +5744,10 @@ html.desk-mode body {
 .style-daylight .cal-dow {
 	color: rgba(0, 0, 0, 0.5) !important;
 }
-.style-daylight .sys-pop button:hover,
-.style-daylight .sys-pop button:focus-visible,
-.style-daylight .ctx-menu button:hover,
-.style-daylight .ctx-menu button:focus-visible {
+.style-daylight .sys-pop button:not(:disabled):hover,
+.style-daylight .sys-pop button:not(:disabled):focus-visible,
+.style-daylight .ctx-menu button:not(:disabled):hover,
+.style-daylight .ctx-menu button:not(:disabled):focus-visible {
 	background: rgba(0, 0, 0, 0.07);
 }
 .style-daylight .pop-note {
@@ -6244,6 +6426,15 @@ html:not(.desk-mode) .upload-panel {
 	backdrop-filter: blur(30px) saturate(1.4);
 	-webkit-backdrop-filter: blur(30px) saturate(1.4);
 	animation: fv-in 0.22s ease-out;
+	/* Always a dark media/document canvas: pin dark tokens so light themes stay legible. */
+	--fg: #fff;
+	--fg-2: rgba(255, 255, 255, 0.86);
+	--muted: rgba(255, 255, 255, 0.58);
+	--line: rgba(255, 255, 255, 0.12);
+	--line-2: rgba(255, 255, 255, 0.2);
+	--glass: rgba(255, 255, 255, 0.08);
+	--glass-2: rgba(255, 255, 255, 0.14);
+	color-scheme: dark;
 	color: var(--fg);
 }
 @keyframes fv-in {
@@ -6675,8 +6866,8 @@ html:not(.desk-mode) .upload-panel {
 [data-theme='omarchy'] h1,
 [data-theme='omarchy'] h2,
 [data-theme='omarchy'] .title { letter-spacing: -0.03em; }
-[data-theme='omarchy'] .win { background: #1a1b26 !important; }
-[data-theme='omarchy'] .win-bar { background: #16161e; }
+[data-theme='omarchy'] .desk .win-bar { background: color-mix(in srgb, var(--bg-solid) 96%, var(--fg) 4%); }
+[data-theme='omarchy'] .desk .win:not(.active) .win-bar { background: var(--bg-solid); }
 /* Phone console: sized to the visible area by script while the keyboard is up. */
 .console:not(.desk-ui):not(.embedded) { bottom: 0; }
 .console:not(.desk-ui):not(.embedded) .console-input { bottom: auto; top: 0; }
@@ -8031,7 +8222,7 @@ html.page-locked .auth {
 }
 .swarm-steps .chip.on {
 	background: var(--accent);
-	color: #fff;
+	color: var(--on-accent, #fff);
 }
 
 /* ---- Hyprland shell ---- */
@@ -8071,13 +8262,26 @@ html.page-locked .auth {
 }
 .hypr-pill.min {
 	opacity: 0.55;
-	outline: 1px dashed rgba(255, 255, 255, 0.35);
+	outline: 1px dashed color-mix(in srgb, currentColor 45%, transparent);
 	outline-offset: -1px;
 }
 .hypr-pill.on {
 	opacity: 1;
-	background: var(--accent);
-	color: var(--on-accent, #111);
+	min-width: 30px;
+	padding: 0 9px;
+	background: rgba(255, 255, 255, 0.92);
+	color: #111;
+}
+.hypr-ws .hypr-pill:not(.on):hover {
+	opacity: 1;
+	background: rgba(255, 255, 255, 0.14);
+}
+.style-daylight .hypr-pill.on {
+	background: #1c1c1e;
+	color: #fff;
+}
+.style-daylight .hypr-ws .hypr-pill:not(.on):hover {
+	background: rgba(0, 0, 0, 0.08);
 }
 .hypr-lock {
 	height: 26px;
@@ -8094,8 +8298,19 @@ html.page-locked .auth {
 	cursor: default;
 }
 .hypr-lock.on {
-	background: var(--accent);
-	color: var(--on-accent, #111);
+	background: color-mix(in srgb, var(--accent) 18%, transparent);
+	color: inherit;
+	box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.hypr-lock.on svg {
+	color: var(--accent);
+}
+.style-daylight .hypr-lock.on {
+	background: color-mix(in srgb, var(--accent) 14%, transparent);
+	box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 75%, #000);
+}
+.style-daylight .hypr-lock.on svg {
+	color: color-mix(in srgb, var(--accent) 75%, #000);
 }
 .win.tiled {
 	border-radius: 8px;
@@ -8141,6 +8356,9 @@ html.page-locked .auth {
 	font-size: 16px;
 	padding: 14px 16px;
 	outline: none;
+}
+.hypr-launcher input:focus-visible {
+	box-shadow: inset 0 -2px 0 var(--accent-text);
 }
 .hypr-launcher ul {
 	list-style: none;
@@ -8869,11 +9087,11 @@ html:not(.desk-mode) body:has(.ac-widget) .shell { padding-bottom: calc(var(--do
 	margin-left: 4px;
 	border: 0;
 	border-radius: 50%;
-	background: color-mix(in srgb, var(--fg) 12%, transparent);
-	color: var(--fg);
+	background: rgba(255, 255, 255, 0.14);
+	color: #fff;
 	cursor: pointer;
 }
-.desk-hint-close:hover { background: color-mix(in srgb, var(--fg) 22%, transparent); }
+.desk-hint-close:hover { background: rgba(255, 255, 255, 0.24); }
 
 /* ---- first sign-in on a device: Desktop or Phone & tablet ---- */
 .layout-chooser {

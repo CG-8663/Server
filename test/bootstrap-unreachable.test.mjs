@@ -95,7 +95,7 @@ test('/api/bootstrap transitions from unreachable to reachable when omarchyd ret
 			up = true
 			const second = await (await fetch(`${base}/api/bootstrap`)).json()
 			assert.equal(second.server.reachable, true)
-			assert.equal(second.server.url, 'http://127.0.0.1')
+			assert.equal(second.server.url, base)
 			assert.equal(second.server.version, '2.0.0')
 		},
 	)
