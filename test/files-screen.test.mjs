@@ -86,13 +86,14 @@ describe('files screen: #189 Enter key on row action buttons', () => {
 		const childBtn = {}
 		assert.equal(helpers.shouldActivateRowOnKey({key: 'Enter', target: row, currentTarget: row}), true)
 		assert.equal(helpers.shouldActivateRowOnKey({key: 'Enter', target: childBtn, currentTarget: row}), false)
-		assert.equal(helpers.shouldActivateRowOnKey({key: ' ', target: row, currentTarget: row}), false)
+		assert.equal(helpers.shouldActivateRowOnKey({key: ' ', target: row, currentTarget: row}), true)
+		assert.equal(helpers.shouldActivateRowOnKey({key: ' ', target: childBtn, currentTarget: row}), false)
 		assert.equal(helpers.shouldActivateRowOnKey({key: 'Escape', target: row, currentTarget: row}), false)
 	})
 
 	test('Files.tsx guards row onKeyDown with shouldActivateRowOnKey', async () => {
 		const src = await filesSource()
-		assert.match(src, /onKeyDown=\{\(e\) => shouldActivateRowOnKey\(e\) && activate\(f\)\}/)
+		assert.equal(src.match(/if \(!shouldActivateRowOnKey\(e\)\) return;\s*e\.preventDefault\(\);\s*activate\(f\);/g)?.length, 2, 'both the tile and the row stop the page scrolling on Space')
 	})
 })
 

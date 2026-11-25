@@ -1873,7 +1873,11 @@ const FileRow = memo(function FileRow({
         tabIndex={0}
         aria-pressed={selecting ? selected : undefined}
         onClick={() => activate(f)}
-        onKeyDown={(e) => shouldActivateRowOnKey(e) && activate(f)}
+        onKeyDown={(e) => {
+          if (!shouldActivateRowOnKey(e)) return;
+          e.preventDefault();
+          activate(f);
+        }}
         {...press(f)}
       >
         <span className="tile-art">
@@ -1892,7 +1896,11 @@ const FileRow = memo(function FileRow({
       tabIndex={0}
       aria-pressed={selecting ? selected : undefined}
       onClick={() => activate(f)}
-      onKeyDown={(e) => shouldActivateRowOnKey(e) && activate(f)}
+      onKeyDown={(e) => {
+          if (!shouldActivateRowOnKey(e)) return;
+          e.preventDefault();
+          activate(f);
+        }}
       {...press(f)}
     >
       {selecting && <Icon name={selected ? "checked" : "unchecked"} size={24} className={`check${selected ? " on" : ""}`} />}
