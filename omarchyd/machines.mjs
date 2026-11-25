@@ -791,7 +791,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const kind = catalogInstallKind(img)
 			if (kind === 'windows' && hostArch !== 'amd64') throw new RpcError('PRECONDITION_FAILED', `Installing Windows from its ISO needs an x86-64 computer`)
 			const name = String(input.name ?? '').trim()
-			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (!name || [...name].length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
 			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 			if (machines.some((m) => m.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
 			const threads = Number(status.threads) || 1
@@ -953,7 +953,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			// Windows set up from its ISO (and its answer file) is the x86 PC kind.
 			if (kind === 'windows' && caps.hostArchitecture !== 'amd64') throw new RpcError('PRECONDITION_FAILED', 'Installing Windows from its ISO needs an x86-64 server')
 			const name = String(input.name ?? '').trim()
-			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (!name || [...name].length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
 			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 			if (machines.some((m) => m.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
 			const threads = os.cpus().length || 1
@@ -1951,7 +1951,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		let nextName
 		if (input.name !== undefined) {
 			const name = String(input.name).trim()
-			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (!name || [...name].length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
 			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 			if (machines.some((x) => x.id !== m.id && x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
 			nextName = name
@@ -2568,8 +2568,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return {id}
 	}
 	const uniqueName = (wanted) => {
-		let name = wanted.slice(0, 64)
-		for (let n = 2; machines.some((x) => x.name.toLowerCase() === name.toLowerCase()); n++) name = `${wanted.slice(0, 58)} (${n})`
+		let name = [...wanted].slice(0, 64).join('')
+		for (let n = 2; machines.some((x) => x.name.toLowerCase() === name.toLowerCase()); n++) name = `${[...wanted].slice(0, 58).join('')} (${n})`
 		return name
 	}
 	async function restoreBackup(input = {}) {
@@ -2580,14 +2580,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const meta = await readFile(join(dir, 'machine.json'), 'utf8').then(JSON.parse, () => null)
 		if (!meta?.machine?.layout) throw new RpcError('NOT_FOUND', 'That backup doesn’t exist')
 		const name = input.name ? String(input.name).trim() : uniqueName(meta.machine.name)
-		if (!name || name.length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
+		if (!name || [...name].length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
 		return adopt(meta.machine, {name, keepIds: true, copyDisk: (d, dst) => run('qemu-img', ['convert', '-O', 'qcow2', join(dir, `${d.id}.qcow2`), dst], {timeout: 6 * 60 * 60_000})})
 	}
 	// A VM brought over from another server (the Unraid importer): its settings, and disk images
 	// already copied to this server (raw or qcow2), each converted into the machine's own qcow2.
 	async function importVm(spec = {}) {
 		await ready
-		const requested = String(spec.name ?? 'Imported').trim().slice(0, 64) || 'Imported'
+		const requested = [...String(spec.name ?? 'Imported').trim()].slice(0, 64).join('') || 'Imported'
 		const name = uniqueName(requested)
 		const disks = (spec.disks ?? []).map((d, i) => ({id: i === 0 ? 'disk0' : `disk${i}`, file: String(d.file), device: 'disk', bus: ['virtio', 'sata', 'scsi'].includes(d.bus) ? (d.bus === 'scsi' ? 'sata' : d.bus) : 'sata', format: d.format === 'qcow2' ? 'qcow2' : 'raw'}))
 		if (!disks.length) throw new RpcError('BAD_REQUEST', 'That VM has no disks to bring over')
@@ -2611,7 +2611,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		writable(m)
 		await requireStopped(m, 'clone it')
 		const name = input.name ? String(input.name).trim() : uniqueName(`${m.name} copy`)
-		if (!name || name.length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
+		if (!name || [...name].length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
 		// The source's history entry stays running until the copy ends, then follows its result.
 		const sourceTask = beginTask(m, 'clone', name)
 		await save().catch(() => {})
