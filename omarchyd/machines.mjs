@@ -2517,7 +2517,16 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					if (d.device === 'disk') {
 						const dst = join(dir, d.id === 'disk0' ? 'disk.qcow2' : `${d.id}.qcow2`)
 						await copyDisk(d, dst)
-						kept.push({...d, file: dst, format: await copiedFormat(dst, d.format)})
+						const copied = {...d, file: dst, format: await copiedFormat(dst, d.format)}
+						// A brought-over machine has no recorded size: read it from the converted disk.
+						if (copied.sizeGb === undefined) {
+							const {virtualGb} = await diskInfo(dst)
+							if (virtualGb !== undefined) {
+								copied.sizeGb = Math.max(1, Math.round(virtualGb))
+								if (copied.id === 'disk0' && m.diskSizeGb === undefined) m.diskSizeGb = copied.sizeGb
+							}
+						}
+						kept.push(copied)
 					} else if (d.role === 'answer') continue
 					else if (d.role === 'seed') {
 						const src = d.file
