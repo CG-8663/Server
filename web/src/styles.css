@@ -9251,6 +9251,65 @@ select.field {
 .bk-hero .btn.ghost {
 	margin-top: 2px;
 }
+.bk-hero-actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 8px;
+	margin-top: 4px;
+}
+.bk-quota {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	width: 100%;
+	padding: 2px 0;
+}
+.bk-quota-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 8px;
+	font-size: 13px;
+}
+.bk-gdrive-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	width: 100%;
+}
+.bk-uri-box {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 12px;
+	border-radius: 12px;
+	border: 1px solid var(--line-2);
+	background: var(--glass);
+	margin-bottom: 12px;
+	font-size: 12.5px;
+}
+.bk-uri-box code {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--mono, ui-monospace, monospace);
+}
+.bk-oauth-steps a.row {
+	text-decoration: none;
+	color: inherit;
+}
+.bk-custom-add {
+	display: flex;
+	gap: 8px;
+	width: 100%;
+	align-items: center;
+}
+.bk-custom-add input {
+	flex: 1;
+	min-width: 0;
+}
 .bk-status {
 	display: flex;
 	flex-direction: column;
