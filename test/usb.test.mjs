@@ -874,3 +874,12 @@ test('usb-overlay-restart-recreate', async () => {
 		await ctx.close()
 	}
 })
+
+test('a stick whose serial has a space or a + is passed through by that serial and then reported as attached', () => {
+	for (const serial of ['0001 0002', 'A+B-7']) {
+		const stick = {id: `stick-${serial}`, vendorId: '10c4', productId: 'ea60', serial}
+		const xml = hostdevXml(stick)
+		assert.ok(xml.includes(`<serial>${serial}</serial>`), xml)
+		assert.deepEqual(parseUsbLive(`<domain><devices>${xml}</devices></domain>`, [stick]), [stick.id])
+	}
+})
