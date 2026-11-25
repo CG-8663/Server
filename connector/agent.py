@@ -4045,6 +4045,19 @@ def _resolve_file_path(virtual, must_exist=True, home=None):
     return target, "/" + "/".join([root_name, *rel])
 
 
+def _link_itself(src, norm, home=None):
+    """A link is renamed or trashed as the link; _resolve_file_path hands back what it points to."""
+    parts = norm.strip("/").split("/")
+    root_real = _file_roots(home)[parts[0]]
+    parent = os.path.realpath(os.path.join(root_real, *parts[1:-1]))
+    leaf = os.path.join(parent, parts[-1])
+    if not os.path.islink(leaf):
+        return src
+    if not _is_inside(parent, root_real) or _is_private_connector_path(parent, home):
+        raise RuntimeError("That path is outside the allowed folders")
+    return leaf
+
+
 def swarm_files_list(args, home=None):
     virtual = str((args or {}).get("path") or "/")
     if virtual.strip("/") == "":
@@ -4092,6 +4105,7 @@ def files_rename(args, home=None):
     parent_virtual = "/" + "/".join(norm.strip("/").split("/")[:-1])
     if parent_virtual == "/":
         raise RuntimeError("Can’t rename a top-level folder")
+    src = _link_itself(src, norm, home)
     dst, dst_norm = _resolve_file_path(f"{parent_virtual}/{new_name}", must_exist=False, home=home)
     if os.path.exists(dst):
         raise RuntimeError("Something with that name already exists")
@@ -4103,6 +4117,7 @@ def files_trash(args, home=None):
     src, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=True, home=home)
     if len(norm.strip("/").split("/")) < 2:
         raise RuntimeError("Can’t trash a top-level folder")
+    src = _link_itself(src, norm, home)
     h = os.path.realpath(home or os.path.expanduser("~"))
     trash_files = os.path.join(h, ".local", "share", "Trash", "files")
     trash_info = os.path.join(h, ".local", "share", "Trash", "info")
