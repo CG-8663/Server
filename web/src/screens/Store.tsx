@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useRef, useState, type CSSProperties} from 'react'
+import {useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {PluginBrowser} from './Plugins'
 
@@ -15,6 +15,7 @@ import {Icon, hasIcon} from '../icons'
 import {AppIcon, Sheet, SheetHeader, StatusPill, appStatus, bytes, haptic, isAppBusy, useToast} from '../ui'
 import {SearchField} from './Apps'
 import {remainingSuggestedStores, type StoreRepo} from '../storeSuggestions'
+import {isClamped} from '../textClamp'
 import {categoryOf, effectiveCategory, joinedFields, nextStartingToast, rankedCategories, searchNeedle, validCommunityStoreUrl} from '../storeBrowse'
 
 type StoreApp = RegistryApp & {compatible?: boolean; repo?: string; unsupported?: string}
@@ -555,6 +556,8 @@ function StoreSheet({
 		if (boundTarget.ability === 'ready') setReviewing(true)
 	}, [startInstall, bound, boundTarget])
 	const [more, setMore] = useState(false)
+	const proseRef = useRef<HTMLDivElement>(null)
+	const [clipped, setClipped] = useState(false)
 	const detail = useStoreApp(app)
 	const website = detail.data?.website ?? app.website
 	const view = {
@@ -564,6 +567,16 @@ function StoreSheet({
 		website: typeof website === 'string' && /^https?:\/\//i.test(website) ? website : undefined,
 		releaseNotes: detail.data?.releaseNotes ?? app.releaseNotes,
 	}
+	// "More" shows when the text really is cut off, so a short list of lines gets it too.
+	useLayoutEffect(() => {
+		const el = proseRef.current
+		if (!el || more) return
+		const measure = () => setClipped(isClamped(el))
+		measure()
+		const watch = new ResizeObserver(measure)
+		watch.observe(el)
+		return () => watch.disconnect()
+	}, [view.description, more])
 
 	const live = installed.get(app.id)
 	// What it needs that isn't installed yet (an installed app can stand in, e.g. Bitcoin Knots).
@@ -765,8 +778,10 @@ function StoreSheet({
 					)}
 					{view.description && (
 						<>
-							<div className={`prose${more ? '' : ' clamp'}`}>{view.description}</div>
-							{!more && view.description.length > 280 && (
+							<div ref={proseRef} className={`prose${more ? '' : ' clamp'}`}>
+								{view.description}
+							</div>
+							{!more && clipped && (
 								<button className="link-btn" style={{paddingLeft: 0}} onClick={() => setMore(true)}>
 									More
 								</button>
