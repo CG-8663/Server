@@ -116,6 +116,25 @@ def _ssl_context(cafile=None):
     return ctx
 
 
+def _keepalive(sock):
+    """Probe a quiet connection every 10 s after 30 s, and drop it after three misses. A server that
+    disappears without closing it (power cut, a router that forgot the connection) is then noticed
+    in about a minute, not after the system's 15 minute retry limit."""
+    try:
+        if hasattr(sock, "ioctl") and hasattr(socket, "SIO_KEEPALIVE_VALS"):  # Windows
+            sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 30000, 10000))
+            return
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        idle = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
+        # TCP_USER_TIMEOUT (Linux) also covers data that is sent but never acknowledged.
+        user_timeout = getattr(socket, "TCP_USER_TIMEOUT", 18 if sys.platform.startswith("linux") else None)
+        for option, value in ((idle, 30), (getattr(socket, "TCP_KEEPINTVL", None), 10), (getattr(socket, "TCP_KEEPCNT", None), 3), (user_timeout, 60000)):
+            if option is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, option, value)
+    except (OSError, ValueError):
+        pass
+
+
 # ---------------------------------------------------------------------------------------------
 # A small WebSocket client (RFC 6455), enough for this: text and binary frames, ping/pong, close.
 class WS:
@@ -126,6 +145,7 @@ class WS:
         host, port = u.hostname, u.port or 443
         ctx = _ssl_context(cafile)
         raw = socket.create_connection((host, port), timeout=20)
+        _keepalive(raw)
         self.sock = ctx.wrap_socket(raw, server_hostname=host)
         key = base64.b64encode(os.urandom(16)).decode()
         path = (u.path or "/") + (f"?{u.query}" if u.query else "")

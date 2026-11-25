@@ -39,6 +39,51 @@ class ReportHelloInterval(unittest.TestCase):
         self.assertEqual(last_hello, 300.0)
 
 
+class ServerConnectionKeepalive(unittest.TestCase):
+    # A server that vanishes without closing the connection (power cut, a router that forgot the
+    # connection) must be noticed in about a minute, not after the system's 15 minute retry limit.
+    def test_the_connection_asks_the_system_to_probe_an_idle_server(self):
+        import base64
+        import hashlib
+        import socket
+        import threading
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        done = threading.Event()
+
+        def serve():
+            peer, _ = listener.accept()
+            raw = b""
+            while b"\r\n\r\n" not in raw:
+                raw += peer.recv(4096)
+            key = [l.split(b": ", 1)[1] for l in raw.split(b"\r\n") if l.lower().startswith(b"sec-websocket-key")][0].decode()
+            accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+            peer.sendall(f"HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: {accept}\r\n\r\n".encode())
+            done.wait(5)
+            peer.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+
+        class PlainContext:
+            def wrap_socket(self, raw, server_hostname=None):
+                return raw
+
+        try:
+            with mock.patch.object(agent, "_ssl_context", return_value=PlainContext()):
+                ws = agent.WS("wss://127.0.0.1:%d/connector/ws" % listener.getsockname()[1], {}, None)
+            try:
+                self.assertTrue(ws.sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE))
+                if hasattr(socket, "TCP_KEEPIDLE"):
+                    self.assertLessEqual(ws.sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE), 60)
+            finally:
+                ws.close()
+        finally:
+            done.set()
+            listener.close()
+
+
 if __name__ == "__main__":
     unittest.main()
 
