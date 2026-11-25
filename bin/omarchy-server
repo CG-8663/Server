@@ -3,7 +3,7 @@
 #   omarchy-server              status and address
 #   omarchy-server open         open the web app
 #   omarchy-server restart      restart both services (also: start, stop)
-#   omarchy-server logs [-f]    recent log lines (follow with -f)
+#   omarchy-server logs [-f]    recent log lines, including the desktop screen sharing (follow with -f)
 #   omarchy-server widget on    add the status icon to the top bar (off to remove)
 #   omarchy-server uninstall    remove Omarchy Server, keeping your data (--purge deletes that too)
 set -u
@@ -365,7 +365,7 @@ case "$cmd" in
 				*) echo "Use: omarchy-server logs [-f|--follow] [-n N] [--since TIME]" >&2; exit 2 ;;
 			esac
 		done
-		jargs=(--user -u omarchyd -u omarchy-server-web)
+		jargs=(--user -u omarchyd -u omarchy-server-web -u omarchy-server-desktop -u omarchy-server-desktop-now)
 		[ -n "$since" ] && jargs+=(--since "$since")
 		if [ "$follow" = 1 ]; then
 			[ "$has_lines" = 1 ] && jargs+=(-n "$lines")
