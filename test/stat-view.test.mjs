@@ -26,17 +26,30 @@ test('every view is given the same readings, including temperature and a size-on
 	})
 	assert.deepEqual(
 		readings.map((r) => r.id),
-		['CPU', 'Memory', 'gpu0', 'Battery', 'disk-size', 'temp'],
+		['CPU', 'Memory', 'gpu0', 'Battery', 'disk-size', 'temp:processor'],
 	)
 	assert.deepEqual(
 		readings.map((r) => r.text),
 		['12%', '40%', '–', '80%', '? of 120 GB', '61°C'],
 	)
-	// The list does not depend on which drawing is showing. Faces only choose an arc or the value.
-	assert.deepEqual(readings.map(readingFace), ['arc', 'arc', 'value', 'arc', 'value', 'value'])
+	// The list does not depend on which drawing is showing. A temperature draws an arc on its own scale.
+	assert.deepEqual(readings.map(readingFace), ['arc', 'arc', 'value', 'arc', 'value', 'arc'])
 	assert.equal(gaugeCaption(readings[0]), null)
 	assert.equal(gaugeCaption(readings[1]), '1 GB of 4 GB')
-	assert.equal(gaugeCaption(readings.find((r) => r.id === 'temp')), null)
+	const temp = readings.find((r) => r.id === 'temp:processor')
+	assert.equal(temp.label, 'Processor')
+	assert.equal(temp.color, 'var(--green)')
+	assert.equal(temp.meter.now, 61)
+	assert.equal(temp.meter.max, 100)
+	assert.equal(temp.meter.unit, '°C')
+	const fahrenheit = statReadings({gauges: [], temp: 61.2, diskSizeGb: null, tempUnit: 'f'})
+	const hot = fahrenheit.find((r) => r.id === 'temp:processor')
+	assert.equal(hot.text, '142°F')
+	assert.equal(hot.meter.now, 142)
+	assert.equal(hot.meter.max, 212)
+	assert.equal(hot.meter.unit, '°F')
+	assert.equal(hot.percent, temp.percent)
+	assert.equal(gaugeCaption(temp), null)
 	assert.equal(readings.find((r) => r.id === 'Battery').color, 'var(--green)')
 })
 

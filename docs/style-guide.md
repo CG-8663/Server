@@ -37,6 +37,16 @@ The layout named Desktop is the windowed layout of this application. That layout
 
 Internal paths, CSS classes, protocol names, and developer logs may still say console. That does not make console a product name. User-facing copy follows this guide even when the code behind it still says console.
 
+A machine's status is Online or Offline. Online means this server is up, a joined computer's connector answers, or a virtual machine is running. Offline means that computer's connector does not answer, or the virtual machine is shut off. Do not show stopped or running as that status. Paused, Hibernated, Installing, Starting, Stopping, Restarting, and Error stay, because those are neither Online nor Offline. A count of machines uses the same word, such as "3 of 4 online".
+
+Power buttons may say Start, Shut down, Reboot, Pause, Hibernate, Resume, and Stop. Stop is the action that cuts power. It is not a status.
+
+Pin places a machine or an application on Home. The button says Pin. When it is already there, the button says Pinned. Add to desktop belongs only to the desktop shell, for an icon on the desktop. A machine page does not say Add to desktop.
+
+Terminal and Desktop are one row: the primary Terminal button, the Desktop button, and Pin. The same row is used on this server, a joined computer, and a virtual machine. A second design for those two actions is a defect.
+
+A row that opens a machine shows the disclosure chevron. The row is the control. The chevron is not its own button. The machine list and a host's list of virtual machines both show it.
+
 Build a new component when the behavior is different. A container is different from a machine. A confirm is different from a page. Those differences earn a component. A new visual for the same action does not.
 
 ## Machines
@@ -165,7 +175,7 @@ A menu, a toast, a gauge list, or a small picker. It is brief, and it closes wit
 
 ### Row
 
-The repeated unit for a machine, a file, a setting, or an application. Icon, name, secondary line, and action line up the same way across the product.
+The repeated unit for a machine, a file, a setting, or an application. Icon, name, secondary line, and action line up the same way across the product. When the row opens a machine, it ends with the disclosure chevron.
 
 ### Gauge
 
@@ -189,6 +199,10 @@ Reduced motion is respected. A transition does not hide a change of state. After
 
 - The same action uses the same component and the same words on this server, a joined computer, and a virtual machine.
 - Copy a person reads names the shell Terminal and the machine's screen Desktop. Console is not a product name for either.
+- A machine's status reads Online or Offline, or Paused, Hibernated, Installing, Starting, Stopping, Restarting, or Error. It does not read stopped or running.
+- Home's pin control reads Pin, or Pinned when it is on. Add to desktop is not used for that control.
+- Terminal and Desktop use the shared action row, with Pin on that row.
+- A row that opens a machine shows the disclosure chevron.
 - A virtual machine differs only where the host, the guest operating system, or the connector makes a real difference.
 - An application is presented as a container on a machine.
 - The screen works by touch on a phone and in a window on the desktop, in both the floating shell and the tiled shell.

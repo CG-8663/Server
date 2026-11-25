@@ -8,9 +8,11 @@ import {Terminal as XTerm} from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 
 import {clipText} from './clips'
+import {isClipTarget, markClipTarget, unmarkClipTarget} from './clipPasteTarget'
 import {BootstrapContext} from './data'
 import {Icon} from './icons'
 import {overlayBackUsesHistory, popstateClosesOverlay} from './overlayHistory'
+import {terminalCloseOutcome} from './terminalClose'
 import {forwardTerminalInput, ignoreOpeningFocus} from './terminalInput'
 import {pasteInto, terminalPasteDecision} from './terminalPaste'
 import {SEQ, applyTerminalModifiers} from './terminalKeys'
@@ -363,7 +365,9 @@ export function TerminalScreen({
 			const ws = new WebSocket(`${scheme}//${location.host}/api/terminal?${qs}`)
 			ws.binaryType = 'arraybuffer'
 			wsRef.current = ws
+			let opened = false
 			ws.onopen = () => {
+				opened = true
 				setState('connected')
 				haptic(8)
 				if (pending.current) {
@@ -398,13 +402,9 @@ export function TerminalScreen({
 			}
 			ws.onclose = (e) => {
 				if (disposed || wsRef.current !== ws) return
-				if (e.code === 1000 && e.reason === 'Shell ended') {
-					setState('closed')
-					setMessage('The shell has ended.')
-				} else {
-					setState((st) => (st === 'connecting' ? 'error' : 'lost'))
-					setMessage(agent ? 'Your shell is still running on that computer. Reconnect to pick up where you left off.' : 'Your shell is still running on the server. Reconnect to pick up where you left off.')
-				}
+				const out = terminalCloseOutcome({opened, shellEnded: e.code === 1000 && e.reason === 'Shell ended', onComputer: !!agent})
+				setState(out.state)
+				setMessage(out.message)
 			}
 		}
 		connect()
@@ -524,13 +524,28 @@ export function TerminalScreen({
 		}
 	}, [app, agent?.id, attempt])
 
+	// A clip pasted as text goes into the terminal used last, not into every open one.
+	const clipTarget = useRef({})
 	useEffect(() => {
+		const me = clipTarget.current
+		markClipTarget(me)
+		// Listening on the document, because the screen's own element can be swapped out.
+		const mark = (e: Event) => {
+			if (e.target instanceof Node && root.current?.contains(e.target)) markClipTarget(me)
+		}
+		document.addEventListener('focusin', mark)
+		document.addEventListener('pointerdown', mark, true)
 		const onClipPaste = (e: Event) => {
 			const text = (e as CustomEvent<{text?: string}>).detail?.text
-			if (text) termRef.current?.paste(text)
+			if (text && isClipTarget(me)) termRef.current?.paste(text)
 		}
 		window.addEventListener('omarchy-clip-paste', onClipPaste)
-		return () => window.removeEventListener('omarchy-clip-paste', onClipPaste)
+		return () => {
+			window.removeEventListener('omarchy-clip-paste', onClipPaste)
+			document.removeEventListener('focusin', mark)
+			document.removeEventListener('pointerdown', mark, true)
+			unmarkClipTarget(me)
+		}
 	}, [])
 
 	const sendSeq = (seq: string) => {

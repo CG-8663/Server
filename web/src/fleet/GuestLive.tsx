@@ -4,15 +4,15 @@ import {lazy, Suspense, useEffect, useState, type ReactNode} from 'react'
 import {ApiError, mutate, type Machine} from '../api'
 import {Icon} from '../icons'
 import {useMachineDetails, useStats} from '../machines/api'
-import {extraDisks, rootDisk} from '../swarm/gauges'
-import {connectorKind, guestAgent, hostGuestMetrics, linuxConnectorOs} from '../swarm/guestLink'
+import {extraDisks} from '../swarm/gauges'
+import {connectorKind, guestAgent, guestPoweredOffAt, guestUptimeSeconds, hostGuestMetrics, linuxConnectorOs} from '../swarm/guestLink'
 import {storageRowSub} from '../swarm/storageHint'
 import {AddComputer, ConnectorControls, agentMay, useSwarm} from '../swarm/Swarm'
-import {Field, Row, Sheet, SheetHeader, bytes, duration, haptic, useToast} from '../ui'
+import {Field, Row, Sheet, SheetHeader, bytes, haptic, useToast} from '../ui'
+import {MachineSeen} from './MachineSeen'
 import {LiveStats} from './StatRegion'
 import {MachineActions} from './machineActions'
 import {openStore} from './openStore'
-import {SheetGroup} from './sheetGroup'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
@@ -47,10 +47,11 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 	const desk = useDesktop()
 	const [storageNote, setStorageNote] = useState(false)
 	const live = machine.state === 'running' && !!agent?.online
+	const running = machine.state === 'running'
+	const stopped = machine.state === 'stopped'
 	const metrics = agent?.online ? agent.metrics : null
-	const stats = useStats(machine.id, machine.state === 'running' && !metrics)
-	const host = !metrics && machine.state === 'running' ? hostGuestMetrics(stats.data?.last, machine.memoryMb ?? (machine.memoryGb ? machine.memoryGb * 1024 : 0), machine.cores ?? 0) : null
-	const disk = metrics ? rootDisk(metrics.disks ?? []) : undefined
+	const stats = useStats(machine.id, (running && !metrics) || stopped)
+	const host = !metrics && running ? hostGuestMetrics(stats.data?.last, machine.memoryMb ?? (machine.memoryGb ? machine.memoryGb * 1024 : 0), machine.cores ?? 0) : null
 	const linux = linuxConnectorOs(machine.osId)
 	const canInstall = connectorKind(machine.osId) !== 'unsupported'
 	const details = useMachineDetails(!agent && canInstall ? machine.id : null)
@@ -121,26 +122,25 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 					</button>
 					<span className="primary-row-spacer" aria-hidden="true" />
 					<span className="btn small primary-row-pin-slot" aria-hidden="true">
-						<Icon name="pin" size={16} /> pin
+						<Icon name="pin" size={16} /> Pin
 					</span>
 				</div>
 			)}
 {swarm.isFetched && !agent && !canInstall && <p className="quiet">This operating system can’t run the connector. It runs on Linux with systemd or Alpine OpenRC.</p>}
-			{(metrics || host || machine.diskSizeGb) && <LiveStats metrics={metrics ?? host} temp={typeof metrics?.temp === 'number' ? metrics.temp : null} diskSizeGb={machine.diskSizeGb ?? null} />}
-			<SheetGroup title="Now">
-				<Row
-					icon="disk"
-					color="var(--teal)"
-					label={disk && disk.mount !== '/' ? disk.mount : 'Disk'}
-					sub={disk ? `${bytes(disk.used, 1)} of ${bytes(disk.total, 0)}` : machine.diskSizeGb ? `${machine.diskSizeGb} GB` : undefined}
-					trailing={disk ? <b>{pct(disk)}%</b> : undefined}
-				/>
-				{extraDisks(metrics?.disks).map((d) => (
-					<Row key={d.mount} icon="disk" color="#f0a020" label={d.mount} sub={`${bytes(d.used)} of ${bytes(d.total)}`} trailing={<b>{pct(d)}%</b>} />
-				))}
-				{typeof metrics?.temp === 'number' && <Row icon="thermo" color="#ef5350" label="Temperature" trailing={<b>{Math.round(metrics.temp)}°C</b>} />}
-				{metrics?.uptime !== undefined && <Row icon="clock" color="#8e8e93" label="Up for" trailing={<b>{duration(metrics.uptime)}</b>} />}
-			</SheetGroup>
+			{(metrics || host || machine.diskSizeGb) && <LiveStats metrics={metrics ?? host} temp={typeof metrics?.temp === 'number' ? metrics.temp : null} diskSizeGb={machine.diskSizeGb ?? null} machineName={machine.name} />}
+			<MachineSeen
+				online={running}
+				offline={stopped}
+				uptime={running ? (metrics?.uptime != null && Number.isFinite(metrics.uptime) ? metrics.uptime : guestUptimeSeconds(details.data?.tasks, Date.now())) : null}
+				lastSeen={agent?.lastSeen ?? guestPoweredOffAt(details.data?.tasks) ?? (stopped && stats.data?.last?.t != null && stats.data.last.t > 0 ? stats.data.last.t : null)}
+			/>
+			{extraDisks(metrics?.disks).length > 0 && (
+				<div className="glass group machine-extra">
+					{extraDisks(metrics?.disks).map((d) => (
+						<Row key={d.mount} icon="disk" color="#f0a020" label={d.mount} sub={`${bytes(d.used)} of ${bytes(d.total)}`} trailing={<b>{pct(d)}%</b>} />
+					))}
+				</div>
+			)}
 			{tabs({
 				files:
 					live && agent && agentMay(agent, 'files') ? (
@@ -181,7 +181,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 					>
 						<Field id="guest-sudo" label="Password in the machine" type="password" autoComplete="off" value={sudoPassword} onChange={(e) => setSudoPassword(e.target.value)} hint="Used once so the installer can finish. It isn’t saved." autoFocus required />
 						<button type="submit" className="btn primary" disabled={busy || !sudoPassword} style={{width: '100%', marginTop: 12}}>
-							{busy ? <span className="spinner" /> : 'Install connector'}
+							{busy ? <><span className="spinner" /><span className="sr-only">Install connector</span></> : 'Install connector'}
 						</button>
 					</form>
 				</Sheet>

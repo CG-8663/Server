@@ -47,6 +47,8 @@ const SLOW_RPC = new Set([
 	'files.unarchive',
 	'files.move',
 	'files.delete',
+	'files.trash',
+	'files.restore',
 	'files.emptyTrash',
 	'appStore.addRepository',
 	'appStore.refresh',
@@ -299,7 +301,8 @@ export type DiskUsage = {
 	drives?: {name: string; folder: string; size: number; used: number; available: number}[]
 	drive?: {name: string; size: number; notInUse: number; steps: ('partition' | 'partition-not-last' | 'encryption' | 'filesystem')[]; partition: string | null; partitionNumber: number | null; encrypted: string | null; filesystem: string | null} | null
 }
-export type Temperature = {temperature: number | null; warning: string; reason?: 'virtual' | 'no-sensor'}
+export type ThermalSensor = {id: string; label: string; kind: 'processor' | 'video' | 'case' | 'drive' | 'board' | 'other'; celsius: number; stuck?: boolean; defaultOn?: boolean}
+export type Temperature = {temperature: number | null; warning: string; reason?: 'virtual' | 'no-sensor'; sensors?: ThermalSensor[]}
 export type GpuInfo = {
 	id: string
 	index: number
