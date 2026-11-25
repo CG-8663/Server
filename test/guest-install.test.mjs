@@ -135,10 +135,8 @@ test('Fedora cloud-init lets qemu-ga guest-exec open TCP before enroll', () => {
 	assert.deepEqual(fedora.packages, ['qemu-guest-agent', 'python3'])
 	assert.deepEqual(fedora.commands[0], ['systemctl', 'enable', '--now', 'qemu-guest-agent'])
 	assert.deepEqual(fedora.commands[1], ['loginctl', 'enable-linger', 'chris'])
-	const sebool = fedora.commands.find((c) => c.join(' ').includes('virt_qemu_ga_run_unconfined'))
-	assert.ok(sebool, 'SELinux boolean so guest-exec can reach the server')
-	assert.match(sebool.join(' '), /setsebool/)
-	assert.match(sebool.join(' '), /qemu-guest-agent/)
+	assert.deepEqual(fedora.commands[2], ['/usr/sbin/setsebool', '-P', 'virt_qemu_ga_run_unconfined', '1'])
+	assert.deepEqual(fedora.commands[3], ['systemctl', 'restart', 'qemu-guest-agent'])
 	const debian = connectorCloudInit({familyId: 'debian', username: 'chris'})
 	assert.equal(debian.commands.some((c) => c.join(' ').includes('setsebool')), false)
 })
@@ -170,7 +168,7 @@ test('Alpine cloud-init installs qemu-ga, python3 and bash through OpenRC, witho
 		username: 'chris',
 		cloudInit: {packages: ['sudo'], shell: '/bin/ash', adminGroup: 'wheel'},
 	})
-	assert.deepEqual(alpine.packages, ['qemu-guest-agent', 'python3', 'bash', 'sudo'])
+	assert.deepEqual(alpine.packages, ['qemu-guest-agent', 'python3', 'bash', 'curl', 'runuser', 'sudo'])
 	assert.equal(alpine.commands.some((c) => c[0] === 'systemctl'), false)
 	assert.equal(alpine.commands.some((c) => c[0] === 'loginctl'), false)
 	assert.ok(alpine.commands.some((c) => c[0] === 'rc-update' && c.includes('qemu-guest-agent')))
@@ -260,6 +258,8 @@ test('Alpine guest-exec enrolls as the user then starts an OpenRC system service
 	assert.match(text, /rc-service omarchy-connector start/)
 	assert.match(text, /command_user=["']?chris/)
 	assert.equal(text.indexOf('runuser') < text.indexOf('/etc/init.d/omarchy-connector'), true)
+	assert.match(alpine.args[1], / && cat > \/etc\/init\.d\/omarchy-connector/)
+	assert.equal(/;[\s\n]*cat > \/etc\/init\.d\/omarchy-connector/.test(alpine.args[1]), false)
 	const local = guestConnectorExec({
 		os: 'linux',
 		osId: 'alpine-3.24.1-amd64',
