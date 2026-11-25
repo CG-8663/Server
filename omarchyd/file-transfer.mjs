@@ -199,6 +199,8 @@ export function createFileTransfer({files, fleet}) {
 		const to = locateTransferPath(input?.toDirectory)
 		if (!from || !to) throw new RpcError('BAD_REQUEST', 'Choose a folder on a machine that can be read')
 		if (!from.rel && from.kind === 'computer') throw new RpcError('BAD_REQUEST', 'Choose a file')
+		// A move deletes the original afterwards. Home, Trash, Drives and a drive itself can't be moved.
+		if (!copy && from.kind === 'server' && /^\/(Home|Trash|External(\/[^/]+)?)\/*$/.test(from.path)) throw new RpcError('BAD_REQUEST', '[cannot-move]')
 		if (from.kind === 'server' && to.kind === 'server') {
 			return files.procedures[copy ? 'files.copy' : 'files.move'].run({path: from.path, toDirectory: to.path, collision: input?.collision || 'keep-both'})
 		}
