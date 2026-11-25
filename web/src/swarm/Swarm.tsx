@@ -56,6 +56,7 @@ export type Agent = {
 		agentSha?: string
 		helperSha?: string
 		macs?: string[]
+		posture?: {rebootRequired: boolean; rebootReason?: string; securityUpdates?: number | null; listeningPorts?: {port: number; proto: string; addr: string}[]; failedUnits?: number} | null
 		pkg?: string
 		updateCommand?: string
 		omarchy?: boolean
@@ -305,7 +306,7 @@ export function AgentCard({a, onClick, footer, extra, className}: {a: Agent; onC
 			</span>
 			{a.online && m && (
 				<div className="specs">
-					<LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} />
+					<LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} posture={a.info?.posture} />
 					{!!m.updates && (
 						<StatChip icon="update" label="Updates">
 							{m.updates} update{m.updates === 1 ? '' : 's'}
@@ -624,7 +625,7 @@ function AgentSheet({
 			/>
 			<MachineActions terminal={!offline && may(a, 'terminal')} desktop={!offline && may(a, 'desktop') && desk?.ok !== false} onTerminal={() => onTerminal()} onDesktop={onDesktop} pin={<PinButton pin={{kind: 'machine', id: a.id, computer: ''}} name={a.name} />} />
 <DesktopHelp a={a} onTerminal={onTerminal} />
-			{a.online && m && <LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} />}
+			{a.online && m && <LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} posture={a.info?.posture} />}
 			{a.online && <HistorySparklines agentId={a.id} />}
 			{offline && !!a.info?.macs?.length && (
 				<div style={{marginTop: 12}}>
