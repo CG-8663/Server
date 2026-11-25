@@ -65,7 +65,7 @@ const Console = lazy(() => import('../Console').then((m) => ({default: m.Console
 function WinFallback() {
 	return (
 		<div className="win-empty">
-			<span className="spinner" aria-label="Loading" />
+			<span className="spinner" role="status" aria-label="Loading" />
 		</div>
 	)
 }

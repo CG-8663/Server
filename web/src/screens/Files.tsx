@@ -1636,7 +1636,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
         <Suspense
           fallback={
             <main className="screen center">
-              <span className="spinner" aria-label="Loading" />
+              <span className="spinner" role="status" aria-label="Loading" />
             </main>
           }
         >

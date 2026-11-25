@@ -1027,7 +1027,7 @@ function ChatGptSignInSheet({keyId, onClose}: {keyId?: string; onClose: () => vo
 							inputMode="url"
 						/>
 						<button className="btn block" type="submit" disabled={busy || !/^http:\/\/127\.0\.0\.1:\d+\/auth\/callback\?/.test(pasted.trim())}>
-							{busy ? <span className="spinner" /> : 'Finish signing in'}
+							{busy ? <><span className="spinner" /><span className="sr-only">Finish signing in</span></> : 'Finish signing in'}
 						</button>
 					</>
 				)}

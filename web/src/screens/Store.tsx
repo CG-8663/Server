@@ -476,7 +476,7 @@ function StoreItem({
 			<span className="end">
 				{installed ? (
 					<button className="btn get" onClick={() => onOpenInstalled(installed)} aria-label={`Manage ${app.name}`}>
-						{isAppBusy(installed.state) ? <span className="spinner" style={{width: 14, height: 14}} /> : 'Open'}
+						{isAppBusy(installed.state) ? <><span className="spinner" style={{width: 14, height: 14}} /><span className="sr-only">Open</span></> : 'Open'}
 					</button>
 				) : (
 					<button className="btn get" onClick={() => onPick(app, true)} aria-label={`Get ${app.name}`} disabled={app.compatible === false || !!app.unsupported}>

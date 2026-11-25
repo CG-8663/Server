@@ -181,7 +181,7 @@ export function GuestLive({machine, onOpenStore, onOpenDesktop, onOpenStorage, o
 					>
 						<Field id="guest-sudo" label="Password in the machine" type="password" autoComplete="off" value={sudoPassword} onChange={(e) => setSudoPassword(e.target.value)} hint="Used once so the installer can finish. It isn’t saved." autoFocus required />
 						<button type="submit" className="btn primary" disabled={busy || !sudoPassword} style={{width: '100%', marginTop: 12}}>
-							{busy ? <span className="spinner" /> : 'Install connector'}
+							{busy ? <><span className="spinner" /><span className="sr-only">Install connector</span></> : 'Install connector'}
 						</button>
 					</form>
 				</Sheet>

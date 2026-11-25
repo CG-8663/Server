@@ -196,7 +196,7 @@ export function LocalSwarm({
 				<Suspense
 					fallback={
 						<main className="screen center">
-							<span className="spinner" aria-label="Loading" />
+							<span className="spinner" role="status" aria-label="Loading" />
 						</main>
 					}
 				>
@@ -207,7 +207,7 @@ export function LocalSwarm({
 				<Suspense
 					fallback={
 						<main className="screen center">
-							<span className="spinner" aria-label="Loading" />
+							<span className="spinner" role="status" aria-label="Loading" />
 						</main>
 					}
 				>
@@ -730,7 +730,7 @@ export function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 											act.mutate({path: 'swarm.action', input: {id: a.id, name: 'plugin-install', pluginId: p.id}, done: `${p.name} installed on ${a.name}`})
 									}}
 								>
-									{act.isPending && act.variables?.input && (act.variables.input as {pluginId?: string}).pluginId === p.id ? <span className="spinner" /> : 'Install'}
+									{act.isPending && act.variables?.input && (act.variables.input as {pluginId?: string}).pluginId === p.id ? <><span className="spinner" /><span className="sr-only">Install</span></> : 'Install'}
 								</button>
 							}
 						/>

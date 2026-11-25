@@ -42,7 +42,7 @@ const Assistant = lazy(() => import('./screens/Assistant').then((m) => ({default
 function ScreenFallback() {
 	return (
 		<main className="screen center">
-			<span className="spinner" aria-label="Loading" />
+			<span className="spinner" role="status" aria-label="Loading" />
 		</main>
 	)
 }
@@ -119,7 +119,7 @@ export function App() {
 	if (boot.isLoading) {
 		content = (
 			<main className="auth center">
-				<span className="spinner" style={{width: 30, height: 30, margin: '0 auto', color: 'var(--accent-text)'}} aria-label="Loading" />
+				<span className="spinner" style={{width: 30, height: 30, margin: '0 auto', color: 'var(--accent-text)'}} role="status" aria-label="Loading" />
 			</main>
 		)
 	} else if (boot.error || !b) {
