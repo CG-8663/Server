@@ -729,7 +729,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				return finish(null)
 			}
 			if (!row) {
-				const title = String(message ?? '').split(/\r?\n/)[0].trim().slice(0, 48) || 'Chat'
+				const title = [...String(message ?? '').split(/\r?\n/)[0].trim()].slice(0, 48).join('') || 'Chat'
 				row = await conversations.create(userId, {keyId: key.id, title})
 			} else if (row.keyId !== key.id) {
 				row = await conversations.setKey(userId, row.id, key.id)

@@ -335,7 +335,7 @@ export async function openAccounts(dataDir, {create = true} = {}) {
 			const u = userById(userId)
 			if (!u) throw new RpcError('NOT_FOUND', 'No such account')
 			const nextUser = {...u}
-			if (typeof patch?.name === 'string' && patch.name.trim()) nextUser.name = patch.name.trim().slice(0, 40)
+			if (typeof patch?.name === 'string' && patch.name.trim()) nextUser.name = [...patch.name.trim()].slice(0, 40).join('')
 			if (typeof patch?.language === 'string') nextUser.language = patch.language.slice(0, 10)
 			if (typeof patch?.wallpaper === 'string') nextUser.wallpaper = {id: patch.wallpaper.slice(0, 40)}
 			await commit({...state, users: state.users.map((user) => (user.userId === u.userId ? nextUser : user))})
