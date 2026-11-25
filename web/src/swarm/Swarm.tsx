@@ -14,6 +14,7 @@ import {extraDisks, type SwarmBattery} from './gauges'
 import {isGuestAgent, linuxConnectorOs} from './guestLink'
 import {connectorInstallCommand, connectorInstallCommandWindows} from './installCommand'
 import {newlyJoined} from './join'
+import {loadPluginNames} from './pluginNames'
 import {MachineSeen} from '../fleet/MachineSeen'
 import {LiveStats, useStatView} from '../fleet/StatRegion'
 import {tempDegrees} from '../fleet/temperatures'
@@ -824,6 +825,12 @@ export function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 		placeholderData: (prev) => prev,
 	})
 	const list = page.data?.plugins ?? []
+	// The Installed rows read their names from the whole list, not from what the search shows.
+	const names = useQuery({
+		queryKey: ['omarchy.plugins', 'names'],
+		queryFn: () => loadPluginNames((offset) => query<{total: number; plugins: Plugin[]}>('omarchy.plugins', {q: '', category: '', sort: 'stars', limit: 60, offset}), 60),
+		staleTime: 5 * 60_000,
+	})
 	return (
 		<Sheet open onClose={onClose} label={`Plugins on ${a.name}`} tall>
 			<SheetHeader icon={<Icon name="puzzle" size={30} />} title="Omarchy plugins" subtitle={`On ${a.name}`} onClose={onClose} />
@@ -836,7 +843,7 @@ export function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 						<Row
 							key={id}
 							icon="puzzle"
-							label={list.find((p) => p.id === id)?.name ?? id}
+							label={names.data?.get(id) ?? list.find((p) => p.id === id)?.name ?? id}
 							trailing={
 								<button
 									className="btn small"
