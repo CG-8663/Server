@@ -772,7 +772,8 @@ def cpu_percent():
     last, _cpu_last = _cpu_last, (idle, total)
     if not last or total == last[1]:
         return None
-    return round(100 * (1 - (idle - last[0]) / (total - last[1])), 1)
+    # iowait is part of idle and may go down between two samples, which would push the result past 100.
+    return round(max(0.0, min(100.0, 100 * (1 - (idle - last[0]) / (total - last[1])))), 1)
 
 
 def meminfo():
