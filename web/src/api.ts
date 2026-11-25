@@ -199,6 +199,8 @@ export async function mutate<T = unknown>(path: string, input?: unknown, options
 export type Bootstrap = {
 	touch: {version: string}
 	configured: boolean
+	// Reached through MODC Connect: the website sign-in is offered.
+	sso?: boolean
 	server: null | {
 		url: string
 		host: string

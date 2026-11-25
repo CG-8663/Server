@@ -75,24 +75,21 @@ test('emergency disable not confirmed (502 disable_unverified, or offline): bloc
 	}
 })
 
-test('until the website’s field names are filled in, nothing is read and remote access stays shut', async () => {
-	assert.equal(REMOTE_ACCESS_FIELDS, null)
-	assert.equal(parseRemoteAccess({state: 'enabled', hostname: 'nodezero.myowndatacenter.com'}), null)
-	const t = await setup(() => json(200, {state: 'enabled'}))
-	try {
-		await t.r.tick()
-		assert.equal(t.r.status().problem, 'contract_pending')
-		assert.equal(t.r.gate().enabled, false)
-		assert.equal(t.r.gate().syncedAt, null)
-	} finally {
-		await t.cleanup()
-	}
+// The §10 answer, as the website sends it for an enabled installation.
+const BODY = (over = {}) => ({
+	api_version: 1, data_center_id: 'd', device_id: DEVICE, selected_connector: true, hostname: 'nodezero.myowndatacenter.com', origin: 'http://127.0.0.1:7780',
+	state: 'enabled', mode: 'adopted', enabled: true, config_version: 3, connector_validation: false, error: null,
+	access: {audience: 'a'.repeat(64), issuer: 'https://weisguy.cloudflareaccess.com', certs_url: 'https://weisguy.cloudflareaccess.com/cdn-cgi/access/certs', jwt_header: 'Cf-Access-Jwt-Assertion', algorithms: ['RS256']},
+	credentials: {rotation_required: false},
+	security: {contract_version: 1, protection_mode: 'cloudflare_access', desired_ingress: 'protected_route', observed_ingress: 'unknown', verification: 'not_checked_this_request', config_version: 3, sso_only_activation_allowed: false},
+	sso: {enabled: false, available: true, stage: 'behind_access', contract_version: 1, callback_path: '/modc/auth/callback', authorization_endpoint: 'https://myowndatacenter.com/connect/authorize'},
+	...over,
 })
 
-test('with the field names: settings are read, checked and handed to the gate; another device’s are ignored; 401 means revoked', async () => {
-	const body = {state: 'enabled', config_version: 7, hostname: 'nodezero.myowndatacenter.com', device_id: DEVICE, data_center_id: 'd', access: {aud: 'a'.repeat(64), issuer: 'https://modc.cloudflareaccess.com', certs_url: 'https://modc.cloudflareaccess.com/cdn-cgi/access/certs'}, connector: {validated: true}}
-	let answer = () => json(200, body)
-	const t = await setup(() => answer(), {fields: FIELDS})
+test('the §10 answer: read, checked and handed to the gate; another device’s ignored; 401 means revoked', async () => {
+	assert.ok(REMOTE_ACCESS_FIELDS)
+	let answer = () => json(200, BODY())
+	const t = await setup(() => answer())
 	try {
 		await t.r.tick()
 		const g = t.r.gate()
@@ -100,13 +97,13 @@ test('with the field names: settings are read, checked and handed to the gate; a
 		assert.equal(g.verified, true)
 		assert.equal(g.hostname, 'nodezero.myowndatacenter.com')
 		assert.equal(g.audience, 'a'.repeat(64))
+		assert.equal(g.certsUrl, 'https://weisguy.cloudflareaccess.com/cdn-cgi/access/certs')
 		assert.ok(g.syncedAt)
 		assert.ok(!JSON.stringify(g).includes(CRED))
-		assert.ok(!JSON.stringify(t.r.status()).includes(CRED))
-		answer = () => json(200, {...body, device_id: '99999999-2222-4333-8444-555555555555', config_version: 8})
+		answer = () => json(200, BODY({device_id: '99999999-2222-4333-8444-555555555555', config_version: 4}))
 		await t.r.tick()
 		assert.equal(t.r.status().problem, 'other_device')
-		assert.equal(t.r.status().configVersion, 7, 'kept the last good settings')
+		assert.equal(t.r.status().configVersion, 3, 'kept the last good settings')
 		answer = () => json(401, {error: 'invalid_credential'})
 		await t.r.tick()
 		await new Promise((r) => setTimeout(r, 10))
@@ -114,4 +111,25 @@ test('with the field names: settings are read, checked and handed to the gate; a
 	} finally {
 		await t.cleanup()
 	}
+})
+
+test('the gate stays shut unless every part agrees', async () => {
+	for (const [label, over, key] of [
+		['not the selected connector', {selected_connector: false}, 'enabled'],
+		['enabled flag off', {enabled: false}, 'enabled'],
+		['rotation pending', {credentials: {rotation_required: true}}, 'enabled'],
+		['protection not Access', {security: {...BODY().security, protection_mode: 'disabled'}}, 'verified'],
+		['another contract', {security: {...BODY().security, contract_version: 2}}, 'verified'],
+		['not RS256', {access: {...BODY().access, algorithms: ['HS256']}}, 'verified'],
+	]) {
+		const t = await setup(() => json(200, BODY(over)))
+		try {
+			await t.r.tick()
+			assert.equal(t.r.gate()[key], false, label)
+		} finally {
+			await t.cleanup()
+		}
+	}
+	assert.equal(parseRemoteAccess(BODY({api_version: 2})), null)
+	assert.equal(parseRemoteAccess(BODY({config_version: '3'})), null)
 })

@@ -442,7 +442,9 @@ export function createTunnel({
 	// Is what the website set up for this tunnel acceptable to run? Checked on every status read.
 	async function ingressPolicy(snap) {
 		if (snap.ingress === 'deny_all' && snap.remoteAccess !== true) return {ok: true, mode: 'deny_all'}
-		if (snap.ingress === 'protected_route' && snap.remoteAccess === true && snap.remoteState === 'enabled' && snap.hostname) {
+		// The security contract, when present, must name Cloudflare Access (v1); then this server checks it.
+		const contractOk = snap.protectionMode == null || (snap.protectionMode === 'cloudflare_access' && snap.contractVersion === 1)
+		if (snap.ingress === 'protected_route' && snap.remoteAccess === true && snap.remoteState === 'enabled' && snap.hostname && contractOk) {
 			const p = await probeAccess(snap.hostname)
 			return p.ok ? {ok: true, mode: 'protected_route', hostname: snap.hostname, at: now()} : p
 		}
@@ -617,6 +619,9 @@ export function createTunnel({
 			connectorError: typeof c.error === 'string' && CONNECTOR_ERROR[c.error] ? c.error : null,
 			remoteAccess: ra.enabled === true ? true : ra.enabled === false ? false : null,
 			remoteState: typeof ra.state === 'string' ? ra.state.slice(0, 40) : null,
+			// The versioned security contract (handoff §11), when the website sends it.
+			protectionMode: plainObject(ra.security) && typeof ra.security.protection_mode === 'string' ? ra.security.protection_mode : null,
+			contractVersion: plainObject(ra.security) ? ra.security.contract_version : null,
 			ingress: typeof ra.ingress === 'string' ? ra.ingress : null,
 			rotatedAt: t(cr.secret_rotated_at),
 			rotationRequired: cr.rotation_required === true,

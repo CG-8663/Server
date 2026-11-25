@@ -24,6 +24,8 @@ import {join} from 'node:path'
 import {plainObject, readJsonState, writeAtomic} from './atomic.mjs'
 import {createTunnel} from './connect-tunnel.mjs'
 import {createRemoteAccess} from './connect-remote.mjs'
+import {createSso} from './connect-sso.mjs'
+import http from 'node:http'
 import {RpcError} from './rpc.mjs'
 
 export const CONNECT_API = 'https://myowndatacenter.com/api/public/cloud'
@@ -84,7 +86,7 @@ function validState(v) {
 	return true
 }
 
-export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch, now = () => Date.now(), version = '', autoStart = true, log = (m) => console.error(m), tunnelOptions = {}, remoteOptions = {}}) {
+export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch, now = () => Date.now(), version = '', autoStart = true, log = (m) => console.error(m), tunnelOptions = {}, remoteOptions = {}, accounts = null, ssoOptions = {}}) {
 	const base = String(apiBase).replace(/\/+$/, '')
 	if (!/^https:\/\//.test(base)) throw new Error('MODC Connect needs an https address')
 	const dir = join(dataDir, 'connect')
@@ -132,6 +134,25 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 		log,
 		...remoteOptions,
 	})
+	// Single sign-on with the website account (stage "behind_access"): only with remote access on.
+	const sso = createSso({
+		dir,
+		apiBase: base,
+		credential: () => state.device?.credential ?? null,
+		device: () => (state.device?.credential ? {deviceId: state.device.deviceId, dataCenterId: state.device.dataCenterId} : null),
+		remote,
+		accounts,
+		now,
+		log,
+		probeLocal: (hostname) => localBoundaryHolds(hostname),
+		...ssoOptions,
+	})
+	// Remote access on: report readiness (when the self-test passes). Off or changed: SSO sessions end.
+	remote.onSettings(async (parsed, changed) => {
+		const on = parsed.state === 'enabled' && parsed.enabled === true && parsed.selectedConnector === true
+		if (!on) return sso.revokeAll()
+		await sso.report(changed)
+	})
 	async function markRevoked() {
 		const d = state.device
 		if (!d?.credential) return
@@ -141,6 +162,7 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 		await save()
 		log('[connect] this server’s device was revoked on myowndatacenter.com')
 		remote.teardown().catch(() => {})
+		sso.revokeAll().catch(() => {})
 		schedule(0)
 	}
 
@@ -362,7 +384,7 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 	async function full() {
 		const s = status()
 		const paired = !!state.device?.credential
-		return {...s, tunnel: paired ? await tunnel.status().catch(() => null) : null, remote: paired ? remote.status() : null}
+		return {...s, tunnel: paired ? await tunnel.status().catch(() => null) : null, remote: paired ? {...remote.status(), sso: sso.status()} : null}
 	}
 
 	async function pair(input) {
@@ -449,6 +471,7 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 		status: async () => (await ready, full()),
 		tunnel,
 		remote,
+		sso,
 		// For the web server's remote-access gate (non-secret settings only).
 		remoteGate: () => (state.device?.credential ? remote.gate() : {enabled: false, verified: false, blocked: false, syncedAt: null}),
 		pair,
@@ -479,9 +502,30 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 			'connect.tunnel.check': {kind: 'mutation', run: async () => (await tunnel.check(), full())},
 			'connect.tunnel.install': {kind: 'mutation', run: async () => (await tunnel.install(), full())},
 			// Remote access: turning it on is the owner's, on the website; switching it off works from here.
-			'connect.remote.disable': {kind: 'mutation', run: async () => (await remote.disable(), full())},
+			'connect.remote.disable': {kind: 'mutation', run: async () => (await remote.disable(), await sso.revokeAll().catch(() => {}), full())},
 			'connect.remote.allow': {kind: 'mutation', run: async () => (await remote.allowAgain(), full())},
 			'connect.remote.check': {kind: 'mutation', run: async () => (await remote.check(), full())},
 		},
 	}
+}
+
+// The self-test behind "legacy_origin_isolated": a request with no Cloudflare Access token must be
+// refused on the remote listener (7781) and, as a Cloudflare-forwarded request, on the main one (7780).
+const WEB_PORT = Number(process.env.OMARCHY_SERVER_PORT || 7780)
+const REMOTE_PORT = Number(process.env.OMARCHY_REMOTE_PORT || 7781)
+function localGet(port, headers) {
+	return new Promise((resolve) => {
+		const req = http.get({host: '127.0.0.1', port, path: '/api/health', headers, timeout: 5000}, (res) => {
+			res.resume()
+			resolve(res.statusCode)
+		})
+		req.on('timeout', () => req.destroy())
+		req.on('error', () => resolve(0))
+	})
+}
+export async function localBoundaryHolds(hostname) {
+	const refused = (code) => code === 403 || code === 503
+	const remote = await localGet(REMOTE_PORT, {host: hostname})
+	const legacy = await localGet(WEB_PORT, {host: hostname, 'cf-connecting-ip': '192.0.2.1', 'x-forwarded-proto': 'https'})
+	return refused(remote) && refused(legacy)
 }

@@ -4,7 +4,7 @@
 // cloudflared) whatever its headers, or on the main listener from a proxy on this machine that says it
 // is Cloudflare (CF-Connecting-IP, Cf-Access-Jwt-Assertion or CF-Ray). Each one must pass, in order:
 //   1. Remote access is on, verified by the website, not blocked here, and the website's settings
-//      were read recently (stale after 30 minutes without a successful read): otherwise 503.
+//      were read recently (stale after 10 minutes without a successful read): otherwise 503.
 //   2. It is for this server's own address (Host): otherwise 421.
 //   3. It carries a valid Cloudflare Access token for the configured team and application: otherwise 403.
 // Then the usual MODC sign-in applies as it always has: the Access token signs no one in.
@@ -13,7 +13,7 @@
 // read every 10 seconds. When remote access goes off, everything remote is cut at once (see onClose).
 import {createAccessVerifier, validAccessConfig} from './access-jwt.mjs'
 
-export const STALE_MS = 30 * 60_000
+export const STALE_MS = 10 * 60_000
 
 export const GATE_MESSAGES = {
 	REMOTE_OFF: 'Remote access to this server is turned off.',

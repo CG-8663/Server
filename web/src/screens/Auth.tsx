@@ -178,6 +178,11 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 					{busy ? <span className="spinner" /> : <Icon name="key" size={20} />}
 					{busy ? 'Signing in…' : 'Sign in'}
 				</button>
+				{boot.sso && (
+					<a className="btn block" href="/modc/auth/start" style={{marginTop: 10}}>
+						Continue with myowndatacenter.com
+					</a>
+				)}
 			</form>
 			<div className="glass device-card" style={{marginTop: 28, marginBottom: 0}}>
 				<span className="dot live" />

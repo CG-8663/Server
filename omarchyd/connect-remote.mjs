@@ -14,16 +14,32 @@ import {join} from 'node:path'
 import {plainObject, readJsonState, writeAtomic} from './atomic.mjs'
 import {RpcError} from './rpc.mjs'
 
-const POLL_MS = 5 * 60_000
+const POLL_MS = 30_000 // the contract's suggestion; shares 30 per 10 minutes with tunnel status
 const TROUBLE_MS = 60_000
-const STALE_MS = 30 * 60_000
+const STALE_MS = 10 * 60_000
 const TIMEOUT_MS = 20_000
 
-// The GET answer's fields. The handoff only lists what the answer carries (state, configuration
-// version, hostname, device ID, data center ID, Access audience, issuer, certificates URL, connector
-// validation); their exact names come from the website's contract and go here, nowhere else. Until
-// they're filled in, nothing is read and remote access stays shut.
-export const REMOTE_ACCESS_FIELDS = null
+// The GET answer's fields (Lovable handoff §10, api_version 1).
+export const REMOTE_ACCESS_FIELDS = {
+	apiVersion: 'api_version',
+	state: 'state',
+	enabled: 'enabled',
+	selectedConnector: 'selected_connector',
+	configVersion: 'config_version',
+	hostname: 'hostname',
+	deviceId: 'device_id',
+	dataCenterId: 'data_center_id',
+	audience: 'access.audience',
+	issuer: 'access.issuer',
+	certsUrl: 'access.certs_url',
+	algorithms: 'access.algorithms',
+	jwtHeader: 'access.jwt_header',
+	connectorValidated: 'connector_validation',
+	rotationRequired: 'credentials.rotation_required',
+	contractVersion: 'security.contract_version',
+	protectionMode: 'security.protection_mode',
+	sso: 'sso',
+}
 
 // The website's answer, checked, or null when it can't be trusted.
 export function parseRemoteAccess(body, fields = REMOTE_ACCESS_FIELDS) {
@@ -39,8 +55,19 @@ export function parseRemoteAccess(body, fields = REMOTE_ACCESS_FIELDS) {
 		issuer: get('issuer'),
 		certsUrl: get('certsUrl'),
 		connectorValidated: get('connectorValidated'),
+		apiVersion: get('apiVersion'),
+		enabled: get('enabled'),
+		selectedConnector: get('selectedConnector'),
+		algorithms: get('algorithms'),
+		jwtHeader: get('jwtHeader'),
+		rotationRequired: get('rotationRequired'),
+		contractVersion: get('contractVersion'),
+		protectionMode: get('protectionMode'),
+		sso: plainObject(get('sso')) ? get('sso') : null,
 	}
 	if (typeof out.state !== 'string' || out.state.length > 40) return null
+	if (fields.apiVersion && out.apiVersion !== 1) return null
+	if (fields.configVersion && !Number.isInteger(out.configVersion)) return null
 	if (out.hostname != null && (typeof out.hostname !== 'string' || !/^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(out.hostname))) return null
 	return out
 }
@@ -67,6 +94,7 @@ export function createRemoteAccess({
 	// Saved: {settings, syncedAt, blocked: {at, reason}|null, warning: {kind, at}|null}
 	let state = {settings: null, syncedAt: null, blocked: null, warning: null}
 	let live = {problem: null, nextAt: null, lastTry: null}
+	const listeners = new Set()
 	let timer = null
 	let closed = false
 	let busy = Promise.resolve()
@@ -160,6 +188,7 @@ export function createRemoteAccess({
 		live.problem = null
 		await save()
 		if (changed) log('[connect] remote-access settings changed')
+		for (const fn of listeners) Promise.resolve(fn(parsed, changed)).catch(() => {})
 		schedule(POLL_MS)
 	}
 
@@ -209,9 +238,11 @@ export function createRemoteAccess({
 	// For the web server's gate: no secrets in here.
 	function gate() {
 		const s = state.settings
+		// On: enabled, for this device as the selected connector, no rotation pending. Verified: Cloudflare
+		// Access (RS256, the standard header) is the declared protection, contract v1.
 		return {
-			enabled: s?.state === 'enabled',
-			verified: s?.connectorValidated === true,
+			enabled: s?.state === 'enabled' && s?.enabled === true && s?.selectedConnector === true && s?.rotationRequired !== true,
+			verified: s?.protectionMode === 'cloudflare_access' && s?.contractVersion === 1 && Array.isArray(s?.algorithms) && s.algorithms.includes('RS256') && String(s?.jwtHeader ?? '').toLowerCase() === 'cf-access-jwt-assertion',
 			blocked: !!state.blocked,
 			syncedAt: state.syncedAt,
 			hostname: s?.hostname ?? null,
@@ -253,6 +284,8 @@ export function createRemoteAccess({
 		ready,
 		status,
 		gate,
+		settings: () => (state.syncedAt && now() - state.syncedAt <= STALE_MS ? state.settings : null),
+		onSettings: (fn) => (listeners.add(fn), () => listeners.delete(fn)),
 		disable,
 		allowAgain,
 		teardown,

@@ -116,7 +116,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const oidc = createOidc({dataDir, accounts, ...oidcOptions})
 	// MODC Connect: this installation paired with the owner's myowndatacenter.com account. Only check-ins
 	// for now; it opens nothing. Tests never reach the website unless they pass their own fetch.
-	const connect = createConnect({dataDir, version: OMARCHYD_VERSION, ...(process.env.NODE_TEST_CONTEXT ? {autoStart: false, fetchImpl: async () => Promise.reject(Object.assign(new Error('offline in tests'), {code: 'ENOTFOUND'})), tunnelOptions: {unitDir: join(dataDir, 'test-units'), systemPaths: [], sh: async () => ({ok: false, code: 1, out: '', err: ''})}} : {}), ...connectOptions})
+	const connect = createConnect({dataDir, accounts, version: OMARCHYD_VERSION, ...(process.env.NODE_TEST_CONTEXT ? {autoStart: false, fetchImpl: async () => Promise.reject(Object.assign(new Error('offline in tests'), {code: 'ENOTFOUND'})), tunnelOptions: {unitDir: join(dataDir, 'test-units'), systemPaths: [], sh: async () => ({ok: false, code: 1, out: '', err: ''})}, ssoOptions: {post: async () => Promise.reject(new Error('offline in tests'))}} : {}), ...connectOptions})
 	const usb = createUsb({
 		enumerate: () => listHostUsb(usbOptions),
 		guests: {
@@ -851,6 +851,31 @@ WantedBy=graphical-session.target
 			// A connector updating itself from this server (authenticated with its own key).
 			// The web server's remote-access gate reads its settings here: non-secret values only, and only
 			// for a caller on this machine.
+			// The web server's single-sign-on steps (connect-sso.mjs), on this machine only. Nothing secret
+			// comes back except, after a verified website sign-in, the owner's local session.
+			if (url.pathname.startsWith('/internal/sso/') && req.method === 'POST') {
+				const a = String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, '')
+				const step = url.pathname.slice('/internal/sso/'.length)
+				if ((a !== '::1' && !/^127\./.test(a)) || !['start', 'finish', 'check', 'logout'].includes(step)) {
+					res.writeHead(404).end()
+					return
+				}
+				const chunks = []
+				let size = 0
+				for await (const c of req) {
+					size += c.length
+					if (size > 4096) break
+					chunks.push(c)
+				}
+				let input = {}
+				try {
+					input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+				} catch {}
+				const out = await connect.sso[step](input && typeof input === 'object' ? input : {}).catch(() => ({error: 'failed'}))
+				res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'})
+				res.end(JSON.stringify(out))
+				return
+			}
 			if (url.pathname === '/internal/remote-gate' && req.method === 'GET') {
 				const a = String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, '')
 				if (a !== '::1' && !/^127\./.test(a)) {

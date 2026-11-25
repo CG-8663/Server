@@ -545,9 +545,109 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const sid = parseCookies(req.headers.cookie)[COOKIE]
 		const session = sid ? store.getSession(sid) : null
 		if (sid && !(session?.remote && session.remoteSub && session.remoteSub === g.claims.sub)) req.headers.cookie = withoutSessionCookie(req.headers.cookie)
+		else if (sid && session?.sso?.ref) {
+			// A website (SSO) session: checked with myowndatacenter.com (cached at most 30 s; 10 s before
+			// changes and live connections). Not active, or can't tell: not signed in.
+			const live = req.headers.upgrade || /text\/event-stream/.test(String(req.headers.accept ?? ''))
+			const v = await ssoCall('check', {ref: session.sso.ref, maxAgeMs: live || (req.method !== 'GET' && req.method !== 'HEAD') ? 10_000 : 30_000})
+			if (!v.active) {
+				req.headers.cookie = withoutSessionCookie(req.headers.cookie)
+				if (!v.transient) endSsoSession(sid, session)
+			} else if (live) ssoLive.set(req.socket, {sid, ref: session.sso.ref})
+		}
 		return g
 	}
 	app.passGate = passGate
+
+	// ---- MODC Connect single sign-on (omarchyd/connect-sso.mjs does the website side) ---------------
+	const ssoCall = async (step, body) => {
+		try {
+			const base = getClient()?.baseUrl
+			if (!base) return {error: 'no_backend'}
+			const r = await fetchImpl(`${base}/internal/sso/${step}`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body), signal: AbortSignal.timeout(25_000)})
+			return r.ok ? await r.json() : {error: `http_${r.status}`}
+		} catch {
+			return {error: 'unreachable', transient: true}
+		}
+	}
+	function endSsoSession(sid, session) {
+		store.deleteSession(sid).catch(() => {})
+		if (session?.console) getClient()?.mutation('user.logout', undefined, {token: session.console.token, cookie: session.console.cookie}).catch(() => {})
+	}
+	// Terminals, desktops and live streams of SSO sessions: checked again every 15 s; cut when not active.
+	const ssoLive = new Map()
+	const ssoTimer = setInterval(async () => {
+		for (const [sock, {sid, ref}] of ssoLive) {
+			if (sock.destroyed) {
+				ssoLive.delete(sock)
+				continue
+			}
+			const v = await ssoCall('check', {ref, maxAgeMs: 30_000})
+			if (!v.active) {
+				ssoLive.delete(sock)
+				sock.destroy()
+				if (!v.transient) endSsoSession(sid, store.getSession(sid))
+			}
+		}
+	}, 15_000)
+	ssoTimer.unref?.()
+	const host = (req) =>
+		String(req.headers.host ?? '')
+			.toLowerCase()
+			.replace(/:\d+$/, '')
+	const SSO_TX = '__Host-modc_sso'
+	const ssoPage = (title, body) =>
+		`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:system-ui;background:#111;color:#eee;max-width:32em;margin:15vh auto;padding:0 1em"><h1 style="font-size:1.3em">${title}</h1><p>${body}</p>`
+	// Only through the tunnel, after the gate (Cloudflare Access) let the browser in.
+	app.get('/modc/auth/start', async (req, res) => {
+		res.set('Cache-Control', 'no-store')
+		if (!viaTunnel(req)) return res.status(404).type('text/plain').send('Not found')
+		const g = await passGate(req).catch(() => ({ok: false, status: 503, message: 'Remote access isn’t available right now.'}))
+		if (!g.ok) return res.status(g.status).type('text/plain').send(g.message)
+		const r = await ssoCall('start', {hostname: host(req)})
+		if (typeof r.url !== 'string' || !r.url.startsWith('https://myowndatacenter.com/connect/authorize?') || typeof r.tx !== 'string') {
+			return res.status(503).type('html').send(ssoPage('Not available right now', 'Signing in with myowndatacenter.com isn’t available right now. <a href="/" style="color:#9cf">Sign in with your MODC password</a> instead.'))
+		}
+		res.append('Set-Cookie', `${SSO_TX}=${r.tx}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`)
+		res.redirect(302, r.url)
+	})
+	app.get('/modc/auth/callback', async (req, res) => {
+		res.set('Cache-Control', 'no-store')
+		if (!viaTunnel(req)) return res.status(404).type('text/plain').send('Not found')
+		const g = await passGate(req).catch(() => ({ok: false, status: 503, message: 'Remote access isn’t available right now.'}))
+		if (!g.ok) return res.status(g.status).type('text/plain').send(g.message)
+		const tx = parseCookies(req.headers.cookie)[SSO_TX]
+		res.append('Set-Cookie', `${SSO_TX}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`)
+		const fail = () => res.status(400).type('html').send(ssoPage('Sign-in didn’t complete', 'Nothing was signed in. <a href="/modc/auth/start" style="color:#9cf">Start again</a> or <a href="/" style="color:#9cf">use your MODC password</a>.'))
+		if (!tx || typeof req.query.code !== 'string' || typeof req.query.state !== 'string') return fail()
+		const r = await ssoCall('finish', {tx, code: req.query.code, state: req.query.state, hostname: host(req)})
+		if (typeof r.ref !== 'string' || !r.native?.accessToken) return fail()
+		// A fresh local session: whatever session ID this browser had is dropped, never adopted.
+		const old = parseCookies(req.headers.cookie)[COOKIE]
+		if (old) await store.deleteSession(old).catch(() => {})
+		const backend = getClient()
+		const userAgent = req.headers['user-agent']
+		const session = {
+			mode: 'native',
+			accountId: r.native.accountId,
+			accessToken: r.native.accessToken,
+			accessExpiresAt: r.native.accessExpiresAt,
+			deviceToken: r.native.deviceToken,
+			client: 'modc-sso',
+			console: await openConsoleSession(backend, null, userAgent, r.native.accessToken).catch(() => null),
+			remote: true,
+			remoteSub: req.remote.sub,
+			remoteEmail: req.remote.email,
+			sso: {ref: r.ref, expiresAt: r.expiresAt},
+		}
+		const sid = newSessionId()
+		const t = Date.now()
+		await store.putSession(sid, {...session, createdAt: t, lastSeenAt: t, userAgent: String(userAgent ?? '').slice(0, 200)})
+		rememberSid(sid)
+		setCookie(res, sid, Math.max(60, Math.ceil((r.expiresAt - t) / 1000)))
+		// Same-site page, then home (a cookie set during a cross-site redirect chain isn't sent at once).
+		res.type('html').send('<!doctype html><meta http-equiv="refresh" content="0;url=/"><title>Signed in</title>')
+	})
 	app.use(async (req, res, next) => {
 		if (!viaTunnel(req)) return next()
 		const g = await passGate(req).catch(() => ({ok: false, status: 503, code: 'REMOTE_OFF', message: 'Remote access isn’t available right now.'}))
@@ -897,6 +997,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			server: null,
 			accounts: [],
 			session: session ? {accountId: session.accountId, mode: session.mode, console: !!session.console} : null,
+			// Through the tunnel: offer "Continue with myowndatacenter.com".
+			sso: viaTunnel(req) && !!req.remote,
 		}
 		if (!backend) return res.json(out)
 		// When Touch runs on the server itself it talks to 127.0.0.1; the phone must
@@ -1227,6 +1329,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 
 	api.post('/auth/logout', async (req, res) => {
 		const session = store.getSession(req.sid)
+		// A website (SSO) session: revoked on myowndatacenter.com too.
+		if (session?.sso?.ref) await ssoCall('logout', {ref: session.sso.ref})
 		if (session?.console) {
 			await getClient()
 				?.mutation('user.logout', undefined, {token: session.console.token, cookie: session.console.cookie})
@@ -2285,6 +2389,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	const consoles = new Set()
 	app.closeAll = () => {
 		gate.stop?.()
+		clearInterval(ssoTimer)
 		for (const wss of consoles) for (const c of wss.clients) c.close(1001, 'server restarting')
 		for (const r of relays.values()) r.server?.close?.()
 		for (const r of relays.values()) r.server?.destroyConnections?.()
