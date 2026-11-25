@@ -1294,7 +1294,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 					windows={hyprWindows}
 					onSelectTarget={(next) => setHyprTarget(next)}
 					onFallbackVnc={() => switchRenderMode('vnc')}
-					onClose={embedded ? undefined : onClose}
+					onClose={embedded ? undefined : back}
 				/>
 			</div>,
 			portalRoot,
