@@ -71,7 +71,9 @@ export async function memoryUsage() {
 	)
 	const size = info.MemTotal ?? os.totalmem()
 	const used = size - (info.MemAvailable ?? os.freemem())
-	return {size, totalUsed: used, system: used, apps: [], machines: []}
+	const swapTotal = info.SwapTotal ?? 0
+	const swap = swapTotal > 0 ? {total: swapTotal, used: Math.max(0, swapTotal - (info.SwapFree ?? 0))} : undefined
+	return {size, totalUsed: used, system: used, apps: [], machines: [], ...(swap ? {swap} : {})}
 }
 
 // What takes up the drive: apps, machines and your files are measured in the background (du can

@@ -1687,7 +1687,7 @@ test('an x86 server’s machines are unchanged', async () => {
 	const {readFile: rf} = await import('node:fs/promises')
 	const catalog = JSON.parse(await rf(new URL('../omarchyd/machine-catalog.json', import.meta.url), 'utf8'))
 	const ids = catalog.images.map((i) => i.id)
-	for (const id of ['ubuntu-26.04-desktop-amd64', 'debian-13-server-amd64', 'omarchy-4.0.4-amd64']) assert.ok(ids.includes(id))
+	for (const id of ['ubuntu-26.04-desktop-amd64', 'debian-13-server-amd64', 'debian-12-server-amd64', 'ubuntu-22.04-server-amd64', 'opensuse-leap-16.1-amd64', 'rocky-10-server-amd64', 'omarchy-4.5.0-amd64', 'cachyos-desktop-amd64', 'linuxmint-22.3-cinnamon-amd64']) assert.ok(ids.includes(id))
 	for (const i of catalog.images.filter((x) => x.arch === 'arm64')) {
 		assert.match(i.url, /arm64/)
 		assert.equal(i.firmware, 'efi')
