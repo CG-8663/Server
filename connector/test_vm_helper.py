@@ -150,6 +150,24 @@ class BadBootList(unittest.TestCase):
                 self.assertIn("Invalid boot", str(err.exception))
 
 
+class SeedFileNames(unittest.TestCase):
+    def test_a_seed_file_name_that_starts_with_a_dash_is_refused(self):
+        # The names are handed to xorriso as arguments, where a leading dash is an option.
+        calls = []
+
+        def run(cmd, args, input=None):
+            calls.append([cmd, *args])
+            return ""
+
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("-quiet", "-o", "--help"):
+                body = json.dumps({"label": "cidata", "files": {"user-data": "#cloud-config\n", name: "x"}})
+                with self.assertRaises(HelperError) as err:
+                    handle("seed", ["abcd1234", "seed"], stdin=body, run=run, data_dir=d, uid=1000)
+                self.assertIn("Invalid seed", str(err.exception))
+        self.assertEqual(calls, [])
+
+
 class GuestExecPath(unittest.TestCase):
     def test_basename_commands_and_rejections(self):
         log = []
