@@ -15,7 +15,7 @@ import {createAssistant} from './assistant.mjs'
 import {createBackups} from './backups.mjs'
 import {createUnraid} from './unraid.mjs'
 import {APP_COOKIE, createApps} from './apps.mjs'
-import {createFiles} from './files.mjs'
+import {contentDisposition, createFiles} from './files.mjs'
 import {createFileTransfer} from './file-transfer.mjs'
 import {installTargetId} from './install-target.mjs'
 import {fileUrl, localGitDir} from './local-source.mjs'
@@ -970,11 +970,10 @@ WantedBy=graphical-session.target
 				const id = url.searchParams.get('id') ?? ''
 				const remotePath = url.searchParams.get('path') ?? ''
 				const file = await connector.readRemoteFile(id, remotePath)
-				const safeDisp = file.name.replace(/["\\\r\n]/g, '_')
 				res.writeHead(200, {
 					'content-type': 'application/octet-stream',
 					'content-length': file.data.length,
-					'content-disposition': `attachment; filename="${safeDisp}"`,
+					'content-disposition': contentDisposition(file.name),
 					'cache-control': 'no-store',
 				})
 				return res.end(file.data)
