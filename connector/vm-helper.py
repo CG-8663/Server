@@ -660,7 +660,7 @@ def validate_spec(spec, guest_id, arch):
     if not isinstance(notes, str) or len(notes) > 8000 or not xml_chars(notes):
         raise HelperError("Invalid notes")
     boot = spec.get("boot")
-    if not isinstance(boot, list) or not boot or len(boot) != len(set(boot)):
+    if not isinstance(boot, list) or not boot or not all(isinstance(b, str) for b in boot) or len(boot) != len(set(boot)):
         raise HelperError("Invalid boot")
     disks = spec.get("disks")
     if not isinstance(disks, list) or not (1 <= len(disks) <= 8):

@@ -134,6 +134,22 @@ class Lifecycle(unittest.TestCase):
             self.assertEqual(base64.b64decode(body["arguments"]["input-data"]).decode(), secret)
 
 
+class BadBootList(unittest.TestCase):
+    def test_boot_entries_that_are_not_text_get_a_plain_error(self):
+        spec = {
+            "id": "abcd1234", "name": "Box", "memoryMb": 2048, "sockets": 1, "cores": 2,
+            "cpuType": "host", "mac": "52:54:00:11:22:33", "firmware": "bios", "arch": "amd64",
+            "machineType": "q35", "nic": "virtio", "video": "vga", "kvm": False, "tablet": True,
+            "acpi": True, "agent": False, "bootMenu": False, "notes": "",
+            "disks": [{"id": "disk0", "device": "disk", "bus": "virtio", "format": "qcow2", "file": "disk.qcow2"}],
+        }
+        for boot in ([["disk0"]], [{"a": 1}], [1], [None]):
+            with self.subTest(boot=boot):
+                with self.assertRaises(HelperError) as err:
+                    handle("define", ["abcd1234"], stdin=json.dumps(dict(spec, boot=boot)), uid=1000, uname="x86_64")
+                self.assertIn("Invalid boot", str(err.exception))
+
+
 class GuestExecPath(unittest.TestCase):
     def test_basename_commands_and_rejections(self):
         log = []
