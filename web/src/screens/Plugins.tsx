@@ -137,19 +137,19 @@ export function PluginBrowser({q}: {q: string}) {
 								{p.job?.state === 'error' && <p className="plugin-error">{p.job.error}</p>}
 								<div className="plugin-actions">
 									{busy ? (
-										<button className="btn small" disabled>
+										<button className="btn small" disabled aria-label={`${p.job!.state === 'installing' ? 'Installing' : 'Removing'} ${p.name}`}>
 											<span className="spinner" /> {p.job!.state === 'installing' ? 'Installing…' : 'Removing…'}
 										</button>
 									) : p.installed ? (
-										<button className="btn small" disabled={!owner || act.isPending} onClick={() => remove(p)}>
+										<button className="btn small" disabled={!owner || act.isPending} aria-label={`Installed · Remove ${p.name}`} onClick={() => remove(p)}>
 											<Icon name="check" size={15} /> Installed · Remove
 										</button>
 									) : (
-										<button className="btn small primary" disabled={!owner || !data?.available || act.isPending} onClick={() => install(p)} title={owner ? undefined : 'Only the server’s owner can install plugins'}>
+										<button className="btn small primary" disabled={!owner || !data?.available || act.isPending} aria-label={`Install ${p.name}`} onClick={() => install(p)} title={owner ? undefined : 'Only the server’s owner can install plugins'}>
 											Install
 										</button>
 									)}
-									<a className="btn small ghost" href={p.page} target="_blank" rel="noopener noreferrer">
+									<a className="btn small ghost" href={p.page} target="_blank" rel="noopener noreferrer" aria-label={`Details for ${p.name}`}>
 										Details
 									</a>
 								</div>
