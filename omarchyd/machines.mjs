@@ -2611,8 +2611,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const name = input.name ? String(input.name).trim() : uniqueName(`${m.name} copy`)
 		if (!name || name.length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
 		// The source's history entry stays running until the copy ends, then follows its result.
+		// No await between the name check above and adopt() adding the machine, or two clones could take one name.
+		// adopt() saves the registry, source history included.
 		const sourceTask = beginTask(m, 'clone', name)
-		await save().catch(() => {})
 		try {
 			return await adopt(m, {name, keepIds: false, sourceTask: {m, t: sourceTask}, copyDisk: (d, dst) => run('qemu-img', ['convert', '-O', 'qcow2', d.file, dst], {timeout: 6 * 60 * 60_000})})
 		} catch (error) {
