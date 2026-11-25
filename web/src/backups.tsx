@@ -640,7 +640,7 @@ function SetupSheet({mode, current, onClose, onDone}: {mode: 'new' | 'nas'; curr
 							<span className="muted">Found on your network</span>
 							<div>
 								{found.data!.map((f) => (
-									<button type="button" key={f.host} className={`chip${host === f.host ? ' on' : ''}`} onClick={() => (haptic(5), setHost(f.host))}>
+									<button type="button" key={f.host} className={`chip${host === f.host ? ' on' : ''}`} aria-pressed={host === f.host} onClick={() => (haptic(5), setHost(f.host))}>
 										<Icon name="server" size={14} /> {f.name}
 									</button>
 								))}

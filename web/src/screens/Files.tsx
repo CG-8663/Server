@@ -2435,6 +2435,7 @@ function FolderPicker({
           <button
             key={r.path}
             className={`chip${dir === r.path || dir.startsWith(`${r.path}/`) ? " on" : ""}`}
+            aria-pressed={dir === r.path || dir.startsWith(`${r.path}/`)}
             onClick={() => setDir(r.path)}
           >
             {r.name}

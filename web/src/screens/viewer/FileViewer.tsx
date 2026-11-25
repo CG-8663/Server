@@ -720,7 +720,7 @@ function TextView(b: BodyProps) {
               </button>
             )}
             {mode === "source" && (
-              <button className={`icon-btn${wrap ? " on" : ""}`} aria-label="Wrap lines" title="Wrap lines" onClick={() => setWrap((w) => !w)}>
+              <button className={`icon-btn${wrap ? " on" : ""}`} aria-label="Wrap lines" aria-pressed={wrap} title="Wrap lines" onClick={() => setWrap((w) => !w)}>
                 <Icon name="wrap" size={20} />
               </button>
             )}
@@ -955,7 +955,7 @@ function XlsxView(b: BodyProps) {
       {sheets.length > 1 && (
         <nav className="fv-tabs" aria-label="Sheets">
           {sheets.map((x, n) => (
-            <button key={n} className={n === tab ? "on" : undefined} onClick={() => setTab(n)}>{x.name}</button>
+            <button key={n} className={n === tab ? "on" : undefined} aria-current={n === tab ? "true" : undefined} onClick={() => setTab(n)}>{x.name}</button>
           ))}
         </nav>
       )}
