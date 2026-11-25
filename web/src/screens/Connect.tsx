@@ -37,16 +37,17 @@ export type TunnelStatus = {
 	connectorError: string | null
 	lastHealthyAt: number | null
 	checkedAt: number | null
-	remoteAccess: false
-	ingress: 'deny_all'
+	remoteAccess: boolean
+	ingress: string
+	accessVerified?: boolean
 	rotatedAt: number | null
 	rotationRequired: boolean
 	tokenIssuedAt: number | null
-	block: null | {code: string; message: string; recovery: string; at: number}
+	block: null | {code: string; message: string; recovery: string; detail?: string | null; at: number}
 	problem: null | string
 	nextCheckAt: number | null
 	cloudflared: {installed: boolean; version: string | null; compatible: boolean; source: null | 'system' | 'managed'; installable: boolean; pinnedVersion: string; minimum: string; installing: boolean}
-	service: {state: string; since: number | null; restarts: number; failing: boolean}
+	service: {state: string; since: number | null; restarts: number; failing: boolean; running?: boolean}
 	others: string[]
 }
 
@@ -58,6 +59,7 @@ const TUNNEL_PROBLEM: Record<string, string> = {
 	token_wait: 'The tunnel key was asked for several times this hour. It waits before asking again.',
 	service: 'The connector service didn’t start. Its log: journalctl --user -u modc-cloudflared',
 	cloudflared: 'cloudflared is missing or too old on this computer. Install it below.',
+	protection_unverified: 'Couldn’t confirm that Cloudflare Access guards your address (no internet?), so the connector is paused. It checks again in 5 minutes.',
 }
 const PROVISIONING_LABEL: Record<string, string> = {provisioning: 'Being set up', active: 'Ready', failed: 'Failed', deleting: 'Being removed', unknown: 'Unknown'}
 
@@ -92,9 +94,10 @@ function TunnelSection({t, busy, run, now}: {t: TunnelStatus; busy: boolean; run
 					<Icon name="alert" size={22} />
 					<div>
 						<b>{t.block.message}</b>
+						{t.block.detail && <span className="mono">{t.block.detail}</span>}
 						<span>{t.block.recovery}</span>
 						<span className="connect-actions">
-							<button className="btn small primary" disabled={busy} onClick={() => run('connect.tunnel.check')}>
+							<button className="btn small primary" disabled={busy} onClick={() => run('connect.tunnel.check', 'Checked')}>
 								{retryable ? 'Try again' : 'Check now'}
 							</button>
 						</span>
@@ -105,7 +108,9 @@ function TunnelSection({t, busy, run, now}: {t: TunnelStatus; busy: boolean; run
 				title="Secure tunnel"
 				footer={
 					<>
-						Remote access is off: the tunnel is deny-all, so every request to your address gets a 404, and nothing on this server is reachable from the internet.
+						{t.remoteAccess
+							? 'Remote access is on: Cloudflare Access stands in front of your address, then your MODC sign-in. This server checks that Access is there before it runs the connector.'
+							: 'Remote access is off: the tunnel is deny-all, so every request to your address gets a 404, and nothing on this server is reachable from the internet.'}
 						{otherNames.length > 0 && ` Your own cloudflared (${otherNames.join(', ')}) is separate and left alone.`}
 					</>
 				}
@@ -116,7 +121,7 @@ function TunnelSection({t, busy, run, now}: {t: TunnelStatus; busy: boolean; run
 					icon="bolt"
 					color="var(--green)"
 					label="Connector"
-					sub={t.enabled ? 'Starts with this server, and reconnects by itself' : 'Off: nothing runs'}
+					sub={!t.enabled ? 'Off: nothing runs' : t.service.running ? 'Running · starts with this server and reconnects by itself' : t.block ? 'On, but stopped (see above)' : 'On · starting…'}
 					trailing={
 						<Switch
 							on={t.enabled}
@@ -154,8 +159,14 @@ function TunnelSection({t, busy, run, now}: {t: TunnelStatus; busy: boolean; run
 						onClick={() => run('connect.tunnel.install', 'cloudflared installed')}
 					/>
 				)}
-				<Row icon="shield" color="var(--green)" label="Remote access" value="Off · deny-all" />
-				<Row icon="restart" color="var(--accent)" label="Check now" disabled={busy} onClick={() => run('connect.tunnel.check')} />
+				<Row
+					icon="shield"
+					color="var(--green)"
+					label="Remote access"
+					value={!t.remoteAccess ? 'Off · deny-all' : t.accessVerified ? 'On · Access checked' : 'On · not checked'}
+					sub={t.remoteAccess ? 'Cloudflare Access is in front; then your MODC sign-in' : undefined}
+				/>
+				<Row icon="restart" color="var(--accent)" label="Check now" disabled={busy} onClick={() => run('connect.tunnel.check', 'Checked')} />
 			</Group>
 			{(t.problem || t.service.failing || t.rotationRequired) && (
 				<p className="muted connect-note" role="status">

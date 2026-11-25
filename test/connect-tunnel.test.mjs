@@ -490,3 +490,142 @@ test('the token is fetched at most 6 times an hour, whatever happens', async () 
 		await t.cleanup()
 	}
 })
+
+// ---- Remote access through the tunnel ("protected_route"), as production now reports it ----------
+const PROD_STATUS = (health = 'down') => ({
+	provisioning: {status: 'active', hostname: 'nodezero.myowndatacenter.com'},
+	connector: {health, connections: health === 'healthy' ? 4 : 0},
+	remote_access: {enabled: true, ingress: 'protected_route', state: 'enabled', mode: 'adopted', config_version: 1},
+	credentials: {rotation_required: false, secret_rotated_at: null},
+})
+const ACCESS_LOGIN = 'https://modc.cloudflareaccess.com/cdn-cgi/access/login/nodezero.myowndatacenter.com?kid=x&redirect_url=%2F'
+function protectedRoute(t, probe = () => new Response('', {status: 302, headers: {location: ACCESS_LOGIN}})) {
+	t.site.over['GET /api/public/cloud/tunnel/status'] = () => json(200, PROD_STATUS(t.site.health))
+	const tokenAnswer = () => json(200, {token_type: 'cloudflared_tunnel_token', tunnel_token: t.site.token, issued_at: new Date(t.site.clock()).toISOString(), tunnel_id: TUNNEL, tunnel_name: `modc-${CENTER}`, hostname: 'nodezero.myowndatacenter.com', data_center_id: CENTER, device_id: DEVICE, ingress: 'protected_route', remote_access: true})
+	t.site.over['POST /api/public/cloud/tunnel/token'] = tokenAnswer
+	for (const p of ['/', '/api/health', '/api/rpc/user.get']) t.site.over[`GET https://nodezero.myowndatacenter.com${p}`] = (c) => probe(p, c)
+}
+
+test('production’s protected route: runs once this server sees Cloudflare Access in front of every probed path', async () => {
+	const t = await setup()
+	try {
+		protectedRoute(t)
+		const s = (await t.call('connect.tunnel.enable')).tunnel
+		assert.equal(s.block, null)
+		assert.equal(s.remoteAccess, true)
+		assert.equal(s.ingress, 'protected_route')
+		assert.equal(s.accessVerified, true)
+		assert.equal(await readFile(t.tokenFile, 'utf8'), TOKEN_1)
+		assert.equal(t.mach.units[UNIT].active, 'active')
+		// The probes carried nothing: no cookie, no credential, no Access token, and didn't follow redirects.
+		const probes = t.site.calls.filter((c) => c.path.startsWith('https://nodezero'))
+		assert.equal(probes.length, 3)
+		for (const p of probes) {
+			assert.equal(p.auth, null)
+			assert.equal(p.redirect, 'manual')
+		}
+	} finally {
+		await t.cleanup()
+	}
+})
+
+test('an old “unsafe” block, a wiped token and a stopped service recover by themselves once the setup checks out', async () => {
+	const t = await setup()
+	try {
+		protectedRoute(t)
+		// What the server was left with: on, blocked as unsafe, no token, service off.
+		await writeFile(join(t.dir, 'tunnel.json'), JSON.stringify({enabled: true, block: {code: 'unsafe', at: 1}, tokenIssuedAt: null}))
+		const again = await t.reopen()
+		await again.tunnel.tick()
+		const s = (await again.status()).tunnel
+		assert.equal(s.block, null)
+		assert.equal(await readFile(t.tokenFile, 'utf8'), TOKEN_1, 'the missing token was fetched')
+		assert.equal(t.mach.units[UNIT].active, 'active')
+		assert.equal(t.mach.units[UNIT].enabled, true, 'enabled to start at boot')
+		again.close()
+	} finally {
+		await t.cleanup()
+	}
+})
+
+test('protected route without Access in front: refused, connector stopped, token wiped, with the reason', async () => {
+	const t = await setup()
+	try {
+		await t.call('connect.tunnel.enable')
+		assert.equal(t.mach.units[UNIT].active, 'active')
+		protectedRoute(t, (p) => (p === '/api/health' ? new Response('{"ok":true}', {status: 200}) : new Response('', {status: 302, headers: {location: ACCESS_LOGIN}})))
+		t.advance(5 * 60_000)
+		await t.tunnel.tick()
+		const s = (await t.connect.status()).tunnel
+		assert.equal(s.block.code, 'unprotected')
+		assert.match(s.block.detail, /\/api\/health answered HTTP 200/)
+		assert.equal(t.mach.units[UNIT].active, 'inactive')
+		assert.equal(await stat(t.tokenFile).catch(() => null), null)
+		// A redirect anywhere other than the Access sign-in doesn't count either.
+		protectedRoute(t, () => new Response('', {status: 302, headers: {location: 'https://evil.example/cdn-cgi/access/login/x'}}))
+		t.advance(5 * 60_000)
+		await t.tunnel.tick()
+		assert.equal((await t.connect.status()).tunnel.block.code, 'unprotected')
+	} finally {
+		await t.cleanup()
+	}
+})
+
+test('the label alone isn’t enough: remote access on but not “enabled”, or an unknown ingress, stays unsafe', async () => {
+	const t = await setup()
+	try {
+		t.site.over['GET /api/public/cloud/tunnel/status'] = () => json(200, {...PROD_STATUS(), remote_access: {enabled: true, ingress: 'protected_route', state: 'pending'}})
+		assert.equal((await t.call('connect.tunnel.enable')).tunnel.block.code, 'unsafe')
+		t.site.over['GET /api/public/cloud/tunnel/status'] = () => json(200, {...PROD_STATUS(), remote_access: {enabled: true, ingress: 'public'}})
+		t.advance(60_000)
+		await t.tunnel.tick()
+		assert.equal((await t.connect.status()).tunnel.block.code, 'unsafe')
+		assert.equal(tunnelCalls(t, 'token').length, 0)
+		// A token answer claiming a protected route that wasn't checked: refused.
+		delete t.site.over['GET /api/public/cloud/tunnel/status']
+		t.site.over['POST /api/public/cloud/tunnel/token'] = () => json(200, {token_type: 'cloudflared_tunnel_token', tunnel_token: TOKEN_1, issued_at: new Date().toISOString(), tunnel_id: TUNNEL, hostname: 'nodezero.myowndatacenter.com', ingress: 'protected_route', remote_access: true})
+		t.advance(60_000)
+		await t.call('connect.tunnel.check')
+		assert.equal((await t.connect.status()).tunnel.block.code, 'unsafe')
+		assert.equal(await stat(t.tokenFile).catch(() => null), null)
+	} finally {
+		await t.cleanup()
+	}
+})
+
+test('Access can’t be confirmed (offline): paused with the token kept, back by itself when it can', async () => {
+	const t = await setup()
+	try {
+		protectedRoute(t)
+		await t.call('connect.tunnel.enable')
+		protectedRoute(t, () => Promise.reject(new TypeError('fetch failed')))
+		t.advance(5 * 60_000)
+		await t.tunnel.tick()
+		let s = (await t.connect.status()).tunnel
+		assert.equal(s.problem, 'protection_unverified')
+		assert.equal(t.mach.units[UNIT].active, 'inactive')
+		assert.equal(await readFile(t.tokenFile, 'utf8'), TOKEN_1)
+		protectedRoute(t)
+		t.advance(5 * 60_000)
+		await t.tunnel.tick()
+		s = (await t.connect.status()).tunnel
+		assert.equal(s.problem, null)
+		assert.equal(t.mach.units[UNIT].active, 'active')
+		assert.equal(tunnelCalls(t, 'token').length, 1, 'no new token needed')
+	} finally {
+		await t.cleanup()
+	}
+})
+
+test('no restart loop without a token, and Check now always answers', async () => {
+	assert.match(unitText({bin: '/usr/bin/cloudflared', config: '/d/c.yml', token: '/d/connect/tunnel.token'}), /^ConditionFileNotEmpty=\/d\/connect\/tunnel\.token$/m)
+	const t = await setup()
+	try {
+		await t.call('connect.tunnel.enable')
+		t.advance(20_000)
+		await t.call('connect.tunnel.check')
+		await assert.rejects(t.call('connect.tunnel.check'), (e) => e.code === 'TOO_MANY_REQUESTS' && /Try again/.test(e.message))
+	} finally {
+		await t.cleanup()
+	}
+})

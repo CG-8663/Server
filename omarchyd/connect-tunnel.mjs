@@ -67,7 +67,8 @@ export const BLOCKS = {
 	data_center_mismatch: ['This server isn’t attached to that tunnel’s data center.', 'Disconnect, then pair this server with the data center that has the tunnel.'],
 	tunnel_missing: ['The tunnel was deleted in Cloudflare.', 'Remove the tunnel on myowndatacenter.com and create it again. The connector stays off until then.'],
 	tunnel_mismatch: ['The tunnel no longer matches its record on myowndatacenter.com, so the website refused it.', 'Remove the tunnel on myowndatacenter.com and create it again.'],
-	unsafe: ['The website offered a tunnel that isn’t deny-all, or has remote access on. This version only runs a deny-all tunnel, so the connector stays off.', 'Update My Own Data Center, then press Check now.'],
+	unsafe: ['The website asked for a tunnel setup this version doesn’t recognise, so the connector stays off.', 'Update My Own Data Center, then press Check now.'],
+	unprotected: ['Your address is routed to this server, but this server couldn’t confirm that Cloudflare Access is in front of it, so the connector stays off.', 'Check the Access protection for your address on myowndatacenter.com, then press Check now.'],
 	token_failed: ['Couldn’t get the tunnel key from myowndatacenter.com after 3 tries.', 'Wait a few minutes, then press Try again.'],
 	bad_request: ['The website didn’t accept this server’s tunnel request.', 'Update My Own Data Center, then press Try again.'],
 }
@@ -112,6 +113,8 @@ After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=600
 StartLimitBurst=10
+# No token yet (or wiped): don't start at all, rather than fail and restart over and over.
+ConditionFileNotEmpty=${token}
 
 [Service]
 Type=simple
@@ -131,6 +134,19 @@ export const CONFIG_TEXT = `# Managed by My Own Data Center (MODC Connect).
 # The tunnel is configured on myowndatacenter.com (deny-all ingress). Nothing is routed from here.
 no-autoupdate: true
 `
+
+// Remote access through the tunnel ("protected_route") is only accepted when this server sees for
+// itself that Cloudflare Access guards its address: an unauthenticated request for each of these
+// paths must be sent to the Access sign-in, never reach this server. The label alone isn't trusted.
+export const PROBE_PATHS = ['/', '/api/health', '/api/rpc/user.get']
+export const isAccessLogin = (location) => {
+	try {
+		const u = new URL(location)
+		return u.protocol === 'https:' && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cloudflareaccess\.com$/i.test(u.hostname) && u.pathname.startsWith('/cdn-cgi/access/login')
+	} catch {
+		return false
+	}
+}
 
 function validState(v) {
 	return plainObject(v)
@@ -372,11 +388,11 @@ export function createTunnel({
 
 	// The disconnect procedure (contract §9): stop our connector, wipe the token. Paired or not is the
 	// caller's business: a removed tunnel leaves the device paired.
-	async function shutDown(block) {
+	async function shutDown(block, detail) {
 		await stopService()
 		await wipeToken()
 		state.tokenIssuedAt = null
-		state.block = block ? {code: block, at: now()} : null
+		state.block = block ? {code: block, at: now(), ...(detail ? {detail: String(detail).slice(0, 200)} : {})} : null
 		// What the website said before no longer holds (no tunnel, not this device's, …).
 		if (block && block !== 'token_failed' && block !== 'bad_request') state.snapshot = null
 		live.tokenTries = 0
@@ -408,6 +424,31 @@ export function createTunnel({
 		return false
 	}
 
+	// -> {ok: true} | {ok: false, code: 'unprotected', detail} | {ok: false, code: 'unverified', detail}
+	async function probeAccess(hostname) {
+		for (const path of PROBE_PATHS) {
+			let res
+			try {
+				res = await fetchImpl(`https://${hostname}${path}`, {method: 'GET', redirect: 'manual', headers: {accept: 'text/html'}, signal: AbortSignal.timeout(15_000)})
+			} catch {
+				return {ok: false, code: 'unverified', detail: `couldn’t reach https://${hostname}${path}`}
+			}
+			const loc = res.headers?.get?.('location') ?? ''
+			res.body?.cancel?.().catch?.(() => {})
+			if (!([301, 302, 303, 307, 308].includes(res.status) && isAccessLogin(loc))) return {ok: false, code: 'unprotected', detail: `${path} answered HTTP ${res.status} without asking for Cloudflare Access`}
+		}
+		return {ok: true}
+	}
+	// Is what the website set up for this tunnel acceptable to run? Checked on every status read.
+	async function ingressPolicy(snap) {
+		if (snap.ingress === 'deny_all' && snap.remoteAccess !== true) return {ok: true, mode: 'deny_all'}
+		if (snap.ingress === 'protected_route' && snap.remoteAccess === true && snap.remoteState === 'enabled' && snap.hostname) {
+			const p = await probeAccess(snap.hostname)
+			return p.ok ? {ok: true, mode: 'protected_route', hostname: snap.hostname, at: now()} : p
+		}
+		return {ok: false, code: 'unsafe', detail: `ingress “${snap.ingress ?? 'none'}”, remote access ${snap.remoteAccess === true ? 'on' : 'off'}`}
+	}
+
 	const backoff = (tries, retryAfter, baseMs) => Math.max((retryAfter ?? 0) * 1000, baseMs * 2 ** Math.max(0, tries - 1) * (0.8 + 0.4 * random()))
 
 	async function fetchToken() {
@@ -432,9 +473,12 @@ export function createTunnel({
 			const b = r.body ?? {}
 			const shapeOk = b.token_type === 'cloudflared_tunnel_token' && typeof b.tunnel_token === 'string' && TOKEN_RE.test(b.tunnel_token) && UUID.test(String(b.tunnel_id)) && HOST_RE.test(String(b.hostname))
 			if (!shapeOk) return retryToken(null, 60_000)
-			if (b.ingress !== 'deny_all' || b.remote_access !== false) {
-				await shutDown('unsafe')
-				log('[connect] refused a tunnel that isn’t deny-all with remote access off')
+			const denyAll = b.ingress === 'deny_all' && b.remote_access === false
+			// A protected route only right after this server checked Access guards that same address.
+			const protectedOk = b.ingress === 'protected_route' && b.remote_access === true && live.policy?.ok && live.policy.mode === 'protected_route' && live.policy.hostname === String(b.hostname).toLowerCase()
+			if (!denyAll && !protectedOk) {
+				await shutDown('unsafe', `token answer: ingress “${String(b.ingress ?? 'none').slice(0, 40)}”`)
+				log('[connect] refused a tunnel setup that wasn’t checked')
 				return false
 			}
 			await writeToken(b.tunnel_token)
@@ -498,12 +542,22 @@ export function createTunnel({
 		const snap = snapshot(r.body)
 		state.snapshot = snap
 		if (snap.hostname) state.hostname = snap.hostname
-		if (state.block && state.block.code !== 'token_failed' && state.block.code !== 'unsafe') state.block = null
 		if (snap.healthy && state.enabled) state.lastHealthyAt = now()
-		if (snap.remoteAccess !== false || (snap.ingress && snap.ingress !== 'deny_all')) {
-			await shutDown('unsafe')
-			return schedule(STATUS_BLOCKED_MS)
+		const policy = await ingressPolicy(snap)
+		live.policy = policy
+		if (!policy.ok && policy.code === 'unverified') {
+			// Can't confirm the protection right now (no internet?): run nothing remote-reachable until we can.
+			live.problem = 'protection_unverified'
+			await stopService()
+			await save()
+			return schedule(STATUS_EVERY_MS)
 		}
+		if (!policy.ok) {
+			await shutDown(policy.code, policy.detail)
+			return schedule(STATUS_EVERY_MS)
+		}
+		// Checked and fine now: an earlier block about the setup no longer applies.
+		if (state.block && state.block.code !== 'token_failed') state.block = null
 		await save()
 
 		if (!state.enabled) {
@@ -515,7 +569,7 @@ export function createTunnel({
 			if (snap.provisioning === 'deleting') await shutDown(null)
 			return schedule(STATUS_EVERY_MS)
 		}
-		if (state.block?.code === 'token_failed' || state.block?.code === 'unsafe') return schedule(STATUS_EVERY_MS)
+		if (state.block?.code === 'token_failed') return schedule(STATUS_EVERY_MS)
 
 		const haveToken = !!(await stat(tokenFile).catch(() => null)) && !!state.tokenIssuedAt
 		const rotated = snap.rotatedAt && state.tokenIssuedAt && snap.rotatedAt > state.tokenIssuedAt
@@ -562,6 +616,7 @@ export function createTunnel({
 			connectedSince: t(c.connected_since),
 			connectorError: typeof c.error === 'string' && CONNECTOR_ERROR[c.error] ? c.error : null,
 			remoteAccess: ra.enabled === true ? true : ra.enabled === false ? false : null,
+			remoteState: typeof ra.state === 'string' ? ra.state.slice(0, 40) : null,
 			ingress: typeof ra.ingress === 'string' ? ra.ingress : null,
 			rotatedAt: t(cr.secret_rotated_at),
 			rotationRequired: cr.rotation_required === true,
@@ -574,7 +629,7 @@ export function createTunnel({
 		const bin = live.binary ?? (await binary())
 		const svc = (await stat(unitFile).catch(() => null)) ? await serviceState() : {active: 'inactive', sub: '', restarts: 0, enabled: false, since: null}
 		const s = state.snapshot ?? null
-		const block = state.block && BLOCKS[state.block.code] ? {code: state.block.code, message: BLOCKS[state.block.code][0], recovery: BLOCKS[state.block.code][1], at: state.block.at} : null
+		const block = state.block && BLOCKS[state.block.code] ? {code: state.block.code, message: BLOCKS[state.block.code][0], recovery: BLOCKS[state.block.code][1], detail: state.block.detail ?? null, at: state.block.at} : null
 		let health = s?.health ?? null
 		// Just started: Cloudflare takes a little while to see it.
 		const connecting = state.enabled && svc.active === 'active' && !s?.healthy && live.startedAt && now() - live.startedAt < 3 * 60_000
@@ -590,8 +645,10 @@ export function createTunnel({
 			connectorError: s?.connectorError ? CONNECTOR_ERROR[s.connectorError] : null,
 			lastHealthyAt: state.lastHealthyAt ?? null,
 			checkedAt: s?.checkedAt ?? null,
-			remoteAccess: false, // never on in this phase, whatever happens
-			ingress: 'deny_all',
+			// What the website set up, and whether this server confirmed Access guards it.
+			remoteAccess: s?.remoteAccess === true,
+			ingress: s?.ingress ?? 'deny_all',
+			accessVerified: live.policy?.ok === true && live.policy.mode === 'protected_route',
 			rotatedAt: s?.rotatedAt ?? null,
 			rotationRequired: s?.rotationRequired ?? false,
 			tokenIssuedAt: state.tokenIssuedAt ?? null,
@@ -599,7 +656,7 @@ export function createTunnel({
 			problem: live.problem,
 			nextCheckAt: live.nextAt,
 			cloudflared: {installed: bin.installed, version: bin.version, compatible: bin.compatible, source: bin.source, installable: !!pinned.sha256[arch], pinnedVersion: pinned.version, minimum: MIN_VERSION.join('.'), installing: live.installing},
-			service: {state: svc.active, since: svc.since, restarts: svc.restarts, failing: svc.active === 'failed' || svc.restarts >= 5},
+			service: {state: svc.active, since: svc.since, restarts: svc.restarts, failing: svc.active === 'failed' || svc.restarts >= 5, running: svc.active === 'active' || svc.active === 'activating'},
 			others: live.others ?? [],
 		}
 	}
@@ -636,8 +693,9 @@ export function createTunnel({
 		await ready
 		return serial(async () => {
 			// The status endpoint allows 30 per 10 minutes; a button pressed again and again stays under it.
-			if (live.lastCheckAt && now() - live.lastCheckAt < 15_000) return status()
-			if (state.block?.code === 'token_failed' || state.block?.code === 'bad_request' || state.block?.code === 'unsafe') state.block = null
+			if (!credential()) throw new RpcError('PRECONDITION_FAILED', 'Connect this server to myowndatacenter.com first')
+			if (live.lastCheckAt && now() - live.lastCheckAt < 15_000) throw new RpcError('TOO_MANY_REQUESTS', `Checked ${Math.round((now() - live.lastCheckAt) / 1000)} seconds ago. Try again in a few seconds.`)
+			if (state.block?.code === 'token_failed' || state.block?.code === 'bad_request' || state.block?.code === 'unsafe' || state.block?.code === 'unprotected') state.block = null
 			live.tokenTries = 0
 			await binary(true)
 			await others()
