@@ -565,6 +565,7 @@ function HistoryRow({r, timeZone}: {r: Run; timeZone?: string}) {
 				label={`${r.computer ? r.name : 'This server'} · ${formatBackupStamp(r.startedAt, timeZone)}${r.reason === 'scheduled' ? '' : ' · by hand'}`}
 				sub={sub}
 				onClick={r.items.length ? () => setOpen(!open) : undefined}
+				expanded={r.items.length ? open : undefined}
 			/>
 			{open &&
 				r.items.map((i, n) => {
