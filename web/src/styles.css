@@ -1160,6 +1160,12 @@ h1.title {
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
+/* A row whose explanation matters to a decision (what a permission allows) wraps instead of being cut to one line. */
+.wrap-sub .row .main span {
+	white-space: normal;
+	overflow: visible;
+	text-overflow: clip;
+}
 .row .chev {
 	color: var(--muted);
 	flex: none;
