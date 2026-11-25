@@ -9,6 +9,7 @@ import {useState, type CSSProperties, type ReactNode} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from '../api'
+import {poweredOnText} from '../plural'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {Icon} from '../icons'
 import {poolCheckText, storageDrivesView, storageStatusMessage} from '../storageList'
@@ -457,7 +458,7 @@ function DriveSheet({d, onClose, onChanged, rpc, args}: {d: Drive | null; onClos
 						rows={[
 							['Health', h ? (h.passed === false ? 'Failed' : issues.length ? 'Needs attention' : h.passed ? 'Good' : 'Unknown') : 'Not available'],
 							...(h?.temperature != null ? ([['Temperature', formatTemp(h.temperature, tempUnit)]] as [string, ReactNode][]) : []),
-							...(h?.powerOnHours != null ? ([['Powered on', `${Math.round(h.powerOnHours / 24).toLocaleString()} days`]] as [string, ReactNode][]) : []),
+							...(h?.powerOnHours != null ? ([['Powered on', poweredOnText(h.powerOnHours)]] as [string, ReactNode][]) : []),
 							...(h?.lifetimeUsed != null ? ([['Life used', `${h.lifetimeUsed}%`]] as [string, ReactNode][]) : []),
 							['Serial', d.serial ?? '–'],
 							['Used for', d.role === 'system' ? 'Omarchy (system)' : d.role === 'pool' ? `Pool “${d.pool}”` : d.role === 'blank' ? 'Nothing yet' : d.btrfs ? 'A Btrfs filesystem' : 'Existing data'],

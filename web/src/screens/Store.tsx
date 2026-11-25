@@ -4,6 +4,7 @@ import {PluginBrowser} from './Plugins'
 
 import {mutate, query, type RegistryApp, type UserApp} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
+import {plural} from '../plural'
 import {appUrl, useAction, useApps, useBootstrap, useMachines, useRegistry, useUser} from '../data'
 import {computerInstallInput, confirmInstallTarget, guestInstallInput, installKindLabel, installTargets, installsOf, machineCountLabel} from '../fleet/installTargets'
 import {type StoreBinding} from '../fleet/openStore'
@@ -120,7 +121,7 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 				)}
 				<div className="store-heading">
 					<h1 className="title">{bound ? `App Store for ${bound.name}` : 'App Store'}</h1>
-					<p className="subtitle">{bound ? `Installs on ${bound.name}` : registry.isLoading ? 'Loading the catalog…' : problem && !registry.data ? 'Can’t reach your server' : oneStore ? `${all.length} apps in ${oneStore.name}` : `${all.length} apps from ${storeList.length} store${storeList.length === 1 ? '' : 's'}`}</p>
+					<p className="subtitle">{bound ? `Installs on ${bound.name}` : registry.isLoading ? 'Loading the catalog…' : problem && !registry.data ? 'Can’t reach your server' : oneStore ? `${plural(all.length, 'app')} in ${oneStore.name}` : `${plural(all.length, 'app')} from ${plural(storeList.length, 'store')}`}</p>
 				</div>
 				<button className="btn small stores-btn" style={{marginLeft: 'auto'}} aria-label="Check for new apps" title="Check for new apps" disabled={refresh.isPending} onClick={() => (haptic(5), refresh.mutate())}>
 					{refresh.isPending ? <span className="spinner" /> : <Icon name="restart" size={17} />}

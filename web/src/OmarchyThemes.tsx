@@ -2,6 +2,7 @@ import {useEffect, useMemo, useRef, useState} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
+import {plural} from './plural'
 import {Icon} from './icons'
 import {isMoreThemeBusy, runThemeAction, shouldPollThemes} from './omarchyThemesLogic'
 import {themeAction} from './theme/themeAction'
@@ -125,7 +126,7 @@ export function OmarchyThemes({owner, onSwitched}: {owner: boolean; onSwitched?:
 					<p className="footer-note" style={{textAlign: 'left', margin: '0 2px 10px'}}>
 						Community themes from the Omarchy manual. Getting one downloads it to this server and switches the desktop to it.
 					</p>
-					<input className="omt-search" type="search" placeholder={`Search ${data.more.length} themes`} value={search} onChange={(e) => setSearch(e.target.value)} />
+					<input className="omt-search" type="search" placeholder={`Search ${plural(data.more.length, 'theme')}`} value={search} onChange={(e) => setSearch(e.target.value)} />
 					<div className="omt-grid">
 						{more.map((t) => {
 							const busy = isMoreThemeBusy(t, pending)

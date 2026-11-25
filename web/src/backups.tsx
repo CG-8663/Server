@@ -5,6 +5,7 @@ import {backupGapText, computerSheetChanged, computerSnapshotRows, folderListErr
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
+import {agoText} from './plural'
 import {queryProblem, useBrowserOnline} from './connection'
 import {errorText} from './queryNotice'
 import {Icon} from './icons'
@@ -82,13 +83,7 @@ type Found = {host: string; name: string; address?: string}
 type Share = {name: string; comment: string}
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-const ago = (t: number) => {
-	const s = Math.max(0, (Date.now() - t) / 1000)
-	if (s < 90) return 'just now'
-	if (s < 3600) return `${Math.round(s / 60)} min ago`
-	if (s < 86400) return `${Math.round(s / 3600)} h ago`
-	return `${Math.round(s / 86400)} days ago`
-}
+const ago = (t: number) => agoText((Date.now() - t) / 1000)
 
 function useStatus() {
 	const q = useQuery({queryKey: ['backups.status'], queryFn: () => query<BackupStatus>('backups.status'), retry: false, refetchInterval: (s) => (s.state.data?.running ? 1500 : 20_000)})

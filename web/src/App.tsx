@@ -2,6 +2,7 @@ import {lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type 
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {getBootstrap, query, type Bootstrap, type User, type UserApp} from './api'
+import {plural} from './plural'
 import {bootstrapPollInterval, useServerReachable} from './connection'
 import {AppSheet} from './AppSheet'
 import {AppViewer} from './AppViewer'
@@ -282,7 +283,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 					</button>
 					<button
 						className={`round-btn bell${notes.length ? ' lit' : ''}${notes.includes('update-available') ? ' ringing' : ''}`}
-						aria-label={notes.length ? `${notes.length} notifications` : 'Notifications'}
+						aria-label={notes.length ? plural(notes.length, 'notification') : 'Notifications'}
 						onClick={() => {
 							haptic(6)
 							setBellOpen(true)

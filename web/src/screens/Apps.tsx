@@ -9,6 +9,7 @@ import {machineCountLabel} from '../fleet/installTargets'
 import {PinButton} from '../fleet/PinButton'
 import {Icon} from '../icons'
 import {AppIcon, Segmented, StatusPill, StoreIcon, appStatus, haptic, isAppBusy, useConfirm} from '../ui'
+import {plural} from '../plural'
 
 type Filter = 'all' | 'running' | 'stopped' | 'updates'
 
@@ -100,7 +101,7 @@ export function Apps({onOpenApp, onStore}: {onOpenApp: (app: UserApp) => void; o
 					</button>
 				</div>
 			)}
-			<SearchField value={q} onChange={setQ} placeholder={`Search ${list.length} apps`} />
+			<SearchField value={q} onChange={setQ} placeholder={`Search ${plural(list.length, 'app')}`} />
 			<Segmented value={filter} options={segments} onChange={setFilter} label="Filter apps" />
 			{filter === 'updates' && counts.updates > 1 && (
 				<button className="btn primary block" style={{marginBottom: 14}} onClick={updateAll} disabled={action.isPending}>
