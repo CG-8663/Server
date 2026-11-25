@@ -8,6 +8,7 @@ import {Icon, type IconName} from '../icons'
 import {swarmGaugeItems, type SwarmMetrics} from '../swarm/gauges'
 import {Ring, levelColor} from '../ui'
 import {LiveStats} from './StatRegion'
+import {gaugeButtonLabel} from './gaugeLabel'
 
 export type GaugeModel = {
 	k: string
@@ -142,7 +143,7 @@ export function GaugeCluster({
 						type="button"
 						className="gauge press"
 						key={key}
-						aria-label={level === 'ok' ? `${g.k}, ${g.sub}` : `${g.k}, tap for details`}
+						aria-label={gaugeButtonLabel(g.k, g.reading?.text ?? g.sub, level)}
 						onClick={() => onOpen?.({title: g.k, kind: gaugeKind(g.k), gpuId: g.key})}
 					>
 						{face}
