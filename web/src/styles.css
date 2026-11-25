@@ -638,6 +638,14 @@ h1.title {
 	max-width: 100%;
 	min-width: 0;
 }
+/* On a narrow phone three gauges share the row: let the caption wrap ("6.2 GB of" / "16 GB") instead of cutting the unit off. */
+@media (max-width: 400px) {
+	.gauge .sub {
+		white-space: normal;
+		text-wrap: balance;
+		line-height: 1.25;
+	}
+}
 .gauge .sub.gauge-alert {
 	display: inline-flex;
 	align-items: center;
