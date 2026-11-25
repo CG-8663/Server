@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.83',
+		date: '2026-11-25',
+		title: 'Apps can sign in with My Own Data Center',
+		added: [
+			'An app can sign in with My Own Data Center. The app has to prove it started that sign-in, and a matching email does not take over an existing account.',
+		],
+	},
+	{
 		version: '0.9.82',
 		date: '2026-11-25',
 		title: 'Encrypted Drive backups, and sturdier guest enroll',
