@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.82',
+		date: '2026-11-25',
+		title: 'Encrypted Drive backups, and sturdier guest enroll',
+		added: [
+			'Backups can keep an encrypted copy in a Google Drive folder that this server creates. The connection can see only that folder.',
+		],
+		fixed: [
+			'An Alpine guest installs curl and runuser, and the connector starts only after enroll succeeds. Fedora sets the guest-agent permission with the real setsebool path.',
+		],
+	},
+	{
 		version: '0.9.81',
 		date: '2026-11-24',
 		title: 'More Linux guests, and readings from the machine',
