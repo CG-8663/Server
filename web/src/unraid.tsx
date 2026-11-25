@@ -357,7 +357,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 			active = false
 			clearTimeout(t)
 		}
-	}, [shareList, containerList, vmList, destination, portOverrides, shutdownRunningVms, count])
+	}, [shareList, containerList, vmList, destination, portOverrides, preserveSettings, shutdownRunningVms, count])
 
 	const totalLabel = useMemo(
 		() =>
