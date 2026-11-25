@@ -238,10 +238,10 @@ export function BackupsPage({onBack}: {onBack?: () => void}) {
 					</Group>
 
 					<Group title="What’s backed up" footer={s.include.apps && s.pauseApps ? 'Each app pauses for a moment while its files are saved, so databases are saved in a consistent state.' : undefined}>
-						<Row icon="apps" color="var(--accent)" label="Apps" sub="Every installed app’s data" trailing={<Switch label="Apps" on={s.include.apps} onChange={(v) => set({include: {...s.include, apps: v}})} />} />
-						{s.include.apps && <Row icon="stop" color="#8e8e93" label="Pause apps while saving" trailing={<Switch label="Pause apps while saving" on={s.pauseApps} onChange={(v) => set({pauseApps: v})} />} />}
-						<Row icon="settings" color="#8e8e93" label="Server settings" sub="Accounts, settings, certificates, VM settings" trailing={<Switch label="Server settings" on={s.include.settings} onChange={(v) => set({include: {...s.include, settings: v}})} />} />
-						<Row icon="machine" color="var(--orange, #f59e0b)" label="VM backups" sub="Home › Backups › Machines" trailing={<Switch label="VM backups" on={s.include.machineBackups} onChange={(v) => set({include: {...s.include, machineBackups: v}})} />} />
+						<Row icon="apps" color="var(--accent)" label="Apps" sub="Every installed app’s data" trailing={<Switch label="Apps" on={s.include.apps} disabled={save.isPending} onChange={(v) => set({include: {...s.include, apps: v}})} />} />
+						{s.include.apps && <Row icon="stop" color="#8e8e93" label="Pause apps while saving" trailing={<Switch label="Pause apps while saving" on={s.pauseApps} disabled={save.isPending} onChange={(v) => set({pauseApps: v})} />} />}
+						<Row icon="settings" color="#8e8e93" label="Server settings" sub="Accounts, settings, certificates, VM settings" trailing={<Switch label="Server settings" on={s.include.settings} disabled={save.isPending} onChange={(v) => set({include: {...s.include, settings: v}})} />} />
+						<Row icon="machine" color="var(--orange, #f59e0b)" label="VM backups" sub="Home › Backups › Machines" trailing={<Switch label="VM backups" on={s.include.machineBackups} disabled={save.isPending} onChange={(v) => set({include: {...s.include, machineBackups: v}})} />} />
 						{(s.customPaths ?? []).map((vp) => (
 							<div className="row static" key={vp}>
 								<span className="row-ico" style={{'--c': 'var(--teal)'} as CSSProperties}>
@@ -254,6 +254,7 @@ export function BackupsPage({onBack}: {onBack?: () => void}) {
 								<button
 									type="button"
 									className="btn ghost small"
+									disabled={save.isPending}
 									aria-label={`Remove ${vp}`}
 									onClick={() => set({customPaths: (s.customPaths ?? []).filter((p) => p !== vp)}, 'Folder removed')}
 								>
@@ -288,7 +289,7 @@ export function BackupsPage({onBack}: {onBack?: () => void}) {
 						</div>
 					</Group>
 
-					<ScheduleGroup s={s} onChange={set} />
+					<ScheduleGroup s={s} busy={save.isPending} onChange={set} />
 
 					<Group title="Computers" footer="Computers in Machines › Local swarm back up the folders you choose here, encrypted, then everything goes to the NAS. A computer that’s off at backup time catches up when it’s back.">
 						{(comps.data ?? []).filter((c) => !c.removed).map((c) => (
@@ -426,10 +427,11 @@ function StatusCard({s, busy, onRun}: {s: BackupStatus; busy: boolean; onRun: ()
 	)
 }
 
-function ScheduleGroup({s, onChange}: {s: BackupStatus; onChange: (input: Record<string, unknown>) => void}) {
+function ScheduleGroup({s, busy, onChange}: {s: BackupStatus; busy: boolean; onChange: (input: Record<string, unknown>) => void}) {
 	const sc = s.schedule
-	const put = (patch: Partial<Schedule>) => onChange({schedule: {...sc, ...patch}})
-	const keep = (patch: Partial<Keep>) => onChange({keep: {...s.keep, ...patch}})
+	// Each save sends the whole schedule or keep object. A second change before the first is saved would send the old values back.
+	const put = (patch: Partial<Schedule>) => !busy && onChange({schedule: {...sc, ...patch}})
+	const keep = (patch: Partial<Keep>) => !busy && onChange({keep: {...s.keep, ...patch}})
 	return (
 		<Group title="Schedule" footer={`Keeps the last ${s.keep.daily} days, ${s.keep.weekly} weeks and ${s.keep.monthly} months of backups. Older ones are removed from the server and the NAS.`}>
 			<div className="row static bk-sched">
@@ -449,7 +451,7 @@ function ScheduleGroup({s, onChange}: {s: BackupStatus; onChange: (input: Record
 					{sc.frequency === 'weekly' && (
 						<label>
 							<span>Day</span>
-							<select className="field" value={sc.weekday} onChange={(e) => put({weekday: Number(e.target.value)})}>
+							<select className="field" disabled={busy} value={sc.weekday} onChange={(e) => put({weekday: Number(e.target.value)})}>
 								{DAYS.map((d, i) => (
 									<option key={d} value={i}>
 										{d}
@@ -460,7 +462,7 @@ function ScheduleGroup({s, onChange}: {s: BackupStatus; onChange: (input: Record
 					)}
 					<label>
 						<span>Time{s.timeZone ? ` (${s.timeZone})` : ''}</span>
-						<select className="field" value={sc.hour} onChange={(e) => put({hour: Number(e.target.value)})}>
+						<select className="field" disabled={busy} value={sc.hour} onChange={(e) => put({hour: Number(e.target.value)})}>
 							{Array.from({length: 24}, (_, h) => (
 								<option key={h} value={h}>
 									{formatBackupHour(h)}
@@ -480,7 +482,7 @@ function ScheduleGroup({s, onChange}: {s: BackupStatus; onChange: (input: Record
 				).map(([k, label, opts]) => (
 					<label key={k}>
 						<span>{label}</span>
-						<select className="field" value={s.keep[k]} onChange={(e) => keep({[k]: Number(e.target.value)})}>
+						<select className="field" disabled={busy} value={s.keep[k]} onChange={(e) => keep({[k]: Number(e.target.value)})}>
 							{[...new Set([...opts, s.keep[k]])]
 								.sort((a, b) => a - b)
 								.map((n) => (
