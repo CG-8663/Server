@@ -710,12 +710,12 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 
 	// Express 4 does not turn a rejected async handler into a response, so a failed settings save
 	// has to be caught here or the process exits.
-	const catchSave = (handler) => (req, res) => {
+	const catchSave = (handler, message = 'Couldn’t save that') => (req, res) => {
 		Promise.resolve(handler(req, res)).catch((error) => {
 			console.error('[omarchy-server]', error)
 			if (res.headersSent) return
 			try {
-				res.status(500).json({error: {code: 'INTERNAL', message: 'Couldn’t save that'}})
+				res.status(500).json({error: {code: 'INTERNAL', message}})
 			} catch (sendFailure) {
 				console.error('[omarchy-server]', sendFailure)
 			}
@@ -1026,7 +1026,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 
 	// ---- Auth ----------------------------------------------------------------
 	const attempts = new Map()
-	api.post('/auth/login', async (req, res) => {
+	api.post('/auth/login', catchSave(async (req, res) => {
 		const backend = getClient()
 		if (!backend) return res.status(409).json({error: {code: 'NOT_CONFIGURED', message: 'Connect to your server first'}})
 		const ip = req.ip ?? 'unknown'
@@ -1097,9 +1097,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		setCookie(res, sid, SESSION_MAX_AGE_S)
 		shareAppSession(req, res, session)
 		res.json({ok: true, accountId: session.accountId, mode: session.mode})
-	})
+	}, 'Couldn’t sign you in. Try again.'))
 
-	api.post('/auth/logout', async (req, res) => {
+	api.post('/auth/logout', catchSave(async (req, res) => {
 		const session = store.getSession(req.sid)
 		if (session?.console) {
 			await getClient()
@@ -1115,7 +1115,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		setCookie(res, '', 0)
 		res.append('Set-Cookie', 'OMARCHY_APP_SESSION=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0')
 		res.json({ok: true})
-	})
+	}, 'Couldn’t sign you out. Try again.'))
 
 	// ---- Saved appearance (per My Own Data Center account, shared by all its phones) -------
 	const THEME_IDS = ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte', 'custom', 'omarchy']
