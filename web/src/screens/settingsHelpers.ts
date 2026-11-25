@@ -12,3 +12,14 @@ export function updateStartFailure(e: unknown): string | null {
 	if (err.code === 'UNREACHABLE' || err.code === 'TIMEOUT') return null
 	return typeof err.message === 'string' && err.message ? err.message : 'The update did not start'
 }
+
+// The browser a user-agent string names. Edge, Opera and the iPhone browsers also say "Chrome" or "Safari" in
+// their string, so they are tested first.
+export function browserName(ua: string): string {
+	if (/Edg(e|A|iOS)?\//.test(ua)) return 'Edge'
+	if (/OPR\/|OPiOS\/|Opera/.test(ua)) return 'Opera'
+	if (/Firefox\/|FxiOS\//.test(ua)) return 'Firefox'
+	if (/Chrome\/|CriOS\//.test(ua)) return 'Chrome'
+	if (/Safari\//.test(ua)) return 'Safari'
+	return 'Browser'
+}
