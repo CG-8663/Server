@@ -1670,7 +1670,7 @@ function DesktopSignIn({onDone}: {onDone: () => void}) {
 			<input type="password" autoComplete="current-password" placeholder="Your password" value={password} onChange={(e) => setPassword(e.target.value)} aria-label="Your password" />
 			{error && <span className="desk-signin-error">{error}</span>}
 			<button className="btn primary small" disabled={busy || !password}>
-				{busy ? <span className="spinner" /> : 'Sign in to the desktop'}
+				{busy ? <><span className="spinner" /><span className="sr-only">Sign in to the desktop</span></> : 'Sign in to the desktop'}
 			</button>
 		</form>
 	)

@@ -90,7 +90,7 @@ function Actions({onCancel, onSave, saving, disabled, label = 'Save', danger}: {
 				Cancel
 			</button>
 			<button type="button" className={`btn small ${danger ? 'danger solid' : 'primary'}`} onClick={onSave} disabled={disabled || saving}>
-				{saving ? <span className="spinner" /> : label}
+				{saving ? <><span className="spinner" /><span className="sr-only">{label}</span></> : label}
 			</button>
 		</div>
 	)
@@ -759,7 +759,7 @@ export function CloudInitPanel({d}: {d: MachineDetails}) {
 							action.mutate({path: 'machines.updateCloudInit', input: {id: d.id, username, hostname, sshKeys: keyList, ...(password ? {password} : {})}, done: 'Cloud-init updated for the next start'}, {onSuccess: () => setPassword('')})
 						}
 					>
-						{action.isPending ? <span className="spinner" /> : 'Regenerate image'}
+						{action.isPending ? <><span className="spinner" /><span className="sr-only">Regenerate image</span></> : 'Regenerate image'}
 					</button>
 				</div>
 			</div>

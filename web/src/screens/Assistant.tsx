@@ -639,7 +639,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 			)}
 			{loading && (
 				<div className="assistant-thread">
-					<span className="spinner" aria-label="Loading" />
+					<span className="spinner" role="status" aria-label="Loading" />
 				</div>
 			)}
 			{keys.isSuccess && !hasKeys && (

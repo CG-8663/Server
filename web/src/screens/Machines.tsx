@@ -434,7 +434,7 @@ export function Machines({onOpenApp, onTerminal, windowId, prefs, setPrefs}: {on
 				<Suspense
 					fallback={
 						<main className="screen center">
-							<span className="spinner" aria-label="Loading" />
+							<span className="spinner" role="status" aria-label="Loading" />
 						</main>
 					}
 				>
@@ -445,7 +445,7 @@ export function Machines({onOpenApp, onTerminal, windowId, prefs, setPrefs}: {on
 				<Suspense
 					fallback={
 						<main className="screen center">
-							<span className="spinner" aria-label="Loading" />
+							<span className="spinner" role="status" aria-label="Loading" />
 						</main>
 					}
 				>
