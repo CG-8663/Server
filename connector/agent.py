@@ -116,6 +116,25 @@ def _ssl_context(cafile=None):
     return ctx
 
 
+def _keepalive(sock):
+    """Probe a quiet connection every 10 s after 30 s, and drop it after three misses. A server that
+    disappears without closing it (power cut, a router that forgot the connection) is then noticed
+    in about a minute, not after the system's 15 minute retry limit."""
+    try:
+        if hasattr(sock, "ioctl") and hasattr(socket, "SIO_KEEPALIVE_VALS"):  # Windows
+            sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 30000, 10000))
+            return
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        idle = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
+        # TCP_USER_TIMEOUT (Linux) also covers data that is sent but never acknowledged.
+        user_timeout = getattr(socket, "TCP_USER_TIMEOUT", 18 if sys.platform.startswith("linux") else None)
+        for option, value in ((idle, 30), (getattr(socket, "TCP_KEEPINTVL", None), 10), (getattr(socket, "TCP_KEEPCNT", None), 3), (user_timeout, 60000)):
+            if option is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, option, value)
+    except (OSError, ValueError):
+        pass
+
+
 # ---------------------------------------------------------------------------------------------
 # A small WebSocket client (RFC 6455), enough for this: text and binary frames, ping/pong, close.
 class WS:
@@ -126,6 +145,7 @@ class WS:
         host, port = u.hostname, u.port or 443
         ctx = _ssl_context(cafile)
         raw = socket.create_connection((host, port), timeout=20)
+        _keepalive(raw)
         self.sock = ctx.wrap_socket(raw, server_hostname=host)
         key = base64.b64encode(os.urandom(16)).decode()
         path = (u.path or "/") + (f"?{u.query}" if u.query else "")
@@ -772,7 +792,8 @@ def cpu_percent():
     last, _cpu_last = _cpu_last, (idle, total)
     if not last or total == last[1]:
         return None
-    return round(100 * (1 - (idle - last[0]) / (total - last[1])), 1)
+    # iowait is part of idle and may go down between two samples, which would push the result past 100.
+    return round(max(0.0, min(100.0, 100 * (1 - (idle - last[0]) / (total - last[1])))), 1)
 
 
 def meminfo():
@@ -3749,7 +3770,8 @@ def files_transfer(args, copy, home=None, config=None, data=None):
         except OSError:
             pass
     if is_dir:
-        shutil.copytree(real, target, symlinks=True, ignore=lambda _dir, names: [n for n in names if n.startswith(".")])
+        # A move deletes the original afterwards, so it must copy the hidden files too.
+        shutil.copytree(real, target, symlinks=True, ignore=None if not copy else lambda _dir, names: [n for n in names if n.startswith(".")])
         if not copy:
             shutil.rmtree(real)
     else:
@@ -4045,6 +4067,19 @@ def _resolve_file_path(virtual, must_exist=True, home=None):
     return target, "/" + "/".join([root_name, *rel])
 
 
+def _link_itself(src, norm, home=None):
+    """A link is renamed or trashed as the link; _resolve_file_path hands back what it points to."""
+    parts = norm.strip("/").split("/")
+    root_real = _file_roots(home)[parts[0]]
+    parent = os.path.realpath(os.path.join(root_real, *parts[1:-1]))
+    leaf = os.path.join(parent, parts[-1])
+    if not os.path.islink(leaf):
+        return src
+    if not _is_inside(parent, root_real) or _is_private_connector_path(parent, home):
+        raise RuntimeError("That path is outside the allowed folders")
+    return leaf
+
+
 def swarm_files_list(args, home=None):
     virtual = str((args or {}).get("path") or "/")
     if virtual.strip("/") == "":
@@ -4092,6 +4127,7 @@ def files_rename(args, home=None):
     parent_virtual = "/" + "/".join(norm.strip("/").split("/")[:-1])
     if parent_virtual == "/":
         raise RuntimeError("Can’t rename a top-level folder")
+    src = _link_itself(src, norm, home)
     dst, dst_norm = _resolve_file_path(f"{parent_virtual}/{new_name}", must_exist=False, home=home)
     if os.path.exists(dst):
         raise RuntimeError("Something with that name already exists")
@@ -4103,6 +4139,7 @@ def files_trash(args, home=None):
     src, norm = _resolve_file_path(str((args or {}).get("path") or ""), must_exist=True, home=home)
     if len(norm.strip("/").split("/")) < 2:
         raise RuntimeError("Can’t trash a top-level folder")
+    src = _link_itself(src, norm, home)
     h = os.path.realpath(home or os.path.expanduser("~"))
     trash_files = os.path.join(h, ".local", "share", "Trash", "files")
     trash_info = os.path.join(h, ".local", "share", "Trash", "info")
@@ -4315,7 +4352,12 @@ class Connection:
         def report():
             last_hello = time.monotonic()
             while not stop.wait(REPORT_INTERVAL):
-                last_hello = self._report_step(live_sampler, last_hello, time.monotonic())
+                # One failed reading (a folder that vanished, a command that errored) must not end
+                # the reporting for as long as this connection lasts.
+                try:
+                    last_hello = self._report_step(live_sampler, last_hello, time.monotonic())
+                except Exception as e:  # noqa: BLE001
+                    log("report:", e)
 
         threading.Thread(target=report, daemon=True).start()
         try:

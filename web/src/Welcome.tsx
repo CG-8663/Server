@@ -3,11 +3,12 @@
 // skipped, and everything here can be changed later in Settings › Appearance.
 // Shown under the same condition the old layout question used, so a device that already set up
 // never sees it again.
-import {useState} from 'react'
+import {useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 
 import {openSettingsPage} from './desktop/settingsPage'
 import {useUser} from './data'
+import {useDialogFocus} from './focus'
 import {Icon, type IconName} from './icons'
 import {ScreenLayoutCards} from './LayoutPicker'
 import {detectDesktop, haptic, setLayoutPref, THEMES, type LayoutPref, type Prefs} from './ui'
@@ -27,6 +28,9 @@ const TOUR: {icon: IconName; title: string; body: string; owner?: boolean}[] = [
 
 export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; owner: boolean; prefs: Prefs; setPrefs: (p: Prefs) => void; onDone: () => void}) {
 	const [step, setStep] = useState<Step>('hello')
+	// Focus moves into the setup, Tab stays inside it, and focus goes back to where it was when it closes.
+	const dialogRef = useRef<HTMLDivElement>(null)
+	useDialogFocus(true, dialogRef)
 	const [detected] = useState(() => detectDesktop())
 	const [layout, setLayout] = useState<LayoutPref | null>(null)
 	const index = STEPS.indexOf(step)
@@ -56,7 +60,7 @@ export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; 
 	const first = name?.trim().split(/\s+/)[0]
 
 	return createPortal(
-		<div className="layout-chooser welcome" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
+		<div ref={dialogRef} className="layout-chooser welcome" role="dialog" aria-modal="true" aria-labelledby="welcome-title" tabIndex={-1}>
 			<div className="layout-card glass welcome-card">
 				<div className="welcome-top">
 					<span className="welcome-dots" aria-label={`Step ${index + 1} of ${STEPS.length}`}>
@@ -168,7 +172,7 @@ export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; 
 					) : (
 						<span />
 					)}
-					<button type="button" className="btn primary" onClick={next}>
+					<button type="button" className="btn primary" data-autofocus onClick={next}>
 						{index === 0 ? 'Get started' : index === STEPS.length - 1 ? 'Done' : 'Next'}
 					</button>
 				</div>

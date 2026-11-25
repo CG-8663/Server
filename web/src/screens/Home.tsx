@@ -13,6 +13,8 @@ import {gpuGaugeItems} from '../gauges'
 import {Icon, type IconName} from '../icons'
 import {guestAgent, isGuestAgent} from '../swarm/guestLink'
 import {useSwarm} from '../swarm/Swarm'
+import {useStatView} from '../fleet/StatRegion'
+import {formatTemp} from '../fleet/temperatures'
 import {GaugeCluster, type GaugeModel} from '../fleet/serverGauges'
 import {AppIcon, Ring, Row, Sheet, SheetHeader, appStatus, bytes, duration, greeting, haptic, levelColor, pct, today} from '../ui'
 
@@ -73,6 +75,7 @@ function machineIcon(member: FleetMember): IconName {
 }
 
 export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 'apps' | 'more' | 'store') => void; onTerminal?: () => void; onAssistant?: () => void}) {
+	const {tempUnit} = useStatView()
 	const user = useUser()
 	const apps = useApps()
 	const boot = useBootstrap()
@@ -165,13 +168,13 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 					{rings?.temp ? (
 						<span className="fact">
 							<Icon name="thermo" size={15} />
-							{Math.round(rings.temp.celsius)}°C
+							{formatTemp(rings.temp.celsius, tempUnit)}
 						</span>
 					) : (
 						temp.data?.temperature != null && (
 							<span className="fact">
 								<Icon name="thermo" size={15} />
-								{Math.round(temp.data.temperature)}°C
+								{formatTemp(temp.data.temperature, tempUnit)}
 							</span>
 						)
 					)}
@@ -212,7 +215,7 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 										<button key={pinKey(pin)} type="button" className="row" onClick={() => openPin(pin)}>
 											<span className="main">
 												<b>{member?.name ?? pin.id}</b>
-												<span>{pin.kind === 'vm' ? `Pinned virtual machine${host ? ` · ${host}` : ''}${member ? ` · ${member.online ? 'running' : 'stopped'}` : ''}` : 'Pinned machine'}</span>
+												<span>{pin.kind === 'vm' ? `Pinned virtual machine${host ? ` · ${host}` : ''}${member ? ` · ${member.online ? 'Online' : 'Offline'}` : ''}` : 'Pinned machine'}</span>
 											</span>
 											<span className="muted">Pinned</span>
 										</button>

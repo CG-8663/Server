@@ -15,6 +15,7 @@ import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 
 import {RpcError} from './rpc.mjs'
+import {stoppedMessage} from './exec-error.mjs'
 
 export const REPO_RAW = 'https://raw.githubusercontent.com/MyOwnDataCenter/server'
 export const INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/MyOwnDataCenter/server/main/install.sh | bash'
@@ -66,7 +67,7 @@ function execP(cmd, args, {cwd, env, timeout = 15 * 60_000} = {}) {
 	return new Promise((resolve, reject) => {
 		execFile(cmd, args, {cwd, env, timeout, maxBuffer: 32 * 1024 * 1024}, (error, stdout, stderr) => {
 			if (error) {
-				error.message = `${cmd} ${args[0] ?? ''}: ${(stderr || error.message).toString().trim().split('\n').slice(-3).join(' ')}`
+				error.message = stoppedMessage(`${cmd} ${args[0] ?? ''}`.trim(), error, timeout) ?? `${cmd} ${args[0] ?? ''}: ${(stderr || error.message).toString().trim().split('\n').slice(-3).join(' ')}`
 				return reject(error)
 			}
 			resolve(stdout.toString())
@@ -249,6 +250,10 @@ export function createUpdater({
 	async function check({force = false} = {}) {
 		await ready
 		if (!force && cache && Date.now() - cache.at < 10_000) return cache.value
+		// A remote without a raw URL is read from a fetched copy. Fetch it again for each check,
+		// or a version published after the first check is never seen.
+		originTree = null
+		originFetch = null
 		let pkg
 		try {
 			pkg = JSON.parse(await get('package.json'))

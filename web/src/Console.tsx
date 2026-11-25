@@ -15,12 +15,14 @@ import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, query, type Machine} from './api'
 import {HyprlandView, supportsWebCodecs, type HyprlandStatus, type HyprlandWindow} from './HyprlandView'
+import {isClipTarget, markClipTarget, unmarkClipTarget} from './clipPasteTarget'
 import {clipImage, clipText} from './clips'
 import {consoleShouldTakeFocus} from './consoleFocus'
 import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, consoleFailureMessage, effectiveConsoleScale, handleConsoleWheel, keysymOfChar, mouseButtonFromEvent, PASTE_STEP_MS, pasteKeySequence, pasteKeySteps, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, shouldSendConsoleInput, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
 import {overlayBackUsesHistory, popstateClosesOverlay} from './overlayHistory'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
+import {useMenuFocus} from './focus'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
 
 type RFBClass = typeof import('@novnc/novnc/lib/rfb.js').default
@@ -134,6 +136,9 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	const [fullscreen, setFullscreen] = useState(false)
 	const [barShown, setBarShown] = useState(true)
 	const [keysOpen, setKeysOpen] = useState(false)
+	const keysMenuRef = useRef<HTMLDivElement>(null)
+	// Focus moves into the Keys menu when it opens; arrows, Home and End move between items, Escape or Tab close it and focus goes back to the button.
+	useMenuFocus(keysOpen, keysMenuRef, () => setKeysOpen(false))
 	const [typing, setTyping] = useState<string | null>(null)
 	const [state, setState] = useState<State>('connecting')
 	const [message, setMessage] = useState('')
@@ -471,10 +476,20 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		remoteClip.current = clean
 		r.clipboardPasteFrom(clean)
 	}
+	// A clip pasted as text goes to the screen used last, not to every open one.
+	const clipTarget = useRef({})
 	useEffect(() => {
+		const me = clipTarget.current
+		markClipTarget(me)
+		// Listening on the document, because the screen's own element can be swapped out.
+		const mark = (e: Event) => {
+			if (e.target instanceof Node && rootRef.current?.contains(e.target)) markClipTarget(me)
+		}
+		document.addEventListener('focusin', mark)
+		document.addEventListener('pointerdown', mark, true)
 		const onClipPaste = (e: Event) => {
 			const text = (e as CustomEvent<{text?: string}>).detail?.text
-			if (!text) return
+			if (!text || !isClipTarget(me)) return
 			const r = rfbRef.current
 			if (!r) return
 			const clean = text.replace(/\r\n?/g, '\n')
@@ -482,7 +497,12 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			r.clipboardPasteFrom(clean)
 		}
 		window.addEventListener('omarchy-clip-paste', onClipPaste)
-		return () => window.removeEventListener('omarchy-clip-paste', onClipPaste)
+		return () => {
+			window.removeEventListener('omarchy-clip-paste', onClipPaste)
+			document.removeEventListener('focusin', mark)
+			document.removeEventListener('pointerdown', mark, true)
+			unmarkClipTarget(me)
+		}
 	}, [])
 	const syncClipboard = () => {
 		if (!window.isSecureContext || !navigator.clipboard?.readText || !document.hasFocus()) return
@@ -1274,7 +1294,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 					windows={hyprWindows}
 					onSelectTarget={(next) => setHyprTarget(next)}
 					onFallbackVnc={() => switchRenderMode('vnc')}
-					onClose={embedded ? undefined : onClose}
+					onClose={embedded ? undefined : back}
 				/>
 			</div>,
 			portalRoot,
@@ -1324,7 +1344,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 						</button>
 					)}
 					<div className="ct-menu-wrap">
-						<button className={`ct-btn${keysOpen ? ' on' : ''}`} disabled={!live} onClick={() => setKeysOpen((o) => !o)} aria-expanded={keysOpen}>
+						<button className={`ct-btn${keysOpen ? ' on' : ''}`} disabled={!live} onClick={() => setKeysOpen((o) => !o)} aria-haspopup="menu" aria-expanded={keysOpen}>
 							<Icon name="keyboard" size={17} />
 							Keys
 							<Icon name="chevron-down" size={13} />
@@ -1332,7 +1352,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 						{keysOpen && (
 							<>
 								<button className="ct-scrim" aria-label="Close" onClick={() => setKeysOpen(false)} />
-								<div className="ct-menu" role="menu">
+								<div ref={keysMenuRef} className="ct-menu" role="menu" aria-label="Keys" tabIndex={-1}>
 									{machine.id === 'desktop' &&
 										OMARCHY_COMBOS.map((k) => (
 											<button
@@ -1648,9 +1668,9 @@ function DesktopSignIn({onDone}: {onDone: () => void}) {
 				The Omarchy desktop is at its sign-in screen, so there’s nothing to show yet. Sign it in from here: this also clears a lockout after too many wrong passwords.
 			</span>
 			<input type="password" autoComplete="current-password" placeholder="Your password" value={password} onChange={(e) => setPassword(e.target.value)} aria-label="Your password" />
-			{error && <span className="desk-signin-error">{error}</span>}
+			{error && <span className="desk-signin-error" role="alert">{error}</span>}
 			<button className="btn primary small" disabled={busy || !password}>
-				{busy ? <span className="spinner" /> : 'Sign in to the desktop'}
+				{busy ? <><span className="spinner" /><span className="sr-only">Sign in to the desktop</span></> : 'Sign in to the desktop'}
 			</button>
 		</form>
 	)

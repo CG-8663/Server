@@ -4,6 +4,7 @@ import {useQuery} from '@tanstack/react-query'
 import {query, type UsbList} from './api'
 import {useAction, useUser} from './data'
 import {Icon} from './icons'
+import {errorText} from './queryNotice'
 import {haptic, useToast} from './ui'
 import {showUnplugged} from './usbPresent'
 
@@ -33,7 +34,13 @@ export function DevicesPanel({guest}: {guest: {kind: 'machine' | 'app'; id: stri
 				<Icon name="usb" size={16} /> Devices
 			</h4>
 			{installer.data?.needed && <p className="muted pf-note">The server helper needs an update to hand this stick to apps.</p>}
-			{!devices.length && <p className="muted pf-note">Plug a serial adapter or Zigbee stick into this server.</p>}
+			{list.error && !devices.length && (
+				<div className="error" role="alert">
+					<Icon name="alert" size={18} />
+					{errorText(list.error)}
+				</div>
+			)}
+			{list.isSuccess && !devices.length && <p className="muted pf-note">Plug a serial adapter or Zigbee stick into this server.</p>}
 			{devices.length > 0 && (
 				<div className="glass group">
 					{devices.map((d) => {

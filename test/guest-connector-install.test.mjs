@@ -140,7 +140,7 @@ test('haos and macos are unsupported and never ping the guest agent', async () =
 		assert.equal(agent.pingCount(), 0)
 		assert.deepEqual(virsh, [])
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -179,7 +179,7 @@ test('alpine cloud running with qemu-ga enrolls as the user then starts OpenRC',
 		assert.match(text, /\/etc\/init\.d\/omarchy-connector/)
 		assert.match(text, /rc-service omarchy-connector start/)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -198,7 +198,7 @@ test('a stopped machine is PRECONDITION_FAILED before ping', async () => {
 		)
 		assert.equal(agent.pingCount(), 0)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -222,7 +222,7 @@ test('a running machine whose guest agent does not answer needs-agent', async ()
 		assert.equal(out.os, 'linux')
 		assert.equal(out.taskId, undefined)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -276,7 +276,7 @@ test('linux cloud running with qemu-ga starts a connector task through runuser',
 		assert.equal(done?.type, 'connector')
 		assert.equal(done.status, 'ok')
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -312,7 +312,7 @@ test('installConnector skips the guest’s own LAN address and uses the passt ga
 		assert.equal(enroll.args[5].includes('192.168.84.81'), false)
 		assert.equal(enroll.args[5].includes('100.64.1.2'), false)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -339,7 +339,7 @@ test('windows guests do not run the connector', async () => {
 		assert.equal(agent.execs.length, 0)
 		assert.equal(JSON.stringify(out).includes('powershell'), false)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -379,7 +379,7 @@ test('guest-exec exit 4 does not start enroll and does not return needs-password
 		assert.equal(tasks.some((row) => row.type === 'connector'), false)
 		assert.equal(JSON.stringify(execs).includes(secret), false)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -411,7 +411,7 @@ test('sudoPassword is dropped and never written to tasks or machines.json', asyn
 		const saved = await readFile(join(dataDir, 'machines', 'machines.json'), 'utf8')
 		assert.equal(saved.includes(secret), false)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -436,7 +436,7 @@ test('a member cannot call machines.installConnector', async () => {
 	})
 	after(async () => {
 		await d.close()
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	})
 	const login = async (userId) => {
 		const r = await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId, password: 'correct horse', client: {id: 't'}})})
@@ -593,7 +593,7 @@ test('creating testos-amd64 starts a connector install after the machine boots',
 		assert.match(run.userData, /qemu-guest-agent/)
 		assert.match(run.userData, /python3/)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -638,7 +638,7 @@ test('creating testos-amd64 pairs after the guest agent misses the first pings',
 		assert.equal(execs.length >= 1, true)
 		assert.equal(execs.some((cmd) => cmd.path === 'runuser' && cmd.args[1] === 'chris'), true)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -684,7 +684,7 @@ test('creating testos-amd64 still succeeds when the guest agent never answers', 
 		const failed = tasks.find((row) => row.machineId === id && row.type === 'connector')
 		assert.equal(failed?.status, 'error')
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -709,7 +709,7 @@ test('creating testos-amd64 shows a running connector task while the guest agent
 		assert.equal(trying?.type, 'connector')
 		assert.equal(trying?.status, 'running')
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -753,7 +753,7 @@ test('creating testos-amd64 records a connector error when install fails', async
 		const running = (await call('machines.list')).find((x) => x.id === id)
 		assert.equal(running.state, 'running')
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -801,7 +801,7 @@ test('creating testos-amd64 waits until the guest account exists', async () => {
 		assert.equal(pairCalls.length, 1)
 		assert.equal(pairCalls[0].machineId, id)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -835,7 +835,7 @@ test('creating a guest that already enrolled does not mint another token', async
 		const tasks = await call('machines.tasks')
 		assert.equal(tasks.some((row) => row.machineId === id && row.type === 'connector'), false)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -881,7 +881,7 @@ test('creating an alpine guest starts a connector install through OpenRC', async
 		assert.doesNotMatch(run.userData, /loginctl/)
 		assert.doesNotMatch(run.userData, /systemctl/)
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 	}
 })
 
@@ -925,7 +925,7 @@ test('a Windows create does not install the connector', async () => {
 		assert.doesNotMatch(run.unattend, /SkipCertificateCheck/)
 		assert.ok(!run.unattend.includes('hunter2'), 'password is not plaintext in the answer file')
 	} finally {
-		await rm(root, {recursive: true, force: true})
+		await rm(root, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 		await rm(rootHome, {recursive: true, force: true})
 	}
 })

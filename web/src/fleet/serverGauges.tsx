@@ -1,5 +1,6 @@
 import type {ReactNode} from 'react'
 
+import type {ThermalSensor} from '../api'
 import {useBattery, useCpu, useDisk, useGpus, useMemory, useTemp, useUptime} from '../data'
 import {BatteryRing} from './BatteryRing'
 import type {FleetRings, GaugeKind} from './aggregate'
@@ -7,6 +8,7 @@ import {Icon, type IconName} from '../icons'
 import {swarmGaugeItems, type SwarmMetrics} from '../swarm/gauges'
 import {Ring, levelColor} from '../ui'
 import {LiveStats} from './StatRegion'
+import {gaugeButtonLabel} from './gaugeLabel'
 
 export type GaugeModel = {
 	k: string
@@ -34,7 +36,7 @@ function gaugeKind(name: string): GaugeKind {
 	return 'CPU'
 }
 
-export function useServerGaugeMetrics(): {metrics: SwarmMetrics; temp: number | null; uptime: number | undefined} {
+export function useServerGaugeMetrics(): {metrics: SwarmMetrics; temp: number | null; sensors: ThermalSensor[] | null; uptime: number | undefined} {
 	const cpu = useCpu()
 	const mem = useMemory()
 	const disk = useDisk()
@@ -49,18 +51,19 @@ export function useServerGaugeMetrics(): {metrics: SwarmMetrics; temp: number | 
 			mem: mem.data ? {total: mem.data.size, used: mem.data.totalUsed} : null,
 			swap: mem.data?.swap && mem.data.swap.total > 0 ? mem.data.swap : null,
 			disks: disk.data ? [{mount: '/', total: disk.data.totalUsed + disk.data.available, used: disk.data.totalUsed}] : [],
-			gpus: (gpus.data?.gpus ?? []).map((g) => ({id: g.id, index: g.index, name: g.name, used: g.used})),
+			gpus: (gpus.data?.gpus ?? []).map((g) => ({id: g.id, index: g.index, name: g.name, used: g.used, temp: g.temperature})),
 			batteries: battery.data?.batteries ?? [],
 		},
 		temp: temp.data?.temperature ?? null,
+		sensors: temp.data?.sensors ?? null,
 		uptime: uptime.data,
 	}
 }
 
 /** This server's readings on its card. The account's stat view decides the drawing. */
 export function ServerSpecs() {
-	const {metrics, temp} = useServerGaugeMetrics()
-	return <LiveStats metrics={metrics} temp={temp} />
+	const {metrics, temp, sensors} = useServerGaugeMetrics()
+	return <LiveStats metrics={metrics} temp={temp} sensors={sensors} />
 }
 
 function gaugeFace(g: GaugeModel): ReactNode {
@@ -140,7 +143,7 @@ export function GaugeCluster({
 						type="button"
 						className="gauge press"
 						key={key}
-						aria-label={level === 'ok' ? `${g.k}, ${g.sub}` : `${g.k}, tap for details`}
+						aria-label={gaugeButtonLabel(g.k, g.reading?.text ?? g.sub, level)}
 						onClick={() => onOpen?.({title: g.k, kind: gaugeKind(g.k), gpuId: g.key})}
 					>
 						{face}
@@ -151,7 +154,7 @@ export function GaugeCluster({
 	)
 }
 
-export function ServerRings() {
-	const {metrics, temp} = useServerGaugeMetrics()
-	return <LiveStats metrics={metrics} temp={temp} />
+export function ServerRings({name}: {name?: string} = {}) {
+	const {metrics, temp, sensors} = useServerGaugeMetrics()
+	return <LiveStats metrics={metrics} temp={temp} sensors={sensors} machineName={name} />
 }

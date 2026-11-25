@@ -35,8 +35,7 @@ import {
 	type ManagerPower,
 	type MotionPhase,
 } from './machineManagerLogic'
-import {StatRegion} from './StatRegion'
-import {statReadings, type StatReading} from './statView'
+import {LiveStats} from './StatRegion'
 import {useServerGaugeMetrics} from './serverGauges'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
@@ -218,6 +217,33 @@ function ActionRow({
 	)
 }
 
+function LineButton({
+	name,
+	icon,
+	iconBg,
+	reach,
+	selected,
+	onSelect,
+}: {
+	name: string
+	icon: IconName
+	iconBg: string
+	reach: {kind: 'running' | 'stopped' | 'busy' | 'error' | 'update'; label: string}
+	selected: boolean
+	onSelect: () => void
+}) {
+	return (
+		<button type="button" className={selected ? 'mm-line on' : 'mm-line'} aria-current={selected ? 'true' : undefined} onClick={() => (haptic(6), onSelect())}>
+			<span className="vm-os mm-ico" style={{background: iconBg}}>
+				<Icon name={icon} size={16} />
+			</span>
+			<span className="mm-name">{name}</span>
+			<StatusPill {...reach} />
+			<Icon name="chevron" size={16} className="mm-chev" />
+		</button>
+	)
+}
+
 function RowFrame({
 	open,
 	name,
@@ -255,10 +281,7 @@ function RowFrame({
 	)
 }
 
-function Readings({readings}: {readings: readonly StatReading[]}) {
-	if (!readings.length) return <p className="quiet mm-noread">No readings yet.</p>
-	return <StatRegion readings={readings} />
-}
+const noReadings = <p className="quiet mm-noread">No readings yet.</p>
 
 function ServerRow({
 	member,
@@ -266,6 +289,8 @@ function ServerRow({
 	owner,
 	serverTerminal,
 	open,
+	lines,
+	selected,
 	onToggle,
 	onManage,
 	onTerminal,
@@ -276,18 +301,20 @@ function ServerRow({
 	owner: boolean
 	serverTerminal: boolean
 	open: boolean
+	lines: boolean
+	selected: boolean
 	onToggle: () => void
 	onManage: () => void
 	onTerminal: () => void
 	onDesktop: () => void
 }) {
-	const {metrics, temp, uptime} = useServerGaugeMetrics()
-	const readings = statReadings({gauges: swarmGaugeItems(metrics), temp, diskSizeGb: null})
+	const {metrics, temp, sensors, uptime} = useServerGaugeMetrics()
+	if (lines) return <LineButton name={member.name} icon="server" iconBg="linear-gradient(140deg,#2b2b2b,#0b0b0b)" reach={reachLabel('server', member.online)} selected={selected} onSelect={onManage} />
 	const seen = seenFact(member.online, uptime, null, Date.now())
 	return (
 		<RowFrame open={open} name={member.name} icon="server" iconBg="linear-gradient(140deg,#2b2b2b,#0b0b0b)" reach={reachLabel('server', member.online)} health={healthPill(health)} onToggle={onToggle}>
 			<div className="mm-panel">
-				<Readings readings={readings} />
+				<LiveStats metrics={metrics} temp={temp} sensors={sensors} machineName={member.name} empty={noReadings} />
 				<ActionRow
 					kind="server"
 					access={managerAccess({kind: 'server', linkOnline: member.online, owner, serverTerminal, terminalGranted: false, desktopGranted: false, desktopOk: false, guestRunning: false})}
@@ -315,6 +342,8 @@ function ComputerRow({
 	agent,
 	health,
 	open,
+	lines,
+	selected,
 	onToggle,
 	onManage,
 	onTerminal,
@@ -324,6 +353,8 @@ function ComputerRow({
 	agent: Agent
 	health: ManagerHealth
 	open: boolean
+	lines: boolean
+	selected: boolean
 	onToggle: () => void
 	onManage: () => void
 	onTerminal: () => void
@@ -332,7 +363,7 @@ function ComputerRow({
 	const confirm = useConfirm()
 	const act = useSwarmAction()
 	const metrics = agent.metrics
-	const readings = statReadings({gauges: swarmGaugeItems(metrics), temp: metrics?.temp ?? null, diskSizeGb: null, posture: agent.info?.posture})
+	if (lines) return <LineButton name={member.name} icon="machine" iconBg="linear-gradient(140deg,#3a3a3c,#1c1c1e)" reach={reachLabel('computer', agent.online)} selected={selected} onSelect={onManage} />
 	const seen = seenFact(agent.online, metrics?.uptime, agent.lastSeen, Date.now())
 	const powers = managerPower({kind: 'computer', online: agent.online, manage: agentMay(agent, 'manage')})
 	const run = (id: ManagerPower) => {
@@ -347,7 +378,7 @@ function ComputerRow({
 	return (
 		<RowFrame open={open} name={member.name} icon="machine" iconBg="linear-gradient(140deg,#3a3a3c,#1c1c1e)" reach={reachLabel('computer', agent.online)} health={healthPill(health)} onToggle={onToggle}>
 			<div className="mm-panel">
-				<Readings readings={readings} />
+				<LiveStats metrics={metrics} temp={metrics?.temp ?? null} machineName={member.name} posture={agent.info?.posture} empty={noReadings} />
 				<ActionRow
 					kind="computer"
 					access={managerAccess({
@@ -384,6 +415,8 @@ function GuestRow({
 	agents,
 	health,
 	open,
+	lines,
+	selected,
 	onToggle,
 	onManage,
 	onTerminal,
@@ -393,6 +426,8 @@ function GuestRow({
 	agents: readonly Agent[]
 	health: ManagerHealth
 	open: boolean
+	lines: boolean
+	selected: boolean
 	onToggle: () => void
 	onManage: () => void
 	onTerminal: (agent: Agent) => void
@@ -403,9 +438,9 @@ function GuestRow({
 	const statsQ = useStats(machine.id, open && machine.state === 'running' && !connectorOnline)
 	const host = !connectorOnline && machine.state === 'running' ? hostGuestMetrics(statsQ.data?.last, machine.memoryMb ?? (machine.memoryGb ? machine.memoryGb * 1024 : 0), machine.cores ?? 0) : null
 	const metrics = connectorOnline ? agent?.metrics : host
-	const readings = statReadings({gauges: swarmGaugeItems(metrics), temp: connectorOnline ? (agent?.metrics?.temp ?? null) : null, diskSizeGb: machine.diskSizeGb ?? null})
-	const seen = seenFact(machine.state === 'running', connectorOnline ? agent?.metrics?.uptime : undefined, agent?.lastSeen, Date.now())
 	const power = usePowerActions({id: machine.id, name: machine.name, state: machine.state, protected: machine.protected})!
+	if (lines) return <LineButton name={machine.name} icon="vm" iconBg="linear-gradient(140deg,#3a3a3c,#1c1c1e)" reach={reachLabel('guest', machine.state === 'running', machine.state)} selected={selected} onSelect={onManage} />
+	const seen = seenFact(machine.state === 'running', connectorOnline ? agent?.metrics?.uptime : undefined, agent?.lastSeen, Date.now())
 	const busy = managerBusy('guest', machine.state, !!(power.pending || machine.pending))
 	const powers = managerPower({kind: 'guest', online: machine.state === 'running', manage: false, state: machine.state, pending: busy})
 	const run = (id: ManagerPower) => {
@@ -419,7 +454,7 @@ function GuestRow({
 	return (
 		<RowFrame open={open} name={machine.name} icon="vm" iconBg="linear-gradient(140deg,#3a3a3c,#1c1c1e)" reach={reachLabel('guest', machine.state === 'running', machine.state)} health={healthPill(health)} onToggle={onToggle}>
 			<div className="mm-panel">
-				<Readings readings={readings} />
+				<LiveStats metrics={metrics} temp={connectorOnline ? (agent?.metrics?.temp ?? null) : null} diskSizeGb={machine.diskSizeGb ?? null} machineName={machine.name} empty={noReadings} />
 				<ActionRow
 					kind="guest"
 					access={managerAccess({
@@ -468,6 +503,12 @@ export function MachineManager({
 	onGuestDesktop,
 	onAddComputer,
 	onCreateVm,
+	lines = false,
+	selectedKey = null,
+	queryValue,
+	onQueryText,
+	filterValue,
+	onFilter,
 }: {
 	owner: boolean
 	serverTerminal: boolean
@@ -485,9 +526,20 @@ export function MachineManager({
 	onGuestDesktop: (id: string) => void
 	onAddComputer: () => void
 	onCreateVm: () => void
+	/** One line per machine, for the desktop Compact split. */
+	lines?: boolean
+	selectedKey?: string | null
+	queryValue?: string
+	onQueryText?: (value: string) => void
+	filterValue?: ManagerFilter
+	onFilter?: (value: ManagerFilter) => void
 }) {
-	const [queryText, setQueryText] = useState('')
-	const [filter, setFilter] = useState<ManagerFilter>('all')
+	const [ownQuery, setOwnQuery] = useState('')
+	const [ownFilter, setOwnFilter] = useState<ManagerFilter>('all')
+	const queryText = queryValue ?? ownQuery
+	const setQueryText = onQueryText ?? setOwnQuery
+	const filter = filterValue ?? ownFilter
+	const setFilter = onFilter ?? setOwnFilter
 	const [tip, setTip] = useState(() => {
 		try {
 			return localStorage.getItem(FILTER_TIP_KEY) !== '1'
@@ -584,52 +636,65 @@ export function MachineManager({
 		haptic(6)
 		setOpenId((cur) => (cur === id ? null : id))
 	}
-	return (
-		<div className="mm">
-			<div className="mm-top">
-				<h1 className="title">Machines</h1>
-				<div className="mm-add" ref={addRef}>
+	const statusLine = <p className="subtitle">{loading ? 'Loading…' : problem ? 'Can’t reach your server' : `${online} of ${total} online`}</p>
+	const addControl = (
+		<div className="mm-add" ref={addRef}>
+			<button
+				type="button"
+				className="btn primary small mm-add-btn"
+				aria-label={owner ? 'Add a machine' : 'New virtual machine'}
+				aria-haspopup={owner ? 'menu' : undefined}
+				aria-expanded={owner ? addOpen : undefined}
+				onClick={() => {
+					haptic(6)
+					if (!owner) onCreateVm()
+					else setAddOpen((v) => !v)
+				}}
+			>
+				<Icon name="plus" size={18} stroke={2.4} />
+			</button>
+			{owner && addOpen && (
+				<div className="mm-menu glass" role="menu" aria-label="Add">
 					<button
 						type="button"
-						className="btn primary small mm-add-btn"
-						aria-label={owner ? 'Add a machine' : 'New virtual machine'}
-						aria-haspopup={owner ? 'menu' : undefined}
-						aria-expanded={owner ? addOpen : undefined}
+						role="menuitem"
 						onClick={() => {
-							haptic(6)
-							if (!owner) onCreateVm()
-							else setAddOpen((v) => !v)
+							setAddOpen(false)
+							onAddComputer()
 						}}
 					>
-						<Icon name="plus" size={18} stroke={2.4} />
+						Machine
 					</button>
-					{owner && addOpen && (
-						<div className="mm-menu glass" role="menu" aria-label="Add">
-							<button
-								type="button"
-								role="menuitem"
-								onClick={() => {
-									setAddOpen(false)
-									onAddComputer()
-								}}
-							>
-								Machine
-							</button>
-							<button
-								type="button"
-								role="menuitem"
-								onClick={() => {
-									setAddOpen(false)
-									onCreateVm()
-								}}
-							>
-								Virtual Machine
-							</button>
-						</div>
-					)}
+					<button
+						type="button"
+						role="menuitem"
+						onClick={() => {
+							setAddOpen(false)
+							onCreateVm()
+						}}
+					>
+						Virtual Machine
+					</button>
 				</div>
-			</div>
-			<p className="subtitle">{loading ? 'Loading…' : problem ? 'Can’t reach your server' : `${online} of ${total} online`}</p>
+			)}
+		</div>
+	)
+	return (
+		<div className={lines ? 'mm is-lines' : 'mm'}>
+			{lines ? (
+				<div className="mm-top">
+					{statusLine}
+					{addControl}
+				</div>
+			) : (
+				<>
+					<div className="mm-top">
+						<h1 className="title">Machines</h1>
+						{addControl}
+					</div>
+					{statusLine}
+				</>
+			)}
 			<div className="mm-tools">
 				<label className="search glass mm-search">
 					<Icon name="search" size={16} />
@@ -643,7 +708,7 @@ export function MachineManager({
 				<Segmented
 					value={filterSlot(filter)}
 					options={FILTER_SLOTS.map((slot) => ({id: slot, label: filterLabel(filter, slot)}))}
-					onChange={(slot) => setFilter((cur) => nextFilter(cur, slot))}
+					onChange={(slot) => setFilter(nextFilter(filter, slot))}
 					label="Which machines"
 				/>
 			</div>
@@ -668,11 +733,12 @@ export function MachineManager({
 				</div>
 			)}
 			{loading && <div className="skeleton" style={{height: 64, borderRadius: 16, marginTop: 12}} />}
-			<div className="mm-list">
+			<div className="mm-list" role={lines ? 'list' : undefined} aria-label={lines ? 'Machines' : undefined}>
 				{slots.map((slot) => {
 					const member = byId.get(slot.id)
 					if (!member) return null
-					const open = slot.phase === 'stay' && openId === member.id
+					const open = !lines && slot.phase === 'stay' && openId === member.id
+					const selected = selectedKey === `${member.kind}:${member.id}`
 					if (member.kind === 'server')
 						return (
 							<MotionSlot key={slot.id} phase={slot.phase}>
@@ -682,6 +748,8 @@ export function MachineManager({
 									owner={owner}
 									serverTerminal={serverTerminal}
 									open={open}
+									lines={lines}
+									selected={selected}
 									onToggle={() => toggle(member.id)}
 									onManage={() => onManage('server', member.id)}
 									onTerminal={onServerTerminal}
@@ -699,6 +767,8 @@ export function MachineManager({
 									agent={agent}
 									health={member.health}
 									open={open}
+									lines={lines}
+									selected={selected}
 									onToggle={() => toggle(member.id)}
 									onManage={() => onManage('computer', member.id)}
 									onTerminal={() => setTerm({id: agent.id, name: agent.name})}
@@ -716,6 +786,8 @@ export function MachineManager({
 								agents={agents}
 								health={member.health}
 								open={open}
+								lines={lines}
+								selected={selected}
 								onToggle={() => toggle(member.id)}
 								onManage={() => onManage('guest', member.id)}
 								onTerminal={(agent) => setTerm({id: agent.id, name: machine.name})}

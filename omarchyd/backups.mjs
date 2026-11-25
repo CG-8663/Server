@@ -34,6 +34,7 @@ import {
 	pkceChallenge,
 } from './gdrive.mjs'
 import {RpcError} from './rpc.mjs'
+import {stoppedMessage} from './exec-error.mjs'
 
 export const RESTIC_VERSION = '0.18.1'
 // From restic's SHA256SUMS for 0.18.1 (https://github.com/restic/restic/releases/tag/v0.18.1).
@@ -158,7 +159,8 @@ export function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 
 		let out = ''
 		let err = ''
 		let buf = ''
-		const timer = setTimeout(() => child.kill('SIGTERM'), timeout)
+		let timedOut = false
+		const timer = setTimeout(() => ((timedOut = true), child.kill('SIGTERM')), timeout)
 		child.stdout.on('data', (s) => {
 			out += s
 			if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024)
@@ -174,7 +176,7 @@ export function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 
 		child.on('close', (code) => {
 			clearTimeout(timer)
 			if (code === 0) return resolve({stdout: out, stderr: err})
-			const e = new Error(`${cmd}: ${(err || out).trim().split('\n').slice(-3).join(' ') || `exit ${code}`}`)
+			const e = new Error(timedOut ? stoppedMessage(cmd, {killed: true}, timeout) : `${cmd}: ${(err || out).trim().split('\n').slice(-3).join(' ') || `exit ${code}`}`)
 			e.code = code
 			e.stdout = out
 			e.stderr = err
@@ -517,7 +519,13 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	async function localFiles(root) {
 		const out = new Map()
 		async function walk(d) {
-			for (const e of await readdir(d, {withFileTypes: true}).catch(() => [])) {
+			// A folder that is gone is empty. One that cannot be read is not: treating it as empty would
+			// make the NAS copy delete everything it holds for that folder.
+			const entries = await readdir(d, {withFileTypes: true}).catch((error) => {
+				if (error?.code === 'ENOENT') return []
+				throw new RpcError('PRECONDITION_FAILED', `Couldn’t read the backup folder ${relative(root, d) || '.'}, so the NAS copy wasn’t changed (${error?.code ?? error?.message}).`)
+			})
+			for (const e of entries) {
 				const p = join(d, e.name)
 				if (e.isDirectory()) await walk(p)
 				else if (e.isFile() && !e.name.endsWith('.tmp')) {
@@ -638,11 +646,17 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	async function runBackup(reason = 'manual') {
 		await ready
 		if (job) throw new RpcError('CONFLICT', 'A backup is already running')
-		if (!hasTarget() || !(await hasKey())) throw new RpcError('PRECONDITION_FAILED', 'Set up backups first')
-		const entry = {id: randomBytes(4).toString('hex'), reason, startedAt: now(), endedAt: null, ok: false, error: null, items: [], added: 0, nas: null, gdrive: null}
-		history.unshift(entry)
-		await saveHistory()
-		job = {step: 'Getting ready', progress: 0, startedAt: entry.startedAt}
+		// Claim it before the first await, so a second request in the meantime is refused too.
+		job = {step: 'Getting ready', progress: 0, startedAt: now()}
+		const entry = {id: randomBytes(4).toString('hex'), reason, startedAt: job.startedAt, endedAt: null, ok: false, error: null, items: [], added: 0, nas: null, gdrive: null}
+		try {
+			if (!hasTarget() || !(await hasKey())) throw new RpcError('PRECONDITION_FAILED', 'Set up backups first')
+			history.unshift(entry)
+			await saveHistory()
+		} catch (error) {
+			job = null
+			throw error
+		}
 		const done = (async () => {
 			try {
 				const direct = isDirectDrive()
@@ -1062,12 +1076,18 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		if (!a.on) throw new RpcError('FORBIDDEN', `Backups aren’t switched on for ${a.name}`)
 		if (!a.online) throw new RpcError('PRECONDITION_FAILED', `${a.name} is offline right now`)
 		const entry = {id: randomBytes(4).toString('hex'), computer: a.id, name: a.name, reason, startedAt: now(), endedAt: null, ok: false, error: null, items: [], added: 0, nas: null}
-		history.unshift(entry)
-		c.lastAttemptAt = now()
-		config.computers = {...(config.computers ?? {}), [a.id]: c}
-		await saveConfig()
-		await saveHistory()
+		// Claim it before the first await, so a second request in the meantime is refused too.
 		computerJobs.set(a.id, {step: 'Getting ready', progress: 0, startedAt: entry.startedAt})
+		try {
+			history.unshift(entry)
+			c.lastAttemptAt = now()
+			config.computers = {...(config.computers ?? {}), [a.id]: c}
+			await saveConfig()
+			await saveHistory()
+		} catch (error) {
+			computerJobs.delete(a.id)
+			throw error
+		}
 		const poll = pollComputerProgress(a.id, (job, p) => {
 			computerJobs.set(a.id, {...job, step: p.step || 'Backing up', progress: 0.85 * p.percent})
 		})
@@ -1626,12 +1646,21 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		const snapshotId = String(input.snapshotId ?? '')
 		const appId = String(input.appId ?? '')
 		if (!SNAPSHOT.test(snapshotId) || !APP_ID.test(appId)) throw new RpcError('BAD_REQUEST', 'Bad restore')
-		const snap = (await snapshots()).find((s) => s.id === snapshotId || s.shortId === snapshotId)
-		if (!snap || !snap.tags.includes(`app:${appId}`)) throw new RpcError('NOT_FOUND', 'That backup doesn’t have this app')
-		const app = (await apps.backupTargets()).find((a) => a.id === appId)
-		if (!app) throw new RpcError('NOT_FOUND', 'Install the app first, then restore its data')
-		if (!snap.paths.includes(app.dir)) throw new RpcError('PRECONDITION_FAILED', 'That backup was made for a different folder')
-		job = {step: `Restoring ${app.name}`, progress: 0, startedAt: now()}
+		// Claim it before the first await, so a backup or a second restore asked for in the meantime is refused.
+		job = {step: 'Getting ready', progress: 0, startedAt: now()}
+		let snap
+		let app
+		try {
+			snap = (await snapshots()).find((s) => s.id === snapshotId || s.shortId === snapshotId)
+			if (!snap || !snap.tags.includes(`app:${appId}`)) throw new RpcError('NOT_FOUND', 'That backup doesn’t have this app')
+			app = (await apps.backupTargets()).find((a) => a.id === appId)
+			if (!app) throw new RpcError('NOT_FOUND', 'Install the app first, then restore its data')
+			if (!snap.paths.includes(app.dir)) throw new RpcError('PRECONDITION_FAILED', 'That backup was made for a different folder')
+		} catch (error) {
+			job = null
+			throw error
+		}
+		job = {...job, step: `Restoring ${app.name}`}
 		const stampNow = now()
 		const aside = `${app.dir}.before-restore-${stampNow}`
 		// Restored beside the app first (restic recreates the whole path under the target), then swapped in.
