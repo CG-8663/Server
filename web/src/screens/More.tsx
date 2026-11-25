@@ -168,7 +168,7 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 		onSignedOut()
 	}
 	const signOut = async () => {
-		const ok = await confirm({title: 'Sign out?', body: 'This phone is signed out and removed from your server’s devices.', confirm: 'Sign out', icon: 'signout'})
+		const ok = await confirm({title: 'Sign out?', body: 'This device is signed out and removed from your server’s devices.', confirm: 'Sign out', icon: 'signout'})
 		if (!ok) return
 		await finishSignOut()
 	}
