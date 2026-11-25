@@ -10705,3 +10705,10 @@ button.mm-squares {
 	background: #ef4444;
 	color: #fff;
 }
+.connect-card.critical {
+	border: 1px solid color-mix(in srgb, var(--red) 55%, transparent);
+	background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+.connect-card.critical > svg {
+	color: var(--red);
+}

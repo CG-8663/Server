@@ -21,6 +21,7 @@ import {dualProtocolServer, fromLocalProxy, wantsUpgrade} from '../omarchyd/tls.
 import {linkProxy} from '../omarchyd/proxy-link.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
+import {createRemoteGate} from './remote-gate.mjs'
 
 export const VERSION = '0.9.76'
 const COOKIE = 'omarchy_server_sid'
@@ -307,6 +308,9 @@ export const ALLOWED = {
 	'connect.tunnel.disable': 'mutation',
 	'connect.tunnel.check': 'mutation',
 	'connect.tunnel.install': 'mutation',
+	'connect.remote.disable': 'mutation',
+	'connect.remote.allow': 'mutation',
+	'connect.remote.check': 'mutation',
 	// This server as an OpenID Connect provider. Owner only, checked in omarchyd.
 	'oidc.status': 'query',
 	'oidc.setConfig': 'mutation',
@@ -397,8 +401,16 @@ export function stripForwarding(req) {
 	}
 	return dropped
 }
-// Came through MODC Connect's Cloudflare tunnel (cloudflared on this machine adds CF-Connecting-IP).
-export const viaTunnel = (req) => fromLocalProxy(req) && !!req.headers['cf-connecting-ip']
+// Came from outside through MODC Connect: on the remote-ingress listener (always, whatever the headers),
+// or from a proxy on this machine that says it is Cloudflare. Forwarding headers from anywhere else
+// were already removed (stripForwarding), so nothing on the network can claim this.
+export const viaTunnel = (req) => req.socket?.__modcRemote === true || (fromLocalProxy(req) && !!(req.headers['cf-connecting-ip'] || req.headers['cf-access-jwt-assertion'] || req.headers['cf-ray']))
+// A cookie header without the MODC session cookie.
+const withoutSessionCookie = (header) =>
+	String(header ?? '')
+		.split(';')
+		.filter((c) => c.split('=')[0].trim() !== 'omarchy_server_sid')
+		.join(';')
 // The scheme a trusted local proxy says the browser used, or '' (no proxy, or not trusted).
 export const forwardedProto = (req) => (fromLocalProxy(req) ? String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase() : '')
 
@@ -481,7 +493,7 @@ export function normalizeAppHosts(input) {
 	return p
 }
 
-export function createApp({store, staticDir, connectorDir = staticDir ? join(staticDir, '..', 'connector') : '', fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0'}) {
+export function createApp({store, staticDir, connectorDir = staticDir ? join(staticDir, '..', 'connector') : '', fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0', remoteGate = null}) {
 	const app = express()
 	app.disable('x-powered-by')
 	app.set('trust proxy', 'loopback')
@@ -491,6 +503,58 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	app.use((req, _res, next) => {
 		stripForwarding(req)
 		next()
+	})
+
+	// ---- Remote access (MODC Connect): every remote request passes the gate first. -------------------
+	// The gate's settings come from omarchyd. Not reachable, or not set: remote access stays shut.
+	const gate =
+		remoteGate ??
+		createRemoteGate({
+			fetchConfig: async () => {
+				const base = getClient()?.baseUrl
+				if (!base) return null
+				const r = await fetchImpl(`${base}/internal/remote-gate`, {signal: AbortSignal.timeout(5000)})
+				return r.ok ? r.json() : null
+			},
+		})
+	gate.start?.()
+	app.remoteGate = gate
+	// Everything that came in remotely, so it can all be cut the moment remote access goes off.
+	const remoteSockets = new Set()
+	const trackRemote = (socket) => {
+		if (!socket || remoteSockets.has(socket)) return
+		remoteSockets.add(socket)
+		socket.once('close', () => remoteSockets.delete(socket))
+	}
+	gate.onClose(() => {
+		for (const sock of remoteSockets) sock.destroy()
+		remoteSockets.clear()
+		// Signed-in remote browsers are signed out; sessions at home are untouched.
+		for (const {key, session} of store.sessionEntries?.() ?? []) if (session?.remote) store.deleteSessionByKey(key).catch(() => {})
+	})
+	// A remote request: the gate says yes or no. A yes only means Cloudflare Access let this browser
+	// through; it still signs in to My Own Data Center as usual. A session made remotely only works for
+	// the same Access identity; a different one (or a session made at home) doesn't come along.
+	async function passGate(req) {
+		trackRemote(req.socket)
+		// Everything on the remote listener reached Cloudflare over https, whatever cloudflared sends.
+		if (req.socket?.__modcRemote) req.headers['x-forwarded-proto'] = 'https'
+		const g = await gate.check(req)
+		if (!g.ok) return g
+		req.remote = g.claims
+		const sid = parseCookies(req.headers.cookie)[COOKIE]
+		const session = sid ? store.getSession(sid) : null
+		if (sid && !(session?.remote && session.remoteSub && session.remoteSub === g.claims.sub)) req.headers.cookie = withoutSessionCookie(req.headers.cookie)
+		return g
+	}
+	app.passGate = passGate
+	app.use(async (req, res, next) => {
+		if (!viaTunnel(req)) return next()
+		const g = await passGate(req).catch(() => ({ok: false, status: 503, code: 'REMOTE_OFF', message: 'Remote access isn’t available right now.'}))
+		if (g.ok) return next()
+		res.set('Cache-Control', 'no-store')
+		if (req.path.startsWith('/api/')) return res.status(g.status).json({error: {code: g.code, message: g.message}})
+		res.status(g.status).type('text/plain').send(g.message)
 	})
 	// Computers joining the local swarm, and their backups, are for this network only: not through the
 	// tunnel (a browser behind Cloudflare Access never needs them).
@@ -1154,7 +1218,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		}
 		attempts.delete(ip)
 		const sid = newSessionId()
-		await store.putSession(sid, {...session, createdAt: now, lastSeenAt: now, userAgent: String(userAgent ?? '').slice(0, 200)})
+		await store.putSession(sid, {...session, createdAt: now, lastSeenAt: now, userAgent: String(userAgent ?? '').slice(0, 200), ...(req.remote ? {remote: true, remoteSub: req.remote.sub, remoteEmail: req.remote.email} : {})})
 		rememberSid(sid)
 		setCookie(res, sid, SESSION_MAX_AGE_S)
 		shareAppSession(req, res, session)
@@ -2220,9 +2284,18 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	// reconnect), and stop the app relays.
 	const consoles = new Set()
 	app.closeAll = () => {
+		gate.stop?.()
 		for (const wss of consoles) for (const c of wss.clients) c.close(1001, 'server restarting')
 		for (const r of relays.values()) r.server?.close?.()
 		for (const r of relays.values()) r.server?.destroyConnections?.()
+	}
+	// The remote-ingress listener (127.0.0.1, for cloudflared): every connection on it is remote,
+	// whatever it sends, so the gate always applies.
+	app.attachRemote = (server) => {
+		server.on('connection', (socket) => {
+			socket.__modcRemote = true
+		})
+		app.attachConsole(server)
 	}
 	app.attachConsole = (server) => {
 		const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false})
@@ -2230,12 +2303,17 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		server.on('upgrade', async (req, socket, head) => {
 			// Upgrades skip Express: drop untrusted forwarding headers here too.
 			stripForwarding(req)
-			if (app.relayUpgrade(req, socket, head)) return
 			const refuse = (status) => {
 				if (socket.destroyed) return
 				socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`)
 				socket.destroy()
 			}
+			// Remote WebSockets pass the same gate as remote pages, before anything else.
+			if (viaTunnel(req)) {
+				const g = await passGate(req).catch(() => ({ok: false, status: 503}))
+				if (!g.ok) return refuse(g.status === 421 ? '421 Misdirected Request' : g.status === 403 ? '403 Forbidden' : '503 Service Unavailable')
+			}
+			if (app.relayUpgrade(req, socket, head)) return
 			// Until the upgrade completes nothing else watches the browser's socket: if the tab goes away
 			// first, drop the connection to omarchyd too. The returned function stops watching.
 			const dropWithBrowser = (upstream) => {
@@ -2630,6 +2708,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		try {
 			if (Object.hasOwn(LOCAL, path)) return res.json({data: (await LOCAL[path](req, res, input)) ?? null})
 			const data = await authedCall(req, path, kind, input)
+			// Remote access switched (here or after a check): the gate learns it now, not in 10 s.
+			if (path.startsWith('connect.')) gate.refresh().catch(() => {})
 			res.json({data: data ?? null})
 		} catch (error) {
 			if (error instanceof BackendError && error.code === 'UNAUTHORIZED' && !store.getSession(req.sid)) setCookie(res, '', 0)

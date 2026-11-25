@@ -22,6 +22,100 @@ export type ConnectStatus = {
 	siteUrl: string
 	defaultName: string
 	tunnel?: TunnelStatus | null
+	remote?: RemoteStatus | null
+}
+
+// Remote access (omarchyd/connect-remote.mjs). Non-secret: settings, sync time, local block.
+export type RemoteStatus = {
+	state: string | null
+	hostname: string | null
+	configVersion: string | number | null
+	accessProtected: boolean
+	connectorValidated: boolean
+	syncedAt: number | null
+	stale: boolean
+	blocked: null | {at: number; reason: string}
+	warning: null | {kind: string; message: string; at: number}
+	problem: null | string
+	nextCheckAt: number | null
+}
+
+const REMOTE_PROBLEM: Record<string, string> = {
+	contract_pending: 'This build doesn’t read the website’s remote-access settings yet, so remote access stays off here.',
+	unreadable: 'The website’s remote-access settings couldn’t be read, so remote access stays off here.',
+	other_device: 'The website sent settings for another device, so they were ignored.',
+	offline: 'Can’t reach myowndatacenter.com. Remote access pauses if this lasts 30 minutes.',
+	unavailable: 'myowndatacenter.com is having trouble. Remote access pauses if this lasts 30 minutes.',
+	rate_limited: 'The website asked this server to slow down.',
+	error: 'The website didn’t accept the request for remote-access settings.',
+}
+
+function RemoteSection({r, siteUrl, busy, run, now, confirm}: {r: RemoteStatus; siteUrl: string; busy: boolean; run: (path: string, done?: string) => void; now: number; confirm: ReturnType<typeof useConfirm>}) {
+	const on = r.state === 'enabled' && !r.blocked && !r.stale && r.accessProtected && r.connectorValidated
+	const pill: {kind: StatusKind; label: string} = r.blocked ? {kind: 'error', label: 'Blocked here'} : on ? {kind: 'running', label: 'On'} : r.state === 'enabled' ? {kind: 'update', label: 'Paused'} : {kind: 'stopped', label: 'Off'}
+	const openSite = () => window.open(siteUrl, '_blank', 'noopener,noreferrer')
+	const enable = async () => {
+		if (r.blocked) {
+			const ok = await confirm({
+				title: 'Allow remote access on this server again?',
+				body: 'Remote access was blocked here after an emergency switch-off. Allowing it again lifts that block; remote access still only works once you turn it on and approve it on myowndatacenter.com.',
+				confirm: 'Allow',
+			})
+			if (!ok) return
+			run('connect.remote.allow')
+		}
+		openSite()
+	}
+	const disable = async () => {
+		const ok = await confirm({
+			title: 'Switch remote access off?',
+			body: 'Every remote browser is signed out and its connections are closed. Access here at home keeps working, and this server stays paired.',
+			confirm: 'Switch off',
+			danger: true,
+		})
+		if (ok) run('connect.remote.disable', 'Remote access switched off')
+	}
+	return (
+		<>
+			{r.warning && (
+				<div className="glass connect-card critical" role="alert">
+					<Icon name="alert" size={22} />
+					<div>
+						<b>Remote access is blocked on this server</b>
+						<span>{r.warning.message}</span>
+						<span className="connect-actions">
+							<button className="btn small primary" disabled={busy} onClick={() => run('connect.remote.disable')}>
+								Retry cloud switch-off
+							</button>
+						</span>
+					</div>
+				</div>
+			)}
+			<Group
+				title="Remote access"
+				footer="Turning remote access on is done on myowndatacenter.com, where you approve it. Every remote browser has to get past Cloudflare Access first, then sign in here as usual."
+			>
+				<Row icon="link" color="var(--accent)" label="Remote access" value={<StatusPill kind={pill.kind} label={pill.label} />} sub={r.hostname ? <span className="mono connect-host">{r.hostname}</span> : undefined} />
+				<Row icon="shield" color="var(--green)" label="Access protection" value={r.accessProtected ? 'Cloudflare Access' : 'Not set up'} />
+				<Row icon="check" color="var(--teal)" label="Connector checked" value={r.connectorValidated ? 'Yes' : 'Not yet'} />
+				<Row
+					icon="history"
+					color="#8e8e93"
+					label="Settings synced"
+					value={r.syncedAt ? ago(r.syncedAt, now) : 'Never'}
+					sub={r.problem ? REMOTE_PROBLEM[r.problem] : r.stale && r.syncedAt ? 'Out of date: remote access is paused until the next successful check.' : undefined}
+				/>
+				<Row icon="open" color="var(--blue)" label="Open My Data Centers" onClick={openSite} />
+				{on ? (
+					<Row icon="power" color="var(--red)" label="Switch remote access off" sub="Works even if the website can’t be reached" disabled={busy} onClick={disable} />
+				) : (
+					<Row icon="link" color="var(--accent)" label="Turn on remote access" sub="On myowndatacenter.com, where you approve it" disabled={busy} onClick={enable} />
+				)}
+				{!on && r.state === 'enabled' && <Row icon="power" color="var(--red)" label="Switch remote access off" disabled={busy} onClick={disable} />}
+				<Row icon="restart" color="var(--accent)" label="Check now" disabled={busy} onClick={() => run('connect.remote.check')} />
+			</Group>
+		</>
+	)
 }
 
 // The Cloudflare connector (omarchyd/connect-tunnel.mjs). No token or credential ever reaches here.
@@ -452,6 +546,7 @@ export function ConnectPage({onBack}: {onBack: () => void}) {
 						)}
 					</Group>
 					{s.tunnel && s.state !== 'revoked' && <TunnelSection t={s.tunnel} busy={act.isPending} run={(path, done) => act.mutate({path, done})} now={now} />}
+					{s.remote && s.state !== 'revoked' && <RemoteSection r={s.remote} siteUrl={s.siteUrl} busy={act.isPending} run={(path, done) => act.mutate({path, done})} now={now} confirm={confirm} />}
 					{s.device && (
 						<Group title="This device" footer="How this server appears in My Data Centers on myowndatacenter.com.">
 							<Row icon="server" color="var(--teal)" label="Name" value={s.device.name || '–'} />

@@ -23,6 +23,7 @@ import {join} from 'node:path'
 
 import {plainObject, readJsonState, writeAtomic} from './atomic.mjs'
 import {createTunnel} from './connect-tunnel.mjs'
+import {createRemoteAccess} from './connect-remote.mjs'
 import {RpcError} from './rpc.mjs'
 
 export const CONNECT_API = 'https://myowndatacenter.com/api/public/cloud'
@@ -83,7 +84,7 @@ function validState(v) {
 	return true
 }
 
-export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch, now = () => Date.now(), version = '', autoStart = true, log = (m) => console.error(m), tunnelOptions = {}}) {
+export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch, now = () => Date.now(), version = '', autoStart = true, log = (m) => console.error(m), tunnelOptions = {}, remoteOptions = {}}) {
 	const base = String(apiBase).replace(/\/+$/, '')
 	if (!/^https:\/\//.test(base)) throw new Error('MODC Connect needs an https address')
 	const dir = join(dataDir, 'connect')
@@ -117,6 +118,20 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 		log,
 		...tunnelOptions,
 	})
+	// Remote access (API v1): the website's settings for the gate, and the emergency switch.
+	const remote = createRemoteAccess({
+		dir,
+		apiBase: base,
+		credential: () => state.device?.credential ?? null,
+		deviceId: () => state.device?.deviceId ?? null,
+		onRevoked: () => serial(() => markRevoked()),
+		stopConnector: () => tunnel.disable(),
+		fetchImpl,
+		now,
+		autoStart,
+		log,
+		...remoteOptions,
+	})
 	async function markRevoked() {
 		const d = state.device
 		if (!d?.credential) return
@@ -125,6 +140,7 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 		live.problem = null
 		await save()
 		log('[connect] this server’s device was revoked on myowndatacenter.com')
+		remote.teardown().catch(() => {})
 		schedule(0)
 	}
 
@@ -152,6 +168,7 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 		}
 		if (autoStart) schedule(5_000)
 		await tunnel.begin(autoStart ? 10_000 : 0).catch(() => {})
+		if (state.device?.credential) await remote.begin(autoStart ? 8_000 : 0).catch(() => {})
 	})()
 
 	function schedule(ms) {
@@ -268,6 +285,7 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 			await save()
 			log('[connect] paired with myowndatacenter.com')
 			tunnel.begin(5_000).catch(() => {})
+			remote.begin(6_000).catch(() => {})
 			return schedule(0)
 		}
 		if (r.status === 409 && errorCode(r) === 'authorization_pending') return schedule(pace)
@@ -313,6 +331,7 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 			log('[connect] this server’s device was revoked on myowndatacenter.com')
 			// Its tunnel connector stops too (not awaited: the tunnel takes its own turn).
 			tunnel.teardown().catch(() => {})
+			remote.teardown().catch(() => {})
 			return schedule(0)
 		}
 		if (r.status === 429) {
@@ -342,7 +361,8 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 	// Everything the page shows: the pairing and, once paired, the tunnel.
 	async function full() {
 		const s = status()
-		return {...s, tunnel: state.device?.credential ? await tunnel.status().catch(() => null) : null}
+		const paired = !!state.device?.credential
+		return {...s, tunnel: paired ? await tunnel.status().catch(() => null) : null, remote: paired ? remote.status() : null}
 	}
 
 	async function pair(input) {
@@ -406,6 +426,7 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 		return serial(async () => {
 			// The connector goes first: stopped, its token wiped, its unit removed.
 			await tunnel.teardown().catch(() => log('[connect] couldn’t stop the tunnel connector'))
+			await remote.teardown().catch(() => {})
 			state = {device: null, pairing: null, notice: null}
 			live = {problem: null, lastAttemptAt: null, nextAt: null, checking: false}
 			await save()
@@ -427,6 +448,9 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 		ready,
 		status: async () => (await ready, full()),
 		tunnel,
+		remote,
+		// For the web server's remote-access gate (non-secret settings only).
+		remoteGate: () => (state.device?.credential ? remote.gate() : {enabled: false, verified: false, blocked: false, syncedAt: null}),
 		pair,
 		cancel,
 		dismiss,
@@ -438,6 +462,7 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 		close() {
 			closed = true
 			tunnel.close()
+			remote.close()
 			if (timer) clearTimeout(timer)
 			timer = null
 		},
@@ -453,6 +478,10 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 			'connect.tunnel.disable': {kind: 'mutation', run: async () => (await tunnel.disable(), full())},
 			'connect.tunnel.check': {kind: 'mutation', run: async () => (await tunnel.check(), full())},
 			'connect.tunnel.install': {kind: 'mutation', run: async () => (await tunnel.install(), full())},
+			// Remote access: turning it on is the owner's, on the website; switching it off works from here.
+			'connect.remote.disable': {kind: 'mutation', run: async () => (await remote.disable(), full())},
+			'connect.remote.allow': {kind: 'mutation', run: async () => (await remote.allowAgain(), full())},
+			'connect.remote.check': {kind: 'mutation', run: async () => (await remote.check(), full())},
 		},
 	}
 }
