@@ -724,7 +724,11 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			const old = live.get(existing.id)
 			if (old) {
 				old.progress = null
-				for (const ch of old.channels.values()) closeSocket(ch.ws, 1000, 'Permissions updated')
+				for (const ch of [...old.channels.values()]) {
+					// A file transfer has no browser socket, only a way to end it.
+					if (ch.kind === 'file') ch.end(new RpcError('BAD_GATEWAY', 'Permissions updated'))
+					else closeSocket(ch.ws, 1000, 'Permissions updated')
+				}
 				for (const c of old.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'Permissions updated')))
 				old.channels.clear()
 				old.calls.clear()
