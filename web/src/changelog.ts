@@ -4,6 +4,19 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.80',
+		date: '2026-11-24',
+		title: 'Alpine guests, and Machines on every screen',
+		added: [
+			'An Alpine guest can install the connector. It runs as an OpenRC service. Windows, macOS, and Home Assistant still do not.',
+			'A guest on passt reaches this server through an address it can use.',
+			'Machines uses the same list on the phone and on the desktop. A joined computer can create a virtual machine from its own page.',
+		],
+		fixed: [
+			'Restarting this server stops only its own process, so virtual machines keep running. The installer asks to run once so that takes effect.',
+		],
+	},
+	{
 		version: '0.9.79',
 		date: '2026-11-24',
 		title: 'One drawing for a machine’s readings',
