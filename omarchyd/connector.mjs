@@ -180,9 +180,15 @@ export async function sendWolPacket(mac) {
 				resolve()
 			})
 		})
+		// One address failing (no route to it) is fine. Every one failing means nothing was sent.
+		let sent = 0
+		let failure = null
 		for (const host of subnetBroadcasts()) {
-			await new Promise((resolve) => sock.send(packet, 9, host, () => resolve()))
+			const error = await new Promise((resolve) => sock.send(packet, 9, host, resolve))
+			if (error) failure ??= error
+			else sent++
 		}
+		if (!sent) throw failure ?? new Error('Couldn’t send a wake packet')
 	} finally {
 		try {
 			sock.close()
@@ -568,8 +574,13 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		await save()
 		await forgetRemote(a.id).catch(() => {})
 		const l = live.get(a.id)
-		// Tell it to forget this server and stop; then cut it off either way.
+		// Tell it to forget this server and stop; then cut it off either way. Terminals, desktops and
+		// transfers that are open end at once, with the real reason, not after the delay as "went offline".
 		if (l) {
+			const reason = 'This computer was removed from the swarm'
+			for (const ch of [...l.channels.keys()]) closeLiveChannel(l, ch, reason)
+			for (const c of l.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', reason)))
+			l.calls.clear()
 			try {
 				l.ws.send(JSON.stringify({op: 'removed'}))
 			} catch {}
@@ -713,7 +724,11 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			const old = live.get(existing.id)
 			if (old) {
 				old.progress = null
-				for (const ch of old.channels.values()) closeSocket(ch.ws, 1000, 'Permissions updated')
+				for (const ch of [...old.channels.values()]) {
+					// A file transfer has no browser socket, only a way to end it.
+					if (ch.kind === 'file') ch.end(new RpcError('BAD_GATEWAY', 'Permissions updated'))
+					else closeSocket(ch.ws, 1000, 'Permissions updated')
+				}
 				for (const c of old.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'Permissions updated')))
 				old.channels.clear()
 				old.calls.clear()

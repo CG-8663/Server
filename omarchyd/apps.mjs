@@ -37,6 +37,7 @@ import {linkProxy} from './proxy-link.mjs'
 import {installTargetId} from './install-target.mjs'
 import {usbComposeOverlay} from './usb.mjs'
 import {buildAppRedirectUris, buildOidcCaBundle, oidcComposeOverlay, oidcSummaryForStore, oidcVarsFor, parseManifestOidc, resolveAppOidcSpec} from './app-oidc.mjs'
+import {stoppedMessage} from './exec-error.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
 // Every cookie My Own Data Center itself sets (and any it may set later under these prefixes).
@@ -540,7 +541,7 @@ function execP(cmd, args, {env, cwd, timeout = 10 * 60_000} = {}) {
 	return new Promise((resolve, reject) => {
 		execFile(cmd, args, {cwd, timeout, maxBuffer: 32 * 1024 * 1024, env: {...process.env, ...env}}, (error, stdout, stderr) => {
 			if (error) {
-				error.message = `${cmd}: ${(stderr || error.message).toString().trim().split('\n').slice(-3).join(' ')}`
+				error.message = stoppedMessage(cmd, error, timeout) ?? `${cmd}: ${(stderr || error.message).toString().trim().split('\n').slice(-3).join(' ')}`
 				return reject(error)
 			}
 			resolve(stdout.toString())
@@ -624,6 +625,9 @@ function toDetail(a) {
 
 // Turn a store compose file into what omarchyd runs: no app_proxy, the web service published on
 // 127.0.0.1 only. Returns the compose text and where the gateway should forward to.
+// Text that screens draw. A listing can write a list or a mapping where text belongs, and a screen
+// cannot draw that, so anything that is not text (or a number or true/false) is left out.
+const listingText = (v) => (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : typeof v === 'boolean' ? String(v) : undefined)
 const stringList = (v) => (Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? x : typeof x === 'number' && Number.isFinite(x) ? String(x) : null)).filter(Boolean) : [])
 // The apps `id` needs, dependencies first (a depth-first post-order).
 function orderNeeds(id, byId, seen = new Set(), out = []) {
@@ -636,15 +640,20 @@ function orderNeeds(id, byId, seen = new Set(), out = []) {
 	return out
 }
 // True when `id` depends on itself or the dependency links come back to an app already on the path.
+// An app already checked and found loop-free is not walked again: apps that share dependencies
+// would otherwise be walked once per path through them, which grows without end.
 function dependencyLoop(id, byId) {
-	const stack = []
+	const path = new Set()
+	const clear = new Set()
 	const visit = (cur) => {
-		if (stack.includes(cur)) return true
+		if (path.has(cur)) return true
+		if (clear.has(cur)) return false
 		const row = byId.get(cur)
 		if (!row) return false
-		stack.push(cur)
+		path.add(cur)
 		for (const d of stringList(row.a.dependencies)) if (visit(d)) return true
-		stack.pop()
+		path.delete(cur)
+		clear.add(cur)
 		return false
 	}
 	return visit(id)
@@ -715,8 +724,8 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 	if (doc.errors.length) throw doc.errors[0]
 	if (!doc.contents) doc.contents = doc.createNode({})
 	if (!YAML.isMap(doc.contents)) throw new Error('Compose file must be a mapping')
-	if (!YAML.isMap(doc.get('services'))) doc.set('services', {})
 	const serviceNodes = doc.get('services')
+	if (!YAML.isMap(serviceNodes)) throw new Error('This app’s compose file lists no services, so there is nothing to start')
 	const proxyNode = serviceNodes.get('app_proxy')
 	const envNode = YAML.isMap(proxyNode) ? proxyNode.get('environment') : null
 	const proxy = YAML.isMap(envNode) ? (envNode.toJSON() ?? {}) : {}
@@ -853,7 +862,7 @@ export async function podmanHealth(run, env, home) {
 	}
 }
 
-export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000, systemApps = null, deviceExists = exists, forwardInstall = null, remoteApps = async () => [], oidc = null, getTailscaleStatus = null}) {
+export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000, systemApps = null, deviceExists = exists, forwardInstall = null, remoteApps = async () => [], oidc = null, getTailscaleStatus = null, usbReleased = null}) {
 	const base = join(dataDir, 'apps')
 	const storesDir = join(base, 'stores')
 	const installedDir = join(base, 'installed')
@@ -1370,25 +1379,25 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			apps.push({
 				id: a.id,
 				name: String(a.name ?? a.id),
-				tagline: a.tagline,
+				tagline: listingText(a.tagline),
 				icon: media(a.icon) ?? (gallery ? `${gallery}/${a.id}/icon.svg` : undefined),
-				category: a.category,
+				category: listingText(a.category),
 				version: a.version !== undefined ? String(a.version) : undefined,
 				...(installSize !== undefined ? {installSize} : {}),
 				port: Number(a.port) || undefined,
 				path: typeof a.path === 'string' ? a.path : '',
-				description: a.description,
-				developer: a.developer,
-				website: a.website,
+				description: listingText(a.description),
+				developer: listingText(a.developer),
+				website: listingText(a.website),
 				gallery: (Array.isArray(a.gallery) ? a.gallery : []).map(media).filter(Boolean),
-				releaseNotes: a.releaseNotes,
+				releaseNotes: listingText(a.releaseNotes),
 				dependencies: deps,
 				// Everything installed along with it, in install order (what it needs comes first). Never itself.
 				...(needs.length ? {needs} : {}),
 				...(Array.isArray(a.implements) ? {implements: a.implements.filter((x) => typeof x === 'string')} : {}),
 				shared: a.shared === true || deps.length > 0 || neededByOthers.has(a.id) || /ipv4_address/.test(compose),
-				defaultUsername: a.defaultUsername || undefined,
-				defaultPassword: a.defaultPassword || undefined,
+				defaultUsername: listingText(a.defaultUsername) || undefined,
+				defaultPassword: listingText(a.defaultPassword) || undefined,
 				deterministicPassword: a.deterministicPassword === true,
 				// Needs a secure (https://) page in the browser, e.g. for WebCodecs or the Web Crypto API.
 				...(a.requiresHttps === true ? {requiresHttps: true} : {}),
@@ -1494,7 +1503,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					const line = stderr.split('\n').map((l) => l.trim()).filter(Boolean).at(-1)
 						?? String(e?.message ?? e ?? 'download failed').split('\n').map((l) => l.trim()).filter(Boolean).at(-1)
 						?? 'download failed'
-					throw new RpcError('BAD_GATEWAY', `Couldn't reach ${s.url}: ${line}`)
+					const failure = new RpcError('BAD_GATEWAY', `Couldn't reach ${s.url}: ${line}`)
+					// The hourly check going offline is not a reason to hide a catalog that is already on disk.
+					// It is not cached, so the next read tries the network again. "Check for new apps" still fails.
+					if (refresh || !(await exists(join(storeDir(s.url), '.git')))) throw failure
+					storeFailed = true
+					console.error(`[omarchyd] ${failure.message}; showing the copy already downloaded`)
 				}
 			}
 			if (!stillAdded(s.url)) continue
@@ -2723,6 +2737,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				state.apps = state.apps.filter((a) => a.id !== app.id)
 				state.recent = state.recent.filter((r) => r !== app.id)
 				await save()
+				// The sticks it had attached: their udev rules go too (as when a stick is detached).
+				await usbReleased?.(app.usbDevices ?? [])
 				// After this app is gone, so the other uninstall in a pair is not still counted.
 				await stopTorIfIdle(app.id)
 			})
@@ -3105,7 +3121,13 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		// still needs a real sign-in, so a studio container can't uninstall the rest of the server.
 		authenticatePublish,
 		appDirFor: (id) => appDir(id),
-		installed: (id) => state.apps.some((a) => a.id === id),
+		// An app whose install failed is not "here": it can be tried again.
+		installed: (id) => state.apps.some((a) => a.id === id && a.state !== 'error'),
+		// Removes a failed install (as a new install would) so an importer can copy data into a clean folder.
+		async clearFailed(id) {
+			await ready
+			if (state.apps.some((a) => a.id === id && a.state === 'error')) await uninstall({appId: id})
+		},
 		async installImported(id) {
 			dropRegistry()
 			const plan = await installPlan(id)

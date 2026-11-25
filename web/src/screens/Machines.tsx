@@ -1,4 +1,5 @@
-import {lazy, Suspense, useEffect, useMemo, useState} from 'react'
+import {lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode} from 'react'
+import {flushSync} from 'react-dom'
 
 import {SERVER_DESKTOP, type Machine, type UserApp} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
@@ -6,12 +7,14 @@ import {useDesktop} from '../desktop/Desktop'
 import {useBootstrap, useMachines, useUser} from '../data'
 import {useMachineDetails} from '../machines/api'
 import {PortForwarding} from '../machines/PortForwarding'
+import {VmView} from '../machines/pveDetail'
 import {BackupsPanel, CloudInitPanel, HardwarePanel, HistoryPanel, MonitorPanel, OptionsPanel, PANELS, SnapshotsPanel, SummaryPanel, usePowerActions, type PanelId} from '../machines/panels'
 import {DevicesPanel} from '../usb'
 import {Icon} from '../icons'
 import {osLook} from '../osLook'
 import {hostedVms} from '../fleet/hostedVms'
 import {computerFleetInput, fleetList, guestFleetInput, SERVER_FLEET_ID} from '../fleet/list'
+import type {ManagerFilter} from '../fleet/machineManagerLogic'
 import {OPEN_FLEET, takePendingFleet, type FleetOpen} from '../fleet/openMember'
 import {openStore} from '../fleet/openStore'
 import {GuestLive} from '../fleet/GuestLive'
@@ -21,14 +24,152 @@ import {ServerSheet} from '../fleet/ServerSheet'
 import {guestAgent, isGuestAgent} from '../swarm/guestLink'
 import {LocalSwarm, useSwarm} from '../swarm/Swarm'
 import {StoragePanel} from './Storage'
-import {SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
+import {applyPrefsUpdate} from '../photoPrefs'
+import {SheetHeader, StatusPill, Switch, haptic, machineStatus, type Prefs} from '../ui'
 import {MachineManager} from '../fleet/MachineManager'
+
+const COMPACT_KEY = 'omarchy-server:machines-compact'
+const LIST_WIDTH_KEY = 'omarchy-server:machines-list-width'
+/** Name field plus All, Physical, Unhealthy, and Offline on one line. */
+const LIST_WIDTH_MIN = 360
+/** Starts at that floor. A wider choice is remembered. */
+const LIST_WIDTH_DEFAULT = 360
+const LIST_WIDTH_MAX = 640
+const LIST_BAR_PX = 10
+const DETAIL_MIN = 160
+
+function clampListWidth(n: number, max = LIST_WIDTH_MAX) {
+	const cap = Math.max(LIST_WIDTH_MIN, max)
+	if (!Number.isFinite(n)) return Math.min(LIST_WIDTH_DEFAULT, cap)
+	return Math.round(Math.min(Math.max(n, LIST_WIDTH_MIN), cap))
+}
+
+function readListWidth(): number {
+	try {
+		const raw = localStorage.getItem(LIST_WIDTH_KEY)
+		if (raw == null || raw === '') return LIST_WIDTH_DEFAULT
+		return clampListWidth(Number(raw))
+	} catch {
+		return LIST_WIDTH_DEFAULT
+	}
+}
+
+function writeListWidth(n: number) {
+	try {
+		localStorage.setItem(LIST_WIDTH_KEY, String(n))
+	} catch {
+		/* private mode: the width lasts for this visit */
+	}
+}
+
+function readCompact(): boolean {
+	try {
+		return localStorage.getItem(COMPACT_KEY) === '1'
+	} catch {
+		return false
+	}
+}
+
+/** Swap the Machines window. The desktop shell stays still. */
+function transitionMachines(apply: () => void) {
+	const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+	const frames = document.querySelectorAll('.machines-frame')
+	const root = document as Document & {startViewTransition?: (update: () => void) => {finished: Promise<void>}}
+	if (reduce || frames.length !== 1 || !root.startViewTransition) {
+		apply()
+		return
+	}
+	const frame = frames[0]
+	frame.classList.add('is-vt')
+	document.documentElement.classList.add('machines-vt')
+	const clear = () => {
+		frame.classList.remove('is-vt')
+		document.documentElement.classList.remove('machines-vt')
+	}
+	let transition: {finished: Promise<void>}
+	try {
+		transition = root.startViewTransition(() => {
+			flushSync(apply)
+		})
+	} catch {
+		clear()
+		apply()
+		return
+	}
+	transition.finished.finally(clear)
+}
+
+function MachinesSplit({list, detail, preferred, onPreferred}: {list: ReactNode; detail: ReactNode; preferred: number; onPreferred: (n: number, persist: boolean) => void}) {
+	const ref = useRef<HTMLDivElement>(null)
+	const [limit, setLimit] = useState(LIST_WIDTH_MAX)
+	useEffect(() => {
+		const el = ref.current
+		if (!el) return
+		const measure = () => {
+			const room = el.getBoundingClientRect().width - LIST_BAR_PX - DETAIL_MIN
+			setLimit(Math.max(LIST_WIDTH_MIN, Math.min(LIST_WIDTH_MAX, room)))
+		}
+		measure()
+		const ro = new ResizeObserver(measure)
+		ro.observe(el)
+		return () => ro.disconnect()
+	}, [])
+	const width = clampListWidth(preferred, limit)
+	const dragging = useRef(false)
+	const widthFrom = (clientX: number) => {
+		const split = ref.current
+		if (!split) return width
+		return clampListWidth(clientX - split.getBoundingClientRect().left, limit)
+	}
+	return (
+		<div ref={ref} className="machines-split is-resizable" style={{gridTemplateColumns: `${width}px ${LIST_BAR_PX}px minmax(0, 1fr)`}}>
+			<div className="machines-list">{list}</div>
+			<div
+				className="machines-split-bar"
+				role="separator"
+				aria-orientation="vertical"
+				aria-valuenow={width}
+				aria-valuemin={LIST_WIDTH_MIN}
+				aria-valuemax={Math.round(limit)}
+				aria-label="Machine list width"
+				tabIndex={0}
+				onPointerDown={(e) => {
+					if (e.button !== 0) return
+					e.preventDefault()
+					dragging.current = true
+					e.currentTarget.setPointerCapture(e.pointerId)
+				}}
+				onPointerMove={(e) => {
+					if (!dragging.current || !e.currentTarget.hasPointerCapture(e.pointerId)) return
+					onPreferred(widthFrom(e.clientX), false)
+				}}
+				onPointerUp={(e) => {
+					if (!dragging.current) return
+					dragging.current = false
+					onPreferred(widthFrom(e.clientX), true)
+				}}
+				onKeyDown={(e) => {
+					const step = e.shiftKey ? 48 : 16
+					let next: number | null = null
+					if (e.key === 'ArrowLeft') next = width - step
+					else if (e.key === 'ArrowRight') next = width + step
+					else if (e.key === 'Home') next = LIST_WIDTH_MIN
+					else if (e.key === 'End') next = limit
+					if (next == null) return
+					e.preventDefault()
+					onPreferred(clampListWidth(next, limit), true)
+				}}
+			/>
+			<div className="machines-detail">{detail}</div>
+		</div>
+	)
+}
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const CreateMachine = lazy(() => import('../CreateMachine').then((m) => ({default: m.CreateMachine})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 
-export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: UserApp) => void; onTerminal?: () => void; windowId?: string} = {}) {
+export function Machines({onOpenApp, onTerminal, windowId, prefs, setPrefs}: {onOpenApp?: (app: UserApp) => void; onTerminal?: () => void; windowId?: string; prefs?: Prefs; setPrefs?: (next: Prefs) => void} = {}) {
 	const desk = useDesktop()
 	const boot = useBootstrap()
 	const machines = useMachines()
@@ -43,6 +184,10 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 	const [consoleId, setConsoleId] = useState<string | null>(null)
 	const [createHost, setCreateHost] = useState<{id: string; name: string} | null>(null)
 	const [adding, setAdding] = useState(false)
+	const [listPreferred, setListPreferred] = useState(readListWidth)
+	const [pvePanel, setPvePanel] = useState<PanelId>('summary')
+	const [queryText, setQueryText] = useState('')
+	const [filter, setFilter] = useState<ManagerFilter>('all')
 	const list = machines.data ?? []
 	const serverName = boot.server?.device || 'This server'
 	const agents = swarm.data ?? []
@@ -80,6 +225,16 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 		setComputerId(kind === 'computer' ? id : null)
 		setServerOpen(kind === 'server')
 	}
+	const onListWidth = (n: number, persist: boolean) => {
+		setListPreferred(n)
+		if (persist) writeListWidth(n)
+	}
+	const physicalHost = (hostId?: string) => {
+		const id = hostId || SERVER_FLEET_ID
+		if (id === SERVER_FLEET_ID) return {name: serverName, hostname: undefined as string | undefined}
+		const agent = agents.find((a) => a.id === id)
+		return {name: agent?.name || 'This computer', hostname: agent?.info?.hostname}
+	}
 	const openDesktop = () => {
 		haptic(8)
 		if (!desk) setServerOpen(false)
@@ -98,6 +253,29 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 		onTerminal?.()
 	}
 	const wide = desk != null
+	// The account remembers Compact. A browser that stored it before that is copied up once, then the old key goes away.
+	const compact = prefs?.machinesCompact == null ? readCompact() : prefs.machinesCompact
+	useEffect(() => {
+		if (!setPrefs) return
+		if (prefs?.machinesCompact != null) {
+			try {
+				localStorage.removeItem(COMPACT_KEY)
+			} catch {
+				/* private mode */
+			}
+			return
+		}
+		if (!readCompact()) return
+		applyPrefsUpdate(setPrefs, (current) => (current.machinesCompact != null ? current : {...current, machinesCompact: true}))
+	}, [prefs?.machinesCompact, setPrefs])
+	const showCompact = wide && compact
+	const selectedKey = serverOpen ? `server:${SERVER_FLEET_ID}` : computerId ? `computer:${computerId}` : selected ? `guest:${selected.id}` : null
+	const setCompactMode = (on: boolean) => {
+		if (!setPrefs) return
+		transitionMachines(() => {
+			applyPrefsUpdate(setPrefs, (current) => ({...current, machinesCompact: on}))
+		})
+	}
 	const detail = (
 		<>
 			{selected && !consoleMachine && (
@@ -122,6 +300,7 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 				vms={list}
 				onCreateVm={setCreateHost}
 				onOpenVm={(id) => openMember('guest', id)}
+				onOpenApp={onOpenApp}
 			/>
 			{serverOpen && (
 				<ServerSheet
@@ -134,11 +313,12 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 					onTerminal={openServerTerminal}
 					onOpenVm={(id) => openMember('guest', id)}
 					onCreateVm={() => setCreateHost({id: SERVER_FLEET_ID, name: serverName})}
+					onOpenApp={onOpenApp}
 				/>
 			)}
 		</>
 	)
-	const manager = (
+	const manager = (lines: boolean) => (
 		<MachineManager
 			owner={owner}
 			serverTerminal={!!onTerminal}
@@ -150,6 +330,12 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 			members={members}
 			machines={list}
 			agents={agents}
+			lines={lines}
+			selectedKey={selectedKey}
+			queryValue={wide ? queryText : undefined}
+			onQueryText={wide ? setQueryText : undefined}
+			filterValue={wide ? filter : undefined}
+			onFilter={wide ? setFilter : undefined}
 			onManage={openMember}
 			onServerTerminal={openServerTerminal}
 			onServerDesktop={openDesktop}
@@ -164,22 +350,91 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 	)
 	return (
 		<div className={wide ? 'machines-frame' : 'stagger'}>
-			{wide && (selected || computerId || serverOpen) ? (
-				<div className="machines-split">
-					<div className="machines-list">{manager}</div>
-					<div className="machines-detail">{detail}</div>
+			{wide && (
+				<div className={showCompact ? 'machines-compact-bar is-titled' : 'machines-compact-bar'}>
+					{showCompact && <h1 className="title">Machines</h1>}
+					<div className="machines-compact-switch">
+						<span aria-hidden="true">Flat</span>
+						<Switch on={compact} label="Flat" onChange={setCompactMode} />
+					</div>
 				</div>
-			) : (
-				<>
-					{manager}
-					{detail}
-				</>
 			)}
+			<div className="machines-body">
+				{showCompact ? (
+					<MachinesSplit
+						preferred={listPreferred}
+						onPreferred={onListWidth}
+						list={manager(true)}
+						detail={
+							<>
+								{computerId ? (
+									<LocalSwarm
+										hideList
+										onlyId={computerId}
+										selectedId={computerId}
+										layout="nav"
+										onSelect={(id) => {
+											if (!id) setComputerId(null)
+										}}
+										bare
+										adding={adding}
+										onAdding={setAdding}
+										vms={hostedVms(list, computerId)}
+										onCreateVm={setCreateHost}
+										onOpenVm={(id) => openMember('guest', id)}
+										onOpenApp={onOpenApp}
+									/>
+								) : selected ? (
+									<VmView
+										key={selected.id}
+										m={selected}
+										physicalName={physicalHost(selected.hostId).name}
+										hostname={selected.hostId && selected.hostId !== SERVER_FLEET_ID ? (physicalHost(selected.hostId).hostname ?? null) : undefined}
+										panel={pvePanel}
+										setPanel={setPvePanel}
+										onGone={() => setSelectedId(null)}
+										backLabel={`Back to ${physicalHost(selected.hostId).name}`}
+										onBack={() => {
+											const hostId = selected.hostId || SERVER_FLEET_ID
+											if (hostId === SERVER_FLEET_ID) openMember('server', SERVER_FLEET_ID)
+											else openMember('computer', hostId)
+										}}
+									/>
+								) : (
+									<ServerSheet
+										layout="nav"
+										bare
+										name={serverName}
+										owner={owner}
+										vms={hostedVms(list, SERVER_FLEET_ID)}
+										onClose={() => setServerOpen(false)}
+										onDesktop={openDesktop}
+										onTerminal={() => desk?.openTerminal()}
+										onOpenVm={(id) => openMember('guest', id)}
+										onCreateVm={() => setCreateHost({id: SERVER_FLEET_ID, name: serverName})}
+										onOpenApp={onOpenApp}
+									/>
+								)}
+								{adding && !computerId && (
+									<LocalSwarm hideList bare adding={adding} onAdding={setAdding} selectedId={null} vms={list} onCreateVm={setCreateHost} onOpenVm={(id) => openMember('guest', id)} />
+								)}
+							</>
+						}
+					/>
+				) : wide && (selected || computerId || serverOpen) ? (
+					<MachinesSplit preferred={listPreferred} onPreferred={onListWidth} list={manager(false)} detail={detail} />
+				) : (
+					<>
+						{manager(false)}
+						{detail}
+					</>
+				)}
+			</div>
 			{createHost && (
 				<Suspense
 					fallback={
 						<main className="screen center">
-							<span className="spinner" aria-label="Loading" />
+							<span className="spinner" role="status" aria-label="Loading" />
 						</main>
 					}
 				>
@@ -190,7 +445,7 @@ export function Machines({onOpenApp, onTerminal, windowId}: {onOpenApp?: (app: U
 				<Suspense
 					fallback={
 						<main className="screen center">
-							<span className="spinner" aria-label="Loading" />
+							<span className="spinner" role="status" aria-label="Loading" />
 						</main>
 					}
 				>
@@ -212,7 +467,7 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 	const [tab, setTab] = useState(m.state === 'running' ? 'files' : 'power')
 	const [storage, setStorage] = useState<{agentId: string; name: string} | null>(null)
 	const [guestTerm, setGuestTerm] = useState<{id: string; name: string; input?: string} | null>(null)
-	const hostTabs = PANELS.filter((p) => p.id !== 'console' && p.id !== 'backups' && (p.id !== 'cloudinit' || d?.cloudInit))
+	const hostTabs = PANELS.filter((p) => p.id !== 'backups' && (p.id !== 'cloudinit' || d?.cloudInit))
 	const panel = (id: PanelId) => {
 		if (!d) return <div className="skeleton" style={{height: 160, borderRadius: 20}} />
 		if (id === 'summary') return <SummaryPanel d={d} />
@@ -296,7 +551,7 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 				onClose={onClose}
 			/>
 			{m.errorMessage && (
-				<div className="error">
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
 					{/^\[[\w-]+\]$/.test(m.errorMessage) ? m.errorMessage.slice(1, -1).replace(/-/g, ' ') : m.errorMessage}
 				</div>

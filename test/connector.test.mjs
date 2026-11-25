@@ -484,7 +484,7 @@ describe('swarm close reasons', () => {
 			agentWs.terminate()
 			c.close()
 			await new Promise((r) => server.close(r))
-			await rm(dataDir, {recursive: true, force: true})
+			await rm(dataDir, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 		}
 	}
 	async function browserSocket() {
@@ -620,6 +620,43 @@ describe('swarm close reasons', () => {
 				vnc.serverSide.terminate()
 				await pty.close()
 				await vnc.close()
+			}
+		})
+	})
+
+	test('removing a computer ends its open terminal at once and says it was removed (#738)', async () => {
+		const allowed = {...abilities, terminal: true}
+		await withAgent({name: 'Study PC', allowed, on: {...allowed}}, async ({c, id, agentWs}) => {
+			const pty = await browserSocket()
+			try {
+				const opened = new Promise((resolve) => {
+					const onMsg = (d, isBinary) => {
+						if (isBinary) return
+						if (JSON.parse(String(d)).op !== 'open') return
+						agentWs.off('message', onMsg)
+						resolve()
+					}
+					agentWs.on('message', onMsg)
+				})
+				c.openChannel(id, 'pty', pty.serverSide, {cols: 80, rows: 24})
+				await opened
+				const closed = closedAs(pty.client)
+				const started = Date.now()
+				await c.procedures['swarm.remove'].run({id})
+				const got = await Promise.race([closed, new Promise((resolve) => setTimeout(() => resolve(null), 300))])
+				assert.ok(got, `the terminal was still open ${Date.now() - started} ms after the computer was removed`)
+				assert.equal(got.reason.toString('utf8'), 'This computer was removed from the swarm')
+				const binaries = []
+				agentWs.on('message', (d, isBinary) => isBinary && binaries.push(d))
+				try {
+					pty.serverSide.send(Buffer.from([1, 2, 3, 4]))
+				} catch {}
+				await new Promise((r) => setTimeout(r, 50))
+				assert.equal(binaries.length, 0)
+			} finally {
+				pty.client.terminate()
+				pty.serverSide.terminate()
+				await pty.close()
 			}
 		})
 	})
