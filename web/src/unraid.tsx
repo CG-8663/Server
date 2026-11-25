@@ -120,7 +120,13 @@ export function UnraidPage({onBack}: {onBack: () => void}) {
 					error={error}
 					onCancel={async () => {
 						const ok = await confirm({title: 'Stop the move?', body: 'What’s being copied right now finishes; the rest is skipped. You can start again later, and copies pick up where they left off.', confirm: 'Stop', danger: true, icon: 'stop'})
-						if (ok) await mutate('unraid.cancel').then(refresh)
+						if (!ok) return
+						try {
+							await mutate('unraid.cancel')
+							refresh()
+						} catch (e) {
+							toast((e as Error).message, true)
+						}
 					}}
 					onAgain={look}
 					onResync={async () => {
