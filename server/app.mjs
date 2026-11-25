@@ -2816,5 +2816,14 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			res.set('Cache-Control', 'no-cache').sendFile(join(staticDir, 'index.html'))
 		})
 	}
+	// Anything the routes above don't answer (a path that is not valid percent-encoding, say) would get
+	// Express's HTML error page with a stack trace and this server's file paths, even from someone not signed in.
+	app.use((error, req, res, next) => {
+		if (res.headersSent) return next(error)
+		const status = Number(error?.status ?? error?.statusCode)
+		if (status >= 400 && status < 500) return res.status(status).type('text/plain').send('Bad request')
+		console.error('[omarchy-server]', error?.message ?? error)
+		res.status(500).type('text/plain').send('Something went wrong')
+	})
 	return app
 }
