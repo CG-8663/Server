@@ -1,6 +1,6 @@
 import {randomBytes} from 'node:crypto'
 
-import {anthropicHeaders} from './anthropic.mjs'
+import {anthropicHeaders, plainBody} from './anthropic.mjs'
 
 const completeArgs = (s) => {
 	if (!s) return false
@@ -163,7 +163,7 @@ const errorMessage = (raw, status) => {
 		const m = json.error?.message || json.message
 		if (m) return String(m)
 	} catch {}
-	return (raw && String(raw).trim()) || `HTTP ${status}`
+	return plainBody(raw, status)
 }
 
 function parseEvent(event, pending) {
