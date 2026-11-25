@@ -6918,6 +6918,7 @@ html:not(.desk-mode) .upload-panel {
 .fv-nav.next { right: 12px; }
 .fv:hover .fv-nav { opacity: 0.85; }
 .fv-nav:hover { opacity: 1 !important; }
+.fv-nav:focus-visible { opacity: 1; }
 @media (pointer: coarse) {
 	.fv-nav { display: none; }
 }
@@ -8258,6 +8259,9 @@ html.page-locked .auth {
 }
 .solid-swatch.on {
 	box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+}
+.solid-swatch.custom:has(input:focus-visible) {
+	box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-text);
 }
 .solid-swatch.custom input {
 	position: absolute;
