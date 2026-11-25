@@ -116,6 +116,8 @@ test('Omarchy install: one disk, a boot partition and Btrfs with the usual subvo
 	assert.notEqual(boot.obj_id, root.obj_id)
 
 	assert.deepEqual(omarchyCredentials({username: 'chris', hash: '$6$x'}), {users: [{username: 'chris', enc_password: '$6$x', sudo: true}]})
+	assert.deepEqual(cfg.packages, ['qemu-guest-agent'])
+	assert.deepEqual(cfg.services, ['qemu-guest-agent'])
 })
 
 test('Windows disc labels', () => {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
-import {connectorCloudInit, connectorInstallCommand, connectorKind, guestConnectorExec, guestConnectorPrep, guestDefaultGateway, guestOwnAddresses, guestReachableUrl} from '../omarchyd/guest-install.mjs'
+import {connectorCloudInit, connectorInstallCommand, connectorKind, guestConnectorExec, guestConnectorPrep, guestConnectorReadyCommand, guestDefaultGateway, guestOwnAddresses, guestReachableUrl} from '../omarchyd/guest-install.mjs'
 
 test('guestReachableUrl skips loopback and prefers a LAN address', () => {
 	assert.equal(guestReachableUrl({addresses: [], port: 7780}), '')
@@ -20,6 +20,15 @@ test('guestReachableUrl skips loopback and prefers a LAN address', () => {
 })
 
 test('guestReachableUrl skips a passt guest’s own LAN address', () => {
+	assert.equal(
+		guestReachableUrl({
+			addresses: [{address: '100.64.1.2', tailscale: true}, {address: '192.168.84.81'}],
+			port: 7780,
+			exclude: ['192.168.84.81'],
+			gateway: '192.168.86.1',
+		}),
+		'https://192.168.86.1:7780',
+	)
 	assert.equal(
 		guestReachableUrl({
 			addresses: [{address: '100.64.1.2', tailscale: true}, {address: '192.168.84.81'}],
@@ -83,9 +92,12 @@ test('connectorCloudInit adds qemu-guest-agent and python without dropping catal
 		familyId: 'debian',
 		cloudInit: {packages: ['task-gnome-desktop'], commands: [['systemctl', 'set-default', 'graphical.target']], graphical: true, adminGroup: 'sudo'},
 	})
-	assert.deepEqual(debian.packages, ['qemu-guest-agent', 'python3', 'task-gnome-desktop'])
+	assert.deepEqual(debian.packages, ['qemu-guest-agent', 'python3'])
 	assert.deepEqual(debian.commands[0], ['systemctl', 'enable', '--now', 'qemu-guest-agent'])
-	assert.deepEqual(debian.commands[1], ['systemctl', 'set-default', 'graphical.target'])
+	const desktopPkg = debian.commands.find((c) => c.join(' ').includes('task-gnome-desktop'))
+	assert.ok(desktopPkg, 'desktop packages install after qemu-ga is enabled')
+	assert.equal(debian.commands.indexOf(desktopPkg) > 0, true)
+	assert.deepEqual(debian.commands.at(-1), ['systemctl', 'set-default', 'graphical.target'])
 	assert.equal(debian.graphical, true)
 	assert.equal(debian.adminGroup, 'sudo')
 	const arch = connectorCloudInit({familyId: 'arch'})
@@ -96,15 +108,40 @@ test('connectorCloudInit adds qemu-guest-agent and python without dropping catal
 		username: 'chris',
 		cloudInit: {packages: ['task-gnome-desktop'], commands: [['systemctl', 'set-default', 'graphical.target']], graphical: true, adminGroup: 'sudo'},
 	})
-	assert.deepEqual(withUser.packages, ['qemu-guest-agent', 'python3', 'task-gnome-desktop'])
+	assert.deepEqual(withUser.packages, ['qemu-guest-agent', 'python3'])
 	assert.deepEqual(withUser.commands[0], ['systemctl', 'enable', '--now', 'qemu-guest-agent'])
 	assert.deepEqual(withUser.commands[1], ['loginctl', 'enable-linger', 'chris'])
-	assert.deepEqual(withUser.commands[2], ['systemctl', 'set-default', 'graphical.target'])
+	assert.equal(withUser.commands.some((c) => c.join(' ').includes('task-gnome-desktop')), true)
+	assert.deepEqual(withUser.commands.at(-1), ['systemctl', 'set-default', 'graphical.target'])
 	assert.equal(withUser.graphical, true)
 	const without = connectorCloudInit({familyId: 'debian', cloudInit: {packages: ['task-gnome-desktop'], commands: [['systemctl', 'set-default', 'graphical.target']], graphical: true}})
 	assert.equal(without.commands.some((c) => c[0] === 'loginctl'), false)
-	assert.deepEqual(without.packages, ['qemu-guest-agent', 'python3', 'task-gnome-desktop'])
+	assert.deepEqual(without.packages, ['qemu-guest-agent', 'python3'])
 	assert.equal(without.graphical, true)
+})
+
+test('Fedora cloud-init lets qemu-ga guest-exec open TCP before enroll', () => {
+	const fedora = connectorCloudInit({familyId: 'fedora', username: 'chris'})
+	assert.deepEqual(fedora.packages, ['qemu-guest-agent', 'python3'])
+	assert.deepEqual(fedora.commands[0], ['systemctl', 'enable', '--now', 'qemu-guest-agent'])
+	assert.deepEqual(fedora.commands[1], ['loginctl', 'enable-linger', 'chris'])
+	const sebool = fedora.commands.find((c) => c.join(' ').includes('virt_qemu_ga_run_unconfined'))
+	assert.ok(sebool, 'SELinux boolean so guest-exec can reach the server')
+	assert.match(sebool.join(' '), /setsebool/)
+	assert.match(sebool.join(' '), /qemu-guest-agent/)
+	const debian = connectorCloudInit({familyId: 'debian', username: 'chris'})
+	assert.equal(debian.commands.some((c) => c.join(' ').includes('setsebool')), false)
+})
+
+test('guestConnectorReadyCommand waits until the account exists and the live ISO is gone', () => {
+	const ready = guestConnectorReadyCommand({username: 'chris'})
+	assert.equal(ready.path, 'bash')
+	assert.equal(ready.args[0], '-lc')
+	assert.match(ready.args[1], /\bid chris\b/)
+	assert.match(ready.args[1], /\/run\/archiso/)
+	assert.match(ready.args[1], /\/run\/archinstall/)
+	const missing = guestConnectorReadyCommand({username: ''})
+	assert.match(missing.args[1], /exit 1/)
 })
 
 test('Alpine cloud-init installs qemu-ga, python3 and bash through OpenRC, without linger', () => {

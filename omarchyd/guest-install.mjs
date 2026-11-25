@@ -31,10 +31,11 @@ export function guestReachableUrl({addresses = [], port, exclude = [], gateway} 
 		return address && !skip.has(address.toLowerCase())
 	})
 	const lan = rows.find((row) => !row.tailscale)
-	const chosen = lan ?? rows[0]
-	if (chosen) return httpsUrl(chosen.address, n)
+	if (lan) return httpsUrl(lan.address, n)
 	const gw = String(gateway ?? '').trim()
 	if (gw && !skip.has(gw.toLowerCase())) return httpsUrl(gw, n)
+	const chosen = rows[0]
+	if (chosen) return httpsUrl(chosen.address, n)
 	return ''
 }
 
@@ -62,6 +63,35 @@ function isAlpine(osId = '', familyId = '') {
 	return /alpine/.test(String(osId).toLowerCase()) || String(familyId).toLowerCase() === 'alpine'
 }
 
+function isFedora(osId = '', familyId = '') {
+	return /fedora|rhel|centos|rocky|alma/.test(`${osId} ${familyId}`.toLowerCase())
+}
+
+function extraPackageCommand(names) {
+	const list = names.map((n) => String(n)).join(' ')
+	return ['bash', '-lc', [
+		`if command -v apt-get >/dev/null 2>&1; then apt-get install -y ${list}`,
+		`elif command -v dnf >/dev/null 2>&1; then dnf install -y ${list}`,
+		`elif command -v pacman >/dev/null 2>&1; then pacman -S --needed --noconfirm ${list}`,
+		`elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive install ${list}`,
+		`elif command -v apk >/dev/null 2>&1; then apk add --no-cache ${list}`,
+		'else exit 1; fi',
+	].join('; ')]
+}
+
+export function guestConnectorReadyCommand({username} = {}) {
+	const user = String(username ?? '').trim()
+	if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user) || user === 'root') {
+		return {path: 'bash', args: ['-lc', 'exit 1']}
+	}
+	return {path: 'bash', args: ['-lc', [
+		`id ${user} >/dev/null 2>&1`,
+		'! test -e /run/archiso',
+		'! test -e /run/archinstall',
+		'! test -d /run/live',
+	].join(' && ')]}
+}
+
 export function connectorKind(osId = '') {
 	const id = String(osId).toLowerCase()
 	// The connector runs on Linux with systemd or Alpine OpenRC. Windows, macOS, and Home Assistant do not run it.
@@ -71,16 +101,22 @@ export function connectorKind(osId = '') {
 
 export function connectorCloudInit(img = {}) {
 	const alpine = isAlpine(img.osId, img.familyId)
+	const fedora = isFedora(img.osId, img.familyId)
 	const python = img.familyId === 'arch' ? 'python' : 'python3'
 	const given = img.cloudInit && typeof img.cloudInit === 'object' ? img.cloudInit : {}
 	const extra = Array.isArray(given.packages) ? given.packages : []
-	const packages = alpine ? ['qemu-guest-agent', 'python3', 'bash', ...extra] : ['qemu-guest-agent', python, ...extra]
+	const packages = alpine ? ['qemu-guest-agent', 'python3', 'bash', ...extra] : ['qemu-guest-agent', python]
 	const enableGa = alpine
 		? [['rc-update', 'add', 'qemu-guest-agent', 'default'], ['rc-service', 'qemu-guest-agent', 'start']]
 		: [['systemctl', 'enable', '--now', 'qemu-guest-agent']]
-	const commands = [...enableGa, ...(Array.isArray(given.commands) ? given.commands : [])]
+	const commands = [...enableGa]
 	const username = String(img.username ?? '').trim()
-	if (username && !alpine) commands.splice(enableGa.length, 0, ['loginctl', 'enable-linger', username])
+	if (username && !alpine) commands.push(['loginctl', 'enable-linger', username])
+	if (fedora) {
+		commands.push(['bash', '-lc', 'if command -v setsebool >/dev/null 2>&1; then setsebool -P virt_qemu_ga_run_unconfined 1; systemctl restart qemu-guest-agent; fi'])
+	}
+	if (!alpine && extra.length) commands.push(extraPackageCommand(extra))
+	commands.push(...(Array.isArray(given.commands) ? given.commands : []))
 	return {...given, packages, commands}
 }
 

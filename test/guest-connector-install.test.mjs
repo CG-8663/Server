@@ -280,7 +280,7 @@ test('linux cloud running with qemu-ga starts a connector task through runuser',
 	}
 })
 
-test('installConnector skips the guest’s own LAN address and uses Tailscale', async () => {
+test('installConnector skips the guest’s own LAN address and uses the passt gateway', async () => {
 	const id = 'abcd1234'
 	const execs = []
 	const {root, call} = await open({
@@ -308,8 +308,9 @@ test('installConnector skips the guest’s own LAN address and uses Tailscale', 
 		assert.equal(out.status, 'started')
 		const enroll = execs.find((cmd) => cmd.path === 'runuser')
 		assert.ok(enroll, 'enroll runs as the guest user')
-		assert.match(enroll.args[5], /--server '?https:\/\/100\.64\.1\.2:7780'?/)
+		assert.match(enroll.args[5], /--server '?https:\/\/192\.168\.86\.1:7780'?/)
 		assert.equal(enroll.args[5].includes('192.168.84.81'), false)
+		assert.equal(enroll.args[5].includes('100.64.1.2'), false)
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}
@@ -680,6 +681,8 @@ test('creating testos-amd64 still succeeds when the guest agent never answers', 
 		assert.deepEqual(execs, [])
 		const tasks = await call('machines.tasks')
 		assert.equal(tasks.some((row) => row.machineId === id && row.type === 'connector' && row.status === 'running'), false)
+		const failed = tasks.find((row) => row.machineId === id && row.type === 'connector')
+		assert.equal(failed?.status, 'error')
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}
@@ -705,6 +708,98 @@ test('creating testos-amd64 shows a running connector task while the guest agent
 		})
 		assert.equal(trying?.type, 'connector')
 		assert.equal(trying?.status, 'running')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('creating testos-amd64 records a connector error when install fails', async () => {
+	const execs = []
+	const pairCalls = []
+	const {root, call} = await openCreate({
+		connectorAgentWaitMs: 200,
+		connectorEnrollTimeoutMs: 80,
+		qemuAgent: () => ({
+			ping: async () => {},
+			exec: async (cmd) => {
+				execs.push(cmd)
+				return {pid: execs.length}
+			},
+			status: async (pid) => {
+				const cmd = execs[pid - 1]
+				if (cmd?.path === 'loginctl') return {exited: true, exitcode: 1, out: '', err: 'Linger failed'}
+				return {exited: true, exitcode: 0, out: '', err: ''}
+			},
+		}),
+		connector: {
+			pair: async (input) => {
+				pairCalls.push(input)
+				return fakePair()
+			},
+			list: async () => [],
+		},
+	})
+	try {
+		const {id} = await call('machines.create', {...createSpec, name: 'FailPrep', osId: 'testos-amd64'})
+		await until(async () => (await call('machines.list')).find((x) => x.id === id && x.state === 'running'))
+		const failed = await until(async () => {
+			const tasks = await call('machines.tasks')
+			const t = tasks.find((row) => row.machineId === id && row.type === 'connector' && row.status !== 'running')
+			return t ?? null
+		}, 3000)
+		assert.equal(failed?.status, 'error')
+		assert.match(String(failed?.message ?? ''), /couldn’t prepare|didn’t join|guest agent/i)
+		assert.deepEqual(pairCalls, [])
+		const running = (await call('machines.list')).find((x) => x.id === id)
+		assert.equal(running.state, 'running')
+	} finally {
+		await rm(root, {recursive: true, force: true})
+	}
+})
+
+test('creating testos-amd64 waits until the guest account exists', async () => {
+	const execs = []
+	const pairCalls = []
+	let readyTries = 0
+	let id
+	const {root, call} = await openCreate({
+		connectorAgentWaitMs: 800,
+		qemuAgent: () => ({
+			ping: async () => {},
+			exec: async (cmd) => {
+				execs.push(cmd)
+				return {pid: execs.length}
+			},
+			status: async (pid) => {
+				const cmd = execs[pid - 1]
+				const text = [cmd?.path, ...(cmd?.args ?? [])].join(' ')
+				if (text.includes('/run/archiso') || /\bid chris\b/.test(text)) {
+					readyTries++
+					return {exited: true, exitcode: readyTries >= 3 ? 0 : 1, out: '', err: ''}
+				}
+				return {exited: true, exitcode: 0, out: '', err: ''}
+			},
+		}),
+		connector: {
+			pair: async (input) => {
+				pairCalls.push(input)
+				return fakePair()
+			},
+			list: async () => (id && pairCalls.length ? [{guestOf: id}] : []),
+		},
+	})
+	try {
+		;({id} = await call('machines.create', {...createSpec, name: 'LateUser', osId: 'testos-amd64'}))
+		await until(async () => (await call('machines.list')).find((x) => x.id === id && x.state === 'running'))
+		const done = await until(async () => {
+			const tasks = await call('machines.tasks')
+			const t = tasks.find((row) => row.machineId === id && row.type === 'connector')
+			return t?.status === 'ok' ? t : null
+		}, 3000)
+		assert.equal(done?.status, 'ok')
+		assert.equal(readyTries >= 3, true)
+		assert.equal(pairCalls.length, 1)
+		assert.equal(pairCalls[0].machineId, id)
 	} finally {
 		await rm(root, {recursive: true, force: true})
 	}
