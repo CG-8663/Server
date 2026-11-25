@@ -155,6 +155,13 @@ function LocalCreateMachine({open, onClose, host}: {open: boolean; onClose: () =
 							{caps.data.performanceWarning}
 						</div>
 					)}
+					{caps.error && (
+						<div className="error" role="alert">
+							<Icon name="alert" size={18} />
+							{remote ? `Couldn’t check what ${host.name} can run: ` : 'Couldn’t check what this server can run: '}
+							{(caps.error as Error).message}
+						</div>
+					)}
 					{caps.data && !caps.data.libvirtAvailable && (
 						<div className="error">
 							<Icon name="alert" size={18} />
