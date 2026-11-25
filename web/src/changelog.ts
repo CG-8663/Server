@@ -14,6 +14,11 @@ export const CHANGELOG: Release[] = [
 		fixed: [
 			'Removed the twelve older photo backgrounds (Yosemite Valley through Tower). They were outdated and crowded the picker; Omarchy backgrounds, the server wallpaper, your own photo and solid colours remain. If one of them was your desktop background, it switches to the Omarchy background.',
 			'Dock and desktop icon settings now appear only in the desktop layout. On a phone they controlled things you can’t see there, which was confusing.',
+			'A Mac that joins uses a Python that can verify this server’s certificate.',
+			'When a list cannot be loaded, including backups, plugins, and a new machine, the page says so instead of looking empty.',
+			'Keyboard focus, screen readers, and the phone’s page title follow the screen you are on.',
+			'Daylight and the Omarchy theme keep secondary text and accent text readable.',
+			'The App Store window follows the computer you just picked.',
 		],
 	},
 	{
