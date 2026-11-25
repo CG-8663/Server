@@ -102,9 +102,10 @@ where you left off; add `--purge` to delete those too.
 
 ### Machines (virtual machines)
 
-- **One tap:** Ubuntu, Debian, Fedora, Arch and Alpine (server or desktop), Omarchy, Windows 10/11 from
-  your own ISO, or any ISO in Files. Images are checked against their publisher's checksums, and
-  cloud-init sets up your account.
+- **One tap:** Ubuntu, Debian, and Fedora, as server or desktop, plus Rocky, openSUSE Leap, Arch, Alpine, and Omarchy.
+  CachyOS and Linux Mint boot their own installers. Windows 10/11 comes from your own ISO, or any ISO
+  in Files. Images are checked against their publisher's checksums, and cloud-init sets up your account
+  on the cloud images.
 - **The same controls on the phone and the desktop:** CPU (sockets, cores, type),
   memory, disks, network, boot order, firmware, snapshots, backups (live), clone, restore, pause,
   hibernate, start with the server, task history, live usage graphs and a monitor.

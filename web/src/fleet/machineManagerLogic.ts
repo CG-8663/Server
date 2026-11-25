@@ -11,7 +11,7 @@ export type ReachKind = 'running' | 'stopped' | 'busy' | 'error'
 export type ManagerStat = {
 	id: string
 	label: string
-	icon: 'cpu' | 'memory' | 'disk' | 'gpu' | 'battery' | 'thermo'
+	icon: 'cpu' | 'memory' | 'swap' | 'disk' | 'gpu' | 'battery' | 'thermo'
 	text: string
 	percent: number | null
 	ready: boolean
@@ -19,7 +19,7 @@ export type ManagerStat = {
 	dial: boolean
 }
 
-const ICONS = new Set<ManagerStat['icon']>(['cpu', 'memory', 'disk', 'gpu', 'battery', 'thermo'])
+const ICONS = new Set<ManagerStat['icon']>(['cpu', 'memory', 'swap', 'disk', 'gpu', 'battery', 'thermo'])
 
 /** Browser-only. Squares are the first visit. Gauges stay chosen across machines. */
 export const MANAGER_DIALS_KEY = 'omarchy-server:mm-dials'
