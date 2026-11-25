@@ -15,6 +15,7 @@ import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, query, type Machine} from './api'
 import {HyprlandView, supportsWebCodecs, type HyprlandStatus, type HyprlandWindow} from './HyprlandView'
+import {isClipTarget, markClipTarget, unmarkClipTarget} from './clipPasteTarget'
 import {clipImage, clipText} from './clips'
 import {consoleShouldTakeFocus} from './consoleFocus'
 import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, consoleFailureMessage, effectiveConsoleScale, handleConsoleWheel, keysymOfChar, mouseButtonFromEvent, PASTE_STEP_MS, pasteKeySequence, pasteKeySteps, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, shouldSendConsoleInput, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
@@ -475,10 +476,20 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		remoteClip.current = clean
 		r.clipboardPasteFrom(clean)
 	}
+	// A clip pasted as text goes to the screen used last, not to every open one.
+	const clipTarget = useRef({})
 	useEffect(() => {
+		const me = clipTarget.current
+		markClipTarget(me)
+		// Listening on the document, because the screen's own element can be swapped out.
+		const mark = (e: Event) => {
+			if (e.target instanceof Node && rootRef.current?.contains(e.target)) markClipTarget(me)
+		}
+		document.addEventListener('focusin', mark)
+		document.addEventListener('pointerdown', mark, true)
 		const onClipPaste = (e: Event) => {
 			const text = (e as CustomEvent<{text?: string}>).detail?.text
-			if (!text) return
+			if (!text || !isClipTarget(me)) return
 			const r = rfbRef.current
 			if (!r) return
 			const clean = text.replace(/\r\n?/g, '\n')
@@ -486,7 +497,12 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			r.clipboardPasteFrom(clean)
 		}
 		window.addEventListener('omarchy-clip-paste', onClipPaste)
-		return () => window.removeEventListener('omarchy-clip-paste', onClipPaste)
+		return () => {
+			window.removeEventListener('omarchy-clip-paste', onClipPaste)
+			document.removeEventListener('focusin', mark)
+			document.removeEventListener('pointerdown', mark, true)
+			unmarkClipTarget(me)
+		}
 	}, [])
 	const syncClipboard = () => {
 		if (!window.isSecureContext || !navigator.clipboard?.readText || !document.hasFocus()) return
