@@ -645,9 +645,9 @@ function SetupSheet({mode, current, onClose, onDone}: {mode: 'new' | 'nas'; curr
 					{shares.length === 0 ? (
 						<p className="muted">This account can’t see any shared folders on {host}. Create one on the NAS, then try again.</p>
 					) : (
-						<div className="glass group" style={{marginBottom: 14}}>
+						<div className="glass group" style={{marginBottom: 14}} role="radiogroup" aria-label="Share">
 							{shares.map((x) => (
-								<button type="button" key={x.name} className="row" onClick={() => (haptic(5), setShare(x.name))} style={{minHeight: 52}}>
+								<button type="button" key={x.name} className="row" role="radio" aria-checked={share === x.name} onClick={() => (haptic(5), setShare(x.name))} style={{minHeight: 52}}>
 									<span className="row-ico" style={{'--c': 'var(--teal)'} as CSSProperties}>
 										<Icon name="folder" size={18} />
 									</span>
@@ -1407,7 +1407,7 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 							</div>
 						)}
 						{shown.map((name) => (
-							<button type="button" key={name} className="row" style={{minHeight: 50}} onClick={() => (haptic(5), toggle(name))}>
+							<button type="button" key={name} className="row" style={{minHeight: 50}} role="checkbox" aria-checked={picked.includes(name)} onClick={() => (haptic(5), toggle(name))}>
 								<span className="row-ico" style={{'--c': picked.includes(name) ? 'var(--accent)' : '#8e8e93'} as CSSProperties}>
 									<Icon name={picked.includes(name) ? 'checked' : 'unchecked'} size={18} />
 								</span>
