@@ -6,7 +6,12 @@ const tool = (name, rpc, description, properties = {}, ownerOnly = false) => ({
 	ownerOnly,
 })
 
-const mutation = (name, rpc, description, properties = {}, ownerOnly = false) => ({...tool(name, rpc, description, properties, ownerOnly), kind: 'mutation'})
+// `required` lists what the model must send. It goes in the schema so the model is told, and propose() refuses a call without it.
+const mutation = (name, rpc, description, properties = {}, ownerOnly = false, required = []) => {
+	const spec = {...tool(name, rpc, description, properties, ownerOnly), kind: 'mutation'}
+	if (required.length) spec.parameters = {...spec.parameters, required}
+	return spec
+}
 
 export const READ_TOOLS = [
 	tool('system_diskUsage', 'system.diskUsage', 'Disk used and free on this server'),
@@ -71,12 +76,12 @@ export const READ_TOOLS = [
 ]
 
 export const WRITE_TOOLS = [
-	mutation('apps_install', 'apps.install', 'Install an app', {appId: {type: 'string'}}),
-	mutation('apps_start', 'apps.start', 'Start an app', {appId: {type: 'string'}}),
-	mutation('apps_stop', 'apps.stop', 'Stop an app', {appId: {type: 'string'}}),
-	mutation('apps_restart', 'apps.restart', 'Restart an app', {appId: {type: 'string'}}),
-	mutation('apps_uninstall', 'apps.uninstall', 'Uninstall an app', {appId: {type: 'string'}}),
-	mutation('apps_update', 'apps.update', 'Update an app', {appId: {type: 'string'}}),
+	mutation('apps_install', 'apps.install', 'Install an app', {appId: {type: 'string'}}, false, ['appId']),
+	mutation('apps_start', 'apps.start', 'Start an app', {appId: {type: 'string'}}, false, ['appId']),
+	mutation('apps_stop', 'apps.stop', 'Stop an app', {appId: {type: 'string'}}, false, ['appId']),
+	mutation('apps_restart', 'apps.restart', 'Restart an app', {appId: {type: 'string'}}, false, ['appId']),
+	mutation('apps_uninstall', 'apps.uninstall', 'Uninstall an app', {appId: {type: 'string'}}, false, ['appId']),
+	mutation('apps_update', 'apps.update', 'Update an app', {appId: {type: 'string'}}, false, ['appId']),
 	mutation('machines_create', 'machines.create', 'Create a virtual machine', {
 		name: {type: 'string'},
 		osId: {type: 'string'},
@@ -84,11 +89,11 @@ export const WRITE_TOOLS = [
 		memoryGb: {type: 'integer'},
 		diskSizeGb: {type: 'integer'},
 		username: {type: 'string'},
-	}),
-	mutation('machines_start', 'machines.start', 'Start a virtual machine', {id: {type: 'string'}}),
-	mutation('machines_stop', 'machines.stop', 'Stop a virtual machine', {id: {type: 'string'}}),
-	mutation('machines_restart', 'machines.restart', 'Restart a virtual machine', {id: {type: 'string'}}),
-	mutation('machines_uninstall', 'machines.uninstall', 'Remove a virtual machine', {id: {type: 'string'}}),
+	}, false, ['name', 'osId']),
+	mutation('machines_start', 'machines.start', 'Start a virtual machine', {id: {type: 'string'}}, false, ['id']),
+	mutation('machines_stop', 'machines.stop', 'Stop a virtual machine', {id: {type: 'string'}}, false, ['id']),
+	mutation('machines_restart', 'machines.restart', 'Restart a virtual machine', {id: {type: 'string'}}, false, ['id']),
+	mutation('machines_uninstall', 'machines.uninstall', 'Remove a virtual machine', {id: {type: 'string'}}, false, ['id']),
 	mutation('machines_updateSettings', 'machines.updateSettings', 'Change a virtual machine’s port forwards', {
 		id: {type: 'string'},
 		portForwards: {
@@ -103,7 +108,7 @@ export const WRITE_TOOLS = [
 				},
 			},
 		},
-	}),
+	}, false, ['id', 'portForwards']),
 	mutation('usb_attach', 'usb.attach', 'Bind a host USB serial or Zigbee stick to one virtual machine or app on this server. Exclusive: only one guest can hold a stick. A running app may need a restart.', {
 		deviceId: {type: 'string', description: 'Stable USB id from usb_list'},
 		guest: {
@@ -112,21 +117,22 @@ export const WRITE_TOOLS = [
 				kind: {type: 'string', enum: ['machine', 'app'], description: 'machine = VM, app = container'},
 				id: {type: 'string', description: 'Machine or app id'},
 			},
+			required: ['kind', 'id'],
 		},
-	}, true),
+	}, true, ['deviceId', 'guest']),
 	mutation('usb_detach', 'usb.detach', 'Unbind a host USB stick from the app or virtual machine that holds it. A running app may need a restart.', {
 		deviceId: {type: 'string', description: 'Stable USB id from usb_list'},
-	}, true),
+	}, true, ['deviceId']),
 	mutation('swarm_wake', 'swarm.wake', 'Wake a powered-off Local swarm computer with Wake-on-LAN. Packets go out from this server and every swarm computer that is on. Not a virtual machine, and not over Tailscale alone.', {
 		id: {type: 'string', description: 'Computer id from swarm_list'},
-	}, true),
+	}, true, ['id']),
 	mutation('swarm_action', 'swarm.action', 'Install a plugin, set a theme, or reboot another Local swarm computer — not this server’s Round or Square shape', {
 		id: {type: 'string'},
 		name: {type: 'string', enum: ['plugin-install', 'plugin-remove', 'theme-set', 'reboot']},
 		pluginId: {type: 'string'},
 		theme: {type: 'string'},
-	}, true),
-	mutation('swarm_rename', 'swarm.rename', 'Rename a swarm computer', {id: {type: 'string'}, name: {type: 'string'}}, true),
+	}, true, ['id', 'name']),
+	mutation('swarm_rename', 'swarm.rename', 'Rename a swarm computer', {id: {type: 'string'}, name: {type: 'string'}}, true, ['id', 'name']),
 	mutation('desktop_setLayout', 'desktop.setLayout', 'Set this server’s Shape: Round (gnome: floating, rounded corners; was called Ubuntu) or Square (hyprland: tiling, square corners; was called Hyprland). Not a swarm theme and not omarchy_setTheme. Does not change phone or desktop layout.', {
 		shell: {type: 'string', enum: ['gnome', 'hyprland'], description: 'gnome = Round, floating, rounded. hyprland = Square, tiling, square.'},
 	}),
@@ -135,8 +141,8 @@ export const WRITE_TOOLS = [
 		theme: {type: 'string', description: 'Theme slug whose pictures to show'},
 		id: {type: 'string', description: 'Background id to pre-select (16 hex characters)'},
 	}, true),
-	mutation('omarchy_installPlugin', 'omarchy.installPlugin', 'Install an Omarchy plugin', {id: {type: 'string'}}, true),
-	mutation('omarchy_removePlugin', 'omarchy.removePlugin', 'Remove an Omarchy plugin', {id: {type: 'string'}}, true),
+	mutation('omarchy_installPlugin', 'omarchy.installPlugin', 'Install an Omarchy plugin', {id: {type: 'string'}}, true, ['id']),
+	mutation('omarchy_removePlugin', 'omarchy.removePlugin', 'Remove an Omarchy plugin', {id: {type: 'string'}}, true, ['id']),
 	mutation('system_restart', 'system.restart', 'Restart this server', {}, true),
 	mutation('system_shutdown', 'system.shutdown', 'Shut down this server', {}, true),
 ]
@@ -241,4 +247,37 @@ export function declaredArgs(spec, args) {
 
 export function isWriteTool(name) {
 	return writeByName.has(name)
+}
+
+// Why a write call's arguments can't be used, or null when they are fine. Checks what the schema declares:
+// the required fields, each present field's type, and the allowed values of an enum.
+export function badWriteArgs(spec, args) {
+	const check = (schema, value, path) => {
+		const type = schema?.type
+		const here = path || 'the call'
+		if (Array.isArray(schema?.enum) && !schema.enum.includes(value)) return `${path} must be one of ${schema.enum.join(', ')}`
+		if (type === 'string' && typeof value !== 'string') return `${path} must be text`
+		if (type === 'integer' && !(Number.isInteger(value) || (typeof value === 'string' && /^\d+$/.test(value.trim())))) return `${path} must be a whole number`
+		if (type === 'array') {
+			if (!Array.isArray(value)) return `${path} must be a list`
+			for (let i = 0; i < value.length; i++) {
+				const bad = check(schema.items, value[i], `${path}[${i}]`)
+				if (bad) return bad
+			}
+		}
+		if (type === 'object') {
+			if (!value || typeof value !== 'object' || Array.isArray(value)) return `${here} must be an object`
+			for (const key of schema.required ?? []) {
+				const v = value[key]
+				if (v === undefined || v === null || (typeof v === 'string' && !v.trim())) return `${path ? `${path}.` : ''}${key} is required`
+			}
+			for (const [key, sub] of Object.entries(schema.properties ?? {})) {
+				if (value[key] === undefined) continue
+				const bad = check(sub, value[key], path ? `${path}.${key}` : key)
+				if (bad) return bad
+			}
+		}
+		return null
+	}
+	return check(spec?.parameters, args && typeof args === 'object' ? args : {}, '')
 }
