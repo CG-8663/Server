@@ -239,7 +239,13 @@ export function cardFor(name, args, names = {}) {
 	if (name === 'machines_updateSettings') {
 		const vm = lookup(maps.machines, id, 'this virtual machine')
 		const n = Array.isArray(a.portForwards) ? a.portForwards.length : 0
-		return {title: `Change port forwards on ${vm}`, detail: n ? `${n} port forward${n === 1 ? '' : 's'}` : ''}
+		// The step replaces the whole list, so the card says which ports end up open, not only how many.
+		const ports = (Array.isArray(a.portForwards) ? a.portForwards : [])
+			.filter((f) => f && Number.isInteger(Number(f.hostPort)) && Number.isInteger(Number(f.guestPort)))
+			.map((f) => `${f.protocol === 'udp' ? 'udp' : 'tcp'} ${Number(f.hostPort)} → ${Number(f.guestPort)}`)
+		const listed = ports.length ? `: ${ports.slice(0, 8).join(', ')}${ports.length > 8 ? `, and ${ports.length - 8} more` : ''}` : ''
+		if (Array.isArray(a.portForwards) && !n) return {title: `Change port forwards on ${vm}`, detail: 'Removes every port forward'}
+		return {title: `Change port forwards on ${vm}`, detail: n ? `${n} port forward${n === 1 ? '' : 's'}${listed}` : ''}
 	}
 	if (name === 'swarm_wake') {
 		const host = lookup(maps.swarm, a.id, 'this computer')
