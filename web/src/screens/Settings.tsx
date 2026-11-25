@@ -155,7 +155,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 		save.mutate({path: 'user.revokeSession', input: {sessionId: s.id}, done: `${d.name} signed out`, refresh: ['user.listSessions']})
 	}
 	const revokeOthers = async () => {
-		if (!(await confirm({title: 'Sign out all other devices?', body: 'Every browser and app signed in to your server, except this phone, is signed out.', confirm: 'Sign out others', danger: true})))
+		if (!(await confirm({title: 'Sign out all other devices?', body: 'Every browser and app signed in to your server, except this device, is signed out.', confirm: 'Sign out others', danger: true})))
 			return
 		save.mutate({path: 'user.revokeOtherSessions', done: 'Other devices signed out', refresh: ['user.listSessions']})
 	}
@@ -252,7 +252,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 							</span>
 							<span className="main">
 								<b style={{fontWeight: 550}}>{d.name}</b>
-								<span>{s.current ? 'This phone' : `Active ${ago(s.lastSeenAt)}`}{d.detail ? ` · ${d.detail}` : ''}</span>
+								<span>{s.current ? 'This device' : `Active ${ago(s.lastSeenAt)}`}{d.detail ? ` · ${d.detail}` : ''}</span>
 							</span>
 							{!s.current && (
 								<button className="btn get" style={{color: 'var(--red)'}} onClick={() => revoke(s)}>
