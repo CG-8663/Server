@@ -857,6 +857,10 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				}
 				if (!toolCalls.length) {
 					await stopped(text)
+					if (!text.trim()) {
+						say('error', {message: 'The assistant sent an empty answer; try again'})
+						return finish(row.id)
+					}
 					say('done', {conversationId: row.id})
 					return finish(row.id)
 				}

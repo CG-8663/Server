@@ -160,6 +160,7 @@ export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, mess
 			finished = true
 			// A reply cut off by its length limit may hold a half-written tool call: run none of it.
 			if (stopReason === 'max_tokens') yield {type: 'error', message: 'The answer ran out of room and was cut off; try again or ask for less'}
+			else if (stopReason === 'model_context_window_exceeded') yield {type: 'error', message: 'This chat is too long for the model to answer; start a new chat'}
 			else if (stopReason === 'refusal') yield {type: 'error', message: 'The model declined to answer this'}
 			else yield* toolEvents
 		}
