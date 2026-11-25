@@ -109,7 +109,7 @@ export function connectorCloudInit(img = {}) {
 	const python = img.familyId === 'arch' ? 'python' : 'python3'
 	const given = img.cloudInit && typeof img.cloudInit === 'object' ? img.cloudInit : {}
 	const extra = Array.isArray(given.packages) ? given.packages : []
-	const packages = alpine ? ['qemu-guest-agent', 'python3', 'bash', ...extra] : ['qemu-guest-agent', python]
+	const packages = alpine ? ['qemu-guest-agent', 'python3', 'bash', 'curl', 'runuser', ...extra] : ['qemu-guest-agent', python]
 	const enableGa = alpine
 		? [['rc-update', 'add', 'qemu-guest-agent', 'default'], ['rc-service', 'qemu-guest-agent', 'start']]
 		: [['systemctl', 'enable', '--now', 'qemu-guest-agent']]
@@ -117,7 +117,8 @@ export function connectorCloudInit(img = {}) {
 	const username = String(img.username ?? '').trim()
 	if (username && !alpine) commands.push(['loginctl', 'enable-linger', username])
 	if (fedora) {
-		commands.push(['bash', '-lc', 'if command -v setsebool >/dev/null 2>&1; then setsebool -P virt_qemu_ga_run_unconfined 1; systemctl restart qemu-guest-agent; fi'])
+		commands.push(['/usr/sbin/setsebool', '-P', 'virt_qemu_ga_run_unconfined', '1'])
+		commands.push(['systemctl', 'restart', 'qemu-guest-agent'])
 	}
 	if (!alpine && extra.length) {
 		const extraCmd = extraPackageCommand(extra)
@@ -218,7 +219,7 @@ export function guestConnectorExec({os, osId, username, source, server, ca, toke
 	const built = connectorInstallCommand({source, server, ca, token, allow, caPem})
 	if (isAlpine(osId)) {
 		const enroll = `${built.command} --user-enroll-only`
-		const exec = {path: 'bash', args: ['-lc', `runuser -u ${username} -- bash -lc ${sh(enroll)}; ${alpineOpenrcFollowup(username)}`]}
+		const exec = {path: 'bash', args: ['-lc', `runuser -u ${username} -- bash -lc ${sh(enroll)} && ${alpineOpenrcFollowup(username)}`]}
 		if (built.input) exec.input = built.input
 		return exec
 	}
