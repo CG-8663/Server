@@ -1889,6 +1889,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			const sid = relaySid(req, app.id)
 			if (!sid) return socket.destroy()
 			const up = http.request(upstream(req, sid))
+			// A browser that goes away while the app is still answering must not raise an unhandled 'error'.
+			socket.on('error', () => up.destroy())
 			up.on('upgrade', (ur, us, uhead) => {
 				const lines = [`HTTP/1.1 ${ur.statusCode} ${ur.statusMessage}`]
 				for (let i = 0; i < ur.rawHeaders.length; i += 2) lines.push(`${ur.rawHeaders[i]}: ${ur.rawHeaders[i + 1]}`)
@@ -2169,6 +2171,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false})
 		consoles.add(wss)
 		server.on('upgrade', async (req, socket, head) => {
+			// A browser that resets the connection while we are still checking its session or asking omarchyd
+			// would otherwise raise an unhandled 'error' on its socket and end this process.
+			socket.on('error', () => {})
 			if (app.relayUpgrade(req, socket, head)) return
 			const refuse = (status) => {
 				if (socket.destroyed) return
