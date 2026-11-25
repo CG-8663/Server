@@ -49,7 +49,8 @@ export function anthropicMessages(messages) {
 		} else if (m.role === 'assistant') {
 			// Thinking from this run of the tool loop goes first, exactly as it came.
 			const blocks = Array.isArray(m.thinking) ? m.thinking.map((b) => ({...b})) : []
-			if (m.content) blocks.push({type: 'text', text: String(m.content)})
+			// The API refuses a text block that is only whitespace, and a saved chat replays every message.
+			if (String(m.content ?? '').trim()) blocks.push({type: 'text', text: String(m.content)})
 			for (const t of m.tool_calls ?? []) blocks.push({type: 'tool_use', id: safeId(t.id), name: t.function?.name, input: parseInput(t.function?.arguments)})
 			push('assistant', blocks)
 		} else if (m.role === 'tool') {
