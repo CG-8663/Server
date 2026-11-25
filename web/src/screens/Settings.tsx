@@ -925,7 +925,7 @@ function ShareKeySheet({
 			) : (
 				<div className="glass group" style={{borderRadius: 18, marginBottom: 12, '--inset': '62px'} as CSSProperties}>
 					{others.map((a) => (
-						<button type="button" key={a.userId} className="row" style={{minHeight: 56}} onClick={() => toggle(a.userId)}>
+						<button type="button" key={a.userId} className="row" style={{minHeight: 56}} role="checkbox" aria-checked={picked.includes(a.userId)} onClick={() => toggle(a.userId)}>
 							<span className="row-ico" style={{'--c': 'var(--blue)'} as CSSProperties}>
 								<Icon name="user" size={19} />
 							</span>
