@@ -43,7 +43,8 @@ def port_env(name):
 def same(left, right):
     if not left or not right or len(left) != len(right):
         return False
-    return hmac.compare_digest(left, right)
+    # compare_digest refuses a str with a non-ASCII character, and a header can hold any byte.
+    return hmac.compare_digest(left.encode("utf-8", "replace"), right.encode("utf-8", "replace"))
 
 
 def header_map(lines):
