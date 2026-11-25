@@ -14,9 +14,9 @@ import {solidOf, WALLPAPERS, useDeskConfig, wallpaperSrc} from './desktop/config
 import {wallpaperBlocked} from './desktop/wallpaperGate'
 import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
+import {darkenForTextOn, darkenHslForWhite, hslToRgb, legibleMuted, pickOnAccent, resolveCssColor} from './theme/contrast'
 import {reachLabel} from './fleet/machineManagerLogic'
 import {cleanTempPicks} from './fleet/temperatures'
-import {darkenHslForWhite, pickOnAccent, resolveCssColor} from './theme/contrast'
 import {initials as nameInitials} from './initials'
 import {paddingBottomPlus} from './scrollPad'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
@@ -883,7 +883,7 @@ function applyOmarchyPalette(root: HTMLElement, on: boolean) {
 	set('--bg-solid', mix(bg, '#000', 88))
 	set('--fg', fg)
 	set('--fg-2', mix(fg, bg, 88))
-	set('--muted', c.palette?.brightBlack && c.palette.brightBlack !== bg ? mix(c.palette.brightBlack, fg, 55) : mix(fg, bg, 62))
+	set('--muted', legibleMuted(bg, fg, c.palette?.brightBlack) ?? (c.palette?.brightBlack && c.palette.brightBlack !== bg ? mix(c.palette.brightBlack, fg, 55) : mix(fg, bg, 62)))
 	set('--faint', mix(fg, 'transparent', 8))
 	set('--glass', mix(bg, 'transparent', 94))
 	set('--glass-2', mix(fg, bg, 8))
@@ -918,13 +918,14 @@ export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 		const source = p.theme === 'custom' ? (p.customBrandHsl ?? brandHsl) : brandHsl
 		const [h, s, l] = (source ?? FALLBACK_BRAND).split(' ').map((v) => parseFloat(v))
 		root.style.setProperty('--accent', darkenHslForWhite(h, s, l))
-		root.style.setProperty('--accent-text', `hsl(${h} ${Math.min(s, 95)}% ${light ? Math.min(l, 42) : Math.max(l, 66)}%)`)
+		const [r, g, b] = hslToRgb(h, Math.min(s, 95), Math.min(l, 42))
+		root.style.setProperty('--accent-text', (light && darkenForTextOn(`rgb(${r}, ${g}, ${b})`)) || `hsl(${h} ${Math.min(s, 95)}% ${light ? Math.min(l, 42) : Math.max(l, 66)}%)`)
 		root.style.setProperty('--on-accent', '#fff')
 	} else {
 		const token = `var(--${p.accent})`
 		root.style.setProperty('--accent', token)
-		root.style.setProperty('--accent-text', token)
 		const resolved = resolveCssColor(root, token)
+		root.style.setProperty('--accent-text', (light && darkenForTextOn(resolved)) || token)
 		root.style.setProperty('--on-accent', pickOnAccent(resolved, light ? '#fff' : '#111'))
 	}
 	const meta = document.querySelector('meta[name="theme-color"]')
