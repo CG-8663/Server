@@ -113,7 +113,7 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 
 	return (
 		<div className="stagger">
-			<div className="page-head">
+			<div className="page-head store-head">
 				{onBack && (
 					<button className="round-btn" aria-label="Back" onClick={onBack}>
 						<Icon name="back" size={20} />
