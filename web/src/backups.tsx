@@ -6,6 +6,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
 import {queryProblem, useBrowserOnline} from './connection'
+import {errorText} from './queryNotice'
 import {Icon} from './icons'
 import {Field, Group, Row, Segmented, Sheet, SheetHeader, Switch, bytes, haptic, useConfirm, useToast} from './ui'
 
@@ -295,6 +296,15 @@ export function BackupsPage({onBack}: {onBack?: () => void}) {
 						{(comps.data ?? []).filter((c) => !c.removed).map((c) => (
 							<ComputerRow key={c.id} c={c} onOpen={() => setComputer(c.id)} />
 						))}
+						{comps.error && !comps.data && (
+							<div className="row static">
+								<span className="main">
+									<span className="bk-err" role="alert">
+										Couldn’t list the computers: {errorText(comps.error)}
+									</span>
+								</span>
+							</div>
+						)}
 						{comps.isSuccess && (comps.data ?? []).filter((c) => !c.removed).length === 0 && (
 							<div className="row static">
 								<span className="main">
@@ -316,6 +326,15 @@ export function BackupsPage({onBack}: {onBack?: () => void}) {
 						{snaps.isLoading && (
 							<div className="row static">
 								<span className="spinner" />
+							</div>
+						)}
+						{snaps.error && appsBacked.size === 0 && (
+							<div className="row static">
+								<span className="main">
+									<span className="bk-err" role="alert">
+										Couldn’t list the app backups: {errorText(snaps.error)}
+									</span>
+								</span>
 							</div>
 						)}
 						{snaps.isSuccess && appsBacked.size === 0 && (
@@ -1481,6 +1500,11 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 						<button className="btn block primary" disabled={busy || !!c.running || !c.online} onClick={() => act('backups.runComputer', {id: c.id}, 'Backup started')}>
 							<Icon name="history" size={17} /> Back up now
 						</button>
+					)}
+					{(c.enabled || c.removed) && snaps.error && computerSnapshotRows(snaps.data).length === 0 && (
+						<p className="bk-err" role="alert">
+							Couldn’t list the backups: {errorText(snaps.error)}
+						</p>
 					)}
 					{(c.enabled || c.removed) && computerSnapshotRows(snaps.data).length > 0 && (
 						<>
