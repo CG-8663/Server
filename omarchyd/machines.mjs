@@ -1389,7 +1389,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// A changed definition: libvirt keeps it for the next start. While running, it's pending until then.
 	async function markChanged(m, {markPending = true} = {}) {
 		if (m.state !== 'error' && !isBusy(m.id)) {
-			await define(m)
+			try {
+				await define(m)
+			} catch (error) {
+				throw engineFailure(error, m.name, 'save that change')
+			}
 			if (markPending && (await liveState(m)) !== 'stopped') m.pending = true
 		}
 		await save()
