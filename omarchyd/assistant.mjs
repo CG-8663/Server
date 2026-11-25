@@ -315,6 +315,14 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 				keyId: body.keyId ? String(body.keyId) : undefined,
 				signal: ac.signal,
 				emit,
+				// A new chat has no id until its first message is saved. From then on the chat is taken.
+				onConversation: (id) => {
+					if (lock) return
+					const key = `${who.userId}\u0000${id}`
+					if (turning.has(key)) return
+					turning.set(key, ac)
+					lock = key
+				},
 			})
 			if (timedOut) emit({event: 'error', data: {message: 'The assistant stopped answering, so this reply was cut off. Try again.', ...(out?.conversationId ? {conversationId: out.conversationId} : {})}})
 		} finally {

@@ -14,6 +14,7 @@ import {
 	createRttStats,
 	updateRttStats,
 } from './hyprlandStreamState.mjs'
+import {bindConsoleWheel} from './consoleHelpers'
 import {Icon} from './icons'
 import {getRailDeviceId, StreamProfilerSheet, type StreamCodec, type StreamProfile, type StreamProfilesResponse} from './screens/StreamProfiler'
 
@@ -1868,6 +1869,19 @@ export function HyprlandView({
 		return () => el.removeEventListener('pointerrawupdate', onRaw)
 	}, [canvasMode])
 
+	// A native, non-passive listener: React's onWheel is passive, so its preventDefault is ignored and a
+	// pinch or Ctrl+scroll would also zoom the browser page.
+	const sendScrollRef = useRef(sendBinaryScroll)
+	sendScrollRef.current = sendBinaryScroll
+	useEffect(() => {
+		const el = canvasRef.current
+		if (!el) return
+		return bindConsoleWheel(el, (e) => {
+			e.preventDefault()
+			sendScrollRef.current(e.deltaX * 0.15, e.deltaY * 0.15)
+		})
+	}, [canvasMode])
+
 	const encoderLabel =
 		meta?.encoder === 'hevc444_vaapi_dmabuf'
 			? 'HEVC 4:4:4 DMA-BUF'
@@ -2050,10 +2064,6 @@ export function HyprlandView({
 				onPointerLeave={() => {
 					if (canvasRef.current) canvasRef.current.style.cursor = 'default'
 					releaseHeldInputs()
-				}}
-				onWheel={(e) => {
-					e.preventDefault()
-					sendBinaryScroll(e.deltaX * 0.15, e.deltaY * 0.15)
 				}}
 			/>
 

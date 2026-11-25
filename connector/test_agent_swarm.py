@@ -271,6 +271,23 @@ class ServicesAndFilesTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 agent.files_list({"path": "/Home/.local/share/keyrings"}, home=home)
 
+    def test_renaming_or_trashing_a_link_acts_on_the_link_not_what_it_points_to(self):
+        with tempfile.TemporaryDirectory() as home:
+            os.makedirs(os.path.join(home, "docs"))
+            real = os.path.join(home, "docs", "report.txt")
+            with open(real, "w") as f:
+                f.write("report")
+            os.symlink(real, os.path.join(home, "shortcut"))
+            res = agent.files_rename({"path": "/Home/shortcut", "newName": "renamed"}, home=home)
+            self.assertEqual(res["path"], "/Home/renamed")
+            self.assertTrue(os.path.islink(os.path.join(home, "renamed")))
+            self.assertFalse(os.path.lexists(os.path.join(home, "shortcut")))
+            self.assertTrue(os.path.isfile(real), "the file the link points to must stay where it was")
+            agent.files_trash({"path": "/Home/renamed"}, home=home)
+            self.assertFalse(os.path.lexists(os.path.join(home, "renamed")))
+            self.assertTrue(os.path.islink(os.path.join(home, ".local", "share", "Trash", "files", "renamed")))
+            self.assertTrue(os.path.isfile(real))
+
     def test_files_jail_blocks_traversal_symlink_escape_and_connector_config(self):
         with tempfile.TemporaryDirectory() as outer:
             home = os.path.join(outer, "home")

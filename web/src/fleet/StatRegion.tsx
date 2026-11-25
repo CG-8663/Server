@@ -1,12 +1,20 @@
 // The stats region. A tap cycles the account's saved view. Home's aggregate gauges do not use this.
-import {createContext, useContext, useState, type ReactNode} from 'react'
+import {createContext, useContext, useEffect, useId, useRef, useState, type ReactNode, type RefObject} from 'react'
 
 import {Icon} from '../icons'
 import {swarmGaugeItems, type SwarmMetrics} from '../swarm/gauges'
 import {Ring, StatChip, haptic, levelColor, type Prefs} from '../ui'
+import {formatTemp, machineTemperatures, sortTemps, tempIsShown, tempUnitOf, toggleTempPick, type TempProbe, type TempSensor, type TempUnit} from './temperatures'
 import {STAT_VIEW_NAME, gaugeCaption, nextStatView, readingFace, statReadings, statViewOf, type PostureSummary, type StatReading, type StatView} from './statView'
 
-type StatViewApi = {view: StatView; cycle: () => void}
+type StatViewApi = {
+	view: StatView
+	cycle: () => void
+	tempPicks: Prefs['tempPicks']
+	setTempPicks: (next: Prefs['tempPicks']) => void
+	tempUnit: TempUnit
+	setTempUnit: (unit: TempUnit) => void
+}
 
 const StatViewContext = createContext<StatViewApi | null>(null)
 
@@ -23,8 +31,14 @@ export function StatViewProvider({prefs, setPrefs, children}: {prefs: Prefs; set
 		})
 		setNote(name ? `Stats shown as ${name}` : '')
 	}
+	const setTempPicks = (next: Prefs['tempPicks']) => {
+		setPrefs((current) => ({...current, tempPicks: next ?? null}))
+	}
+	const setTempUnit = (unit: TempUnit) => {
+		setPrefs((current) => ({...current, tempUnit: unit === 'f' ? 'f' : null}))
+	}
 	return (
-		<StatViewContext.Provider value={{view, cycle}}>
+		<StatViewContext.Provider value={{view, cycle, tempPicks: prefs.tempPicks ?? null, setTempPicks, tempUnit: tempUnitOf(prefs.tempUnit), setTempUnit}}>
 			{children}
 			<div className="sr-only" role="status" aria-live="polite">
 				{note}
@@ -42,15 +56,25 @@ export function useStatView(): StatViewApi {
 export function LiveStats({
 	metrics,
 	temp = null,
+	sensors = null,
 	diskSizeGb = null,
 	posture = null,
+	machineName,
+	empty = null,
 }: {
 	metrics: SwarmMetrics | null | undefined
 	temp?: number | null
+	sensors?: readonly TempProbe[] | null
 	diskSizeGb?: number | null
 	posture?: PostureSummary
+	machineName?: string
+	empty?: ReactNode
 }) {
-	return <StatRegion readings={statReadings({gauges: swarmGaugeItems(metrics), temp, diskSizeGb, posture})} />
+	const {tempPicks, tempUnit} = useStatView()
+	const temps = machineTemperatures({temp, sensors, gpus: metrics?.gpus})
+	const readings = statReadings({gauges: swarmGaugeItems(metrics), temp: null, diskSizeGb, posture, temps, tempPicks, tempUnit})
+	if (!readings.length && !temps.length) return <>{empty}</>
+	return <StatRegion readings={readings} temps={temps} machineName={machineName} />
 }
 
 function ValueFace({text, color}: {text: string; color?: string}) {
@@ -69,64 +93,174 @@ function ValueFace({text, color}: {text: string; color?: string}) {
 	)
 }
 
-/** One button for the whole region. Its name is the readings, so each machine stays distinct. */
-export function StatRegion({readings}: {readings: readonly StatReading[]}) {
-	const {view, cycle} = useStatView()
-	if (!readings.length) return null
-	const summary = `${readings.map((r) => `${r.label} ${r.text}`).join(', ')}. Shown as ${STAT_VIEW_NAME[view]}.`
+function useDialogDismiss(dialogRef: RefObject<HTMLDialogElement | null>, active: boolean) {
+	useEffect(() => {
+		if (!active) return
+		const dialog = dialogRef.current
+		if (!dialog) return
+		dialog.setAttribute('closedby', 'any')
+		if ('closedBy' in HTMLDialogElement.prototype) return
+		let pressedOutside = false
+		const outside = (event: PointerEvent) => {
+			const rect = dialog.getBoundingClientRect()
+			return event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom
+		}
+		const down = (event: PointerEvent) => {
+			pressedOutside = outside(event)
+		}
+		const up = (event: PointerEvent) => {
+			if (pressedOutside && outside(event)) dialog.close()
+		}
+		dialog.addEventListener('pointerdown', down)
+		dialog.addEventListener('pointerup', up)
+		return () => {
+			dialog.removeEventListener('pointerdown', down)
+			dialog.removeEventListener('pointerup', up)
+		}
+	}, [dialogRef, active])
+}
+
+const nativeSwitch = typeof HTMLInputElement !== 'undefined' && 'switch' in HTMLInputElement.prototype
+
+/** Celsius or Fahrenheit. Off is Celsius. The native switch attribute is Safari-only, so other browsers get the same pill. */
+function TempUnitSwitch({fahrenheit, onChange}: {fahrenheit: boolean; onChange: (on: boolean) => void}) {
 	return (
-		<button
-			type="button"
-			className={`stat-region stat-${view}`}
-			onClick={(e) => {
-				e.stopPropagation()
-				cycle()
-			}}
-		>
-			<span className="sr-only">{summary}</span>
-			{view === 'line' && (
-				<span className="specs" aria-hidden="true">
-					{readings.map((r) => (
-						<StatChip key={r.id} icon={r.icon} label={r.label}>
-							{r.text}
-						</StatChip>
-					))}
-				</span>
-			)}
-			{view === 'blocks' && (
-				<span className="mm-squares" aria-hidden="true">
-					{readings.map((r) => (
-						<span className="mm-square" key={r.id}>
-							<Icon name={r.icon} size={16} />
-							<b>{r.text}</b>
-							<span>{r.label}</span>
-						</span>
-					))}
-				</span>
-			)}
-			{view === 'gauges' && (
-				<span className="glass gauges" data-n={readings.length} aria-hidden="true">
-					{readings.map((r) => {
-						const caption = gaugeCaption(r)
-						return (
-							<span className="gauge" key={r.id}>
-								{readingFace(r) === 'arc' && r.percent != null ? (
-									<Ring value={r.percent} color={r.color ?? levelColor(r.percent)} label={`${r.label} ${r.text}`}>
-										<span className="pct">
-											{Math.round(r.percent)}
-											<small>%</small>
-										</span>
-									</Ring>
-								) : (
-									<ValueFace text={r.text} color={r.color} />
-								)}
-								<span className="k">{r.label}</span>
-								{caption ? <span className="sub">{caption}</span> : null}
+		<div className="temp-unit">
+			<span className={fahrenheit ? undefined : 'on'} aria-hidden="true">
+				°C
+			</span>
+			<label>
+				<input
+					type="checkbox"
+					className={nativeSwitch ? 'temp-unit-box' : 'temp-unit-box fallback'}
+					checked={fahrenheit}
+					aria-label="Fahrenheit"
+					ref={(node) => {
+						if (!node) return
+						node.setAttribute('switch', '')
+						if (!nativeSwitch) node.setAttribute('role', 'switch')
+					}}
+					onChange={(event) => {
+						haptic(5)
+						onChange(event.target.checked)
+					}}
+				/>
+			</label>
+			<span className={fahrenheit ? 'on' : undefined} aria-hidden="true">
+				°F
+			</span>
+		</div>
+	)
+}
+
+/** One button for the whole region. Its name is the readings, so each machine stays distinct. */
+export function StatRegion({readings, temps = [], machineName}: {readings: readonly StatReading[]; temps?: readonly TempSensor[]; machineName?: string}) {
+	const {view, cycle, tempPicks, setTempPicks, tempUnit, setTempUnit} = useStatView()
+	const dialogRef = useRef<HTMLDialogElement>(null)
+	const titleId = useId()
+	useDialogDismiss(dialogRef, temps.length > 0)
+	if (!readings.length && !temps.length) return null
+	const summary = `${readings.map((r) => `${r.label} ${r.text}`).join(', ')}. Shown as ${STAT_VIEW_NAME[view]}.`
+	const listed = sortTemps(temps)
+	const openTemps = () => {
+		const dialog = dialogRef.current
+		if (!dialog || dialog.open) return
+		// The list stays mounted while the dialog is closed, so the checkbox has to
+		// carry the attribute at the moment showModal runs or the close button takes focus.
+		dialog.querySelector('input.temp-pick-box')?.setAttribute('autofocus', '')
+		dialog.showModal()
+	}
+	return (
+		<div className={`stat-hold stat-${view}`}>
+			<button
+				type="button"
+				className={`stat-region stat-${view}`}
+				onClick={(e) => {
+					e.stopPropagation()
+					cycle()
+				}}
+			>
+				<span className="sr-only">{summary}</span>
+				{view === 'line' && (
+					<span className="specs" aria-hidden="true">
+						{readings.map((r) => (
+							<StatChip key={r.id} icon={r.icon} label={r.label}>
+								<span style={r.color ? {color: r.color} : undefined}>{r.text}</span>
+							</StatChip>
+						))}
+					</span>
+				)}
+				{view === 'blocks' && (
+					<span className="mm-squares" aria-hidden="true">
+						{readings.map((r) => (
+							<span className="mm-square" key={r.id}>
+								<Icon name={r.icon} size={16} />
+								<b style={r.color ? {color: r.color} : undefined}>{r.text}</b>
+								<span>{r.label}</span>
 							</span>
-						)
-					})}
-				</span>
+						))}
+					</span>
+				)}
+				{view === 'gauges' && (
+					<span className="glass gauges" data-n={readings.length} aria-hidden="true">
+						{readings.map((r) => {
+							const caption = gaugeCaption(r)
+							return (
+								<span className="gauge" key={r.id}>
+									{readingFace(r) === 'arc' && r.percent != null ? (
+										<Ring value={r.percent} color={r.color ?? levelColor(r.percent)} label={`${r.label} ${r.text}`} now={r.meter?.now} max={r.meter?.max}>
+											<span className="pct">
+												{r.meter ? Math.round(r.meter.now) : Math.round(r.percent)}
+												<small>{r.meter ? (r.meter.unit ?? '°C') : '%'}</small>
+											</span>
+										</Ring>
+									) : (
+										<ValueFace text={r.text} color={r.color} />
+									)}
+									<span className="k">{r.label}</span>
+									{caption ? <span className="sub">{caption}</span> : null}
+								</span>
+							)
+						})}
+					</span>
+				)}
+			</button>
+			{listed.length > 0 && (
+				<button type="button" className="stat-pencil" aria-label="Choose temperatures" onClick={openTemps}>
+					<Icon name="pencil" size={15} />
+				</button>
 			)}
-		</button>
+			{listed.length > 0 && (
+				<dialog ref={dialogRef} className="temp-dialog" aria-labelledby={titleId}>
+					<div className="temp-dialog-head">
+						<h1 id={titleId}>Temperatures</h1>
+						<form method="dialog">
+							<button className="icon-btn" aria-label="Close">
+								<Icon name="close" size={18} />
+							</button>
+						</form>
+					</div>
+					<p className="temp-dialog-where">{machineName ? `On ${machineName}.` : 'On this machine.'} These are the readings right now.</p>
+					<TempUnitSwitch fahrenheit={tempUnit === 'f'} onChange={(on) => setTempUnit(on ? 'f' : 'c')} />
+					<div className="temp-picks">
+						{listed.map((sensor) => (
+							<label className="temp-pick" key={sensor.id}>
+								<input
+									type="checkbox"
+									className="temp-pick-box"
+									checked={tempIsShown(sensor, tempPicks ?? null)}
+									onChange={(event) => setTempPicks(toggleTempPick(tempPicks ?? null, sensor, event.target.checked))}
+								/>
+								<span className="temp-pick-name">
+									{sensor.label}
+									{sensor.stuck ? <small>Not changing</small> : null}
+								</span>
+								<b>{formatTemp(sensor.celsius, tempUnit)}</b>
+							</label>
+						))}
+					</div>
+				</dialog>
+			)}
+		</div>
 	)
 }

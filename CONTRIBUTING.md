@@ -4,7 +4,7 @@ Thanks for helping. Bug reports, ideas and pull requests are all welcome.
 
 ## Getting set up
 
-You need Node.js 20 or newer (CI uses 22). You don't need Omarchy to work on most of it.
+You need Node.js 22.13 or newer (CI uses 22). The tests run TypeScript directly with `--experimental-strip-types`, which Node 20 does not have, and the PDF viewer library needs 22.13. You don't need Omarchy to work on most of it.
 
 ```sh
 git clone https://github.com/MyOwnDataCenter/server.git

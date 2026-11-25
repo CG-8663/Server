@@ -300,6 +300,41 @@ test('a failed store load is not cached, and a failed refresh still throws', asy
 	await assert.rejects(failing.procedures['appStore.registry'].run(), /Couldn't reach/)
 })
 
+test('the hourly store check going offline keeps the catalog that is already downloaded (#681, #129)', async (t) => {
+	const root = await realpath(await mkdtemp(join(os.tmpdir(), 'app-store-offline-')))
+	t.after(() => rm(root, {recursive: true, force: true}))
+	const origin = join(root, 'origin')
+	await mkdir(join(origin, 'one'), {recursive: true})
+	await writeFile(join(origin, 'omarchy-app-store.yml'), 'id: demo\nname: Demo\n')
+	await writeFile(join(origin, 'one', 'omarchy-app.yml'), 'manifestVersion: 1\nid: one\nname: One\nport: 37023\n')
+	await writeFile(join(origin, 'one', 'docker-compose.yml'), 'services:\n  web:\n    image: x\n')
+	git(origin, 'init', '-q', '-b', 'main')
+	git(origin, 'add', '.')
+	git(origin, 'commit', '-qm', 'store')
+	const url = `file://${origin}`
+	let online = true
+	const run = async (cmd, args, opts = {}) => {
+		if (cmd !== 'git') return ''
+		if (!online) throw Object.assign(new Error('git failed'), {stderr: 'fatal: unable to access: Could not resolve host\n'})
+		return execFileSync('git', gitArgv(args), {cwd: opts.cwd, stdio: 'pipe'}).toString()
+	}
+	const apps = createApps({dataDir: join(root, 'data'), home: join(root, 'home'), allowFileStores: true, defaultStores: [{url}], systemApps: null, run})
+	t.after(() => apps.close())
+	assert.deepEqual((await apps.procedures['appStore.registry'].run())[0].apps.map((a) => a.id), ['one'])
+	online = false
+	// Two hours later the cached listing and the last check have both expired, and the network is gone.
+	const real = Date.now
+	Date.now = () => real() + 2 * 60 * 60_000
+	try {
+		const later = await apps.procedures['appStore.registry'].run()
+		assert.deepEqual(later[0].apps.map((a) => a.id), ['one'])
+		// An explicit "Check for new apps" still says it could not reach the store.
+		await assert.rejects(apps.procedures['appStore.refresh'].run(), /Couldn't reach/)
+	} finally {
+		Date.now = real
+	}
+})
+
 test('Tailscale’s private port skips another app’s public port', async (t) => {
 	const target = loopback('tailscale')
 	assert.equal(await portFree(target), true, `tailscale loopback ${target} is already taken on this host`)
