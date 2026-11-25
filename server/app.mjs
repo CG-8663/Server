@@ -598,7 +598,14 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 
 	// The connector on another computer trading its one-time pairing code for its own key
 	// (omarchyd checks the code; nothing else is reachable without a key).
-	app.post('/connector/enroll', express.json({limit: '64kb'}), async (req, res) => {
+	// A body that is not JSON, or too large, gets the short JSON answer omarchyd gives, not Express's HTML error page.
+	const enrollBodyError = (error, _req, res, next) => {
+		if (res.headersSent) return next(error)
+		const status = Number(error?.status ?? error?.statusCode)
+		if (!(status >= 400 && status < 500)) return next(error)
+		res.status(status).json({error: status === 413 ? 'Too large' : 'Bad request'})
+	}
+	app.post('/connector/enroll', express.json({limit: '64kb'}), enrollBodyError, async (req, res) => {
 		try {
 			const r = await fetchImpl(`${getClient().baseUrl}/connector/enroll`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(req.body ?? {}), signal: AbortSignal.timeout(15_000)})
 			res.status(r.status).json(await r.json().catch(() => ({})))
