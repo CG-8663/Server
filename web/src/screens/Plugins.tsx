@@ -99,7 +99,7 @@ export function PluginBrowser({q}: {q: string}) {
 			<div className="plugin-chipbar">
 				<CategoryChips label="Plugin categories">
 					{['', ...(data?.categories ?? [])].map((c) => (
-						<button key={c || 'all'} type="button" role="tab" aria-selected={category === c} className={`chip${category === c ? ' on' : ''}`} onClick={() => (haptic(5), setCategory(c))}>
+						<button key={c || 'all'} type="button" role="tab" aria-selected={category === c} tabIndex={category === c ? 0 : -1} className={`chip${category === c ? ' on' : ''}`} onClick={() => (haptic(5), setCategory(c))}>
 							{c || 'All'}
 						</button>
 					))}

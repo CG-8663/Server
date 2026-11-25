@@ -8,6 +8,7 @@ import {queryClearsOnSignOut} from '../signOutQueries'
 import {useBootstrap, useUser} from '../data'
 import {Icon} from '../icons'
 import {applyPrefsUpdate, prefsAfterPhotoUpload, prefsChoosingYourPhoto} from '../photoPrefs'
+import {RADIO_SELECTOR, rovingKeyDown, rovingTabIndex} from '../roving'
 import {ACCENTS, Card, KV, Row, THEMES, VersionTag, customBackgroundUrl, haptic, omarchyBackgroundUrl, preparePhoto, useConfirm, useOmarchyThemes, useToast, type Prefs, type ThemeId} from '../ui'
 import {FactoryReset} from './machineHost'
 
@@ -43,8 +44,8 @@ export function Appearance({prefs, setPrefs, wallpaper, onTheme}: {prefs: Prefs;
 	return (
 		<Card>
 			<input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => upload(e.target.files?.[0])} />
-			<div className="themes" role="radiogroup" aria-label="Theme">
-				{THEMES.filter((t) => t.id !== 'omarchy').map((t) => {
+			<div className="themes" role="radiogroup" aria-label="Theme" onKeyDown={(e) => rovingKeyDown(e, RADIO_SELECTOR)}>
+				{THEMES.filter((t) => t.id !== 'omarchy').map((t, ti) => {
 					const on = prefs.theme === t.id
 					const isWall = t.id === 'horizon'
 					const isPhoto = t.id === 'custom'
@@ -54,6 +55,7 @@ export function Appearance({prefs, setPrefs, wallpaper, onTheme}: {prefs: Prefs;
 							key={t.id}
 							role="radio"
 							aria-checked={on}
+							tabIndex={rovingTabIndex(on, ti, THEMES.some((x) => x.id !== 'omarchy' && x.id === prefs.theme))}
 							className={`theme-card${on ? ' on' : ''}`}
 							style={{background: bg, color: t.fg, minHeight: isWall || isPhoto ? 104 : undefined}}
 							onClick={() => {
@@ -97,12 +99,13 @@ export function Appearance({prefs, setPrefs, wallpaper, onTheme}: {prefs: Prefs;
 			<div className="section-head" style={{margin: '18px 0 6px'}}>
 				<h2>Accent</h2>
 			</div>
-			<div className="accents" role="radiogroup" aria-label="Accent color">
-				{ACCENTS.map((a) => (
+			<div className="accents" role="radiogroup" aria-label="Accent color" onKeyDown={(e) => rovingKeyDown(e, RADIO_SELECTOR)}>
+				{ACCENTS.map((a, ai) => (
 					<button
 						key={a}
 						role="radio"
 						aria-checked={prefs.accent === a}
+						tabIndex={rovingTabIndex(prefs.accent === a, ai, ACCENTS.includes(prefs.accent))}
 						aria-label={a === 'wallpaper' ? 'Match background' : a}
 						className={`accent-btn${prefs.accent === a ? ' on' : ''}`}
 						style={{background: a === 'wallpaper' ? accentPreview : `var(--${a})`}}
