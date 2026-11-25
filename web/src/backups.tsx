@@ -1,7 +1,7 @@
 // This server's backups: apps, settings, and folders, encrypted locally before upload to Google Drive or a NAS.
 // Opened from this server on the Machines page.
 import {useEffect, useMemo, useState, type CSSProperties, type FormEvent} from 'react'
-import {backupGapText, computerSheetChanged, computerSnapshotRows, folderListError, formatBackupHour, formatBackupStamp, formatBackupWhen, historyRowTone, serverLastRun} from './backupHelpers'
+import {backupGapText, computerSheetChanged, computerSnapshotRows, folderListError, formatBackupHour, formatBackupStamp, formatBackupWhen, gdriveSignInFinished, historyRowTone, serverLastRun} from './backupHelpers'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
@@ -1038,7 +1038,7 @@ function GdriveSetupSheet({current, onClose, onDone}: {current: BackupStatus; on
 		const check = async () => {
 			try {
 				const st = await query<GdriveStatus>('backups.gdrive.status')
-				if (st.connected) {
+				if (gdriveSignInFinished(st, {connected: !!g?.connected, email: g?.email})) {
 					setConnected(true)
 					setEmail(st.email)
 					setQuota(st.quota)
@@ -1054,7 +1054,7 @@ function GdriveSetupSheet({current, onClose, onDone}: {current: BackupStatus; on
 			window.removeEventListener('focus', onFocus)
 			window.clearInterval(id)
 		}
-	}, [authUrl, connected, qc])
+	}, [authUrl, connected, qc, g?.connected, g?.email])
 
 	const copyUri = async () => {
 		try {
