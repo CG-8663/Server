@@ -1564,6 +1564,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
             <div className="select-bar">
               <button
                 className="sb-cancel"
+                aria-label={`Cancel selection, ${selected.size} selected`}
                 onClick={() => setSelected(new Set())}
               >
                 <Icon name="close" size={18} stroke={2.2} />
