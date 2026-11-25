@@ -1350,6 +1350,15 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 	// Incremental delta cutover re-sync for shares & appdata copied in the last job (no re-install).
 	async function resync(input = {}) {
 		if (starting || (job && !job.endedAt)) throw new RpcError('CONFLICT', 'An import is already running')
+		// Held until the new job is assigned, so a second request in the gap is refused (as Start does).
+		starting = true
+		try {
+			return await beginResync(input)
+		} finally {
+			starting = false
+		}
+	}
+	async function beginResync(input) {
 		await ready
 		if (!session) throw new RpcError('PRECONDITION_FAILED', 'Connect to your Unraid server first')
 		if (!job || job.host !== session.host) throw new RpcError('PRECONDITION_FAILED', 'Run an initial move from this Unraid server first')
