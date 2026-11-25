@@ -2499,7 +2499,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		})
 		machines.push(m)
 		busy.set(id, {state: 'installing', progress: 0})
-		await save()
+		try {
+			await save()
+		} catch (error) {
+			// A refused save leaves no machine behind, and its name stays free.
+			machines = machines.filter((x) => x !== m)
+			busy.delete(id)
+			throw error
+		}
 		// Hold the live source for the whole copy. A settling entry expires on a short timer, so replace it;
 		// a real busy entry (no settling flag) belongs to another operation and is left alone.
 		const liveSource = machines.find((x) => x === source)
