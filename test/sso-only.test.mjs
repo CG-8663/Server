@@ -211,3 +211,39 @@ test('the label alone opens nothing: every v2 part, and the 7781 origin, must ag
 		await rm(dir, {recursive: true, force: true})
 	}
 })
+
+test('v2 self-test while v1 (Access) is active: the probe is judged by SSO-only rules, answers synthetically, and changes nothing', async () => {
+	const V1 = () => ({enabled: true, verified: true, blocked: false, mode: 'cloudflare_access', syncedAt: Date.now(), hostname: HOST, audience: 'a'.repeat(64), issuer: 'https://modc-test.cloudflareaccess.com', certsUrl: 'https://modc-test.cloudflareaccess.com/cdn-cgi/access/certs'})
+	const s = await stack({config: V1})
+	try {
+		const P = {'x-modc-probe': 'sso_only'}
+		// v1 stays the active protection: without the probe, no Access token → 403 as before.
+		assert.equal((await s.req(s.port, {path: '/api/prefs'})).status, 403)
+		assert.equal((await s.req(s.port, {path: '/'})).status, 403)
+		const gated = (r, status) => (assert.equal(r.status, status), assert.equal(r.headers['x-modc-gate'], 'sso_only'), assert.equal(r.headers['x-modc-probe'], 'sso_only'))
+		gated(await s.req(s.port, {path: '/api/prefs', headers: P}), 401)
+		gated(await s.req(s.port, {path: '/api/rpc/files.list', headers: {...P, 'cf-access-jwt-assertion': s.team.token(), 'x-forwarded-for': '127.0.0.1'}}), 401)
+		gated(await s.req(s.port, {path: '/api/files/download?path=%2F', headers: P}), 401)
+		gated(await s.req(s.port, {method: 'POST', path: '/api/auth/login', headers: {...P, 'x-omarchy-server': '1'}, body: JSON.stringify({username: 'Chris', password: 'correct horse'})}), 401)
+		// Where the sign-in page would load: 204, no content — the probe never reaches a handler.
+		const home = await s.req(s.port, {path: '/', headers: P})
+		assert.equal(home.status, 204)
+		assert.equal(home.text, '')
+		assert.equal((await s.req(s.port, {path: '/modc/auth/start', headers: P})).status, 204)
+		assert.equal((await s.req(s.port, {path: '/api/prefs', headers: {...P, host: 'evil.example'}})).status, 421)
+		assert.equal((await s.req(s.local, {path: '/api/prefs', headers: {...P, 'cf-connecting-ip': '192.0.2.1'}})).status, 421)
+		// A signed-in session doesn't change a probe's answer (a probe never uses a session).
+		const sid = await (async () => {
+			await s.setConfig(() => V2())
+			const x = await s.signInSso()
+			await s.setConfig(V1)
+			return x
+		})()
+		gated(await s.req(s.port, {path: '/api/prefs', headers: {...P, cookie: sid, 'cf-access-jwt-assertion': s.team.token()}}), 401)
+		// Remote access off: the probe reports it, it doesn't pretend.
+		await s.setConfig(() => ({...V1(), enabled: false}))
+		assert.equal((await s.req(s.port, {path: '/', headers: P})).status, 503)
+	} finally {
+		await s.close()
+	}
+})

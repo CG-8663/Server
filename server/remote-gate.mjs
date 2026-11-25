@@ -62,7 +62,9 @@ export function createRemoteGate({fetchConfig, verifier = createAccessVerifier()
 	}
 
 	// -> {ok: true, claims} | {ok: false, status, code, message}
-	async function check(req) {
+	// as: 'modc_sso' evaluates the SSO-only (v2) rules against the live settings without switching modes;
+	// used only by the self-test probe, which answers synthetically and never serves content.
+	async function check(req, {as} = {}) {
 		if (!loaded) loaded = refresh()
 		await loaded
 		const s = state()
@@ -71,7 +73,7 @@ export function createRemoteGate({fetchConfig, verifier = createAccessVerifier()
 			.toLowerCase()
 			.replace(/:\d+$/, '')
 		if (!config.hostname || host !== String(config.hostname).toLowerCase()) return {ok: false, status: 421, code: 'WRONG_HOST', message: GATE_MESSAGES.WRONG_HOST}
-		if (ssoOnly()) {
+		if (ssoOnly() || as === 'modc_sso') {
 			// Only the dedicated listener: the legacy origin (7780) carries nothing remote in this mode.
 			if (req.socket?.__modcRemote !== true) return {ok: false, status: 421, code: 'LEGACY_ORIGIN', message: GATE_MESSAGES.LEGACY_ORIGIN}
 			return {ok: true, mode: 'modc_sso', claims: null}

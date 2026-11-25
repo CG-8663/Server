@@ -209,7 +209,7 @@ test('sign-out revokes on the website; switching remote access off revokes every
 		const rep = await x.s.report(true)
 		assert.equal(rep.accepted, true)
 		const body = x.w.calls.find((c) => c.path === '/sso/readiness').body
-		assert.deepEqual(body, {contract_version: 1, config_version: 3, origin: 'http://127.0.0.1:7781', app_version: 'remote-v1', checks: {pkce: true, state: true, session_validation: true, fail_closed: true, host_only_cookie: true, legacy_origin_isolated: true, sso_only_gate: true}})
+		assert.deepEqual(body, {contract_version: 2, config_version: 3, origin: 'http://127.0.0.1:7781', app_version: 'remote-v1', checks: {pkce: true, state: true, session_validation: true, fail_closed: true, host_only_cookie: true, legacy_origin_isolated: true, sso_only_gate: true}})
 	} finally {
 		await x.cleanup()
 	}
@@ -343,5 +343,19 @@ test('web: start and callback only through the tunnel, behind Access; a new host
 		assert.ok(w.steps.some((x) => x.step === 'check'))
 	} finally {
 		await w.close()
+	}
+})
+
+test('readiness: nothing is reported when the v2 self-test or the active protection’s checks fail', async () => {
+	for (const probe of [{isolated: true, ssoOnlyGate: false}, {isolated: false, ssoOnlyGate: true}, false]) {
+		const x = await sso({probe})
+		try {
+			const r = await x.s.report(true)
+			assert.equal(r.accepted, false)
+			assert.equal(r.error, 'local_checks_failed')
+			assert.equal(x.w.calls.filter((c) => c.path === '/sso/readiness').length, 0)
+		} finally {
+			await x.cleanup()
+		}
 	}
 })

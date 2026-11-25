@@ -19,6 +19,9 @@ import {join} from 'node:path'
 
 import {plainObject, readJsonState, writeAtomic} from './atomic.mjs'
 
+// The highest security contract this server implements (v2: SSO only on the 7781 listener).
+const SUPPORTED_CONTRACT = 2
+
 export const SSO_SITE = 'https://myowndatacenter.com'
 const TX_TTL_MS = 10 * 60_000
 const TX_MAX = 20
@@ -218,26 +221,31 @@ export function createSso({dir, apiBase, credential, device, remote, accounts, p
 	async function report(force = false) {
 		const c = config()
 		if (!c) return readiness
-		if (!force && readiness.accepted && readiness.configVersion === c.configVersion && readiness.at && now() - readiness.at < READY_EVERY_MS) return readiness
+		if (!force && readiness.accepted && readiness.configVersion === c.configVersion && readiness.contractVersion === SUPPORTED_CONTRACT && readiness.at && now() - readiness.at < READY_EVERY_MS) return readiness
 		if (reporting) return reporting
 		reporting = (async () => {
 			try {
 				const probe = await probeLocal(c.hostname, c.protection)
 				const isolated = probe === true || probe?.isolated === true
 				const ssoOnlyGate = probe === true || probe?.ssoOnlyGate === true
+				// Capability, not the active mode: contract 2 is reported once the v2 boundary passes its own
+				// self-test, while v1 (Cloudflare Access) may still be the active protection. The active
+				// protection's checks (isolated) must pass too. Activation itself stays with the website.
 				if (!isolated || !ssoOnlyGate) {
 					readiness = {...readiness, accepted: false, error: 'local_checks_failed', at: now()}
+					log(`[connect] readiness not sent: local self-test failed (active protection ${isolated ? 'ok' : 'failed'}, v2 boundary ${ssoOnlyGate ? 'ok' : 'failed'})`)
 					return readiness
 				}
 				const r = await call('/sso/readiness', {
-					contract_version: c.contractVersion,
+					contract_version: SUPPORTED_CONTRACT,
 					config_version: c.configVersion,
 					origin: 'http://127.0.0.1:7781',
 					app_version: appVersion,
 					checks: {pkce: true, state: true, session_validation: true, fail_closed: true, host_only_cookie: true, legacy_origin_isolated: true, sso_only_gate: true},
 				})
 				const ok = r.status === 200 && r.body?.accepted === true
-				readiness = {at: now(), accepted: ok, expiresAt: ok ? Date.parse(r.body.expires_at) || null : null, error: ok ? null : r.body?.error || `http_${r.status}`, configVersion: c.configVersion}
+				readiness = {at: now(), accepted: ok, expiresAt: ok ? Date.parse(r.body.expires_at) || null : null, error: ok ? null : r.body?.error || `http_${r.status}`, configVersion: c.configVersion, contractVersion: SUPPORTED_CONTRACT}
+				log(`[connect] readiness (contract ${SUPPORTED_CONTRACT}, config ${c.configVersion}): ${ok ? 'accepted' : `refused, ${readiness.error}`}`)
 			} catch {
 				readiness = {...readiness, accepted: false, error: 'unreachable', at: now()}
 			} finally {

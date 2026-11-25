@@ -568,6 +568,28 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	// SSO only, signed out: what the sign-in page itself needs, and nothing else.
 	const SSO_PUBLIC = new Set(['/', '/index.html', '/modc/auth/start', '/modc/auth/callback', '/api/bootstrap', '/manifest.webmanifest', '/sw.js', '/favicon.ico', '/favicon-32.png', '/favicon-64.png', '/icon-180.png', '/icon-192.png', '/icon-512.png', '/icon-512-maskable.png', '/modc-logo.png'])
 	const ssoPublic = (req) => (req.method === 'GET' || req.method === 'HEAD') && (SSO_PUBLIC.has(req.path) || /^\/assets\/[\w.-]+$/.test(req.path))
+	// SSO only (v2): without a valid website session, only the sign-in entry points and the sign-in page's
+	// own files. Everything else, and remote password sign-in, is refused. Shared by the live gate and the
+	// self-test probe below.
+	const ssoRefusal = (req, signedIn) => {
+		if (!signedIn && !ssoPublic(req)) return {status: 401, code: 'UNAUTHORIZED', message: 'Sign in with myowndatacenter.com'}
+		if (req.path === '/api/auth/login') return {status: 403, code: 'FORBIDDEN', message: 'Remote sign-in uses myowndatacenter.com'}
+		return null
+	}
+	const sendSsoRefusal = (res, r) => res.status(r.status).set('Cache-Control', 'no-store').set('x-modc-gate', 'sso_only').json({error: {code: r.code, message: r.message}})
+	// Self-test of the v2 boundary while v1 (Cloudflare Access) is still the active protection: a request
+	// marked "x-modc-probe: sso_only" is judged by the SSO-only rules against the live settings, signed out,
+	// and answered synthetically — refused, or 204 where the sign-in page would load. It never reaches a
+	// handler, never uses a session and never grants anything; the active protection is unchanged.
+	app.use(async (req, res, next) => {
+		if (req.headers['x-modc-probe'] !== 'sso_only' || !viaTunnel(req)) return next()
+		res.set('Cache-Control', 'no-store').set('x-modc-probe', 'sso_only')
+		if (req.socket?.__modcRemote) req.headers['x-forwarded-proto'] = 'https'
+		const g = await gate.check(req, {as: 'modc_sso'}).catch(() => ({ok: false, status: 503, code: 'REMOTE_OFF'}))
+		if (!g.ok) return res.status(g.status).json({error: {code: g.code}})
+		const r = ssoRefusal(req, false)
+		return r ? sendSsoRefusal(res, r) : res.status(204).end()
+	})
 
 	// ---- MODC Connect single sign-on (omarchyd/connect-sso.mjs does the website side) ---------------
 	const ssoCall = async (step, body) => {
@@ -661,13 +683,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	app.use(async (req, res, next) => {
 		if (!viaTunnel(req)) return next()
 		const g = await passGate(req).catch(() => ({ok: false, status: 503, code: 'REMOTE_OFF', message: 'Remote access isn’t available right now.'}))
-		if (g.ok && g.mode === 'modc_sso' && !req.ssoSession && !ssoPublic(req)) {
-			// SSO only: without a valid website session, only the sign-in entry points and the sign-in
-			// page's own files. Everything else, and remote password sign-in, is refused.
-			res.set('Cache-Control', 'no-store').set('x-modc-gate', 'sso_only')
-			return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Sign in with myowndatacenter.com'}})
-		}
-		if (g.ok && g.mode === 'modc_sso' && req.path === '/api/auth/login') return res.status(403).set('x-modc-gate', 'sso_only').json({error: {code: 'FORBIDDEN', message: 'Remote sign-in uses myowndatacenter.com'}})
+		const refusal = g.ok && g.mode === 'modc_sso' ? ssoRefusal(req, !!req.ssoSession) : null
+		if (refusal) return sendSsoRefusal(res, refusal)
 		if (g.ok) return next()
 		res.set('Cache-Control', 'no-store')
 		if (req.path.startsWith('/api/')) return res.status(g.status).json({error: {code: g.code, message: g.message}})

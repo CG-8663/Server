@@ -517,10 +517,10 @@ function localReq(port, {method = 'GET', path = '/api/health', headers}) {
 	return new Promise((resolve) => {
 		const req = http.request({host: '127.0.0.1', port, method, path, headers, timeout: 5000}, (res) => {
 			res.resume()
-			resolve({status: res.statusCode, gate: res.headers['x-modc-gate'] ?? null})
+			resolve({status: res.statusCode, gate: res.headers['x-modc-gate'] ?? null, probe: res.headers['x-modc-probe'] ?? null})
 		})
 		req.on('timeout', () => req.destroy())
-		req.on('error', () => resolve({status: 0, gate: null}))
+		req.on('error', () => resolve({status: 0, gate: null, probe: null}))
 		req.end(method === 'POST' ? '{}' : undefined)
 	})
 }
@@ -538,5 +538,23 @@ export async function localBoundaryHolds(hostname, protection = 'cloudflare_acce
 		localReq(REMOTE_PORT, {path: '/api/rpc/files.list', headers: {host: hostname}}),
 		localReq(REMOTE_PORT, {method: 'POST', path: '/api/auth/login', headers: {host: hostname, 'content-type': 'application/json', 'x-omarchy-server': '1'}}),
 	])
-	return {isolated, ssoOnlyGate: checks.every(refused)}
+	const active = checks.every(refused)
+	// The v2 (SSO-only) boundary, judged independently of the active protection through the synthetic
+	// probe: refused without a website session even with spoofed headers, the legacy origin and a wrong
+	// hostname refused, and the sign-in page reachable (so the refusals come from a live gate, not an outage).
+	const P = {'x-modc-probe': 'sso_only'}
+	const spoof = {'cf-access-jwt-assertion': 'x.y.z', 'cf-connecting-ip': '127.0.0.1', 'x-forwarded-for': '127.0.0.1', 'x-forwarded-proto': 'https', 'cf-access-authenticated-user-email': 'owner@localhost', 'x-modc-gate': 'ok'}
+	const v2 = await Promise.all([
+		localReq(REMOTE_PORT, {path: '/api/prefs', headers: {host: hostname, ...P}}),
+		localReq(REMOTE_PORT, {path: '/api/rpc/files.list', headers: {host: hostname, ...P, ...spoof}}),
+		localReq(REMOTE_PORT, {path: '/api/files/download?path=%2F', headers: {host: hostname, ...P}}),
+		localReq(REMOTE_PORT, {method: 'POST', path: '/api/auth/login', headers: {host: hostname, ...P, 'content-type': 'application/json', 'x-omarchy-server': '1'}}),
+		localReq(REMOTE_PORT, {path: '/', headers: {host: hostname, ...P}}),
+		localReq(REMOTE_PORT, {path: '/api/prefs', headers: {host: 'not-this-server.invalid', ...P}}),
+		localReq(WEB_PORT, {path: '/api/prefs', headers: {host: hostname, ...P, 'cf-connecting-ip': '192.0.2.1', 'x-forwarded-proto': 'https'}}),
+	])
+	const gated = (r) => (r.status === 401 || r.status === 403) && r.gate === 'sso_only' && r.probe === 'sso_only'
+	const [prefs, rpc, download, login, home, wrongHost, legacyV2] = v2
+	const ssoOnlyGate = gated(prefs) && gated(rpc) && gated(download) && gated(login) && home.status === 204 && home.probe === 'sso_only' && wrongHost.status === 421 && legacyV2.status === 421 && legacyV2.probe === 'sso_only'
+	return {isolated: isolated && active, ssoOnlyGate}
 }
