@@ -89,6 +89,13 @@ where you left off; add `--purge` to delete those too.
   Server sign-in.
 - **Behind your sign-in:** every app's port admits only browsers signed in to My Own Data Center.
 - Start, stop, restart, update, logs, and a shell inside any app.
+- **Opening apps from outside your network** (through a tunnel or a reverse proxy on https://) needs
+  each app to have its own address, which you choose with an *app addresses* pattern such as
+  `{app}-touch.example.com` (`{app}` becomes the app's name). Point those names at your server, then
+  tell the web app the pattern: run `systemctl --user edit omarchy-server-web.service`, add
+  `[Service]` and `Environment=TOUCH_APP_HOSTS={app}-touch.example.com`, save, and run
+  `omarchy-server restart`. Set it to `off` to clear it. Until it is set, opening an app that way says
+  "Opening apps remotely needs app addresses". On your own network it isn't needed.
 
 ### Files
 
