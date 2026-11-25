@@ -525,3 +525,18 @@ test('factory reset’s clip hook removes every book', async () => {
 		await rm(b.root, {recursive: true, force: true})
 	}
 })
+
+test('a clip whose text looks like a path or a hidden file can still be saved into a folder', async () => {
+	const b = await boot()
+	try {
+		for (const text of ['/etc/hosts', 'https://example.com/a', '.env', '..']) {
+			const clip = await b.clips.procedures['clips.addText'].run({text}, b.ctx(owner))
+			assert.equal(clip.name.includes('/'), false, `name ${clip.name}`)
+			assert.equal(clip.name.startsWith('.'), false, `name ${clip.name}`)
+			const saved = await b.clips.procedures['clips.paste'].run({id: clip.id, dest: {folder: '/Home/Documents'}}, b.ctx(owner))
+			assert.equal(await readFile(join(b.home, 'Documents', saved.path.split('/').at(-1)), 'utf8'), text)
+		}
+	} finally {
+		await rm(b.root, {recursive: true, force: true})
+	}
+})

@@ -1,5 +1,5 @@
 // Full settings, backed by the same omarchyd calls My Own Data Center uses.
-import {useContext, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
+import {useContext, useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query, type ActiveSession, type AssistantApi, type AssistantCheck, type AssistantEffort, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
@@ -17,7 +17,7 @@ import {UnraidPage} from '../unraid'
 import {OidcSheet} from './Oidc'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 import {clearTotpSetupQuery} from './twoFactorQuery'
-import {MIN_PASSWORD_LENGTH, PASSWORD_SHEET_SUBTITLE, updateStartFailure} from './settingsHelpers'
+import {MIN_PASSWORD_LENGTH, PASSWORD_SHEET_SUBTITLE, updateFinished, updateStartFailure} from './settingsHelpers'
 import {safeSession} from '../safeStorage'
 
 
@@ -143,6 +143,17 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 			setUpdating(false)
 		}
 	}, [status.data?.error])
+	// The panel promises "this page reloads by itself": once the server has restarted and says the update is done,
+	// load the new build. `sawRunning` keeps an "Updated to X" left by an earlier update from reloading at once.
+	const sawRunning = useRef(false)
+	useEffect(() => {
+		if (!updating) {
+			sawRunning.current = false
+			return
+		}
+		if (status.data?.running) sawRunning.current = true
+		else if (updateFinished(sawRunning.current, status.data)) location.reload()
+	}, [updating, status.data])
 
 	const revoke = async (s: ActiveSession) => {
 		const d = describeSession(s)
@@ -150,7 +161,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 		save.mutate({path: 'user.revokeSession', input: {sessionId: s.id}, done: `${d.name} signed out`, refresh: ['user.listSessions']})
 	}
 	const revokeOthers = async () => {
-		if (!(await confirm({title: 'Sign out all other devices?', body: 'Every browser and app signed in to your server, except this phone, is signed out.', confirm: 'Sign out others', danger: true})))
+		if (!(await confirm({title: 'Sign out all other devices?', body: 'Every browser and app signed in to your server, except this device, is signed out.', confirm: 'Sign out others', danger: true})))
 			return
 		save.mutate({path: 'user.revokeOtherSessions', done: 'Other devices signed out', refresh: ['user.listSessions']})
 	}
@@ -247,7 +258,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 							</span>
 							<span className="main">
 								<b style={{fontWeight: 550}}>{d.name}</b>
-								<span>{s.current ? 'This phone' : `Active ${ago(s.lastSeenAt)}`}{d.detail ? ` · ${d.detail}` : ''}</span>
+								<span>{s.current ? 'This device' : `Active ${ago(s.lastSeenAt)}`}{d.detail ? ` · ${d.detail}` : ''}</span>
 							</span>
 							{!s.current && (
 								<button className="btn get" style={{color: 'var(--red)'}} onClick={() => revoke(s)}>
@@ -547,7 +558,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 				</div>
 			)}
 			{keys.error && (
-				<div className="error">
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
 					{(keys.error as Error).message}
 				</div>
@@ -909,7 +920,7 @@ function ShareKeySheet({
 			) : (
 				<div className="glass group" style={{borderRadius: 18, marginBottom: 12, '--inset': '62px'} as CSSProperties}>
 					{others.map((a) => (
-						<button type="button" key={a.userId} className="row" style={{minHeight: 56}} onClick={() => toggle(a.userId)}>
+						<button type="button" key={a.userId} className="row" style={{minHeight: 56}} role="checkbox" aria-checked={picked.includes(a.userId)} onClick={() => toggle(a.userId)}>
 							<span className="row-ico" style={{'--c': 'var(--blue)'} as CSSProperties}>
 								<Icon name="user" size={19} />
 							</span>
@@ -960,7 +971,11 @@ function ChatGptSignInSheet({keyId, onClose}: {keyId?: string; onClose: () => vo
 			const r = await mutate<{url: string}>('assistant.chatgptStart', keyId ? {keyId} : {})
 			if (!r.url.startsWith('https://auth.openai.com/')) throw new Error('ChatGPT didn’t finish the sign-in')
 			setUrl(r.url)
-			if (tab) tab.location.href = r.url
+			if (tab) {
+				// The sign-in page must not be able to reach back to this one through window.opener.
+				tab.opener = null
+				tab.location.href = r.url
+			}
 		} catch (e) {
 			tab?.close()
 			setError((e as Error).message)
@@ -1022,7 +1037,7 @@ function ChatGptSignInSheet({keyId, onClose}: {keyId?: string; onClose: () => vo
 							inputMode="url"
 						/>
 						<button className="btn block" type="submit" disabled={busy || !/^http:\/\/127\.0\.0\.1:\d+\/auth\/callback\?/.test(pasted.trim())}>
-							{busy ? <span className="spinner" /> : 'Finish signing in'}
+							{busy ? <><span className="spinner" /><span className="sr-only">Finish signing in</span></> : 'Finish signing in'}
 						</button>
 					</>
 				)}

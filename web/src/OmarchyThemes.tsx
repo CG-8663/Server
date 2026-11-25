@@ -6,6 +6,7 @@ import {plural} from './plural'
 import {Icon} from './icons'
 import {isMoreThemeBusy, runThemeAction, shouldPollThemes} from './omarchyThemesLogic'
 import {themeAction} from './theme/themeAction'
+import {RADIO_SELECTOR, rovingKeyDown} from './roving'
 import {haptic, useConfirm, useToast} from './ui'
 
 type Job = {state: 'installing' | 'switching' | 'removing' | 'error'; error?: string}
@@ -60,19 +61,19 @@ export function OmarchyThemes({owner, onSwitched}: {owner: boolean; onSwitched?:
 	}, [data, search])
 
 	if (themes.isLoading) return <div className="omb-note"><span className="spinner" /> Loading Omarchy’s themes…</div>
-	if (themes.error) return <div className="error"><Icon name="alert" size={18} />{(themes.error as Error).message}</div>
+	if (themes.error) return <div className="error" role="alert"><Icon name="alert" size={18} />{(themes.error as Error).message}</div>
 	if (!data?.installed.length) return <div className="omb-note">No Omarchy themes found on this server.</div>
 
 	return (
 		<div className="omt">
 			{!data.available && (
-				<div className="error">
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
 					Omarchy’s theme commands weren’t found, so themes can be shown but not switched here.
 				</div>
 			)}
 			{!owner && <p className="footer-note" style={{textAlign: 'left'}}>Only the server’s owner can change the desktop’s theme.</p>}
-			<div className="omt-grid" role="radiogroup" aria-label="Omarchy themes">
+			<div className="omt-grid" role="radiogroup" aria-label="Omarchy themes" onKeyDown={(e) => rovingKeyDown(e, RADIO_SELECTOR)}>
 				{data.installed.map((t) => {
 					const busy = (t.job && t.job.state !== 'error') || (pending === t.slug && !t.current)
 					return (

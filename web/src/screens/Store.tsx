@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useRef, useState, type CSSProperties} from 'react'
+import {useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {PluginBrowser} from './Plugins'
 
@@ -13,9 +13,11 @@ import {CategoryChips} from '../CategoryChips'
 import {useDesktop} from '../desktop/Desktop'
 import {explainProbe, openApp} from '../openApp'
 import {Icon, hasIcon} from '../icons'
+import {rovingKeyDown, TAB_SELECTOR} from '../roving'
 import {AppIcon, Sheet, SheetHeader, StatusPill, appStatus, bytes, haptic, isAppBusy, useToast} from '../ui'
 import {SearchField} from './Apps'
 import {remainingSuggestedStores, type StoreRepo} from '../storeSuggestions'
+import {isClamped} from '../textClamp'
 import {categoryOf, effectiveCategory, joinedFields, nextStartingToast, rankedCategories, searchNeedle, validCommunityStoreUrl} from '../storeBrowse'
 
 type StoreApp = RegistryApp & {compatible?: boolean; repo?: string; unsupported?: string}
@@ -117,8 +119,8 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 						<Icon name="back" size={20} />
 					</button>
 				)}
-				<div>
-					<h1 className="title">App Store</h1>
+				<div className="store-heading">
+					<h1 className="title">{bound ? `App Store for ${bound.name}` : 'App Store'}</h1>
 					<p className="subtitle">{bound ? `Installs on ${bound.name}` : registry.isLoading ? 'Loading the catalog…' : problem && !registry.data ? 'Can’t reach your server' : oneStore ? `${plural(all.length, 'app')} in ${oneStore.name}` : `${plural(all.length, 'app')} from ${plural(storeList.length, 'store')}`}</p>
 				</div>
 				<button className="btn small stores-btn" style={{marginLeft: 'auto'}} aria-label="Check for new apps" title="Check for new apps" disabled={refresh.isPending} onClick={() => (haptic(5), refresh.mutate())}>
@@ -130,12 +132,13 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 				</button>
 			</div>
 			{storeList.length > 1 && (
-				<div className="chips store-picker" role="tablist" aria-label="App stores">
+				<div className="chips store-picker" role="tablist" aria-label="App stores" onKeyDown={(e) => rovingKeyDown(e, TAB_SELECTOR, 'horizontal')}>
 					{[{key: 'all', name: 'All stores', count: null as number | null}, ...storeList].map((st) => (
 						<button
 							key={st.key}
 							role="tab"
 							aria-selected={storeKey === st.key}
+							tabIndex={storeKey === st.key ? 0 : -1}
 							className={`chip${storeKey === st.key ? ' on' : ''}`}
 							onClick={() => {
 								haptic(5)
@@ -157,6 +160,7 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 						key={c}
 						role="tab"
 						aria-selected={active === c}
+						tabIndex={active === c ? 0 : -1}
 						className={`chip${active === c ? ' on' : ''}`}
 						onClick={() => {
 							haptic(5)
@@ -477,7 +481,7 @@ function StoreItem({
 			<span className="end">
 				{installed ? (
 					<button className="btn get" onClick={() => onOpenInstalled(installed)} aria-label={`Manage ${app.name}`}>
-						{isAppBusy(installed.state) ? <span className="spinner" style={{width: 14, height: 14}} /> : 'Open'}
+						{isAppBusy(installed.state) ? <><span className="spinner" style={{width: 14, height: 14}} /><span className="sr-only">Open</span></> : 'Open'}
 					</button>
 				) : (
 					<button className="btn get" onClick={() => onPick(app, true)} aria-label={`Get ${app.name}`} disabled={app.compatible === false || !!app.unsupported}>
@@ -556,6 +560,8 @@ function StoreSheet({
 		if (boundTarget.ability === 'ready') setReviewing(true)
 	}, [startInstall, bound, boundTarget])
 	const [more, setMore] = useState(false)
+	const proseRef = useRef<HTMLDivElement>(null)
+	const [clipped, setClipped] = useState(false)
 	const detail = useStoreApp(app)
 	const website = detail.data?.website ?? app.website
 	const view = {
@@ -565,6 +571,16 @@ function StoreSheet({
 		website: typeof website === 'string' && /^https?:\/\//i.test(website) ? website : undefined,
 		releaseNotes: detail.data?.releaseNotes ?? app.releaseNotes,
 	}
+	// "More" shows when the text really is cut off, so a short list of lines gets it too.
+	useLayoutEffect(() => {
+		const el = proseRef.current
+		if (!el || more) return
+		const measure = () => setClipped(isClamped(el))
+		measure()
+		const watch = new ResizeObserver(measure)
+		watch.observe(el)
+		return () => watch.disconnect()
+	}, [view.description, more])
 
 	const live = installed.get(app.id)
 	// What it needs that isn't installed yet (an installed app can stand in, e.g. Bitcoin Knots).
@@ -574,9 +590,11 @@ function StoreSheet({
 	const canInstall = !live && !incompatible
 	const chosen = targets.find((t) => t.id === chosenId) ?? null
 	const chosenReady = chosen?.ability === 'ready'
+	const machineName = bound?.name || chosen?.name || ''
 	const targetGone = reviewing && canInstall && !chosenReady
 	const showChooser = canInstall && (choosing || (targetGone && !bound))
-	const showReview = reviewing && canInstall && chosenReady && (!bound || boundTarget?.ability === 'ready')
+	// The confirmation, and its install button, stay hidden until a machine is chosen.
+	const showReview = reviewing && canInstall && chosenReady && machineName !== '' && (!bound || boundTarget?.ability === 'ready')
 	const blockedReason = bound && !boundReady ? (boundTarget?.reason || (machines.isLoading || computers.isLoading ? '' : `${bound.name} isn’t available for an install.`)) : ''
 	const liveUrl = live ? appUrl(live, boot.server!.host) : null
 
@@ -612,6 +630,7 @@ function StoreSheet({
 				<BeforeInstall
 					appId={app.id}
 					appName={app.name}
+					machineName={machineName}
 					installSize={app.installSize}
 					pending={action.isPending}
 					cancelLabel="Back"
@@ -684,7 +703,7 @@ function StoreSheet({
 							)}
 						</div>
 					) : incompatible ? (
-						<div className="error">
+						<div className="error" role="alert">
 							<Icon name="alert" size={18} />
 							{app.unsupported ?? 'This app needs a newer version of My Own Data Center.'}
 						</div>
@@ -766,8 +785,10 @@ function StoreSheet({
 					)}
 					{view.description && (
 						<>
-							<div className={`prose${more ? '' : ' clamp'}`}>{view.description}</div>
-							{!more && view.description.length > 280 && (
+							<div ref={proseRef} className={`prose${more ? '' : ' clamp'}`}>
+								{view.description}
+							</div>
+							{!more && clipped && (
 								<button className="link-btn" style={{paddingLeft: 0}} onClick={() => setMore(true)}>
 									More
 								</button>

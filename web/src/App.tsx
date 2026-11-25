@@ -12,6 +12,7 @@ import {OPEN_FLEET} from './fleet/openMember'
 import {OPEN_STORE, type StoreBinding} from './fleet/openStore'
 import {BootstrapContext, useAction, useApps, useNotifications, useUpdates, useUser} from './data'
 import {Icon, type IconName} from './icons'
+import {APP_TITLE, pageTitle} from './pageTitle'
 import {Apps} from './screens/Apps'
 import {Connect, Login} from './screens/Auth'
 import {Home} from './screens/Home'
@@ -43,7 +44,7 @@ const Assistant = lazy(() => import('./screens/Assistant').then((m) => ({default
 function ScreenFallback() {
 	return (
 		<main className="screen center">
-			<span className="spinner" aria-label="Loading" />
+			<span className="spinner" role="status" aria-label="Loading" />
 		</main>
 	)
 }
@@ -120,7 +121,7 @@ export function App() {
 	if (boot.isLoading) {
 		content = (
 			<main className="auth center">
-				<span className="spinner" style={{width: 30, height: 30, margin: '0 auto', color: 'var(--accent-text)'}} aria-label="Loading" />
+				<span className="spinner" style={{width: 30, height: 30, margin: '0 auto', color: 'var(--accent-text)'}} role="status" aria-label="Loading" />
 			</main>
 		)
 	} else if (boot.error || !b) {
@@ -190,6 +191,13 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	const updates = useUpdates()
 	const notifications = useNotifications()
 
+	// Each phone screen is its own history entry, so each one names itself in the tab and the history list.
+	useEffect(() => {
+		document.title = pageTitle(tab)
+		return () => {
+			document.title = APP_TITLE
+		}
+	}, [tab])
 	useEffect(() => {
 		const onHash = () => setTab(tabFromHash())
 		window.addEventListener('hashchange', onHash)
@@ -310,7 +318,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						{tab === 'apps' && <Apps onOpenApp={(a) => setAppId(a.id)} onStore={() => go('store')} />}
 						{tab === 'files' && <Files />}
 						{tab === 'store' && <Store bound={storeBound} onOpenInstalled={(a) => setAppId(a.id)} onBack={backInApp} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
-						{tab === 'machines' && <Machines onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} />}
+						{tab === 'machines' && <Machines prefs={prefs} setPrefs={setPrefs} onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} />}
 						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} onClips={() => go('clips')} />}
 						{tab === 'clips' && <Clips onBack={backInApp} />}
 						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={backInApp} />}
