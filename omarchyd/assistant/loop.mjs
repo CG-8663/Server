@@ -243,7 +243,7 @@ export function cardFor(name, args, names = {}) {
 	}
 	if (name === 'swarm_wake') {
 		const host = lookup(maps.swarm, a.id, 'this computer')
-		return {title: `Wake ${host}`, detail: 'Sends a wake packet on the local network'}
+		return {title: `Wake up ${host}`, detail: 'Sends a wake packet on the local network'}
 	}
 	if (name === 'swarm_action') {
 		const host = lookup(maps.swarm, a.id, 'this computer')

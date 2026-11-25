@@ -95,7 +95,7 @@ const EVERYWHERE: Ability[] = WINDOWS_ABILITIES
 export const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = {
 	terminal: {label: 'Terminal', icon: 'terminal', what: 'A shell on it, as the person who installed the connector'},
 	desktop: {label: 'Desktop', icon: 'devices', what: 'See and use its screen (Hyprland, Sway or an X11 desktop)'},
-	manage: {label: 'Manage', icon: 'settings', what: 'Omarchy plugins (verified only) and themes, updates, restart, and wake'},
+	manage: {label: 'Manage', icon: 'settings', what: 'Omarchy plugins (verified only) and themes, updates, restart, and wake up'},
 	storage: {label: 'Storage', icon: 'disk', what: 'See its drives, format extra disks, and manage pools on that computer'},
 	backup: {label: 'Backups', icon: 'history', what: 'Back up folders you choose to this server, on a schedule (open this computer and choose Backups). It can add backups, never delete them.'},
 	services: {label: 'Services', icon: 'server', what: 'Inspect logs and start, stop, or restart user systemd services and containers'},
@@ -640,7 +640,7 @@ function AgentSheet({
 						onClick={
 							wake.enabled
 								? async () => {
-										if (await confirm({title: `Wake ${a.name}?`, body: 'This sends a wake packet on the local network from this server and every computer that is on. The computer needs Wake-on-LAN switched on, and it has to be on one of those networks.', confirm: 'Wake', icon: 'power'}))
+										if (await confirm({title: `Wake up ${a.name}?`, body: 'This sends a wake packet on the local network from this server and every computer that is on. The computer needs Wake-on-LAN switched on, and it has to be on one of those networks.', confirm: 'Wake up', icon: 'power'}))
 											act.mutate({path: 'swarm.wake', input: {id: a.id}, done: `Waking ${a.name}…`})
 									}
 								: undefined
