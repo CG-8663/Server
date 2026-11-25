@@ -254,7 +254,16 @@ export function createUsb({enumerate = listHostUsb, guests = {bindings: () => []
 		const needsRestart = running && !live
 		return {needsRestart, ...(needsRestart ? {message: `Restart ${current.name} to apply`} : {})}
 	}
+	// An app or a machine was removed with sticks attached: take their udev rules out too, unless
+	// another guest still holds a stick with the same serial.
+	async function release(devices) {
+		const held = new Set((await guests.bindings()).flatMap((g) => (g.devices ?? []).map((d) => d.serial).filter(Boolean)))
+		for (const serial of new Set((devices ?? []).map((d) => d?.serial))) {
+			if (serial && USB_SERIAL.test(serial) && !held.has(serial)) await helper('usb-forget', [serial]).catch(() => {})
+		}
+	}
 	return {
+		release,
 		procedures: {
 			'usb.list': {kind: 'query', run: list},
 			'usb.attach': {kind: 'mutation', run: attach},
