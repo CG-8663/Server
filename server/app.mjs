@@ -904,14 +904,17 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const id = req.params.id
 		if (!backend || !/^\d{1,3}$/.test(id)) return res.status(404).end()
 		const tier = req.query.size === 'thumb' ? 'thumbnails' : 'medium'
+		// The .jpg is the desktop's current background (the same picture under id 1 whatever it is today),
+		// so it keeps the type it really has and is never cached as unchanging.
 		for (const [path, type] of [
 			[`/assets/wallpapers/generated-avif/${tier}/${id}.avif`, 'image/avif'],
-			[`/assets/wallpapers/${id}.jpg`, 'image/jpeg'],
+			[`/assets/wallpapers/${id}.jpg`, null],
 		]) {
 			try {
 				const upstream = await fetchImpl(`${backend.baseUrl}${path}`, {signal: AbortSignal.timeout(10_000)})
-				if (!upstream.ok || !(upstream.headers.get('content-type') ?? '').startsWith('image/')) continue
-				res.set({'Content-Type': type, 'Cache-Control': 'public, max-age=604800, immutable'})
+				const upstreamType = upstream.headers.get('content-type') ?? ''
+				if (!upstream.ok || !upstreamType.startsWith('image/')) continue
+				res.set({'Content-Type': type ?? upstreamType, 'Cache-Control': type ? 'public, max-age=604800, immutable' : 'no-cache'})
 				return res.send(Buffer.from(await upstream.arrayBuffer()))
 			} catch {
 				/* try the next format */
