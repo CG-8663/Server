@@ -378,6 +378,8 @@ function toOpenAI(m) {
 function placeholder(action) {
 	if (action?.status === 'error') return action.error || 'That step failed'
 	if (action?.status === 'rejected') return 'user rejected this step'
+	// A call with no Approve card behind it never ran (the reply was stopped or failed first).
+	if (!action) return 'this step did not run'
 	return WAITING
 }
 
