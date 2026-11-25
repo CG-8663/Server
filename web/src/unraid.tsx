@@ -6,7 +6,7 @@ import {mutate, query, type Listing} from './api'
 import {Icon, type IconName} from './icons'
 import {safeSession} from './safeStorage'
 import {Field, Group, Row, Segmented, Switch, haptic, useConfirm, useToast} from './ui'
-import {defaultSelectedVms, formatBytes, formatTotalSize, isKeyChangedError, itemStatusForView, jobSummary, retryActionState, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
+import {defaultSelectedVms, formatBytes, formatTotalSize, isKeyChangedError, itemStatusForView, jobSummary, retryActionState, typedSshPort, type UnraidItem as Item, type UnraidJob as Job} from './unraidView'
 
 type ShareConfig = {comment: string; export: string; security: string; useCache: string; splitLevel: string}
 type Share = {name: string; size: number | null; kind: 'share' | 'appdata' | 'system' | 'domains' | 'isos'; config?: ShareConfig}
@@ -202,7 +202,7 @@ function ConnectCard({onConnected}: {onConnected: () => void}) {
 		setBusy(true)
 		setError(null)
 		try {
-			const parsedPort = Number(port) || 22
+			const parsedPort = typedSshPort(port)
 			await mutate('unraid.connect', {
 				host,
 				...(parsedPort !== 22 ? {port: parsedPort} : {}),
@@ -223,7 +223,7 @@ function ConnectCard({onConnected}: {onConnected: () => void}) {
 	const forget = async () => {
 		setForgetting(true)
 		try {
-			await mutate('unraid.forgetHost', {host, ...(Number(port) && Number(port) !== 22 ? {port: Number(port)} : {})})
+			await mutate('unraid.forgetHost', {host, ...(typedSshPort(port) !== 22 ? {port: typedSshPort(port)} : {})})
 			setError(null)
 			toast('Forgot this server’s key. Connect again.')
 		} catch (err) {
