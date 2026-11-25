@@ -4,6 +4,19 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.81',
+		date: '2026-11-24',
+		title: 'More Linux guests, and readings from the machine',
+		added: [
+			'Swap shows on a machine that has it, in the same drawings as the other readings. Home keeps its aggregate gauges.',
+			'The catalog adds CachyOS, Linux Mint, openSUSE Leap, Rocky Linux, Debian 12, and Ubuntu 22.04. Omarchy is 4.5.0. CachyOS and Linux Mint boot their own installers.',
+			'A joined computer shows when a restart is needed, how many security updates are waiting, failed services, and listening ports.',
+		],
+		fixed: [
+			'Create waits until a Debian, Fedora, or Omarchy guest can enroll. A failed connector install stays an error.',
+		],
+	},
+	{
 		version: '0.9.80',
 		date: '2026-11-24',
 		title: 'Alpine guests, and Machines on every screen',
