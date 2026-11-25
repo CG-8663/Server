@@ -640,11 +640,17 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	async function runBackup(reason = 'manual') {
 		await ready
 		if (job) throw new RpcError('CONFLICT', 'A backup is already running')
-		if (!hasTarget() || !(await hasKey())) throw new RpcError('PRECONDITION_FAILED', 'Set up backups first')
-		const entry = {id: randomBytes(4).toString('hex'), reason, startedAt: now(), endedAt: null, ok: false, error: null, items: [], added: 0, nas: null, gdrive: null}
-		history.unshift(entry)
-		await saveHistory()
-		job = {step: 'Getting ready', progress: 0, startedAt: entry.startedAt}
+		// Claim it before the first await, so a second request in the meantime is refused too.
+		job = {step: 'Getting ready', progress: 0, startedAt: now()}
+		const entry = {id: randomBytes(4).toString('hex'), reason, startedAt: job.startedAt, endedAt: null, ok: false, error: null, items: [], added: 0, nas: null, gdrive: null}
+		try {
+			if (!hasTarget() || !(await hasKey())) throw new RpcError('PRECONDITION_FAILED', 'Set up backups first')
+			history.unshift(entry)
+			await saveHistory()
+		} catch (error) {
+			job = null
+			throw error
+		}
 		const done = (async () => {
 			try {
 				const direct = isDirectDrive()
@@ -1064,12 +1070,18 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		if (!a.on) throw new RpcError('FORBIDDEN', `Backups aren’t switched on for ${a.name}`)
 		if (!a.online) throw new RpcError('PRECONDITION_FAILED', `${a.name} is offline right now`)
 		const entry = {id: randomBytes(4).toString('hex'), computer: a.id, name: a.name, reason, startedAt: now(), endedAt: null, ok: false, error: null, items: [], added: 0, nas: null}
-		history.unshift(entry)
-		c.lastAttemptAt = now()
-		config.computers = {...(config.computers ?? {}), [a.id]: c}
-		await saveConfig()
-		await saveHistory()
+		// Claim it before the first await, so a second request in the meantime is refused too.
 		computerJobs.set(a.id, {step: 'Getting ready', progress: 0, startedAt: entry.startedAt})
+		try {
+			history.unshift(entry)
+			c.lastAttemptAt = now()
+			config.computers = {...(config.computers ?? {}), [a.id]: c}
+			await saveConfig()
+			await saveHistory()
+		} catch (error) {
+			computerJobs.delete(a.id)
+			throw error
+		}
 		const poll = pollComputerProgress(a.id, (job, p) => {
 			computerJobs.set(a.id, {...job, step: p.step || 'Backing up', progress: 0.85 * p.percent})
 		})
