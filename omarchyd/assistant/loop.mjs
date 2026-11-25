@@ -788,7 +788,17 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				try {
 					// A ChatGPT sign-in uses the person's plan through the Responses API. Other OpenAI-style
 					// endpoints fall back to tools-as-text when a model can't take native tools.
-					const accessToken = key.provider === 'chatgpt' ? await chatgpt.accessToken(key.id) : undefined
+					let accessToken
+					if (key.provider === 'chatgpt') {
+						try {
+							accessToken = await chatgpt.accessToken(key.id)
+						} catch (e) {
+							if (signal?.aborted || e?.name === 'AbortError') return finish(row.id)
+							// The sign-in itself failed, and its own message says what to do. No request went out.
+							say('error', {message: e?.message || 'Sign in with ChatGPT again in Settings → Assistant'})
+							return finish(row.id)
+						}
+					}
 					const openAiStyle = apiOf(key) === 'responses' ? streamResponses : chatOrResponses
 					const stream = key.provider === 'chatgpt' ? streamResponses : key.provider === 'anthropic' ? streamAnthropic : (opts) => withToolFallback(openAiStyle, opts)
 					for await (const ev of stream({
