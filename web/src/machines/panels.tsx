@@ -203,7 +203,7 @@ export function SummaryPanel({d}: {d: MachineDetails}) {
 						<p className={d.options.notes ? 'mx-notes' : 'muted'}>{d.options.notes || 'No notes yet. Write down what this machine is for, logins, or anything else worth remembering.'}</p>
 					) : (
 						<>
-							<textarea className="field mx-textarea" value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} maxLength={8000} />
+							<textarea className="field mx-textarea" aria-label="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={6} maxLength={8000} />
 							<Actions
 								onCancel={() => setNotes(null)}
 								saving={action.isPending}
@@ -687,7 +687,7 @@ function BootOrder({d, onDone}: {d: MachineDetails; onDone: () => void}) {
 			<ol className="mx-boot">
 				{list.map((x, i) => (
 					<li key={x.id} className={x.on ? '' : 'off'}>
-						<button type="button" role="checkbox" aria-checked={x.on} className="mx-check" onClick={() => setList(list.map((y) => (y.id === x.id ? {...y, on: !y.on} : y)))}>
+						<button type="button" role="checkbox" aria-checked={x.on} aria-label={bootName(d, x.id)} className="mx-check" onClick={() => setList(list.map((y) => (y.id === x.id ? {...y, on: !y.on} : y)))}>
 							<Icon name={x.on ? 'checked' : 'unchecked'} size={18} />
 						</button>
 						<span>{bootName(d, x.id)}</span>
@@ -998,7 +998,7 @@ export function MonitorPanel({d}: {d: MachineDetails}) {
 					send()
 				}}
 			>
-				<input className="field mono" value={cmd} onChange={(e) => setCmd(e.target.value)} disabled={d.state !== 'running'} spellCheck={false} autoCapitalize="none" />
+				<input className="field mono" aria-label="QEMU monitor command" value={cmd} onChange={(e) => setCmd(e.target.value)} disabled={d.state !== 'running'} spellCheck={false} autoCapitalize="none" />
 				<button type="submit" className="btn small primary" disabled={d.state !== 'running' || action.isPending}>
 					Send
 				</button>
