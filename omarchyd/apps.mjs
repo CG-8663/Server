@@ -636,15 +636,20 @@ function orderNeeds(id, byId, seen = new Set(), out = []) {
 	return out
 }
 // True when `id` depends on itself or the dependency links come back to an app already on the path.
+// An app already checked and found loop-free is not walked again: apps that share dependencies
+// would otherwise be walked once per path through them, which grows without end.
 function dependencyLoop(id, byId) {
-	const stack = []
+	const path = new Set()
+	const clear = new Set()
 	const visit = (cur) => {
-		if (stack.includes(cur)) return true
+		if (path.has(cur)) return true
+		if (clear.has(cur)) return false
 		const row = byId.get(cur)
 		if (!row) return false
-		stack.push(cur)
+		path.add(cur)
 		for (const d of stringList(row.a.dependencies)) if (visit(d)) return true
-		stack.pop()
+		path.delete(cur)
+		clear.add(cur)
 		return false
 	}
 	return visit(id)
