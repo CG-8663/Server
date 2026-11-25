@@ -3105,7 +3105,13 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		// still needs a real sign-in, so a studio container can't uninstall the rest of the server.
 		authenticatePublish,
 		appDirFor: (id) => appDir(id),
-		installed: (id) => state.apps.some((a) => a.id === id),
+		// An app whose install failed is not "here": it can be tried again.
+		installed: (id) => state.apps.some((a) => a.id === id && a.state !== 'error'),
+		// Removes a failed install (as a new install would) so an importer can copy data into a clean folder.
+		async clearFailed(id) {
+			await ready
+			if (state.apps.some((a) => a.id === id && a.state === 'error')) await uninstall({appId: id})
+		},
 		async installImported(id) {
 			dropRegistry()
 			const plan = await installPlan(id)

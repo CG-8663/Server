@@ -1516,6 +1516,8 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 	async function importContainer(item, plan, shareDest) {
 		if (!plan) throw new Error('It isn’t on the Unraid server any more')
 		if (apps.installed(plan.id)) throw new Error('It’s already here')
+		// An earlier try that failed is removed first: installing clears a failed app's folder, copied files and all.
+		await apps.clearFailed?.(plan.id)
 		// The listing, in the "Imported from Unraid" store.
 		const storeDir = apps.importedStoreDir
 		await mkdir(storeDir, {recursive: true, mode: 0o700})
