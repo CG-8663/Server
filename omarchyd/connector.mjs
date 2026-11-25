@@ -180,9 +180,15 @@ export async function sendWolPacket(mac) {
 				resolve()
 			})
 		})
+		// One address failing (no route to it) is fine. Every one failing means nothing was sent.
+		let sent = 0
+		let failure = null
 		for (const host of subnetBroadcasts()) {
-			await new Promise((resolve) => sock.send(packet, 9, host, () => resolve()))
+			const error = await new Promise((resolve) => sock.send(packet, 9, host, resolve))
+			if (error) failure ??= error
+			else sent++
 		}
+		if (!sent) throw failure ?? new Error('Couldn’t send a wake packet')
 	} finally {
 		try {
 			sock.close()
