@@ -80,12 +80,21 @@ export function flattenToolTurns(messages) {
 export const anthropicTools = (tools) =>
 	(tools ?? []).map((t) => ({name: t.function?.name, description: t.function?.description ?? '', input_schema: t.function?.parameters ?? {type: 'object', properties: {}}}))
 
+// An error body that isn't JSON is shown only when it is short plain text. A proxy's or gateway's HTML page,
+// or a long dump, becomes one plain sentence instead.
+export const plainBody = (raw, status) => {
+	const text = raw ? String(raw).trim() : ''
+	if (!text) return `HTTP ${status}`
+	if (/^</.test(text) || /<\/?(?:html|head|body)\b/i.test(text) || text.length > 300) return `The AI service answered with an error page (HTTP ${status}). Check the endpoint address or try again.`
+	return text
+}
+
 const errorText = (raw, status) => {
 	try {
 		const m = JSON.parse(raw)?.error?.message
 		if (m) return String(m)
 	} catch {}
-	return (raw && String(raw).trim()) || `HTTP ${status}`
+	return plainBody(raw, status)
 }
 
 export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, messages, tools, effort, fetchImpl = fetch, signal, retried = false}) {
