@@ -314,6 +314,7 @@ export function createGdriveClient({
 
 	async function driveFetch(url, opts = {}, {retries = 4, timeoutMs = 60_000, expectStatus = null} = {}) {
 		let lastErr
+		let refreshedAfter401 = false
 		for (let attempt = 0; attempt <= retries; attempt++) {
 			const token = await accessToken({force: attempt > 0 && lastErr?.status === 401})
 			const headers = {...(opts.headers ?? {}), authorization: `Bearer ${token}`}
@@ -328,10 +329,13 @@ export function createGdriveClient({
 				}
 				throw new Error(`Couldn’t reach Google Drive: ${e?.message || 'network error'}`)
 			}
-			if (r.status === 401 && attempt === 0) {
+			// One fresh token per call, and it does not use up a retry (a chunk upload has none).
+			if (r.status === 401 && !refreshedAfter401) {
 				await r.arrayBuffer().catch(() => {})
+				refreshedAfter401 = true
 				lastErr = {status: 401}
 				cachedAccess = null
+				attempt--
 				continue
 			}
 			if (r.ok || (expectStatus && expectStatus.includes(r.status))) return r

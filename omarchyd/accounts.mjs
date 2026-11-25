@@ -351,7 +351,7 @@ export async function openAccounts(dataDir, {create = true} = {}) {
 				users: s.users.map((user) => {
 					if (user.userId !== u.userId) return user
 					const nextUser = {...user}
-					if (typeof patch?.name === 'string' && patch.name.trim()) nextUser.name = patch.name.trim().slice(0, 40)
+					if (typeof patch?.name === 'string' && patch.name.trim()) nextUser.name = [...patch.name.trim()].slice(0, 40).join('')
 					if (typeof patch?.language === 'string') nextUser.language = patch.language.slice(0, 10)
 					if (typeof patch?.wallpaper === 'string') nextUser.wallpaper = {id: patch.wallpaper.slice(0, 40)}
 					return nextUser

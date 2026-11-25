@@ -117,7 +117,7 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			if (provider !== 'openai-compatible' && apiKey.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')
 			const model = String(input?.model ?? '').trim()
 			if (!model || model.length > 80) throw new RpcError('BAD_REQUEST', 'Enter a model id')
-			const name = String(input?.name ?? '').trim().slice(0, 48) || ({spacexai: 'Grok', openai: 'OpenAI', anthropic: 'Anthropic'}[provider] ?? 'API')
+			const name = [...String(input?.name ?? '').trim()].slice(0, 48).join('') || ({spacexai: 'Grok', openai: 'OpenAI', anthropic: 'Anthropic'}[provider] ?? 'API')
 			let baseUrl = presetBaseUrl(provider) ?? normalizeBaseUrl(input?.baseUrl)
 			if (provider === 'openai-compatible') {
 				if (!/^https?:\/\/[^\s]+/i.test(baseUrl) || baseUrl.length > 200) throw new RpcError('BAD_REQUEST', 'Enter the API base URL')
@@ -160,7 +160,7 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			const next = {...k}
 			if (clearDefault) next.systemDefault = false
 			if (k.ownerUserId === actor.userId) {
-				if (typeof input?.name === 'string') next.name = input.name.trim().slice(0, 48) || next.name
+				if (typeof input?.name === 'string') next.name = [...input.name.trim()].slice(0, 48).join('') || next.name
 				if (typeof input?.model === 'string' && input.model.trim() && input.model.trim() !== next.model) {
 					next.model = input.model.trim().slice(0, 80)
 					delete next.check

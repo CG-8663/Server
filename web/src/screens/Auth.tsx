@@ -2,6 +2,7 @@ import {useState, type FormEvent} from 'react'
 
 import {ApiError, login, setup, type Bootstrap} from '../api'
 import {connectSubmitMode} from '../connection'
+import {CREATE_OWNER_COMMAND, needsFirstAccount} from './firstAccount'
 import {Icon} from '../icons'
 import {Field, VersionTag, haptic} from '../ui'
 
@@ -100,6 +101,19 @@ export function Connect({onDone, onRetry, unreachable}: {onDone: () => void; onR
 	)
 }
 
+// A server with no account (after a factory reset, say): the form below could only say "Incorrect password".
+function NoAccount({boot}: {boot: Bootstrap}) {
+	return (
+		<main className="auth center screen">
+			<Logo />
+			<h1>No account yet</h1>
+			<p className="lead">{boot.server?.device ?? 'This server'} has no account to sign in with. The first account is made in a Terminal on the server itself. Run this there:</p>
+			<pre className="mono" style={{whiteSpace: 'pre-wrap', wordBreak: 'break-all', textAlign: 'left', fontSize: 12.5, margin: '0 0 8px', userSelect: 'all'}}>{CREATE_OWNER_COMMAND}</pre>
+			<p className="muted" style={{fontSize: 13, margin: '0 0 12px'}}>It asks for a name and a password. Reload this page afterwards to sign in.</p>
+		</main>
+	)
+}
+
 export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUserId?: (id: string) => void; onDone: () => void}) {
 	const [username, setUsername] = useState('')
 	const [password, setPassword] = useState('')
@@ -129,6 +143,8 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 			setBusy(false)
 		}
 	}
+
+	if (needsFirstAccount(boot)) return <NoAccount boot={boot} />
 
 	return (
 		<main className="auth center screen">

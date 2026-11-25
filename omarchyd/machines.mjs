@@ -29,6 +29,7 @@ import {createQemuAgent} from './qemu-agent.mjs'
 import {remoteGuestAgentRun} from './remote-guest-agent.mjs'
 import {RpcError} from './rpc.mjs'
 import {hostdevXml, parseUsbLive} from './usb.mjs'
+import {stoppedMessage} from './exec-error.mjs'
 
 export const CATALOG_URL = 'https://raw.githubusercontent.com/MyOwnDataCenter/app-store/main/machines/catalog.json'
 const BUNDLED_CATALOG = fileURLToPath(new URL('./machine-catalog.json', import.meta.url))
@@ -42,7 +43,7 @@ function execP(cmd, args, {input, cwd, timeout = 120_000} = {}) {
 	return new Promise((resolve, reject) => {
 		const child = execFile(cmd, args, {cwd, timeout, maxBuffer: 8 * 1024 * 1024, env: {...process.env, LC_ALL: 'C'}}, (error, stdout, stderr) => {
 			if (error) {
-				error.message = `${cmd} ${args[0] ?? ''}: ${(stderr || error.message).toString().trim().split('\n').slice(-2).join(' ')}`
+				error.message = stoppedMessage(`${cmd} ${args[0] ?? ''}`.trim(), error, timeout) ?? `${cmd} ${args[0] ?? ''}: ${(stderr || error.message).toString().trim().split('\n').slice(-2).join(' ')}`
 				return reject(error)
 			}
 			resolve(stdout.toString())
@@ -109,7 +110,7 @@ function catalogInstallKind(img) {
 	return 'cloud'
 }
 
-export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000, connectorAgentWaitMs = 60 * 60 * 1000, isOwner = () => true}) {
+export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000, connectorAgentWaitMs = 60 * 60 * 1000, isOwner = () => true, usbReleased = null}) {
 	const base = join(dataDir, 'machines')
 	const imagesDir = join(base, 'images')
 	const vmsDir = join(base, 'vms')
@@ -791,7 +792,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const kind = catalogInstallKind(img)
 			if (kind === 'windows' && hostArch !== 'amd64') throw new RpcError('PRECONDITION_FAILED', `Installing Windows from its ISO needs an x86-64 computer`)
 			const name = String(input.name ?? '').trim()
-			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (!name || [...name].length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
 			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 			if (machines.some((m) => m.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
 			const threads = Number(status.threads) || 1
@@ -953,7 +954,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			// Windows set up from its ISO (and its answer file) is the x86 PC kind.
 			if (kind === 'windows' && caps.hostArchitecture !== 'amd64') throw new RpcError('PRECONDITION_FAILED', 'Installing Windows from its ISO needs an x86-64 server')
 			const name = String(input.name ?? '').trim()
-			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (!name || [...name].length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
 			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 			if (machines.some((m) => m.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
 			const threads = os.cpus().length || 1
@@ -1262,6 +1263,17 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (m.options?.protection && !input?.force) throw new RpcError('PRECONDITION_FAILED', `${m.name} is protected. Turn off Protection in its options to delete it.`)
 		if (hostOf(m) !== 'server') {
 			assertOwner(ctx)
+			// A computer that was removed from the swarm can't be asked to delete anything. Only a swarm list
+			// that was read and doesn't have it counts: a list that fails to load keeps the machine.
+			let swarm = null
+			try {
+				swarm = await connector?.list?.()
+			} catch {}
+			if (Array.isArray(swarm) && !swarm.some((a) => a?.id === hostOf(m))) {
+				machines = machines.filter((x) => x.id !== m.id)
+				await save()
+				return true
+			}
 			const {hostId, hostName, agent} = await hostAgent(m)
 			if (!agent.online) throw new RpcError('PRECONDITION_FAILED', `${hostName} is offline, so ${m.name} was not deleted.`)
 			if (!agent.allowed?.vms || !agent.on?.vms) throw new RpcError('FORBIDDEN', `Pair ${hostName} again with Virtual machines switched on.`)
@@ -1286,6 +1298,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await rm(join(vmsDir, m.id), {recursive: true, force: true})
 		machines = machines.filter((x) => x.id !== m.id)
 		await save()
+		// The sticks it had attached: their udev rules go too (as when a stick is detached).
+		await usbReleased?.(m.usbDevices ?? [])
 		return true
 	}
 
@@ -1375,7 +1389,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// A changed definition: libvirt keeps it for the next start. While running, it's pending until then.
 	async function markChanged(m, {markPending = true} = {}) {
 		if (m.state !== 'error' && !isBusy(m.id)) {
-			await define(m)
+			try {
+				await define(m)
+			} catch (error) {
+				throw engineFailure(error, m.name, 'save that change')
+			}
 			if (markPending && (await liveState(m)) !== 'stopped') m.pending = true
 		}
 		await save()
@@ -1949,7 +1967,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		let nextName
 		if (input.name !== undefined) {
 			const name = String(input.name).trim()
-			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
+			if (!name || [...name].length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
 			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 			if (machines.some((x) => x.id !== m.id && x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
 			nextName = name
@@ -2075,6 +2093,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const m = find(input.id)
 		assertLocal(m)
 		writable(m)
+		refuseIfBusy(m)
 		const d = findDisk(m, input.diskId)
 		if (d.device !== 'disk') throw new RpcError('BAD_REQUEST', 'Only disks can be resized')
 		const sizeGb = Number(input.sizeGb)
@@ -2499,7 +2518,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		})
 		machines.push(m)
 		busy.set(id, {state: 'installing', progress: 0})
-		await save()
+		try {
+			await save()
+		} catch (error) {
+			// A refused save leaves no machine behind, and its name stays free.
+			machines = machines.filter((x) => x !== m)
+			busy.delete(id)
+			throw error
+		}
 		// Hold the live source for the whole copy. A settling entry expires on a short timer, so replace it;
 		// a real busy entry (no settling flag) belongs to another operation and is left alone.
 		const liveSource = machines.find((x) => x === source)
@@ -2517,7 +2543,16 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					if (d.device === 'disk') {
 						const dst = join(dir, d.id === 'disk0' ? 'disk.qcow2' : `${d.id}.qcow2`)
 						await copyDisk(d, dst)
-						kept.push({...d, file: dst, format: await copiedFormat(dst, d.format)})
+						const copied = {...d, file: dst, format: await copiedFormat(dst, d.format)}
+						// A brought-over machine has no recorded size: read it from the converted disk.
+						if (copied.sizeGb === undefined) {
+							const {virtualGb} = await diskInfo(dst)
+							if (virtualGb !== undefined) {
+								copied.sizeGb = Math.max(1, Math.round(virtualGb))
+								if (copied.id === 'disk0' && m.diskSizeGb === undefined) m.diskSizeGb = copied.sizeGb
+							}
+						}
+						kept.push(copied)
 					} else if (d.role === 'answer') continue
 					else if (d.role === 'seed') {
 						const src = d.file
@@ -2566,8 +2601,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return {id}
 	}
 	const uniqueName = (wanted) => {
-		let name = wanted.slice(0, 64)
-		for (let n = 2; machines.some((x) => x.name.toLowerCase() === name.toLowerCase()); n++) name = `${wanted.slice(0, 58)} (${n})`
+		let name = [...wanted].slice(0, 64).join('')
+		for (let n = 2; machines.some((x) => x.name.toLowerCase() === name.toLowerCase()); n++) name = `${[...wanted].slice(0, 58).join('')} (${n})`
 		return name
 	}
 	async function restoreBackup(input = {}) {
@@ -2578,14 +2613,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const meta = await readFile(join(dir, 'machine.json'), 'utf8').then(JSON.parse, () => null)
 		if (!meta?.machine?.layout) throw new RpcError('NOT_FOUND', 'That backup doesn’t exist')
 		const name = input.name ? String(input.name).trim() : uniqueName(meta.machine.name)
-		if (!name || name.length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
+		if (!name || [...name].length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
 		return adopt(meta.machine, {name, keepIds: true, copyDisk: (d, dst) => run('qemu-img', ['convert', '-O', 'qcow2', join(dir, `${d.id}.qcow2`), dst], {timeout: 6 * 60 * 60_000})})
 	}
 	// A VM brought over from another server (the Unraid importer): its settings, and disk images
 	// already copied to this server (raw or qcow2), each converted into the machine's own qcow2.
 	async function importVm(spec = {}) {
 		await ready
-		const requested = String(spec.name ?? 'Imported').trim().slice(0, 64) || 'Imported'
+		const requested = [...String(spec.name ?? 'Imported').trim()].slice(0, 64).join('') || 'Imported'
 		const name = uniqueName(requested)
 		const disks = (spec.disks ?? []).map((d, i) => ({id: i === 0 ? 'disk0' : `disk${i}`, file: String(d.file), device: 'disk', bus: ['virtio', 'sata', 'scsi'].includes(d.bus) ? (d.bus === 'scsi' ? 'sata' : d.bus) : 'sata', format: d.format === 'qcow2' ? 'qcow2' : 'raw'}))
 		if (!disks.length) throw new RpcError('BAD_REQUEST', 'That VM has no disks to bring over')
@@ -2609,10 +2644,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		writable(m)
 		await requireStopped(m, 'clone it')
 		const name = input.name ? String(input.name).trim() : uniqueName(`${m.name} copy`)
-		if (!name || name.length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
+		if (!name || [...name].length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
 		// The source's history entry stays running until the copy ends, then follows its result.
+		// No await between the name check above and adopt() adding the machine, or two clones could take one name.
+		// adopt() saves the registry, source history included.
 		const sourceTask = beginTask(m, 'clone', name)
-		await save().catch(() => {})
 		try {
 			return await adopt(m, {name, keepIds: false, sourceTask: {m, t: sourceTask}, copyDisk: (d, dst) => run('qemu-img', ['convert', '-O', 'qcow2', d.file, dst], {timeout: 6 * 60 * 60_000})})
 		} catch (error) {
