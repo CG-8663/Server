@@ -625,6 +625,9 @@ function toDetail(a) {
 
 // Turn a store compose file into what omarchyd runs: no app_proxy, the web service published on
 // 127.0.0.1 only. Returns the compose text and where the gateway should forward to.
+// Text that screens draw. A listing can write a list or a mapping where text belongs, and a screen
+// cannot draw that, so anything that is not text (or a number or true/false) is left out.
+const listingText = (v) => (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : typeof v === 'boolean' ? String(v) : undefined)
 const stringList = (v) => (Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? x : typeof x === 'number' && Number.isFinite(x) ? String(x) : null)).filter(Boolean) : [])
 // The apps `id` needs, dependencies first (a depth-first post-order).
 function orderNeeds(id, byId, seen = new Set(), out = []) {
@@ -1376,25 +1379,25 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			apps.push({
 				id: a.id,
 				name: String(a.name ?? a.id),
-				tagline: a.tagline,
+				tagline: listingText(a.tagline),
 				icon: media(a.icon) ?? (gallery ? `${gallery}/${a.id}/icon.svg` : undefined),
-				category: a.category,
+				category: listingText(a.category),
 				version: a.version !== undefined ? String(a.version) : undefined,
 				...(installSize !== undefined ? {installSize} : {}),
 				port: Number(a.port) || undefined,
 				path: typeof a.path === 'string' ? a.path : '',
-				description: a.description,
-				developer: a.developer,
-				website: a.website,
+				description: listingText(a.description),
+				developer: listingText(a.developer),
+				website: listingText(a.website),
 				gallery: (Array.isArray(a.gallery) ? a.gallery : []).map(media).filter(Boolean),
-				releaseNotes: a.releaseNotes,
+				releaseNotes: listingText(a.releaseNotes),
 				dependencies: deps,
 				// Everything installed along with it, in install order (what it needs comes first). Never itself.
 				...(needs.length ? {needs} : {}),
 				...(Array.isArray(a.implements) ? {implements: a.implements.filter((x) => typeof x === 'string')} : {}),
 				shared: a.shared === true || deps.length > 0 || neededByOthers.has(a.id) || /ipv4_address/.test(compose),
-				defaultUsername: a.defaultUsername || undefined,
-				defaultPassword: a.defaultPassword || undefined,
+				defaultUsername: listingText(a.defaultUsername) || undefined,
+				defaultPassword: listingText(a.defaultPassword) || undefined,
 				deterministicPassword: a.deterministicPassword === true,
 				// Needs a secure (https://) page in the browser, e.g. for WebCodecs or the Web Crypto API.
 				...(a.requiresHttps === true ? {requiresHttps: true} : {}),
