@@ -47,6 +47,8 @@ const SLOW_RPC = new Set([
 	'files.unarchive',
 	'files.move',
 	'files.delete',
+	'files.trash',
+	'files.restore',
 	'files.emptyTrash',
 	'appStore.addRepository',
 	'appStore.refresh',
