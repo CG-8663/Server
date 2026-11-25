@@ -1495,7 +1495,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					const line = stderr.split('\n').map((l) => l.trim()).filter(Boolean).at(-1)
 						?? String(e?.message ?? e ?? 'download failed').split('\n').map((l) => l.trim()).filter(Boolean).at(-1)
 						?? 'download failed'
-					throw new RpcError('BAD_GATEWAY', `Couldn't reach ${s.url}: ${line}`)
+					const failure = new RpcError('BAD_GATEWAY', `Couldn't reach ${s.url}: ${line}`)
+					// The hourly check going offline is not a reason to hide a catalog that is already on disk.
+					// It is not cached, so the next read tries the network again. "Check for new apps" still fails.
+					if (refresh || !(await exists(join(storeDir(s.url), '.git')))) throw failure
+					storeFailed = true
+					console.error(`[omarchyd] ${failure.message}; showing the copy already downloaded`)
 				}
 			}
 			if (!stillAdded(s.url)) continue
