@@ -671,7 +671,13 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	const api = express.Router()
 	const json64k = express.json({limit: '64kb'})
 	const jsonClipboard = express.json({limit: '256kb'})
-	api.use((req, res, next) => (req.path === '/rpc/hyprland.clipboardWrite' ? jsonClipboard(req, res, next) : json64k(req, res, next)))
+	// omarchyd takes up to 100,000 bytes for one assistant message, so the proxy must not cut it at 64 KB.
+	const jsonAssistant = express.json({limit: 100_000})
+	api.use((req, res, next) => {
+		if (req.path === '/rpc/hyprland.clipboardWrite') return jsonClipboard(req, res, next)
+		if (req.path === '/assistant/stream') return jsonAssistant(req, res, next)
+		return json64k(req, res, next)
+	})
 	api.use((req, res, next) => {
 		res.set('Cache-Control', 'no-store')
 		req.sid = parseCookies(req.headers.cookie)[COOKIE]
@@ -2813,7 +2819,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	api.use((error, req, res, next) => {
 		if (res.headersSent) return next(error)
 		const status = Number(error?.status ?? error?.statusCode)
-		if (status >= 400 && status < 500) return res.status(status).json({error: {code: 'BAD_REQUEST', message: error.type === 'entity.parse.failed' ? 'Malformed JSON' : error.type === 'entity.too.large' ? 'Request too large' : 'Bad request'}})
+		if (status >= 400 && status < 500) return res.status(status).json({error: {code: 'BAD_REQUEST', message: error.type === 'entity.parse.failed' ? 'Malformed JSON' : error.type === 'entity.too.large' ? (req.path === '/assistant/stream' ? 'That message is too long (the limit is about 100 KB)' : 'Request too large') : 'Bad request'}})
 		console.error('[omarchy-server] api', error?.message ?? error)
 		res.status(500).json({error: {code: 'INTERNAL_SERVER_ERROR', message: 'Something went wrong on the server'}})
 	})
