@@ -39,6 +39,7 @@ import {isSuper, resolveHyprKey, type Action} from './hyprland/keymap'
 import {Launcher} from './hyprland/Launcher'
 import {GAP, MIN_PANE, collapse, contains, dividers, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, moveWorkspace, ratioAt, reconcile, rects as tileRectsOf, remove as removeTile, setRatio, swapDir, type Divider, type Node, type Path} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
+import {restoreWindows} from './restoreWindows'
 import {loadWallpaper} from './wallpaperLoader'
 import {overviewEnterOpensApp} from './overviewEnter'
 import {OPEN_SETTINGS, SHOW_SHELL_KEY, rememberAppearanceFocus, rememberSettingsPage, settingsPayloadFor, settingsRemountKey} from './settingsPage'
@@ -385,7 +386,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const user = useUser()
 	const [cfg, setCfg] = useDeskConfig()
 	const {info, appList, machineList, railApps, railWindows, railReady, owner} = useItems()
-	const [wins, setWins] = useState<Win[]>(() => load<Win[]>(STORE_KEY, []).filter((w) => w.kind !== 'terminal' && w.kind !== 'console' && w.kind !== 'rail'))
+	const [wins, setWins] = useState<Win[]>(() => restoreWindows<Win>(load<unknown>(STORE_KEY, [])))
 	const [overview, setOverview] = useState<null | 'windows' | 'apps'>(null)
 	const [topMenu, setTopMenu] = useState<null | 'clock' | 'system'>(null)
 	const [menu, setMenu] = useState<Menu | null>(null)
