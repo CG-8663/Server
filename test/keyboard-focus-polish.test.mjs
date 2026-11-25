@@ -70,3 +70,13 @@ describe('visible focus rings', () => {
 		assert.match(CSS, /\.hypr-launcher input:focus-visible \{[^}]*box-shadow:/)
 	})
 })
+
+describe('controls hidden with opacity 0 show themselves when keyboard focus reaches them (#504)', () => {
+	test('the file viewer Previous and Next buttons are fully visible on keyboard focus', () => {
+		assert.match(CSS, /\.fv-nav:focus-visible \{\s*opacity:\s*1;/)
+	})
+
+	test('the custom colour swatch draws a ring when its hidden input has keyboard focus', () => {
+		assert.match(CSS, /\.solid-swatch\.custom:has\(input:focus-visible\) \{[^}]*box-shadow:[^}]*--accent-text/)
+	})
+})

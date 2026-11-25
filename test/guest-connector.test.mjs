@@ -8,7 +8,7 @@ import {test} from 'node:test'
 
 import {createConnector} from '../omarchyd/connector.mjs'
 import {RpcError} from '../omarchyd/rpc.mjs'
-import {connectorKind, guestAgent, hostGuestMetrics, isGuestAgent, linuxConnectorOs} from '../web/src/swarm/guestLink.ts'
+import {connectorKind, guestAgent, guestPoweredOffAt, guestUptimeSeconds, hostGuestMetrics, isGuestAgent, linuxConnectorOs} from '../web/src/swarm/guestLink.ts'
 
 test('the connector installs on Linux guests, and host stats omit disk use', () => {
 	assert.equal(connectorKind('ubuntu'), 'linux')
@@ -41,6 +41,14 @@ test('the connector installs on Linux guests, and host stats omit disk use', () 
 	assert.equal(isGuestAgent({guestOf: 'abcd1234'}), true)
 	assert.equal(isGuestAgent({guestOf: ''}), false)
 	assert.equal(isGuestAgent({}), false)
+	const now = 10_000_000
+	const start = {type: 'start', status: 'ok', startedAt: now - 3_600_000, endedAt: now - 3_598_000}
+	assert.equal(guestUptimeSeconds([start], now), 3598)
+	assert.equal(guestUptimeSeconds([{type: 'stop', status: 'ok', startedAt: now - 1000, endedAt: now - 500}, start], now), null)
+	assert.equal(guestUptimeSeconds([{type: 'reboot', status: 'ok', startedAt: now - 120_000, endedAt: now - 60_000}, start], now), 60)
+	assert.equal(guestPoweredOffAt([{type: 'shutdown', status: 'ok', startedAt: now - 50_000, endedAt: now - 40_000}, start]), now - 40_000)
+	assert.equal(guestPoweredOffAt([start]), null)
+	assert.equal(guestUptimeSeconds([{type: 'start', status: 'error', startedAt: now - 1000, endedAt: now - 500}], now), null)
 })
 
 test('pairing a virtual machine keeps the connector off the physical computer list', async () => {
