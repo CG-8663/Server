@@ -6,7 +6,7 @@ import {useQuery} from '@tanstack/react-query'
 
 import {query, type OsImage} from '../api'
 import {Icon, type IconName} from '../icons'
-import {bytes, duration, haptic, useConfirm} from '../ui'
+import {bytes, duration, haptic, machineStatus, useConfirm} from '../ui'
 import {
 	BUS_LABEL,
 	CACHE_LABEL,
@@ -31,10 +31,9 @@ import {backupListView} from './backupList'
 import {formatServerDiskGb} from './formatServerDisk'
 import {cpuStatusText, pointsInLastHour} from './statsWindow'
 
-export type PanelId = 'summary' | 'console' | 'hardware' | 'cloudinit' | 'options' | 'network' | 'usb' | 'snapshots' | 'backups' | 'history' | 'monitor'
+export type PanelId = 'summary' | 'hardware' | 'cloudinit' | 'options' | 'network' | 'usb' | 'snapshots' | 'backups' | 'history' | 'monitor'
 export const PANELS: {id: PanelId; label: string; icon: IconName}[] = [
 	{id: 'summary', label: 'Summary', icon: 'activity'},
-	{id: 'console', label: 'Desktop', icon: 'devices'},
 	{id: 'hardware', label: 'Hardware', icon: 'cpu'},
 	{id: 'cloudinit', label: 'Cloud-Init', icon: 'key'},
 	{id: 'options', label: 'Options', icon: 'settings'},
@@ -172,7 +171,7 @@ export function SummaryPanel({d}: {d: MachineDetails}) {
 					<h4>Status</h4>
 					<dl>
 						<dt>Status</dt>
-						<dd className={`st-${d.state}`}>{d.state}</dd>
+						<dd className={`st-${d.state}`}>{machineStatus(d.state).label}</dd>
 						<dt>ID</dt>
 						<dd>{d.vmid}</dd>
 						<dt>CPU usage</dt>
@@ -1004,7 +1003,7 @@ export function MonitorPanel({d}: {d: MachineDetails}) {
 					Send
 				</button>
 			</form>
-			{d.state !== 'running' && <p className="muted mx-small">{d.name} isn’t running.</p>}
+			{d.state !== 'running' && <p className="muted mx-small">{d.name} isn’t online.</p>}
 		</div>
 	)
 }

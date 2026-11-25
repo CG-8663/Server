@@ -1123,6 +1123,26 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	const HSL = /^\d{1,3}(\.\d+)? \d{1,3}(\.\d+)?% \d{1,3}(\.\d+)?%$/
 	const accountKey = (accountId) => hashId(`account:${accountId}`).slice(0, 32)
 	const backgroundFile = (accountId) => join(store.dataDir, 'backgrounds', `${accountKey(accountId)}.jpg`)
+	const TEMP_ID = /^[a-z0-9][a-z0-9:_-]{0,63}$/
+	const cleanTempIdList = (value) => {
+		if (value == null) return []
+		if (!Array.isArray(value)) return null
+		const out = []
+		for (const id of value) {
+			if (typeof id !== 'string' || !TEMP_ID.test(id) || out.includes(id)) return null
+			out.push(id)
+			if (out.length > 40) return null
+		}
+		return out
+	}
+	const cleanTempPicks = (value) => {
+		if (value == null || typeof value !== 'object' || Array.isArray(value)) return {ok: false}
+		const on = cleanTempIdList(value.on)
+		const off = cleanTempIdList(value.off)
+		if (!on || !off) return {ok: false}
+		const hidden = off.filter((id) => !on.includes(id))
+		return {ok: true, value: on.length || hidden.length ? {on, off: hidden} : null}
+	}
 	const prefsOf = (accountId) => store.getConfig().prefs?.[accountKey(accountId)] ?? null
 	const savePrefs = async (accountId, patch) => {
 		const key = accountKey(accountId)
@@ -1151,7 +1171,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	api.post('/prefs', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView} = req.body ?? {}
+		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView, machinesCompact, tempPicks, tempUnit} = req.body ?? {}
 		const patch = {}
 		// How the assistant looks for this account (character, name, motion). Appearance only: it never
 		// reaches the assistant itself. Checked field by field; anything else is dropped.
@@ -1186,6 +1206,26 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		if (statView !== undefined) {
 			if (statView !== null && statView !== 'line' && statView !== 'blocks' && statView !== 'gauges') return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown stat view'}})
 			patch.statView = statView
+		}
+		// Desktop Machines compact list for this account. Absent means off.
+		if (machinesCompact !== undefined) {
+			if (typeof machinesCompact !== 'boolean') return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad compact setting'}})
+			patch.machinesCompact = machinesCompact
+		}
+		// Celsius, or Fahrenheit. Null and "c" both mean Celsius.
+		if (tempUnit !== undefined) {
+			if (tempUnit === null || tempUnit === 'c') patch.tempUnit = null
+			else if (tempUnit === 'f') patch.tempUnit = 'f'
+			else return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad temperature unit'}})
+		}
+		// Which temperature sensors this account shows. Null clears the choice.
+		if (tempPicks !== undefined) {
+			if (tempPicks === null) patch.tempPicks = null
+			else {
+				const picks = cleanTempPicks(tempPicks)
+				if (!picks.ok) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad temperature choice'}})
+				patch.tempPicks = picks.value
+			}
 		}
 		res.json({prefs: await savePrefs(session.accountId, patch)})
 	}))
