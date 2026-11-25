@@ -534,6 +534,7 @@ export function Row({
 	trailing,
 	title,
 	disabled,
+	expanded,
 }: {
 	icon: IconName
 	color?: string
@@ -545,6 +546,8 @@ export function Row({
 	trailing?: ReactNode
 	title?: string
 	disabled?: boolean
+	/** For a row that opens or closes more rows under it: whether they are showing. */
+	expanded?: boolean
 }) {
 	const inner = (
 		<>
@@ -567,7 +570,7 @@ export function Row({
 		)
 	if (onClick)
 		return (
-			<button className="row" onClick={onClick} title={title} disabled={disabled} style={{minHeight: 56}}>
+			<button className="row" onClick={onClick} title={title} disabled={disabled} aria-expanded={expanded} style={{minHeight: 56}}>
 				{inner}
 			</button>
 		)

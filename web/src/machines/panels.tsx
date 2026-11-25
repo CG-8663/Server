@@ -788,7 +788,7 @@ export function SnapshotsPanel({d}: {d: MachineDetails}) {
 	return (
 		<div className="mx-panel">
 			<div className="mx-toolbar">
-				<button type="button" className="btn small primary" onClick={() => setTaking(!taking)} disabled={!canAct}>
+				<button type="button" className="btn small primary" onClick={() => setTaking(!taking)} disabled={!canAct} aria-expanded={taking}>
 					<Icon name="camera" size={15} /> Take snapshot
 				</button>
 				{!canAct && <span className="muted mx-small">Shut down {d.name} to take, restore or delete snapshots.</span>}
@@ -878,7 +878,7 @@ export function BackupsPanel({d}: {d: MachineDetails}) {
 	return (
 		<div className="mx-panel">
 			<div className="mx-toolbar">
-				<button type="button" className="btn small primary" disabled={!!running || action.isPending || d.state === 'error'} onClick={() => setAsking(!asking)}>
+				<button type="button" className="btn small primary" disabled={!!running || action.isPending || d.state === 'error'} onClick={() => setAsking(!asking)} aria-expanded={asking}>
 					<Icon name="save" size={15} /> Backup now
 				</button>
 				{running && (
