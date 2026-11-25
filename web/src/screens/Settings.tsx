@@ -16,7 +16,7 @@ import {UnraidPage} from '../unraid'
 import {OidcSheet} from './Oidc'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 import {clearTotpSetupQuery} from './twoFactorQuery'
-import {MIN_PASSWORD_LENGTH, PASSWORD_SHEET_SUBTITLE, updateFinished, updateStartFailure} from './settingsHelpers'
+import {MIN_PASSWORD_LENGTH, PASSWORD_SHEET_SUBTITLE, browserName, updateFinished, updateStartFailure} from './settingsHelpers'
 import {safeSession} from '../safeStorage'
 
 
@@ -83,7 +83,7 @@ function describeSession(s: ActiveSession) {
 		return {icon: 'phone' as IconName, name, detail: [s.client.platform, s.client.appVersion && `v${s.client.appVersion}`].filter(Boolean).join(' · ')}
 	}
 	const ua = s.client.userAgent ?? ''
-	const browser = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser'
+	const browser = browserName(ua)
 	const os = /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : ''
 	return {icon: 'browser' as IconName, name: `${browser}${os ? ` on ${os}` : ''}`, detail: ''}
 }
