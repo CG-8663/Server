@@ -4335,7 +4335,12 @@ class Connection:
         def report():
             last_hello = time.monotonic()
             while not stop.wait(REPORT_INTERVAL):
-                last_hello = self._report_step(live_sampler, last_hello, time.monotonic())
+                # One failed reading (a folder that vanished, a command that errored) must not end
+                # the reporting for as long as this connection lasts.
+                try:
+                    last_hello = self._report_step(live_sampler, last_hello, time.monotonic())
+                except Exception as e:  # noqa: BLE001
+                    log("report:", e)
 
         threading.Thread(target=report, daemon=True).start()
         try:

@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -82,6 +83,55 @@ class ServerConnectionKeepalive(unittest.TestCase):
         finally:
             done.set()
             listener.close()
+
+
+class ReportLoopSurvivesAnError(unittest.TestCase):
+    def test_one_failed_report_does_not_end_the_reporting(self):
+        import threading
+
+        release = threading.Event()
+
+        class FakeWs:
+            def __init__(self, *args):
+                pass
+
+            def send_text(self, text):
+                pass
+
+            def recv(self):
+                release.wait(5)
+                raise ConnectionError("closed")
+
+            def close(self):
+                pass
+
+        conn = agent.Connection({"server": "https://example.test", "id": "a", "key": "b", "abilities": {}})
+        calls = []
+
+        def step(sampler, last_hello, now):
+            calls.append(now)
+            if len(calls) == 1:
+                raise OSError("the runtime folder went away")
+            return last_hello
+
+        with mock.patch.object(agent, "WS", FakeWs), mock.patch.object(agent, "REPORT_INTERVAL", 0.01), \
+                mock.patch.object(agent, "log"), mock.patch.object(agent, "info", return_value={}), \
+                mock.patch.object(conn, "_report_step", side_effect=step):
+            runner = threading.Thread(target=lambda: self._run(conn), daemon=True)
+            runner.start()
+            deadline = time.time() + 3
+            while len(calls) < 3 and time.time() < deadline:
+                time.sleep(0.01)
+            release.set()
+            runner.join(3)
+        self.assertGreaterEqual(len(calls), 3, "reporting stopped after the first error")
+
+    @staticmethod
+    def _run(conn):
+        try:
+            conn.run()
+        except ConnectionError:
+            pass
 
 
 if __name__ == "__main__":
