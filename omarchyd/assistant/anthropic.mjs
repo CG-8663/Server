@@ -175,7 +175,9 @@ export async function* streamAnthropic({baseUrl = ANTHROPIC, apiKey, model, mess
 	let buf = ''
 	if (res.body) {
 		for await (const chunk of res.body) {
-			buf += (typeof chunk === 'string' ? chunk : decoder.decode(chunk, {stream: true})).replace(/\r\n/g, '\n')
+			// A chunk can end between the \r and the \n, so the whole buffer is normalized, not just the new piece.
+			buf += typeof chunk === 'string' ? chunk : decoder.decode(chunk, {stream: true})
+			buf = buf.replace(/\r\n/g, '\n')
 			let idx
 			while ((idx = buf.indexOf('\n\n')) >= 0) {
 				const event = buf.slice(0, idx)
