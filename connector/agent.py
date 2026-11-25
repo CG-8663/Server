@@ -320,6 +320,123 @@ def lan_macs(list_dir=os.listdir, read_file=read, root="/sys/class/net"):
     return out[:8]
 
 
+_VIRTUAL_NIC = re.compile(r"^(lo|docker|podman|veth|virbr|br-|cni|tailscale|wg|tun|tap|dummy|flannel|cali|kube|zt)")
+
+
+def _mac(raw):
+    hexm = re.sub(r"[^0-9a-fA-F]", "", raw or "").lower()
+    if len(hexm) != 12 or hexm in ("000000000000", "ffffffffffff"):
+        return ""
+    return ":".join(hexm[i : i + 2] for i in range(0, 12, 2))
+
+
+def _broadcast(ip, prefix):
+    if prefix is None or prefix >= 31 or prefix < 0:
+        return None
+    parts = str(ip).split(".")
+    if len(parts) != 4:
+        return None
+    try:
+        n = (int(parts[0]) << 24) | (int(parts[1]) << 16) | (int(parts[2]) << 8) | int(parts[3])
+    except ValueError:
+        return None
+    mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
+    b = (n & mask) | (~mask & 0xFFFFFFFF)
+    return ".".join(str((b >> s) & 255) for s in (24, 16, 8, 0))
+
+
+def _physical(name, list_dir):
+    if not name or _VIRTUAL_NIC.match(name):
+        return False
+    try:
+        entries = set(list_dir(f"/sys/class/net/{name}"))
+    except OSError:
+        return False
+    if "bridge" in entries:
+        return False
+    return "device" in entries or "wireless" in entries or "phy80211" in entries
+
+
+def collect_nics(list_dir=None, read_file=None, ip_json=None):
+    list_dir = list_dir or os.listdir
+    read_file = read_file or read
+    if ip_json is None:
+        try:
+            ip_json = subprocess.run(["ip", "-4", "-json", "addr"], capture_output=True, text=True, timeout=3).stdout or "[]"
+        except (OSError, subprocess.SubprocessError):
+            ip_json = "[]"
+    addrs = {}
+    try:
+        parsed = json.loads(ip_json or "[]")
+    except ValueError:
+        parsed = []
+    for iface in parsed:
+        for a in iface.get("addr_info") or []:
+            if a.get("family") == "inet" and a.get("local") is not None and a.get("prefixlen") is not None:
+                addrs.setdefault(iface.get("ifname"), []).append((a["local"], int(a["prefixlen"])))
+    out = []
+    try:
+        names = list_dir("/sys/class/net")
+    except OSError:
+        names = []
+    for name in names:
+        if not _physical(name, list_dir):
+            continue
+        mac = _mac(read_file(f"/sys/class/net/{name}/address"))
+        if not mac:
+            continue
+        broadcasts = [b for ip, prefix in addrs.get(name, []) if (b := _broadcast(ip, prefix))]
+        out.append({"name": name, "mac": mac, "broadcasts": broadcasts})
+    return out
+
+
+def magic_packet(mac):
+    hexm = re.sub(r"[^0-9a-fA-F]", "", mac or "")
+    if len(hexm) != 12:
+        return None
+    raw = bytes.fromhex(hexm)
+    return b"\xff" * 6 + raw * 16
+
+
+def send_wol(macs, nics, send):
+    targets = []
+    for n in nics or []:
+        targets.extend(n.get("broadcasts") or [])
+    if not targets:
+        targets = ["255.255.255.255"]
+    seen = []
+    for dest in targets:
+        if dest not in seen:
+            seen.append(dest)
+    sent = 0
+    for mac in macs or []:
+        packet = magic_packet(mac)
+        if not packet:
+            continue
+        for dest in seen:
+            send(packet, (dest, 9))
+            sent += 1
+    return sent
+
+
+def _udp_send(packet, dest):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.sendto(packet, dest)
+    finally:
+        sock.close()
+
+
+def wol_action(args, collect=None, send=None):
+    macs = [m for m in (args.get("macs") or []) if _mac(m)]
+    nics = (collect or collect_nics)()
+    sent = send_wol(macs, nics, send or _udp_send)
+    if not sent:
+        raise RuntimeError("No wake packet sent")
+    return {"sent": sent}
+
+
 # ---- Windows readings (by kdegeek, #868): Win32 calls through ctypes, standard library only. ----
 _WIN_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _win_cpu_last = None
@@ -627,6 +744,7 @@ def info(abilities=None):
         "agentSha": _file_sha256(__file__),
         "helperSha": _file_sha256(HELPER),
         "macs": lan_macs(),
+        "nics": [n["mac"] for n in collect_nics()],
         "posture": host_posture(),
         "pkg": pkg,
         "updateCommand": update_command(pkg, om.get("omarchy")),
@@ -4304,6 +4422,10 @@ class Connection:
     def call(self, msg):
         name = msg.get("name")
         try:
+            # Always on, like metrics: any powered-on computer can relay a wake packet.
+            if name == "wol":
+                data = wol_action(msg.get("args") or {})
+                return self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})
             if name == "app-install":
                 data = app_install(msg.get("args") or {})
                 return self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})

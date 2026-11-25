@@ -22,6 +22,7 @@ import {openStore} from '../fleet/openStore'
 import {ThemePicker} from '../theme/ThemePicker'
 import {themeAction} from '../theme/themeAction'
 import {storageRowSub} from './storageHint'
+import {wakeOffer} from './wake'
 import {StoragePanel} from '../screens/Storage'
 import {useDesktop} from '../desktop/Desktop'
 import {ComputerBackups} from '../backups'
@@ -66,6 +67,7 @@ export type Agent = {
 		desktop?: {kind: string; ok: boolean; why: string}
 	} | null
 	libvirt?: boolean
+	macs?: string[]
 	metrics: {
 		cpu: number | null
 		cores?: number
@@ -93,7 +95,7 @@ const EVERYWHERE: Ability[] = WINDOWS_ABILITIES
 export const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = {
 	terminal: {label: 'Terminal', icon: 'terminal', what: 'A shell on it, as the person who installed the connector'},
 	desktop: {label: 'Desktop', icon: 'devices', what: 'See and use its screen (Hyprland, Sway or an X11 desktop)'},
-	manage: {label: 'Manage', icon: 'settings', what: 'Omarchy plugins (verified only) and themes, updates, restart'},
+	manage: {label: 'Manage', icon: 'settings', what: 'Omarchy plugins (verified only) and themes, updates, restart, and wake'},
 	storage: {label: 'Storage', icon: 'disk', what: 'See its drives, format extra disks, and manage pools on that computer'},
 	backup: {label: 'Backups', icon: 'history', what: 'Back up folders you choose to this server, on a schedule (open this computer and choose Backups). It can add backups, never delete them.'},
 	services: {label: 'Services', icon: 'server', what: 'Inspect logs and start, stop, or restart user systemd services and containers'},
@@ -462,6 +464,7 @@ function AgentSheet({
 	const m = a.metrics
 	const desk = a.info?.desktop
 	const offline = !a.online
+	const wake = wakeOffer(a)
 	if (storage) return <StoragePanel bare={bare} target={{agentId: a.id, name: a.name}} onClose={() => setStorage(false)} />
 	if (backups) return <ComputerBackups id={a.id} name={a.name} onClose={() => setBackups(false)} />
 	if (services) return <AgentServices a={a} onClose={() => setServices(false)} />
@@ -627,11 +630,25 @@ function AgentSheet({
 <DesktopHelp a={a} onTerminal={onTerminal} />
 			{a.online && m && <LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} posture={a.info?.posture} />}
 			{a.online && <HistorySparklines agentId={a.id} />}
-			{offline && !!a.info?.macs?.length && (
+			{wake && (
 				<div style={{marginTop: 12}}>
-					<button className="btn primary" style={{width: '100%'}} disabled={act.isPending} onClick={() => (haptic(8), act.mutate({path: 'swarm.wake', input: {id: a.id}, done: `Sent Wake-on-LAN to ${a.name}`}))}>
+					<button
+						className="btn primary"
+						style={{width: '100%'}}
+						disabled={!wake.enabled || act.isPending}
+						title={wake.why || undefined}
+						onClick={
+							wake.enabled
+								? async () => {
+										if (await confirm({title: `Wake ${a.name}?`, body: 'This sends a wake packet on the local network from this server and every computer that is on. The computer needs Wake-on-LAN switched on, and it has to be on one of those networks.', confirm: 'Wake', icon: 'power'}))
+											act.mutate({path: 'swarm.wake', input: {id: a.id}, done: `Waking ${a.name}…`})
+									}
+								: undefined
+						}
+					>
 						<Icon name="power" size={18} /> Wake up
 					</button>
+					{!wake.enabled && wake.why ? <p className="quiet" style={{marginTop: 8}}>{wake.why}</p> : null}
 				</div>
 			)}
 			{a.online && m && (extraDisks(m.disks).length > 0 || typeof m.temp === 'number' || m.uptime !== undefined || (m.net && (m.net.rx != null || m.net.tx != null))) && (

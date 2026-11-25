@@ -117,6 +117,9 @@ export const WRITE_TOOLS = [
 	mutation('usb_detach', 'usb.detach', 'Unbind a host USB stick from the app or virtual machine that holds it. A running app may need a restart.', {
 		deviceId: {type: 'string', description: 'Stable USB id from usb_list'},
 	}, true),
+	mutation('swarm_wake', 'swarm.wake', 'Wake a powered-off Local swarm computer with Wake-on-LAN. Packets go out from this server and every swarm computer that is on. Not a virtual machine, and not over Tailscale alone.', {
+		id: {type: 'string', description: 'Computer id from swarm_list'},
+	}, true),
 	mutation('swarm_action', 'swarm.action', 'Install a plugin, set a theme, or reboot another Local swarm computer — not this server’s Round or Square shape', {
 		id: {type: 'string'},
 		name: {type: 'string', enum: ['plugin-install', 'plugin-remove', 'theme-set', 'reboot']},
