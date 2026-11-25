@@ -43,7 +43,8 @@ function cleanLabel(input, fallback) {
 }
 
 function fileName(label, ext) {
-	const base = cleanLabel(label, 'clip').slice(0, 80)
+	// A name Files can save: no slash, and not hidden (a copied path or ".env" would be refused).
+	const base = cleanLabel(label, 'clip').replace(/[/\\]/g, '_').replace(/^\.+/, '').trim().slice(0, 80) || 'clip'
 	const lower = base.toLowerCase()
 	const named = ext && !lower.endsWith(ext) ? `${base}${ext}` : base
 	return named.slice(0, 120)
