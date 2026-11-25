@@ -54,7 +54,8 @@ function Stepper({label, value, unit, min, max, step = 1, next, onChange}: {labe
 			<button className="step-btn" aria-label={`Less ${label}`} onClick={() => go(-1)} disabled={value <= min}>
 				−
 			</button>
-			<span className="step-val num">
+			<span className="step-val num" role="status">
+				<span className="sr-only">{label} </span>
 				{value} <small>{unit}</small>
 			</span>
 			<button className="step-btn" aria-label={`More ${label}`} onClick={() => go(1)} disabled={value >= max}>
