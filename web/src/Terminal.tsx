@@ -8,6 +8,7 @@ import {Terminal as XTerm} from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 
 import {clipText} from './clips'
+import {isClipTarget, markClipTarget, unmarkClipTarget} from './clipPasteTarget'
 import {BootstrapContext} from './data'
 import {Icon} from './icons'
 import {overlayBackUsesHistory, popstateClosesOverlay} from './overlayHistory'
@@ -524,13 +525,28 @@ export function TerminalScreen({
 		}
 	}, [app, agent?.id, attempt])
 
+	// A clip pasted as text goes into the terminal used last, not into every open one.
+	const clipTarget = useRef({})
 	useEffect(() => {
+		const me = clipTarget.current
+		markClipTarget(me)
+		// Listening on the document, because the screen's own element can be swapped out.
+		const mark = (e: Event) => {
+			if (e.target instanceof Node && root.current?.contains(e.target)) markClipTarget(me)
+		}
+		document.addEventListener('focusin', mark)
+		document.addEventListener('pointerdown', mark, true)
 		const onClipPaste = (e: Event) => {
 			const text = (e as CustomEvent<{text?: string}>).detail?.text
-			if (text) termRef.current?.paste(text)
+			if (text && isClipTarget(me)) termRef.current?.paste(text)
 		}
 		window.addEventListener('omarchy-clip-paste', onClipPaste)
-		return () => window.removeEventListener('omarchy-clip-paste', onClipPaste)
+		return () => {
+			window.removeEventListener('omarchy-clip-paste', onClipPaste)
+			document.removeEventListener('focusin', mark)
+			document.removeEventListener('pointerdown', mark, true)
+			unmarkClipTarget(me)
+		}
 	}, [])
 
 	const sendSeq = (seq: string) => {
