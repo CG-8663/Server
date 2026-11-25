@@ -715,8 +715,8 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 	if (doc.errors.length) throw doc.errors[0]
 	if (!doc.contents) doc.contents = doc.createNode({})
 	if (!YAML.isMap(doc.contents)) throw new Error('Compose file must be a mapping')
-	if (!YAML.isMap(doc.get('services'))) doc.set('services', {})
 	const serviceNodes = doc.get('services')
+	if (!YAML.isMap(serviceNodes)) throw new Error('This app’s compose file lists no services, so there is nothing to start')
 	const proxyNode = serviceNodes.get('app_proxy')
 	const envNode = YAML.isMap(proxyNode) ? proxyNode.get('environment') : null
 	const proxy = YAML.isMap(envNode) ? (envNode.toJSON() ?? {}) : {}
