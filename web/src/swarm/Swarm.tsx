@@ -962,9 +962,9 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 			) : !pairing ? (
 				<>
 					<p className="muted" style={{fontSize: 14, margin: '0 4px 12px'}}>
-						Choose what this server may do on the new computer. The connector there enforces it too, and you can switch these off later (but not on again without adding it again).
+						Choose what this server may do on the new computer. The connector there enforces it too. Later you can switch any of these off and on again from the computer’s page, and Change permissions there can allow more without removing it.
 					</p>
-					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+					<div className="glass group wrap-sub" style={{'--inset': '62px'} as CSSProperties}>
 						<Row icon="sparkle" color="#2fbf71" label="Watch" sub="Always: CPU, memory, disks, temperature, updates waiting" />
 						{shown.map((k) => (
 							<Row key={k} icon={ABILITY[k].icon} label={ABILITY[k].label} sub={guest || EVERYWHERE.includes(k) ? ABILITY[k].what : `${ABILITY[k].what} · Linux`} trailing={<Switch on={allow[k]} label={ABILITY[k].label} onChange={(v) => setAllow({...allow, [k]: v})} />} />
@@ -1495,7 +1495,7 @@ function ReauthorizeComputer({a, onClose}: {a: Agent; onClose: () => void}) {
 					<p className="muted" style={{fontSize: 14, margin: '0 4px 12px'}}>
 						Choose the abilities this server may use on {a.name}. Running the command on that computer updates its permissions in place and rotates its key.
 					</p>
-					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+					<div className="glass group wrap-sub" style={{'--inset': '62px'} as CSSProperties}>
 						{(Object.keys(ABILITY) as Ability[]).map((k) => (
 							<Row key={k} icon={ABILITY[k].icon} label={ABILITY[k].label} sub={ABILITY[k].what} trailing={<Switch on={allow[k]} label={ABILITY[k].label} onChange={(v) => setAllow({...allow, [k]: v})} />} />
 						))}
