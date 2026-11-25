@@ -8,6 +8,7 @@ import {useBootstrap, useUser} from '../data'
 import {checkLiveText} from '../focus'
 import {Icon, type IconName} from '../icons'
 import {Card, Field, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, useConfirm, useToast, type Prefs} from '../ui'
+import {agoText} from '../plural'
 import {Personalize} from '../desktop/Personalize'
 import {AssistantAppearanceSettings} from '../character/widgets'
 import {StoragePage} from './Storage'
@@ -70,13 +71,7 @@ function FormSheet({open, title, subtitle, onClose, onSubmit, busy, submit, dang
 	)
 }
 
-const ago = (t: number) => {
-	const s = Math.max(0, (Date.now() - t) / 1000)
-	if (s < 90) return 'just now'
-	if (s < 3600) return `${Math.round(s / 60)} min ago`
-	if (s < 86400) return `${Math.round(s / 3600)} h ago`
-	return `${Math.round(s / 86400)} days ago`
-}
+const ago = (t: number) => agoText((Date.now() - t) / 1000)
 function describeSession(s: ActiveSession) {
 	if (s.client.type === 'native') {
 		const name = s.client.id === 'omarchy-server' || !s.client.id ? 'MODC' : s.client.id

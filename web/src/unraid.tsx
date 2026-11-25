@@ -3,6 +3,7 @@ import {useEffect, useMemo, useState, type CSSProperties, type FormEvent} from '
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query, type Listing} from './api'
+import {plural} from './plural'
 import {Icon, type IconName} from './icons'
 import {safeSession} from './safeStorage'
 import {Field, Group, Row, Segmented, Switch, haptic, useConfirm, useToast} from './ui'
@@ -473,7 +474,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 										<span>
 											{v.installed ? 'Already here' : (v.problems[0] ??
 													[
-														`${v.cores} cores`,
+														plural(v.cores, 'core'),
 														`${Math.round(v.memoryMb / 1024)} GB`,
 														formatBytes(v.size),
 														v.nvram ? 'UEFI NVRAM' : '',
