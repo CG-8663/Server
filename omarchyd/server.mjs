@@ -100,6 +100,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const secure = appOptions.secure ?? tlsContext({dir: tlsDir, lazy: true})
 	// Apps that are part of the server itself (Tailscale), installed through the root helper.
 	const systemApps = appOptions.systemApps !== undefined ? appOptions.systemApps || null : createSystemApps({helper: storage.helper})
+	const oidc = createOidc({dataDir, accounts, ...oidcOptions})
+	const tailscale = createTailscale({...tailscaleOptions})
 	// The connector is created later. These bindings are filled in once it exists, so an install
 	// aimed at another machine is forwarded there instead of running on this server.
 	let forwardInstall = async () => {
@@ -118,14 +120,14 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		secure,
 		forwardInstall: (...args) => forwardInstall(...args),
 		remoteApps: () => remoteApps(),
+		oidc,
+		getTailscaleStatus: () => tailscale.procedures['tailscale.status'].run().catch(() => null),
 	})
 	// Backups need apps: to pause them while their files are saved, and to know where those files are.
 	// …and the local swarm's connector (created further down), for computers that back up here.
 	const backups = createBackups({dataDir, home, files, apps, swarm: {agents: () => connector.backup.agents(), call: (...a) => connector.backup.call(...a), progress: (id) => connector.backup.progress(id)}, ...backupOptions})
 	// Move from Unraid: its shares, containers and VMs, brought over SSH.
 	const unraid = createUnraid({dataDir, files, apps, machines, storage, ...unraidOptions})
-	const tailscale = createTailscale({...tailscaleOptions})
-	const oidc = createOidc({dataDir, accounts, ...oidcOptions})
 	const usb = createUsb({
 		enumerate: () => listHostUsb(usbOptions),
 		guests: {
@@ -522,19 +524,37 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			Object.entries(apps.procedures).map(([name, p]) =>
 				name === 'appStore.addRepository' || name === 'appStore.removeRepository'
 					? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'change app stores'), p.run(input))}]
-					: name === 'apps.install'
-						? [
-								name,
-								{
-									kind: p.kind,
-									run: (input, {auth}) => {
-										// This server’s own install stays as open as it is today. Another machine is owner-only.
-										if (installTargetId(input?.target)) ownerOnly(auth, 'install an app on another computer')
-										return p.run(input)
+					: name === 'apps.oidcStatus' || name === 'apps.setOidc'
+						? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage single sign-on'), p.run(input))}]
+						: name === 'apps.install'
+							? [
+									name,
+									{
+										kind: p.kind,
+										run: (input, ctx) => {
+											// This server’s own install stays as open as it is today. Another machine or OIDC wiring is owner-only.
+											if (installTargetId(input?.target)) ownerOnly(ctx.auth, 'install an app on another computer')
+											if (input?.oidc || input?.oidcIssuerUrl) ownerOnly(ctx.auth, 'manage single sign-on')
+											return p.run(input, ctx)
+										},
 									},
-								},
-							]
-						: [name, p],
+								]
+							: name === 'apps.installReview'
+								? [
+										name,
+										{
+											kind: p.kind,
+											run: async (input, ctx) => {
+												const res = await p.run(input, ctx)
+												if (accounts.getUser(ctx.auth?.userId)?.role === 'member' && res?.oidc) {
+													const {oidc: _drop, ...rest} = res
+													return rest
+												}
+												return res
+											},
+										},
+									]
+								: [name, p],
 			),
 		),
 		...Object.fromEntries(
@@ -545,7 +565,20 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		...Object.fromEntries(Object.entries(backups.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage backups'), p.run(input))}])),
 		...Object.fromEntries(Object.entries(unraid.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'move from Unraid'), p.run(input))}])),
 		...Object.fromEntries(Object.entries(tailscale.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage Tailscale'), p.run(input))}])),
-		...Object.fromEntries(Object.entries(oidc.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage single sign-on'), p.run(input))}])),
+		...Object.fromEntries(
+			Object.entries(oidc.procedures).map(([name, p]) => [
+				name,
+				{
+					kind: p.kind,
+					run: async (input, {auth}) => {
+						ownerOnly(auth, 'manage single sign-on')
+						const res = await p.run(input)
+						if (name === 'oidc.setConfig') await apps.resyncOidcClients?.().catch(() => {})
+						return res
+					},
+				},
+			]),
+		),
 		...Object.fromEntries(
 			Object.entries(updater.procedures).map(([name, p]) =>
 				name === 'system.update' || name === 'system.setReleaseChannel' ? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'update this server'), p.run(input))}] : [name, p],
