@@ -1602,6 +1602,8 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 
 	async function importVm(item, plan) {
 		if (!plan) throw new Error('It isn’t on the Unraid server any more')
+		// Before anything is changed on Unraid: a VM that is already here must not be shut down for nothing.
+		if (vmInstalled(plan.name)) throw new Error('It’s already here')
 		let st = (await remote(`virsh domstate ${sq(plan.name)}`).catch(() => '')).trim()
 		if (st && st !== 'shut off') {
 			if (!job.shutdownRunningVms) throw new Error(`Shut down ${plan.name} on Unraid first (it’s ${st}), then bring it over`)
@@ -1615,7 +1617,6 @@ export function createUnraid({dataDir, files, apps, machines, storage, run = def
 			}
 			if (st !== 'shut off') throw new Error(`${plan.name} didn’t shut down within 2 minutes (still ${st}). Shut it down on Unraid first.`)
 		}
-		if (vmInstalled(plan.name)) throw new Error('It’s already here')
 		const stage = join(stagingDir, `vm-${randomBytes(4).toString('hex')}`)
 		await mkdir(stage, {recursive: true, mode: 0o700})
 		try {
