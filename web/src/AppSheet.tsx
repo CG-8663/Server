@@ -239,7 +239,7 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 				) : (
 				<>
 				{app.error && (
-					<div className="error" style={{marginBottom: 14, display: 'block'}}>
+					<div className="error" role="alert" style={{marginBottom: 14, display: 'block'}}>
 						<div style={{display: 'flex', gap: 8, alignItems: 'flex-start'}}>
 							<Icon name="alert" size={18} />
 							<span style={{wordBreak: 'break-word'}}>{app.error}</span>

@@ -435,7 +435,7 @@ function StatusCard({s, busy, onRun}: {s: BackupStatus; busy: boolean; onRun: ()
 						</span>
 						<b>{!last ? 'No backups yet' : last.ok ? `Backed up ${ago(last.endedAt!)}` : `Last backup ${ago(last.endedAt!)} had a problem`}</b>
 					</div>
-					{last && !last.ok && last.error && <p className="bk-err">{last.error}</p>}
+					{last && !last.ok && last.error && <p className="bk-err" role="alert">{last.error}</p>}
 					<p className="muted bk-next">{s.nextRunAt ? `Next backup ${formatBackupWhen(s.nextRunAt, s.timeZone)}` : 'Scheduled backups are off'}</p>
 				</>
 			)}
@@ -651,7 +651,7 @@ function SetupSheet({mode, current, onClose, onDone}: {mode: 'new' | 'nas'; curr
 					<Field id="bk-user" label="Username" hint="An account on the NAS that can write to the share. A separate account just for backups is safest." value={username} onChange={(e) => setUsername(e.target.value)} autoCapitalize="off" autoComplete="off" required />
 					<Field id="bk-pass" label="Password" type="password" placeholder={reuse ? 'Saved (leave empty to keep it)' : ''} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required={!reuse} />
 					{error && (
-						<div className="error">
+						<div className="error" role="alert">
 							<Icon name="alert" size={18} />
 							{error}
 						</div>
@@ -686,7 +686,7 @@ function SetupSheet({mode, current, onClose, onDone}: {mode: 'new' | 'nas'; curr
 					)}
 					<Field id="bk-folder" label="Folder on the share" hint="Created if it isn’t there. Use a folder only these backups go in." value={folder} onChange={(e) => setFolder(e.target.value)} required />
 					{error && (
-						<div className="error">
+						<div className="error" role="alert">
 							<Icon name="alert" size={18} />
 							{error}
 						</div>
@@ -858,7 +858,7 @@ function ConnectSheet({current, onConnectGdrive, onClose}: {current?: BackupStat
 						<Field id="bkcg-folder" label="Google Drive folder" value={gFolder} onChange={(e) => setGFolder(e.target.value)} required />
 						<Field id="bkcg-key" label="Recovery key" placeholder="abcd-efgh-…" value={gKey} onChange={(e) => setGKey(e.target.value)} autoCapitalize="off" autoCorrect="off" spellCheck={false} required />
 						{error && (
-							<div className="error">
+							<div className="error" role="alert">
 								<Icon name="alert" size={18} />
 								{error}
 							</div>
@@ -887,7 +887,7 @@ function ConnectSheet({current, onConnectGdrive, onClose}: {current?: BackupStat
 					<Field id="bkc-folder" label="Folder on the share" value={f.folder} onChange={put('folder')} required />
 					<Field id="bkc-key" label="Recovery key" placeholder="abcd-efgh-…" value={f.recoveryKey} onChange={put('recoveryKey')} autoCapitalize="off" autoCorrect="off" spellCheck={false} required />
 					{error && (
-						<div className="error">
+						<div className="error" role="alert">
 							<Icon name="alert" size={18} />
 							{error}
 						</div>
@@ -1247,7 +1247,7 @@ function GdriveSetupSheet({current, onClose, onDone}: {current: BackupStatus; on
 							required
 						/>
 						{!authUrl && error && (
-							<div className="error">
+							<div className="error" role="alert">
 								<Icon name="alert" size={18} />
 								{error}
 							</div>
@@ -1277,7 +1277,7 @@ function GdriveSetupSheet({current, onClose, onDone}: {current: BackupStatus; on
 								required
 							/>
 							{error && (
-								<div className="error">
+								<div className="error" role="alert">
 									<Icon name="alert" size={18} />
 									{error}
 								</div>
@@ -1325,7 +1325,7 @@ function GdriveSetupSheet({current, onClose, onDone}: {current: BackupStatus; on
 						</label>
 					</div>
 					{error && (
-						<div className="error">
+						<div className="error" role="alert">
 							<Icon name="alert" size={18} />
 							{error}
 						</div>

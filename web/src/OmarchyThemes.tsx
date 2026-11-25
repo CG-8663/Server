@@ -60,13 +60,13 @@ export function OmarchyThemes({owner, onSwitched}: {owner: boolean; onSwitched?:
 	}, [data, search])
 
 	if (themes.isLoading) return <div className="omb-note"><span className="spinner" /> Loading Omarchy’s themes…</div>
-	if (themes.error) return <div className="error"><Icon name="alert" size={18} />{(themes.error as Error).message}</div>
+	if (themes.error) return <div className="error" role="alert"><Icon name="alert" size={18} />{(themes.error as Error).message}</div>
 	if (!data?.installed.length) return <div className="omb-note">No Omarchy themes found on this server.</div>
 
 	return (
 		<div className="omt">
 			{!data.available && (
-				<div className="error">
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
 					Omarchy’s theme commands weren’t found, so themes can be shown but not switched here.
 				</div>

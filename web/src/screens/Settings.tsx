@@ -563,7 +563,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 				</div>
 			)}
 			{keys.error && (
-				<div className="error">
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
 					{(keys.error as Error).message}
 				</div>

@@ -151,13 +151,13 @@ function LocalCreateMachine({open, onClose, host}: {open: boolean; onClose: () =
 				<>
 					<SheetHeader title="New machine" subtitle={remote ? host.name : 'Choose an operating system'} onClose={close} />
 					{caps.data?.performanceWarning && (
-						<div className="error" style={{marginBottom: 12}}>
+						<div className="error" role="alert" style={{marginBottom: 12}}>
 							<Icon name="alert" size={18} />
 							{caps.data.performanceWarning}
 						</div>
 					)}
 					{caps.data && !caps.data.libvirtAvailable && (
-						<div className="error">
+						<div className="error" role="alert">
 							<Icon name="alert" size={18} />
 							Virtual machines aren’t available on this server.
 						</div>
@@ -165,7 +165,7 @@ function LocalCreateMachine({open, onClose, host}: {open: boolean; onClose: () =
 					<div style={{overflowY: 'auto', flex: 1, margin: '0 -20px', padding: '0 20px 20px'}}>
 						{images.isLoading && Array.from({length: 5}, (_, i) => <div key={i} className="skeleton" style={{height: 64, margin: '8px 0'}} />)}
 						{images.error && (
-							<div className="error">
+							<div className="error" role="alert">
 								<Icon name="alert" size={18} />
 								{(images.error as Error).message}
 							</div>
@@ -294,7 +294,7 @@ function ConfigureForm({os, hostArch, host, onBack, onDone, threads, memory, max
 			</div>
 			<div style={{overflowY: 'auto', flex: 1, margin: '0 -20px', padding: '0 20px 8px'}}>
 				{error && (
-					<div className="error shake">
+					<div className="error shake" role="alert">
 						<Icon name="alert" size={18} />
 						{error}
 					</div>

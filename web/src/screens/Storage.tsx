@@ -448,7 +448,7 @@ function DriveSheet({d, onClose, onChanged, rpc, args}: {d: Drive | null; onClos
 				<>
 					<SheetHeader title={d.model ?? d.name} subtitle={`${KIND[d.kind]} · ${tb(d.size)} · ${d.path}`} onClose={close} />
 					{issues.length > 0 && (
-						<div className="error" style={{marginBottom: 14}}>
+						<div className="error" role="alert" style={{marginBottom: 14}}>
 							<Icon name="alert" size={18} />
 							{issues.join(' · ')}. Back up what’s on it.
 						</div>

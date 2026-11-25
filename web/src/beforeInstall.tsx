@@ -67,7 +67,7 @@ export function BeforeInstall({
 				</div>
 			)}
 			{review.error && (
-				<div className="error">
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
 					{(review.error as Error).message}
 				</div>

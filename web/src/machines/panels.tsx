@@ -214,7 +214,7 @@ export function SummaryPanel({d}: {d: MachineDetails}) {
 				</div>
 			</div>
 			{d.errorMessage && (
-				<div className="error">
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
 					{d.errorMessage}
 				</div>

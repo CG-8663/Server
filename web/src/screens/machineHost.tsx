@@ -177,7 +177,7 @@ function ResetSheet({open, onClose, onDone}: {open: boolean; onClose: () => void
 			disabled={!password || typed !== 'RESET'}
 			onSubmit={() => save.mutate({path: 'system.factoryReset', input: {password}, done: 'Your server is resetting'}, {onSuccess: onDone})}
 		>
-			<div className="error" style={{marginBottom: 16}}>
+			<div className="error" role="alert" style={{marginBottom: 16}}>
 				<Icon name="alert" size={18} />
 				Every app and its data, every machine and its disks, and all My Own Data Center accounts and settings are permanently deleted. Afterwards you make the first account again in a Terminal on the server; the sign-in page shows the command. This can’t be undone. Your own files, storage pools and the Omarchy desktop are left as they are.
 			</div>
