@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.84',
+		date: '2026-11-25',
+		title: 'Wake a computer from any machine that is on',
+		added: [
+			'Wake up uses every network card that computer has shown. The packet goes out from this server and from every computer that is on.',
+		],
+	},
+	{
 		version: '0.9.83',
 		date: '2026-11-25',
 		title: 'Apps can sign in with My Own Data Center',
