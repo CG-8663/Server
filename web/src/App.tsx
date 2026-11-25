@@ -11,6 +11,7 @@ import {OPEN_FLEET} from './fleet/openMember'
 import {OPEN_STORE, type StoreBinding} from './fleet/openStore'
 import {BootstrapContext, useAction, useApps, useNotifications, useUpdates, useUser} from './data'
 import {Icon, type IconName} from './icons'
+import {APP_TITLE, pageTitle} from './pageTitle'
 import {Apps} from './screens/Apps'
 import {Connect, Login} from './screens/Auth'
 import {Home} from './screens/Home'
@@ -189,6 +190,13 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	const updates = useUpdates()
 	const notifications = useNotifications()
 
+	// Each phone screen is its own history entry, so each one names itself in the tab and the history list.
+	useEffect(() => {
+		document.title = pageTitle(tab)
+		return () => {
+			document.title = APP_TITLE
+		}
+	}, [tab])
 	useEffect(() => {
 		const onHash = () => setTab(tabFromHash())
 		window.addEventListener('hashchange', onHash)
