@@ -517,7 +517,13 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 	async function localFiles(root) {
 		const out = new Map()
 		async function walk(d) {
-			for (const e of await readdir(d, {withFileTypes: true}).catch(() => [])) {
+			// A folder that is gone is empty. One that cannot be read is not: treating it as empty would
+			// make the NAS copy delete everything it holds for that folder.
+			const entries = await readdir(d, {withFileTypes: true}).catch((error) => {
+				if (error?.code === 'ENOENT') return []
+				throw new RpcError('PRECONDITION_FAILED', `Couldn’t read the backup folder ${relative(root, d) || '.'}, so the NAS copy wasn’t changed (${error?.code ?? error?.message}).`)
+			})
+			for (const e of entries) {
 				const p = join(d, e.name)
 				if (e.isDirectory()) await walk(p)
 				else if (e.isFile() && !e.name.endsWith('.tmp')) {
