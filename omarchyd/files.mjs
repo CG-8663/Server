@@ -606,7 +606,8 @@ export function createFiles({home, dataDir, io, drivesDir = join('/run/media', o
 					await resolve(p)
 					keep.push(p)
 				} catch (error) {
-					if (!(error instanceof RpcError) || error.code !== 'NOT_FOUND') keep.push(p)
+					// A drive that is unplugged has no folders to find; its favorites wait for it.
+					if (!(error instanceof RpcError) || error.code !== 'NOT_FOUND' || p.startsWith('/External/')) keep.push(p)
 				}
 			}
 			if (keep.length !== list.length) await writeAtomic(favoritesFile, JSON.stringify(keep))
