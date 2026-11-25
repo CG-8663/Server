@@ -1925,6 +1925,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (!(videos ?? await availableVideo()).includes(video)) throw new RpcError('BAD_REQUEST', 'That display isn’t available on this server')
 		const nic = input.nic ?? m.layout.nic
 		if (!NICS.includes(nic)) throw new RpcError('BAD_REQUEST', 'Unknown network model')
+		if (input.linkDown !== undefined && input.linkDown !== null && typeof input.linkDown !== 'boolean') throw new RpcError('BAD_REQUEST', 'Disconnect must be true or false')
 		const mac = String(input.mac ?? m.mac).toLowerCase()
 		if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac) || parseInt(mac.slice(0, 2), 16) & 1) throw new RpcError('BAD_REQUEST', 'Enter a unicast MAC address like 52:54:00:12:34:56')
 		if (machines.some((x) => x.id !== m.id && x.mac === mac)) throw new RpcError('CONFLICT', 'Another machine uses that MAC address')
@@ -1948,7 +1949,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const o = {...m.options}
 		let nextName
 		if (input.name !== undefined) {
-			const name = String(input.name).trim()
+			const name = typeof input.name === 'string' ? input.name.trim() : ''
 			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
 			if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 			if (machines.some((x) => x.id !== m.id && x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'A machine with that name already exists')
@@ -1956,12 +1957,12 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		}
 		for (const k of ['onBoot', 'protection', 'tablet', 'acpi', 'kvm', 'agent', 'bootMenu']) if (input[k] !== undefined) o[k] = !!input[k]
 		if (input.startupOrder !== undefined) {
-			const n = input.startupOrder === null || input.startupOrder === '' ? null : Number(input.startupOrder)
+			const n = input.startupOrder === null || input.startupOrder === '' ? null : input.startupOrder
 			if (n !== null && (!Number.isInteger(n) || n < 0 || n > 999)) throw new RpcError('BAD_REQUEST', 'Start order must be between 0 and 999')
 			o.startupOrder = n
 		}
 		if (input.startupDelay !== undefined) {
-			const n = Number(input.startupDelay)
+			const n = input.startupDelay
 			if (!Number.isInteger(n) || n < 0 || n > 600) throw new RpcError('BAD_REQUEST', 'Start delay must be between 0 and 600 seconds')
 			o.startupDelay = n
 		}
@@ -2033,7 +2034,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const m = find(idArg)
 			writable(m)
 			refuseIfBusy(m)
-			const sizeGb = Number(input.sizeGb)
+			const sizeGb = input.sizeGb
 			const bus = input.bus ?? 'virtio'
 			if (!Number.isInteger(sizeGb) || sizeGb < 1 || sizeGb > 4096) throw new RpcError('BAD_REQUEST', 'Disk size must be between 1 and 4096 GB')
 			if (!BUSES.includes(bus)) throw new RpcError('BAD_REQUEST', 'Unknown disk bus')
@@ -2077,7 +2078,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		writable(m)
 		const d = findDisk(m, input.diskId)
 		if (d.device !== 'disk') throw new RpcError('BAD_REQUEST', 'Only disks can be resized')
-		const sizeGb = Number(input.sizeGb)
+		const sizeGb = input.sizeGb
 		const current = (await diskInfo(d.file)).virtualGb ?? d.sizeGb ?? 0
 		if (!Number.isInteger(sizeGb) || sizeGb > 4096) throw new RpcError('BAD_REQUEST', 'Disk size must be a whole number of GB, up to 4096')
 		if (sizeGb <= current) throw new RpcError('BAD_REQUEST', `Disks can only grow: enter more than ${current} GB`)
