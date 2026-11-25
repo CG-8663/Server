@@ -2,7 +2,7 @@ import {createPortal} from 'react-dom'
 import {createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type InputHTMLAttributes, type ReactNode, type RefObject} from 'react'
 
 import {useQuery} from '@tanstack/react-query'
-import type {AppState, Machine, Wallpaper} from './api'
+import type {AppState, Wallpaper} from './api'
 import {AssistantAvatar, cleanLook, type AssistantLook} from './character/AssistantCharacter'
 import {detectDesktop, LAYOUT_POINTER} from './layout'
 export {detectDesktop}
@@ -13,6 +13,8 @@ import {solidOf, WALLPAPERS, useDeskConfig, wallpaperSrc} from './desktop/config
 import {wallpaperBlocked} from './desktop/wallpaperGate'
 import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
+import {reachLabel} from './fleet/machineManagerLogic'
+import {cleanTempPicks} from './fleet/temperatures'
 import {darkenHslForWhite, pickOnAccent, resolveCssColor} from './theme/contrast'
 import {initials as nameInitials} from './initials'
 import {paddingBottomPlus} from './scrollPad'
@@ -67,11 +69,8 @@ export function appStatus(state: AppState | undefined, hasUpdate = false): {kind
 	return {kind: 'running', label: 'running'}
 }
 export const isAppBusy = (state?: AppState) => !!state && BUSY.includes(state)
-export function machineStatus(state: Machine['state']): {kind: StatusKind; label: string} {
-	if (state === 'running') return {kind: 'running', label: 'running'}
-	if (state === 'stopped' || state === 'suspended' || state === 'hibernated') return {kind: 'stopped', label: state === 'suspended' ? 'paused' : state}
-	if (state === 'error') return {kind: 'error', label: 'error'}
-	return {kind: 'busy', label: state}
+export function machineStatus(state: string): {kind: StatusKind; label: string} {
+	return reachLabel('guest', state === 'running', state)
 }
 const STATUS_COLOR: Record<StatusKind, string> = {
 	running: 'var(--green)',
@@ -152,7 +151,7 @@ export function AppIcon({
 }
 
 // ---- ring gauge -------------------------------------------------------------
-export function Ring({value, color, children, size = 84, label, empty = false}: {value: number; color: string; children: ReactNode; size?: number; label: string; empty?: boolean}) {
+export function Ring({value, color, children, size = 84, label, empty = false, now, max = 100}: {value: number; color: string; children: ReactNode; size?: number; label: string; empty?: boolean; now?: number; max?: number}) {
 	const stroke = 8
 	const r = (size - stroke) / 2
 	const c = 2 * Math.PI * r
@@ -167,9 +166,9 @@ export function Ring({value, color, children, size = 84, label, empty = false}: 
 			style={{width: size, height: size, color}}
 			role={empty ? 'img' : 'meter'}
 			aria-label={label}
-			aria-valuenow={empty ? undefined : Math.round(value)}
+			aria-valuenow={empty ? undefined : Math.round(now ?? value)}
 			aria-valuemin={empty ? undefined : 0}
-			aria-valuemax={empty ? undefined : 100}
+			aria-valuemax={empty ? undefined : max}
 		>
 			<svg viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
 				<circle className="track" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke} />
@@ -782,6 +781,12 @@ export type Prefs = {
 	assistantLook?: AssistantLook | null
 	/** How machine stats are drawn. Null means the one-line default. Saved per account. */
 	statView?: 'line' | 'blocks' | 'gauges' | null
+	/** Desktop Machines compact list. Null means off. Saved per account. */
+	machinesCompact?: boolean | null
+	/** Which temperature sensors this account shows. Null means each sensor's own default. */
+	tempPicks?: {on: string[]; off: string[]} | null
+	/** Fahrenheit when `f`. Null means Celsius. */
+	tempUnit?: 'f' | null
 }
 // New installs start on the Omarchy theme (the Omarchy desktop's own colours and background). Anyone
 // who already chose a theme keeps it: their choice is saved on the server and wins over this default.
@@ -814,7 +819,10 @@ function clean(p: Partial<Prefs> | null | undefined): Prefs {
 	const accent = (ACCENTS as readonly string[]).includes(p?.accent as string) ? p!.accent! : DEFAULT_PREFS.accent
 	const omarchyBackground = typeof p?.omarchyBackground === 'string' && /^[0-9a-f]{16}$/.test(p.omarchyBackground) ? p.omarchyBackground : null
 	const statView = p?.statView === 'line' || p?.statView === 'blocks' || p?.statView === 'gauges' ? p.statView : null
-	return {theme, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null, statView}
+	const machinesCompact = typeof p?.machinesCompact === 'boolean' ? p.machinesCompact : null
+	const tempPicks = cleanTempPicks(p?.tempPicks)
+	const tempUnit = p?.tempUnit === 'f' ? 'f' : null
+	return {theme, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null, statView, machinesCompact, tempPicks, tempUnit}
 }
 export function readPrefs(): Prefs {
 	try {

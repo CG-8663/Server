@@ -108,7 +108,7 @@ function useSave() {
 	})
 }
 
-export function BackupsPage({onBack}: {onBack: () => void}) {
+export function BackupsPage({onBack}: {onBack?: () => void}) {
 	const status = useStatus()
 	const browserOnline = useBrowserOnline()
 	const problem = queryProblem(status, browserOnline)
@@ -162,9 +162,11 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 	return (
 		<div className="stagger">
 			<div className="page-head" style={{margin: '6px 0 14px'}}>
-				<button className="round-btn" aria-label="Back" onClick={onBack}>
-					<Icon name="back" size={20} />
-				</button>
+				{onBack && (
+					<button className="round-btn" aria-label="Back" onClick={onBack}>
+						<Icon name="back" size={20} />
+					</button>
+				)}
 				<h1 className="title" style={{flex: 1}}>
 					Backups
 				</h1>

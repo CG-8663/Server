@@ -1,5 +1,6 @@
 // One account-wide way to show a machine's readings. Every view lists the same readings.
 import {managerStats, type ManagerStat} from './machineManagerLogic.ts'
+import {formatTemp, tempArc, tempColor, tempDegrees, tempIsShown, tempScale, type TempPicks, type TempSensor, type TempUnit} from './temperatures.ts'
 
 export const STAT_VIEWS = ['line', 'blocks', 'gauges'] as const
 export type StatView = (typeof STAT_VIEWS)[number]
@@ -33,11 +34,13 @@ export type StatReading = {
 	icon: ManagerStat['icon'] | 'restart' | 'update' | 'alert' | 'network'
 	/** The value, the same words on the line, the block, and a gauge that has no percent. */
 	text: string
-	/** Set only when a ring can show a real percent. Temperature and a size-only disk stay null. */
+	/** How far around the ring to draw. A size-only disk stays null. A temperature uses its own scale. */
 	percent: number | null
 	/** Longer caption under a percent gauge, when it says more than `text`. */
 	sub: string
 	color?: string
+	/** When set, the ring is a temperature: the arc is `percent`, and the meter reports degrees. */
+	meter?: {now: number; max: number; unit?: string}
 }
 
 export type StatGauge = {k: string; icon: string; p: number; ready: boolean; key?: string; sub?: string; color?: string}
@@ -109,25 +112,42 @@ function postureReadings(posture: PostureSummary | undefined): StatReading[] {
 	return out
 }
 
+function temperatureReading(sensor: TempSensor, unit: TempUnit): StatReading {
+	const text = formatTemp(sensor.celsius, unit)
+	return {
+		id: `temp:${sensor.id}`,
+		label: sensor.label,
+		icon: 'thermo',
+		text,
+		percent: tempArc(sensor.celsius, sensor.kind),
+		sub: text,
+		color: tempColor(sensor.celsius, sensor.kind),
+		meter: {now: Math.round(tempDegrees(sensor.celsius, unit)), max: Math.round(tempDegrees(tempScale(sensor.kind).max, unit)), unit: unit === 'f' ? '°F' : '°C'},
+	}
+}
+
 /**
- * The readings every view shows, in one order: the usage gauges, then a size-only disk, then temperature, then host posture readings.
+ * The readings every view shows, in one order: the usage gauges, then a size-only disk, then temperatures, then host posture readings.
  * `diskSizeGb` is used only when no storage gauge is present.
+ * Pass `temps` for the machine's sensors. A lone `temp` number is the processor.
  */
-export function statReadings(input: {gauges: readonly StatGauge[]; temp: number | null; diskSizeGb: number | null; posture?: PostureSummary}): StatReading[] {
-	const stats = managerStats({gauges: input.gauges, temp: input.temp, diskSizeGb: input.diskSizeGb})
+export function statReadings(input: {gauges: readonly StatGauge[]; temp: number | null; diskSizeGb: number | null; posture?: PostureSummary; temps?: readonly TempSensor[]; tempPicks?: TempPicks; tempUnit?: TempUnit}): StatReading[] {
+	const stats = managerStats({gauges: input.gauges, temp: null, diskSizeGb: input.diskSizeGb})
 	const extra = new Map(input.gauges.map((g) => [g.key ?? g.k, g]))
 	const base: StatReading[] = stats.map((s) => {
 		const g = extra.get(s.id)
-		const text = s.id === 'temp' && input.temp != null && Number.isFinite(input.temp) ? `${Math.round(input.temp)}°C` : s.text
 		return {
 			id: s.id,
 			label: s.label,
 			icon: s.icon,
-			text,
+			text: s.text,
 			percent: s.percent,
-			sub: g?.sub && g.sub !== '–' ? g.sub : text,
+			sub: g?.sub && g.sub !== '–' ? g.sub : s.text,
 			color: g?.color,
 		}
 	})
-	return [...base, ...postureReadings(input.posture)]
+	const sensors = input.temps ?? (input.temp != null && Number.isFinite(input.temp) ? [{id: 'processor', label: 'Processor', kind: 'processor' as const, celsius: input.temp, stuck: false, defaultOn: true}] : [])
+	const unit = input.tempUnit === 'f' ? 'f' : 'c'
+	const temperatures = sensors.filter((sensor) => tempIsShown(sensor, input.tempPicks ?? null)).map((sensor) => temperatureReading(sensor, unit))
+	return [...base, ...temperatures, ...postureReadings(input.posture)]
 }

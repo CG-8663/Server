@@ -116,8 +116,8 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 						<Icon name="back" size={20} />
 					</button>
 				)}
-				<div>
-					<h1 className="title">App Store</h1>
+				<div className="store-heading">
+					<h1 className="title">{bound ? `App Store for ${bound.name}` : 'App Store'}</h1>
 					<p className="subtitle">{bound ? `Installs on ${bound.name}` : registry.isLoading ? 'Loading the catalog…' : problem && !registry.data ? 'Can’t reach your server' : oneStore ? `${all.length} apps in ${oneStore.name}` : `${all.length} apps from ${storeList.length} store${storeList.length === 1 ? '' : 's'}`}</p>
 				</div>
 				<button className="btn small stores-btn" style={{marginLeft: 'auto'}} aria-label="Check for new apps" title="Check for new apps" disabled={refresh.isPending} onClick={() => (haptic(5), refresh.mutate())}>
@@ -573,9 +573,11 @@ function StoreSheet({
 	const canInstall = !live && !incompatible
 	const chosen = targets.find((t) => t.id === chosenId) ?? null
 	const chosenReady = chosen?.ability === 'ready'
+	const machineName = bound?.name || chosen?.name || ''
 	const targetGone = reviewing && canInstall && !chosenReady
 	const showChooser = canInstall && (choosing || (targetGone && !bound))
-	const showReview = reviewing && canInstall && chosenReady && (!bound || boundTarget?.ability === 'ready')
+	// The confirmation, and its install button, stay hidden until a machine is chosen.
+	const showReview = reviewing && canInstall && chosenReady && machineName !== '' && (!bound || boundTarget?.ability === 'ready')
 	const blockedReason = bound && !boundReady ? (boundTarget?.reason || (machines.isLoading || computers.isLoading ? '' : `${bound.name} isn’t available for an install.`)) : ''
 	const liveUrl = live ? appUrl(live, boot.server!.host) : null
 
@@ -611,6 +613,7 @@ function StoreSheet({
 				<BeforeInstall
 					appId={app.id}
 					appName={app.name}
+					machineName={machineName}
 					installSize={app.installSize}
 					pending={action.isPending}
 					cancelLabel="Back"

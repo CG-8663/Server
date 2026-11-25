@@ -309,7 +309,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						{tab === 'apps' && <Apps onOpenApp={(a) => setAppId(a.id)} onStore={() => go('store')} />}
 						{tab === 'files' && <Files />}
 						{tab === 'store' && <Store bound={storeBound} onOpenInstalled={(a) => setAppId(a.id)} onBack={backInApp} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
-						{tab === 'machines' && <Machines onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} />}
+						{tab === 'machines' && <Machines prefs={prefs} setPrefs={setPrefs} onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} />}
 						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} onClips={() => go('clips')} />}
 						{tab === 'clips' && <Clips onBack={backInApp} />}
 						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={backInApp} />}

@@ -2072,7 +2072,7 @@ function Dock(p: {
 										startDrag(k)(e)
 									}}
 									onClick={() => !suppressClick.current && open(k)}
-									{...tipProps(it.label + (it.status === 'stopped' ? ' · stopped' : ''))}
+									{...tipProps(it.label + (it.status === 'stopped' ? ` · ${k.startsWith('machine:') ? 'Offline' : 'stopped'}` : ''))}
 									onContextMenu={(e) => {
 										e.preventDefault()
 										tip.hide()
@@ -2314,7 +2314,7 @@ function DesktopIcons(p: {
 							if (!sel.has(i.key)) setSel(new Set([i.key]))
 							p.onItemMenu(i.key, e.clientX, e.clientY, e.currentTarget)
 						}}
-						title={it.status ? `${it.label} · ${it.status === 'running' ? 'running' : it.status === 'stopped' ? 'stopped' : 'busy'}` : it.label}
+						title={it.status ? `${it.label} · ${i.key.startsWith('machine:') ? (it.status === 'running' ? 'Online' : it.status === 'stopped' ? 'Offline' : 'busy') : it.status === 'running' ? 'running' : it.status === 'stopped' ? 'stopped' : 'busy'}` : it.label}
 					>
 						<span className="desk-icon-art">
 							{it.icon(56)}
@@ -2863,6 +2863,10 @@ function winTitle(w: Win, appList: UserApp[], machineList: Machine[]) {
 	}
 	if (w.kind === 'rail') return w.payload?.rail?.title || 'Linux App'
 	if (w.kind === 'terminal' && w.payload?.term) return `Terminal — ${w.payload.term.name ?? w.payload.term.id}`
+	if (w.kind === 'store') {
+		const name = w.payload?.store?.name?.trim()
+		return name ? `App Store for ${name}` : SYS.store.title
+	}
 	return SYS[w.kind].title
 }
 
@@ -3585,7 +3589,7 @@ const WindowContent = memo(
 				case 'store':
 					return <Store bound={win.payload?.store ?? null} onOpenInstalled={(a) => desk.launch(a)} />
 				case 'machines':
-					return <Machines windowId={win.id} onOpenApp={(a) => desk.launch(a)} onTerminal={() => desk.openTerminal()} />
+					return <Machines windowId={win.id} prefs={prefs} setPrefs={setPrefs} onOpenApp={(a) => desk.launch(a)} onTerminal={() => desk.openTerminal()} />
 				case 'system':
 					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} onClips={() => desk.open('clips')} />
 				case 'settings':
@@ -3651,6 +3655,9 @@ const WindowContent = memo(
 		a.win.payload?.pageNonce === b.win.payload?.pageNonce &&
 		a.win.payload?.rail?.address === b.win.payload?.rail?.address &&
 		a.win.payload?.rail?.title === b.win.payload?.rail?.title &&
+		a.win.payload?.store?.id === b.win.payload?.store?.id &&
+		a.win.payload?.store?.kind === b.win.payload?.store?.kind &&
+		a.win.payload?.store?.name === b.win.payload?.store?.name &&
 		a.prefs === b.prefs &&
 		a.owner === b.owner &&
 		a.muted === b.muted,
@@ -3703,7 +3710,7 @@ function MachineConsoleWindow({machineId, windowId, onClose}: {machineId: string
 		return (
 			<div className="win-empty">
 				<MachineIcon m={m} size={64} />
-				<b>{m.name} isn’t running</b>
+				<b>{m.name} isn’t online</b>
 				<span>{m.state === 'starting' ? 'It’s starting. The desktop connects once it’s up.' : 'Start it from its desktop icon or from Machines.'}</span>
 			</div>
 		)
