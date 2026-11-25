@@ -7,6 +7,7 @@ import {mutate, query, type UserApp} from './api'
 import {appUrl, useAction, useBootstrap, useUser} from './data'
 import {useDesktop} from './desktop/Desktop'
 import {Icon, type IconName} from './icons'
+import {rovingKeyDown, TAB_SELECTOR} from './roving'
 import {AppIcon, Group, KV, Row, Sheet, SheetHeader, StatusPill, Switch, appStatus, haptic, isAppBusy, useConfirm, useToast} from './ui'
 import {nearBottom} from './logFollow'
 import {DevicesPanel} from './usb'
@@ -224,11 +225,11 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 					}
 					onClose={onClose}
 				/>
-				<div className="mx-tabs" role="tablist" aria-label={`${name} sections`}>
-					<button type="button" role="tab" aria-selected={tab === 'overview'} className={`chip${tab === 'overview' ? ' on' : ''}`} onClick={() => (haptic(5), setTab('overview'))}>
+				<div className="mx-tabs" role="tablist" aria-label={`${name} sections`} onKeyDown={(e) => rovingKeyDown(e, TAB_SELECTOR, 'horizontal')}>
+					<button type="button" role="tab" aria-selected={tab === 'overview'} tabIndex={tab === 'overview' ? 0 : -1} className={`chip${tab === 'overview' ? ' on' : ''}`} onClick={() => (haptic(5), setTab('overview'))}>
 						Overview
 					</button>
-					<button type="button" role="tab" aria-selected={tab === 'usb'} className={`chip${tab === 'usb' ? ' on' : ''}`} onClick={() => (haptic(5), setTab('usb'))}>
+					<button type="button" role="tab" aria-selected={tab === 'usb'} tabIndex={tab === 'usb' ? 0 : -1} className={`chip${tab === 'usb' ? ' on' : ''}`} onClick={() => (haptic(5), setTab('usb'))}>
 						<Icon name="usb" size={15} />
 						Devices
 					</button>
@@ -238,7 +239,7 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 				) : (
 				<>
 				{app.error && (
-					<div className="error" style={{marginBottom: 14, display: 'block'}}>
+					<div className="error" role="alert" style={{marginBottom: 14, display: 'block'}}>
 						<div style={{display: 'flex', gap: 8, alignItems: 'flex-start'}}>
 							<Icon name="alert" size={18} />
 							<span style={{wordBreak: 'break-word'}}>{app.error}</span>

@@ -28,6 +28,7 @@ import {desktopIconKeyOpens, desktopIconKeysApply, iconSelectionClearsOnFocus} f
 import {iconsInView} from './iconsInView'
 import {desktopMachineStatus, machineOpenAction} from './machineOpen'
 import {startAlreadyPending} from './startPending'
+import {dockLabel} from './dockLabel'
 import {extraWindowAction} from './extraWindow'
 import {ignoreRepeatedDesktopShortcut} from './shortcutRepeat'
 import {nextStarting, type StartingWatch} from './startingWatch'
@@ -39,7 +40,9 @@ import {isSuper, resolveHyprKey, type Action} from './hyprland/keymap'
 import {Launcher} from './hyprland/Launcher'
 import {GAP, MIN_PANE, collapse, contains, dividers, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, moveWorkspace, ratioAt, reconcile, rects as tileRectsOf, remove as removeTile, setRatio, swapDir, type Divider, type Node, type Path} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
+import {restoreWindows} from './restoreWindows'
 import {loadWallpaper} from './wallpaperLoader'
+import {sameShellWindows} from './extraWindow'
 import {overviewEnterOpensApp} from './overviewEnter'
 import {OPEN_SETTINGS, SHOW_SHELL_KEY, rememberAppearanceFocus, rememberSettingsPage, settingsPayloadFor, settingsRemountKey} from './settingsPage'
 import {clampDragY, clampWindowRect} from './windowGeometry'
@@ -66,7 +69,7 @@ const Console = lazy(() => import('../Console').then((m) => ({default: m.Console
 function WinFallback() {
 	return (
 		<div className="win-empty">
-			<span className="spinner" aria-label="Loading" />
+			<span className="spinner" role="status" aria-label="Loading" />
 		</div>
 	)
 }
@@ -386,7 +389,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	const user = useUser()
 	const [cfg, setCfg] = useDeskConfig()
 	const {info, appList, machineList, railApps, railWindows, railReady, owner} = useItems()
-	const [wins, setWins] = useState<Win[]>(() => load<Win[]>(STORE_KEY, []).filter((w) => w.kind !== 'terminal' && w.kind !== 'console' && w.kind !== 'rail'))
+	const [wins, setWins] = useState<Win[]>(() => restoreWindows<Win>(load<unknown>(STORE_KEY, [])))
 	const [overview, setOverview] = useState<null | 'windows' | 'apps'>(null)
 	const [topMenu, setTopMenu] = useState<null | 'clock' | 'system'>(null)
 	const [menu, setMenu] = useState<Menu | null>(null)
@@ -666,7 +669,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			const storedPayload = settingsPayload ?? payload
 			const key = keyOf(kind, storedPayload)
 			const multi = kind === 'files' || kind === 'terminal'
-			const existing = winsRef.current.filter((w) => w.key === key).sort((a, b) => b.z - a.z)[0]
+			const sameKey = winsRef.current.filter((w) => w.key === key)
+			const existing = (kind === 'terminal' ? sameShellWindows(sameKey, payload?.term) : sameKey).sort((a, b) => b.z - a.z)[0]
 			if (existing && !(multi && opts?.newWindow)) {
 				if (kind === 'personalize' && payload?.tab) update(existing.id, {payload})
 				if (kind === 'store') update(existing.id, {payload: storedPayload})
@@ -757,14 +761,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			launch,
 			openConsole,
 			openTerminal: (term, input) => {
-				const action = extraWindowAction('terminal', winsRef.current.some((w) => w.kind === 'terminal'))
+				const action = extraWindowAction('terminal', sameShellWindows(winsRef.current, term).length > 0)
 				open('terminal', term || input ? {...(term ? {term} : {}), ...(input ? {input} : {})} : undefined, {newWindow: action === 'open'})
 			},
 			close,
 			openItem: (key) => {
 				if (isSys(key)) {
 					if (key !== 'terminal') return open(key)
-					const action = extraWindowAction('terminal', winsRef.current.some((w) => w.kind === 'terminal'))
+					const action = extraWindowAction('terminal', sameShellWindows(winsRef.current, null).length > 0)
 					return open('terminal', undefined, {newWindow: action === 'open'})
 				}
 				if (key.startsWith('folder:')) return open('files', {path: key.slice(7)}, {newWindow: true})
@@ -2067,13 +2071,14 @@ function Dock(p: {
 								<button
 									data-key={k}
 									className={`dock-item${p.focusedKey === k ? ' focused' : ''}${count ? ' running' : ''}${drag?.key === k ? ' dragging' : ''}${bouncing === k ? ' bouncing' : ''}`}
-									aria-label={it.label}
+									aria-label={dockLabel(it.label, count, it.status, k.startsWith('machine:'))}
+									aria-current={p.focusedKey === k ? 'true' : undefined}
 									onPointerDown={(e) => {
 										tip.hide()
 										startDrag(k)(e)
 									}}
 									onClick={() => !suppressClick.current && open(k)}
-									{...tipProps(it.label + (it.status === 'stopped' ? ' · stopped' : ''))}
+									{...tipProps(it.label + (it.status === 'stopped' ? ` · ${k.startsWith('machine:') ? 'Offline' : 'stopped'}` : ''))}
 									onContextMenu={(e) => {
 										e.preventDefault()
 										tip.hide()
@@ -2099,6 +2104,7 @@ function Dock(p: {
 				<button
 					className={`dock-item show-apps-btn${p.showAppsOn ? ' focused' : ''}`}
 					aria-label="Show Applications"
+					aria-pressed={!!p.showAppsOn}
 					onPointerDown={tip.hide}
 					onClick={p.onShowApps}
 					{...tipProps('Show Applications')}
@@ -2315,7 +2321,7 @@ function DesktopIcons(p: {
 							if (!sel.has(i.key)) setSel(new Set([i.key]))
 							p.onItemMenu(i.key, e.clientX, e.clientY, e.currentTarget)
 						}}
-						title={it.status ? `${it.label} · ${it.status === 'running' ? 'running' : it.status === 'stopped' ? 'stopped' : 'busy'}` : it.label}
+						title={it.status ? `${it.label} · ${i.key.startsWith('machine:') ? (it.status === 'running' ? 'Online' : it.status === 'stopped' ? 'Offline' : 'busy') : it.status === 'running' ? 'running' : it.status === 'stopped' ? 'stopped' : 'busy'}` : it.label}
 					>
 						<span className="desk-icon-art">
 							{it.icon(56)}
@@ -2700,7 +2706,7 @@ function Overview({
 						placeholder={railReady ? 'Search web & native Linux apps…' : 'Type to search'}
 						aria-label="Search apps"
 						onKeyDown={(e) => {
-							if (overviewEnterOpensApp(e.key, showApps, items.length)) onOpen(items[0].key)
+							if (overviewEnterOpensApp(e.key, showApps, items.length, e.nativeEvent.isComposing)) onOpen(items[0].key)
 						}}
 					/>
 				</div>
@@ -2864,6 +2870,10 @@ function winTitle(w: Win, appList: UserApp[], machineList: Machine[]) {
 	}
 	if (w.kind === 'rail') return w.payload?.rail?.title || 'Linux App'
 	if (w.kind === 'terminal' && w.payload?.term) return `Terminal — ${w.payload.term.name ?? w.payload.term.id}`
+	if (w.kind === 'store') {
+		const name = w.payload?.store?.name?.trim()
+		return name ? `App Store for ${name}` : SYS.store.title
+	}
 	return SYS[w.kind].title
 }
 
@@ -3586,7 +3596,7 @@ const WindowContent = memo(
 				case 'store':
 					return <Store bound={win.payload?.store ?? null} onOpenInstalled={(a) => desk.launch(a)} />
 				case 'machines':
-					return <Machines windowId={win.id} onOpenApp={(a) => desk.launch(a)} onTerminal={() => desk.openTerminal()} />
+					return <Machines windowId={win.id} prefs={prefs} setPrefs={setPrefs} onOpenApp={(a) => desk.launch(a)} onTerminal={() => desk.openTerminal()} />
 				case 'system':
 					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} onClips={() => desk.open('clips')} />
 				case 'settings':
@@ -3698,7 +3708,7 @@ function MachineConsoleWindow({machineId, windowId, onClose}: {machineId: string
 		return (
 			<div className="win-empty">
 				<MachineIcon m={m} size={64} />
-				<b>{m.name} isn’t running</b>
+				<b>{m.name} isn’t online</b>
 				<span>{m.state === 'starting' ? 'It’s starting. The desktop connects once it’s up.' : 'Start it from its desktop icon or from Machines.'}</span>
 			</div>
 		)

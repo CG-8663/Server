@@ -9,6 +9,7 @@ import { Icon, type IconName } from "../../icons";
 import { bytes, haptic, usePortalRoot, useToast } from "../../ui";
 import { ZIP_ENTRY_LIMIT, decodeTextFile, encodeTextFile, handleDocumentLinkClick, nextGridCell, renderMarkdownHtml, shouldIgnoreViewerKey, zipTruncatedNote } from "./helpers";
 import type { Sheet, Shape, ZipEntry } from "./office";
+import { panDeltaForKey } from "./panKeys";
 
 const enc = encodeURIComponent;
 const viewUrl = (path: string) => `/api/files/view?path=${enc(path)}`;
@@ -401,8 +402,24 @@ function ImageView(b: BodyProps) {
           </button>
         </>
       ),
+      // A zoomed photo owns the arrow keys (they pan it); at 100% they still switch files.
+      ownsArrows: z.s > 1,
     });
   }, [z.s, z.x, z.y]);
+  const panning = z.s > 1;
+  useEffect(() => {
+    if (!panning) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey || (e.target as HTMLElement | null)?.closest?.("input, textarea, [contenteditable=true]")) return;
+      const d = panDeltaForKey(e.key);
+      if (!d) return;
+      e.preventDefault();
+      const cur = zRef.current;
+      setRef.current(cur.s, cur.x + d.x, cur.y + d.y);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [panning]);
   useEffect(() => {
     const el = box.current;
     if (!el) return;
@@ -703,7 +720,7 @@ function TextView(b: BodyProps) {
               </button>
             )}
             {mode === "source" && (
-              <button className={`icon-btn${wrap ? " on" : ""}`} aria-label="Wrap lines" title="Wrap lines" onClick={() => setWrap((w) => !w)}>
+              <button className={`icon-btn${wrap ? " on" : ""}`} aria-label="Wrap lines" aria-pressed={wrap} title="Wrap lines" onClick={() => setWrap((w) => !w)}>
                 <Icon name="wrap" size={20} />
               </button>
             )}
@@ -938,7 +955,7 @@ function XlsxView(b: BodyProps) {
       {sheets.length > 1 && (
         <nav className="fv-tabs" aria-label="Sheets">
           {sheets.map((x, n) => (
-            <button key={n} className={n === tab ? "on" : undefined} onClick={() => setTab(n)}>{x.name}</button>
+            <button key={n} className={n === tab ? "on" : undefined} aria-current={n === tab ? "true" : undefined} onClick={() => setTab(n)}>{x.name}</button>
           ))}
         </nav>
       )}

@@ -435,7 +435,17 @@ export function normalizeBackendUrl(input) {
 	// A bare IPv6 address (more than one colon, no brackets) needs brackets to be a URL host.
 	if (!scheme && !value.startsWith('[') && !value.includes('/') && (value.match(/:/g) ?? []).length > 1) value = `[${value}]`
 	if (!scheme) value = `http://${value}`
-	const url = new URL(value)
+	let url
+	try {
+		url = new URL(value)
+	} catch {
+		// Node's own text is just "Invalid URL": say what is wrong and what to type instead.
+		const port = /^https?:\/\/[^/?#\s]*?(?:\]|[^:\]]):([^:/?#\]]*)(?:[/?#]|$)/i.exec(value)?.[1]
+		if (port !== undefined && !(/^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535)) {
+			throw new Error('The port in that address isn’t right. Use a number from 1 to 65535, like 192.168.1.50:7780')
+		}
+		throw new Error('That doesn’t look like an address. Try something like 192.168.1.50 or omarchy.local')
+	}
 	if (url.username || url.password) throw new Error('The address must not contain a username or password')
 	return `${url.protocol}//${url.host}`
 }
@@ -598,7 +608,14 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 
 	// The connector on another computer trading its one-time pairing code for its own key
 	// (omarchyd checks the code; nothing else is reachable without a key).
-	app.post('/connector/enroll', express.json({limit: '64kb'}), async (req, res) => {
+	// A body that is not JSON, or too large, gets the short JSON answer omarchyd gives, not Express's HTML error page.
+	const enrollBodyError = (error, _req, res, next) => {
+		if (res.headersSent) return next(error)
+		const status = Number(error?.status ?? error?.statusCode)
+		if (!(status >= 400 && status < 500)) return next(error)
+		res.status(status).json({error: status === 413 ? 'Too large' : 'Bad request'})
+	}
+	app.post('/connector/enroll', express.json({limit: '64kb'}), enrollBodyError, async (req, res) => {
 		try {
 			const r = await fetchImpl(`${getClient().baseUrl}/connector/enroll`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(req.body ?? {}), signal: AbortSignal.timeout(15_000)})
 			res.status(r.status).json(await r.json().catch(() => ({})))
@@ -661,7 +678,13 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	const api = express.Router()
 	const json64k = express.json({limit: '64kb'})
 	const jsonClipboard = express.json({limit: '256kb'})
-	api.use((req, res, next) => (req.path === '/rpc/hyprland.clipboardWrite' ? jsonClipboard(req, res, next) : json64k(req, res, next)))
+	// omarchyd takes up to 100,000 bytes for one assistant message, so the proxy must not cut it at 64 KB.
+	const jsonAssistant = express.json({limit: 100_000})
+	api.use((req, res, next) => {
+		if (req.path === '/rpc/hyprland.clipboardWrite') return jsonClipboard(req, res, next)
+		if (req.path === '/assistant/stream') return jsonAssistant(req, res, next)
+		return json64k(req, res, next)
+	})
 	api.use((req, res, next) => {
 		res.set('Cache-Control', 'no-store')
 		req.sid = parseCookies(req.headers.cookie)[COOKIE]
@@ -710,12 +733,12 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 
 	// Express 4 does not turn a rejected async handler into a response, so a failed settings save
 	// has to be caught here or the process exits.
-	const catchSave = (handler) => (req, res) => {
+	const catchSave = (handler, message = 'Couldn’t save that') => (req, res) => {
 		Promise.resolve(handler(req, res)).catch((error) => {
 			console.error('[omarchy-server]', error)
 			if (res.headersSent) return
 			try {
-				res.status(500).json({error: {code: 'INTERNAL', message: 'Couldn’t save that'}})
+				res.status(500).json({error: {code: 'INTERNAL', message}})
 			} catch (sendFailure) {
 				console.error('[omarchy-server]', sendFailure)
 			}
@@ -894,14 +917,17 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const id = req.params.id
 		if (!backend || !/^\d{1,3}$/.test(id)) return res.status(404).end()
 		const tier = req.query.size === 'thumb' ? 'thumbnails' : 'medium'
+		// The .jpg is the desktop's current background (the same picture under id 1 whatever it is today),
+		// so it keeps the type it really has and is never cached as unchanging.
 		for (const [path, type] of [
 			[`/assets/wallpapers/generated-avif/${tier}/${id}.avif`, 'image/avif'],
-			[`/assets/wallpapers/${id}.jpg`, 'image/jpeg'],
+			[`/assets/wallpapers/${id}.jpg`, null],
 		]) {
 			try {
 				const upstream = await fetchImpl(`${backend.baseUrl}${path}`, {signal: AbortSignal.timeout(10_000)})
-				if (!upstream.ok || !(upstream.headers.get('content-type') ?? '').startsWith('image/')) continue
-				res.set({'Content-Type': type, 'Cache-Control': 'public, max-age=604800, immutable'})
+				const upstreamType = upstream.headers.get('content-type') ?? ''
+				if (!upstream.ok || !upstreamType.startsWith('image/')) continue
+				res.set({'Content-Type': type ?? upstreamType, 'Cache-Control': type ? 'public, max-age=604800, immutable' : 'no-cache'})
 				return res.send(Buffer.from(await upstream.arrayBuffer()))
 			} catch {
 				/* try the next format */
@@ -1026,7 +1052,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 
 	// ---- Auth ----------------------------------------------------------------
 	const attempts = new Map()
-	api.post('/auth/login', async (req, res) => {
+	api.post('/auth/login', catchSave(async (req, res) => {
 		const backend = getClient()
 		if (!backend) return res.status(409).json({error: {code: 'NOT_CONFIGURED', message: 'Connect to your server first'}})
 		const ip = req.ip ?? 'unknown'
@@ -1097,9 +1123,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		setCookie(res, sid, SESSION_MAX_AGE_S)
 		shareAppSession(req, res, session)
 		res.json({ok: true, accountId: session.accountId, mode: session.mode})
-	})
+	}, 'Couldn’t sign you in. Try again.'))
 
-	api.post('/auth/logout', async (req, res) => {
+	api.post('/auth/logout', catchSave(async (req, res) => {
 		const session = store.getSession(req.sid)
 		if (session?.console) {
 			await getClient()
@@ -1115,7 +1141,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		setCookie(res, '', 0)
 		res.append('Set-Cookie', 'OMARCHY_APP_SESSION=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0')
 		res.json({ok: true})
-	})
+	}, 'Couldn’t sign you out. Try again.'))
 
 	// ---- Saved appearance (per My Own Data Center account, shared by all its phones) -------
 	const THEME_IDS = ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte', 'custom', 'omarchy']
@@ -1123,6 +1149,26 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	const HSL = /^\d{1,3}(\.\d+)? \d{1,3}(\.\d+)?% \d{1,3}(\.\d+)?%$/
 	const accountKey = (accountId) => hashId(`account:${accountId}`).slice(0, 32)
 	const backgroundFile = (accountId) => join(store.dataDir, 'backgrounds', `${accountKey(accountId)}.jpg`)
+	const TEMP_ID = /^[a-z0-9][a-z0-9:_-]{0,63}$/
+	const cleanTempIdList = (value) => {
+		if (value == null) return []
+		if (!Array.isArray(value)) return null
+		const out = []
+		for (const id of value) {
+			if (typeof id !== 'string' || !TEMP_ID.test(id) || out.includes(id)) return null
+			out.push(id)
+			if (out.length > 40) return null
+		}
+		return out
+	}
+	const cleanTempPicks = (value) => {
+		if (value == null || typeof value !== 'object' || Array.isArray(value)) return {ok: false}
+		const on = cleanTempIdList(value.on)
+		const off = cleanTempIdList(value.off)
+		if (!on || !off) return {ok: false}
+		const hidden = off.filter((id) => !on.includes(id))
+		return {ok: true, value: on.length || hidden.length ? {on, off: hidden} : null}
+	}
 	const prefsOf = (accountId) => store.getConfig().prefs?.[accountKey(accountId)] ?? null
 	const savePrefs = async (accountId, patch) => {
 		const key = accountKey(accountId)
@@ -1151,7 +1197,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	api.post('/prefs', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView} = req.body ?? {}
+		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView, machinesCompact, tempPicks, tempUnit} = req.body ?? {}
 		const patch = {}
 		// How the assistant looks for this account (character, name, motion). Appearance only: it never
 		// reaches the assistant itself. Checked field by field; anything else is dropped.
@@ -1186,6 +1232,26 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		if (statView !== undefined) {
 			if (statView !== null && statView !== 'line' && statView !== 'blocks' && statView !== 'gauges') return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown stat view'}})
 			patch.statView = statView
+		}
+		// Desktop Machines compact list for this account. Absent means off.
+		if (machinesCompact !== undefined) {
+			if (typeof machinesCompact !== 'boolean') return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad compact setting'}})
+			patch.machinesCompact = machinesCompact
+		}
+		// Celsius, or Fahrenheit. Null and "c" both mean Celsius.
+		if (tempUnit !== undefined) {
+			if (tempUnit === null || tempUnit === 'c') patch.tempUnit = null
+			else if (tempUnit === 'f') patch.tempUnit = 'f'
+			else return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad temperature unit'}})
+		}
+		// Which temperature sensors this account shows. Null clears the choice.
+		if (tempPicks !== undefined) {
+			if (tempPicks === null) patch.tempPicks = null
+			else {
+				const picks = cleanTempPicks(tempPicks)
+				if (!picks.ok) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad temperature choice'}})
+				patch.tempPicks = picks.value
+			}
 		}
 		res.json({prefs: await savePrefs(session.accountId, patch)})
 	}))
@@ -1889,6 +1955,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			const sid = relaySid(req, app.id)
 			if (!sid) return socket.destroy()
 			const up = http.request(upstream(req, sid))
+			// A browser that goes away while the app is still answering must not raise an unhandled 'error'.
+			socket.on('error', () => up.destroy())
 			up.on('upgrade', (ur, us, uhead) => {
 				const lines = [`HTTP/1.1 ${ur.statusCode} ${ur.statusMessage}`]
 				for (let i = 0; i < ur.rawHeaders.length; i += 2) lines.push(`${ur.rawHeaders[i]}: ${ur.rawHeaders[i + 1]}`)
@@ -2169,6 +2237,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false})
 		consoles.add(wss)
 		server.on('upgrade', async (req, socket, head) => {
+			// A browser that resets the connection while we are still checking its session or asking omarchyd
+			// would otherwise raise an unhandled 'error' on its socket and end this process.
+			socket.on('error', () => {})
 			if (app.relayUpgrade(req, socket, head)) return
 			const refuse = (status) => {
 				if (socket.destroyed) return
@@ -2760,7 +2831,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	api.use((error, req, res, next) => {
 		if (res.headersSent) return next(error)
 		const status = Number(error?.status ?? error?.statusCode)
-		if (status >= 400 && status < 500) return res.status(status).json({error: {code: 'BAD_REQUEST', message: error.type === 'entity.parse.failed' ? 'Malformed JSON' : error.type === 'entity.too.large' ? 'Request too large' : 'Bad request'}})
+		if (status >= 400 && status < 500) return res.status(status).json({error: {code: 'BAD_REQUEST', message: error.type === 'entity.parse.failed' ? 'Malformed JSON' : error.type === 'entity.too.large' ? (req.path === '/assistant/stream' ? 'That message is too long (the limit is about 100 KB)' : 'Request too large') : 'Bad request'}})
 		console.error('[omarchy-server] api', error?.message ?? error)
 		res.status(500).json({error: {code: 'INTERNAL_SERVER_ERROR', message: 'Something went wrong on the server'}})
 	})
@@ -2776,5 +2847,14 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			res.set('Cache-Control', 'no-cache').sendFile(join(staticDir, 'index.html'))
 		})
 	}
+	// Anything the routes above don't answer (a path that is not valid percent-encoding, say) would get
+	// Express's HTML error page with a stack trace and this server's file paths, even from someone not signed in.
+	app.use((error, req, res, next) => {
+		if (res.headersSent) return next(error)
+		const status = Number(error?.status ?? error?.statusCode)
+		if (status >= 400 && status < 500) return res.status(status).type('text/plain').send('Bad request')
+		console.error('[omarchy-server]', error?.message ?? error)
+		res.status(500).type('text/plain').send('Something went wrong')
+	})
 	return app
 }

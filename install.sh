@@ -98,6 +98,18 @@ if [ -z "${OMARCHY_SERVER_REPO-}" ] && [ -n "$SOURCE" ]; then
 	REPO="$SOURCE"
 fi
 require_repo "$REPO"
+# The port goes into the web service's unit file and the firewall rule. Check it before anything is installed,
+# so a typo is an error now and not a half-finished install later (the firewall step would be the one to fail).
+check_port() {
+	case "$PORT" in
+		'' | *[!0-9]*) die "OMARCHY_SERVER_PORT is \"$PORT\" but must be a number from 1 to 65535." ;;
+	esac
+	if [ "${#PORT}" -gt 5 ] || [ "$((10#$PORT))" -lt 1 ] || [ "$((10#$PORT))" -gt 65535 ]; then
+		die "OMARCHY_SERVER_PORT is \"$PORT\" but must be a number from 1 to 65535."
+	fi
+	PORT=$((10#$PORT))
+}
+check_port
 
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not with sudo. It asks for sudo only to install packages."
 if ! command -v pacman >/dev/null; then

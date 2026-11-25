@@ -187,24 +187,32 @@ export function focusDir(tree: Node | null, focusedId: string, dir: Dir, area: R
 	if (!src) return focusedId
 	const scx = src.x + src.w / 2
 	const scy = src.y + src.h / 2
-	let best: string | null = null
-	let bestD = Infinity
-	for (const [id, r] of Object.entries(all)) {
-		if (id === focusedId) continue
-		const dx = r.x + r.w / 2 - scx
-		const dy = r.y + r.h / 2 - scy
-		const along = dir === 'left' || dir === 'right' ? dx : dy
-		const across = dir === 'left' || dir === 'right' ? dy : dx
-		const positive = dir === 'right' || dir === 'down'
-		if (positive ? along <= 0 : along >= 0) continue
-		if (Math.abs(along) < Math.abs(across)) continue
-		const d = dx * dx + dy * dy
-		if (d < bestD) {
-			bestD = d
-			best = id
+	const sideways = dir === 'left' || dir === 'right'
+	const positive = dir === 'right' || dir === 'down'
+	const pick = (accept: (r: Rect, along: number, across: number) => boolean): string | null => {
+		let best: string | null = null
+		let bestD = Infinity
+		for (const [id, r] of Object.entries(all)) {
+			if (id === focusedId) continue
+			const dx = r.x + r.w / 2 - scx
+			const dy = r.y + r.h / 2 - scy
+			const along = sideways ? dx : dy
+			const across = sideways ? dy : dx
+			if (positive ? along <= 0 : along >= 0) continue
+			if (!accept(r, along, across)) continue
+			const d = dx * dx + dy * dy
+			if (d < bestD) {
+				bestD = d
+				best = id
+			}
 		}
+		return best
 	}
-	return best ?? focusedId
+	// A window that sits that way and shares a stretch of this window's edge is the neighbour. Judging by
+	// centres alone sent Right from a lower window to the wide one above it on a wide screen, and gave no
+	// neighbour at all for Up and Down between a wide window and two narrow ones.
+	const beside = pick((r) => (sideways ? Math.min(src.y + src.h, r.y + r.h) - Math.max(src.y, r.y) : Math.min(src.x + src.w, r.x + r.w) - Math.max(src.x, r.x)) > 0)
+	return beside ?? pick((_r, along, across) => Math.abs(along) >= Math.abs(across)) ?? focusedId
 }
 
 export function swapIds(tree: Node | null, a: string, b: string): Node | null {

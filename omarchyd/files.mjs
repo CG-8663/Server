@@ -67,6 +67,9 @@ function nameProblem(n) {
 	if (n.startsWith('.')) return '[hidden-name]'
 	return null
 }
+// A Content-Disposition value that any file name can travel in: the name goes out percent-encoded
+// (UTF-8), so a name outside Latin-1 cannot make the response fail.
+export const contentDisposition = (name, inline = false) => `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name)}`
 // Shown inline when viewed; everything else is sent as a download.
 const INLINE = /^(image\/(jpeg|png|gif|webp|avif|bmp)|video\/(mp4|webm|quicktime)|audio\/|application\/pdf|text\/plain)/
 const STAT_CONCURRENCY = 16
@@ -606,7 +609,8 @@ export function createFiles({home, dataDir, io, drivesDir = join('/run/media', o
 					await resolve(p)
 					keep.push(p)
 				} catch (error) {
-					if (!(error instanceof RpcError) || error.code !== 'NOT_FOUND') keep.push(p)
+					// A drive that is unplugged has no folders to find; its favorites wait for it.
+					if (!(error instanceof RpcError) || error.code !== 'NOT_FOUND' || p.startsWith('/External/')) keep.push(p)
 				}
 			}
 			if (keep.length !== list.length) await writeAtomic(favoritesFile, JSON.stringify(keep))
@@ -661,7 +665,7 @@ export function createFiles({home, dataDir, io, drivesDir = join('/run/media', o
 			'accept-ranges': 'bytes',
 			etag: fileTag(st),
 			'last-modified': st.mtime.toUTCString(),
-			'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name)}`,
+			'content-disposition': contentDisposition(name, inline),
 			'x-content-type-options': 'nosniff',
 		}
 		const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '')

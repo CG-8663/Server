@@ -374,6 +374,14 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(r.body.prefs.statView, 'gauges')
 		r = await touch.req('POST', '/api/prefs', {statView: 'line'})
 		assert.equal(r.body.prefs.statView, 'line')
+		r = await touch.req('POST', '/api/prefs', {machinesCompact: true})
+		assert.equal(r.body.prefs.machinesCompact, true)
+		assert.equal(r.body.prefs.theme, 'tokyo')
+		assert.equal((await touch.req('POST', '/api/prefs', {machinesCompact: 'yes'})).status, 400)
+		r = await touch.req('GET', '/api/prefs')
+		assert.equal(r.body.prefs.machinesCompact, true)
+		r = await touch.req('POST', '/api/prefs', {machinesCompact: false})
+		assert.equal(r.body.prefs.machinesCompact, false)
 		assert.equal((await touch.req('POST', '/api/prefs', {theme: '<script>'})).status, 400)
 		assert.equal((await touch.req('POST', '/api/prefs', {customBrandHsl: 'red; x'})).status, 400)
 		// Only plain strings are stored: an array or object is a 400, not a stored array or a 500.
@@ -1035,5 +1043,14 @@ describe('normalizeBackendUrl (#655)', () => {
 		assert.equal(normalizeBackendUrl('10.0.0.5:2021'), 'http://10.0.0.5:2021')
 		assert.equal(normalizeBackendUrl('nas.local'), 'http://nas.local')
 		assert.equal(normalizeBackendUrl('HTTPS://nas.local'), 'https://nas.local')
+	})
+	test('a mistyped address gets a sentence, not Node’s "Invalid URL" (#446)', () => {
+		for (const input of ['my server', 'http://', '[::1', '@', 'http://a b']) {
+			assert.throws(() => normalizeBackendUrl(input), /That doesn’t look like an address\. Try something like 192\.168\.1\.50 or omarchy\.local/, input)
+		}
+		for (const input of ['192.168.1.5:abc', '192.168.1.5:99999', 'http://nas.local:abc/', '[fe80::1]:70000']) {
+			assert.throws(() => normalizeBackendUrl(input), /The port in that address isn’t right/, input)
+		}
+		assert.equal(normalizeBackendUrl('192.168.1.5:7780'), 'http://192.168.1.5:7780')
 	})
 })

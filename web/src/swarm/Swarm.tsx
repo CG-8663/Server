@@ -4,26 +4,31 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 
-import {mutate, query, type Machine} from '../api'
+import {mutate, query, type Machine, type UserApp} from '../api'
 import {hostedVms} from '../fleet/hostedVms'
 import {queryProblem, useBrowserOnline} from '../connection'
+import {errorText} from '../queryNotice'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, type SwarmBattery} from './gauges'
 import {isGuestAgent, linuxConnectorOs} from './guestLink'
 import {connectorInstallCommand, connectorInstallCommandWindows} from './installCommand'
 import {newlyJoined} from './join'
-import {LiveStats} from '../fleet/StatRegion'
+import {MachineSeen} from '../fleet/MachineSeen'
+import {LiveStats, useStatView} from '../fleet/StatRegion'
+import {tempDegrees} from '../fleet/temperatures'
 import {MachineActions} from '../fleet/machineActions'
 import {MachineShell, MachineTabs, type MachineTab} from '../fleet/MachineTabs'
 import {SheetGroup} from '../fleet/sheetGroup'
 import {PinButton} from '../fleet/PinButton'
+import {MachineApps} from '../fleet/MachineApps'
 import {openStore} from '../fleet/openStore'
 import {ThemePicker} from '../theme/ThemePicker'
 import {themeAction} from '../theme/themeAction'
 import {storageRowSub} from './storageHint'
 import {wakeOffer} from './wake'
-import {StoragePanel} from '../screens/Storage'
+import {StoragePage, StoragePanel} from '../screens/Storage'
+import {DetailFrame, type DetailSection} from '../machines/detailFrame'
 import {useDesktop} from '../desktop/Desktop'
 import {ComputerBackups} from '../backups'
 import {Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, useConfirm, useToast} from '../ui'
@@ -133,6 +138,8 @@ export function LocalSwarm({
 	vms = [],
 	onCreateVm,
 	onOpenVm,
+	onOpenApp,
+	layout = 'page',
 }: {
 	heading?: boolean
 	/** The phone fleet list owns the rows. Sheets still open for the selected computer. */
@@ -147,6 +154,9 @@ export function LocalSwarm({
 	vms?: Machine[]
 	onCreateVm?: (host: {id: string; name: string}) => void
 	onOpenVm?: (id: string) => void
+	onOpenApp?: (app: UserApp) => void
+	/** Compact Machines: the computer page uses the virtual-machine frame. */
+	layout?: 'page' | 'nav'
 } = {}) {
 	const swarm = useSwarm()
 	const browserOnline = useBrowserOnline()
@@ -177,11 +187,14 @@ export function LocalSwarm({
 		<>
 			{selected && !terminal && !screen && (
 				<AgentSheet
+					key={selected.id}
 					a={selected}
 					bare={bare}
+					layout={layout}
 					vms={hostedVms(vms, selected.id)}
 					onCreateVm={onCreateVm ? () => onCreateVm({id: selected.id, name: selected.name}) : undefined}
 					onOpenVm={onOpenVm}
+					onOpenApp={onOpenApp}
 					onClose={() => setSelectedId(null)}
 					onTerminal={(input) => setTerminal({agent: selected, input})}
 					onDesktop={() => {
@@ -196,7 +209,7 @@ export function LocalSwarm({
 				<Suspense
 					fallback={
 						<main className="screen center">
-							<span className="spinner" aria-label="Loading" />
+							<span className="spinner" role="status" aria-label="Loading" />
 						</main>
 					}
 				>
@@ -207,7 +220,7 @@ export function LocalSwarm({
 				<Suspense
 					fallback={
 						<main className="screen center">
-							<span className="spinner" aria-label="Loading" />
+							<span className="spinner" role="status" aria-label="Loading" />
 						</main>
 					}
 				>
@@ -308,7 +321,7 @@ export function AgentCard({a, onClick, footer, extra, className}: {a: Agent; onC
 			</span>
 			{a.online && m && (
 				<div className="specs">
-					<LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} posture={a.info?.posture} />
+					<LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} posture={a.info?.posture} machineName={a.name} />
 					{!!m.updates && (
 						<StatChip icon="update" label="Updates">
 							{m.updates} update{m.updates === 1 ? '' : 's'}
@@ -322,7 +335,7 @@ export function AgentCard({a, onClick, footer, extra, className}: {a: Agent; onC
 	)
 }
 
-export function ConnectorControls({a, onTerminal}: {a: Agent; onTerminal: (input?: string) => void}) {
+export function ConnectorControls({a, onTerminal, power = true}: {a: Agent; onTerminal: (input?: string) => void; power?: boolean}) {
 	const act = useSwarmAction()
 	const confirm = useConfirm()
 	const [plugins, setPlugins] = useState(false)
@@ -374,45 +387,49 @@ export function ConnectorControls({a, onTerminal}: {a: Agent; onTerminal: (input
 							<Row icon="puzzle" color="var(--accent)" label="Omarchy plugins" sub={`${a.info.plugins?.length ?? 0} installed`} onClick={manage ? () => setPlugins(true) : undefined} />
 						</>
 					)}
-					<Row
-						icon="power"
-						color="#f59e0b"
-						label="Suspend"
-						onClick={
-							manage
-								? async () => {
-										if (await confirm({title: `Suspend ${a.name}?`, body: 'It goes to sleep right away. Wake it with Wake-on-LAN or its power button.', confirm: 'Suspend', icon: 'power'}))
-											act.mutate({path: 'swarm.action', input: {id: a.id, name: 'suspend'}, done: `Suspending ${a.name}…`})
-									}
-								: undefined
-						}
-					/>
-					<Row
-						icon="power"
-						color="#ef5350"
-						label="Restart"
-						onClick={
-							manage
-								? async () => {
-										if (await confirm({title: `Restart ${a.name}?`, body: 'Anything open on it closes. It joins again by itself once it’s back up.', confirm: 'Restart', icon: 'power'}))
-											act.mutate({path: 'swarm.action', input: {id: a.id, name: 'reboot'}, done: `Restarting ${a.name}…`})
-									}
-								: undefined
-						}
-					/>
-					<Row
-						icon="power"
-						color="#dc2626"
-						label="Shut down"
-						onClick={
-							manage
-								? async () => {
-										if (await confirm({title: `Shut down ${a.name}?`, body: 'Anything open on it closes and the computer powers off.', confirm: 'Shut down', icon: 'power'}))
-											act.mutate({path: 'swarm.action', input: {id: a.id, name: 'shutdown'}, done: `Shutting down ${a.name}…`})
-									}
-								: undefined
-						}
-					/>
+					{power && (
+						<>
+							<Row
+								icon="power"
+								color="#f59e0b"
+								label="Suspend"
+								onClick={
+									manage
+										? async () => {
+												if (await confirm({title: `Suspend ${a.name}?`, body: 'It goes to sleep right away. Wake it with Wake-on-LAN or its power button.', confirm: 'Suspend', icon: 'power'}))
+													act.mutate({path: 'swarm.action', input: {id: a.id, name: 'suspend'}, done: `Suspending ${a.name}…`})
+											}
+										: undefined
+								}
+							/>
+							<Row
+								icon="power"
+								color="#ef5350"
+								label="Restart"
+								onClick={
+									manage
+										? async () => {
+												if (await confirm({title: `Restart ${a.name}?`, body: 'Anything open on it closes. It joins again by itself once it’s back up.', confirm: 'Restart', icon: 'power'}))
+													act.mutate({path: 'swarm.action', input: {id: a.id, name: 'reboot'}, done: `Restarting ${a.name}…`})
+											}
+										: undefined
+								}
+							/>
+							<Row
+								icon="power"
+								color="#dc2626"
+								label="Shut down"
+								onClick={
+									manage
+										? async () => {
+												if (await confirm({title: `Shut down ${a.name}?`, body: 'Anything open on it closes and the computer powers off.', confirm: 'Shut down', icon: 'power'}))
+													act.mutate({path: 'swarm.action', input: {id: a.id, name: 'shutdown'}, done: `Shutting down ${a.name}…`})
+											}
+										: undefined
+								}
+							/>
+						</>
+					)}
 				</SheetGroup>
 			)}
 			<SheetGroup title="Allowed here">
@@ -440,18 +457,22 @@ function AgentSheet({
 	onTerminal,
 	onDesktop,
 	bare,
+	layout = 'page',
 	vms = [],
 	onCreateVm,
 	onOpenVm,
+	onOpenApp,
 }: {
 	a: Agent
 	onClose: () => void
 	onTerminal: (input?: string) => void
 	onDesktop: () => void
 	bare?: boolean
+	layout?: 'page' | 'nav'
 	vms?: Machine[]
 	onCreateVm?: () => void
 	onOpenVm?: (id: string) => void
+	onOpenApp?: (app: UserApp) => void
 }) {
 	const os = look(a)
 	const act = useSwarmAction()
@@ -460,7 +481,7 @@ function AgentSheet({
 	const [backups, setBackups] = useState(false)
 	const [storage, setStorage] = useState(false)
 	const [services, setServices] = useState(false)
-	const [tab, setTab] = useState('files')
+	const [tab, setTab] = useState(layout === 'nav' ? 'summary' : 'files')
 	const m = a.metrics
 	const desk = a.info?.desktop
 	const offline = !a.online
@@ -567,7 +588,7 @@ function AgentSheet({
 			label: 'Manage',
 			body: (
 				<>
-					<ConnectorControls a={a} onTerminal={onTerminal} />
+					<ConnectorControls a={a} onTerminal={onTerminal} power={layout !== 'nav'} />
 					<SheetGroup title="About">
 						<div className="row static" style={{minHeight: 56, gap: 10}}>
 							<input
@@ -610,6 +631,9 @@ function AgentSheet({
 			),
 		},
 	]
+	if (layout === 'nav') {
+		return <ComputerDetail a={a} tabs={tabs} tab={tab} onTab={setTab} onTerminal={onTerminal} onDesktop={onDesktop} onOpenApp={onOpenApp} />
+	}
 	return (
 		<MachineShell bare={bare} label={a.name} onClose={onClose}>
 			<SheetHeader
@@ -628,7 +652,8 @@ function AgentSheet({
 			/>
 			<MachineActions terminal={!offline && may(a, 'terminal')} desktop={!offline && may(a, 'desktop') && desk?.ok !== false} onTerminal={() => onTerminal()} onDesktop={onDesktop} pin={<PinButton pin={{kind: 'machine', id: a.id, computer: ''}} name={a.name} />} />
 <DesktopHelp a={a} onTerminal={onTerminal} />
-			{a.online && m && <LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} posture={a.info?.posture} />}
+			{a.online && m && <LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} posture={a.info?.posture} machineName={a.name} />}
+			<MachineSeen online={a.online} uptime={m?.uptime} lastSeen={a.lastSeen} />
 			{a.online && <HistorySparklines agentId={a.id} />}
 			{wake && (
 				<div style={{marginTop: 12}}>
@@ -651,19 +676,139 @@ function AgentSheet({
 					{!wake.enabled && wake.why ? <p className="quiet" style={{marginTop: 8}}>{wake.why}</p> : null}
 				</div>
 			)}
-			{a.online && m && (extraDisks(m.disks).length > 0 || typeof m.temp === 'number' || m.uptime !== undefined || (m.net && (m.net.rx != null || m.net.tx != null))) && (
-				<SheetGroup title="Now">
+			{a.online && m && (extraDisks(m.disks).length > 0 || (m.net && (m.net.rx != null || m.net.tx != null))) && (
+				<div className="glass group machine-extra">
 					{extraDisks(m.disks).map((d) => (
 						<Row key={d.mount} icon="disk" color="#f0a020" label={d.mount} sub={`${bytes(d.used)} of ${bytes(d.total)}`} trailing={<b>{pct(d)}%</b>} />
 					))}
 					{m.net && (m.net.rx != null || m.net.tx != null) && <Row icon="network" color="#3b82f6" label="Network" trailing={<b>↓ {bytes(m.net.rx ?? 0)}/s · ↑ {bytes(m.net.tx ?? 0)}/s</b>} />}
-					{typeof m.temp === 'number' && <Row icon="thermo" color="#ef5350" label="Temperature" trailing={<b>{Math.round(m.temp)}°C</b>} />}
-					{m.uptime !== undefined && <Row icon="clock" color="#8e8e93" label="Up for" trailing={<b>{duration(m.uptime)}</b>} />}
-				</SheetGroup>
+				</div>
 			)}
 			<MachineTabs label={`${a.name} sections`} tabs={tabs} tab={tab} onTab={setTab} />
 		</MachineShell>
 	)
+}
+
+function ComputerDetail({
+	a,
+	tabs,
+	tab,
+	onTab,
+	onTerminal,
+	onDesktop,
+	onOpenApp,
+}: {
+	a: Agent
+	tabs: MachineTab[]
+	tab: string
+	onTab: (id: string) => void
+	onTerminal: (input?: string) => void
+	onDesktop: () => void
+	onOpenApp?: (app: UserApp) => void
+}) {
+	const os = look(a)
+	const act = useSwarmAction()
+	const confirm = useConfirm()
+	const desk = a.info?.desktop
+	const offline = !a.online
+	const wake = wakeOffer(a)
+	const m = a.metrics
+	const manage = !offline && may(a, 'manage')
+	const sections: DetailSection[] = [
+		{id: 'summary', label: 'Summary', icon: 'activity'},
+		...tabs.map((item) => ({id: item.id, label: item.label, icon: sectionIcon(item.id)})),
+	]
+	const current = sections.some((item) => item.id === tab) ? tab : 'summary'
+	const power = (action: 'suspend' | 'reboot' | 'shutdown', title: string, body: string, confirmLabel: string, done: string) => async () => {
+		if (await confirm({title, body, confirm: confirmLabel, icon: 'power'})) act.mutate({path: 'swarm.action', input: {id: a.id, name: action}, done})
+	}
+	return (
+		<DetailFrame
+			name={a.name}
+			facts={a.info?.hostname ? [{label: 'Hostname', value: a.info.hostname}] : []}
+			icon={os.icon}
+			iconBg={os.bg}
+			status={<StatusPill kind={a.online ? 'running' : 'stopped'} label={a.online ? 'Online' : 'Offline'} />}
+			navLabel={`${a.name} sections`}
+			sections={sections}
+			section={current}
+			onSection={onTab}
+			store={
+				a.online ? (
+					<button type="button" className="btn small" title="Installs on this computer" onClick={() => (haptic(6), openStore({id: a.id, kind: 'computer', name: a.name}))}>
+						<Icon name="store" size={14} /> App Store
+					</button>
+				) : undefined
+			}
+			toolbar={
+				manage || wake?.enabled ? (
+					<div className="pve-toolbar">
+						{manage && (
+							<>
+								<button type="button" className="btn small" disabled={act.isPending} onClick={power('suspend', `Suspend ${a.name}?`, 'It goes to sleep right away. Wake it with Wake-on-LAN or its power button.', 'Suspend', `Suspending ${a.name}…`)}>
+									<Icon name="power" size={14} /> Suspend
+								</button>
+								<button type="button" className="btn small" disabled={act.isPending} onClick={power('reboot', `Restart ${a.name}?`, 'Anything open on it closes. It joins again by itself once it’s back up.', 'Restart', `Restarting ${a.name}…`)}>
+									<Icon name="restart" size={14} /> Restart
+								</button>
+								<button type="button" className="btn small" disabled={act.isPending} onClick={power('shutdown', `Shut down ${a.name}?`, 'Anything open on it closes and the computer powers off.', 'Shut down', `Shutting down ${a.name}…`)}>
+									<Icon name="power" size={14} /> Shut down
+								</button>
+							</>
+						)}
+						{wake?.enabled && (
+							<button
+								type="button"
+								className="btn small"
+								disabled={act.isPending}
+								onClick={async () => {
+									if (await confirm({title: `Wake up ${a.name}?`, body: 'This sends a wake packet on the local network from this server and every computer that is on. The computer needs Wake-on-LAN switched on, and it has to be on one of those networks.', confirm: 'Wake up', icon: 'power'}))
+										act.mutate({path: 'swarm.wake', input: {id: a.id}, done: `Waking ${a.name}…`})
+								}}
+							>
+								<Icon name="power" size={14} /> Wake up
+							</button>
+						)}
+					</div>
+				) : undefined
+			}
+		>
+			{current === 'summary' ? (
+				<>
+					<MachineActions terminal={!offline && may(a, 'terminal')} desktop={!offline && may(a, 'desktop') && desk?.ok !== false} onTerminal={() => onTerminal()} onDesktop={onDesktop} pin={<PinButton pin={{kind: 'machine', id: a.id, computer: ''}} name={a.name} />} />
+					<DesktopHelp a={a} onTerminal={onTerminal} />
+					{a.online && m && <LiveStats metrics={m} temp={typeof m.temp === 'number' ? m.temp : null} posture={a.info?.posture} machineName={a.name} />}
+					<MachineSeen online={a.online} uptime={m?.uptime} lastSeen={a.lastSeen} />
+					{a.online && <HistorySparklines agentId={a.id} />}
+					{wake && !wake.enabled && wake.why ? <p className="quiet">{wake.why}</p> : null}
+					{a.online && m && (extraDisks(m.disks).length > 0 || (m.net && (m.net.rx != null || m.net.tx != null))) && (
+						<div className="glass group machine-extra">
+							{extraDisks(m.disks).map((d) => (
+								<Row key={d.mount} icon="disk" color="#f0a020" label={d.mount} sub={`${bytes(d.used)} of ${bytes(d.total)}`} trailing={<b>{pct(d)}%</b>} />
+							))}
+							{m.net && (m.net.rx != null || m.net.tx != null) && <Row icon="network" color="#3b82f6" label="Network" trailing={<b>↓ {bytes(m.net.rx ?? 0)}/s · ↑ {bytes(m.net.tx ?? 0)}/s</b>} />}
+						</div>
+					)}
+				</>
+			) : current === 'storage' && a.online && may(a, 'storage') ? (
+				<StoragePage target={{agentId: a.id, name: a.name}} />
+			) : current === 'apps' ? (
+				<MachineApps computerId={a.id} name={a.name} onOpenApp={onOpenApp} />
+			) : (
+				tabs.find((item) => item.id === current)?.body
+			)}
+		</DetailFrame>
+	)
+}
+
+function sectionIcon(id: string): IconName {
+	if (id === 'files') return 'folder'
+	if (id === 'apps') return 'store'
+	if (id === 'services') return 'server'
+	if (id === 'storage') return 'disk'
+	if (id === 'machines') return 'machine'
+	if (id === 'backups') return 'save'
+	return 'settings'
 }
 
 type Plugin = {id: string; name: string; description?: string; author?: string}
@@ -713,6 +858,7 @@ export function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 			</div>
 			<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 				{page.isLoading && <Row icon="puzzle" label="Loading…" />}
+				{page.error && <Row icon="alert" label="Couldn’t load the plugin list" sub={errorText(page.error)} />}
 				{list
 					.filter((p) => !installed.has(p.id))
 					.map((p) => (
@@ -730,7 +876,7 @@ export function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 											act.mutate({path: 'swarm.action', input: {id: a.id, name: 'plugin-install', pluginId: p.id}, done: `${p.name} installed on ${a.name}`})
 									}}
 								>
-									{act.isPending && act.variables?.input && (act.variables.input as {pluginId?: string}).pluginId === p.id ? <span className="spinner" /> : 'Install'}
+									{act.isPending && act.variables?.input && (act.variables.input as {pluginId?: string}).pluginId === p.id ? <><span className="spinner" /><span className="sr-only">Install</span></> : 'Install'}
 								</button>
 							}
 						/>
@@ -816,9 +962,9 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 			) : !pairing ? (
 				<>
 					<p className="muted" style={{fontSize: 14, margin: '0 4px 12px'}}>
-						Choose what this server may do on the new computer. The connector there enforces it too, and you can switch these off later (but not on again without adding it again).
+						Choose what this server may do on the new computer. The connector there enforces it too. Later you can switch any of these off and on again from the computer’s page, and Change permissions there can allow more without removing it.
 					</p>
-					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+					<div className="glass group wrap-sub" style={{'--inset': '62px'} as CSSProperties}>
 						<Row icon="sparkle" color="#2fbf71" label="Watch" sub="Always: CPU, memory, disks, temperature, updates waiting" />
 						{shown.map((k) => (
 							<Row key={k} icon={ABILITY[k].icon} label={ABILITY[k].label} sub={guest || EVERYWHERE.includes(k) ? ABILITY[k].what : `${ABILITY[k].what} · Linux`} trailing={<Switch on={allow[k]} label={ABILITY[k].label} onChange={(v) => setAllow({...allow, [k]: v})} />} />
@@ -944,6 +1090,7 @@ function Sparkline({values, max = 100, color, label, suffix = '%'}: {values: Arr
 }
 
 function HistorySparklines({agentId}: {agentId: string}) {
+	const {tempUnit} = useStatView()
 	const [range, setRange] = useState<'1h' | '24h'>('1h')
 	const hist = useQuery({
 		queryKey: ['swarm.history', agentId, range],
@@ -969,7 +1116,7 @@ function HistorySparklines({agentId}: {agentId: string}) {
 			<div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 12}}>
 				<Sparkline label="CPU" values={points.map((p) => p.cpu)} color="var(--accent)" />
 				<Sparkline label="Memory" values={points.map((p) => p.memPct)} color="#38bdf8" />
-				<Sparkline label="Temp" values={points.map((p) => p.temp)} max={100} color="#ef5350" suffix="°C" />
+				<Sparkline label="Temp" values={points.map((p) => (typeof p.temp === 'number' ? tempDegrees(p.temp, tempUnit) : p.temp))} max={tempUnit === 'f' ? tempDegrees(100, 'f') : 100} color="#ef5350" suffix={tempUnit === 'f' ? '°F' : '°C'} />
 			</div>
 		</div>
 	)
@@ -1015,7 +1162,7 @@ function AgentServices({a, onClose}: {a: Agent; onClose: () => void}) {
 				</button>
 			</div>
 			{data.isLoading && <p className="muted">Loading…</p>}
-			{data.error && <div className="error">{(data.error as Error).message}</div>}
+			{data.error && <div className="error" role="alert">{(data.error as Error).message}</div>}
 			{tab === 'user' && payload && (
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					{payload.systemd.length === 0 && <Row icon="server" label="No user services found" />}
@@ -1217,7 +1364,7 @@ export function AgentFiles({a, onClose}: {a: Agent; onClose: () => void}) {
 				)}
 			</div>
 			{dir.isLoading && <p className="muted">Loading…</p>}
-			{dir.error && <div className="error">{(dir.error as Error).message}</div>}
+			{dir.error && <div className="error" role="alert">{(dir.error as Error).message}</div>}
 			{dir.data && (
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					{dir.data.items.length === 0 && <Row icon="folder" label="Empty folder" />}
@@ -1348,7 +1495,7 @@ function ReauthorizeComputer({a, onClose}: {a: Agent; onClose: () => void}) {
 					<p className="muted" style={{fontSize: 14, margin: '0 4px 12px'}}>
 						Choose the abilities this server may use on {a.name}. Running the command on that computer updates its permissions in place and rotates its key.
 					</p>
-					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+					<div className="glass group wrap-sub" style={{'--inset': '62px'} as CSSProperties}>
 						{(Object.keys(ABILITY) as Ability[]).map((k) => (
 							<Row key={k} icon={ABILITY[k].icon} label={ABILITY[k].label} sub={ABILITY[k].what} trailing={<Switch on={allow[k]} label={ABILITY[k].label} onChange={(v) => setAllow({...allow, [k]: v})} />} />
 						))}
