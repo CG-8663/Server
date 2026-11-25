@@ -82,6 +82,9 @@ export function TerminalScreen({
 	const [alt, setAlt] = useState(false)
 	const [kbd, setKbd] = useState(false)
 	const [pasteBox, setPasteBox] = useState(false)
+	// Long-press on a phone: a small Paste button where the finger was.
+	const [pressPaste, setPressPaste] = useState<{x: number; y: number} | null>(null)
+	const pasteRef = useRef<() => void>(() => {})
 	const [pasteText, setPasteText] = useState('')
 	const pasteField = useRef<HTMLTextAreaElement>(null)
 	const pasteCaret = useRef<number | null>(null)
@@ -188,15 +191,10 @@ export function TerminalScreen({
 				term.focus()
 				return
 			}
-			if (!window.isSecureContext || !navigator.clipboard?.readText) return
+			// Paste: straight from the clipboard where the browser allows it (https://), otherwise the
+			// paste box, so right-click → Paste works on http:// too.
 			e.preventDefault()
-			navigator.clipboard.readText().then(
-				(text) => {
-					if (text) term.paste(text)
-					term.focus()
-				},
-				() => toast('Allow clipboard access for this site to paste with a right-click', true),
-			)
+			pasteRef.current()
 		}
 		el.addEventListener('contextmenu', onContextMenu)
 		// Take a clipboard paste once. Otherwise the browser also drops it into xterm's hidden
@@ -453,17 +451,26 @@ export function TerminalScreen({
 			vp.scrollTop = before + dy
 			return vp.scrollTop !== before
 		}
+		// Press and hold (without moving) offers Paste; a reading of the clipboard needs a tap of its own.
+		let holdTimer = 0
+		const cancelHold = () => window.clearTimeout(holdTimer)
 		const onTouchStart = (e: TouchEvent) => {
 			stopFling()
+			cancelHold()
 			if (e.touches.length !== 1) return void (touch = null)
 			const y = e.touches[0].clientY
+			const x = e.touches[0].clientX
 			touch = {startY: y, y, t: performance.now(), v: 0, moved: false, carry: 0}
+			holdTimer = window.setTimeout(() => {
+				if (touch && !touch.moved) (haptic(10), setPressPaste({x, y}))
+			}, 500)
 		}
 		const onTouchMove = (e: TouchEvent) => {
 			if (!touch || e.touches.length !== 1) return
 			const y = e.touches[0].clientY
 			if (!touch.moved && Math.abs(y - touch.startY) < 6) return // not a drag yet: maybe a tap or a long press
 			touch.moved = true
+			cancelHold()
 			e.preventDefault() // ours, not the page's (or xterm's own, slower) scrolling
 			e.stopPropagation()
 			const now = performance.now()
@@ -475,6 +482,7 @@ export function TerminalScreen({
 			scrollBy(dy)
 		}
 		const onTouchEnd = (e: TouchEvent) => {
+			cancelHold()
 			const t = touch
 			touch = null
 			if (!t?.moved) return
@@ -507,6 +515,7 @@ export function TerminalScreen({
 			window.clearTimeout(readyTimer)
 			window.clearTimeout(sizeTimer)
 			rootEl?.removeEventListener('viewportchange', onResize)
+			cancelHold()
 			el.removeEventListener('touchstart', onTouchStart, {capture: true})
 			el.removeEventListener('touchmove', onTouchMove, {capture: true})
 			el.removeEventListener('touchend', onTouchEnd, {capture: true})
@@ -570,6 +579,12 @@ export function TerminalScreen({
 		setPasteText('')
 		setPasteBox(true)
 	}
+	pasteRef.current = () => void paste()
+	useEffect(() => {
+		if (!pressPaste) return
+		const t = window.setTimeout(() => setPressPaste(null), 4000)
+		return () => window.clearTimeout(t)
+	}, [pressPaste])
 	const sendPaste = () => {
 		if (pasteText) {
 			haptic(8)
@@ -666,12 +681,24 @@ export function TerminalScreen({
 					</div>
 				)}
 			</div>
+			{pressPaste && (
+				<>
+					<div className="term-press-scrim" onPointerDown={() => setPressPaste(null)} />
+					<button
+						className="term-press-paste"
+						style={{left: Math.min(Math.max(12, pressPaste.x - 40), window.innerWidth - 92), top: Math.max(12, pressPaste.y - 56)}}
+						onClick={() => (setPressPaste(null), void paste())}
+					>
+						Paste
+					</button>
+				</>
+			)}
 			{pasteBox && (
 				<div className="term-paste" role="dialog" aria-label="Paste into terminal">
 					<div className="term-paste-card">
 						<div className="term-paste-head">
 							<b>Paste</b>
-							<span>Long-press in the box, tap Paste, then Send.</span>
+							<span>{matchMedia('(any-pointer: fine)').matches ? 'Press Ctrl+V (or right-click → Paste) in the box, then Send.' : 'Long-press in the box, tap Paste, then Send.'}</span>
 						</div>
 						<textarea
 							ref={pasteField}
