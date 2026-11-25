@@ -1,6 +1,6 @@
 # MODC Connect — development handoff (paused 2026-11-24)
 
-Development is paused. This branch (`dev/modc-connect-sso-v2`) and the tag `modc-connect-checkpoint-2026-11-24` hold all MODC Connect work. Nothing here is merged into `main`. The production server (Node Zero, `nodezero.myowndatacenter.com`) was moved back to the stable release (0.9.81 at the time of writing).
+Development is paused. This branch (`dev/modc-connect-sso-v2`) and the frozen branch `checkpoint/modc-connect-2026-11-24` hold all MODC Connect work. Nothing here is merged into `main`. The production server (Node Zero, `nodezero.myowndatacenter.com`) was moved back to the stable release (0.9.81 at the time of writing).
 
 ## 1. Completed functionality
 
@@ -62,7 +62,7 @@ Automated: 65 focused tests for 1e0d00d, 34 readiness tests for 95b325a (`test/s
 
 ```
 git clone https://github.com/MyOwnDataCenter/server && cd server
-git checkout dev/modc-connect-sso-v2          # or: git checkout modc-connect-checkpoint-2026-11-24
+git checkout dev/modc-connect-sso-v2          # or the frozen copy: git checkout checkpoint/modc-connect-2026-11-24
 git merge origin/main                         # bring in 0.9.81+, resolve, re-run tests
 node --test test/sso-only.test.mjs test/connect-sso.test.mjs test/connect-remote.test.mjs \
   test/remote-gate.test.mjs test/remote-access.test.mjs test/connect-tunnel.test.mjs test/connect.test.mjs
