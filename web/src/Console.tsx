@@ -21,6 +21,7 @@ import {BTN, bindConsoleWheel, charKeySteps, consoleDisconnectAction, consoleFai
 import {overlayBackUsesHistory, popstateClosesOverlay} from './overlayHistory'
 import {Icon} from './icons'
 import {keysymFromEvent, setConsoleKeyHandler} from './desktop/hyprland/consoleBridge'
+import {useMenuFocus} from './focus'
 import {haptic, settleViewport, usePortalRoot, useScreenLock, useToast} from './ui'
 
 type RFBClass = typeof import('@novnc/novnc/lib/rfb.js').default
@@ -134,6 +135,9 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	const [fullscreen, setFullscreen] = useState(false)
 	const [barShown, setBarShown] = useState(true)
 	const [keysOpen, setKeysOpen] = useState(false)
+	const keysMenuRef = useRef<HTMLDivElement>(null)
+	// Focus moves into the Keys menu when it opens; arrows, Home and End move between items, Escape or Tab close it and focus goes back to the button.
+	useMenuFocus(keysOpen, keysMenuRef, () => setKeysOpen(false))
 	const [typing, setTyping] = useState<string | null>(null)
 	const [state, setState] = useState<State>('connecting')
 	const [message, setMessage] = useState('')
@@ -1324,7 +1328,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 						</button>
 					)}
 					<div className="ct-menu-wrap">
-						<button className={`ct-btn${keysOpen ? ' on' : ''}`} disabled={!live} onClick={() => setKeysOpen((o) => !o)} aria-expanded={keysOpen}>
+						<button className={`ct-btn${keysOpen ? ' on' : ''}`} disabled={!live} onClick={() => setKeysOpen((o) => !o)} aria-haspopup="menu" aria-expanded={keysOpen}>
 							<Icon name="keyboard" size={17} />
 							Keys
 							<Icon name="chevron-down" size={13} />
@@ -1332,7 +1336,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 						{keysOpen && (
 							<>
 								<button className="ct-scrim" aria-label="Close" onClick={() => setKeysOpen(false)} />
-								<div className="ct-menu" role="menu">
+								<div ref={keysMenuRef} className="ct-menu" role="menu" aria-label="Keys" tabIndex={-1}>
 									{machine.id === 'desktop' &&
 										OMARCHY_COMBOS.map((k) => (
 											<button
