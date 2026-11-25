@@ -2089,6 +2089,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const m = find(input.id)
 		assertLocal(m)
 		writable(m)
+		refuseIfBusy(m)
 		const d = findDisk(m, input.diskId)
 		if (d.device !== 'disk') throw new RpcError('BAD_REQUEST', 'Only disks can be resized')
 		const sizeGb = Number(input.sizeGb)
