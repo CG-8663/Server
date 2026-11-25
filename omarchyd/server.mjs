@@ -76,9 +76,12 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const defaultStores = storeDir ? [{url: fileUrl(storeDir)}] : undefined
 	const catalogUrl = storeDir ? fileUrl(join(storeDir, 'machines', 'catalog.json')) : undefined
 	let connector
+	// Filled in once usb exists: removing an app or machine takes its attached sticks' udev rules out.
+	let usbReleased = async () => {}
 	const machines = createMachines({
 		dataDir,
 		files,
+		usbReleased: (devices) => usbReleased(devices),
 		...(catalogUrl ? {catalogUrl} : {}),
 		isOwner: (ctx) => accounts.getUser(ctx?.auth?.userId)?.role !== 'member',
 		connector: {
@@ -118,6 +121,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		systemApps,
 		tlsDir,
 		secure,
+		usbReleased: (devices) => usbReleased(devices),
 		forwardInstall: (...args) => forwardInstall(...args),
 		remoteApps: () => remoteApps(),
 		oidc,
@@ -139,6 +143,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		},
 		helper: (verb, args) => storage.helper(verb, args),
 	})
+	usbReleased = usb.release
 	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).
 	const tickets = new Map()
 	const hyprSocketsBySession = new Map() // sessionId -> Set<WebSocket>

@@ -853,7 +853,7 @@ export async function podmanHealth(run, env, home) {
 	}
 }
 
-export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000, systemApps = null, deviceExists = exists, forwardInstall = null, remoteApps = async () => [], oidc = null, getTailscaleStatus = null}) {
+export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true}), startGraceMs = 120_000, systemApps = null, deviceExists = exists, forwardInstall = null, remoteApps = async () => [], oidc = null, getTailscaleStatus = null, usbReleased = null}) {
 	const base = join(dataDir, 'apps')
 	const storesDir = join(base, 'stores')
 	const installedDir = join(base, 'installed')
@@ -2723,6 +2723,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				state.apps = state.apps.filter((a) => a.id !== app.id)
 				state.recent = state.recent.filter((r) => r !== app.id)
 				await save()
+				// The sticks it had attached: their udev rules go too (as when a stick is detached).
+				await usbReleased?.(app.usbDevices ?? [])
 				// After this app is gone, so the other uninstall in a pair is not still counted.
 				await stopTorIfIdle(app.id)
 			})

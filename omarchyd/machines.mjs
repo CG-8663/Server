@@ -109,7 +109,7 @@ function catalogInstallKind(img) {
 	return 'cloud'
 }
 
-export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000, connectorAgentWaitMs = 60 * 60 * 1000, isOwner = () => true}) {
+export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000, connectorAgentWaitMs = 60 * 60 * 1000, isOwner = () => true, usbReleased = null}) {
 	const base = join(dataDir, 'machines')
 	const imagesDir = join(base, 'images')
 	const vmsDir = join(base, 'vms')
@@ -1286,6 +1286,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await rm(join(vmsDir, m.id), {recursive: true, force: true})
 		machines = machines.filter((x) => x.id !== m.id)
 		await save()
+		// The sticks it had attached: their udev rules go too (as when a stick is detached).
+		await usbReleased?.(m.usbDevices ?? [])
 		return true
 	}
 
