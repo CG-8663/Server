@@ -12,6 +12,7 @@ import {CategoryChips} from '../CategoryChips'
 import {useDesktop} from '../desktop/Desktop'
 import {explainProbe, openApp} from '../openApp'
 import {Icon, hasIcon} from '../icons'
+import {rovingKeyDown, TAB_SELECTOR} from '../roving'
 import {AppIcon, Sheet, SheetHeader, StatusPill, appStatus, bytes, haptic, isAppBusy, useToast} from '../ui'
 import {SearchField} from './Apps'
 import {remainingSuggestedStores, type StoreRepo} from '../storeSuggestions'
@@ -129,12 +130,13 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 				</button>
 			</div>
 			{storeList.length > 1 && (
-				<div className="chips store-picker" role="tablist" aria-label="App stores">
+				<div className="chips store-picker" role="tablist" aria-label="App stores" onKeyDown={(e) => rovingKeyDown(e, TAB_SELECTOR, 'horizontal')}>
 					{[{key: 'all', name: 'All stores', count: null as number | null}, ...storeList].map((st) => (
 						<button
 							key={st.key}
 							role="tab"
 							aria-selected={storeKey === st.key}
+							tabIndex={storeKey === st.key ? 0 : -1}
 							className={`chip${storeKey === st.key ? ' on' : ''}`}
 							onClick={() => {
 								haptic(5)
@@ -156,6 +158,7 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 						key={c}
 						role="tab"
 						aria-selected={active === c}
+						tabIndex={active === c ? 0 : -1}
 						className={`chip${active === c ? ' on' : ''}`}
 						onClick={() => {
 							haptic(5)

@@ -7,6 +7,7 @@ import {AssistantAvatar, cleanLook, type AssistantLook} from './character/Assist
 import {detectDesktop, LAYOUT_POINTER} from './layout'
 export {detectDesktop}
 import {fieldAria, liveRegionText, useDialogFocus} from './focus'
+import {RADIO_SELECTOR, rovingKeyDown, rovingTabIndex, TAB_SELECTOR} from './roving'
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
 import {solidOf, WALLPAPERS, useDeskConfig, wallpaperSrc} from './desktop/config'
@@ -320,7 +321,7 @@ export function Segmented<T extends string>({
 }) {
 	const index = Math.max(0, options.findIndex((o) => o.id === value))
 	return (
-		<div className="segmented glass" role="tablist" aria-label={label}>
+		<div className="segmented glass" role="tablist" aria-label={label} onKeyDown={(e) => rovingKeyDown(e, TAB_SELECTOR, 'horizontal')}>
 			<span className="thumb" style={{width: `calc((100% - 8px) / ${options.length})`, transform: `translateX(${index * 100}%)`}} />
 			{options.map((o) => (
 				<button
@@ -328,6 +329,7 @@ export function Segmented<T extends string>({
 					type="button"
 					role="tab"
 					aria-selected={o.id === value}
+					tabIndex={rovingTabIndex(o.id === value, options.indexOf(o), options.some((x) => x.id === value))}
 					onClick={() => {
 						haptic(5)
 						onChange(o.id)
@@ -798,12 +800,12 @@ export const isSolidColor = (v: unknown): v is string => typeof v === 'string' &
 // Plain colours instead of a picture: a few to tap, any other with the colour picker, or the picture.
 export function SolidColors({value, onChange}: {value: string | null; onChange: (c: string | null) => void}) {
 	return (
-		<div className="solid-colors" role="radiogroup" aria-label="Solid colour">
-			<button role="radio" aria-checked={!value} className={`solid-swatch picture${!value ? ' on' : ''}`} onClick={() => onChange(null)} title="A picture (no solid colour)">
+		<div className="solid-colors" role="radiogroup" aria-label="Solid colour" onKeyDown={(e) => rovingKeyDown(e, RADIO_SELECTOR)}>
+			<button role="radio" aria-checked={!value} tabIndex={!value || !SOLID_COLORS.includes(value as (typeof SOLID_COLORS)[number]) ? 0 : -1} className={`solid-swatch picture${!value ? ' on' : ''}`} onClick={() => onChange(null)} title="A picture (no solid colour)">
 				<Icon name="wallpaper" size={16} />
 			</button>
 			{SOLID_COLORS.map((c) => (
-				<button key={c} role="radio" aria-checked={value === c} aria-label={c} className={`solid-swatch${value === c ? ' on' : ''}`} style={{background: c}} onClick={() => onChange(c)} />
+				<button key={c} role="radio" aria-checked={value === c} tabIndex={value === c ? 0 : -1} aria-label={c} className={`solid-swatch${value === c ? ' on' : ''}`} style={{background: c}} onClick={() => onChange(c)} />
 			))}
 			<label className={`solid-swatch custom${value && !(SOLID_COLORS as readonly string[]).includes(value) ? ' on' : ''}`} title="Any colour" style={value && !(SOLID_COLORS as readonly string[]).includes(value) ? {background: value} : undefined}>
 				<Icon name="palette" size={16} />
