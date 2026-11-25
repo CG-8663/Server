@@ -5,6 +5,7 @@ import {mutate, query} from '../api'
 import {Icon} from '../icons'
 import {Field, Row, Segmented, Sheet, SheetHeader, useConfirm, useToast} from '../ui'
 import {TailscaleSheet} from './Tailscale'
+import {wifiRowValue} from './wifiRow'
 
 function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false} = {}) {
 	return useQuery({queryKey: [path, input], queryFn: () => query<T>(path, input), retry: false, staleTime: 15_000, ...opts})
@@ -200,7 +201,7 @@ export function ServerNetwork() {
 			<div className="glass group">
 				<Row icon="network" color="var(--teal)" label="Device name" value={hostname.data ? `${hostname.data}.local` : ''} onClick={() => setSheet('hostname')} />
 				<Row icon="networking" color="var(--blue)" label="IP address" value={(ips.data ?? []).join(', ') || '–'} />
-				{wifiSupported.data && <Row icon="wifi" color="var(--blue)" label="Wi-Fi" value={wifi.data?.status === 'connected' ? wifi.data.ssid : 'Off'} onClick={() => setSheet('wifi')} />}
+				{wifiSupported.data && <Row icon="wifi" color="var(--blue)" label="Wi-Fi" value={wifiRowValue(wifi.data)} onClick={() => setSheet('wifi')} />}
 				<Row icon="networking" color="var(--purple, #8b5cf6)" label="Tailscale" value={tsValue} onClick={() => setSheet('tailscale')} />
 			</div>
 			<HostnameSheet open={sheet === 'hostname'} current={hostname.data ?? ''} onClose={() => setSheet(null)} />
