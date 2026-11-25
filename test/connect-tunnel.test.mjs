@@ -629,3 +629,29 @@ test('no restart loop without a token, and Check now always answers', async () =
 		await t.cleanup()
 	}
 })
+
+test('contract v2 (SSO only): runs only when this server’s own sign-in gate answers on the hostname, without Access', async () => {
+	const t = await setup()
+	try {
+		protectedRoute(t)
+		const v2 = () => {
+			const b = PROD_STATUS(t.site.health)
+			b.remote_access.security = {contract_version: 2, protection_mode: 'modc_sso'}
+			return json(200, b)
+		}
+		t.site.over['GET /api/public/cloud/tunnel/status'] = v2
+		const gated = () => new Response('{}', {status: 401, headers: {'x-modc-gate': 'sso_only'}})
+		for (const p of ['/api/prefs', '/api/rpc/user.get']) t.site.over[`GET https://nodezero.myowndatacenter.com${p}`] = gated
+		const s = (await t.call('connect.tunnel.enable')).tunnel
+		assert.equal(s.block, null)
+		assert.equal(t.mach.units[UNIT].active, 'active')
+		// The gate disappears (a plain 401 without it, or an open page): stopped.
+		t.site.over['GET https://nodezero.myowndatacenter.com/api/prefs'] = () => new Response('{}', {status: 200})
+		t.advance(5 * 60_000)
+		await t.tunnel.tick()
+		assert.equal((await t.connect.status()).tunnel.block.code, 'unprotected')
+		assert.equal(t.mach.units[UNIT].active, 'inactive')
+	} finally {
+		await t.cleanup()
+	}
+})

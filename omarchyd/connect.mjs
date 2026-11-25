@@ -144,7 +144,7 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 		accounts,
 		now,
 		log,
-		probeLocal: (hostname) => localBoundaryHolds(hostname),
+		probeLocal: (hostname, protection) => localBoundaryHolds(hostname, protection),
 		...ssoOptions,
 	})
 	// Remote access on: report readiness (when the self-test passes). Off or changed: SSO sessions end.
@@ -513,19 +513,30 @@ export function createConnect({dataDir, apiBase = CONNECT_API, fetchImpl = fetch
 // refused on the remote listener (7781) and, as a Cloudflare-forwarded request, on the main one (7780).
 const WEB_PORT = Number(process.env.OMARCHY_SERVER_PORT || 7780)
 const REMOTE_PORT = Number(process.env.OMARCHY_REMOTE_PORT || 7781)
-function localGet(port, headers) {
+function localReq(port, {method = 'GET', path = '/api/health', headers}) {
 	return new Promise((resolve) => {
-		const req = http.get({host: '127.0.0.1', port, path: '/api/health', headers, timeout: 5000}, (res) => {
+		const req = http.request({host: '127.0.0.1', port, method, path, headers, timeout: 5000}, (res) => {
 			res.resume()
-			resolve(res.statusCode)
+			resolve({status: res.statusCode, gate: res.headers['x-modc-gate'] ?? null})
 		})
 		req.on('timeout', () => req.destroy())
-		req.on('error', () => resolve(0))
+		req.on('error', () => resolve({status: 0, gate: null}))
+		req.end(method === 'POST' ? '{}' : undefined)
 	})
 }
-export async function localBoundaryHolds(hostname) {
-	const refused = (code) => code === 403 || code === 503
-	const remote = await localGet(REMOTE_PORT, {host: hostname})
-	const legacy = await localGet(WEB_PORT, {host: hostname, 'cf-connecting-ip': '192.0.2.1', 'x-forwarded-proto': 'https'})
-	return refused(remote) && refused(legacy)
+// The self-test behind readiness. Without any credential:
+//   legacy_origin_isolated: a Cloudflare-forwarded request to 7780 is refused;
+//   sso_only_gate: on 7781 a protected page, an API call and a password sign-in are all refused (in
+//   SSO-only mode by this server's own gate, marked x-modc-gate: sso_only).
+export async function localBoundaryHolds(hostname, protection = 'cloudflare_access') {
+	const ssoOnly = protection === 'modc_sso'
+	const refused = (r) => (ssoOnly ? (r.status === 401 || r.status === 403) && r.gate === 'sso_only' : r.status === 403 || r.status === 503)
+	const legacy = await localReq(WEB_PORT, {headers: {host: hostname, 'cf-connecting-ip': '192.0.2.1', 'x-forwarded-proto': 'https'}})
+	const isolated = [403, 421, 503].includes(legacy.status)
+	const checks = await Promise.all([
+		localReq(REMOTE_PORT, {path: '/api/prefs', headers: {host: hostname}}),
+		localReq(REMOTE_PORT, {path: '/api/rpc/files.list', headers: {host: hostname}}),
+		localReq(REMOTE_PORT, {method: 'POST', path: '/api/auth/login', headers: {host: hostname, 'content-type': 'application/json', 'x-omarchy-server': '1'}}),
+	])
+	return {isolated, ssoOnlyGate: checks.every(refused)}
 }

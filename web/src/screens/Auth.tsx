@@ -127,6 +127,15 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 		<main className="auth center screen">
 			<Logo />
 			<h1>Sign in</h1>
+			{boot.ssoOnly ? (
+				<>
+					<p className="lead">Use your myowndatacenter.com account.</p>
+					<a className="btn primary block" href="/modc/auth/start">
+						Continue with myowndatacenter.com
+					</a>
+				</>
+			) : (
+			<>
 			<p className="lead">Use your username and password.</p>
 			<form onSubmit={submit}>
 				{error && <ErrorBox message={error} k={tries} />}
@@ -184,6 +193,8 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 					</a>
 				)}
 			</form>
+			</>
+			)}
 			<div className="glass device-card" style={{marginTop: 28, marginBottom: 0}}>
 				<span className="dot live" />
 				<div style={{flex: 1, minWidth: 0}}>

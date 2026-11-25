@@ -38,6 +38,7 @@ export const REMOTE_ACCESS_FIELDS = {
 	rotationRequired: 'credentials.rotation_required',
 	contractVersion: 'security.contract_version',
 	protectionMode: 'security.protection_mode',
+	origin: 'origin',
 	sso: 'sso',
 }
 
@@ -63,6 +64,7 @@ export function parseRemoteAccess(body, fields = REMOTE_ACCESS_FIELDS) {
 		rotationRequired: get('rotationRequired'),
 		contractVersion: get('contractVersion'),
 		protectionMode: get('protectionMode'),
+		origin: get('origin'),
 		sso: plainObject(get('sso')) ? get('sso') : null,
 	}
 	if (typeof out.state !== 'string' || out.state.length > 40) return null
@@ -240,9 +242,14 @@ export function createRemoteAccess({
 		const s = state.settings
 		// On: enabled, for this device as the selected connector, no rotation pending. Verified: Cloudflare
 		// Access (RS256, the standard header) is the declared protection, contract v1.
+		// Contract v2, SSO only: every part has to say so, and the origin has to be the 7781 listener.
+		const ssoOnly = s?.contractVersion === 2 && s?.protectionMode === 'modc_sso' && s?.sso?.stage === 'sso_only' && s?.sso?.enabled === true && s?.origin === 'http://127.0.0.1:7781'
+		const accessMode = s?.protectionMode === 'cloudflare_access' && s?.contractVersion === 1 && Array.isArray(s?.algorithms) && s.algorithms.includes('RS256') && String(s?.jwtHeader ?? '').toLowerCase() === 'cf-access-jwt-assertion'
 		return {
 			enabled: s?.state === 'enabled' && s?.enabled === true && s?.selectedConnector === true && s?.rotationRequired !== true,
-			verified: s?.protectionMode === 'cloudflare_access' && s?.contractVersion === 1 && Array.isArray(s?.algorithms) && s.algorithms.includes('RS256') && String(s?.jwtHeader ?? '').toLowerCase() === 'cf-access-jwt-assertion',
+			verified: ssoOnly || accessMode,
+			mode: ssoOnly ? 'modc_sso' : accessMode ? 'cloudflare_access' : null,
+			configVersion: s?.configVersion ?? null,
 			blocked: !!state.blocked,
 			syncedAt: state.syncedAt,
 			hostname: s?.hostname ?? null,

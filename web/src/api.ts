@@ -201,6 +201,8 @@ export type Bootstrap = {
 	configured: boolean
 	// Reached through MODC Connect: the website sign-in is offered.
 	sso?: boolean
+	// Remote, SSO only: no password form.
+	ssoOnly?: boolean
 	server: null | {
 		url: string
 		host: string

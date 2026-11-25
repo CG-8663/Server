@@ -439,13 +439,28 @@ export function createTunnel({
 		}
 		return {ok: true}
 	}
+	// SSO only: no Access in front, so this server's own gateway must answer, refusing an unsigned request.
+	async function probeSsoGate(hostname) {
+		for (const path of ['/api/prefs', '/api/rpc/user.get']) {
+			let res
+			try {
+				res = await fetchImpl(`https://${hostname}${path}`, {method: 'GET', redirect: 'manual', headers: {accept: 'application/json'}, signal: AbortSignal.timeout(15_000)})
+			} catch {
+				return {ok: false, code: 'unverified', detail: `couldn’t reach https://${hostname}${path}`}
+			}
+			res.body?.cancel?.().catch?.(() => {})
+			if (!(res.status === 401 && res.headers?.get?.('x-modc-gate') === 'sso_only')) return {ok: false, code: 'unprotected', detail: `${path} answered HTTP ${res.status} without this server’s sign-in gate`}
+		}
+		return {ok: true}
+	}
 	// Is what the website set up for this tunnel acceptable to run? Checked on every status read.
 	async function ingressPolicy(snap) {
 		if (snap.ingress === 'deny_all' && snap.remoteAccess !== true) return {ok: true, mode: 'deny_all'}
 		// The security contract, when present, must name Cloudflare Access (v1); then this server checks it.
-		const contractOk = snap.protectionMode == null || (snap.protectionMode === 'cloudflare_access' && snap.contractVersion === 1)
+		const ssoOnly = snap.protectionMode === 'modc_sso' && snap.contractVersion === 2
+		const contractOk = snap.protectionMode == null || (snap.protectionMode === 'cloudflare_access' && snap.contractVersion === 1) || ssoOnly
 		if (snap.ingress === 'protected_route' && snap.remoteAccess === true && snap.remoteState === 'enabled' && snap.hostname && contractOk) {
-			const p = await probeAccess(snap.hostname)
+			const p = ssoOnly ? await probeSsoGate(snap.hostname) : await probeAccess(snap.hostname)
 			return p.ok ? {ok: true, mode: 'protected_route', hostname: snap.hostname, at: now()} : p
 		}
 		return {ok: false, code: 'unsafe', detail: `ingress “${snap.ingress ?? 'none'}”, remote access ${snap.remoteAccess === true ? 'on' : 'off'}`}

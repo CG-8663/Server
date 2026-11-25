@@ -20,6 +20,7 @@ export const GATE_MESSAGES = {
 	REMOTE_STALE: 'This server couldn’t confirm its remote-access settings with myowndatacenter.com recently, so remote access is paused.',
 	REMOTE_BLOCKED: 'Remote access was switched off on this server.',
 	WRONG_HOST: 'This address isn’t this server’s.',
+	LEGACY_ORIGIN: 'Remote access uses this server’s remote listener only.',
 	ACCESS_DENIED: 'Sign in through myowndatacenter.com first.',
 }
 
@@ -29,7 +30,10 @@ export function createRemoteGate({fetchConfig, verifier = createAccessVerifier()
 	let timer = null
 	const closers = new Set()
 
-	const open = (c = config) => !!c && c.enabled === true && c.verified === true && c.blocked !== true && Number.isFinite(c.syncedAt) && now() - c.syncedAt <= STALE_MS && validAccessConfig(c)
+	// SSO only (contract v2): no Access token; the MODC session is the only way in (app.mjs).
+	const ssoOnly = (c = config) => c?.mode === 'modc_sso'
+	const modeOk = (c) => (ssoOnly(c) ? !!c.hostname : c?.mode !== 'modc_sso' && validAccessConfig(c))
+	const open = (c = config) => !!c && c.enabled === true && c.verified === true && c.blocked !== true && Number.isFinite(c.syncedAt) && now() - c.syncedAt <= STALE_MS && modeOk(c)
 
 	async function refresh() {
 		const was = open()
@@ -51,7 +55,7 @@ export function createRemoteGate({fetchConfig, verifier = createAccessVerifier()
 	}
 
 	function state() {
-		if (!config || config.enabled !== true || config.verified !== true || !validAccessConfig(config)) return 'REMOTE_OFF'
+		if (!config || config.enabled !== true || config.verified !== true || !modeOk(config)) return 'REMOTE_OFF'
 		if (config.blocked === true) return 'REMOTE_BLOCKED'
 		if (!Number.isFinite(config.syncedAt) || now() - config.syncedAt > STALE_MS) return 'REMOTE_STALE'
 		return 'OPEN'
@@ -67,9 +71,14 @@ export function createRemoteGate({fetchConfig, verifier = createAccessVerifier()
 			.toLowerCase()
 			.replace(/:\d+$/, '')
 		if (!config.hostname || host !== String(config.hostname).toLowerCase()) return {ok: false, status: 421, code: 'WRONG_HOST', message: GATE_MESSAGES.WRONG_HOST}
+		if (ssoOnly()) {
+			// Only the dedicated listener: the legacy origin (7780) carries nothing remote in this mode.
+			if (req.socket?.__modcRemote !== true) return {ok: false, status: 421, code: 'LEGACY_ORIGIN', message: GATE_MESSAGES.LEGACY_ORIGIN}
+			return {ok: true, mode: 'modc_sso', claims: null}
+		}
 		const r = await verifier.verify(req.headers['cf-access-jwt-assertion'], config)
 		if (!r.ok) return {ok: false, status: 403, code: 'ACCESS_DENIED', reason: r.reason, message: GATE_MESSAGES.ACCESS_DENIED}
-		return {ok: true, claims: r.claims}
+		return {ok: true, mode: 'cloudflare_access', claims: r.claims}
 	}
 
 	return {

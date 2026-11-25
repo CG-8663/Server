@@ -301,6 +301,18 @@ export async function startFakeserverd({
 				return issueAccess(rec.sessionId, rec.userId)
 			},
 		},
+		// Like omarchyd: a browser-style session for an already signed-in (native) caller.
+		'user.browserSession': {
+			kind: 'mutation',
+			run: (_input, auth, res) => {
+				const {accessToken} = issueAccess(newToken(), auth.userId)
+				tokens.get(accessToken).expiresAt = Infinity
+				const cookie = newToken()
+				browser.set(accessToken, cookie)
+				res.setHeader('set-cookie', [`OMARCHY_BROWSER_SESSION=${cookie}; Path=/; HttpOnly; SameSite=Lax`])
+				return accessToken
+			},
+		},
 		'user.login': {
 			kind: 'mutation',
 			public: true,

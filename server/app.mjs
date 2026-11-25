@@ -493,7 +493,7 @@ export function normalizeAppHosts(input) {
 	return p
 }
 
-export function createApp({store, staticDir, connectorDir = staticDir ? join(staticDir, '..', 'connector') : '', fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0', remoteGate = null}) {
+export function createApp({store, staticDir, connectorDir = staticDir ? join(staticDir, '..', 'connector') : '', fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0', remoteGate = null, ssoCheckMs = 15_000}) {
 	const app = express()
 	app.disable('x-powered-by')
 	app.set('trust proxy', 'loopback')
@@ -542,9 +542,13 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const g = await gate.check(req)
 		if (!g.ok) return g
 		req.remote = g.claims
+		req.remoteMode = g.mode
 		const sid = parseCookies(req.headers.cookie)[COOKIE]
 		const session = sid ? store.getSession(sid) : null
-		if (sid && !(session?.remote && session.remoteSub && session.remoteSub === g.claims.sub)) req.headers.cookie = withoutSessionCookie(req.headers.cookie)
+		// SSO only: nothing but a website (SSO) session made remotely counts. Access mode: a remote session
+		// made by the same Access identity.
+		const bound = g.mode === 'modc_sso' ? !!(session?.remote && session.sso?.ref) : !!(session?.remote && session.remoteSub && session.remoteSub === g.claims?.sub)
+		if (sid && !bound) req.headers.cookie = withoutSessionCookie(req.headers.cookie)
 		else if (sid && session?.sso?.ref) {
 			// A website (SSO) session: checked with myowndatacenter.com (cached at most 30 s; 10 s before
 			// changes and live connections). Not active, or can't tell: not signed in.
@@ -553,11 +557,17 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			if (!v.active) {
 				req.headers.cookie = withoutSessionCookie(req.headers.cookie)
 				if (!v.transient) endSsoSession(sid, session)
-			} else if (live) ssoLive.set(req.socket, {sid, ref: session.sso.ref})
+			} else {
+				if (live) ssoLive.set(req.socket, {sid, ref: session.sso.ref})
+				req.ssoSession = true
+			}
 		}
 		return g
 	}
 	app.passGate = passGate
+	// SSO only, signed out: what the sign-in page itself needs, and nothing else.
+	const SSO_PUBLIC = new Set(['/', '/index.html', '/modc/auth/start', '/modc/auth/callback', '/api/bootstrap', '/manifest.webmanifest', '/sw.js', '/favicon.ico', '/favicon-32.png', '/favicon-64.png', '/icon-180.png', '/icon-192.png', '/icon-512.png', '/icon-512-maskable.png', '/modc-logo.png'])
+	const ssoPublic = (req) => (req.method === 'GET' || req.method === 'HEAD') && (SSO_PUBLIC.has(req.path) || /^\/assets\/[\w.-]+$/.test(req.path))
 
 	// ---- MODC Connect single sign-on (omarchyd/connect-sso.mjs does the website side) ---------------
 	const ssoCall = async (step, body) => {
@@ -589,7 +599,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				if (!v.transient) endSsoSession(sid, store.getSession(sid))
 			}
 		}
-	}, 15_000)
+	}, ssoCheckMs)
 	ssoTimer.unref?.()
 	const host = (req) =>
 		String(req.headers.host ?? '')
@@ -636,8 +646,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			client: 'modc-sso',
 			console: await openConsoleSession(backend, null, userAgent, r.native.accessToken).catch(() => null),
 			remote: true,
-			remoteSub: req.remote.sub,
-			remoteEmail: req.remote.email,
+			remoteSub: req.remote?.sub ?? null,
+			remoteEmail: req.remote?.email ?? null,
 			sso: {ref: r.ref, expiresAt: r.expiresAt},
 		}
 		const sid = newSessionId()
@@ -651,6 +661,13 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	app.use(async (req, res, next) => {
 		if (!viaTunnel(req)) return next()
 		const g = await passGate(req).catch(() => ({ok: false, status: 503, code: 'REMOTE_OFF', message: 'Remote access isn’t available right now.'}))
+		if (g.ok && g.mode === 'modc_sso' && !req.ssoSession && !ssoPublic(req)) {
+			// SSO only: without a valid website session, only the sign-in entry points and the sign-in
+			// page's own files. Everything else, and remote password sign-in, is refused.
+			res.set('Cache-Control', 'no-store').set('x-modc-gate', 'sso_only')
+			return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Sign in with myowndatacenter.com'}})
+		}
+		if (g.ok && g.mode === 'modc_sso' && req.path === '/api/auth/login') return res.status(403).set('x-modc-gate', 'sso_only').json({error: {code: 'FORBIDDEN', message: 'Remote sign-in uses myowndatacenter.com'}})
 		if (g.ok) return next()
 		res.set('Cache-Control', 'no-store')
 		if (req.path.startsWith('/api/')) return res.status(g.status).json({error: {code: g.code, message: g.message}})
@@ -997,10 +1014,13 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			server: null,
 			accounts: [],
 			session: session ? {accountId: session.accountId, mode: session.mode, console: !!session.console} : null,
-			// Through the tunnel: offer "Continue with myowndatacenter.com".
-			sso: viaTunnel(req) && !!req.remote,
+			// Through the tunnel: offer "Continue with myowndatacenter.com" (the only way, in SSO-only mode).
+			sso: viaTunnel(req) && (!!req.remote || req.remoteMode === 'modc_sso'),
+			ssoOnly: req.remoteMode === 'modc_sso',
 		}
 		if (!backend) return res.json(out)
+		// SSO only and signed out: no accounts, version or server details, just the way in.
+		if (req.remoteMode === 'modc_sso' && !session) return res.json({...out, server: {url: `https://${req.hostname}`, host: req.hostname, reachable: true}})
 		// When Touch runs on the server itself it talks to 127.0.0.1; the phone must
 		// use the address it reached us on instead.
 		const upstream = new URL(backend.baseUrl)
@@ -2417,6 +2437,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			if (viaTunnel(req)) {
 				const g = await passGate(req).catch(() => ({ok: false, status: 503}))
 				if (!g.ok) return refuse(g.status === 421 ? '421 Misdirected Request' : g.status === 403 ? '403 Forbidden' : '503 Service Unavailable')
+				if (g.mode === 'modc_sso' && !req.ssoSession) return refuse('401 Unauthorized')
 			}
 			if (app.relayUpgrade(req, socket, head)) return
 			// Until the upgrade completes nothing else watches the browser's socket: if the tab goes away

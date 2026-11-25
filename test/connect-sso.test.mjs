@@ -25,6 +25,8 @@ const SETTINGS = (over = {}) => ({
 	enabled: true,
 	selectedConnector: true,
 	configVersion: 3,
+	contractVersion: 1,
+	protectionMode: 'cloudflare_access',
 	hostname: HOST,
 	deviceId: DEVICE,
 	dataCenterId: CENTER,
@@ -207,7 +209,7 @@ test('sign-out revokes on the website; switching remote access off revokes every
 		const rep = await x.s.report(true)
 		assert.equal(rep.accepted, true)
 		const body = x.w.calls.find((c) => c.path === '/sso/readiness').body
-		assert.deepEqual(body, {contract_version: 1, config_version: 3, origin: 'http://127.0.0.1:7781', app_version: 'remote-v1', checks: {pkce: true, state: true, session_validation: true, fail_closed: true, host_only_cookie: true, legacy_origin_isolated: true}})
+		assert.deepEqual(body, {contract_version: 1, config_version: 3, origin: 'http://127.0.0.1:7781', app_version: 'remote-v1', checks: {pkce: true, state: true, session_validation: true, fail_closed: true, host_only_cookie: true, legacy_origin_isolated: true, sso_only_gate: true}})
 	} finally {
 		await x.cleanup()
 	}

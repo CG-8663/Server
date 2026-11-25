@@ -80,10 +80,12 @@ export function createSso({dir, apiBase, credential, device, remote, accounts, p
 		if (!s || !d || !credential()) return null
 		const sso = s.sso
 		if (!(s.state === 'enabled' && s.enabled === true && s.selectedConnector === true)) return null
-		if (!plainObject(sso) || sso.available !== true || sso.contract_version !== 1 || sso.callback_path !== '/modc/auth/callback') return null
+		if (!plainObject(sso) || sso.available !== true || ![1, 2].includes(sso.contract_version) || sso.callback_path !== '/modc/auth/callback') return null
 		if (sso.authorization_endpoint !== `${SSO_SITE}/connect/authorize`) return null
 		if (s.deviceId !== d.deviceId || s.dataCenterId !== d.dataCenterId || !s.hostname) return null
-		return {hostname: s.hostname.toLowerCase(), configVersion: s.configVersion, deviceId: d.deviceId, dataCenterId: d.dataCenterId, authorize: sso.authorization_endpoint}
+		// Which stage the exchange must report: SSO only (contract v2) or behind Access (v1).
+		const ssoOnly = s.contractVersion === 2 && s.protectionMode === 'modc_sso' && sso.stage === 'sso_only' && sso.enabled === true
+		return {hostname: s.hostname.toLowerCase(), configVersion: s.configVersion, contractVersion: s.contractVersion, deviceId: d.deviceId, dataCenterId: d.dataCenterId, authorize: sso.authorization_endpoint, protection: ssoOnly ? 'modc_sso' : 'cloudflare_access', stage: ssoOnly ? 'sso_only' : 'behind_access'}
 	}
 
 	// Step 1: a new browser transaction. Returns the website address and the transaction ID for the
@@ -140,8 +142,8 @@ export function createSso({dir, apiBase, credential, device, remote, accounts, p
 			b.data_center_id === c.dataCenterId &&
 			String(b.hostname).toLowerCase() === t.hostname &&
 			b.config_version === c.configVersion &&
-			b.protection_mode === 'cloudflare_access' &&
-			b.sso_stage === 'behind_access' &&
+			b.protection_mode === c.protection &&
+			b.sso_stage === c.stage &&
 			Number.isFinite(expiresAt) &&
 			expiresAt > now()
 		if (!ok) {
@@ -220,17 +222,19 @@ export function createSso({dir, apiBase, credential, device, remote, accounts, p
 		if (reporting) return reporting
 		reporting = (async () => {
 			try {
-				const isolated = await probeLocal(c.hostname)
-				if (!isolated) {
+				const probe = await probeLocal(c.hostname, c.protection)
+				const isolated = probe === true || probe?.isolated === true
+				const ssoOnlyGate = probe === true || probe?.ssoOnlyGate === true
+				if (!isolated || !ssoOnlyGate) {
 					readiness = {...readiness, accepted: false, error: 'local_checks_failed', at: now()}
 					return readiness
 				}
 				const r = await call('/sso/readiness', {
-					contract_version: 1,
+					contract_version: c.contractVersion,
 					config_version: c.configVersion,
 					origin: 'http://127.0.0.1:7781',
 					app_version: appVersion,
-					checks: {pkce: true, state: true, session_validation: true, fail_closed: true, host_only_cookie: true, legacy_origin_isolated: true},
+					checks: {pkce: true, state: true, session_validation: true, fail_closed: true, host_only_cookie: true, legacy_origin_isolated: true, sso_only_gate: true},
 				})
 				const ok = r.status === 200 && r.body?.accepted === true
 				readiness = {at: now(), accepted: ok, expiresAt: ok ? Date.parse(r.body.expires_at) || null : null, error: ok ? null : r.body?.error || `http_${r.status}`, configVersion: c.configVersion}
