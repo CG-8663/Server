@@ -4,6 +4,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query} from '../api'
 import {Icon} from '../icons'
 import {Field, Row, Segmented, Sheet, SheetHeader, useConfirm, useToast} from '../ui'
+import {hostnameAddress} from './hostnameHint'
 import {TailscaleSheet} from './Tailscale'
 
 function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false} = {}) {
@@ -79,7 +80,7 @@ function HostnameSheet({open, current, onClose}: {open: boolean; current: string
 				spellCheck={false}
 				value={name}
 				onChange={(e) => setName(e.target.value)}
-				hint={valid ? `Reachable at http://${name.trim().toLowerCase()}.local` : undefined}
+				hint={valid ? `Reachable at ${hostnameAddress(name.trim().toLowerCase())}` : undefined}
 				error={!valid ? 'Letters, numbers and dashes only.' : undefined}
 				autoFocus
 			/>
