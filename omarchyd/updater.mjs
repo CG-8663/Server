@@ -249,6 +249,10 @@ export function createUpdater({
 	async function check({force = false} = {}) {
 		await ready
 		if (!force && cache && Date.now() - cache.at < 10_000) return cache.value
+		// A remote without a raw URL is read from a fetched copy. Fetch it again for each check,
+		// or a version published after the first check is never seen.
+		originTree = null
+		originFetch = null
 		let pkg
 		try {
 			pkg = JSON.parse(await get('package.json'))
