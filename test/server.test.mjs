@@ -1044,4 +1044,13 @@ describe('normalizeBackendUrl (#655)', () => {
 		assert.equal(normalizeBackendUrl('nas.local'), 'http://nas.local')
 		assert.equal(normalizeBackendUrl('HTTPS://nas.local'), 'https://nas.local')
 	})
+	test('a mistyped address gets a sentence, not Node’s "Invalid URL" (#446)', () => {
+		for (const input of ['my server', 'http://', '[::1', '@', 'http://a b']) {
+			assert.throws(() => normalizeBackendUrl(input), /That doesn’t look like an address\. Try something like 192\.168\.1\.50 or omarchy\.local/, input)
+		}
+		for (const input of ['192.168.1.5:abc', '192.168.1.5:99999', 'http://nas.local:abc/', '[fe80::1]:70000']) {
+			assert.throws(() => normalizeBackendUrl(input), /The port in that address isn’t right/, input)
+		}
+		assert.equal(normalizeBackendUrl('192.168.1.5:7780'), 'http://192.168.1.5:7780')
+	})
 })

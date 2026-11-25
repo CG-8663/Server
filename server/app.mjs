@@ -435,7 +435,17 @@ export function normalizeBackendUrl(input) {
 	// A bare IPv6 address (more than one colon, no brackets) needs brackets to be a URL host.
 	if (!scheme && !value.startsWith('[') && !value.includes('/') && (value.match(/:/g) ?? []).length > 1) value = `[${value}]`
 	if (!scheme) value = `http://${value}`
-	const url = new URL(value)
+	let url
+	try {
+		url = new URL(value)
+	} catch {
+		// Node's own text is just "Invalid URL": say what is wrong and what to type instead.
+		const port = /^https?:\/\/[^/?#\s]*?(?:\]|[^:\]]):([^:/?#\]]*)(?:[/?#]|$)/i.exec(value)?.[1]
+		if (port !== undefined && !(/^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535)) {
+			throw new Error('The port in that address isn’t right. Use a number from 1 to 65535, like 192.168.1.50:7780')
+		}
+		throw new Error('That doesn’t look like an address. Try something like 192.168.1.50 or omarchy.local')
+	}
 	if (url.username || url.password) throw new Error('The address must not contain a username or password')
 	return `${url.protocol}//${url.host}`
 }
