@@ -77,7 +77,11 @@ test('connectorKind matches Linux systemd guests', () => {
 	assert.equal(connectorKind('debian-13-desktop-amd64'), 'linux')
 	assert.equal(connectorKind('fedora-44-server-amd64'), 'linux')
 	assert.equal(connectorKind('arch-server-amd64'), 'linux')
-	assert.equal(connectorKind('omarchy-4.0.4-amd64'), 'linux')
+	assert.equal(connectorKind('omarchy-4.5.0-amd64'), 'linux')
+	assert.equal(connectorKind('cachyos-desktop-amd64'), 'linux')
+	assert.equal(connectorKind('linuxmint-22.3-cinnamon-amd64'), 'linux')
+	assert.equal(connectorKind('opensuse-leap-16.1-amd64'), 'linux')
+	assert.equal(connectorKind('rocky-10-server-amd64'), 'linux')
 	assert.equal(connectorKind(''), 'linux')
 	assert.equal(connectorKind('windows-11'), 'unsupported')
 	assert.equal(connectorKind('windows-server'), 'unsupported')
@@ -102,6 +106,12 @@ test('connectorCloudInit adds qemu-guest-agent and python without dropping catal
 	assert.equal(debian.adminGroup, 'sudo')
 	const arch = connectorCloudInit({familyId: 'arch'})
 	assert.deepEqual(arch.packages, ['qemu-guest-agent', 'python'])
+	for (const familyId of ['opensuse', 'rocky', 'ubuntu', 'debian']) {
+		const seed = connectorCloudInit({familyId, username: 'chris', cloudInit: {adminGroup: familyId === 'ubuntu' || familyId === 'debian' ? 'sudo' : 'wheel'}})
+		assert.ok(seed.packages.includes('qemu-guest-agent'), familyId)
+		assert.ok(seed.packages.includes('python3'), familyId)
+		assert.deepEqual(seed.commands[0], ['systemctl', 'enable', '--now', 'qemu-guest-agent'])
+	}
 	assert.deepEqual(arch.commands, [['systemctl', 'enable', '--now', 'qemu-guest-agent']])
 	const withUser = connectorCloudInit({
 		familyId: 'debian',
@@ -131,6 +141,16 @@ test('Fedora cloud-init lets qemu-ga guest-exec open TCP before enroll', () => {
 	assert.match(sebool.join(' '), /qemu-guest-agent/)
 	const debian = connectorCloudInit({familyId: 'debian', username: 'chris'})
 	assert.equal(debian.commands.some((c) => c.join(' ').includes('setsebool')), false)
+})
+
+test('catalog package names are quoted, and a shell character is left out', () => {
+	const ok = connectorCloudInit({familyId: 'debian', cloudInit: {packages: ['task-gnome-desktop']}})
+	const cmd = ok.commands.find((c) => c.join(' ').includes('task-gnome-desktop'))
+	assert.ok(cmd)
+	assert.match(cmd.join(' '), /apt-get install -y -- 'task-gnome-desktop'/)
+	const bad = connectorCloudInit({familyId: 'debian', cloudInit: {packages: ['ok;curl evil']}})
+	assert.equal(bad.commands.some((c) => c.join(' ').includes('curl') || c.join(' ').includes(';')), false)
+	assert.deepEqual(bad.packages, ['qemu-guest-agent', 'python3'])
 })
 
 test('guestConnectorReadyCommand waits until the account exists and the live ISO is gone', () => {

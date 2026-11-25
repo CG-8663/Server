@@ -47,6 +47,7 @@ export function useServerGaugeMetrics(): {metrics: SwarmMetrics; temp: number | 
 			cpu: cpu.data ? cpu.data.totalUsed : null,
 			cores: cpu.data?.threads,
 			mem: mem.data ? {total: mem.data.size, used: mem.data.totalUsed} : null,
+			swap: mem.data?.swap && mem.data.swap.total > 0 ? mem.data.swap : null,
 			disks: disk.data ? [{mount: '/', total: disk.data.totalUsed + disk.data.available, used: disk.data.totalUsed}] : [],
 			gpus: (gpus.data?.gpus ?? []).map((g) => ({id: g.id, index: g.index, name: g.name, used: g.used})),
 			batteries: battery.data?.batteries ?? [],

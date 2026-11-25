@@ -53,3 +53,45 @@ test('a storage gauge already covers the disk, so the size-only reading is not a
 	assert.equal(readingFace(readings[0]), 'arc')
 	assert.equal(gaugeCaption(readings[0]), '1 GB of 2 GB')
 })
+
+test('host posture values appear as readings on the computer gauges only when present', () => {
+	const healthy = statReadings({
+		gauges: [{k: 'CPU', icon: 'cpu', p: 10, ready: true, sub: '10%'}],
+		temp: null,
+		diskSizeGb: null,
+		posture: {rebootRequired: false, securityUpdates: 0, failedUnits: 0, listeningPorts: []},
+	})
+	assert.deepEqual(
+		healthy.map((r) => r.id),
+		['CPU'],
+	)
+
+	const warned = statReadings({
+		gauges: [{k: 'CPU', icon: 'cpu', p: 10, ready: true, sub: '10%'}],
+		temp: null,
+		diskSizeGb: null,
+		posture: {
+			rebootRequired: true,
+			rebootReason: 'Kernel updated',
+			securityUpdates: 3,
+			failedUnits: 1,
+			listeningPorts: [
+				{port: 22, proto: 'tcp', addr: '0.0.0.0'},
+				{port: 80, proto: 'tcp', addr: '0.0.0.0'},
+			],
+		},
+	})
+	assert.deepEqual(
+		warned.map((r) => r.id),
+		['CPU', 'reboot', 'security', 'failed', 'ports'],
+	)
+	assert.deepEqual(
+		warned.slice(1).map((r) => ({id: r.id, text: r.text, face: readingFace(r), color: r.color})),
+		[
+			{id: 'reboot', text: 'Needed', face: 'value', color: 'var(--yellow)'},
+			{id: 'security', text: '3', face: 'value', color: 'var(--yellow)'},
+			{id: 'failed', text: '1', face: 'value', color: 'var(--red)'},
+			{id: 'ports', text: '2', face: 'value', color: undefined},
+		],
+	)
+})

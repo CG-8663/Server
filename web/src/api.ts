@@ -277,7 +277,7 @@ export type UserApp = {
 
 export type UsageItem = {id: string; used: number; name?: string}
 export type CpuUsage = {threads: number; totalUsed: number; system: number; apps: UsageItem[]; machines: UsageItem[]}
-export type MemoryUsage = {size: number; totalUsed: number; system: number; apps: UsageItem[]; machines: UsageItem[]}
+export type MemoryUsage = {size: number; totalUsed: number; system: number; apps: UsageItem[]; machines: UsageItem[]; swap?: {total: number; used: number}}
 export type DiskUsage = {
 	size: number
 	totalUsed: number

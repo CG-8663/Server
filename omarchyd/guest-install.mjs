@@ -67,14 +67,18 @@ function isFedora(osId = '', familyId = '') {
 	return /fedora|rhel|centos|rocky|alma/.test(`${osId} ${familyId}`.toLowerCase())
 }
 
+const PACKAGE_NAME = /^[A-Za-z0-9][A-Za-z0-9+._:-]{0,127}$/
+
 function extraPackageCommand(names) {
-	const list = names.map((n) => String(n)).join(' ')
+	const list = names.map((n) => String(n))
+	if (!list.length || list.some((n) => !PACKAGE_NAME.test(n))) return null
+	const quoted = list.map((n) => `'${n}'`).join(' ')
 	return ['bash', '-lc', [
-		`if command -v apt-get >/dev/null 2>&1; then apt-get install -y ${list}`,
-		`elif command -v dnf >/dev/null 2>&1; then dnf install -y ${list}`,
-		`elif command -v pacman >/dev/null 2>&1; then pacman -S --needed --noconfirm ${list}`,
-		`elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive install ${list}`,
-		`elif command -v apk >/dev/null 2>&1; then apk add --no-cache ${list}`,
+		`if command -v apt-get >/dev/null 2>&1; then apt-get install -y -- ${quoted}`,
+		`elif command -v dnf >/dev/null 2>&1; then dnf install -y -- ${quoted}`,
+		`elif command -v pacman >/dev/null 2>&1; then pacman -S --needed --noconfirm -- ${quoted}`,
+		`elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive install -- ${quoted}`,
+		`elif command -v apk >/dev/null 2>&1; then apk add --no-cache -- ${quoted}`,
 		'else exit 1; fi',
 	].join('; ')]
 }
@@ -115,7 +119,10 @@ export function connectorCloudInit(img = {}) {
 	if (fedora) {
 		commands.push(['bash', '-lc', 'if command -v setsebool >/dev/null 2>&1; then setsebool -P virt_qemu_ga_run_unconfined 1; systemctl restart qemu-guest-agent; fi'])
 	}
-	if (!alpine && extra.length) commands.push(extraPackageCommand(extra))
+	if (!alpine && extra.length) {
+		const extraCmd = extraPackageCommand(extra)
+		if (extraCmd) commands.push(extraCmd)
+	}
 	commands.push(...(Array.isArray(given.commands) ? given.commands : []))
 	return {...given, packages, commands}
 }

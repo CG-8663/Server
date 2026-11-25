@@ -332,7 +332,7 @@ function ComputerRow({
 	const confirm = useConfirm()
 	const act = useSwarmAction()
 	const metrics = agent.metrics
-	const readings = statReadings({gauges: swarmGaugeItems(metrics), temp: metrics?.temp ?? null, diskSizeGb: null})
+	const readings = statReadings({gauges: swarmGaugeItems(metrics), temp: metrics?.temp ?? null, diskSizeGb: null, posture: agent.info?.posture})
 	const seen = seenFact(agent.online, metrics?.uptime, agent.lastSeen, Date.now())
 	const powers = managerPower({kind: 'computer', online: agent.online, manage: agentMay(agent, 'manage')})
 	const run = (id: ManagerPower) => {

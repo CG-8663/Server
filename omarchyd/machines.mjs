@@ -97,9 +97,16 @@ function validCatalog(data) {
 			/^https:\/\//.test(i.url) &&
 			((/^https:\/\//.test(i.checksums?.url ?? '') && ['sha256', 'sha512'].includes(i.checksums?.algorithm)) || /^[0-9a-f]{64}$/i.test(i.sha256 ?? '')) &&
 			['amd64', 'arm64'].includes(i.arch) &&
-			(i.kind === 'cloud' || (i.kind === 'iso' && i.install === 'omarchy')),
+			(i.kind === 'cloud' || (i.kind === 'iso' && (i.install === 'omarchy' || i.install === 'manual'))),
 	)
 	return ok.length ? ok : null
+}
+
+// Omarchy ISOs install from their own cidata files. Any other catalog ISO boots its installer.
+function catalogInstallKind(img) {
+	if (img?.kind === 'windows') return 'windows'
+	if (img?.kind === 'iso') return img.install === 'omarchy' ? 'omarchy' : 'manual'
+	return 'cloud'
 }
 
 export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000, connectorAgentWaitMs = 60 * 60 * 1000, isOwner = () => true}) {
@@ -210,8 +217,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				sizeMb: Number(img.sizeMb) || 0,
 				arch: img.arch,
 				platform: 'linux',
-				requiresCredentials: true,
+				requiresCredentials: img.install !== 'manual',
 				...(img.install === 'omarchy' ? {manualSetup: false} : {}),
+				...(img.install === 'manual' ? {manualSetup: true} : {}),
 				state,
 				...(dl ? {downloadProgress: dl.progress} : {}),
 			})
@@ -780,7 +788,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const hostArch = status.arch === 'arm64' ? 'arm64' : 'amd64'
 			const img = (await images()).find((i) => i.id === osId)
 			if (!img || img.arch !== hostArch) throw new RpcError('BAD_REQUEST', `That operating system isn’t available on ${hostName}`)
-			const kind = img.kind === 'iso' ? 'omarchy' : img.kind === 'windows' ? 'windows' : 'cloud'
+			const kind = catalogInstallKind(img)
 			if (kind === 'windows' && hostArch !== 'amd64') throw new RpcError('PRECONDITION_FAILED', `Installing Windows from its ISO needs an x86-64 computer`)
 			const name = String(input.name ?? '').trim()
 			if (!name || name.length > 64) throw new RpcError('BAD_REQUEST', 'Give the machine a name (up to 64 characters)')
@@ -791,15 +799,18 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const cores = Number(input.cores)
 			const memoryGb = Number(input.memoryGb)
 			const diskSizeGb = Number(input.diskSizeGb)
-			const minDisk = kind === 'windows' ? 64 : kind === 'omarchy' ? 20 : 4
+			const minDisk = kind === 'windows' ? 64 : kind === 'omarchy' || img.kind === 'iso' ? 20 : 4
 			if (!Number.isInteger(cores) || cores < 1 || cores > threads) throw new RpcError('BAD_REQUEST', `Cores must be between 1 and ${threads}`)
 			if (!Number.isInteger(memoryGb) || memoryGb < 1 || memoryGb > totalGb) throw new RpcError('BAD_REQUEST', `Not enough memory on ${hostName} for that`)
 			if (!Number.isInteger(diskSizeGb) || diskSizeGb < minDisk || diskSizeGb > 4096) throw new RpcError('BAD_REQUEST', `Disk size must be between ${minDisk} and 4096 GB`)
+			const needsAccount = kind !== 'manual'
 			const username = String(input.username ?? '').trim()
 			const password = String(input.password ?? '')
-			const userOk = kind === 'windows' ? /^[A-Za-z0-9][A-Za-z0-9_.-]{0,19}$/.test(username) && !/^(administrator|guest)$/i.test(username) : /^[a-z_][a-z0-9_-]{0,31}$/.test(username) && username !== 'root'
-			if (!userOk) throw new RpcError('BAD_REQUEST', kind === 'windows' ? 'Use a username of letters, numbers, - and _ (up to 20)' : 'Use a lower-case username: letters, numbers, - and _ (not root)')
-			if (password.length < 1 || password.length > 256 || /[\x00-\x1f\x7f]/.test(password)) throw new RpcError('BAD_REQUEST', 'Enter a password for the machine')
+			if (needsAccount) {
+				const userOk = kind === 'windows' ? /^[A-Za-z0-9][A-Za-z0-9_.-]{0,19}$/.test(username) && !/^(administrator|guest)$/i.test(username) : /^[a-z_][a-z0-9_-]{0,31}$/.test(username) && username !== 'root'
+				if (!userOk) throw new RpcError('BAD_REQUEST', kind === 'windows' ? 'Use a username of letters, numbers, - and _ (up to 20)' : 'Use a lower-case username: letters, numbers, - and _ (not root)')
+				if (password.length < 1 || password.length > 256 || /[\x00-\x1f\x7f]/.test(password)) throw new RpcError('BAD_REQUEST', 'Enter a password for the machine')
+			}
 			const freeGb = Number(status.freeGb) || 0
 			const needGb = ((Number(img.sizeMb) || 1024) * 3) / 1024 + 2
 			if (freeGb < needGb) throw new RpcError('PRECONDITION_FAILED', `Not enough free space: about ${Math.ceil(needGb)} GB is needed to set it up`)
@@ -808,10 +819,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			do id = randomBytes(4).toString('hex')
 			while (machines.some((m) => m.id === id))
 			const layout = layoutBasenames(kind === 'cloud' ? 'cloud' : kind === 'windows' ? 'windows' : 'iso', img)
-			if (kind === 'omarchy' || kind === 'windows') {
+			if (kind === 'omarchy' || kind === 'windows' || kind === 'manual') {
 				layout.disks.splice(1, 0, {id: 'cd0', file: `image:${img.id}`, device: 'cdrom', bus: 'sata', format: 'raw'})
 				if (kind === 'omarchy') layout.disks.push({id: 'seed', role: 'seed', file: 'seed.iso', device: 'cdrom', bus: 'sata', format: 'raw'})
-				else layout.disks.push({id: 'answer', role: 'answer', file: 'answer.iso', device: 'cdrom', bus: 'sata', format: 'raw'})
+				else if (kind === 'windows') layout.disks.push({id: 'answer', role: 'answer', file: 'answer.iso', device: 'cdrom', bus: 'sata', format: 'raw'})
 			}
 			const m = normalize({
 				id,
@@ -827,7 +838,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				state: 'installing',
 				options: {agent: true},
 				layout,
-				...(kind === 'omarchy' || kind === 'windows' ? {boot: ['disk0', 'cd0']} : {}),
+				...(kind === 'omarchy' || kind === 'windows' || kind === 'manual' ? {boot: ['disk0', 'cd0']} : {}),
 			})
 			if (kind === 'cloud' || kind === 'omarchy') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
 			machines.push(m)
@@ -844,7 +855,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 
 			;(async () => {
 				try {
-					const hash = kind === 'windows' ? null : await hashPassword(password)
+					const hash = kind === 'cloud' || kind === 'omarchy' ? await hashPassword(password) : null
 					if (kind === 'cloud') {
 						await hostCall(hostId, id, 'vm-seed', {
 							guestId: id,
@@ -870,6 +881,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 							},
 						})
 						step(5)
+						await hostCall(hostId, id, 'vm-fetch', {imageId: img.id, catalogUrl})
+						step(80)
+						await hostCall(hostId, id, 'vm-disk-create', {guestId: id, sizeGb: diskSizeGb})
+					} else if (kind === 'manual') {
 						await hostCall(hostId, id, 'vm-fetch', {imageId: img.id, catalogUrl})
 						step(80)
 						await hostCall(hostId, id, 'vm-disk-create', {guestId: id, sizeGb: diskSizeGb})
@@ -902,7 +917,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					busy.delete(id)
 					await save().catch(() => {})
 				}
-				if (!m.state && connectorKind(osId) !== 'unsupported') waitForGuestConnector(id, username)
+				if (!m.state && username && connectorKind(osId) !== 'unsupported') waitForGuestConnector(id, username)
 			})()
 			return {id}
 		}
@@ -934,7 +949,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				img = (await images()).find((i) => i.id === osId)
 				if (!img || img.arch !== caps.hostArchitecture) throw new RpcError('BAD_REQUEST', 'That operating system isn’t available here')
 			}
-			const kind = local ? (local.requiresCredentials ? 'windows' : 'manual') : img.kind === 'iso' ? 'omarchy' : 'cloud'
+			const kind = local ? (local.requiresCredentials ? 'windows' : 'manual') : catalogInstallKind(img)
 			// Windows set up from its ISO (and its answer file) is the x86 PC kind.
 			if (kind === 'windows' && caps.hostArchitecture !== 'amd64') throw new RpcError('PRECONDITION_FAILED', 'Installing Windows from its ISO needs an x86-64 server')
 			const name = String(input.name ?? '').trim()
@@ -946,7 +961,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const cores = Number(input.cores)
 			const memoryGb = Number(input.memoryGb)
 			const diskSizeGb = Number(input.diskSizeGb)
-			const minDisk = kind === 'windows' ? 64 : kind === 'omarchy' ? 20 : 4
+			const minDisk = kind === 'windows' ? 64 : kind === 'omarchy' || (img && img.kind === 'iso') ? 20 : 4
 			if (!Number.isInteger(cores) || cores < 1 || cores > threads) throw new RpcError('BAD_REQUEST', `Cores must be between 1 and ${threads}`)
 			if (!Number.isInteger(memoryGb) || memoryGb < 1 || memoryGb > Math.max(1, totalGb - 1)) throw new RpcError('BAD_REQUEST', 'Not enough memory on the server for that')
 			if (!Number.isInteger(diskSizeGb) || diskSizeGb < minDisk || diskSizeGb > 4096) throw new RpcError('BAD_REQUEST', `Disk size must be between ${minDisk} and 4096 GB`)
@@ -1011,7 +1026,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 						await rename(part, disk)
 					} else {
 						// Installer ISOs: a blank disk, booted from the installer until something is on it.
-						const iso = kind === 'omarchy' ? await ensureImage(img, (p) => step(5 + Math.floor(p * 0.8))) : local.real
+						const iso = img ? await ensureImage(img, (p) => step(5 + Math.floor(p * 0.8))) : local.real
 						step(88)
 						await run('qemu-img', ['create', '-f', 'qcow2', part, `${diskSizeGb}G`])
 						await rename(part, disk)
@@ -1033,7 +1048,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					busy.delete(id)
 					await save().catch(() => {})
 				}
-				if (!m.state && connectorKind(osId) !== 'unsupported') waitForGuestConnector(id, username)
+				if (!m.state && username && connectorKind(osId) !== 'unsupported') waitForGuestConnector(id, username)
 			})()
 			return {id}
 		}
