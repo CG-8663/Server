@@ -29,6 +29,7 @@ import {createQemuAgent} from './qemu-agent.mjs'
 import {remoteGuestAgentRun} from './remote-guest-agent.mjs'
 import {RpcError} from './rpc.mjs'
 import {hostdevXml, parseUsbLive} from './usb.mjs'
+import {stoppedMessage} from './exec-error.mjs'
 
 export const CATALOG_URL = 'https://raw.githubusercontent.com/MyOwnDataCenter/app-store/main/machines/catalog.json'
 const BUNDLED_CATALOG = fileURLToPath(new URL('./machine-catalog.json', import.meta.url))
@@ -42,7 +43,7 @@ function execP(cmd, args, {input, cwd, timeout = 120_000} = {}) {
 	return new Promise((resolve, reject) => {
 		const child = execFile(cmd, args, {cwd, timeout, maxBuffer: 8 * 1024 * 1024, env: {...process.env, LC_ALL: 'C'}}, (error, stdout, stderr) => {
 			if (error) {
-				error.message = `${cmd} ${args[0] ?? ''}: ${(stderr || error.message).toString().trim().split('\n').slice(-2).join(' ')}`
+				error.message = stoppedMessage(`${cmd} ${args[0] ?? ''}`.trim(), error, timeout) ?? `${cmd} ${args[0] ?? ''}: ${(stderr || error.message).toString().trim().split('\n').slice(-2).join(' ')}`
 				return reject(error)
 			}
 			resolve(stdout.toString())
