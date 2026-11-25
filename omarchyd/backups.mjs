@@ -1646,12 +1646,21 @@ export function createBackups({dataDir, home = os.homedir(), serverDataDir = joi
 		const snapshotId = String(input.snapshotId ?? '')
 		const appId = String(input.appId ?? '')
 		if (!SNAPSHOT.test(snapshotId) || !APP_ID.test(appId)) throw new RpcError('BAD_REQUEST', 'Bad restore')
-		const snap = (await snapshots()).find((s) => s.id === snapshotId || s.shortId === snapshotId)
-		if (!snap || !snap.tags.includes(`app:${appId}`)) throw new RpcError('NOT_FOUND', 'That backup doesn’t have this app')
-		const app = (await apps.backupTargets()).find((a) => a.id === appId)
-		if (!app) throw new RpcError('NOT_FOUND', 'Install the app first, then restore its data')
-		if (!snap.paths.includes(app.dir)) throw new RpcError('PRECONDITION_FAILED', 'That backup was made for a different folder')
-		job = {step: `Restoring ${app.name}`, progress: 0, startedAt: now()}
+		// Claim it before the first await, so a backup or a second restore asked for in the meantime is refused.
+		job = {step: 'Getting ready', progress: 0, startedAt: now()}
+		let snap
+		let app
+		try {
+			snap = (await snapshots()).find((s) => s.id === snapshotId || s.shortId === snapshotId)
+			if (!snap || !snap.tags.includes(`app:${appId}`)) throw new RpcError('NOT_FOUND', 'That backup doesn’t have this app')
+			app = (await apps.backupTargets()).find((a) => a.id === appId)
+			if (!app) throw new RpcError('NOT_FOUND', 'Install the app first, then restore its data')
+			if (!snap.paths.includes(app.dir)) throw new RpcError('PRECONDITION_FAILED', 'That backup was made for a different folder')
+		} catch (error) {
+			job = null
+			throw error
+		}
+		job = {...job, step: `Restoring ${app.name}`}
 		const stampNow = now()
 		const aside = `${app.dir}.before-restore-${stampNow}`
 		// Restored beside the app first (restic recreates the whole path under the target), then swapped in.
