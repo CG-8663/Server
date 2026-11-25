@@ -124,7 +124,7 @@
 	--bg-solid: #e6e9ef;
 	--fg: #4c4f69;
 	--fg-2: #5c5f77;
-	--muted: #6c6f85;
+	--muted: #5f6277;
 	--glass: rgba(255, 255, 255, 0.62);
 	--glass-2: rgba(255, 255, 255, 0.8);
 	--glass-press: rgba(220, 224, 232, 0.9);
@@ -6934,7 +6934,7 @@ html:not(.desk-mode) .upload-panel {
 	--bg-solid: #16161e;
 	--fg: #a9b1d6;
 	--fg-2: #9aa5ce;
-	--muted: #787c99;
+	--muted: #8a8fb0;
 	--faint: rgba(169, 177, 214, 0.08);
 	--glass: rgba(26, 27, 38, 0.94);
 	--glass-2: #24283b;
