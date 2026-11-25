@@ -46,6 +46,7 @@ import {clampDragY, clampWindowRect} from './windowGeometry'
 import {nextMaximizeSnap} from './windowSnap'
 import {bindWindowScrollReset} from './winScroll'
 import {startMinuteClock} from './clock'
+import {sameWindowContent} from './windowContent'
 
 const HINT_KEY = 'omarchy-server:desk-hint-closed'
 
@@ -3644,13 +3645,7 @@ const WindowContent = memo(
 		)
 	},
 	(a, b) =>
-		a.win.id === b.win.id &&
-		a.win.kind === b.win.kind &&
-		a.win.payload?.tab === b.win.payload?.tab &&
-		a.win.payload?.page === b.win.payload?.page &&
-		a.win.payload?.pageNonce === b.win.payload?.pageNonce &&
-		a.win.payload?.rail?.address === b.win.payload?.rail?.address &&
-		a.win.payload?.rail?.title === b.win.payload?.rail?.title &&
+		sameWindowContent(a.win, b.win) &&
 		a.prefs === b.prefs &&
 		a.owner === b.owner &&
 		a.muted === b.muted,
