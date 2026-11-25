@@ -10,6 +10,7 @@ import {folderKey, folderPathOk, reviewInstallInput, type ReviewInstallInput} fr
 export function BeforeInstall({
 	appId,
 	appName,
+	machineName,
 	installSize,
 	pending,
 	cancelLabel,
@@ -19,6 +20,8 @@ export function BeforeInstall({
 }: {
 	appId: string
 	appName: string
+	/** The machine this install will land on. The assistant omits it and says "your server". */
+	machineName?: string
 	installSize?: number
 	pending?: boolean
 	cancelLabel: string
@@ -56,7 +59,7 @@ export function BeforeInstall({
 		<div className="screen">
 			<h3 style={{margin: '0 0 6px', fontSize: 18, fontWeight: 680}}>Before you install</h3>
 			<p className="prose" style={{margin: '0 0 16px'}}>
-				{appName} will be installed on your server{installSize ? ` (${bytes(installSize)} download)` : ''}.
+				{appName} will be installed on {machineName || 'your server'}{installSize ? ` (${bytes(installSize)} download)` : ''}.
 			</p>
 			{review.isLoading && (
 				<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, borderRadius: 18}}>
@@ -64,7 +67,7 @@ export function BeforeInstall({
 				</div>
 			)}
 			{review.error && (
-				<div className="error">
+				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
 					{(review.error as Error).message}
 				</div>
@@ -247,7 +250,7 @@ export function BeforeInstall({
 			<div className="stack">
 				<button className="btn primary block" onClick={install} disabled={!data || !!pending || choice == null}>
 					<Icon name="download" size={20} />
-					{data?.alsoInstalls?.length ? `Install all ${data.alsoInstalls.length + 1}` : `Install ${appName}`}
+					{data?.alsoInstalls?.length ? `Install all ${data.alsoInstalls.length + 1}${machineName ? ` on ${machineName}` : ''}` : `Install ${appName}${machineName ? ` on ${machineName}` : ''}`}
 				</button>
 				<button className="btn block ghost" onClick={onCancel}>
 					{cancelLabel}

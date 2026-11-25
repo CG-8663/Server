@@ -107,11 +107,30 @@ if [ "$MAC" != 1 ]; then
 fi
 PLIST="$HOME/Library/LaunchAgents/org.myowndatacenter.connector.plist"
 
+# Everything the connector installed goes, except what the person made with it: the virtual
+# machines' disks and images, and the apps' compose folders (their data can sit beside them).
+remove_data_dir() {
+	local item kept=""
+	for item in "$DIR"/* "$DIR"/.[!.]*; do
+		[ -e "$item" ] || [ -L "$item" ] || continue
+		case "${item##*/}" in
+			vms | vm-images | apps) kept="$kept${kept:+, }${item##*/}" ;;
+			*) rm -rf "$item" ;;
+		esac
+	done
+	if [ -n "$kept" ]; then
+		say "Kept your virtual machines and apps ($kept) in $DIR. Delete that folder yourself when you no longer need them."
+	else
+		rmdir "$DIR" 2>/dev/null || true
+	fi
+}
+
 if [ "$MAC" = 1 ] && [ "$UNINSTALL" = 1 ]; then
 	say "Removing the connector"
 	launchctl bootout "gui/$(id -u)/org.myowndatacenter.connector" 2>/dev/null || true
 	rm -f "$PLIST"
-	rm -rf "$DIR" "$CONF" "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-connector"
+	remove_data_dir
+	rm -rf "$CONF" "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-connector"
 	say "Done. Remove this computer in Machines → Local swarm too, if it's still listed."
 	exit 0
 fi
@@ -126,7 +145,8 @@ if [ "$UNINSTALL" = 1 ]; then
 		rm -f "$UNIT"
 		systemctl --user daemon-reload 2>/dev/null || true
 	fi
-	rm -rf "$DIR" "$CONF" "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-connector"
+	remove_data_dir
+	rm -rf "$CONF" "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-connector"
 	if [ "$OPENRC" = 1 ]; then
 		if ! sudo rm -f /etc/init.d/omarchy-connector /usr/local/libexec/omarchy-connector/helper.py /etc/sudoers.d/omarchy-connector /etc/udev/rules.d/69-omarchy-connector-sleep.rules; then
 			warn "The helper, its sudoers rule, the init script and the sleep udev rule could not be removed. Run this yourself:"

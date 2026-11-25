@@ -23,3 +23,10 @@ export function browserName(ua: string): string {
 	if (/Safari\//.test(ua)) return 'Safari'
 	return 'Browser'
 }
+
+// Has the update this page started finished? True once the server has reported it running and then reports it
+// stopped without an error (after its restart it answers "Updated to X" at 100%). A status seen before the update
+// began, such as the "Updated to X" left by an earlier update, must not count, hence `sawRunning`.
+export function updateFinished(sawRunning: boolean, status: {running: boolean; error: boolean | string} | undefined): boolean {
+	return sawRunning && !!status && !status.running && !status.error
+}

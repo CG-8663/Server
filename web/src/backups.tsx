@@ -1,11 +1,12 @@
 // This server's backups: apps, settings, and folders, encrypted locally before upload to Google Drive or a NAS.
 // Opened from this server on the Machines page.
 import {useEffect, useMemo, useState, type CSSProperties, type FormEvent} from 'react'
-import {backupGapText, computerSheetChanged, computerSnapshotRows, folderListError, formatBackupHour, formatBackupStamp, formatBackupWhen, historyRowTone, serverLastRun} from './backupHelpers'
+import {backupGapText, computerSheetChanged, computerSnapshotRows, folderListError, formatBackupHour, formatBackupStamp, formatBackupWhen, gdriveSignInFinished, historyRowTone, serverLastRun} from './backupHelpers'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
 import {queryProblem, useBrowserOnline} from './connection'
+import {errorText} from './queryNotice'
 import {Icon} from './icons'
 import {Field, Group, Row, Segmented, Sheet, SheetHeader, Switch, bytes, haptic, useConfirm, useToast} from './ui'
 
@@ -108,7 +109,7 @@ function useSave() {
 	})
 }
 
-export function BackupsPage({onBack}: {onBack: () => void}) {
+export function BackupsPage({onBack}: {onBack?: () => void}) {
 	const status = useStatus()
 	const browserOnline = useBrowserOnline()
 	const problem = queryProblem(status, browserOnline)
@@ -162,9 +163,11 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 	return (
 		<div className="stagger">
 			<div className="page-head" style={{margin: '6px 0 14px'}}>
-				<button className="round-btn" aria-label="Back" onClick={onBack}>
-					<Icon name="back" size={20} />
-				</button>
+				{onBack && (
+					<button className="round-btn" aria-label="Back" onClick={onBack}>
+						<Icon name="back" size={20} />
+					</button>
+				)}
 				<h1 className="title" style={{flex: 1}}>
 					Backups
 				</h1>
@@ -236,10 +239,10 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 					</Group>
 
 					<Group title="What’s backed up" footer={s.include.apps && s.pauseApps ? 'Each app pauses for a moment while its files are saved, so databases are saved in a consistent state.' : undefined}>
-						<Row icon="apps" color="var(--accent)" label="Apps" sub="Every installed app’s data" trailing={<Switch label="Apps" on={s.include.apps} onChange={(v) => set({include: {...s.include, apps: v}})} />} />
-						{s.include.apps && <Row icon="stop" color="#8e8e93" label="Pause apps while saving" trailing={<Switch label="Pause apps while saving" on={s.pauseApps} onChange={(v) => set({pauseApps: v})} />} />}
-						<Row icon="settings" color="#8e8e93" label="Server settings" sub="Accounts, settings, certificates, VM settings" trailing={<Switch label="Server settings" on={s.include.settings} onChange={(v) => set({include: {...s.include, settings: v}})} />} />
-						<Row icon="machine" color="var(--orange, #f59e0b)" label="VM backups" sub="Home › Backups › Machines" trailing={<Switch label="VM backups" on={s.include.machineBackups} onChange={(v) => set({include: {...s.include, machineBackups: v}})} />} />
+						<Row icon="apps" color="var(--accent)" label="Apps" sub="Every installed app’s data" trailing={<Switch label="Apps" on={s.include.apps} disabled={save.isPending} onChange={(v) => set({include: {...s.include, apps: v}})} />} />
+						{s.include.apps && <Row icon="stop" color="#8e8e93" label="Pause apps while saving" trailing={<Switch label="Pause apps while saving" on={s.pauseApps} disabled={save.isPending} onChange={(v) => set({pauseApps: v})} />} />}
+						<Row icon="settings" color="#8e8e93" label="Server settings" sub="Accounts, settings, certificates, VM settings" trailing={<Switch label="Server settings" on={s.include.settings} disabled={save.isPending} onChange={(v) => set({include: {...s.include, settings: v}})} />} />
+						<Row icon="machine" color="var(--orange, #f59e0b)" label="VM backups" sub="Home › Backups › Machines" trailing={<Switch label="VM backups" on={s.include.machineBackups} disabled={save.isPending} onChange={(v) => set({include: {...s.include, machineBackups: v}})} />} />
 						{(s.customPaths ?? []).map((vp) => (
 							<div className="row static" key={vp}>
 								<span className="row-ico" style={{'--c': 'var(--teal)'} as CSSProperties}>
@@ -252,6 +255,7 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 								<button
 									type="button"
 									className="btn ghost small"
+									disabled={save.isPending}
 									aria-label={`Remove ${vp}`}
 									onClick={() => set({customPaths: (s.customPaths ?? []).filter((p) => p !== vp)}, 'Folder removed')}
 								>
@@ -286,12 +290,21 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 						</div>
 					</Group>
 
-					<ScheduleGroup s={s} onChange={set} />
+					<ScheduleGroup s={s} busy={save.isPending} onChange={set} />
 
 					<Group title="Computers" footer="Computers in Machines › Local swarm back up the folders you choose here, encrypted, then everything goes to the NAS. A computer that’s off at backup time catches up when it’s back.">
 						{(comps.data ?? []).filter((c) => !c.removed).map((c) => (
 							<ComputerRow key={c.id} c={c} onOpen={() => setComputer(c.id)} />
 						))}
+						{comps.error && !comps.data && (
+							<div className="row static">
+								<span className="main">
+									<span className="bk-err" role="alert">
+										Couldn’t list the computers: {errorText(comps.error)}
+									</span>
+								</span>
+							</div>
+						)}
 						{comps.isSuccess && (comps.data ?? []).filter((c) => !c.removed).length === 0 && (
 							<div className="row static">
 								<span className="main">
@@ -313,6 +326,15 @@ export function BackupsPage({onBack}: {onBack: () => void}) {
 						{snaps.isLoading && (
 							<div className="row static">
 								<span className="spinner" />
+							</div>
+						)}
+						{snaps.error && appsBacked.size === 0 && (
+							<div className="row static">
+								<span className="main">
+									<span className="bk-err" role="alert">
+										Couldn’t list the app backups: {errorText(snaps.error)}
+									</span>
+								</span>
 							</div>
 						)}
 						{snaps.isSuccess && appsBacked.size === 0 && (
@@ -413,7 +435,7 @@ function StatusCard({s, busy, onRun}: {s: BackupStatus; busy: boolean; onRun: ()
 						</span>
 						<b>{!last ? 'No backups yet' : last.ok ? `Backed up ${ago(last.endedAt!)}` : `Last backup ${ago(last.endedAt!)} had a problem`}</b>
 					</div>
-					{last && !last.ok && last.error && <p className="bk-err">{last.error}</p>}
+					{last && !last.ok && last.error && <p className="bk-err" role="alert">{last.error}</p>}
 					<p className="muted bk-next">{s.nextRunAt ? `Next backup ${formatBackupWhen(s.nextRunAt, s.timeZone)}` : 'Scheduled backups are off'}</p>
 				</>
 			)}
@@ -424,10 +446,11 @@ function StatusCard({s, busy, onRun}: {s: BackupStatus; busy: boolean; onRun: ()
 	)
 }
 
-function ScheduleGroup({s, onChange}: {s: BackupStatus; onChange: (input: Record<string, unknown>) => void}) {
+function ScheduleGroup({s, busy, onChange}: {s: BackupStatus; busy: boolean; onChange: (input: Record<string, unknown>) => void}) {
 	const sc = s.schedule
-	const put = (patch: Partial<Schedule>) => onChange({schedule: {...sc, ...patch}})
-	const keep = (patch: Partial<Keep>) => onChange({keep: {...s.keep, ...patch}})
+	// Each save sends the whole schedule or keep object. A second change before the first is saved would send the old values back.
+	const put = (patch: Partial<Schedule>) => !busy && onChange({schedule: {...sc, ...patch}})
+	const keep = (patch: Partial<Keep>) => !busy && onChange({keep: {...s.keep, ...patch}})
 	return (
 		<Group title="Schedule" footer={`Keeps the last ${s.keep.daily} days, ${s.keep.weekly} weeks and ${s.keep.monthly} months of backups. Older ones are removed from the server and the NAS.`}>
 			<div className="row static bk-sched">
@@ -447,7 +470,7 @@ function ScheduleGroup({s, onChange}: {s: BackupStatus; onChange: (input: Record
 					{sc.frequency === 'weekly' && (
 						<label>
 							<span>Day</span>
-							<select className="field" value={sc.weekday} onChange={(e) => put({weekday: Number(e.target.value)})}>
+							<select className="field" disabled={busy} value={sc.weekday} onChange={(e) => put({weekday: Number(e.target.value)})}>
 								{DAYS.map((d, i) => (
 									<option key={d} value={i}>
 										{d}
@@ -458,7 +481,7 @@ function ScheduleGroup({s, onChange}: {s: BackupStatus; onChange: (input: Record
 					)}
 					<label>
 						<span>Time{s.timeZone ? ` (${s.timeZone})` : ''}</span>
-						<select className="field" value={sc.hour} onChange={(e) => put({hour: Number(e.target.value)})}>
+						<select className="field" disabled={busy} value={sc.hour} onChange={(e) => put({hour: Number(e.target.value)})}>
 							{Array.from({length: 24}, (_, h) => (
 								<option key={h} value={h}>
 									{formatBackupHour(h)}
@@ -478,7 +501,7 @@ function ScheduleGroup({s, onChange}: {s: BackupStatus; onChange: (input: Record
 				).map(([k, label, opts]) => (
 					<label key={k}>
 						<span>{label}</span>
-						<select className="field" value={s.keep[k]} onChange={(e) => keep({[k]: Number(e.target.value)})}>
+						<select className="field" disabled={busy} value={s.keep[k]} onChange={(e) => keep({[k]: Number(e.target.value)})}>
 							{[...new Set([...opts, s.keep[k]])]
 								.sort((a, b) => a - b)
 								.map((n) => (
@@ -542,6 +565,7 @@ function HistoryRow({r, timeZone}: {r: Run; timeZone?: string}) {
 				label={`${r.computer ? r.name : 'This server'} · ${formatBackupStamp(r.startedAt, timeZone)}${r.reason === 'scheduled' ? '' : ' · by hand'}`}
 				sub={sub}
 				onClick={r.items.length ? () => setOpen(!open) : undefined}
+				expanded={r.items.length ? open : undefined}
 			/>
 			{open &&
 				r.items.map((i, n) => {
@@ -616,7 +640,7 @@ function SetupSheet({mode, current, onClose, onDone}: {mode: 'new' | 'nas'; curr
 							<span className="muted">Found on your network</span>
 							<div>
 								{found.data!.map((f) => (
-									<button type="button" key={f.host} className={`chip${host === f.host ? ' on' : ''}`} onClick={() => (haptic(5), setHost(f.host))}>
+									<button type="button" key={f.host} className={`chip${host === f.host ? ' on' : ''}`} aria-pressed={host === f.host} onClick={() => (haptic(5), setHost(f.host))}>
 										<Icon name="server" size={14} /> {f.name}
 									</button>
 								))}
@@ -627,7 +651,7 @@ function SetupSheet({mode, current, onClose, onDone}: {mode: 'new' | 'nas'; curr
 					<Field id="bk-user" label="Username" hint="An account on the NAS that can write to the share. A separate account just for backups is safest." value={username} onChange={(e) => setUsername(e.target.value)} autoCapitalize="off" autoComplete="off" required />
 					<Field id="bk-pass" label="Password" type="password" placeholder={reuse ? 'Saved (leave empty to keep it)' : ''} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required={!reuse} />
 					{error && (
-						<div className="error">
+						<div className="error" role="alert">
 							<Icon name="alert" size={18} />
 							{error}
 						</div>
@@ -662,7 +686,7 @@ function SetupSheet({mode, current, onClose, onDone}: {mode: 'new' | 'nas'; curr
 					)}
 					<Field id="bk-folder" label="Folder on the share" hint="Created if it isn’t there. Use a folder only these backups go in." value={folder} onChange={(e) => setFolder(e.target.value)} required />
 					{error && (
-						<div className="error">
+						<div className="error" role="alert">
 							<Icon name="alert" size={18} />
 							{error}
 						</div>
@@ -834,7 +858,7 @@ function ConnectSheet({current, onConnectGdrive, onClose}: {current?: BackupStat
 						<Field id="bkcg-folder" label="Google Drive folder" value={gFolder} onChange={(e) => setGFolder(e.target.value)} required />
 						<Field id="bkcg-key" label="Recovery key" placeholder="abcd-efgh-…" value={gKey} onChange={(e) => setGKey(e.target.value)} autoCapitalize="off" autoCorrect="off" spellCheck={false} required />
 						{error && (
-							<div className="error">
+							<div className="error" role="alert">
 								<Icon name="alert" size={18} />
 								{error}
 							</div>
@@ -863,7 +887,7 @@ function ConnectSheet({current, onConnectGdrive, onClose}: {current?: BackupStat
 					<Field id="bkc-folder" label="Folder on the share" value={f.folder} onChange={put('folder')} required />
 					<Field id="bkc-key" label="Recovery key" placeholder="abcd-efgh-…" value={f.recoveryKey} onChange={put('recoveryKey')} autoCapitalize="off" autoCorrect="off" spellCheck={false} required />
 					{error && (
-						<div className="error">
+						<div className="error" role="alert">
 							<Icon name="alert" size={18} />
 							{error}
 						</div>
@@ -1034,7 +1058,7 @@ function GdriveSetupSheet({current, onClose, onDone}: {current: BackupStatus; on
 		const check = async () => {
 			try {
 				const st = await query<GdriveStatus>('backups.gdrive.status')
-				if (st.connected) {
+				if (gdriveSignInFinished(st, {connected: !!g?.connected, email: g?.email})) {
 					setConnected(true)
 					setEmail(st.email)
 					setQuota(st.quota)
@@ -1050,7 +1074,7 @@ function GdriveSetupSheet({current, onClose, onDone}: {current: BackupStatus; on
 			window.removeEventListener('focus', onFocus)
 			window.clearInterval(id)
 		}
-	}, [authUrl, connected, qc])
+	}, [authUrl, connected, qc, g?.connected, g?.email])
 
 	const copyUri = async () => {
 		try {
@@ -1223,7 +1247,7 @@ function GdriveSetupSheet({current, onClose, onDone}: {current: BackupStatus; on
 							required
 						/>
 						{!authUrl && error && (
-							<div className="error">
+							<div className="error" role="alert">
 								<Icon name="alert" size={18} />
 								{error}
 							</div>
@@ -1253,7 +1277,7 @@ function GdriveSetupSheet({current, onClose, onDone}: {current: BackupStatus; on
 								required
 							/>
 							{error && (
-								<div className="error">
+								<div className="error" role="alert">
 									<Icon name="alert" size={18} />
 									{error}
 								</div>
@@ -1301,7 +1325,7 @@ function GdriveSetupSheet({current, onClose, onDone}: {current: BackupStatus; on
 						</label>
 					</div>
 					{error && (
-						<div className="error">
+						<div className="error" role="alert">
 							<Icon name="alert" size={18} />
 							{error}
 						</div>
@@ -1477,6 +1501,11 @@ function ComputerSheet({c, timeZone, onClose}: {c: Computer; timeZone?: string; 
 						<button className="btn block primary" disabled={busy || !!c.running || !c.online} onClick={() => act('backups.runComputer', {id: c.id}, 'Backup started')}>
 							<Icon name="history" size={17} /> Back up now
 						</button>
+					)}
+					{(c.enabled || c.removed) && snaps.error && computerSnapshotRows(snaps.data).length === 0 && (
+						<p className="bk-err" role="alert">
+							Couldn’t list the backups: {errorText(snaps.error)}
+						</p>
 					)}
 					{(c.enabled || c.removed) && computerSnapshotRows(snaps.data).length > 0 && (
 						<>

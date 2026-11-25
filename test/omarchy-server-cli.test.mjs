@@ -119,14 +119,14 @@ test('#607: logs handles -f, --follow, -n, --lines, and --since', async () => {
 
 	const lines = (await readLog(box)).trim().split('\n')
 	assert.deepEqual(lines, [
-		'journalctl --user -u omarchyd -u omarchy-server-web -n 80 --no-pager',
-		'journalctl --user -u omarchyd -u omarchy-server-web -f',
-		'journalctl --user -u omarchyd -u omarchy-server-web -f',
-		'journalctl --user -u omarchyd -u omarchy-server-web -n 200 --no-pager',
-		'journalctl --user -u omarchyd -u omarchy-server-web -n 200 --no-pager',
-		'journalctl --user -u omarchyd -u omarchy-server-web -n 200 --no-pager',
-		'journalctl --user -u omarchyd -u omarchy-server-web --since today --no-pager',
-		'journalctl --user -u omarchyd -u omarchy-server-web -n 50 -f',
+		'journalctl --user -u omarchyd -u omarchy-server-web -u omarchy-server-desktop -u omarchy-server-desktop-now -n 80 --no-pager',
+		'journalctl --user -u omarchyd -u omarchy-server-web -u omarchy-server-desktop -u omarchy-server-desktop-now -f',
+		'journalctl --user -u omarchyd -u omarchy-server-web -u omarchy-server-desktop -u omarchy-server-desktop-now -f',
+		'journalctl --user -u omarchyd -u omarchy-server-web -u omarchy-server-desktop -u omarchy-server-desktop-now -n 200 --no-pager',
+		'journalctl --user -u omarchyd -u omarchy-server-web -u omarchy-server-desktop -u omarchy-server-desktop-now -n 200 --no-pager',
+		'journalctl --user -u omarchyd -u omarchy-server-web -u omarchy-server-desktop -u omarchy-server-desktop-now -n 200 --no-pager',
+		'journalctl --user -u omarchyd -u omarchy-server-web -u omarchy-server-desktop -u omarchy-server-desktop-now --since today --no-pager',
+		'journalctl --user -u omarchyd -u omarchy-server-web -u omarchy-server-desktop -u omarchy-server-desktop-now -n 50 -f',
 	])
 })
 
@@ -218,4 +218,12 @@ test('#556: widget on and off keep a symlinked top-bar file as a symlink', async
 	assert.equal((await lstat(link)).isSymbolicLink(), true, 'widget off must not replace the symlink')
 	assert.equal(await readlink(link), dots)
 	assert.doesNotMatch(await readFile(dots, 'utf8'), /omarchy-server/)
+})
+
+test('#565: logs include the desktop screen-sharing (wayvnc) units the failed-desktop message sends people to', async () => {
+	const box = await makeSandbox('logs-desktop')
+	assert.equal(runCli(box, ['logs']).status, 0)
+	const line = (await readLog(box)).trim()
+	assert.match(line, /-u omarchy-server-desktop /)
+	assert.match(line, /-u omarchy-server-desktop-now /)
 })
