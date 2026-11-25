@@ -4,6 +4,24 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.85',
+		date: '2026-11-25',
+		title: 'Paste in the terminal, and a tidier Appearance page',
+		added: [
+			'Terminal: right-click pastes on a computer, even over http://, where the browser blocks reading the clipboard directly; the paste box opens instead. Right-click with text selected still copies.',
+			'Terminal: press and hold on a phone shows a Paste button, because a long press in the terminal did nothing useful before.',
+		],
+		fixed: [
+			'Removed the twelve older photo backgrounds (Yosemite Valley through Tower). They were outdated and crowded the picker; Omarchy backgrounds, the server wallpaper, your own photo and solid colours remain. If one of them was your desktop background, it switches to the Omarchy background.',
+			'Dock and desktop icon settings now appear only in the desktop layout. On a phone they controlled things you can’t see there, which was confusing.',
+			'A Mac that joins uses a Python that can verify this server’s certificate.',
+			'When a list cannot be loaded, including backups, plugins, and a new machine, the page says so instead of looking empty.',
+			'Keyboard focus, screen readers, and the phone’s page title follow the screen you are on.',
+			'Daylight and the Omarchy theme keep secondary text and accent text readable.',
+			'The App Store window follows the computer you just picked.',
+		],
+	},
+	{
 		version: '0.9.84',
 		date: '2026-11-25',
 		title: 'Wake a computer from any machine that is on',

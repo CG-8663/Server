@@ -23,7 +23,7 @@ import {hasOpenDialog, pickFocusTarget, useDialogFocus, useInert, useMenuFocus} 
 import {ScreenErrorBoundary} from '../screenBoundary'
 import {queryClearsOnSignOut} from '../signOutQueries'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
-import {SYSTEM_DOCK, WALLPAPERS, resetDeskConfig, solidOf, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
+import {SYSTEM_DOCK, resetDeskConfig, solidOf, useDeskConfig, type DeskConfig, type DeskIcon} from './config'
 import {desktopIconKeyOpens, desktopIconKeysApply, iconSelectionClearsOnFocus} from './iconKeys'
 import {iconsInView} from './iconsInView'
 import {desktopMachineStatus, machineOpenAction} from './machineOpen'
@@ -1233,11 +1233,9 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	}
 
 	// -- wallpaper + accent for the desktop (scoped to the desktop; the phone keeps its own) --
-	const wp = WALLPAPERS.find((w) => w.id === cfg.wallpaper)
 	const omarchy = useOmarchyThemes(cfg.wallpaper === 'omarchy')
-	const wallUrl = wp
-		? wallpaperSrc(wp.id)
-		: cfg.wallpaper === 'omarchy'
+	const wallUrl =
+		cfg.wallpaper === 'omarchy'
 			? omarchyBackgroundUrl(prefs.omarchyBackground, omarchy.data?.current)
 			: cfg.wallpaper === 'photo'
 				? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(user.data?.wallpaper))
@@ -1747,7 +1745,6 @@ function Wall({url}: {url: string}) {
 	useEffect(
 		() =>
 			loadWallpaper(url, {
-				fallback: url.startsWith('/api/omarchy/') ? wallpaperSrc('valley') : undefined,
 				onLoad: (u) => setLayers((l) => [...l.filter((x) => x !== u).slice(-1), u]),
 			}),
 		[url],

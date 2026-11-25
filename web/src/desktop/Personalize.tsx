@@ -9,7 +9,7 @@ import {applyPrefsUpdate, prefsAfterPhotoUpload} from '../photoPrefs'
 import {Appearance} from '../screens/More'
 import {Row, Segmented, Sheet, SheetHeader, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, setLayoutPref, useLayout, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {takeAppearanceFocus} from './settingsPage'
-import {solidOf, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
+import {solidOf, SYSTEM_DOCK, useDeskConfig, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
 import {DesktopStyleCards, ScreenLayoutCards} from '../LayoutPicker'
 import {CAPTURE_KEY, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
 import {SnippetBlock} from './hyprland/Snippet'
@@ -22,6 +22,8 @@ export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThem
 	const root = useRef<HTMLDivElement>(null)
 	const omarchyTheme = useOmarchyThemes(!!onOpenThemes)
 	const [cfg, setCfg] = useDeskConfig()
+	// The dock and desktop icons only exist in the desktop layout; on a phone they were confusing.
+	const desktop = useLayout().desktop
 	useEffect(() => {
 		let focus = initial ?? ''
 		try {
@@ -72,12 +74,18 @@ export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThem
 			<div id="appearance-background">
 				<Background cfg={cfg} setCfg={setCfg} prefs={prefs} setPrefs={setPrefs} />
 			</div>
-			<div id="appearance-dock">
-				<DockSettings cfg={cfg} setCfg={setCfg} />
-			</div>
-			<div id="appearance-desktop">
-				<DesktopSettings cfg={cfg} setCfg={setCfg} />
-			</div>
+			{desktop ? (
+				<>
+					<div id="appearance-dock">
+						<DockSettings cfg={cfg} setCfg={setCfg} />
+					</div>
+					<div id="appearance-desktop">
+						<DesktopSettings cfg={cfg} setCfg={setCfg} />
+					</div>
+				</>
+			) : (
+				<p className="footer-note pz-note">Dock and desktop icon settings are in the desktop layout. Choose Desktop under Layout above, or open My Own Data Center on a computer.</p>
+			)}
 		</div>
 	)
 }
@@ -222,7 +230,7 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 	}
 	const on = (id: string) => !solid && cfg.wallpaper === id
 	return (
-		<Section title="Background" note="Pictures and solid colours behind the app and the desktop. Omarchy pictures are the ones from the Omarchy theme. The other photos are from the elementary OS collection (CC0, Unsplash and Pexels; credits in wallpapers/CREDITS.md).">
+		<Section title="Background" note="Pictures and solid colours behind the app and the desktop. Omarchy pictures are the ones from the Omarchy theme; you can also use the server wallpaper or upload your own photo.">
 			<OmarchyBackgrounds
 				bare
 				selected={on('omarchy') ? (prefs.omarchyBackground ?? null) : undefined}
@@ -232,14 +240,6 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 				}}
 			/>
 			<div className="pz-grid walls">
-				{WALLPAPERS.map((w) => (
-					<button key={w.id} className={`pz-card wall-card${on(w.id) ? ' on' : ''}`} onClick={() => pick(w.id)} title={`${w.name} · ${w.by}`}>
-						<span className="pz-thumb" style={{backgroundImage: `url(${wallpaperSrc(w.id, true)})`}}>
-							{on(w.id) && <Icon name="check" size={16} stroke={3} className="pz-check" />}
-						</span>
-						<b>{w.name}</b>
-					</button>
-				))}
 				<button className={`pz-card wall-card${on('server') ? ' on' : ''}`} onClick={() => pick('server')}>
 					<span className="pz-thumb" style={{backgroundImage: serverWall ? `url(${serverWall})` : undefined}}>
 						{on('server') && <Icon name="check" size={16} stroke={3} className="pz-check" />}
