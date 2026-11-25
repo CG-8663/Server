@@ -568,8 +568,13 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		await save()
 		await forgetRemote(a.id).catch(() => {})
 		const l = live.get(a.id)
-		// Tell it to forget this server and stop; then cut it off either way.
+		// Tell it to forget this server and stop; then cut it off either way. Terminals, desktops and
+		// transfers that are open end at once, with the real reason, not after the delay as "went offline".
 		if (l) {
+			const reason = 'This computer was removed from the swarm'
+			for (const ch of [...l.channels.keys()]) closeLiveChannel(l, ch, reason)
+			for (const c of l.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', reason)))
+			l.calls.clear()
 			try {
 				l.ws.send(JSON.stringify({op: 'removed'}))
 			} catch {}
