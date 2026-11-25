@@ -11,6 +11,7 @@ import {clipText} from './clips'
 import {BootstrapContext} from './data'
 import {Icon} from './icons'
 import {overlayBackUsesHistory, popstateClosesOverlay} from './overlayHistory'
+import {terminalCloseOutcome} from './terminalClose'
 import {forwardTerminalInput, ignoreOpeningFocus} from './terminalInput'
 import {pasteInto, terminalPasteDecision} from './terminalPaste'
 import {SEQ, applyTerminalModifiers} from './terminalKeys'
@@ -363,7 +364,9 @@ export function TerminalScreen({
 			const ws = new WebSocket(`${scheme}//${location.host}/api/terminal?${qs}`)
 			ws.binaryType = 'arraybuffer'
 			wsRef.current = ws
+			let opened = false
 			ws.onopen = () => {
+				opened = true
 				setState('connected')
 				haptic(8)
 				if (pending.current) {
@@ -398,13 +401,9 @@ export function TerminalScreen({
 			}
 			ws.onclose = (e) => {
 				if (disposed || wsRef.current !== ws) return
-				if (e.code === 1000 && e.reason === 'Shell ended') {
-					setState('closed')
-					setMessage('The shell has ended.')
-				} else {
-					setState((st) => (st === 'connecting' ? 'error' : 'lost'))
-					setMessage(agent ? 'Your shell is still running on that computer. Reconnect to pick up where you left off.' : 'Your shell is still running on the server. Reconnect to pick up where you left off.')
-				}
+				const out = terminalCloseOutcome({opened, shellEnded: e.code === 1000 && e.reason === 'Shell ended', onComputer: !!agent})
+				setState(out.state)
+				setMessage(out.message)
 			}
 		}
 		connect()
