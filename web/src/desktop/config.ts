@@ -49,7 +49,7 @@ export type DeskConfig = {
 	shell: DeskShell
 	// Omarchy Super shortcuts, key capture, and the snippet. Square tiles without this.
 	omarchySuperKeys: boolean
-	dock: {position: DockPos; iconSize: number; hover: DockHover; magnify: number; bounce: boolean; floating: boolean; autohide: boolean; showRunning: boolean; items: string[]}
+	dock: {position: DockPos; iconSize: number; hover: DockHover; magnify: number; bounce: boolean; floating: boolean; autohide: boolean; showRunning: boolean; items: string[]; homeAdded?: boolean}
 	icons: DeskIcon[]
 	showIcons: boolean
 	// 'auto': a window when the app allows being shown inside one, otherwise a browser tab
@@ -106,7 +106,9 @@ function clean(raw: unknown): DeskConfig {
 		/* none */
 	}
 	const items = Array.isArray(dock.items) ? dock.items.filter((k) => typeof k === 'string') : d.dock.items
-	const previousDefault = items.length === PREVIOUS_SYSTEM_DOCK.length && PREVIOUS_SYSTEM_DOCK.every((key, index) => items[index] === key)
+	// Only a dock saved before Home existed gets it, and only once: clean() runs on every change, so without
+	// the homeAdded mark a dock the owner trimmed back to these seven would get Home again each time.
+	const previousDefault = c.dock?.homeAdded !== true && items.length === PREVIOUS_SYSTEM_DOCK.length && PREVIOUS_SYSTEM_DOCK.every((key, index) => items[index] === key)
 	const dockItems = previousDefault ? ['home', ...items] : items
 	return {
 		v: 1,
@@ -127,6 +129,7 @@ function clean(raw: unknown): DeskConfig {
 			autohide: !!dock.autohide,
 			showRunning: dock.showRunning !== false,
 			items: [...new Set([...dockItems, ...(c.dock ? [] : legacyPins)])],
+			homeAdded: true,
 		},
 		icons: Array.isArray(c.icons) ? c.icons.filter((i) => i && typeof i.key === 'string' && Number.isInteger(i.col) && Number.isInteger(i.row)) : d.icons,
 		showIcons: c.showIcons !== false,
