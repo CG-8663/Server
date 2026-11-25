@@ -40,4 +40,5 @@ test('the labels that used a hard-coded plural now go through plural()', async (
 	assert.doesNotMatch(await read('unraid.tsx'), /\$\{v\.cores\} cores/)
 	assert.doesNotMatch(await read('screens/Settings.tsx'), /days ago/)
 	assert.doesNotMatch(await read('backups.tsx'), /days ago/)
+	assert.doesNotMatch(await read('screens/Store.tsx'), /\$\{all\.length\} apps/)
 })
