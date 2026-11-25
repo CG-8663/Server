@@ -825,19 +825,19 @@ export function SnapshotsPanel({d}: {d: MachineDetails}) {
 			)}
 			<div className="mx-table" role="table">
 				<div className="mx-tr head" role="row">
-					<span>Name</span>
-					<span>Date</span>
-					<span>Description</span>
-					<span />
+					<span role="columnheader">Name</span>
+					<span role="columnheader">Date</span>
+					<span role="columnheader">Description</span>
+					<span role="columnheader" aria-label="Actions" />
 				</div>
-				{d.snapshots.length === 0 && <div className="mx-tr empty">No snapshots yet. Take one before an upgrade or a risky change.</div>}
+				{d.snapshots.length === 0 && <div className="mx-tr empty" role="row"><span role="cell">No snapshots yet. Take one before an upgrade or a risky change.</span></div>}
 				{[...d.snapshots].reverse().map((s) => (
 					<div className="mx-tr" role="row" key={s.name}>
-						<span className="b">{s.name}</span>
-						<span>{when(s.createdAt)}</span>
-						<span className="muted">{s.description}</span>
-						<span className="mx-tr-actions">
-							<button type="button" className="btn small" disabled={!canAct || action.isPending} onClick={() => rollback(s.name)}>
+						<span role="cell" className="b">{s.name}</span>
+						<span role="cell">{when(s.createdAt)}</span>
+						<span role="cell" className="muted">{s.description}</span>
+						<span role="cell" className="mx-tr-actions">
+							<button type="button" className="btn small" disabled={!canAct || action.isPending} aria-label={`Roll back to ${s.name}`} onClick={() => rollback(s.name)}>
 								Rollback
 							</button>
 							<button type="button" className="btn small danger" disabled={!canAct || action.isPending} onClick={() => remove(s.name)} aria-label={`Delete ${s.name}`}>
@@ -846,11 +846,11 @@ export function SnapshotsPanel({d}: {d: MachineDetails}) {
 						</span>
 					</div>
 				))}
-				<div className="mx-tr now">
-					<span className="b">NOW</span>
-					<span />
-					<span className="muted">You are here</span>
-					<span />
+				<div className="mx-tr now" role="row">
+					<span role="cell" className="b">NOW</span>
+					<span role="cell" />
+					<span role="cell" className="muted">You are here</span>
+					<span role="cell" />
 				</div>
 			</div>
 			<p className="muted mx-foot">Snapshots are kept inside the machine’s disks (qcow2). UEFI settings aren’t part of a snapshot.</p>
@@ -902,32 +902,32 @@ export function BackupsPanel({d}: {d: MachineDetails}) {
 			)}
 			<div className="mx-table" role="table">
 				<div className="mx-tr head" role="row">
-					<span>Date</span>
-					<span>Size</span>
-					<span>Notes</span>
-					<span />
+					<span role="columnheader">Date</span>
+					<span role="columnheader">Size</span>
+					<span role="columnheader">Notes</span>
+					<span role="columnheader" aria-label="Actions" />
 				</div>
-				{backupRows.loading && <div className="mx-tr empty">Loading…</div>}
+				{backupRows.loading && <div className="mx-tr empty" role="row"><span role="cell">Loading…</span></div>}
 				{backupRows.error && (
 					<div className="error" role="alert">
 						<Icon name="alert" size={18} />
 						{backupRows.error}
 					</div>
 				)}
-				{backupRows.showEmpty && <div className="mx-tr empty">No backups of {d.name} yet.</div>}
+				{backupRows.showEmpty && <div className="mx-tr empty" role="row"><span role="cell">No backups of {d.name} yet.</span></div>}
 				{(backups.data ?? []).map((b) => (
 					<div className="mx-tr" role="row" key={b.id}>
-						<span className="b">
+						<span role="cell" className="b">
 							{when(b.createdAt)}
 							{b.live && <em className="mx-tag">live</em>}
 						</span>
-						<span>{bytes(b.sizeBytes)}</span>
-						<span className="muted">{b.notes}</span>
-						<span className="mx-tr-actions">
-							<button type="button" className="btn small" disabled={action.isPending} onClick={() => restore(b.id, b.name)}>
+						<span role="cell">{bytes(b.sizeBytes)}</span>
+						<span role="cell" className="muted">{b.notes}</span>
+						<span role="cell" className="mx-tr-actions">
+							<button type="button" className="btn small" disabled={action.isPending} aria-label={`Restore the backup from ${when(b.createdAt)}`} onClick={() => restore(b.id, b.name)}>
 								Restore
 							</button>
-							<button type="button" className="btn small danger" disabled={action.isPending} onClick={() => remove(b.id)} aria-label="Delete backup">
+							<button type="button" className="btn small danger" disabled={action.isPending} onClick={() => remove(b.id)} aria-label={`Delete the backup from ${when(b.createdAt)}`}>
 								<Icon name="trash" size={14} />
 							</button>
 						</span>
@@ -944,21 +944,21 @@ export function TaskTable({tasks}: {tasks: Task[]}) {
 	return (
 		<div className="mx-table tasks" role="table">
 			<div className="mx-tr head" role="row">
-				<span>Start time</span>
-				<span>End time</span>
-				<span>Description</span>
-				<span>Status</span>
+				<span role="columnheader">Start time</span>
+				<span role="columnheader">End time</span>
+				<span role="columnheader">Description</span>
+				<span role="columnheader">Status</span>
 			</div>
-			{tasks.length === 0 && <div className="mx-tr empty">No tasks yet.</div>}
+			{tasks.length === 0 && <div className="mx-tr empty" role="row"><span role="cell">No tasks yet.</span></div>}
 			{tasks.map((t) => (
 				<div className={`mx-tr st-${t.status}`} role="row" key={`${t.machineId ?? ''}${t.id}`}>
-					<span>{when(t.startedAt)}</span>
-					<span>{t.endedAt ? when(t.endedAt) : ''}</span>
-					<span>
+					<span role="cell">{when(t.startedAt)}</span>
+					<span role="cell">{t.endedAt ? when(t.endedAt) : ''}</span>
+					<span role="cell">
 						{TASK_LABEL[t.type] ?? t.type}
 						{t.detail ? ` · ${t.detail}` : ''}
 					</span>
-					<span className="mx-status">{t.status === 'running' ? <span className="spinner" /> : t.status === 'ok' ? 'OK' : (t.message ?? 'Error')}</span>
+					<span role="cell" className="mx-status">{t.status === 'running' ? <span className="spinner" /> : t.status === 'ok' ? 'OK' : (t.message ?? 'Error')}</span>
 				</div>
 			))}
 		</div>
