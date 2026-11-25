@@ -1263,6 +1263,17 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (m.options?.protection && !input?.force) throw new RpcError('PRECONDITION_FAILED', `${m.name} is protected. Turn off Protection in its options to delete it.`)
 		if (hostOf(m) !== 'server') {
 			assertOwner(ctx)
+			// A computer that was removed from the swarm can't be asked to delete anything. Only a swarm list
+			// that was read and doesn't have it counts: a list that fails to load keeps the machine.
+			let swarm = null
+			try {
+				swarm = await connector?.list?.()
+			} catch {}
+			if (Array.isArray(swarm) && !swarm.some((a) => a?.id === hostOf(m))) {
+				machines = machines.filter((x) => x.id !== m.id)
+				await save()
+				return true
+			}
 			const {hostId, hostName, agent} = await hostAgent(m)
 			if (!agent.online) throw new RpcError('PRECONDITION_FAILED', `${hostName} is offline, so ${m.name} was not deleted.`)
 			if (!agent.allowed?.vms || !agent.on?.vms) throw new RpcError('FORBIDDEN', `Pair ${hostName} again with Virtual machines switched on.`)
