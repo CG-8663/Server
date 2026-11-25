@@ -707,7 +707,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		return conversations.setSummary(userId, row.id, {text, upTo: cut})
 	}
 
-	async function runTurn({userId, role, message, conversationId, keyId, signal, emit, continue: resume}) {
+	async function runTurn({userId, role, message, conversationId, keyId, signal, emit, onConversation, continue: resume}) {
 		// An error ends the turn without `done`, so it carries the chat's id: the screen of a new chat
 		// has no other way to learn it, and its next message would start a second chat.
 		let row = null
@@ -741,6 +741,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			if (!row) {
 				const title = [...String(message ?? '').split(/\r?\n/)[0].trim()].slice(0, 48).join('') || 'Chat'
 				row = await conversations.create(userId, {keyId: key.id, title})
+				onConversation?.(row.id)
 			} else if (row.keyId !== key.id) {
 				row = await conversations.setKey(userId, row.id, key.id)
 			}
