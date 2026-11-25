@@ -406,7 +406,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 					const choosable = x.kind === 'share' || x.kind === 'isos'
 					const cfgMeta = [x.config?.comment, x.config?.security && x.config.security !== 'public' ? `Unraid: ${x.config.security}` : ''].filter(Boolean).join(' · ')
 					return (
-						<button key={x.name} type="button" className="row" style={{minHeight: 56}} disabled={!choosable} onClick={() => choosable && flip(shares, setShares, x.name)}>
+						<button key={x.name} type="button" className="row" style={{minHeight: 56}} disabled={!choosable} role={choosable ? 'checkbox' : undefined} aria-checked={choosable ? shares.has(x.name) : undefined} onClick={() => choosable && flip(shares, setShares, x.name)}>
 							<span className="row-ico" style={{'--c': shares.has(x.name) ? 'var(--accent)' : '#8e8e93'} as CSSProperties}>
 								{choosable ? <Check on={shares.has(x.name)} /> : <Icon name="folder" size={18} />}
 							</span>
@@ -427,7 +427,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 						const volCount = c.namedVolumes?.length ?? 0
 						return (
 							<div key={c.id}>
-								<button type="button" className="row" style={{minHeight: 60}} disabled={c.installed} onClick={() => flip(containers, setContainers, c.id)}>
+								<button type="button" className="row" style={{minHeight: 60}} disabled={c.installed} role="checkbox" aria-checked={containers.has(c.id)} onClick={() => flip(containers, setContainers, c.id)}>
 									<span className="row-ico" style={{'--c': containers.has(c.id) ? 'var(--accent)' : '#8e8e93'} as CSSProperties}>
 										<Check on={containers.has(c.id)} />
 									</span>
@@ -471,7 +471,7 @@ function Choose({scan, host, fingerprint, version, onStart, onDisconnect}: {scan
 						const off = v.state === 'shut off'
 						return (
 							<div key={v.name}>
-								<button type="button" className="row" style={{minHeight: 60}} disabled={!!v.installed || !!v.problems.length} onClick={() => flip(vms, setVms, v.name)}>
+								<button type="button" className="row" style={{minHeight: 60}} disabled={!!v.installed || !!v.problems.length} role="checkbox" aria-checked={vms.has(v.name)} onClick={() => flip(vms, setVms, v.name)}>
 									<span className="row-ico" style={{'--c': vms.has(v.name) ? 'var(--accent)' : '#8e8e93'} as CSSProperties}>
 										<Check on={vms.has(v.name)} />
 									</span>

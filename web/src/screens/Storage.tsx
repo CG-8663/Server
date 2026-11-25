@@ -99,7 +99,7 @@ function Section({title, children, footer, right}: {title: string; children: Rea
 	)
 }
 
-function DriveRow({d, onClick, trailing}: {d: Drive; onClick?: () => void; trailing?: ReactNode}) {
+function DriveRow({d, onClick, trailing, checked}: {d: Drive; onClick?: () => void; trailing?: ReactNode; checked?: boolean}) {
 	const {tempUnit} = useStatView()
 	const issues = driveIssues(d)
 	const color = issues.length ? 'var(--peach)' : d.role === 'system' ? '#8e8e93' : d.role === 'pool' ? 'var(--teal)' : 'var(--blue)'
@@ -118,7 +118,7 @@ function DriveRow({d, onClick, trailing}: {d: Drive; onClick?: () => void; trail
 		</>
 	)
 	return onClick ? (
-		<button className="row drive-row" onClick={onClick}>
+		<button className="row drive-row" onClick={onClick} role={checked === undefined ? undefined : 'checkbox'} aria-checked={checked}>
 			{inner}
 		</button>
 	) : (
@@ -623,6 +623,7 @@ function NewPool({drives, zfs, taken, swarm, onClose, onDone, rpc, args}: {drive
 						key={d.path}
 						d={d}
 						onClick={() => setPicked((p) => (p.includes(d.path) ? p.filter((x) => x !== d.path) : [...p, d.path]))}
+						checked={picked.includes(d.path)}
 						trailing={<Icon name={picked.includes(d.path) ? 'checked' : 'unchecked'} size={22} />}
 					/>
 				))}
