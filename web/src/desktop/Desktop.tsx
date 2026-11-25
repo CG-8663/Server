@@ -28,6 +28,7 @@ import {desktopIconKeyOpens, desktopIconKeysApply, iconSelectionClearsOnFocus} f
 import {iconsInView} from './iconsInView'
 import {desktopMachineStatus, machineOpenAction} from './machineOpen'
 import {startAlreadyPending} from './startPending'
+import {dockLabel} from './dockLabel'
 import {extraWindowAction} from './extraWindow'
 import {ignoreRepeatedDesktopShortcut} from './shortcutRepeat'
 import {nextStarting, type StartingWatch} from './startingWatch'
@@ -2066,7 +2067,8 @@ function Dock(p: {
 								<button
 									data-key={k}
 									className={`dock-item${p.focusedKey === k ? ' focused' : ''}${count ? ' running' : ''}${drag?.key === k ? ' dragging' : ''}${bouncing === k ? ' bouncing' : ''}`}
-									aria-label={it.label}
+									aria-label={dockLabel(it.label, count, it.status, k.startsWith('machine:'))}
+									aria-current={p.focusedKey === k ? 'true' : undefined}
 									onPointerDown={(e) => {
 										tip.hide()
 										startDrag(k)(e)
@@ -2098,6 +2100,7 @@ function Dock(p: {
 				<button
 					className={`dock-item show-apps-btn${p.showAppsOn ? ' focused' : ''}`}
 					aria-label="Show Applications"
+					aria-pressed={!!p.showAppsOn}
 					onPointerDown={tip.hide}
 					onClick={p.onShowApps}
 					{...tipProps('Show Applications')}
