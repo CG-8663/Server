@@ -150,7 +150,7 @@ export function UnraidPage({onBack}: {onBack: () => void}) {
 						<b>{scanning ? `Looking at ${s.connected.host}…` : `Connected to ${s.connected.host}`}</b>
 					</div>
 					<p className="muted bk-next">{scanning ? 'Measuring shares, containers, VMs, and user scripts. Big shares take a minute or two.' : `Unraid ${s.connected.version}`}</p>
-					{error && <p className="bk-err">{error}</p>}
+					{error && <p className="bk-err" role="alert">{error}</p>}
 					{!scanning && (
 						<button className="btn primary" onClick={look}>
 							Look again
@@ -280,7 +280,7 @@ function ConnectCard({onConnected}: {onConnected: () => void}) {
 					</p>
 				)}
 				{error && (
-					<div className="error">
+					<div className="error" role="alert">
 						<Icon name="alert" size={18} />
 						{error}
 					</div>
@@ -666,8 +666,8 @@ function JobView({job, connected, scanning, error, onCancel, onAgain, onResync, 
 					)}
 					<b>{summary.heading}</b>
 				</div>
-				{job.stopped && <p className="bk-err">{job.stopped}</p>}
-				{error && <p className="bk-err">{error}</p>}
+				{job.stopped && <p className="bk-err" role="alert">{job.stopped}</p>}
+				{error && <p className="bk-err" role="alert">{error}</p>}
 				{summary.running ? (
 					<button className="btn" onClick={onCancel} disabled={job.cancelled}>
 						{job.cancelled ? 'Stopping…' : 'Stop'}

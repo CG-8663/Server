@@ -91,7 +91,7 @@ export function PluginBrowser({q}: {q: string}) {
 				</span>
 			</div>
 			{data && !data.available && (
-				<div className="error" style={{marginBottom: 12}}>
+				<div className="error" role="alert" style={{marginBottom: 12}}>
 					<Icon name="alert" size={18} />
 					This server’s Omarchy doesn’t support plugins yet. Update Omarchy, then come back.
 				</div>
@@ -134,7 +134,7 @@ export function PluginBrowser({q}: {q: string}) {
 									{p.stars ? ` · ★ ${p.stars}` : ''}
 								</small>
 								<p>{p.description}</p>
-								{p.job?.state === 'error' && <p className="plugin-error">{p.job.error}</p>}
+								{p.job?.state === 'error' && <p className="plugin-error" role="alert">{p.job.error}</p>}
 								<div className="plugin-actions">
 									{busy ? (
 										<button className="btn small" disabled>

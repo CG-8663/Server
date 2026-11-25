@@ -1015,7 +1015,7 @@ function AgentServices({a, onClose}: {a: Agent; onClose: () => void}) {
 				</button>
 			</div>
 			{data.isLoading && <p className="muted">Loading…</p>}
-			{data.error && <div className="error">{(data.error as Error).message}</div>}
+			{data.error && <div className="error" role="alert">{(data.error as Error).message}</div>}
 			{tab === 'user' && payload && (
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					{payload.systemd.length === 0 && <Row icon="server" label="No user services found" />}
@@ -1217,7 +1217,7 @@ export function AgentFiles({a, onClose}: {a: Agent; onClose: () => void}) {
 				)}
 			</div>
 			{dir.isLoading && <p className="muted">Loading…</p>}
-			{dir.error && <div className="error">{(dir.error as Error).message}</div>}
+			{dir.error && <div className="error" role="alert">{(dir.error as Error).message}</div>}
 			{dir.data && (
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					{dir.data.items.length === 0 && <Row icon="folder" label="Empty folder" />}

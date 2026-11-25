@@ -683,7 +683,7 @@ function StoreSheet({
 							)}
 						</div>
 					) : incompatible ? (
-						<div className="error">
+						<div className="error" role="alert">
 							<Icon name="alert" size={18} />
 							{app.unsupported ?? 'This app needs a newer version of My Own Data Center.'}
 						</div>
