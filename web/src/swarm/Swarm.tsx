@@ -7,6 +7,7 @@ import {lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties
 import {mutate, query, type Machine} from '../api'
 import {hostedVms} from '../fleet/hostedVms'
 import {queryProblem, useBrowserOnline} from '../connection'
+import {errorText} from '../queryNotice'
 import {Icon, type IconName} from '../icons'
 import {osLook} from '../osLook'
 import {extraDisks, type SwarmBattery} from './gauges'
@@ -713,6 +714,7 @@ export function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 			</div>
 			<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 				{page.isLoading && <Row icon="puzzle" label="Loading…" />}
+				{page.error && <Row icon="alert" label="Couldn’t load the plugin list" sub={errorText(page.error)} />}
 				{list
 					.filter((p) => !installed.has(p.id))
 					.map((p) => (
