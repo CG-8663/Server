@@ -172,7 +172,7 @@ export function ServerSheet({
 					<>
 						<MachineActions terminal={!!onTerminal} desktop={owner} onTerminal={() => onTerminal?.()} onDesktop={onDesktop} pin={<PinButton pin={{kind: 'machine', id: SERVER_FLEET_ID, computer: ''}} name={name} />} />
 						{n?.performanceWarning && (
-							<div className="error">
+							<div className="error" role="alert">
 								<Icon name="alert" size={18} />
 								{n.performanceWarning}
 							</div>
