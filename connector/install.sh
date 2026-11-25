@@ -81,7 +81,10 @@ as_root() {
 # Syntax only. Parsing does not write bytecode beside the download.
 PY="python3"
 python_ok() {
-	"$PY" -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$1"
+	# PY is the Mac OpenSSL interpreter when the whole installer runs. The syntax
+	# check extracts this function alone, so an unset PY still has to find Python.
+	local py="${PY:-python3}"
+	"$py" -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$1"
 }
 
 DIR="${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-connector"
