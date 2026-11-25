@@ -1,5 +1,5 @@
 // Full settings, backed by the same omarchyd calls My Own Data Center uses.
-import {useContext, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
+import {useContext, useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query, type ActiveSession, type AssistantApi, type AssistantCheck, type AssistantEffort, type AssistantKey, type AssistantModel, type AssistantProvider, type AssistantVerify} from '../api'
@@ -16,7 +16,7 @@ import {UnraidPage} from '../unraid'
 import {OidcSheet} from './Oidc'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 import {clearTotpSetupQuery} from './twoFactorQuery'
-import {MIN_PASSWORD_LENGTH, PASSWORD_SHEET_SUBTITLE, updateStartFailure} from './settingsHelpers'
+import {MIN_PASSWORD_LENGTH, PASSWORD_SHEET_SUBTITLE, updateFinished, updateStartFailure} from './settingsHelpers'
 import {safeSession} from '../safeStorage'
 
 
@@ -148,6 +148,17 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 			setUpdating(false)
 		}
 	}, [status.data?.error])
+	// The panel promises "this page reloads by itself": once the server has restarted and says the update is done,
+	// load the new build. `sawRunning` keeps an "Updated to X" left by an earlier update from reloading at once.
+	const sawRunning = useRef(false)
+	useEffect(() => {
+		if (!updating) {
+			sawRunning.current = false
+			return
+		}
+		if (status.data?.running) sawRunning.current = true
+		else if (updateFinished(sawRunning.current, status.data)) location.reload()
+	}, [updating, status.data])
 
 	const revoke = async (s: ActiveSession) => {
 		const d = describeSession(s)
