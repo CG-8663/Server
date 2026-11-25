@@ -37,7 +37,7 @@ import { openTerminalWith } from "../terminalEvent";
 import { safeLocal, safeSession } from "../safeStorage";
 import { MachineTrees, TreeChildren, type TreeActions, type TreeMachine } from "../fleet/FileTree";
 import { actionsForItems, asFileSearch, batchToast, copyTextOrToast, FILES_LIST_PAGE, filesListMoreLeft, filesPathToStore, nice, offersDownload, readStoredFilesPath, searchMatchNote, selectionAfterQuery, viewerAfterPathChange, type BatchKind } from "./filesRules";
-import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, emptyFolderUploadHint, type FavoriteItem, favoritePath, fileKindLabel, filesSearching, filterUnsyncedPhotos, folderPickerRoots, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
+import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, emptyFolderUploadHint, type FavoriteItem, favoritePath, fileKindLabel, filesSearching, filterUnsyncedPhotos, photosAlreadyThere, folderPickerRoots, handleFileDragEnter, handleFileDragOver, handleFileDrop, isServedFilePlace, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, reduceUploadMkdir, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, showFolderEmpty, UPLOAD_REFRESH_KEYS, uploadRelBlocked, type UploadBatch, type UploadMkdirState } from "../filesHelpers";
 
 const FileViewer = lazy(() =>
   import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
@@ -1221,12 +1221,19 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
         accept="image/*,video/*"
         multiple
         hidden
-        onChange={(e) => {
+        onChange={async (e) => {
           const picked = e.target.files ? [...e.target.files] : [];
           e.target.value = "";
           if (!picked.length) return;
           // Sync: upload only what isn't in Photos yet (same name or keep-both copy, and size).
-          const fresh = filterUnsyncedPhotos(picked, listing.data?.files ?? []);
+          // The listing on screen is one page, so a big Photos folder is read in full first.
+          let existing: FileEntry[];
+          try {
+            existing = await photosAlreadyThere(listing.data, () => query<Listing>("files.list", { path: PHOTOS, sortBy: "name", sortOrder: "ascending" }));
+          } catch (err) {
+            return toast(nice((err as Error).message), true);
+          }
+          const fresh = filterUnsyncedPhotos(picked, existing);
           const skipped = picked.length - fresh.length;
           if (!fresh.length) return toast(`All ${picked.length} already synced`);
           if (skipped) toast(`${fresh.length} new · ${skipped} already synced`);

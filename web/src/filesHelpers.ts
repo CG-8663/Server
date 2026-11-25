@@ -90,6 +90,15 @@ export function filterUnsyncedPhotos<T extends {name: string; size: number}>(pic
 	return picked.filter((f) => !have.has(`${f.name}:${f.size}`) && !have.has(`${stripCopySuffix(f.name)}:${f.size}`))
 }
 
+/** The files already in Photos. A listing cut off at one page (hasMore) is not all of them, so the whole folder is read. */
+export async function photosAlreadyThere(
+	listing: {files: FileEntry[]; hasMore?: boolean} | undefined,
+	loadAll: () => Promise<{files: FileEntry[]}>,
+): Promise<FileEntry[]> {
+	if (listing && !listing.hasMore) return listing.files
+	return (await loadAll()).files
+}
+
 export type FileDragEventLike = {
 	preventDefault: () => void
 	dataTransfer: {types: readonly string[]; dropEffect: 'none' | 'copy' | 'link' | 'move'}
