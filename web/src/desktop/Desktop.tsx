@@ -2699,7 +2699,7 @@ function Overview({
 						placeholder={railReady ? 'Search web & native Linux apps…' : 'Type to search'}
 						aria-label="Search apps"
 						onKeyDown={(e) => {
-							if (overviewEnterOpensApp(e.key, showApps, items.length)) onOpen(items[0].key)
+							if (overviewEnterOpensApp(e.key, showApps, items.length, e.nativeEvent.isComposing)) onOpen(items[0].key)
 						}}
 					/>
 				</div>

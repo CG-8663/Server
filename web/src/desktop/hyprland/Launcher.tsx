@@ -41,6 +41,8 @@ export function Launcher({
 	}, [sel, rows.length])
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
+			// An input-method composition (candidate list, confirm, cancel) owns its keys.
+			if (e.isComposing) return
 			if (shouldYieldLauncherKey(document, e.target)) return
 			if (e.key === 'Escape') {
 				e.preventDefault()
