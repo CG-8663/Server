@@ -129,8 +129,12 @@ export async function listHostUsb({
 const USB_SERIAL = /^[A-Za-z0-9._:-]{1,128}$/
 const xml = (s) => String(s).replace(/[<>&'"]/g, (c) => ({'<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;'})[c])
 
+// libvirt matches the serial text exactly, so any plain printable serial is written as it is (a space or
+// a + is common). Only text that XML would have to escape is left out.
+const hostdevSerial = (serial) => typeof serial === 'string' && /^[\x21-\x7e]([\x20-\x7e]{0,126}[\x21-\x7e])?$/.test(serial) && !/[<>&'"]/.test(serial)
+
 export function hostdevXml({vendorId, productId, serial}) {
-	const ser = serial && USB_SERIAL.test(serial) ? `<serial>${xml(serial)}</serial>` : ''
+	const ser = hostdevSerial(serial) ? `<serial>${xml(serial)}</serial>` : ''
 	return `<hostdev mode='subsystem' type='usb' managed='yes'><source startupPolicy='optional'><vendor id='0x${vendorId}'/><product id='0x${productId}'/>${ser}</source></hostdev>`
 }
 
