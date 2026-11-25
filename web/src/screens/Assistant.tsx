@@ -660,6 +660,10 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 				<>
 					<div
 						className="assistant-thread"
+						role="log"
+						aria-live="polite"
+						aria-relevant="additions"
+						aria-label="Conversation"
 						ref={threadRef}
 						onScroll={(e) => {
 							const el = e.currentTarget
@@ -690,7 +694,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 										<div key={b.id} className="assistant-msg">
 											{/* The character beside its replies; only the one being written moves. */}
 											<AssistantCharacter id={look.character} state={b.streaming ? faceState : 'idle'} size={28} animate={look.animate && !!b.streaming} intensity={look.intensity} />
-											<div className={`bubble ${b.role}${b.streaming ? ' live' : ''}`}>
+											<div className={`bubble ${b.role}${b.streaming ? ' live' : ''}`} aria-busy={b.streaming ? true : undefined}>
 												<BubbleMarkdown text={b.content} />
 												<LiveMark streaming={b.streaming} content={b.content} />
 											</div>
@@ -701,7 +705,11 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 										</div>
 									),
 								)}
-								{activity && <p className="assistant-activity">{activity}</p>}
+								{activity && (
+									<p className="assistant-activity" role="status">
+										{activity}
+									</p>
+								)}
 								{turnError && (
 									<div className="error" role="alert">
 										<Icon name="alert" size={18} />
