@@ -3749,7 +3749,8 @@ def files_transfer(args, copy, home=None, config=None, data=None):
         except OSError:
             pass
     if is_dir:
-        shutil.copytree(real, target, symlinks=True, ignore=lambda _dir, names: [n for n in names if n.startswith(".")])
+        # A move deletes the original afterwards, so it must copy the hidden files too.
+        shutil.copytree(real, target, symlinks=True, ignore=None if not copy else lambda _dir, names: [n for n in names if n.startswith(".")])
         if not copy:
             shutil.rmtree(real)
     else:
