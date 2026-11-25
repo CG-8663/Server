@@ -10,7 +10,7 @@ import {fieldAria, liveRegionText, useDialogFocus} from './focus'
 import {RADIO_SELECTOR, rovingKeyDown, rovingTabIndex, TAB_SELECTOR} from './roving'
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
-import {solidOf, WALLPAPERS, useDeskConfig, wallpaperSrc} from './desktop/config'
+import {solidOf, useDeskConfig} from './desktop/config'
 import {wallpaperBlocked} from './desktop/wallpaperGate'
 import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
@@ -1082,10 +1082,8 @@ export function Backdrop({wallpaper, prefs, signedIn = false}: {wallpaper?: Wall
 	const solid = prefs.solidColor || solidOf(desk.wallpaper)
 	const wantsOmarchy = desk.wallpaper === 'omarchy' || prefs.theme === 'omarchy' || prefs.theme === 'horizon'
 	const desktopBg = useOmarchyThemes(wantsOmarchy).data?.current
-	const builtin = WALLPAPERS.find((w) => w.id === desk.wallpaper)
-	const url = builtin
-		? wallpaperSrc(builtin.id)
-		: desk.wallpaper === 'photo'
+	const url =
+		desk.wallpaper === 'photo'
 			? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(wallpaper))
 			: desk.wallpaper === 'server'
 				? wallpaperUrl(wallpaper)

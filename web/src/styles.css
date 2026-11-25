@@ -7188,7 +7188,7 @@ html:not(.desk-mode) .upload-panel {
 .omb-head select {
 	background: var(--glass, rgba(255, 255, 255, 0.08));
 	color: inherit;
-	border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+	border: 1px solid rgba(255, 255, 255, 0.12);
 	border-radius: 10px;
 	padding: 6px 10px;
 	font: inherit;
@@ -8680,7 +8680,7 @@ html.machines-vt::view-transition-new(root) {
 	padding: 10px 12px;
 	border-radius: 12px;
 	background: rgba(0, 0, 0, 0.35);
-	color: var(--text, #fff);
+	color: #fff;
 	font-size: 12px;
 	line-height: 1.45;
 	word-break: break-all;
@@ -11317,4 +11317,24 @@ input.temp-unit-box.fallback:checked {
 .rail-pill-btn.close:hover {
 	background: #ef4444;
 	color: #fff;
+}
+
+/* Terminal: press and hold → Paste (phones) */
+.term-press-scrim {
+	position: fixed;
+	inset: 0;
+	z-index: 60;
+}
+.term-press-paste {
+	position: fixed;
+	z-index: 61;
+	min-width: 80px;
+	padding: 10px 16px;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 12px;
+	background: #17171c;
+	color: #fff;
+	font: inherit;
+	font-weight: 600;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
