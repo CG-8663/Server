@@ -23,7 +23,7 @@ import {pipeline} from 'node:stream/promises'
 import {fileURLToPath} from 'node:url'
 
 import {fetchErrorMessage, httpDownloadErrorMessage, isNetworkError} from './fetch-error.mjs'
-import {connectorAllowList, connectorCloudInit, connectorKind, defaultConnectorAbilities, guestConnectorExec, guestConnectorPrep, guestDefaultGateway, guestOwnAddresses, guestReachableUrl} from './guest-install.mjs'
+import {connectorAllowList, connectorCloudInit, connectorKind, defaultConnectorAbilities, guestConnectorExec, guestConnectorPrep, guestConnectorReadyCommand, guestDefaultGateway, guestOwnAddresses, guestReachableUrl} from './guest-install.mjs'
 import {PUBLIC_KEY, cloudMetaData, cloudUserData, hostnameFor, isWindowsClientLabel, isWindowsLabel, omarchyConfiguration, omarchyCredentials, windowsAnswerFile} from './machine-media.mjs'
 import {createQemuAgent} from './qemu-agent.mjs'
 import {remoteGuestAgentRun} from './remote-guest-agent.mjs'
@@ -109,7 +109,7 @@ function catalogInstallKind(img) {
 	return 'cloud'
 }
 
-export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000, connectorAgentWaitMs = 15 * 60 * 1000, isOwner = () => true}) {
+export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = fetch, run = execP, kvmDevice = '/dev/kvm', bundledCatalog = BUNDLED_CATALOG, files = null, arch = hostArch(), statsIntervalMs = 1_000, seriesIntervalMs = 10_000, watchIdleMs = 15_000, connector, qemuAgent = createQemuAgent, connectorEnrollTimeoutMs = 10 * 60 * 1000, connectorAgentWaitMs = 60 * 60 * 1000, isOwner = () => true}) {
 	const base = join(dataDir, 'machines')
 	const imagesDir = join(base, 'images')
 	const vmsDir = join(base, 'vms')
@@ -840,7 +840,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				layout,
 				...(kind === 'omarchy' || kind === 'windows' || kind === 'manual' ? {boot: ['disk0', 'cd0']} : {}),
 			})
-			if (kind === 'cloud') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
+			if (kind === 'cloud' || kind === 'omarchy') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
 			machines.push(m)
 			try {
 				await save()
@@ -983,7 +983,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			while (machines.some((m) => m.id === id))
 			const dir = join(vmsDir, id)
 			const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', options: {agent: true}, layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' || local?.platform === 'windows' ? 'windows' : 'iso', dir, img)})
-			if (kind === 'cloud') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
+			if (kind === 'cloud' || kind === 'omarchy') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
 			machines.push(m)
 			try {
 				await save()
@@ -1400,6 +1400,20 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const timer = setTimeout(resolve, ms)
 		timer.unref?.()
 	})
+	async function guestExecExit(agent, m, cmd) {
+		const tick = Math.min(1_000, Math.max(25, Math.floor(connectorEnrollTimeoutMs / 4)))
+		const started = await agent.exec(cmd)
+		if (!started?.pid) throw new RpcError('BAD_GATEWAY', `${m.name} didn’t start the connector installer`)
+		const until = Date.now() + connectorEnrollTimeoutMs
+		let result
+		while (Date.now() < until) {
+			result = await agent.status(started.pid)
+			if (result?.exited) break
+			await new Promise((r) => setTimeout(r, tick))
+		}
+		if (!result?.exited) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish the connector installer`)
+		return result
+	}
 	function waitForGuestConnector(id, username) {
 		const m = machines.find((row) => row.id === id)
 		if (!m) return
@@ -1409,9 +1423,22 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const runWait = async () => {
 			const t = beginTask(m, 'connector')
 			await save().catch(() => {})
-			let handedOff = false
+			let lastError = null
+			let enrolled = false
+			let installed = false
+			const pause = async () => {
+				const left = deadline - Date.now()
+				if (left <= 0) return false
+				await sleepUnref(Math.min(gap, left))
+				return true
+			}
 			try {
 				while (Date.now() < deadline) {
+					const listed = await connector?.list?.().catch(() => [])
+					if ((Array.isArray(listed) ? listed : []).some((a) => a?.guestOf === id)) {
+						enrolled = true
+						return
+					}
 					let up = false
 					try {
 						await agent.ping()
@@ -1419,21 +1446,45 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					} catch {
 						up = false
 					}
-					if (up) {
-						const listed = await connector?.list?.().catch(() => [])
-						if ((Array.isArray(listed) ? listed : []).some((a) => a?.guestOf === id)) return
-						handedOff = true
-						await installConnector({id, username}).catch(() => {})
-						return
+					if (!up) {
+						if (!await pause()) return
+						continue
 					}
-					const left = deadline - Date.now()
-					if (left <= 0) return
-					await sleepUnref(Math.min(gap, left))
+					const user = String(username ?? m.cloudInit?.username ?? '').trim()
+					if (connectorKind(m.osId) === 'linux' && user) {
+						try {
+							const ready = await guestExecExit(agent, m, guestConnectorReadyCommand({username: user}))
+							if (ready.exitcode !== 0) {
+								if (!await pause()) return
+								continue
+							}
+						} catch {
+							if (!await pause()) return
+							continue
+						}
+					}
+					try {
+						const out = await installConnector({id, username: user})
+						if (out?.status === 'needs-agent') {
+							if (!await pause()) return
+							continue
+						}
+						if (out?.status === 'unsupported') return
+						if (out?.status === 'started' || out?.status === 'joined') {
+							installed = true
+							enrolled = true
+							return
+						}
+					} catch (error) {
+						lastError = error
+						if (!await pause()) return
+					}
 				}
 			} finally {
 				if (t.status === 'running') {
-					if (handedOff) endTask(m, t)
-					else m.tasks = (m.tasks ?? []).filter((row) => row.id !== t.id)
+					if (installed) endTask(m, t)
+					else if (enrolled) m.tasks = (m.tasks ?? []).filter((row) => row.id !== t.id)
+					else endTask(m, t, lastError || new Error('The guest agent didn’t come up in time'))
 					await save().catch(() => {})
 				}
 			}
@@ -1462,22 +1513,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const username = String(input?.username ?? m.cloudInit?.username ?? '').trim()
 		if (os === 'linux' && !username) throw new RpcError('PRECONDITION_FAILED', 'Give the guest account to install as.')
 		const tick = Math.min(1_000, Math.max(25, Math.floor(connectorEnrollTimeoutMs / 4)))
-		const guestExecExit = async (cmd) => {
-			const started = await agent.exec(cmd)
-			if (!started?.pid) throw new RpcError('BAD_GATEWAY', `${m.name} didn’t start the connector installer`)
-			const deadline = Date.now() + connectorEnrollTimeoutMs
-			let result
-			while (Date.now() < deadline) {
-				result = await agent.status(started.pid)
-				if (result?.exited) break
-				await new Promise((r) => setTimeout(r, tick))
-			}
-			if (!result?.exited) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish the connector installer`)
-			return result
-		}
 		if (os === 'linux') {
 			for (const cmd of guestConnectorPrep({username, osId: m.osId})) {
-				const prepared = await guestExecExit(cmd)
+				const prepared = await guestExecExit(agent, m, cmd)
 				if (prepared.exitcode !== 0) throw new RpcError('PRECONDITION_FAILED', `${m.name} couldn’t prepare the connector installer.`)
 			}
 		}
@@ -1494,7 +1532,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const url = guestReachableUrl({addresses: pair.addresses, port: pair.port, exclude, gateway})
 		if (!url) throw new RpcError('PRECONDITION_FAILED', 'This server has no address the guest can reach.')
 		const caPem = /^https:\/\//i.test(String(pair.source ?? '')) ? undefined : await connector.caCertificate()
-		const result = await guestExecExit(guestConnectorExec({os, osId: m.osId, username, source: pair.source, server: url, ca: pair.ca, token: pair.token, allow: connectorAllowList(os, abilities), caPem}))
+		const result = await guestExecExit(agent, m, guestConnectorExec({os, osId: m.osId, username, source: pair.source, server: url, ca: pair.ca, token: pair.token, allow: connectorAllowList(os, abilities), caPem}))
 		if (result.exitcode !== 0) throw new RpcError('PRECONDITION_FAILED', `${m.name} couldn’t install the connector.`)
 		const poll = async () => {
 			const joinUntil = Date.now() + connectorEnrollTimeoutMs
@@ -1504,6 +1542,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				await new Promise((r) => setTimeout(r, tick))
 			}
 			throw new Error('The connector didn’t join in time')
+		}
+		const existing = (m.tasks ?? []).find((row) => row.type === 'connector' && row.status === 'running')
+		if (existing) {
+			await poll()
+			return {status: 'started', os, taskId: existing.id}
 		}
 		const work = task(m, 'connector', null, poll)
 		const taskId = m.tasks[0].id
@@ -2134,8 +2177,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		writable(m)
 		refuseIfBusy(m)
 		const seedDisk = m.layout.disks.find((d) => d.role === 'seed')
-		// Omarchy installs also have a seed drive (user_configuration.json). Only cloud images set m.cloudInit.
-		if (!m.cloudInit || !seedDisk) throw new RpcError('PRECONDITION_FAILED', `${m.name} doesn’t use cloud-init`)
+		// Omarchy keeps username on cloudInit for connector install; its seed is archinstall, not user-data.
+		if (!m.cloudInit || !seedDisk || /omarchy/i.test(String(m.osId))) throw new RpcError('PRECONDITION_FAILED', `${m.name} doesn’t use cloud-init`)
 		const username = String(input.username ?? m.cloudInit?.username ?? '').trim()
 		if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(username) || username === 'root') throw new RpcError('BAD_REQUEST', 'Use a lower-case username: letters, numbers, - and _ (not root)')
 		const hostname = String(input.hostname ?? m.cloudInit?.hostname ?? hostnameFor(m.name, m.id)).trim().toLowerCase()
