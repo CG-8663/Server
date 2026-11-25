@@ -29,7 +29,7 @@ import {
 } from './api'
 import {backupListView} from './backupList'
 import {formatServerDiskGb} from './formatServerDisk'
-import {cpuStatusText, pointsInLastHour} from './statsWindow'
+import {cpuStatusText, memoryStatusText, pointsInLastHour} from './statsWindow'
 
 export type PanelId = 'summary' | 'console' | 'hardware' | 'cloudinit' | 'options' | 'network' | 'usb' | 'snapshots' | 'backups' | 'history' | 'monitor'
 export const PANELS: {id: PanelId; label: string; icon: IconName}[] = [
@@ -178,7 +178,7 @@ export function SummaryPanel({d}: {d: MachineDetails}) {
 						<dt>CPU usage</dt>
 						<dd>{cpuStatusText(d.state === 'running', last, d.hardware.sockets * d.hardware.cores)}</dd>
 						<dt>Memory</dt>
-						<dd>{last ? `${mib(last.memMb)} of ${mib(d.hardware.memoryMb)}` : mib(d.hardware.memoryMb)}</dd>
+						<dd>{memoryStatusText(d.state === 'running', last, d.hardware.memoryMb, mib)}</dd>
 						<dt>Boot disk</dt>
 						<dd>{disk0?.sizeGb ? `${disk0.sizeGb} GB${disk0.usedGb !== null ? ` (${disk0.usedGb} GB used)` : ''}` : '–'}</dd>
 						<dt>Address</dt>
