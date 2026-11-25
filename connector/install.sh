@@ -79,8 +79,9 @@ as_root() {
 	fi
 }
 # Syntax only. Parsing does not write bytecode beside the download.
+PY="python3"
 python_ok() {
-	python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$1"
+	"$PY" -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$1"
 }
 
 DIR="${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-connector"
@@ -157,13 +158,48 @@ fi
 has() { [[ ",$ALLOW," == *",$1,"* ]]; }
 
 if [ "$MAC" = 1 ]; then
-	# macOS ships a python3 that asks to install the Command Line Tools the first time.
-	if ! python3 -c 'import ssl, sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then
+	# Apple's /usr/bin/python3 links against LibreSSL 2.8.3, which rejects IP Name Constraints
+	# on this server's restricted CA ("unsupported name constraint type"). Pick a Python 3.8+
+	# linked against OpenSSL (or LibreSSL >= 3.5), checking PATH, Homebrew, and python.org.
+	py_ssl_ok() {
+		[ -n "$1" ] && [ -x "$1" ] || return 1
+		"$1" -c 'import ssl, sys
+v = ssl.OPENSSL_VERSION
+bad = False
+if v.startswith("LibreSSL"):
+    parts = v.split()
+    ver = tuple(int(x) for x in parts[1].split(".")[:2]) if len(parts) > 1 and parts[1].replace(".", "").isdigit() else (0, 0)
+    bad = ver < (3, 5)
+sys.exit(sys.version_info < (3, 8) or bad)' 2>/dev/null
+	}
+	find_mac_python() {
+		local cand prefix=""
+		cand=$(command -v python3 2>/dev/null || true)
+		if py_ssl_ok "$cand"; then printf '%s' "$cand"; return 0; fi
+		if command -v brew >/dev/null; then
+			prefix=$(brew --prefix 2>/dev/null || true)
+		fi
+		local dirs=()
+		[ -n "$prefix" ] && dirs+=("$prefix")
+		dirs+=(/opt/homebrew /usr/local)
+		for d in "${dirs[@]}"; do
+			for cand in "$d/bin/python3" "$d/opt/python/libexec/bin/python3" "$d"/bin/python3.* "$d"/opt/python@*/libexec/bin/python3; do
+				case "$cand" in *-config) continue ;; esac
+				if py_ssl_ok "$cand"; then printf '%s' "$cand"; return 0; fi
+			done
+		done
+		for cand in /Library/Frameworks/Python.framework/Versions/Current/bin/python3 /Library/Frameworks/Python.framework/Versions/3.*/bin/python3; do
+			if py_ssl_ok "$cand"; then printf '%s' "$cand"; return 0; fi
+		done
+		return 1
+	}
+	if ! PY=$(find_mac_python); then
 		if command -v brew >/dev/null; then
 			say "Installing Python (Homebrew)"
 			brew install python >/dev/null || die "Couldn't install Python. Run: brew install python"
+			PY=$(find_mac_python) || die "Homebrew Python was installed, but no OpenSSL-backed Python 3.8+ was found."
 		else
-			die "Python 3 is needed. Run: xcode-select --install   (or install it from python.org), then run this again."
+			die "Python 3 with OpenSSL (not Apple's LibreSSL 2.8) is needed. Install it from python.org or with Homebrew (brew install python), then run this again."
 		fi
 	fi
 	if has terminal && ! command -v tmux >/dev/null && command -v brew >/dev/null; then
@@ -253,7 +289,7 @@ if [ "$USER_ENROLL_ONLY" != 1 ] && [ ${#pkgs[@]} -gt 0 ]; then
 		esac
 	done
 fi
-command -v python3 >/dev/null || die "Python 3 is needed. Install it, then run this again."
+command -v "$PY" >/dev/null || die "Python 3 is needed. Install it, then run this again."
 
 # 2. Trust only your server: fetch its certificate authority and check it against the fingerprint
 #    in the command (which came from the server itself, over your own signed-in session).
@@ -263,7 +299,7 @@ say "Checking your server ($SERVER)"
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 curl -fsSk --max-time 20 "${SERVER%/}/api/tls/ca.crt" -o "$tmp" || die "Couldn't reach $SERVER. Is this computer on the same network (or tailnet) as the server?"
-got=$(python3 -c 'import ssl,sys,hashlib; print(hashlib.sha256(ssl.PEM_cert_to_DER_cert(open(sys.argv[1]).read())).hexdigest())' "$tmp") || die "The server didn't send a certificate."
+got=$("$PY" -c 'import ssl,sys,hashlib; print(hashlib.sha256(ssl.PEM_cert_to_DER_cert(open(sys.argv[1]).read())).hexdigest())' "$tmp") || die "The server didn't send a certificate."
 [ "$got" = "$CA" ] || die "That isn't your server (its certificate doesn't match the fingerprint in the command). Nothing was installed."
 install -m 600 "$tmp" "$CONF/server-ca.crt"
 
@@ -328,14 +364,14 @@ fi
 
 # 4. Join, with this one-time code.
 say "Joining your server"
-name=$(python3 "$DIR/agent.py" enroll "$SERVER" "$TOKEN" "$ALLOW") || die "Joining didn't work (see above)."
+name=$("$PY" "$DIR/agent.py" enroll "$SERVER" "$TOKEN" "$ALLOW") || die "Joining didn't work (see above)."
 
 # 5. Keep it running, as you, from now on.
 if [ "$MAC" = 1 ]; then
 	# Escaped for the plist (a home folder may have & or < in its name); launchd's own PATH has no
 	# Homebrew, so give it one (from kdegeek's #864).
-	xml() { python3 -c 'import sys, xml.sax.saxutils as x; print(x.escape(sys.argv[1]))' "$1"; }
-	py=$(xml "$(command -v python3)")
+	xml() { "$PY" -c 'import sys, xml.sax.saxutils as x; print(x.escape(sys.argv[1]))' "$1"; }
+	py=$(xml "$(command -v "$PY")")
 	dir_xml=$(xml "$DIR")
 	mkdir -p "$(dirname "$PLIST")" "$DIR/log"
 	cat >"$PLIST" <<EOF
