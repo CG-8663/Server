@@ -40,6 +40,7 @@ import {Launcher} from './hyprland/Launcher'
 import {GAP, MIN_PANE, collapse, contains, dividers, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, moveWorkspace, ratioAt, reconcile, rects as tileRectsOf, remove as removeTile, setRatio, swapDir, type Divider, type Node, type Path} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
 import {loadWallpaper} from './wallpaperLoader'
+import {sameShellWindows} from './extraWindow'
 import {overviewEnterOpensApp} from './overviewEnter'
 import {OPEN_SETTINGS, SHOW_SHELL_KEY, rememberAppearanceFocus, rememberSettingsPage, settingsPayloadFor, settingsRemountKey} from './settingsPage'
 import {clampDragY, clampWindowRect} from './windowGeometry'
@@ -665,7 +666,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			const storedPayload = settingsPayload ?? payload
 			const key = keyOf(kind, storedPayload)
 			const multi = kind === 'files' || kind === 'terminal'
-			const existing = winsRef.current.filter((w) => w.key === key).sort((a, b) => b.z - a.z)[0]
+			const sameKey = winsRef.current.filter((w) => w.key === key)
+			const existing = (kind === 'terminal' ? sameShellWindows(sameKey, payload?.term) : sameKey).sort((a, b) => b.z - a.z)[0]
 			if (existing && !(multi && opts?.newWindow)) {
 				if (kind === 'personalize' && payload?.tab) update(existing.id, {payload})
 				if (kind === 'store') update(existing.id, {payload: storedPayload})
@@ -756,14 +758,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			launch,
 			openConsole,
 			openTerminal: (term, input) => {
-				const action = extraWindowAction('terminal', winsRef.current.some((w) => w.kind === 'terminal'))
+				const action = extraWindowAction('terminal', sameShellWindows(winsRef.current, term).length > 0)
 				open('terminal', term || input ? {...(term ? {term} : {}), ...(input ? {input} : {})} : undefined, {newWindow: action === 'open'})
 			},
 			close,
 			openItem: (key) => {
 				if (isSys(key)) {
 					if (key !== 'terminal') return open(key)
-					const action = extraWindowAction('terminal', winsRef.current.some((w) => w.kind === 'terminal'))
+					const action = extraWindowAction('terminal', sameShellWindows(winsRef.current, null).length > 0)
 					return open('terminal', undefined, {newWindow: action === 'open'})
 				}
 				if (key.startsWith('folder:')) return open('files', {path: key.slice(7)}, {newWindow: true})
