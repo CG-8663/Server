@@ -2579,6 +2579,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if (!meta?.machine?.layout) throw new RpcError('NOT_FOUND', 'That backup doesn’t exist')
 		const name = input.name ? String(input.name).trim() : uniqueName(meta.machine.name)
 		if (!name || name.length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
+		if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 		return adopt(meta.machine, {name, keepIds: true, copyDisk: (d, dst) => run('qemu-img', ['convert', '-O', 'qcow2', join(dir, `${d.id}.qcow2`), dst], {timeout: 6 * 60 * 60_000})})
 	}
 	// A VM brought over from another server (the Unraid importer): its settings, and disk images
@@ -2610,6 +2611,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await requireStopped(m, 'clone it')
 		const name = input.name ? String(input.name).trim() : uniqueName(`${m.name} copy`)
 		if (!name || name.length > 64 || machines.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new RpcError('CONFLICT', 'Choose a name no other machine has')
+		if (!xmlChars(name)) throw new RpcError('BAD_REQUEST', 'That name can’t be used')
 		// The source's history entry stays running until the copy ends, then follows its result.
 		const sourceTask = beginTask(m, 'clone', name)
 		await save().catch(() => {})
