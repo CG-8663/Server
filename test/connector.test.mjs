@@ -484,7 +484,7 @@ describe('swarm close reasons', () => {
 			agentWs.terminate()
 			c.close()
 			await new Promise((r) => server.close(r))
-			await rm(dataDir, {recursive: true, force: true})
+			await rm(dataDir, {recursive: true, force: true, maxRetries: 5, retryDelay: 20})
 		}
 	}
 	async function browserSocket() {
