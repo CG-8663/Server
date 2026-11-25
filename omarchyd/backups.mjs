@@ -34,6 +34,7 @@ import {
 	pkceChallenge,
 } from './gdrive.mjs'
 import {RpcError} from './rpc.mjs'
+import {stoppedMessage} from './exec-error.mjs'
 
 export const RESTIC_VERSION = '0.18.1'
 // From restic's SHA256SUMS for 0.18.1 (https://github.com/restic/restic/releases/tag/v0.18.1).
@@ -158,7 +159,8 @@ export function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 
 		let out = ''
 		let err = ''
 		let buf = ''
-		const timer = setTimeout(() => child.kill('SIGTERM'), timeout)
+		let timedOut = false
+		const timer = setTimeout(() => ((timedOut = true), child.kill('SIGTERM')), timeout)
 		child.stdout.on('data', (s) => {
 			out += s
 			if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024)
@@ -174,7 +176,7 @@ export function defaultSpawn(cmd, args, {env, input, onLine, timeout = 6 * 60 * 
 		child.on('close', (code) => {
 			clearTimeout(timer)
 			if (code === 0) return resolve({stdout: out, stderr: err})
-			const e = new Error(`${cmd}: ${(err || out).trim().split('\n').slice(-3).join(' ') || `exit ${code}`}`)
+			const e = new Error(timedOut ? stoppedMessage(cmd, {killed: true}, timeout) : `${cmd}: ${(err || out).trim().split('\n').slice(-3).join(' ') || `exit ${code}`}`)
 			e.code = code
 			e.stdout = out
 			e.stderr = err

@@ -37,6 +37,7 @@ import {linkProxy} from './proxy-link.mjs'
 import {installTargetId} from './install-target.mjs'
 import {usbComposeOverlay} from './usb.mjs'
 import {buildAppRedirectUris, buildOidcCaBundle, oidcComposeOverlay, oidcSummaryForStore, oidcVarsFor, parseManifestOidc, resolveAppOidcSpec} from './app-oidc.mjs'
+import {stoppedMessage} from './exec-error.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
 // Every cookie My Own Data Center itself sets (and any it may set later under these prefixes).
@@ -540,7 +541,7 @@ function execP(cmd, args, {env, cwd, timeout = 10 * 60_000} = {}) {
 	return new Promise((resolve, reject) => {
 		execFile(cmd, args, {cwd, timeout, maxBuffer: 32 * 1024 * 1024, env: {...process.env, ...env}}, (error, stdout, stderr) => {
 			if (error) {
-				error.message = `${cmd}: ${(stderr || error.message).toString().trim().split('\n').slice(-3).join(' ')}`
+				error.message = stoppedMessage(cmd, error, timeout) ?? `${cmd}: ${(stderr || error.message).toString().trim().split('\n').slice(-3).join(' ')}`
 				return reject(error)
 			}
 			resolve(stdout.toString())
