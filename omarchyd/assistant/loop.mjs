@@ -241,6 +241,10 @@ export function cardFor(name, args, names = {}) {
 		const n = Array.isArray(a.portForwards) ? a.portForwards.length : 0
 		return {title: `Change port forwards on ${vm}`, detail: n ? `${n} port forward${n === 1 ? '' : 's'}` : ''}
 	}
+	if (name === 'swarm_wake') {
+		const host = lookup(maps.swarm, a.id, 'this computer')
+		return {title: `Wake up ${host}`, detail: 'Sends a wake packet on the local network'}
+	}
 	if (name === 'swarm_action') {
 		const host = lookup(maps.swarm, a.id, 'this computer')
 		if (a.name === 'reboot') return {title: `Restart ${host}`, detail: ''}

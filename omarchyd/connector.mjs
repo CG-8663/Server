@@ -22,8 +22,10 @@ import {WebSocketServer} from 'ws'
 
 import {writeAtomic} from './atomic.mjs'
 import {GUEST_PAIR_TTL} from './guest-install.mjs'
+import {updateNics} from './nics.mjs'
 import {RpcError} from './rpc.mjs'
 import {parseResize} from './terminal.mjs'
+import {fanoutWake} from './wol.mjs'
 
 // backup: the computer backs up folders you choose to this server (see backups.mjs). Its restic
 // uploads through the connector's own pinned connection, and can only add backups, never delete them.
@@ -339,6 +341,25 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 	// A guest connector is the same agent, remembered against the virtual machine it was installed on.
 	// Anything else stays a physical computer. A bad value must not hide that computer.
 	const guestOf = (a) => (typeof a?.guestOf === 'string' && /^[a-f0-9]{8}$/.test(a.guestOf) ? a.guestOf : '')
+	function reportedMacs(info) {
+		const nics = info?.nics
+		if (Array.isArray(nics) && nics.length) {
+			return nics.map((n) => (typeof n === 'string' ? n : n?.mac)).filter(Boolean)
+		}
+		return Array.isArray(info?.macs) ? info.macs : []
+	}
+	function rememberedMacs(a) {
+		const fromNics = (a.nics ?? []).map((n) => n.mac).filter(Boolean)
+		if (fromNics.length) return fromNics
+		return Array.isArray(a.info?.macs) ? a.info.macs : []
+	}
+	function tickNics(a, reported) {
+		const t = now()
+		const elapsed = a.nicTick ? Math.max(0, t - a.nicTick) : 0
+		a.nicTick = t
+		a.nics = updateNics(a.nics, reported, {now: t, session: a.nicSession ?? 0, elapsedOnlineMs: elapsed})
+	}
+
 	const view = (a) => {
 		const l = live.get(a.id)
 		const agentSha = a.info?.agentSha || ''
@@ -348,6 +369,8 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		const lastSeen = l ? (l.lastActivity ?? t) : (a.lastSeen ?? null)
 		const activityAgeMs = l ? Math.max(0, t - (l.lastActivity ?? t)) : null
 		const freshness = !l ? 'offline' : activityAgeMs > 120_000 ? 'stale' : 'live'
+		const macs = rememberedMacs(a)
+		const info = a.info || macs.length ? {...(a.info ?? {}), macs} : null
 		return {
 			id: a.id,
 			name: a.name,
@@ -360,7 +383,8 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			// What it may do: allowed at pairing (and by the connector itself) and still switched on here.
 			allowed: a.allowed,
 			on: a.on,
-			info: a.info ?? null,
+			info,
+			macs,
 			libvirt: a.info?.libvirt === true,
 			metrics: m,
 			updateAvailable: Boolean(a.info && bundledShas.agentSha && agentSha !== bundledShas.agentSha),
@@ -510,10 +534,25 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		await loaded
 		const a = find(String(input?.id ?? ''))
 		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
-		const mac = String(input?.mac || a.info?.macs?.[0] || '').trim().toLowerCase()
-		if (!mac || !MAC_RE.test(mac)) throw new RpcError('PRECONDITION_FAILED', `No network adapter address has been recorded for ${a.name} yet`)
-		await sendWol(mac)
-		return {ok: true, mac}
+		if (!may(a, 'manage')) throw new RpcError('FORBIDDEN', `Managing ${a.name} isn’t switched on`)
+		const macs = rememberedMacs(a)
+		const mac = String(input?.mac || macs[0] || '').trim().toLowerCase()
+		try {
+			const out = await fanoutWake({
+				macs,
+				selfId: a.id,
+				onlineIds: [...live.keys()],
+				sendLocal: async (list) => {
+					for (const one of list) await sendWol(one)
+				},
+				sendRemote: (id, list) => call(id, 'wol', {macs: list}, 4_000),
+			})
+			return {ok: true, mac, ...out}
+		} catch (e) {
+			if (/remembered/i.test(e?.message ?? '')) throw new RpcError('PRECONDITION_FAILED', 'No network address remembered yet. It has to be online once so its network card can be learned.')
+			if (e instanceof RpcError) throw e
+			throw new RpcError('BAD_GATEWAY', 'Couldn’t send a wake packet from this server or any computer that’s on')
+		}
 	}
 	async function list() {
 		await loaded
@@ -669,6 +708,7 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 			existing.allowed = allowed
 			existing.on = {...allowed}
 			existing.info = info
+			tickNics(existing, reportedMacs(body?.info ?? info))
 			await save()
 			const old = live.get(existing.id)
 			if (old) {
@@ -687,6 +727,7 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 		let name = info.hostname || 'computer'
 		for (let n = 2; state.agents.some((a) => a.name === name); n++) name = `${info.hostname || 'computer'} ${n}`
 		const agent = {id, name, keyHash: sha(key), allowed, on: {...allowed}, enrolledAt: t, lastSeen: null, info}
+		tickNics(agent, reportedMacs(body?.info ?? info))
 		if (p.guestOf) agent.guestOf = p.guestOf
 		state.agents.push(agent)
 		await save()
@@ -728,7 +769,9 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 				old.calls.clear()
 				old.ws.terminate()
 			}
-			const l = {ws, metrics: a.metrics ?? null, lastActivity: now(), channels: new Map(), nextCh: 0, calls: new Map(), nextCall: 0}
+			a.nicSession = (a.nicSession ?? 0) + 1
+			a.nicTick = now()
+			const l = {ws, metrics: a.metrics ?? null, lastActivity: now(), channels: new Map(), nextCh: 0, calls: new Map(), nextCall: 0, reportedNics: null}
 			live.set(a.id, l)
 			let ponged = true
 			ws.on('pong', () => {
@@ -769,6 +812,9 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 					}
 					if (msg.op === 'hello') {
 						a.info = cleanInfo(msg.info)
+						l.reportedNics = reportedMacs(msg.info)
+						if (!l.reportedNics.length) l.reportedNics = a.info?.macs ?? []
+						tickNics(a, l.reportedNics)
 						// The connector's own limits win if they're narrower than what was stored.
 						for (const k of ABILITIES) if (msg.abilities?.[k] !== true) a.allowed[k] = a.on[k] = false
 						a.lastSeen = now()
@@ -783,6 +829,7 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 					} else if (msg.op === 'metrics') {
 						l.metrics = cleanMetrics(msg.metrics)
 						a.metrics = l.metrics
+						if (l.reportedNics) tickNics(a, l.reportedNics)
 						recordHistory(a.id, l.metrics)
 					} else if (msg.op === 'file' || msg.op === 'ack') {
 						const ch = l.channels.get(Number(msg.ch))
