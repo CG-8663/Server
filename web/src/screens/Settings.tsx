@@ -965,7 +965,11 @@ function ChatGptSignInSheet({keyId, onClose}: {keyId?: string; onClose: () => vo
 			const r = await mutate<{url: string}>('assistant.chatgptStart', keyId ? {keyId} : {})
 			if (!r.url.startsWith('https://auth.openai.com/')) throw new Error('ChatGPT didn’t finish the sign-in')
 			setUrl(r.url)
-			if (tab) tab.location.href = r.url
+			if (tab) {
+				// The sign-in page must not be able to reach back to this one through window.opener.
+				tab.opener = null
+				tab.location.href = r.url
+			}
 		} catch (e) {
 			tab?.close()
 			setError((e as Error).message)
