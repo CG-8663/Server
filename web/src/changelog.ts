@@ -4,7 +4,7 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
-		version: '0.9.93',
+		version: '0.9.93A',
 		date: '2026-11-26',
 		title: 'Add a container from Machines',
 		added: [
