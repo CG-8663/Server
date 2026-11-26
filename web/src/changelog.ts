@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.88',
+		date: '2026-11-26',
+		title: 'Use Hermes Agent as your assistant',
+		added: [
+			'Settings › Assistant: choose who answers in chat, the built-in assistant or Hermes Agent. If you already run Hermes on this server, Connect Hermes imports it: Hermes keeps its own model, memory and skills, and nothing needs setting up twice.',
+			'Hermes can look after this server from anywhere it runs (here, Telegram, Discord or its own CLI): apps, files, machines, storage and backups. Choose Full control, or Read only to let it look without changing anything.',
+			'Connecting changes Hermes’ own files the way Hermes documents them, keeps a copy of each first, and turns its API server on for this machine only. Disconnect Hermes undoes it.',
+			'The setup wizard now asks which assistant you want.',
+		],
+	},
+	{
 		version: '0.9.87',
 		date: '2026-11-25',
 		title: 'Steadier remote desktop, and servers that start after a restart',
