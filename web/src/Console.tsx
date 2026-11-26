@@ -1194,6 +1194,39 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		return bindConsoleWheel(el, (e) => onWheelRef.current(e))
 	}, [deskUi])
 
+	// Ask for the whole screen, not just what changed. A VNC server sends only the parts of the screen
+	// that change; when the remote screen's size changes (a monitor added or rescaled, a resolution
+	// change) the new area stays black until something is drawn there, and on a still desktop that can
+	// be never (half the picture black). The same after the phone was away and comes back. A full
+	// update request is part of the protocol and cheap: one picture.
+	useEffect(() => {
+		if (state !== 'connected' || directGpu) return
+		let last = ''
+		const full = (force = false) => {
+			const r = rfbRef.current as any
+			const w = r?._fbWidth
+			const h = r?._fbHeight
+			if (!r?._sock || !w || !h) return
+			const key = `${w}x${h}`
+			if (!force && key === last) return
+			last = key
+			try {
+				;(RFB as any).messages.fbUpdateRequest(r._sock, false, 0, 0, w, h)
+			} catch {
+				/* the connection is closing */
+			}
+		}
+		const first = window.setTimeout(() => full(true), 400)
+		const watch = window.setInterval(() => full(false), 1000)
+		const onVisible = () => document.visibilityState === 'visible' && full(true)
+		document.addEventListener('visibilitychange', onVisible)
+		return () => {
+			window.clearTimeout(first)
+			window.clearInterval(watch)
+			document.removeEventListener('visibilitychange', onVisible)
+		}
+	}, [state, directGpu])
+
 	// Touches on the screen keep the on-screen keyboard: the browser's own focus change on a tap is
 	// cancelled, and if the keyboard still went away during a touch, the end of that touch (a user
 	// gesture, so phones allow it) brings it back. Buttons and fields keep their normal behaviour.

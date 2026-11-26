@@ -109,6 +109,8 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 
 	const twoFactor = useQ<boolean>('user.is2faEnabled')
 	const oidc = useQ<{clientCount: number}>('oidc.status', undefined, {enabled: owner})
+	// Starts after a restart or power cut with nobody signed in (headless servers).
+	const bootStart = useQ<{startsAtBoot: boolean | null}>('system.bootStart', undefined, {enabled: owner})
 	const sessions = useQ<ActiveSession[]>('user.listSessions')
 	const check = useQ<{available: boolean; version: string; name: string; releaseNotes?: string}>('system.checkUpdate', undefined, {enabled: owner})
 	const [updating, setUpdating] = useState(false)
@@ -277,6 +279,26 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					<Row icon="sparkle" color="var(--pink)" label="What’s new" value={<VersionTag version={boot.touch.version} info={boot.server} />} onClick={() => setNotes(true)} />
 					{notes && <WhatsNewSheet releases={allReleases(boot.touch.version)} version={boot.touch.version} onClose={() => setNotes(false)} />}
 					<Row icon="server" color="var(--blue)" label="MODC" value={<VersionTag version={boot.server?.version} info={boot.server} />} />
+					{bootStart.data?.startsAtBoot === false ? (
+						<div className="row static update-error" role="alert">
+							<span className="row-ico" style={{'--c': 'var(--orange, var(--peach))'} as CSSProperties}>
+								<Icon name="power" size={19} />
+							</span>
+							<span className="main">
+								<b style={{fontWeight: 600}}>Doesn’t start after a restart</b>
+								<span>After a restart or power cut, this server stays off until someone signs in on it. Turn this on for a server with no screen.</span>
+							</span>
+							<button
+								className="btn small"
+								disabled={save.isPending}
+								onClick={() => save.mutate({path: 'system.enableBootStart', done: 'This server now starts after a restart', refresh: ['system.bootStart']})}
+							>
+								Turn on
+							</button>
+						</div>
+					) : bootStart.data?.startsAtBoot === true ? (
+						<Row icon="power" color="var(--green)" label="Starts after a restart" value="On" />
+					) : null}
 					{updateError && !updating && (
 						<div className="row static update-error" role="alert">
 							<span className="row-ico" style={{'--c': 'var(--red)'} as CSSProperties}>

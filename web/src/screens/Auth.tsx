@@ -7,14 +7,7 @@ import {Icon} from '../icons'
 import {Field, VersionTag, haptic} from '../ui'
 
 function Logo() {
-	return (
-		<div className="logo" aria-hidden="true">
-			<svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-				<path d="M3 12.5a9 9 0 0 1 18 0z" />
-				<path d="M12 12.5v6a2.5 2.5 0 0 1-5 0" />
-			</svg>
-		</div>
-	)
+	return <img className="logo logo-modc" src="/modc-logo.png" alt="MODC" width={96} height={96} draggable={false} />
 }
 
 function ErrorBox({message, k}: {message: string; k: number}) {

@@ -1239,6 +1239,7 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 		let spawnMode = 'ok'
 		let moveOffRailOnWake = false
 		let moveOffRailOnLuaResize = false
+		let openOnPhysical = false
 		const mutatedAddrs = []
 		let betaLaunchSeq = 0
 		const clients = [{address: '0x55a1b2c3d4e0', title: 'Demo', class: 'demo', workspace: {id: 1}, at: [0, 0], size: [640, 480], mapped: true}]
@@ -1275,6 +1276,12 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 				}
 				if (cmd === 'hyprctl' && /float|resize|movewindowpixel|window\.move/.test(args.join(' '))) {
 					mutatedAddrs.push(args.join(' '))
+				}
+				// A window that opened on the physical display, sent to RAIL-1's workspace.
+				const moveTo = /window\.move\(\{window = "address:(0x[0-9a-f]+)", workspace = (\d+), silent = true/.exec(args.join(' '))
+				if (cmd === 'hyprctl' && moveTo) {
+					const target = clients.find((c) => c.address === moveTo[1])
+					if (target) target.workspace = {id: Number(moveTo[2])}
 				}
 				if (cmd === 'wl-copy') {
 					if (failCopy) return {ok: false, stdout: '', stderr: 'wl-copy failed'}
@@ -1317,7 +1324,7 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 									? '0x55a1000000bb'
 									: `0x55a1000000b${seq}`
 						setTimeout(() => {
-							clients.push({address: addr, title: `Beta Main ${seq}`, class: 'beta-app', workspace: {id: 11}, at: [0, 0], size: [900, 600], mapped: true, floating: !moveOffRailOnWake})
+							clients.push({address: openOnPhysical ? '0x55a1000000ee' : addr, title: `Beta Main ${seq}`, class: 'beta-app', workspace: {id: openOnPhysical ? 1 : 11}, at: [0, 0], size: [900, 600], mapped: true, floating: !moveOffRailOnWake})
 						}, 40)
 					}
 				}
@@ -1394,6 +1401,16 @@ test('RAIL .desktop scanner, jailed icons, clipboard bridge, icon/SSE auth, and 
 			false,
 			`must not float/resize/move window after it moved off RAIL-1, saw: ${mutatedAddrs.join('; ')}`,
 		)
+
+		// An app whose window opens on the physical display (focus left RAIL-1, or it reused a running
+		// process) is still found, and brought to RAIL-1, instead of the launch giving up after 15 s.
+		mutatedAddrs.length = 0
+		openOnPhysical = true
+		const physicalRes = await hypr.procedures['hyprland.launch'].run({id: 'beta'})
+		openOnPhysical = false
+		assert.equal(physicalRes.window?.address, '0x55a1000000ee')
+		assert.equal(physicalRes.window?.workspace, 11)
+		assert.ok(mutatedAddrs.some((m) => m.includes('window.move') && m.includes('0x55a1000000ee') && m.includes('workspace = 11')), mutatedAddrs.join('; '))
 
 		// If Lua resize fails and the window leaves RAIL-1 before the legacy resizewindowpixel fallback runs, fallback must NOT dispatch
 		mutatedAddrs.length = 0

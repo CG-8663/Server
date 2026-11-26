@@ -1289,6 +1289,7 @@ export function createHyprland({
 
 		let settled = false
 		let openedAddr = null
+		let openedWs = null
 		let ambiguous = false
 		let launchErr = null
 		let pollTimer = null
@@ -1342,12 +1343,16 @@ export function createHyprland({
 				return peers
 			}
 
-			// Only claim new windows that actually opened on the intended RAIL workspace (never stealing newly opened physical-display windows).
+			// Claim the new window of this app wherever Hyprland put it. Focus can leave RAIL-1 before the
+			// app maps its window (a physical-display click, the screen-share view, an app that reuses its
+			// running process like Chrome), and the window then opened on the physical display: the launch
+			// used to wait 15 s, give up, and the app never showed. Only a window that did not exist when
+			// this launch started and that matches this app is claimed; it is then moved to RAIL-1 below.
 			const canClaim = (addr, winWorkspace, winClass, winTitle) => {
 				const lower = String(addr || '').toLowerCase()
 				if (!lower || beforeAddrs.has(lower) || claimedLaunchAddrs.has(lower)) return false
 				const wsNum = Number(winWorkspace)
-				if (!Number.isInteger(wsNum) || wsNum !== railWs) return false
+				if (!Number.isInteger(wsNum) || wsNum < 1) return false
 				return matchesLaunchedApp(app, winClass, winTitle)
 			}
 
@@ -1362,6 +1367,7 @@ export function createHyprland({
 				}
 				settled = true
 				openedAddr = addr
+				openedWs = Number(winWorkspace)
 				claimedLaunchAddrs.set(String(addr).toLowerCase(), Date.now())
 				resolveOpen(addr)
 				return true
@@ -1441,8 +1447,19 @@ export function createHyprland({
 
 			// Wake RAIL-1 BEFORE checking ownership, then revalidate RAIL workspace immediately before every mutation so a window moved to a physical workspace is never touched.
 			await wakeRailOutput()
-			const list = await windows({strict: true}).catch(() => [])
-			const win = list.find((w) => w.address.toLowerCase() === openedAddr.toLowerCase())
+			let list = await windows({strict: true}).catch(() => [])
+			let win = list.find((w) => w.address.toLowerCase() === openedAddr.toLowerCase())
+			// Only a window that opened elsewhere is brought over; one that opened on RAIL-1 and was then
+			// moved away (by the person, say) is left where they put it.
+			if (win && win.workspace !== railWs && openedWs !== railWs && win.workspace === openedWs) {
+				// It opened on another display: bring it to RAIL-1 (silently, so focus doesn't jump).
+				await hyprDispatch(
+					`hl.dispatch(hl.dsp.window.move({window = "address:${win.address}", workspace = ${railWs}, silent = true}))`,
+					['dispatch', 'movetoworkspacesilent', `${railWs},address:${win.address}`],
+				).catch(() => {})
+				list = await windows({strict: true}).catch(() => [])
+				win = list.find((w) => w.address.toLowerCase() === openedAddr.toLowerCase())
+			}
 			if (!win || win.workspace !== railWs) {
 				return {launched: true, app, window: null}
 			}

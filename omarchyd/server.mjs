@@ -38,7 +38,7 @@ import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.86'
+export const OMARCHYD_VERSION = '0.9.87'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -306,6 +306,16 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		},
 
 		// ---- system ---------------------------------------------------------------------------
+		// Starting after a restart with nobody signed in (headless servers): systemd's "linger".
+		'system.bootStart': {kind: 'query', run: async (_i, {auth}) => (ownerOnly(auth), {startsAtBoot: await bootStart.state()})},
+		'system.enableBootStart': {
+			kind: 'mutation',
+			run: async (_i, {auth}) => {
+				ownerOnly(auth)
+				if (await bootStart.enable()) return {startsAtBoot: true}
+				throw new RpcError('PRECONDITION_FAILED', `This server can’t turn that on by itself here. On the server, run: sudo loginctl enable-linger ${os.userInfo().username}`)
+			},
+		},
 		'system.stats': {kind: 'query', run: () => sampler.get()},
 		'system.uptime': {kind: 'query', run: async () => (await sampler.get()).uptime},
 		'system.cpuUsage': {kind: 'query', run: async () => (await sampler.get()).cpu},
@@ -754,6 +764,27 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		const {execFile} = await import('node:child_process')
 		return new Promise((resolve) => execFile(cmd, args, {timeout}, (err, out, errOut) => resolve({ok: !err, out: String(out ?? ''), err: String(errOut ?? err?.message ?? '')})))
 	}
+	// Start at boot without a sign-in. MODC runs as your user's services, which systemd starts at boot
+	// only when "linger" is on for you. The installer turns it on with sudo; when that didn't happen
+	// (no sudo, an in-app update, an older install), a headless server stayed down after a power cut
+	// until someone signed in. Your own linger can usually be turned on without sudo (logind allows it
+	// for yourself), so try that once at startup and keep showing the state in Settings.
+	const bootStart = {
+		async state() {
+			const r = await sh('loginctl', ['show-user', os.userInfo().username, '-p', 'Linger', '--value'], 5_000)
+			return r.ok ? r.out.trim() === 'yes' : null
+		},
+		async enable() {
+			await sh('loginctl', ['enable-linger', os.userInfo().username], 15_000)
+			return (await bootStart.state()) === true
+		},
+	}
+	if (!process.env.NODE_TEST_CONTEXT && !appOptions.run)
+		setTimeout(async () => {
+			if ((await bootStart.state()) !== false) return
+			const ok = await bootStart.enable()
+			console.log(ok ? '[omarchyd] turned on start at boot (loginctl enable-linger)' : `[omarchyd] this server won’t start after a restart until you sign in; run: sudo loginctl enable-linger ${os.userInfo().username}`)
+		}, 15_000).unref?.()
 	// The desktop's screen is shared on a private socket in your runtime folder (only you can open
 	// it; containers, even on the host network, can't). Older installs shared it on 127.0.0.1:5900,
 	// which any program on the server could reach: still used until the share is moved (below).
