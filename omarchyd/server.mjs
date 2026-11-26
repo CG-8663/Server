@@ -34,11 +34,12 @@ import {createOidc} from './oidc.mjs'
 import {createHyprland} from './hyprland.mjs'
 import {authorityInfo, readPolicy, rotateAuthority, tlsContext, writePolicy} from './tls.mjs'
 import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
+import {createHermes} from './hermes.mjs'
 import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.87'
+export const OMARCHYD_VERSION = '0.9.88'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -619,6 +620,23 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		},
 	})
 	Object.assign(procedures, assistant.procedures)
+	// Hermes Agent, for people who already run it: chat through it, and let it look after this server.
+	const hermes = createHermes({
+		dataDir,
+		home,
+		omarchydPort: port,
+		keys: assistant.keys,
+		accounts,
+		fetchImpl: assistantOptions.fetchImpl,
+		sh: (cmd, args, timeout) => sh(cmd, args, timeout),
+		log: (m) => console.log(m),
+		runProcedure: (name, input, auth) => {
+			const p = procedures[name]
+			if (!p) throw new RpcError('NOT_FOUND', 'Unknown tool')
+			return p.run(input, {auth})
+		},
+	})
+	Object.assign(procedures, hermes.procedures)
 
 	const omarchyTheme = createOmarchyTheme({home, ...themeOptions})
 	const omarchyPlugins = createOmarchyPlugins({home, theme: omarchyTheme, ...pluginOptions})
@@ -1053,6 +1071,8 @@ WantedBy=graphical-session.target
 				})
 				return res.end(icon.data)
 			}
+			// This server's tools, for the Hermes agent connected in Settings › Assistant (its own token).
+			if (url.pathname === '/mcp') return await hermes.handleMcp(req, res)
 			if (url.pathname === '/hyprland/events' && req.method === 'GET') {
 				const auth = accounts.authenticate(req)
 				if (!auth) return sendJson(res, 401, {error: 'unauthorized'})

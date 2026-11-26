@@ -212,7 +212,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.87', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.88', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -631,6 +631,12 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.ok(fake.fsTree.has('/Home/Downloads/hello.txt'))
 	})
 
+
+	test('/mcp is passed to omarchyd for a Hermes elsewhere: POST only, no session, nothing answered without its token', async () => {
+		assert.equal((await fetch(`${touch.base}/mcp`)).status, 405)
+		const r = await fetch(`${touch.base}/mcp`, {method: 'POST', headers: {'content-type': 'application/json'}, body: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'})
+		assert.notEqual(r.status, 200)
+	})
 
 	test('quick transfer: a QR link downloads one file or uploads into one folder, no sign-in, for 10 minutes', async () => {
 		const make = (body) => touch.req('POST', '/api/transfer', body)

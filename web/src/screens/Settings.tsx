@@ -399,6 +399,7 @@ const PROVIDER_LABEL: Record<AssistantProvider, string> = {
 	anthropic: 'Anthropic API',
 	'openai-compatible': 'Custom endpoint',
 	chatgpt: 'ChatGPT plan',
+	hermes: 'Hermes Agent',
 }
 
 const MODEL_PLACEHOLDER: Record<AssistantProvider, string> = {
@@ -407,6 +408,7 @@ const MODEL_PLACEHOLDER: Record<AssistantProvider, string> = {
 	anthropic: 'claude-sonnet-5-5',
 	'openai-compatible': 'llama3.2',
 	chatgpt: 'gpt-5.5',
+	hermes: 'hermes-agent',
 }
 
 // The result of a live check, under a key or in Add provider.
@@ -517,6 +519,228 @@ function ModelField({id, value, onChange, models, provider}: {id: string; value:
 	)
 }
 
+type HermesStatus = {
+	found: boolean
+	where?: 'local' | 'remote'
+	home: string | null
+	cli: boolean
+	apiServer: {enabled: boolean; port: number | null; local: boolean; reachable: boolean; baseUrl?: string | null}
+	connected: boolean
+	mode: 'full' | 'read'
+	engine: 'builtin' | 'hermes'
+	model: string | null
+}
+
+// Which assistant answers in chat: the built-in one, or Hermes Agent if it's already set up on this
+// server. Connecting imports that Hermes (its API server, plus this server as tools it can use).
+function AssistantEngine({owner}: {owner: boolean}) {
+	const qc = useQueryClient()
+	const toast = useToast()
+	const confirm = useConfirm()
+	const st = useQ<HermesStatus>('hermes.status', undefined, {enabled: owner})
+	const [busy, setBusy] = useState(false)
+	const [remoteForm, setRemoteForm] = useState(false)
+	const [setup, setSetup] = useState(false)
+	if (!owner || !st.data) return null
+	const h = st.data
+	const refresh = () => {
+		qc.invalidateQueries({queryKey: ['hermes.status']})
+		qc.invalidateQueries({queryKey: ['assistant.keys']})
+	}
+	const run = async (path: string, input: unknown, done: string) => {
+		setBusy(true)
+		try {
+			const r = await mutate<HermesStatus & {needsRestart?: boolean}>(path, input)
+			toast(r?.needsRestart ? `${done}. Start Hermes’ gateway (hermes gateway) so it picks up the change.` : done)
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setBusy(false)
+			refresh()
+		}
+	}
+	const remote = h.where === 'remote'
+	const pick = async (engine: 'builtin' | 'hermes') => {
+		haptic(6)
+		if (engine === 'hermes' && !h.connected) return h.found && !remote ? run('hermes.connect', {}, 'Hermes connected') : setRemoteForm(true)
+		return run('assistant.setEngine', {engine}, engine === 'hermes' ? 'Chats now go to Hermes' : 'Chats now go to the built-in assistant')
+	}
+	const disconnect = async () => {
+		const ok = await confirm({title: 'Disconnect Hermes?', body: 'Hermes stops being able to use this server, and chats go back to the built-in assistant. Hermes itself and its settings stay.', confirm: 'Disconnect', danger: true})
+		if (ok) run('hermes.disconnect', {}, 'Hermes disconnected')
+	}
+	return (
+		<>
+			<Group title="Assistant">
+				<div className="row static" style={{minHeight: 62}}>
+					<span className="main">
+						<b style={{fontWeight: 550}}>Who answers in chat</b>
+						<span>{h.engine === 'hermes' ? 'Hermes, with its own model, memory and skills' : 'The built-in assistant, with the provider below'}</span>
+					</span>
+				</div>
+				<div className="row static">
+					<Segmented<'builtin' | 'hermes'>
+						label="Assistant"
+						value={h.engine}
+						options={[
+							{id: 'builtin', label: 'Built-in'},
+							{id: 'hermes', label: 'Hermes'},
+						]}
+						onChange={(v) => !busy && pick(v)}
+					/>
+				</div>
+			</Group>
+			{(
+				<Group
+					title="Hermes"
+					footer={
+						h.connected
+							? h.mode === 'read'
+								? 'Hermes can look at this server (apps, files, machines, storage, backups) but can’t change anything.'
+								: 'Hermes can look after this server from anywhere it runs: here, Telegram, Discord or its CLI. Changes run as you.'
+							: h.found
+								? `Found on this server at ${h.home}. Connecting turns on Hermes’ API server on this machine only and adds this server to its tools. A copy of each Hermes file is kept first.`
+								: 'No Hermes on this server. If it runs on another computer or in the cloud, connect it by its address.'
+					}
+				>
+					{!h.connected ? (
+						<>
+							{h.found && <Row icon="sparkle" color="var(--mauve)" label={busy ? 'Connecting…' : 'Connect Hermes on this server'} sub="Import it and use it as the assistant" disabled={busy} onClick={() => pick('hermes')} />}
+							<Row icon="server" color="var(--blue)" label="Hermes on another computer or in the cloud" sub="Connect by its address and API key" disabled={busy} onClick={() => setRemoteForm(true)} />
+						</>
+					) : (
+						<>
+							<Row
+								icon="sparkle"
+								color="var(--mauve)"
+								label="Hermes Agent"
+								value={h.apiServer.reachable ? (h.model ?? 'Connected') : 'Not running'}
+								sub={h.apiServer.reachable ? (remote ? h.apiServer.baseUrl ?? undefined : undefined) : remote ? `Can’t reach Hermes at ${h.apiServer.baseUrl}` : 'Start Hermes’ gateway on this server: hermes gateway'}
+							/>
+							{remote && <Row icon="settings" color="var(--blue)" label="Let Hermes use this server" sub="What to add on the Hermes machine" onClick={() => setSetup(true)} />}
+							<div className="row static">
+								<Segmented<'full' | 'read'>
+									label="What Hermes can do"
+									value={h.mode}
+									options={[
+										{id: 'full', label: 'Full control'},
+										{id: 'read', label: 'Read only'},
+									]}
+									onChange={(mode) => !busy && run('hermes.setMode', {mode}, mode === 'read' ? 'Hermes is now read only' : 'Hermes can now make changes')}
+								/>
+							</div>
+							<Row icon="signout" color="var(--red)" label="Disconnect Hermes" disabled={busy} onClick={disconnect} />
+						</>
+					)}
+				</Group>
+			)}
+			{remoteForm && <HermesRemoteForm onClose={() => setRemoteForm(false)} onDone={() => (setRemoteForm(false), refresh(), setSetup(true))} />}
+			{setup && <HermesSetup onClose={() => setSetup(false)} />}
+		</>
+	)
+}
+
+function HermesRemoteForm({onClose, onDone}: {onClose: () => void; onDone: () => void}) {
+	const toast = useToast()
+	const [baseUrl, setBaseUrl] = useState('')
+	const [apiKey, setApiKey] = useState('')
+	const [busy, setBusy] = useState(false)
+	return (
+		<FormSheet
+			open
+			title="Connect Hermes"
+			subtitle="Hermes on another computer or in the cloud"
+			onClose={onClose}
+			submit="Connect"
+			busy={busy}
+			disabled={!baseUrl.trim() || apiKey.trim().length < 8}
+			onSubmit={async () => {
+				setBusy(true)
+				try {
+					await mutate('hermes.connectRemote', {baseUrl: baseUrl.trim(), apiKey: apiKey.trim()})
+					toast('Hermes connected')
+					onDone()
+				} catch (e) {
+					toast((e as Error).message, true)
+				} finally {
+					setBusy(false)
+				}
+			}}
+		>
+			<Field
+				id="hermes-url"
+				label="Hermes address"
+				value={baseUrl}
+				onChange={(e) => setBaseUrl(e.target.value)}
+				placeholder="http://192.168.1.50:8642"
+				hint="Its API server must listen on the network: API_SERVER_HOST=0.0.0.0 (port 8642 unless changed) in that machine’s ~/.hermes/.env."
+				autoCapitalize="off"
+				autoCorrect="off"
+				spellCheck={false}
+				autoFocus
+			/>
+			<Field id="hermes-key" label="API key" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} hint="API_SERVER_KEY from that machine’s ~/.hermes/.env" autoComplete="off" />
+		</FormSheet>
+	)
+}
+
+// What to add on the Hermes machine so it can use this server: the address it should reach this
+// server at, and the token. The address is the one this page is open at (a cloud Hermes needs one it
+// can reach, such as a Tailscale address).
+function HermesSetup({onClose}: {onClose: () => void}) {
+	const toast = useToast()
+	const qc = useQueryClient()
+	const boot = useBootstrap()
+	const info = useQ<{token: string; path: string; name: string}>('hermes.remoteSetup')
+	const loopback = /^(localhost|127\.|\[::1\])/.test(location.hostname)
+	const origin = loopback && boot.server?.host ? `${location.protocol}//${boot.server.host}${location.port ? `:${location.port}` : ''}` : location.origin
+	const t = info.data
+	const yaml = t ? `mcp_servers:\n  ${t.name}:\n    url: "${origin}${t.path}"\n    headers:\n      Authorization: "Bearer \${MODC_MCP_TOKEN}"\n    timeout: 120` : ''
+	const envLine = t ? `MODC_MCP_TOKEN=${t.token}` : ''
+	const copy = (text: string, what: string) => navigator.clipboard?.writeText(text).then(() => toast(`${what} copied`), () => toast('Select and copy it from the box', true))
+	return (
+		<Sheet open onClose={onClose} label="Let Hermes use this server">
+			<SheetHeader title="Let Hermes use this server" subtitle="Add these on the computer Hermes runs on, then restart its gateway" onClose={onClose} />
+			<div className="hermes-setup">
+				{!t ? (
+					<span className="spinner" />
+				) : (
+					<>
+						<p className="footer-note">1. In ~/.hermes/config.yaml (merge into mcp_servers if it’s already there):</p>
+						<pre className="hermes-snippet">{yaml}</pre>
+						<button className="btn small" onClick={() => copy(yaml, 'Config')}>
+							Copy config
+						</button>
+						<p className="footer-note">2. In ~/.hermes/.env (keep it private: it lets Hermes use this server):</p>
+						<pre className="hermes-snippet">{envLine}</pre>
+						<button className="btn small" onClick={() => copy(envLine, 'Token')}>
+							Copy token line
+						</button>
+						<p className="footer-note">3. Restart Hermes’ gateway (or run /reload-mcp in a Hermes chat).</p>
+						<p className="footer-note">
+							Hermes must be able to reach {origin}. On your network that works as is. For a Hermes in the cloud, use an address it can reach, such as this server’s Tailscale address, and open this page from that address before copying.
+						</p>
+						<button
+							className="btn small"
+							onClick={async () => {
+								try {
+									await mutate('hermes.rotateToken')
+									qc.invalidateQueries({queryKey: ['hermes.remoteSetup']})
+									toast('New token made. Update it on the Hermes machine.')
+								} catch (e) {
+									toast((e as Error).message, true)
+								}
+							}}
+						>
+							Make a new token
+						</button>
+					</>
+				)}
+			</div>
+		</Sheet>
+	)
+}
+
 function AssistantPage({onBack}: {onBack: () => void}) {
 	const boot = useBootstrap()
 	const user = useUser()
@@ -571,6 +795,8 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 					Add
 				</button>
 			</div>
+
+			<AssistantEngine owner={owner} />
 
 			{keys.isLoading && (
 				<div className="glass group">
