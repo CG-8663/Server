@@ -4,7 +4,7 @@ Turn an [Omarchy](https://omarchy.org) machine into a home server you run from a
 apps from a catalog of about 580, keep your files and drives in one place, run virtual machines, and
 reach your real Omarchy desktop — from a phone, a tablet or another computer.
 
-![My Own Data Center's desktop in a browser, with App Store, Machines and Terminal windows open](docs/screenshots/desktop-overview.jpg)
+![My Own Data Center's desktop in a browser, with Machines, Terminal and Files windows open](docs/screenshots/desktop-overview.jpg)
 
 <p align="center">
   <img src="docs/screenshots/phone-home.png" width="24%" alt="Home on a phone">
@@ -97,6 +97,8 @@ where you left off; add `--purge` to delete those too.
   `omarchy-server restart`. Set it to `off` to clear it. Until it is set, opening an app that way says
   "Opening apps remotely needs app addresses". On your own network it isn't needed.
 
+![The App Store in the desktop layout: apps by category from every store you've added](docs/screenshots/desktop-store.jpg)
+
 ### Files
 
 - Your real home folder, so the browser and the Omarchy desktop see the same files.
@@ -106,6 +108,13 @@ where you left off; add `--purge` to delete those too.
 - Photo sync from your phone, and SMB network shares for any folder. Shares are opened on your home
   LAN only (the usual 10., 172.16. and 192.168. addresses); Tailscale is a second network and does
   not get port 445.
+- **Quick transfers with a QR code** (desktop layout): right-click a file to share it, or a folder to
+  upload into it from a phone. The phone opens a small page without signing in; the code lasts 10
+  minutes and covers only that file or folder.
+
+![Files in the desktop layout: places, your storage, and folders shared on your network](docs/screenshots/desktop-files.jpg)
+
+<p align="center"><img src="docs/screenshots/qr-upload.png" width="45%" alt="Upload to a folder from a phone: a QR code that lasts 10 minutes"></p>
 
 ### Machines (virtual machines)
 
@@ -120,7 +129,7 @@ where you left off; add `--purge` to delete those too.
   port forwarding to services inside a machine.
 - Machines run as you under libvirt's per-user session, not as root.
 
-![Machines in the desktop layout: the server's status, its virtual machines and backups](docs/screenshots/desktop-machines.jpg)
+![Machines in the desktop layout: the server's summary, status and its virtual machines](docs/screenshots/desktop-machines.jpg)
 
 ### Your Omarchy desktop, remotely
 
