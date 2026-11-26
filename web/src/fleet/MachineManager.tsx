@@ -39,7 +39,7 @@ import {
 } from './machineManagerLogic'
 import {LiveStats} from './StatRegion'
 import {useServerGaugeMetrics} from './serverGauges'
-import {ContainersInList} from '../containers/Containers'
+import {ContainersInList, NewContainerSheet} from '../containers/Containers'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
@@ -549,6 +549,7 @@ export function MachineManager({
 	const tip = !(dismissedTutorials ?? []).includes(MACHINES_FILTER_TIP)
 	const [openId, setOpenId] = useState<string | null>(null)
 	const [addOpen, setAddOpen] = useState(false)
+	const [newContainer, setNewContainer] = useState(false)
 	const [term, setTerm] = useState<{id: string; name: string} | null>(null)
 	const [screen, setScreen] = useState<{id: string; name: string} | null>(null)
 	const addRef = useRef<HTMLDivElement>(null)
@@ -682,8 +683,19 @@ export function MachineManager({
 					>
 						Virtual Machine
 					</button>
+					<button
+						type="button"
+						role="menuitem"
+						onClick={() => {
+							setAddOpen(false)
+							setNewContainer(true)
+						}}
+					>
+						Container
+					</button>
 				</div>
 			)}
+			{newContainer && <NewContainerSheet onClose={() => setNewContainer(false)} />}
 		</div>
 	)
 	return (

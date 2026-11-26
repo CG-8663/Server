@@ -75,7 +75,16 @@ export function containerPill(c: Pick<Container, 'status' | 'job'>): {kind: 'run
 }
 
 export function useContainerStatus(enabled = true) {
-	return useQuery({queryKey: ['containers.status'], queryFn: () => query<ContainerStatus>('containers.status'), retry: false, enabled, staleTime: 60_000})
+	return useQuery({
+		queryKey: ['containers.status'],
+		queryFn: () => query<ContainerStatus>('containers.status'),
+		retry: false,
+		enabled,
+		staleTime: 60_000,
+		// While containers aren't set up, check every few seconds so the page moves on by itself
+		// as soon as machines-add-lxc finishes.
+		refetchInterval: (q) => (q.state.data && !q.state.data.available ? 5000 : false),
+	})
 }
 export function useContainers(enabled: boolean) {
 	return useQuery({
@@ -143,6 +152,35 @@ export function ContainersPanel({serverName}: {serverName: string}) {
 				<Icon name="plus" size={15} /> New container
 			</button>
 		</>
+	)
+}
+
+/** "Add → Container" on the Machines page: setup first if it's needed, then the library. */
+export function NewContainerSheet({onClose}: {onClose: () => void}) {
+	const status = useContainerStatus()
+	const list = useContainers(status.data?.available === true)
+	return (
+		<Sheet open onClose={onClose} label="New container" tall>
+			<div style={{padding: '4px 16px 24px', display: 'grid', gap: 12}}>
+				{status.isLoading ? (
+					<div className="skeleton" style={{height: 160, borderRadius: 16}} />
+				) : status.data && !status.data.available ? (
+					<>
+						<div style={{display: 'flex', alignItems: 'center', gap: 8}}>
+							<button type="button" className="btn small" onClick={onClose}>
+								<Icon name="close" size={15} /> Close
+							</button>
+							<b>New container</b>
+						</div>
+						<SetUp status={status.data} onCheck={() => status.refetch()} checking={status.isFetching} />
+					</>
+				) : status.isError ? (
+					<p className="quiet">{(status.error as Error).message}</p>
+				) : (
+					<CreateContainer onDone={onClose} existing={(list.data ?? []).map((c) => c.name)} backLabel="Close" />
+				)}
+			</div>
+		</Sheet>
 	)
 }
 
@@ -250,7 +288,7 @@ function SwitchRow({label, sub, on, onChange, disabled}: {label: string; sub?: R
 	)
 }
 
-function CreateContainer({onDone, existing}: {onDone: () => void; existing: string[]}) {
+function CreateContainer({onDone, existing, backLabel = 'Containers'}: {onDone: () => void; existing: string[]; backLabel?: string}) {
 	const library = useQuery({queryKey: ['containers.images'], queryFn: () => query<Distro[]>('containers.images'), staleTime: 30 * 60_000, retry: false})
 	const mine = useQuery({queryKey: ['containers.templates'], queryFn: () => query<Template[]>('containers.templates'), retry: false})
 	const action = useContainerAction()
@@ -277,7 +315,7 @@ function CreateContainer({onDone, existing}: {onDone: () => void; existing: stri
 		<div style={{display: 'grid', gap: 12}}>
 			<div style={{display: 'flex', alignItems: 'center', gap: 8}}>
 				<button type="button" className="btn small" onClick={onDone}>
-					<Icon name="back" size={15} /> Containers
+					<Icon name={backLabel === 'Close' ? 'close' : 'back'} size={15} /> {backLabel}
 				</button>
 				<b>New container</b>
 			</div>
