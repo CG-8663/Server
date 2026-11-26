@@ -770,6 +770,8 @@ export const THEMES = [
 	{id: 'gruvbox', name: 'Ember', bg: '#282828', fg: '#ebdbb2', dots: ['#83a598', '#b8bb26', '#fabd2f', '#fb4934']},
 	{id: 'latte', name: 'Daylight', bg: '#eff1f5', fg: '#4c4f69', dots: ['#1e66f5', '#40a02b', '#df8e1d', '#d20f39']},
 	{id: 'omarchy', name: 'Omarchy', bg: '#1a1b26', fg: '#a9b1d6', dots: ['#7aa2f7', '#9ece6a', '#e0af68', '#f7768e']},
+	{id: 'studio', name: 'Studio Dark', bg: '#14181d', fg: '#e7eaee', dots: ['#6ea0ff', '#4cc38a', '#e5b454', '#f2716b']},
+	{id: 'studio-light', name: 'Studio Light', bg: '#f7f8fa', fg: '#161a20', dots: ['#2f62d0', '#1f8a5b', '#a86b00', '#c8362f']},
 ] as const
 export const ACCENTS = ['wallpaper', 'blue', 'mauve', 'teal', 'peach', 'green', 'pink'] as const
 export type ThemeId = (typeof THEMES)[number]['id']
@@ -902,11 +904,25 @@ function applyOmarchyPalette(root: HTMLElement, on: boolean) {
 	set('--teal', p.cyan)
 	set('--peach', p.yellow && p.red ? mix(p.yellow, p.red, 55) : p.yellow)
 }
+// Studio's own accent, per mode (white text on the fill passes WCAG AA in both).
+const STUDIO_ACCENT = {dark: {fill: '#3f74e0', text: '#8db3ff'}, light: {fill: '#2f62d0', text: '#2a58c2'}}
+export const isStudio = (theme: string): theme is 'studio' | 'studio-light' => theme === 'studio' || theme === 'studio-light'
+/** Studio's dark/light switch: shown only while a Studio theme is on. */
+export function ThemeModeButton({prefs, setPrefs, className, size = 16}: {prefs: Prefs; setPrefs: (p: Prefs) => void; className?: string; size?: number}) {
+	if (!isStudio(prefs.theme)) return null
+	const light = prefs.theme === 'studio-light'
+	const label = light ? 'Switch to dark mode' : 'Switch to light mode'
+	return (
+		<button type="button" className={`theme-mode${className ? ` ${className}` : ''}`} aria-label={label} title={label} onClick={() => setPrefs({...prefs, theme: light ? 'studio' : 'studio-light'})}>
+			<Icon name={light ? 'moon' : 'sun'} size={size} />
+		</button>
+	)
+}
 export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 	const root = document.documentElement
 	root.dataset.theme = p.theme
 	applyOmarchyPalette(root, p.theme === 'omarchy')
-	const light = p.theme === 'latte'
+	const light = p.theme === 'latte' || p.theme === 'studio-light'
 	if (p.accent === 'wallpaper' && p.theme === 'omarchy') {
 		// The Omarchy desktop's own theme colours, once known (see useOmarchyThemes).
 		const c = omarchyColors
@@ -914,6 +930,11 @@ export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 		root.style.setProperty('--accent', fill)
 		root.style.setProperty('--accent-text', fill)
 		root.style.setProperty('--on-accent', pickOnAccent(fill, '#111', c?.background ?? '#1a1b26'))
+	} else if (p.accent === 'wallpaper' && isStudio(p.theme)) {
+		const a = STUDIO_ACCENT[p.theme === 'studio-light' ? 'light' : 'dark']
+		root.style.setProperty('--accent', a.fill)
+		root.style.setProperty('--accent-text', a.text)
+		root.style.setProperty('--on-accent', '#fff')
 	} else if (p.accent === 'wallpaper') {
 		const source = p.theme === 'custom' ? (p.customBrandHsl ?? brandHsl) : brandHsl
 		const [h, s, l] = (source ?? FALLBACK_BRAND).split(' ').map((v) => parseFloat(v))

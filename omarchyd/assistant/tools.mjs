@@ -183,6 +183,8 @@ export function appearanceCatalog() {
 			{id: 'gruvbox', name: 'Ember', look: 'Warm palette'},
 			{id: 'latte', name: 'Daylight', look: 'Light palette'},
 			{id: 'omarchy', name: 'Omarchy', look: 'This server’s Omarchy colours'},
+			{id: 'studio', name: 'Studio Dark', look: 'Calm dark palette, solid panels, one accent'},
+			{id: 'studio-light', name: 'Studio Light', look: 'Calm light palette, solid panels, one accent'},
 		],
 		panelStyle: {
 			where: 'Settings → Appearance',

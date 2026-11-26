@@ -23,7 +23,7 @@ import {AssistantCharacterWidget} from '../character/widgets'
 import {hasOpenDialog, pickFocusTarget, useDialogFocus, useInert, useMenuFocus} from '../focus'
 import {ScreenErrorBoundary} from '../screenBoundary'
 import {queryClearsOnSignOut} from '../signOutQueries'
-import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
+import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, ThemeModeButton, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, resetDeskConfig, solidOf, useDeskConfig, type DeskConfig, type DeskIcon} from './config'
 import {desktopIconKeyOpens, desktopIconKeysApply, iconSelectionClearsOnFocus} from './iconKeys'
 import {iconsInView} from './iconsInView'
@@ -1479,6 +1479,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				{!overview && !wins.some((w) => w.kind === 'assistant' && !w.min) && <AssistantCharacterWidget onOpen={() => open('assistant')} />}
 				<TopBar
 					boot={boot}
+					modeToggle={<ThemeModeButton prefs={prefs} setPrefs={setPrefs} className="top-bell" />}
 					activeTitle={active ? winTitle(active, appList, machineList) : null}
 					overview={!!overview}
 					menu={topMenu}
@@ -2359,6 +2360,7 @@ function TopBar(p: {
 	left?: ReactNode
 	lockChip?: ReactNode
 	winControls?: ReactNode
+	modeToggle?: ReactNode
 }) {
 	const now = useClock()
 	const notes = useNotifications().data ?? []
@@ -2425,6 +2427,7 @@ function TopBar(p: {
 						{memPct}%
 					</StatChip>
 				)}
+				{p.modeToggle}
 				{(() => {
 					const count = notes.length + (updates.length > 0 ? 1 : 0)
 					const serverUpdate = notes.includes('update-available')

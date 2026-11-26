@@ -22,7 +22,7 @@ import {OPEN_SETTINGS} from './desktop/settingsPage'
 import {safeSession} from './safeStorage'
 import {ScreenErrorBoundary} from './screenBoundary'
 import {inAppBackTarget, markInAppHistory, readInAppHistoryFlag} from './inAppHistory'
-import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, scrollPhoneToTop, useLayout, usePrefs, type Prefs} from './ui'
+import {Backdrop, Sheet, SheetHeader, ThemeModeButton, haptic, layoutAsked, scrollPhoneToTop, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
 import {WelcomeForUser} from './Welcome'
 import {InstallerPrompt} from './InstallerPrompt'
@@ -274,6 +274,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						<span className="mono">{boot.server?.host}</span>
 					</span>
 					<span className="spacer-x" />
+					<ThemeModeButton prefs={prefs} setPrefs={setPrefs} className="round-btn" size={20} />
 					<button
 						className="round-btn"
 						aria-label="Settings"

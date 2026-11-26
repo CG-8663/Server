@@ -1157,7 +1157,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	}, 'Couldn’t sign you out. Try again.'))
 
 	// ---- Saved appearance (per My Own Data Center account, shared by all its phones) -------
-	const THEME_IDS = ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte', 'custom', 'omarchy']
+	const THEME_IDS = ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte', 'custom', 'omarchy', 'studio', 'studio-light']
 	const ACCENT_IDS = ['wallpaper', 'blue', 'mauve', 'teal', 'peach', 'green', 'pink']
 	const HSL = /^\d{1,3}(\.\d+)? \d{1,3}(\.\d+)?% \d{1,3}(\.\d+)?%$/
 	const accountKey = (accountId) => hashId(`account:${accountId}`).slice(0, 32)
