@@ -110,7 +110,8 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const twoFactor = useQ<boolean>('user.is2faEnabled')
 	const oidc = useQ<{clientCount: number}>('oidc.status', undefined, {enabled: owner})
 	// Starts after a restart or power cut with nobody signed in (headless servers).
-	const bootStart = useQ<{startsAtBoot: boolean | null}>('system.bootStart', undefined, {enabled: owner})
+	const bootStart = useQ<{startsAtBoot: boolean | null; diskLock?: {encrypted: boolean; unlocksItself: boolean} | null}>('system.bootStart', undefined, {enabled: owner})
+	const diskWaits = !!bootStart.data?.diskLock?.encrypted && !bootStart.data.diskLock.unlocksItself
 	const sessions = useQ<ActiveSession[]>('user.listSessions')
 	const check = useQ<{available: boolean; version: string; name: string; releaseNotes?: string}>('system.checkUpdate', undefined, {enabled: owner})
 	const [updating, setUpdating] = useState(false)
@@ -280,6 +281,19 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					<Row icon="sparkle" color="var(--pink)" label="What’s new" value={<VersionTag version={boot.touch.version} info={boot.server} />} onClick={() => setNotes(true)} />
 					{notes && <WhatsNewSheet releases={allReleases(boot.touch.version)} version={boot.touch.version} onClose={() => setNotes(false)} />}
 					<Row icon="server" color="var(--blue)" label="MODC" value={<VersionTag version={boot.server?.version} info={boot.server} />} />
+					{diskWaits && (
+						<div className="row static update-error" role="alert">
+							<span className="row-ico" style={{'--c': 'var(--orange, var(--peach))'} as CSSProperties}>
+								<Icon name="key" size={19} />
+							</span>
+							<span className="main">
+								<b style={{fontWeight: 600}}>Waits for the disk password after a restart</b>
+								<span>
+									This computer’s disk is encrypted. After a restart or power cut it stops at the disk password screen, before this server or remote access can start, so someone has to type it at the computer. To have it start by itself, set the disk to unlock with the computer’s TPM chip (it then unlocks only on this computer, as long as its startup isn’t changed).
+								</span>
+							</span>
+						</div>
+					)}
 					{bootStart.data?.startsAtBoot === false ? (
 						<div className="row static update-error" role="alert">
 							<span className="row-ico" style={{'--c': 'var(--orange, var(--peach))'} as CSSProperties}>
