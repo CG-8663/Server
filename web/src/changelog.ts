@@ -11,6 +11,7 @@ export const CHANGELOG: Release[] = [
 			'Viewing a desktop no longer drops and reconnects over and over when nothing on it is moving (an empty desktop, an idle window). The desktop only redraws when something changes, and a still screen was mistaken for a lost one; now the last picture is kept and resent.',
 			'An app opened from desktop mode (Google Chrome, say) now shows up in its window even when it opens on the computer’s own screen, for example because it was already running. It’s brought over instead of the launch giving up after 15 seconds.',
 			'Remote desktop no longer leaves part of the picture black after the remote screen changes size, or when you come back to the app: the whole screen is asked for again, instead of waiting for something on it to change.',
+			'The sign-in and setup screens show the My Own Data Center logo instead of the old umbrella, and phones and browsers fetch the new icons instead of keeping a cached umbrella.',
 			'A server with no screen now comes back by itself after a restart or a power cut. It used to stay off until someone signed in on it when the installer couldn’t switch on start at boot. It now switches that on by itself where it can, Settings › Software update shows whether it’s on (with a Turn on button), and the services keep retrying at boot instead of giving up.',
 		],
 	},
