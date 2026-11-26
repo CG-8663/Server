@@ -1268,6 +1268,8 @@ WantedBy=graphical-session.target
 				return wss.handleUpgrade(req, socket, head, (ws) => ws.close(1011, message))
 			}
 			if (!target) return refuse('409 Conflict')
+			// Apps opened from the shared screen should open on it (not on the headless display).
+			if (machineId === 'desktop') Promise.resolve().then(() => hyprland.focusSharedScreen?.()).catch(() => {})
 			if (typeof target === 'object' && target.agentId) return wss.handleUpgrade(req, socket, head, (ws) => connector.openChannel(target.agentId, 'vnc', ws, {guest: target.guest}))
 			const vnc = net.connect(typeof target === 'string' ? {path: target} : target)
 			vnc.once('error', () => refuse('502 Bad Gateway'))
