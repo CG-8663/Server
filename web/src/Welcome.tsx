@@ -22,7 +22,7 @@ const TOUR: {icon: IconName; title: string; body: string; owner?: boolean}[] = [
 	{icon: 'store', title: 'Apps', body: 'Install apps from the App Store and open them from Home or the dock.'},
 	{icon: 'folder', title: 'Files', body: 'Your files and shared folders, with uploads, previews and Trash.'},
 	{icon: 'machine', title: 'Machines', body: 'Virtual machines and the other computers in your swarm.', owner: true},
-	{icon: 'sparkle', title: 'Assistant', body: 'Ask about your server, or have it do things for you. It always asks before changing anything.'},
+	{icon: 'sparkle', title: 'Assistant', body: 'Ask about your server, or have it do things for you. The built-in assistant asks before changing anything; Hermes, if you connect it, can act on its own.'},
 	{icon: 'settings', title: 'Settings', body: 'Appearance, storage, backups, your account and signed-in devices.'},
 ]
 
@@ -120,18 +120,29 @@ export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; 
 
 				{step === 'assistant' && (
 					<>
-						<h2 id="welcome-title">Set up your assistant?</h2>
-						<p>The assistant answers questions about your server and can do things for you. It always asks before changing anything. It needs an AI provider: sign in with ChatGPT, or add an API key.</p>
+						<h2 id="welcome-title">Choose your assistant</h2>
+						<p>The assistant answers questions about your server and can do things for you. Use the built-in one, or Hermes if you already run Hermes Agent. You can switch any time in Settings › Assistant.</p>
 						<div className="welcome-choices">
 							<button type="button" className="welcome-choice" onClick={assistantNow}>
 								<span className="welcome-ico">
 									<Icon name="sparkle" size={20} />
 								</span>
 								<span>
-									<b>Set it up now</b>
-									<span>Opens Settings › Assistant to connect a provider.</span>
+									<b>Built-in assistant</b>
+									<span>Always asks before changing anything. Sign in with ChatGPT or add an API key.</span>
 								</span>
 							</button>
+							{owner && (
+								<button type="button" className="welcome-choice" onClick={assistantNow}>
+									<span className="welcome-ico">
+										<Icon name="bolt" size={20} />
+									</span>
+									<span>
+										<b>Hermes Agent</b>
+										<span>Already set up on this server? Connect it, with its own model, memory and skills, and let it look after this server.</span>
+									</span>
+								</button>
+							)}
 							<button type="button" className="welcome-choice" onClick={next}>
 								<span className="welcome-ico">
 									<Icon name="clock" size={20} />

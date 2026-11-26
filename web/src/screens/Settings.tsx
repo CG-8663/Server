@@ -399,6 +399,7 @@ const PROVIDER_LABEL: Record<AssistantProvider, string> = {
 	anthropic: 'Anthropic API',
 	'openai-compatible': 'Custom endpoint',
 	chatgpt: 'ChatGPT plan',
+	hermes: 'Hermes Agent',
 }
 
 const MODEL_PLACEHOLDER: Record<AssistantProvider, string> = {
@@ -407,6 +408,7 @@ const MODEL_PLACEHOLDER: Record<AssistantProvider, string> = {
 	anthropic: 'claude-sonnet-5-5',
 	'openai-compatible': 'llama3.2',
 	chatgpt: 'gpt-5.5',
+	hermes: 'hermes-agent',
 }
 
 // The result of a live check, under a key or in Add provider.
@@ -517,6 +519,115 @@ function ModelField({id, value, onChange, models, provider}: {id: string; value:
 	)
 }
 
+type HermesStatus = {
+	found: boolean
+	home: string
+	cli: boolean
+	apiServer: {enabled: boolean; port: number; local: boolean; reachable: boolean}
+	connected: boolean
+	mode: 'full' | 'read'
+	engine: 'builtin' | 'hermes'
+	model: string | null
+}
+
+// Which assistant answers in chat: the built-in one, or Hermes Agent if it's already set up on this
+// server. Connecting imports that Hermes (its API server, plus this server as tools it can use).
+function AssistantEngine({owner}: {owner: boolean}) {
+	const qc = useQueryClient()
+	const toast = useToast()
+	const confirm = useConfirm()
+	const st = useQ<HermesStatus>('hermes.status', undefined, {enabled: owner})
+	const [busy, setBusy] = useState(false)
+	if (!owner || !st.data) return null
+	const h = st.data
+	const refresh = () => {
+		qc.invalidateQueries({queryKey: ['hermes.status']})
+		qc.invalidateQueries({queryKey: ['assistant.keys']})
+	}
+	const run = async (path: string, input: unknown, done: string) => {
+		setBusy(true)
+		try {
+			const r = await mutate<HermesStatus & {needsRestart?: boolean}>(path, input)
+			toast(r?.needsRestart ? `${done}. Start Hermes’ gateway (hermes gateway) so it picks up the change.` : done)
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setBusy(false)
+			refresh()
+		}
+	}
+	const pick = async (engine: 'builtin' | 'hermes') => {
+		haptic(6)
+		if (engine === 'hermes' && !h.connected) return run('hermes.connect', {}, 'Hermes connected')
+		return run('assistant.setEngine', {engine}, engine === 'hermes' ? 'Chats now go to Hermes' : 'Chats now go to the built-in assistant')
+	}
+	const disconnect = async () => {
+		const ok = await confirm({title: 'Disconnect Hermes?', body: 'Hermes stops being able to use this server, and chats go back to the built-in assistant. Hermes itself and its settings stay.', confirm: 'Disconnect', danger: true})
+		if (ok) run('hermes.disconnect', {}, 'Hermes disconnected')
+	}
+	return (
+		<>
+			<Group title="Assistant" footer={h.found ? undefined : 'Hermes Agent isn’t set up on this server. Install it and run hermes setup, then come back to connect it.'}>
+				<div className="row static" style={{minHeight: 62}}>
+					<span className="main">
+						<b style={{fontWeight: 550}}>Who answers in chat</b>
+						<span>{h.engine === 'hermes' ? 'Hermes, with its own model, memory and skills' : 'The built-in assistant, with the provider below'}</span>
+					</span>
+				</div>
+				<div className="row static">
+					<Segmented<'builtin' | 'hermes'>
+						label="Assistant"
+						value={h.engine}
+						options={[
+							{id: 'builtin', label: 'Built-in'},
+							{id: 'hermes', label: 'Hermes'},
+						]}
+						onChange={(v) => !busy && (v !== 'hermes' || h.found) && pick(v)}
+					/>
+				</div>
+			</Group>
+			{h.found && (
+				<Group
+					title="Hermes"
+					footer={
+						h.connected
+							? h.mode === 'read'
+								? 'Hermes can look at this server (apps, files, machines, storage, backups) but can’t change anything.'
+								: 'Hermes can look after this server from anywhere it runs: here, Telegram, Discord or its CLI. Changes run as you.'
+							: `Found at ${h.home}. Connecting turns on Hermes’ API server on this machine only and adds this server to its tools. A copy of each Hermes file is kept first.`
+					}
+				>
+					{!h.connected ? (
+						<Row icon="sparkle" color="var(--mauve)" label={busy ? 'Connecting…' : 'Connect Hermes'} sub="Import this server’s Hermes and use it as the assistant" disabled={busy} onClick={() => pick('hermes')} />
+					) : (
+						<>
+							<Row
+								icon="sparkle"
+								color="var(--mauve)"
+								label="Hermes Agent"
+								value={h.apiServer.reachable ? (h.model ?? 'Connected') : 'Not running'}
+								sub={h.apiServer.reachable ? undefined : 'Start Hermes’ gateway on this server: hermes gateway'}
+							/>
+							<div className="row static">
+								<Segmented<'full' | 'read'>
+									label="What Hermes can do"
+									value={h.mode}
+									options={[
+										{id: 'full', label: 'Full control'},
+										{id: 'read', label: 'Read only'},
+									]}
+									onChange={(mode) => !busy && run('hermes.setMode', {mode}, mode === 'read' ? 'Hermes is now read only' : 'Hermes can now make changes')}
+								/>
+							</div>
+							<Row icon="signout" color="var(--red)" label="Disconnect Hermes" disabled={busy} onClick={disconnect} />
+						</>
+					)}
+				</Group>
+			)}
+		</>
+	)
+}
+
 function AssistantPage({onBack}: {onBack: () => void}) {
 	const boot = useBootstrap()
 	const user = useUser()
@@ -571,6 +682,8 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 					Add
 				</button>
 			</div>
+
+			<AssistantEngine owner={owner} />
 
 			{keys.isLoading && (
 				<div className="glass group">

@@ -6,6 +6,8 @@ export type RequestOptions = {timeoutMs?: number; signal?: AbortSignal}
 
 // Long blocking server operations keep a generous timeout; normal RPCs and polling fail in 20 s.
 const SLOW_RPC = new Set([
+	'hermes.connect',
+	'hermes.disconnect',
 	'unraid.connect',
 	'unraid.scan',
 	'backups.configure',
@@ -439,7 +441,7 @@ export type ActiveSession = {
 	client: {type: 'native'; id?: string; platform?: string; deviceClass?: string; appVersion?: string} | {type: 'browser'; userAgent?: string}
 }
 
-export type AssistantProvider = 'spacexai' | 'openai' | 'anthropic' | 'openai-compatible' | 'chatgpt'
+export type AssistantProvider = 'spacexai' | 'openai' | 'anthropic' | 'openai-compatible' | 'chatgpt' | 'hermes'
 // Which endpoint the assistant streams from: /chat/completions or /responses.
 export type AssistantApi = 'chat' | 'responses'
 // How hard a reasoning model thinks; '' leaves the model's default.

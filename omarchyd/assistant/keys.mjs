@@ -49,7 +49,8 @@ const publicOf = (k, userId) => ({
 	updatedAt: k.updatedAt,
 })
 // A ChatGPT sign-in belongs to the person who signed in: never shared, never the system default.
-const personal = (k) => k.provider === 'chatgpt'
+// So does Hermes: it acts on this server with its owner's rights, so nobody else may chat through it.
+const personal = (k) => k.provider === 'chatgpt' || k.provider === 'hermes'
 const signedIn = (k) => k.provider !== 'chatgpt' || !!k.chatgpt?.refreshToken
 const canUse = (k, userId) => k.ownerUserId === userId || (!personal(k) && (k.sharedWith.includes(userId) || k.systemDefault))
 // A check that started before an edit must not be written onto the key, model, or address now saved.
@@ -67,7 +68,7 @@ const validKeysState = (value) => plainObject(value) && Array.isArray(value.keys
 
 export function createKeyStore({dataDir, now = () => Date.now()}) {
 	const file = join(dataDir, 'assistant', 'keys.json')
-	let state = {keys: []}
+	let state = {keys: [], engine: {}}
 	// Factory reset bumps this before it deletes. A write records the generation when it is queued
 	// and writes nothing if a reset has moved on, so the queued write cannot recreate the file.
 	let epoch = 0
@@ -84,7 +85,7 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			return
 		}
 		if (res.status !== 'ok') return
-		state = {keys: res.value.keys.filter(plainObject)}
+		state = {keys: res.value.keys.filter(plainObject), engine: plainObject(res.value.engine) ? res.value.engine : {}}
 		for (const k of state.keys) {
 			if (!Array.isArray(k.sharedWith)) k.sharedWith = []
 			// Custom endpoints saved with a pasted endpoint path (…/v1/responses) work without re-adding them.
@@ -135,11 +136,11 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			if (!k) throw new RpcError('NOT_FOUND', 'That key isn’t here')
 			if (personal(k) && input?.systemDefault === true) {
 				if (k.ownerUserId !== actor.userId) throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
-				throw new RpcError('BAD_REQUEST', 'A ChatGPT sign-in can’t be the system default')
+				throw new RpcError('BAD_REQUEST', k.provider === 'hermes' ? 'Hermes acts with your rights, so it can’t be the system default' : 'A ChatGPT sign-in can’t be the system default')
 			}
 			if (personal(k) && Array.isArray(input?.sharedWith) && input.sharedWith.some((id) => String(id) && String(id) !== k.ownerUserId)) {
 				if (k.ownerUserId !== actor.userId) throw new RpcError('FORBIDDEN', 'Only the person who added this key can change it')
-				throw new RpcError('BAD_REQUEST', 'A ChatGPT sign-in can’t be shared')
+				throw new RpcError('BAD_REQUEST', k.provider === 'hermes' ? 'Hermes acts with your rights, so it can’t be shared' : 'A ChatGPT sign-in can’t be shared')
 			}
 			let makeDefault = false
 			let clearDefault = false
@@ -271,6 +272,43 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			await save()
 			return k
 		},
+		// Hermes (an agent already set up on this server) as this person's assistant.
+		async upsertHermes(actor, {baseUrl, apiKey, model}) {
+			await loaded
+			assertWritable()
+			const t = now()
+			let k = state.keys.find((x) => x.provider === 'hermes' && x.ownerUserId === actor.userId)
+			if (!k) {
+				k = {id: ID(), ownerUserId: actor.userId, name: 'Hermes', provider: 'hermes', sharedWith: [], systemDefault: false, createdAt: t}
+				state.keys.push(k)
+			}
+			Object.assign(k, {baseUrl, apiKey, model: model || 'hermes-agent', api: 'chat', last4: last4(apiKey), updatedAt: t})
+			delete k.check
+			await save()
+			return publicOf(k, actor.userId)
+		},
+		async removeHermes(userId) {
+			await loaded
+			assertWritable()
+			state.keys = state.keys.filter((k) => !(k.provider === 'hermes' && k.ownerUserId === userId))
+			if (state.engine?.[userId] === 'hermes') delete state.engine[userId]
+			await save()
+		},
+		async engineOf(userId) {
+			await loaded
+			const hermes = state.keys.some((k) => k.provider === 'hermes' && k.ownerUserId === userId)
+			return hermes && state.engine?.[userId] === 'hermes' ? 'hermes' : 'builtin'
+		},
+		async setEngine(userId, engine) {
+			await loaded
+			assertWritable()
+			if (engine === 'hermes' && !state.keys.some((k) => k.provider === 'hermes' && k.ownerUserId === userId)) throw new RpcError('PRECONDITION_FAILED', 'Connect Hermes first')
+			state.engine = {...(state.engine ?? {})}
+			if (engine === 'hermes') state.engine[userId] = 'hermes'
+			else delete state.engine[userId]
+			await save()
+			return engine === 'hermes' ? 'hermes' : 'builtin'
+		},
 		async getSecret(id) {
 			await loaded
 			return find(id) ?? null
@@ -281,7 +319,7 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			await loaded
 			epoch++
 			damaged = false
-			state = {keys: []}
+			state = {keys: [], engine: {}}
 			await removeAtomic(file)
 		},
 		async resolveForUser(userId, keyId) {
@@ -291,8 +329,11 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 				if (!k || !canUse(k, userId)) throw new RpcError('NOT_FOUND', 'That key isn’t available')
 				return k
 			}
+			// The engine they chose in Settings › Assistant: Hermes, or the built-in assistant.
+			const hermes = state.keys.find((k) => k.provider === 'hermes' && k.ownerUserId === userId)
+			if (hermes && state.engine?.[userId] === 'hermes') return hermes
 			// A signed-out ChatGPT row is not a usable key. An explicit id still resolves, so that chat can say so.
-			const own = state.keys.filter((k) => k.ownerUserId === userId && signedIn(k))
+			const own = state.keys.filter((k) => k.ownerUserId === userId && signedIn(k) && k.provider !== 'hermes')
 			if (own.length) return own.sort((a, b) => b.updatedAt - a.updatedAt)[0]
 			const shared = state.keys.filter((k) => k.sharedWith.includes(userId))
 			if (shared.length) return shared[0]
