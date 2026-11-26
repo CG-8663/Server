@@ -142,6 +142,10 @@ test('not set up yet: the status says why and gives the one-time setup (sudo is 
 	assert.match(script, /start --no-block/, 'starting never blocks on systemd')
 	assert.match(script, /timeout \d+ sudo incus admin waitready/, 'waiting for Incus has a time limit, so the script can’t hang')
 	assert.doesNotMatch(script, /incus-startup/, 'Arch’s incus package has no incus-startup.service')
+	assert.match(script, /setfacl -m "u:\$USER_NAME:rw" "\$SOCKET"/, 'the account can reach Incus’s per-user socket straight away, without a restart')
+	assert.match(script, /incus-user\.socket\.d\/modc-/, 'and again each time the socket is created (a systemd drop-in)')
+	const src = await readFile(new URL('../omarchyd/containers.mjs', import.meta.url), 'utf8')
+	assert.doesNotMatch(src, /'sg'/, 'never through sg: Arch doesn’t ship it, and it failed as if Incus weren’t installed')
 	const denied = createContainers({run: async () => Promise.reject(Object.assign(new Error('x'), {stderr: 'Error: permission denied'}))}).procedures
 	assert.match((await denied['containers.status'].run()).reason, /Run the setup/)
 	const ok = createContainers({run: fakeIncus().run}).procedures

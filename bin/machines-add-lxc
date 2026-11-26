@@ -39,7 +39,7 @@ if pacman -Qi incus >/dev/null 2>&1; then
 	ok "Incus is installed"
 else
 	step "Installing Incus"
-	sudo pacman -S --needed --noconfirm incus
+	sudo pacman -S --needed --noconfirm incus acl
 	ok "Installed Incus"
 fi
 
@@ -80,6 +80,28 @@ else
 	step "Adding $USER_NAME to the incus group"
 	sudo usermod -aG incus "$USER_NAME"
 	ok "Added $USER_NAME to the incus group"
+fi
+
+# The group only reaches My Own Data Center's processes after the next sign-in or restart. Give this
+# account its own permission on Incus's per-user door too (exactly what the group grants, nothing
+# more), now and each time the socket is created, so containers work straight away.
+SOCKET=/var/lib/incus/unix.socket.user
+DROPIN=/etc/systemd/system/incus-user.socket.d/modc-$USER_NAME.conf
+if [ ! -f "$DROPIN" ]; then
+	step "Letting $USER_NAME reach Incus without a restart"
+	sudo mkdir -p "$(dirname "$DROPIN")"
+	printf '[Socket]\nExecStartPost=/usr/bin/setfacl -m u:%s:rw %s\n' "$USER_NAME" "$SOCKET" | sudo tee "$DROPIN" >/dev/null
+	sudo systemctl daemon-reload
+fi
+command -v setfacl >/dev/null || sudo pacman -S --needed --noconfirm acl
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCKET" ] && break; sleep 1; done
+sudo setfacl -m "u:$USER_NAME:rw" "$SOCKET"
+# Reaching the socket also needs passing through its folder.
+sudo setfacl -m "u:$USER_NAME:x" /var/lib/incus
+if incus info >/dev/null 2>&1; then
+	ok "$USER_NAME can reach Incus now"
+else
+	fail "Incus is set up, but this account still can't reach it. Send over what \`incus info\` prints."
 fi
 
 # Omarchy turns on its firewall (ufw). Containers need it to let them reach this server for an
