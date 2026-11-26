@@ -11,12 +11,11 @@ import {useUser} from './data'
 import {useDialogFocus} from './focus'
 import {Icon, type IconName} from './icons'
 import {ScreenLayoutCards} from './LayoutPicker'
-import {detectDesktop, haptic, setLayoutPref, THEMES, type LayoutPref, type Prefs} from './ui'
+import {ThemeChooser} from './ThemeChooser'
+import {detectDesktop, haptic, setLayoutPref, type LayoutPref, type Prefs} from './ui'
 
 type Step = 'hello' | 'layout' | 'theme' | 'assistant' | 'tour'
 const STEPS: Step[] = ['hello', 'layout', 'theme', 'assistant', 'tour']
-
-const PICKABLE_THEMES = THEMES.filter((t) => t.id !== 'custom')
 
 const TOUR: {icon: IconName; title: string; body: string; owner?: boolean}[] = [
 	{icon: 'store', title: 'Apps', body: 'Install apps from the App Store and open them from Home or the dock.'},
@@ -92,29 +91,7 @@ export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; 
 					<>
 						<h2 id="welcome-title">Choose a theme</h2>
 						<p>Colours for My Own Data Center. You can also use your own photo later.</p>
-						<div className="welcome-themes" role="radiogroup" aria-label="Theme">
-							{PICKABLE_THEMES.map((t) => (
-								<button
-									key={t.id}
-									type="button"
-									role="radio"
-									aria-checked={prefs.theme === t.id}
-									className={`welcome-theme${prefs.theme === t.id ? ' on' : ''}`}
-									style={{background: t.bg, color: t.fg}}
-									onClick={() => {
-										haptic(6)
-										setPrefs({...prefs, theme: t.id})
-									}}
-								>
-									<span>{t.name}</span>
-									<span className="dots">
-										{t.dots.map((d) => (
-											<i key={d} style={{background: d}} />
-										))}
-									</span>
-								</button>
-							))}
-						</div>
+						<ThemeChooser prefs={prefs} setPrefs={setPrefs} />
 					</>
 				)}
 

@@ -24,7 +24,7 @@ import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 import {createQuickTransfer, cleanUploadName, PORTAL_JS, portalHtml} from './quick-transfer.mjs'
 
-export const VERSION = '0.9.89'
+export const VERSION = '0.9.90'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -1235,7 +1235,10 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	}, 'Couldn’t sign you out. Try again.'))
 
 	// ---- Saved appearance (per My Own Data Center account, shared by all its phones) -------
-	const THEME_IDS = ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte', 'custom', 'omarchy']
+	const THEME_IDS = ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte', 'linen', 'sky', 'custom', 'omarchy']
+	const DARK_THEME_IDS = ['mocha', 'tokyo', 'gruvbox']
+	const LIGHT_THEME_IDS = ['latte', 'linen', 'sky']
+	const PICTURE_THEME_IDS = ['horizon', 'custom', 'omarchy']
 	const ACCENT_IDS = ['wallpaper', 'blue', 'mauve', 'teal', 'peach', 'green', 'pink']
 	const HSL = /^\d{1,3}(\.\d+)? \d{1,3}(\.\d+)?% \d{1,3}(\.\d+)?%$/
 	const accountKey = (accountId) => hashId(`account:${accountId}`).slice(0, 32)
@@ -1288,7 +1291,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	api.post('/prefs', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView, machinesCompact, tempPicks, tempUnit} = req.body ?? {}
+		const {theme, darkTheme, lightTheme, pictureTheme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView, machinesCompact, tempPicks, tempUnit, dismissedTutorials} = req.body ?? {}
 		const patch = {}
 		// How the assistant looks for this account (character, name, motion). Appearance only: it never
 		// reaches the assistant itself. Checked field by field; anything else is dropped.
@@ -1309,6 +1312,18 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			if (!THEME_IDS.includes(theme)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown theme'}})
 			patch.theme = theme
 		}
+		if (darkTheme !== undefined) {
+			if (!DARK_THEME_IDS.includes(darkTheme)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown dark theme'}})
+			patch.darkTheme = darkTheme
+		}
+		if (lightTheme !== undefined) {
+			if (!LIGHT_THEME_IDS.includes(lightTheme)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown light theme'}})
+			patch.lightTheme = lightTheme
+		}
+		if (pictureTheme !== undefined) {
+			if (!PICTURE_THEME_IDS.includes(pictureTheme)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown picture theme'}})
+			patch.pictureTheme = pictureTheme
+		}
 		if (accent !== undefined) {
 			if (!ACCENT_IDS.includes(accent)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown accent'}})
 			patch.accent = accent
@@ -1328,6 +1343,14 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		if (machinesCompact !== undefined) {
 			if (typeof machinesCompact !== 'boolean') return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad compact setting'}})
 			patch.machinesCompact = machinesCompact
+		}
+		// Notes this account has closed. One id is one note, on every device.
+		if (dismissedTutorials !== undefined) {
+			const allowed = ['machines-filters']
+			if (!Array.isArray(dismissedTutorials) || dismissedTutorials.some((id) => typeof id !== 'string' || !allowed.includes(id))) {
+				return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown tutorial'}})
+			}
+			patch.dismissedTutorials = [...new Set(dismissedTutorials)]
 		}
 		// Celsius, or Fahrenheit. Null and "c" both mean Celsius.
 		if (tempUnit !== undefined) {
@@ -1426,7 +1449,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			prefs = await savePrefs(session.accountId, {
 				backgroundVersion: null,
 				customBrandHsl: null,
-				...(current.theme === 'custom' ? {theme: 'horizon'} : {}),
+				...(current.theme === 'custom' ? {theme: 'horizon', pictureTheme: 'horizon'} : {}),
 			})
 		} catch (error) {
 			if (moved) await rename(aside, live).catch((restore) => console.error('[omarchy-server]', restore))

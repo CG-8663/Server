@@ -53,8 +53,8 @@ export function Personalize({tab: initial, prefs, setPrefs, embedded, onOpenThem
 						setPrefs={setPrefs}
 						wallpaper={user.data?.wallpaper}
 						onTheme={(id) => {
-							if (id !== 'custom') return
-							setCfg((c) => ({...c, preset: null, wallpaper: 'photo'}))
+							if (id === 'custom') setCfg((c) => ({...c, preset: null, wallpaper: 'photo'}))
+							if (id === 'omarchy') setCfg((c) => ({...c, preset: null, wallpaper: 'omarchy'}))
 						}}
 					/>
 					{onOpenThemes && (
