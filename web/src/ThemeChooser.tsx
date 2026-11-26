@@ -1,7 +1,8 @@
 import type {CSSProperties} from 'react'
 
 import {Icon} from './icons'
-import {applyPrefsUpdate} from './photoPrefs'
+import {applyPrefsUpdate, prefsChoosingYourPhoto} from './photoPrefs'
+import {RADIO_SELECTOR, rovingKeyDown, rovingTabIndex} from './roving'
 import {themeModeOf, withThemeChoice, withThemeMode, withThemePreference, DARK_THEME_IDS, LIGHT_THEME_IDS, PICTURE_THEME_IDS, type ThemeMode} from './theme/themeMode'
 import {haptic, Segmented, THEMES, customBackgroundUrl, omarchyBackgroundUrl, useOmarchyThemes, type Prefs, type ThemeId} from './ui'
 
@@ -38,7 +39,8 @@ export function ThemeChooser({
 			return
 		}
 		applyPrefsUpdate(setPrefs, (latest) => {
-			const next = withThemeChoice(latest, id)
+			const base = id === 'custom' ? prefsChoosingYourPhoto(latest) : latest
+			const next = withThemeChoice(base, id)
 			return id === 'omarchy' ? {...next, solidColor: null} : next
 		})
 		onTheme?.(id)
@@ -80,15 +82,15 @@ export function ThemeChooser({
 				</div>
 				<div className="theme-rule" aria-hidden="true" />
 				<div className="theme-columns">
-					<div className="theme-col" role="radiogroup" aria-label="Dark palette">
-						{DARK_THEME_IDS.map((id) => (
-							<ThemeCard key={id} id={id} on={prefs.theme === id} preferred={prefs.darkTheme === id} onApply={() => apply(id)} onPrefer={() => prefer(id)} preferLabel={`Use ${byId[id].name} for Moon`} />
+					<div className="theme-col" role="radiogroup" aria-label="Dark palette" onKeyDown={(e) => rovingKeyDown(e, RADIO_SELECTOR)}>
+						{DARK_THEME_IDS.map((id, i) => (
+							<ThemeCard key={id} id={id} on={prefs.theme === id} preferred={prefs.darkTheme === id} tabIndex={rovingTabIndex(prefs.darkTheme === id, i, DARK_THEME_IDS.some((x) => x === prefs.darkTheme))} onApply={() => apply(id)} onPrefer={() => prefer(id)} preferLabel={`Use ${byId[id].name} for Moon`} />
 						))}
 					</div>
 					<div className="theme-rule-v" aria-hidden="true" />
-					<div className="theme-col" role="radiogroup" aria-label="Light palette">
-						{LIGHT_THEME_IDS.map((id) => (
-							<ThemeCard key={id} id={id} on={prefs.theme === id} preferred={prefs.lightTheme === id} onApply={() => apply(id)} onPrefer={() => prefer(id)} preferLabel={`Use ${byId[id].name} for Sun`} />
+					<div className="theme-col" role="radiogroup" aria-label="Light palette" onKeyDown={(e) => rovingKeyDown(e, RADIO_SELECTOR)}>
+						{LIGHT_THEME_IDS.map((id, i) => (
+							<ThemeCard key={id} id={id} on={prefs.theme === id} preferred={prefs.lightTheme === id} tabIndex={rovingTabIndex(prefs.lightTheme === id, i, LIGHT_THEME_IDS.some((x) => x === prefs.lightTheme))} onApply={() => apply(id)} onPrefer={() => prefer(id)} preferLabel={`Use ${byId[id].name} for Sun`} />
 						))}
 					</div>
 				</div>
@@ -117,6 +119,7 @@ function ThemeCard({
 	id,
 	on,
 	preferred,
+	tabIndex,
 	onApply,
 	onPrefer,
 	preferLabel,
@@ -125,6 +128,7 @@ function ThemeCard({
 	id: ThemeId
 	on: boolean
 	preferred?: boolean
+	tabIndex?: 0 | -1
 	onApply: () => void
 	onPrefer?: () => void
 	preferLabel?: string
@@ -153,7 +157,7 @@ function ThemeCard({
 				)}
 			</button>
 			{onPrefer && (
-				<button type="button" className="theme-prefer" role="radio" aria-checked={preferred} aria-label={preferLabel} onClick={onPrefer}>
+				<button type="button" className="theme-prefer" role="radio" aria-checked={preferred} aria-label={preferLabel} tabIndex={tabIndex} onClick={onPrefer}>
 					<i />
 				</button>
 			)}
