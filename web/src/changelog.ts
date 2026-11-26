@@ -4,6 +4,22 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.89',
+		date: '2026-11-26',
+		title: 'Safer restarts, and a terminal that behaves like the one on your computer',
+		added: [
+			'Terminal on a computer: Ctrl+V (and Ctrl+Shift+V) pastes, Ctrl+Shift+C copies, and Ctrl+C copies when text is selected (otherwise it stops the running program, as always). Right-click pastes straight away over https://; over http:// browsers don’t let a page read the clipboard, so the browser’s own menu opens with Paste.',
+			'Change permissions on a computer that already has the connector runs the update for you: when its connector is online and allows the terminal, Update now opens a terminal there and runs the command, so there’s nothing to copy and paste. Why: it’s the same command you’d paste, run in a shell you already have as that user, so it reaches no further than you could by typing. Without the terminal ability, or with the computer offline, you still get the command to run yourself.',
+		],
+		fixed: [
+			'Restart and Shut down first make sure this server will start again by itself, with nobody signed in at it. If it can’t switch that on, it tells you before going ahead, instead of leaving a server with no screen down until someone signs in at it.',
+			'Opening a terminal again no longer types stray characters into it (like 1;2c0;276;0c2026;0$y). They were the terminal’s own answers to questions in the screen it was showing again.',
+			'Remote desktop on a phone fits the picture again when the remote screen changes size, instead of keeping the old fit.',
+			'A virtual machine’s screen no longer connects and disconnects over and over right after you sign in to it. Signing in sends the whole new picture at once, and on Wi-Fi or a phone that burst was more than the server let wait for the browser, so it cut the viewer off; reconnecting asked for the whole picture again, and the loop went on. Now the server slows the screen down until the browser catches up, and only lets go of a viewer that has read nothing for 30 seconds.',
+			'The terminal no longer seems to freeze: Ctrl+S doesn’t pause it any more, and a stuck resize can’t hold back what you type.',
+		],
+	},
+	{
 		version: '0.9.88',
 		date: '2026-11-26',
 		title: 'Use Hermes Agent as your assistant',

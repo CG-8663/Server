@@ -38,10 +38,11 @@ import {createHermes} from './hermes.mjs'
 import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
+import {viewerBackpressure} from './backpressure.mjs'
 
-export const OMARCHYD_VERSION = '0.9.88'
+export const OMARCHYD_VERSION = '0.9.89'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, viewerStallMs = undefined, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
 	const storeDir = localGitDir('OMARCHY_SERVER_APP_STORE', process.env.OMARCHY_SERVER_APP_STORE)
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
@@ -330,8 +331,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'system.device': {kind: 'query', run: async () => ({device: await system.deviceName(), os: release.pretty})},
 
 		// ---- Settings: power, logs, device name, two-factor, sessions, reset ----------------------
-		'system.restart': {kind: 'mutation', run: (_i, {auth}) => (ownerOnly(auth, 'restart the server'), power('reboot'))},
-		'system.shutdown': {kind: 'mutation', run: (_i, {auth}) => (ownerOnly(auth, 'shut down the server'), power('poweroff'))},
+		'system.restart': {kind: 'mutation', run: async (input, {auth}) => (ownerOnly(auth, 'restart the server'), await bootGuard(input, 'restart'), power('reboot'))},
+		'system.shutdown': {kind: 'mutation', run: async (input, {auth}) => (ownerOnly(auth, 'shut down the server'), await bootGuard(input, 'shutdown'), power('poweroff'))},
 		'system.logs': {
 			kind: 'query',
 			run: async (input, {auth}) => {
@@ -796,6 +797,19 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			await sh('loginctl', ['enable-linger', os.userInfo().username], 15_000)
 			return (await bootStart.state()) === true
 		},
+	}
+	// Before a restart or shutdown: if this server wouldn't come back by itself (no linger), turn that
+	// on first; if that isn't possible, refuse unless they chose to go ahead anyway. A restart from a
+	// phone used to leave a server with no screen down until someone went and signed in at it.
+	async function bootGuard(input, what) {
+		if (appOptions.run || machineOptions.run) return
+		if ((await bootStart.state()) !== false) return
+		if (await bootStart.enable()) return
+		if (input?.evenIfNoBootStart === true) return
+		throw new RpcError(
+			'PRECONDITION_FAILED',
+			`BOOT_START_OFF: After ${what === 'restart' ? 'restarting' : 'shutting down'}, this server would stay off until someone signs in on it, and it couldn’t turn on starting at boot by itself. On the server, run: sudo loginctl enable-linger ${os.userInfo().username}`,
+		)
 	}
 	if (!process.env.NODE_TEST_CONTEXT && !appOptions.run)
 		setTimeout(async () => {
@@ -1331,22 +1345,27 @@ WantedBy=graphical-session.target
 						viewerJoined()
 						ws.once('close', viewerLeft)
 					}
-					vnc.on('data', (d) => {
-						if (ws.readyState !== ws.OPEN) return
-						// A browser that stopped reading (asleep, off Wi-Fi, a frozen tab) would otherwise make the
-						// server keep every frame in memory. Same 1 MiB cap as the connector viewer.
-						if (ws.bufferedAmount > 1024 * 1024) {
+					// A big burst (the whole screen after signing in) pauses the screen's source until the
+					// viewer catches up; only a viewer that reads nothing for a long time is let go.
+					const behind = viewerBackpressure(
+						ws,
+						vnc,
+						() => {
 							ws.close(1011, 'The viewer fell behind')
 							vnc.destroy()
-							return
-						}
+						},
+						viewerStallMs ? {stallMs: viewerStallMs} : {},
+					)
+					vnc.on('data', (d) => {
+						if (ws.readyState !== ws.OPEN) return
 						ws.send(d, {binary: true})
+						behind.check()
 					})
 					ws.on('message', (d) => vnc.write(d))
 					vnc.on('close', () => ws.close(1000))
 					vnc.on('error', () => ws.terminate())
-					ws.on('close', () => vnc.destroy())
-					ws.on('error', () => vnc.destroy())
+					ws.on('close', () => (behind.stop(), vnc.destroy()))
+					ws.on('error', () => (behind.stop(), vnc.destroy()))
 				})
 			})
 		} catch {

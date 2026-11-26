@@ -1,5 +1,6 @@
 // Desktop mode: Ubuntu (GNOME) by default — top bar, dock, icons, floating windows, Activities.
 // Square tiles those same windows over the dock. Omarchy Super chords stay off until enabled.
+import {serverPower} from '../power'
 import {createContext, lazy, memo, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 import {useAppTab} from '../appTab'
 import {createPortal} from 'react-dom'
@@ -1199,23 +1200,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 
 	const power = async (kind: 'restart' | 'shutdown') => {
 		setTopMenu(null)
-		const ok = await confirm({
-			title: kind === 'restart' ? 'Restart your server?' : 'Shut down your server?',
-			body:
-				kind === 'restart'
-					? 'All apps and machines stop, then come back once this server has restarted. This takes a few minutes.'
-					: 'All apps and machines stop. You’ll need to turn the server back on yourself (for a VM, from its host).',
-			confirm: kind === 'restart' ? 'Restart' : 'Shut down',
-			danger: true,
-			icon: kind === 'restart' ? 'restart' : 'power',
-		})
-		if (!ok) return
-		try {
-			await mutate(`system.${kind}`)
-			toast(kind === 'restart' ? 'Your server is restarting' : 'Your server is shutting down')
-		} catch (e) {
-			toast((e as Error).message, true)
-		}
+		await serverPower(kind, confirm, toast)
 	}
 	const signOut = async () => {
 		setTopMenu(null)
