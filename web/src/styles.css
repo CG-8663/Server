@@ -145,6 +145,58 @@
 	--text-shadow: none;
 	color-scheme: light;
 }
+[data-theme='linen'] {
+	--bg: #f6f1e7;
+	--bg-solid: #efe8da;
+	--fg: #4a4338;
+	--fg-2: #5c5346;
+	--muted: #5c5346;
+	--glass: rgba(255, 252, 246, 0.72);
+	--glass-2: rgba(255, 252, 246, 0.88);
+	--glass-press: rgba(236, 228, 214, 0.92);
+	--line: rgba(74, 67, 56, 0.12);
+	--line-2: rgba(74, 67, 56, 0.18);
+	--sheet: rgba(246, 241, 231, 0.94);
+	--dock: rgba(246, 241, 231, 0.82);
+	--green: #3d8c3a;
+	--yellow: #b8860b;
+	--red: #c44536;
+	--blue: #3d6fbf;
+	--mauve: #8a5a9a;
+	--teal: #2a8a84;
+	--peach: #d4722a;
+	--pink: #c45d8a;
+	--shadow: 0 18px 50px rgba(74, 67, 56, 0.16);
+	--icon-shadow: 0 6px 14px rgba(74, 67, 56, 0.16);
+	--text-shadow: none;
+	color-scheme: light;
+}
+[data-theme='sky'] {
+	--bg: #e7eef6;
+	--bg-solid: #dce6f1;
+	--fg: #2c3d52;
+	--fg-2: #3d5168;
+	--muted: #3e5166;
+	--glass: rgba(255, 255, 255, 0.66);
+	--glass-2: rgba(255, 255, 255, 0.84);
+	--glass-press: rgba(214, 226, 238, 0.92);
+	--line: rgba(44, 61, 82, 0.12);
+	--line-2: rgba(44, 61, 82, 0.18);
+	--sheet: rgba(231, 238, 246, 0.94);
+	--dock: rgba(231, 238, 246, 0.82);
+	--green: #2f8f6b;
+	--yellow: #c4922a;
+	--red: #d04555;
+	--blue: #3a6fbf;
+	--mauve: #6d5bd0;
+	--teal: #1f8a9a;
+	--peach: #e07a3d;
+	--pink: #d06a9a;
+	--shadow: 0 18px 50px rgba(44, 61, 82, 0.16);
+	--icon-shadow: 0 6px 14px rgba(44, 61, 82, 0.16);
+	--text-shadow: none;
+	color-scheme: light;
+}
 
 :root {
 	/* --accent / --accent-text / --on-accent are set from the wallpaper or the chosen accent. */
@@ -288,7 +340,7 @@ img {
 	filter: blur(40px);
 	opacity: 0.55;
 }
-[data-theme='latte'] .backdrop .aurora {
+:is([data-theme='latte'], [data-theme='linen'], [data-theme='sky']) .backdrop .aurora {
 	opacity: 0.35;
 }
 
@@ -516,7 +568,7 @@ h1.title {
 	-webkit-backdrop-filter: blur(28px) saturate(1.7);
 	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
-[data-theme='latte'] .glass {
+:is([data-theme='latte'], [data-theme='linen'], [data-theme='sky']) .glass {
 	box-shadow:
 		inset 0 1px 0 rgba(255, 255, 255, 0.8),
 		0 1px 2px rgba(76, 79, 105, 0.06);
@@ -959,7 +1011,7 @@ h1.title {
 		inset 0 0 0 1px var(--line);
 	transition: transform 0.4s var(--spring);
 }
-[data-theme='latte'] .segmented .thumb {
+:is([data-theme='latte'], [data-theme='linen'], [data-theme='sky']) .segmented .thumb {
 	background: #fff;
 }
 .segmented button {
@@ -1134,7 +1186,7 @@ h1.title {
 	:is(button, a).row:not(.static):not(:disabled):not(:active):hover {
 		background: color-mix(in srgb, var(--fg) 6%, transparent);
 	}
-	[data-theme='latte'] :is(button, a).row:not(.static):not(:disabled):not(:active):hover {
+	:is([data-theme='latte'], [data-theme='linen'], [data-theme='sky']) :is(button, a).row:not(.static):not(:disabled):not(:active):hover {
 		background: color-mix(in srgb, var(--fg) 4%, transparent);
 	}
 }
@@ -1587,7 +1639,7 @@ h1.title {
 	user-select: text;
 	-webkit-user-select: text;
 }
-[data-theme='latte'] .logs {
+:is([data-theme='latte'], [data-theme='linen'], [data-theme='sky']) .logs {
 	background: rgba(255, 255, 255, 0.5);
 }
 
@@ -2711,6 +2763,76 @@ h1.title {
 	height: 12px;
 	border-radius: 50%;
 	box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.2);
+}
+.theme-chooser .segmented {
+	margin-bottom: 8px;
+}
+.theme-mode-note {
+	margin: 0 2px 10px;
+}
+.theme-board {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.theme-picture {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 10px;
+}
+.theme-rule {
+	height: 1px;
+	margin: 0 2px;
+	background: var(--line-2);
+}
+.theme-columns {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+	gap: 8px;
+	align-items: stretch;
+}
+.theme-rule-v {
+	width: 1px;
+	background: var(--line-2);
+}
+.theme-col {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.theme-card-wrap {
+	position: relative;
+}
+.theme-card-wrap .theme-card {
+	width: 100%;
+}
+.theme-card-wrap.has-prefer .dots {
+	margin-left: 22px;
+}
+.theme-prefer {
+	position: absolute;
+	left: 0;
+	bottom: 0;
+	z-index: 2;
+	width: 44px;
+	height: 44px;
+	display: grid;
+	place-items: center;
+	border: 0;
+	background: transparent;
+	color: inherit;
+}
+.theme-prefer i {
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	border: 2px solid currentColor;
+	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+	background: transparent;
+}
+.theme-prefer[aria-checked='true'] i {
+	background: var(--accent-text);
+	border-color: var(--accent-text);
 }
 .theme-card .tick {
 	position: absolute;
@@ -6524,7 +6646,7 @@ html.desk-mode > body > .sheet .confirm-actions .btn.block {
 
 /* ---- phone polish ---- */
 /* Status pills stay readable over bright wallpapers. */
-:root:not([data-theme='latte']) .pill {
+:root:not(:is([data-theme='latte'], [data-theme='linen'], [data-theme='sky'])) .pill {
 	background: color-mix(in srgb, var(--c) 22%, rgba(10, 10, 14, 0.5));
 }
 /* "Drop files here" only makes sense with a mouse. */
@@ -8352,16 +8474,16 @@ html.machines-vt::view-transition-new(root) {
 /* ---- icons that follow the theme --------------------------------------------------------------
    System icons (dock, desktop, home screen) carry --grad (their colourful look) and --tone (a
    palette colour). Horizon and Your photo keep the colourful icons; Midnight, Neon, Ember and
-   Daylight tint them from their own palette; Omarchy draws them flat, like Omarchy's own desktop,
+   Daylight, Linen and Sky tint them from their own palette; Omarchy draws them flat, like Omarchy's own desktop,
    in the colours of whatever theme the Omarchy desktop is using. */
 .app-icon.sys-ico {
 	background: var(--grad);
 }
-:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte']) .app-icon.sys-ico {
+:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte'], [data-theme='linen'], [data-theme='sky']) .app-icon.sys-ico {
 	background: linear-gradient(150deg, color-mix(in srgb, var(--tone) 78%, #fff), color-mix(in srgb, var(--tone) 70%, var(--bg-solid)) 75%) !important;
 	color: var(--bg-solid) !important;
 }
-:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte']) .app-icon.os-ico {
+:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte'], [data-theme='linen'], [data-theme='sky']) .app-icon.os-ico {
 	background: var(--grad) !important;
 	color: #fff !important;
 }
@@ -8375,10 +8497,10 @@ html.machines-vt::view-transition-new(root) {
 	display: none;
 }
 /* The tab bar on phones: each tab's icon in its tone (the chosen one in full, the rest softer). */
-:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte'], [data-theme='omarchy']) .dock button svg {
+:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte'], [data-theme='linen'], [data-theme='sky'], [data-theme='omarchy']) .dock button svg {
 	color: color-mix(in srgb, var(--tone) 70%, var(--muted));
 }
-:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte'], [data-theme='omarchy']) .dock button[aria-current='page'] svg {
+:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte'], [data-theme='linen'], [data-theme='sky'], [data-theme='omarchy']) .dock button[aria-current='page'] svg {
 	color: var(--tone);
 }
 .access-refused {
@@ -8966,7 +9088,7 @@ html[data-shape='square'] *::before,
 html[data-shape='square'] *::after {
 	border-radius: 0 !important;
 }
-html[data-shape='square'] :is(.dot, .state-dot, .pill i, .spinner, .avatar, .badge, .tap-ripple, .theme-card .dots i, .theme-card .tick,
+html[data-shape='square'] :is(.dot, .state-dot, .pill i, .spinner, .avatar, .badge, .tap-ripple, .theme-card .dots i, .theme-card .tick, .theme-prefer i,
 	.pz-accent i, .pz-check, .pick-check, .tile-check, .toast .ico, .accent-btn) {
 	border-radius: 50% !important;
 }
@@ -10560,7 +10682,7 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 		0 2px 8px rgba(0, 0, 0, 0.18),
 		inset 0 0 0 1px var(--line);
 }
-[data-theme='latte'] .mm .segmented button[aria-selected='true'] {
+:is([data-theme='latte'], [data-theme='linen'], [data-theme='sky']) .mm .segmented button[aria-selected='true'] {
 	background: #fff;
 }
 .mm-tip {

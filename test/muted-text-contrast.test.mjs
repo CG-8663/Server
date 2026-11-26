@@ -24,6 +24,16 @@ test('Daylight muted text is at least 4.5:1 on the page, the solid page colour a
 	}
 })
 
+test('Linen and Sky muted text is at least 4.5:1 on the page and the solid page colour', () => {
+	for (const id of ['linen', 'sky']) {
+		const css = block(`[data-theme='${id}']`)
+		const muted = token(css, '--muted')
+		for (const bg of [token(css, '--bg'), token(css, '--bg-solid')]) {
+			assert.ok(ratio(muted, bg) >= 4.5, `${id} ${muted} on ${bg} is ${ratio(muted, bg).toFixed(2)}`)
+		}
+	}
+})
+
 test('the Omarchy fallback muted text is at least 4.5:1 on the page, the solid page colour and a raised panel', () => {
 	const omarchy = block("[data-theme='omarchy']")
 	const muted = token(omarchy, '--muted')

@@ -14,7 +14,8 @@ import {solidOf, useDeskConfig} from './desktop/config'
 import {wallpaperBlocked} from './desktop/wallpaperGate'
 import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
-import {darkenForTextOn, darkenHslForWhite, hslToRgb, legibleMuted, pickOnAccent, resolveCssColor} from './theme/contrast'
+import {darkenForTextOn, darkenHslForWhite, hslToRgb, legibleMuted, parseRgbColor, pickOnAccent, resolveCssColor} from './theme/contrast'
+import {cleanThemeSlots, isLightTheme, type DarkThemeId, type LightThemeId, type PictureThemeId} from './theme/themeMode'
 import {reachLabel} from './fleet/machineManagerLogic'
 import {cleanTempPicks} from './fleet/temperatures'
 import {initials as nameInitials} from './initials'
@@ -769,12 +770,20 @@ export const THEMES = [
 	{id: 'tokyo', name: 'Neon', bg: '#1a1b26', fg: '#c0caf5', dots: ['#7aa2f7', '#9ece6a', '#e0af68', '#f7768e']},
 	{id: 'gruvbox', name: 'Ember', bg: '#282828', fg: '#ebdbb2', dots: ['#83a598', '#b8bb26', '#fabd2f', '#fb4934']},
 	{id: 'latte', name: 'Daylight', bg: '#eff1f5', fg: '#4c4f69', dots: ['#1e66f5', '#40a02b', '#df8e1d', '#d20f39']},
+	{id: 'linen', name: 'Linen', bg: '#f6f1e7', fg: '#4a4338', dots: ['#3d6fbf', '#3d8c3a', '#b8860b', '#c44536']},
+	{id: 'sky', name: 'Sky', bg: '#e7eef6', fg: '#2c3d52', dots: ['#3a6fbf', '#2f8f6b', '#c4922a', '#d04555']},
 	{id: 'omarchy', name: 'Omarchy', bg: '#1a1b26', fg: '#a9b1d6', dots: ['#7aa2f7', '#9ece6a', '#e0af68', '#f7768e']},
 ] as const
 export const ACCENTS = ['wallpaper', 'blue', 'mauve', 'teal', 'peach', 'green', 'pink'] as const
 export type ThemeId = (typeof THEMES)[number]['id']
 export type Prefs = {
 	theme: ThemeId
+	/** Palette Moon returns to. */
+	darkTheme: DarkThemeId
+	/** Palette Sun returns to. */
+	lightTheme: LightThemeId
+	/** Horizon, Your photo, or Omarchy. Off returns to this. */
+	pictureTheme: PictureThemeId
 	accent: (typeof ACCENTS)[number]
 	customBrandHsl?: string | null
 	backgroundVersion?: number | null
@@ -795,7 +804,7 @@ export type Prefs = {
 }
 // New installs start on the Omarchy theme (the Omarchy desktop's own colours and background). Anyone
 // who already chose a theme keeps it: their choice is saved on the server and wins over this default.
-const DEFAULT_PREFS: Prefs = {theme: 'omarchy', accent: 'wallpaper'}
+const DEFAULT_PREFS: Prefs = {theme: 'omarchy', darkTheme: 'mocha', lightTheme: 'latte', pictureTheme: 'omarchy', accent: 'wallpaper'}
 // Plain colours to choose instead of a picture (the phone's background and the desktop's wallpaper).
 export const SOLID_COLORS = ['#1a1b26', '#11111b', '#000000', '#2e3440', '#1f2335', '#283618', '#3b2f2f', '#4a1942', '#0f3b57', '#7aa2f7', '#9ece6a', '#e0af68'] as const
 export const isSolidColor = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v)
@@ -821,13 +830,14 @@ const LOCAL_KEY = 'omarchy-server:prefs'
 
 function clean(p: Partial<Prefs> | null | undefined): Prefs {
 	const theme = THEMES.some((t) => t.id === p?.theme) ? p!.theme! : DEFAULT_PREFS.theme
+	const slots = cleanThemeSlots(theme, p)
 	const accent = (ACCENTS as readonly string[]).includes(p?.accent as string) ? p!.accent! : DEFAULT_PREFS.accent
 	const omarchyBackground = typeof p?.omarchyBackground === 'string' && /^[0-9a-f]{16}$/.test(p.omarchyBackground) ? p.omarchyBackground : null
 	const statView = p?.statView === 'line' || p?.statView === 'blocks' || p?.statView === 'gauges' ? p.statView : null
 	const machinesCompact = typeof p?.machinesCompact === 'boolean' ? p.machinesCompact : null
 	const tempPicks = cleanTempPicks(p?.tempPicks)
 	const tempUnit = p?.tempUnit === 'f' ? 'f' : null
-	return {theme, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null, statView, machinesCompact, tempPicks, tempUnit}
+	return {theme, ...slots, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null, statView, machinesCompact, tempPicks, tempUnit}
 }
 export function readPrefs(): Prefs {
 	try {
@@ -906,7 +916,8 @@ export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 	const root = document.documentElement
 	root.dataset.theme = p.theme
 	applyOmarchyPalette(root, p.theme === 'omarchy')
-	const light = p.theme === 'latte'
+	const light = isLightTheme(p.theme)
+	const lightBg = light ? (parseRgbColor(THEMES.find((t) => t.id === p.theme)?.bg) ?? undefined) : undefined
 	if (p.accent === 'wallpaper' && p.theme === 'omarchy') {
 		// The Omarchy desktop's own theme colours, once known (see useOmarchyThemes).
 		const c = omarchyColors
@@ -919,13 +930,13 @@ export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 		const [h, s, l] = (source ?? FALLBACK_BRAND).split(' ').map((v) => parseFloat(v))
 		root.style.setProperty('--accent', darkenHslForWhite(h, s, l))
 		const [r, g, b] = hslToRgb(h, Math.min(s, 95), Math.min(l, 42))
-		root.style.setProperty('--accent-text', (light && darkenForTextOn(`rgb(${r}, ${g}, ${b})`)) || `hsl(${h} ${Math.min(s, 95)}% ${light ? Math.min(l, 42) : Math.max(l, 66)}%)`)
+		root.style.setProperty('--accent-text', (light && darkenForTextOn(`rgb(${r}, ${g}, ${b})`, lightBg)) || `hsl(${h} ${Math.min(s, 95)}% ${light ? Math.min(l, 42) : Math.max(l, 66)}%)`)
 		root.style.setProperty('--on-accent', '#fff')
 	} else {
 		const token = `var(--${p.accent})`
 		root.style.setProperty('--accent', token)
 		const resolved = resolveCssColor(root, token)
-		root.style.setProperty('--accent-text', (light && darkenForTextOn(resolved)) || token)
+		root.style.setProperty('--accent-text', (light && darkenForTextOn(resolved, lightBg)) || token)
 		root.style.setProperty('--on-accent', pickOnAccent(resolved, light ? '#fff' : '#111'))
 	}
 	const meta = document.querySelector('meta[name="theme-color"]')
