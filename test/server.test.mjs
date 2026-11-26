@@ -631,6 +631,54 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.ok(fake.fsTree.has('/Home/Downloads/hello.txt'))
 	})
 
+
+	test('quick transfer: a QR link downloads one file or uploads into one folder, no sign-in, for 10 minutes', async () => {
+		const make = (body) => touch.req('POST', '/api/transfer', body)
+		// Signed-in only, this server's own files only.
+		assert.equal((await fetch(`${touch.base}/api/transfer`, {method: 'POST', headers: {'x-omarchy-server': '1', 'content-type': 'application/json'}, body: '{}'})).status, 401)
+		for (const path of ['/Trash/x', '/etc/passwd', '/Home/../etc', 'Home/Documents']) assert.equal((await make({kind: 'download', path})).status, 400, path)
+		assert.equal((await make({kind: 'upload', path: '/Home/Documents/Notes.txt'})).status, 400, 'upload needs a folder')
+
+		const d = await make({kind: 'download', path: '/Home/Documents/Notes.txt', name: 'Notes.txt', size: 5, theme: {'--accent': '#ff8800', '--bg': 'url(javascript:x)'}, background: '/api/wallpaper/1'})
+		assert.equal(d.status, 200)
+		assert.match(d.body.path, /^\/t\/[A-Za-z0-9_-]{32}$/)
+		const page = await fetch(touch.base + d.body.path)
+		assert.equal(page.status, 200)
+		assert.equal(page.headers.get('cache-control'), 'no-store')
+		assert.equal(page.headers.get('referrer-policy'), 'no-referrer')
+		const info = await (await fetch(`${touch.base}${d.body.path}/info`)).json()
+		assert.equal(info.kind, 'download')
+		assert.equal(info.name, 'Notes.txt')
+		assert.ok(info.remainingMs > 9 * 60_000 && info.remainingMs <= 10 * 60_000)
+		assert.deepEqual(info.theme, {'--accent': '#ff8800'}, 'only plain colours are copied')
+		const file = await fetch(`${touch.base}${d.body.path}/file`)
+		assert.equal(file.status, 200)
+		assert.ok((await file.text()).length > 0)
+		// The link is exactly one file: no other path, no uploads.
+		assert.equal((await fetch(`${touch.base}${d.body.path}/file?path=%2FHome%2FDocuments%2Fhello.txt`)).status, 200)
+		assert.equal((await fetch(`${touch.base}${d.body.path}/upload?name=x.txt`, {method: 'POST', headers: {'x-modc-transfer': '1'}, body: 'x'})).status, 404)
+
+		const u = await make({kind: 'upload', path: '/Home/Documents', name: 'Documents'})
+		assert.equal(u.status, 200)
+		const send = (name, body, headers = {'x-modc-transfer': '1'}) => fetch(`${touch.base}${u.body.path}/upload?name=${encodeURIComponent(name)}`, {method: 'POST', headers: {'content-type': 'application/octet-stream', ...headers}, body})
+		const ok = await send('from-phone.txt', 'hello from the phone')
+		assert.equal(ok.status, 200)
+		assert.equal((await ok.json()).path, '/Home/Documents/from-phone.txt')
+		const again = await send('from-phone.txt', 'second copy')
+		assert.equal(again.status, 200)
+		assert.notEqual((await again.json()).path, '/Home/Documents/from-phone.txt', 'never replaces a file')
+		for (const bad of ['../escape.txt', '..', '.hidden', '']) assert.equal((await send(bad, 'x')).status, 400, JSON.stringify(bad))
+		const nested = await (await send('sub/dir.txt', 'x')).json()
+		assert.equal(nested.path, '/Home/Documents/sub_dir.txt', 'a slash becomes part of one plain name')
+		assert.equal((await send('x.txt', 'x', {})).status, 403, 'only the portal page may upload')
+		assert.equal((await fetch(`${touch.base}${u.body.path}/file`)).status, 404, 'an upload link downloads nothing')
+
+		// Stopped: gone. Unknown or malformed links: the same 404.
+		assert.equal((await touch.req('DELETE', `/api/transfer/${u.body.token}`)).body.ok, true)
+		assert.equal((await send('late.txt', 'x')).status, 404)
+		assert.equal((await fetch(`${touch.base}/t/${'A'.repeat(32)}/info`)).status, 404)
+		assert.equal((await fetch(`${touch.base}/t/short/info`)).status, 404)
+	})
 	test('community app stores can be listed, added and removed', async () => {
 		const url = 'https://github.com/MyOwnDataCenter/app-store'
 		const add = await touch.req('POST', '/api/rpc/appStore.addRepository', {input: {url}})
