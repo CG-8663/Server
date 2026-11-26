@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.92',
+		date: '2026-11-26',
+		title: 'Containers set up with one command',
+		fixed: [
+			'Setting up containers is one command: machines-add-lxc. It installs Incus, starts it now and at every boot, makes storage, adds your account to Incus’s per-user group, and opens Omarchy’s firewall for the containers’ own network. It’s safe to run again. Why: the long command it replaces stopped partway on Arch, which has no incus-startup service, and left containers half set up.',
+			'No restart after setting up containers. Until the server picks up your new group at the next sign-in, it reaches Incus through that group directly.',
+		],
+	},
+	{
 		version: '0.9.91',
 		date: '2026-11-26',
 		title: 'Containers catch up with Proxmox',

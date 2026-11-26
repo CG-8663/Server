@@ -180,7 +180,7 @@ function SetUp({status, onCheck, checking}: {status: Extract<ContainerStatus, {a
 			<b>Set up containers</b>
 			<span className="quiet">{status.reason}</span>
 			<span className="quiet">
-				Containers run on Incus in its per-user mode: your account gets its own walled-off space for them, and nothing is opened to the network until you add a port. Setting it up needs your password once, so run this in a terminal on this server, then restart the server:
+				Run this one command in a terminal on this server. It asks for your password, sets up Incus in its per-user mode (your own walled-off space for containers; nothing is opened to the network until you add a port), and is safe to run again:
 			</span>
 			<pre className="mono" style={{fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0}}>
 				{status.setupCommand}

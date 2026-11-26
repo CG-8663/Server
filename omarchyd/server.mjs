@@ -1,7 +1,7 @@
 // omarchyd: the My Own Data Center backend. It listens on localhost only; the Touch web server in front
 // of it is the one thing that faces the network. Runs as the owner's own user, not root.
 import {execFile} from 'node:child_process'
-import {mkdir, readFile, readdir, realpath, rm, stat, writeFile} from 'node:fs/promises'
+import {lstat, mkdir, readFile, readdir, readlink, realpath, rm, stat, symlink, unlink, writeFile} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
 import http from 'node:http'
 import {fileURLToPath} from 'node:url'
@@ -41,7 +41,7 @@ import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 import {viewerBackpressure} from './backpressure.mjs'
 
-export const OMARCHYD_VERSION = '0.9.91'
+export const OMARCHYD_VERSION = '0.9.92'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, containerOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, viewerStallMs = undefined, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -851,6 +851,20 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			const ok = await bootStart.enable()
 			console.log(ok ? '[omarchyd] turned on start at boot (loginctl enable-linger)' : `[omarchyd] this server won’t start after a restart until you sign in; run: sudo loginctl enable-linger ${os.userInfo().username}`)
 		}, 15_000).unref?.()
+	// machines-add-lxc (the one command that sets up containers) on the PATH beside omarchy-server.
+	// The installer links it too; servers installed before it existed get the link here.
+	if (!process.env.NODE_TEST_CONTEXT && !appOptions.run)
+		(async () => {
+			const target = join(appDir, 'bin', 'machines-add-lxc')
+			const link = join(home, '.local', 'bin', 'machines-add-lxc')
+			if (!(await stat(target).catch(() => null))) return
+			const st = await lstat(link).catch(() => null)
+			if (st && !st.isSymbolicLink()) return
+			if (st && (await readlink(link).catch(() => '')) === target) return
+			await mkdir(join(home, '.local', 'bin'), {recursive: true})
+			if (st) await unlink(link)
+			await symlink(target, link)
+		})().catch(() => {})
 	// The desktop's screen is shared on a private socket in your runtime folder (only you can open
 	// it; containers, even on the host network, can't). Older installs shared it on 127.0.0.1:5900,
 	// which any program on the server could reach: still used until the share is moved (below).

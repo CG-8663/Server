@@ -46,21 +46,34 @@ export const DISTROS = [
 
 const ARCH = {x64: 'x86_64', arm64: 'aarch64'}[process.arch] ?? process.arch
 
-/** The command that sets up per-user Incus on an Arch-based server (Omarchy). It needs sudo once,
- * so the owner runs it; MODC never asks for the password. */
-export function setupCommand(user = os.userInfo().username) {
-	return [
-		'sudo pacman -S --needed incus',
-		// Unprivileged containers map their users into this range of the host's IDs.
-		"(grep -q '^root:1000000:' /etc/subuid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subuid)",
-		"(grep -q '^root:1000000:' /etc/subgid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subgid)",
-		// incus-startup starts the containers set to start with the server after a restart.
-		'sudo systemctl enable --now incus.socket incus-user.socket incus-startup.service',
-		// A storage pool and the default profile; containers use them.
-		'(sudo incus storage show default >/dev/null 2>&1 || sudo incus admin init --minimal)',
-		`sudo usermod -aG incus ${user}`,
-	].join(' && ')
+/** The one command that sets up containers (bin/machines-add-lxc, linked into ~/.local/bin). It
+ * needs sudo, so the owner runs it; MODC never asks for the password. */
+export function setupCommand() {
+	return 'machines-add-lxc'
 }
+
+// Just after machines-add-lxc adds this account to the `incus` group, the server's own processes
+// don't have the group yet (that needs a new login). Until they do, `incus` is run through
+// `sg incus`, which works without a password for a member of the group, so no restart is needed.
+let groupCheck = {at: 0, sg: false}
+async function needsSg() {
+	if (Date.now() - groupCheck.at < 30_000) return groupCheck.sg
+	let sg = false
+	try {
+		const {readFile} = await import('node:fs/promises')
+		const line = (await readFile('/etc/group', 'utf8')).split('\n').find((l) => l.startsWith('incus:'))
+		if (line) {
+			const [, , gid, members] = line.split(':')
+			const mine = process.getgroups?.() ?? []
+			sg = !mine.includes(Number(gid)) && members.split(',').includes(os.userInfo().username)
+		}
+	} catch {
+		sg = false
+	}
+	groupCheck = {at: Date.now(), sg}
+	return sg
+}
+const shellQuote = (a) => `'${String(a).replace(/'/g, `'\\''`)}'`
 
 /** Group a `incus image list images: --format json` listing into the library: per system, its
  * current releases for this server's architecture, newest first. */
@@ -150,10 +163,15 @@ export function containerFrom(c) {
 	}
 }
 
-function defaultRun(args, {timeout = 60_000, input, binary = false} = {}) {
+async function defaultRun(args, opts = {}) {
+	if (await needsSg()) return execIncus('sg', ['incus', '-c', ['exec', 'incus', ...args.map(shellQuote)].join(' ')], opts)
+	return execIncus('incus', args, opts)
+}
+
+function execIncus(bin, args, {timeout = 60_000, input, binary = false} = {}) {
 	return new Promise((resolve, reject) => {
 		if (input === undefined) {
-			execFile('incus', args, {timeout, maxBuffer: FILE_LIMIT + 1024 * 1024, encoding: binary ? 'buffer' : 'utf8', env: {...process.env, LC_ALL: 'C'}}, (error, stdout, stderr) => {
+			execFile(bin, args, {timeout, maxBuffer: FILE_LIMIT + 1024 * 1024, encoding: binary ? 'buffer' : 'utf8', env: {...process.env, LC_ALL: 'C'}}, (error, stdout, stderr) => {
 				if (error) {
 					error.stderr = String(stderr ?? '')
 					return reject(error)
@@ -163,7 +181,7 @@ function defaultRun(args, {timeout = 60_000, input, binary = false} = {}) {
 			return
 		}
 		// Secrets (a root password) and uploads go in on stdin, never in the arguments.
-		const child = spawn('incus', args, {env: {...process.env, LC_ALL: 'C'}, stdio: ['pipe', 'pipe', 'pipe']})
+		const child = spawn(bin, args, {env: {...process.env, LC_ALL: 'C'}, stdio: ['pipe', 'pipe', 'pipe']})
 		const out = []
 		let err = ''
 		const timer = setTimeout(() => child.kill('SIGKILL'), timeout)
@@ -240,11 +258,11 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 				error?.code === 'ENOENT'
 					? 'Incus isn’t installed on this server yet.'
 					: /permission denied/i.test(text)
-						? 'This account can’t reach Incus yet. If you just ran the setup, restart the server so the new group applies.'
+						? 'This account can’t reach Incus yet. Run the setup below; it adds your account to Incus’s group.'
 						: /no such file|connection refused|unix\.socket/i.test(text)
 							? 'Incus is installed but its per-user service isn’t running.'
 							: message(error)
-			return {available: false, reason, setupCommand: setupCommand(user)}
+			return {available: false, reason, setupCommand: setupCommand()}
 		}
 		let info = {}
 		try {
