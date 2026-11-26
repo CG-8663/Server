@@ -10,11 +10,13 @@ import {guestAgent, hostGuestMetrics, isGuestAgent} from '../swarm/guestLink'
 import {swarmGaugeItems, type SwarmMetrics} from '../swarm/gauges'
 import {agentMay, useSwarmAction, type Agent} from '../swarm/Swarm'
 import {Segmented, StatusPill, haptic, useConfirm} from '../ui'
+import {MACHINES_FILTER_TIP, type TutorialId} from '../tutorials'
 import {PinButton} from './PinButton'
 import {SERVER_FLEET_ID, type FleetMember} from './list'
 import {
 	filterLabel,
 	filterSlot,
+	fleetStatus,
 	healthPill,
 	isOffline,
 	isOnline,
@@ -44,7 +46,6 @@ const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m
 type Alert = {agentId: string; severity: 'info' | 'warning' | 'critical'}
 
 const FILTER_SLOTS: FilterSlot[] = ['all', 'kind', 'health', 'reach']
-const FILTER_TIP_KEY = 'omarchy-server:mm-filter-tip'
 
 const MOTION_MS = 320
 
@@ -509,6 +510,8 @@ export function MachineManager({
 	onQueryText,
 	filterValue,
 	onFilter,
+	dismissedTutorials,
+	onDismissTutorial,
 }: {
 	owner: boolean
 	serverTerminal: boolean
@@ -533,6 +536,8 @@ export function MachineManager({
 	onQueryText?: (value: string) => void
 	filterValue?: ManagerFilter
 	onFilter?: (value: ManagerFilter) => void
+	dismissedTutorials?: readonly string[]
+	onDismissTutorial?: (id: TutorialId) => void
 }) {
 	const [ownQuery, setOwnQuery] = useState('')
 	const [ownFilter, setOwnFilter] = useState<ManagerFilter>('all')
@@ -540,21 +545,7 @@ export function MachineManager({
 	const setQueryText = onQueryText ?? setOwnQuery
 	const filter = filterValue ?? ownFilter
 	const setFilter = onFilter ?? setOwnFilter
-	const [tip, setTip] = useState(() => {
-		try {
-			return localStorage.getItem(FILTER_TIP_KEY) !== '1'
-		} catch {
-			return true
-		}
-	})
-	const dismissTip = () => {
-		setTip(false)
-		try {
-			localStorage.setItem(FILTER_TIP_KEY, '1')
-		} catch {
-			/* private mode: hidden for this visit */
-		}
-	}
+	const tip = !(dismissedTutorials ?? []).includes(MACHINES_FILTER_TIP)
 	const [openId, setOpenId] = useState<string | null>(null)
 	const [addOpen, setAddOpen] = useState(false)
 	const [term, setTerm] = useState<{id: string; name: string} | null>(null)
@@ -636,7 +627,22 @@ export function MachineManager({
 		haptic(6)
 		setOpenId((cur) => (cur === id ? null : id))
 	}
-	const statusLine = <p className="subtitle">{loading ? 'Loading…' : problem ? 'Can’t reach your server' : `${online} of ${total} online`}</p>
+	const status = fleetStatus({shown: rows.length, total, online, filter})
+	const statusLine = (
+		<p className="subtitle">
+			{loading ? (
+				'Loading…'
+			) : problem ? (
+				'Can’t reach your server'
+			) : (
+				<>
+					{status.shown && <span>{status.shown}</span>}
+					{status.shown && <span className="mm-status-gap"> · </span>}
+					<span>{status.online}</span>
+				</>
+			)}
+		</p>
+	)
 	const addControl = (
 		<div className="mm-add" ref={addRef}>
 			<button
@@ -705,21 +711,23 @@ export function MachineManager({
 						</button>
 					)}
 				</label>
-				<Segmented
-					value={filterSlot(filter)}
-					options={FILTER_SLOTS.map((slot) => ({id: slot, label: filterLabel(filter, slot)}))}
-					onChange={(slot) => setFilter(nextFilter(filter, slot))}
-					label="Which machines"
-				/>
-			</div>
-			{tip && (
-				<div className="mm-tip" role="note">
-					<p>Tap again to switch. Physical becomes Virtual, Unhealthy becomes Healthy, and Offline becomes Online.</p>
-					<button type="button" aria-label="Dismiss" onClick={dismissTip}>
-						<Icon name="close" size={14} />
-					</button>
+				<div className="mm-filters">
+					<Segmented
+						value={filterSlot(filter)}
+						options={FILTER_SLOTS.map((slot) => ({id: slot, label: filterLabel(filter, slot)}))}
+						onChange={(slot) => setFilter(nextFilter(filter, slot))}
+						label="Which machines"
+					/>
+					{tip && (
+						<div className="mm-tip" role="note">
+							<p>Tap again to switch. Physical becomes Virtual, Unhealthy becomes Healthy, and Offline becomes Online.</p>
+							<button type="button" aria-label="Dismiss" onClick={() => onDismissTutorial?.(MACHINES_FILTER_TIP)}>
+								<Icon name="close" size={14} />
+							</button>
+						</div>
+					)}
 				</div>
-			)}
+			</div>
 			{problem && (
 				<div className="error" role="alert">
 					<Icon name="alert" size={18} />

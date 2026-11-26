@@ -382,6 +382,13 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(r.body.prefs.machinesCompact, true)
 		r = await touch.req('POST', '/api/prefs', {machinesCompact: false})
 		assert.equal(r.body.prefs.machinesCompact, false)
+		r = await touch.req('POST', '/api/prefs', {dismissedTutorials: ['machines-filters']})
+		assert.equal(r.status, 200)
+		assert.deepEqual(r.body.prefs.dismissedTutorials, ['machines-filters'])
+		assert.equal(r.body.prefs.theme, 'tokyo')
+		assert.equal((await touch.req('POST', '/api/prefs', {dismissedTutorials: ['other']})).status, 400)
+		r = await touch.req('POST', '/api/prefs', {dismissedTutorials: []})
+		assert.deepEqual(r.body.prefs.dismissedTutorials, [])
 		assert.equal((await touch.req('POST', '/api/prefs', {theme: '<script>'})).status, 400)
 		assert.equal((await touch.req('POST', '/api/prefs', {customBrandHsl: 'red; x'})).status, 400)
 		// Only plain strings are stored: an array or object is a 400, not a stored array or a 500.
