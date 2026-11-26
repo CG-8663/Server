@@ -41,7 +41,7 @@ import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 import {viewerBackpressure} from './backpressure.mjs'
 
-export const OMARCHYD_VERSION = '0.9.90'
+export const OMARCHYD_VERSION = '0.9.91'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, containerOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, viewerStallMs = undefined, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -96,7 +96,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		...machineOptions,
 	})
 	// Containers (LXC through per-user Incus): owner-only, like the server's terminal.
-	const containers = createContainers({reservedPorts: [port, webPort], ...containerOptions})
+	const containers = createContainers({reservedPorts: [port, webPort], backupsDir: join(dataDir, 'container-backups'), files, ...containerOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
 	const updater = createUpdater({appDir, dataDir, currentVersion: OMARCHYD_VERSION, webPort, ...(sourceDir ? {sourceDir} : {}), ...(storeDir ? {appStoreDir: storeDir} : {}), ...updaterOptions})
 	// One certificate context for the app gateways and the Security settings. On a server this is
@@ -1074,6 +1074,33 @@ WantedBy=graphical-session.target
 					'cache-control': 'no-store',
 				})
 				return res.end(file.data)
+			}
+			// Owner-only file download/upload for this server's containers (Incus), up to 100 MB.
+			if (url.pathname === '/api/containers/files/download' && req.method === 'GET') {
+				const auth = accounts.authenticate(req) || accounts.checkUrlToken(url.searchParams.get('token'), req)
+				if (!auth) return sendJson(res, 401, {error: 'unauthorized'})
+				ownerOnly(auth, 'download files from containers')
+				const file = await containers.readFile(url.searchParams.get('name') ?? '', url.searchParams.get('path') ?? '')
+				res.writeHead(200, {
+					'content-type': 'application/octet-stream',
+					'content-length': file.data.length,
+					'content-disposition': contentDisposition(file.name),
+					'cache-control': 'no-store',
+				})
+				return res.end(file.data)
+			}
+			if (url.pathname === '/api/containers/files/upload' && req.method === 'POST') {
+				const auth = accounts.authenticate(req)
+				if (!auth) return sendJson(res, 401, {error: 'unauthorized'})
+				ownerOnly(auth, 'upload files to containers')
+				let size = 0
+				const chunks = []
+				for await (const c of req) {
+					size += c.length
+					if (size > 100 * 1024 * 1024) return sendJson(res, 413, {error: 'Files larger than 100 MB can’t be uploaded this way'})
+					chunks.push(c)
+				}
+				return sendJson(res, 200, await containers.writeFile(url.searchParams.get('name') ?? '', url.searchParams.get('path') ?? '', Buffer.concat(chunks)))
 			}
 			if (url.pathname === '/api/swarm/files/upload' && req.method === 'POST') {
 				const auth = accounts.authenticate(req)

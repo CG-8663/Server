@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.91',
+		date: '2026-11-26',
+		title: 'Containers catch up with Proxmox',
+		added: [
+			'Containers can start with the server, in the order you choose and with a delay between them. Why: a server with no screen should bring its containers back after a power cut without anyone signing in. New containers start with the server unless you switch it off. (Run the setup command again on a server that set up containers before, so Incus’s startup service is on.)',
+			'Change a container’s CPUs, CPU cap, CPU priority, memory and swap while it runs, and grow its disk.',
+			'A new container can get a root password and an SSH key. They’re handed straight to the container and not kept by My Own Data Center.',
+			'Back up a container to a single file on this server and restore it under a new name; clone it; or save it as a template, which then appears under Your templates when you make a new one.',
+			'Protect a container from deleting, and give it notes and tags. The Machines search finds the tags.',
+			'Live CPU and network graphs, and a file browser: download, upload, or copy a file into the server’s Downloads.',
+			'Containers appear in the Machines list too, each opening in its own sheet. The library adds CentOS Stream, Devuan and Gentoo.',
+		],
+	},
+	{
 		version: '0.9.90',
 		date: '2026-11-26',
 		title: 'Containers, Linen and Sky, and a restart that says when it will wait',

@@ -39,6 +39,7 @@ import {
 } from './machineManagerLogic'
 import {LiveStats} from './StatRegion'
 import {useServerGaugeMetrics} from './serverGauges'
+import {ContainersInList} from '../containers/Containers'
 
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
@@ -806,6 +807,7 @@ export function MachineManager({
 				})}
 			</div>
 			{!loading && rows.length === 0 && <p className="quiet mm-empty">No machines match.</p>}
+			<ContainersInList owner={owner} filterText={queryText} />
 			{term && (
 				<Suspense fallback={null}>
 					<TerminalScreen agent={term} onClose={() => setTerm(null)} />
