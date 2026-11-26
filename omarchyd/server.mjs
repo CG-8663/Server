@@ -38,6 +38,7 @@ import {createHermes} from './hermes.mjs'
 import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
+import {viewerBackpressure} from './backpressure.mjs'
 
 export const OMARCHYD_VERSION = '0.9.89'
 
@@ -1344,22 +1345,22 @@ WantedBy=graphical-session.target
 						viewerJoined()
 						ws.once('close', viewerLeft)
 					}
+					// A big burst (the whole screen after signing in) pauses the screen's source until the
+					// viewer catches up; only a viewer that reads nothing for a long time is let go.
+					const behind = viewerBackpressure(ws, vnc, () => {
+						ws.close(1011, 'The viewer fell behind')
+						vnc.destroy()
+					})
 					vnc.on('data', (d) => {
 						if (ws.readyState !== ws.OPEN) return
-						// A browser that stopped reading (asleep, off Wi-Fi, a frozen tab) would otherwise make the
-						// server keep every frame in memory. Same 1 MiB cap as the connector viewer.
-						if (ws.bufferedAmount > 1024 * 1024) {
-							ws.close(1011, 'The viewer fell behind')
-							vnc.destroy()
-							return
-						}
 						ws.send(d, {binary: true})
+						behind.check()
 					})
 					ws.on('message', (d) => vnc.write(d))
 					vnc.on('close', () => ws.close(1000))
 					vnc.on('error', () => ws.terminate())
-					ws.on('close', () => vnc.destroy())
-					ws.on('error', () => vnc.destroy())
+					ws.on('close', () => (behind.stop(), vnc.destroy()))
+					ws.on('error', () => (behind.stop(), vnc.destroy()))
 				})
 			})
 		} catch {

@@ -19,6 +19,7 @@ import WebSocket, {WebSocketServer} from 'ws'
 
 import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {linkProxy} from '../omarchyd/proxy-link.mjs'
+import {viewerBackpressure} from '../omarchyd/backpressure.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 import {createQuickTransfer, cleanUploadName, PORTAL_JS, portalHtml} from './quick-transfer.mjs'
@@ -2445,7 +2446,10 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 						} catch {}
 						let proxyKeyTimer = null
 						let unregisterActive = () => {}
+						// Remote screens: slow the source down while this browser catches up (see backpressure.mjs).
+						const behind = viewerBackpressure(client, upstream, () => closeBoth(1011, 'The viewer fell behind'))
 						const closeBoth = (code, reason) => {
+							behind.stop()
 							unregisterActive()
 							if (proxyKeyTimer) {
 								clearTimeout(proxyKeyTimer)
@@ -2535,7 +2539,14 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 								client.send(data, {binary: isBinary})
 								return
 							}
-							// Same 1 MiB cap as the connector viewer. The connector passthrough above does not use it.
+							if (route === 'machines') {
+								// A remote screen's big burst (the whole picture after signing in) waits for the browser
+								// instead of cutting it off, which made it reconnect and get cut off again in a loop.
+								client.send(data, {binary: isBinary})
+								behind.check()
+								return
+							}
+							// Shells: same 1 MiB cap as before (the terminal replays what it missed on reconnect).
 							if (client.bufferedAmount > 1024 * 1024) {
 								closeBoth(1011, 'The viewer fell behind')
 								return
