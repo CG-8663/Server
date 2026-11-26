@@ -1224,7 +1224,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	api.post('/prefs', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView, machinesCompact, tempPicks, tempUnit} = req.body ?? {}
+		const {theme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView, machinesCompact, tempPicks, tempUnit, dismissedTutorials} = req.body ?? {}
 		const patch = {}
 		// How the assistant looks for this account (character, name, motion). Appearance only: it never
 		// reaches the assistant itself. Checked field by field; anything else is dropped.
@@ -1264,6 +1264,14 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		if (machinesCompact !== undefined) {
 			if (typeof machinesCompact !== 'boolean') return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad compact setting'}})
 			patch.machinesCompact = machinesCompact
+		}
+		// Notes this account has closed. One id is one note, on every device.
+		if (dismissedTutorials !== undefined) {
+			const allowed = ['machines-filters']
+			if (!Array.isArray(dismissedTutorials) || dismissedTutorials.some((id) => typeof id !== 'string' || !allowed.includes(id))) {
+				return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown tutorial'}})
+			}
+			patch.dismissedTutorials = [...new Set(dismissedTutorials)]
 		}
 		// Celsius, or Fahrenheit. Null and "c" both mean Celsius.
 		if (tempUnit !== undefined) {
