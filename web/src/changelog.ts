@@ -11,6 +11,7 @@ export const CHANGELOG: Release[] = [
 			'Settings › Assistant: choose who answers in chat, the built-in assistant or Hermes Agent. If you already run Hermes on this server, Connect Hermes imports it: Hermes keeps its own model, memory and skills, and nothing needs setting up twice.',
 			'Hermes can look after this server from anywhere it runs (here, Telegram, Discord or its own CLI): apps, files, machines, storage and backups. Choose Full control, or Read only to let it look without changing anything.',
 			'Connecting changes Hermes’ own files the way Hermes documents them, keeps a copy of each first, and turns its API server on for this machine only. Disconnect Hermes undoes it.',
+			'Hermes can run somewhere else too: on another computer or in the cloud. Connect it by its address and key, and Settings shows the two lines to add on that machine so it can use this server (with a token you can replace any time).',
 			'The setup wizard now asks which assistant you want.',
 		],
 	},

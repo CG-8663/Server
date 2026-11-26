@@ -7,6 +7,7 @@ export type RequestOptions = {timeoutMs?: number; signal?: AbortSignal}
 // Long blocking server operations keep a generous timeout; normal RPCs and polling fail in 20 s.
 const SLOW_RPC = new Set([
 	'hermes.connect',
+	'hermes.connectRemote',
 	'hermes.disconnect',
 	'unraid.connect',
 	'unraid.scan',

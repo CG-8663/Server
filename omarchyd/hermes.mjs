@@ -109,9 +109,9 @@ export function createHermes({dataDir, home = os.homedir(), env = process.env, o
 	}
 	const mcpUrl = () => `http://127.0.0.1:${omarchydPort}/mcp`
 
-	async function reach(port, key) {
+	async function reach(port, key, baseUrl = null) {
 		try {
-			const r = await fetchImpl(`http://127.0.0.1:${port}/v1/models`, {headers: key ? {authorization: `Bearer ${key}`} : {}, signal: AbortSignal.timeout(4_000)})
+			const r = await fetchImpl(baseUrl ? `${String(baseUrl).replace(/\/+$/, '')}/models` : `http://127.0.0.1:${port}/v1/models`, {headers: key ? {authorization: `Bearer ${key}`} : {}, signal: AbortSignal.timeout(4_000)})
 			if (!r.ok) return {ok: false, status: r.status}
 			const body = await r.json().catch(() => null)
 			const model = Array.isArray(body?.data) && body.data[0]?.id ? String(body.data[0].id) : null
@@ -132,10 +132,27 @@ export function createHermes({dataDir, home = os.homedir(), env = process.env, o
 
 	async function status(auth) {
 		await loaded
+		if (state?.where === 'remote' && state.ownerUserId === auth.userId) {
+			const key = keys ? (await keys.listPublic(auth.userId)).find((k) => k.provider === 'hermes') : null
+			const secret = key ? await keys.getSecret(key.id) : null
+			const live = secret ? await reach(null, secret.apiKey, secret.baseUrl) : {ok: false}
+			return {
+				found: true,
+				where: 'remote',
+				home: null,
+				cli: false,
+				apiServer: {enabled: true, port: null, local: false, reachable: !!live.ok, baseUrl: secret?.baseUrl ?? null},
+				connected: !!state.token && !!secret,
+				mode: MODES.includes(state.mode) ? state.mode : 'full',
+				engine: keys ? await keys.engineOf(auth.userId) : 'builtin',
+				model: live.model ?? secret?.model ?? null,
+			}
+		}
 		const i = await inspect()
 		const live = i.api.enabled ? await reach(i.api.port, i.env.API_SERVER_KEY) : {ok: false}
 		return {
 			found: i.found,
+			where: 'local',
 			home: i.home,
 			cli: !!i.cli,
 			apiServer: {enabled: i.api.enabled, port: i.api.port, local: loopbackHost(i.api.host), reachable: !!live.ok},
@@ -173,7 +190,7 @@ export function createHermes({dataDir, home = os.homedir(), env = process.env, o
 		doc.setIn(['mcp_servers', MCP_NAME], doc.createNode({url: mcpUrl(), headers: {Authorization: 'Bearer ${MODC_MCP_TOKEN}'}, timeout: 120}))
 		if (i.configText) await backup(configFile)
 		await writeKeep(configFile, String(doc), 0o600)
-		await saveState({token, ownerUserId: auth.userId, mode, connectedAt: Date.now()})
+		await saveState({token, ownerUserId: auth.userId, mode, where: 'local', connectedAt: Date.now()})
 		const gw = await restartGateway()
 		// Give the gateway a moment to come back with its API server.
 		let live = {ok: false}
@@ -195,8 +212,62 @@ export function createHermes({dataDir, home = os.homedir(), env = process.env, o
 		}
 	}
 
+	// Hermes on another computer or in the cloud: chat goes to its API server over the network (it must
+	// listen beyond 127.0.0.1, with its API_SERVER_KEY), and Hermes reaches this server's tools through
+	// the web app's address (POST /mcp, the same token). Its files are on that machine, so the person
+	// adds the snippet from remoteSetup there.
+	async function connectRemote(auth, input = {}) {
+		await loaded
+		let base = String(input.baseUrl ?? '').trim().replace(/\/+$/, '').replace(/\/(?:chat\/completions|models)$/i, '')
+		let u
+		try {
+			u = new URL(base)
+		} catch {
+			throw new RpcError('BAD_REQUEST', 'Enter Hermes’ address, like http://192.168.1.50:8642')
+		}
+		if (!/^https?:$/.test(u.protocol) || u.username || u.password) throw new RpcError('BAD_REQUEST', 'Use an http:// or https:// address')
+		if (!u.pathname || u.pathname === '/') base = `${u.origin}/v1`
+		const apiKey = String(input.apiKey ?? '').trim()
+		if (apiKey.length < 8 || /\s/.test(apiKey)) throw new RpcError('BAD_REQUEST', 'Enter Hermes’ API_SERVER_KEY (a Hermes reachable over the network must have one)')
+		const live = await reach(null, apiKey, base)
+		if (!live.ok) throw new RpcError('BAD_GATEWAY', live.status === 401 ? 'Hermes refused that key' : 'Couldn’t reach Hermes there. Is its gateway running, and its API server listening on the network (API_SERVER_HOST=0.0.0.0)?')
+		const mode = MODES.includes(input.mode) ? input.mode : MODES.includes(state?.mode) ? state.mode : 'full'
+		const token = state?.token || randomBytes(32).toString('hex')
+		await saveState({token, ownerUserId: auth.userId, mode, where: 'remote', connectedAt: Date.now()})
+		if (keys) {
+			await keys.upsertHermes(auth, {baseUrl: base, apiKey, model: live.model ?? 'hermes-agent'})
+			if (input.use !== false) await keys.setEngine(auth.userId, 'hermes')
+		}
+		log(`[omarchyd] Hermes connected at ${u.host} (${mode === 'read' ? 'read only' : 'full control'})`)
+		return status(auth)
+	}
+	// What to add on the Hermes machine. Shown to the owner only; the token can be replaced any time.
+	async function remoteSetup(auth) {
+		await loaded
+		if (state?.ownerUserId !== auth.userId || !state?.token) throw new RpcError('PRECONDITION_FAILED', 'Connect Hermes first')
+		return {token: state.token, path: '/mcp', name: MCP_NAME}
+	}
+	async function rotateToken(auth) {
+		await loaded
+		if (state?.ownerUserId !== auth.userId) throw new RpcError('PRECONDITION_FAILED', 'Connect Hermes first')
+		await saveState({...state, token: randomBytes(32).toString('hex')})
+		// A Hermes on this machine gets the new token in its .env right away.
+		if (state.where !== 'remote') {
+			const envFile = join(hermesHome(), '.env')
+			const text = await readText(envFile)
+			if (text !== null) await writeKeep(envFile, setEnv(text, {MODC_MCP_TOKEN: state.token}), 0o600)
+			await restartGateway()
+		}
+		return remoteSetup(auth)
+	}
+
 	async function disconnect(auth) {
 		await loaded
+		if (state?.where === 'remote') {
+			await saveState({mode: state?.mode ?? 'full'})
+			if (keys) await keys.removeHermes(auth.userId)
+			return status(auth)
+		}
 		const i = await inspect()
 		const configFile = join(i.home, 'config.yaml')
 		if (i.configText) {
@@ -328,6 +399,9 @@ export function createHermes({dataDir, home = os.homedir(), env = process.env, o
 			'hermes.status': {kind: 'query', run: async (_i, {auth}) => (owner(auth), status(auth))},
 			'hermes.connect': {kind: 'mutation', run: async (input, {auth}) => (owner(auth), connect(auth, input ?? {}))},
 			'hermes.disconnect': {kind: 'mutation', run: async (_i, {auth}) => (owner(auth), disconnect(auth))},
+			'hermes.connectRemote': {kind: 'mutation', run: async (input, {auth}) => (owner(auth), connectRemote(auth, input ?? {}))},
+			'hermes.remoteSetup': {kind: 'query', run: async (_i, {auth}) => (owner(auth), remoteSetup(auth))},
+			'hermes.rotateToken': {kind: 'mutation', run: async (_i, {auth}) => (owner(auth), rotateToken(auth))},
 			'hermes.setMode': {
 				kind: 'mutation',
 				run: async (input, {auth}) => {

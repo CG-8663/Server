@@ -632,6 +632,12 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 	})
 
 
+	test('/mcp is passed to omarchyd for a Hermes elsewhere: POST only, no session, nothing answered without its token', async () => {
+		assert.equal((await fetch(`${touch.base}/mcp`)).status, 405)
+		const r = await fetch(`${touch.base}/mcp`, {method: 'POST', headers: {'content-type': 'application/json'}, body: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'})
+		assert.notEqual(r.status, 200)
+	})
+
 	test('quick transfer: a QR link downloads one file or uploads into one folder, no sign-in, for 10 minutes', async () => {
 		const make = (body) => touch.req('POST', '/api/transfer', body)
 		// Signed-in only, this server's own files only.

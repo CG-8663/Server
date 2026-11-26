@@ -139,7 +139,7 @@ export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; 
 									</span>
 									<span>
 										<b>Hermes Agent</b>
-										<span>Already set up on this server? Connect it, with its own model, memory and skills, and let it look after this server.</span>
+										<span>Already run it, on this server, another computer or in the cloud? Connect it, with its own model, memory and skills, and let it look after this server.</span>
 									</span>
 								</button>
 							)}

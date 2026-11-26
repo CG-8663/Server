@@ -11424,3 +11424,23 @@ input.temp-unit-box.fallback:checked {
 .qt-menu button:hover {
 	background: var(--glass-press, rgba(255, 255, 255, 0.08));
 }
+
+/* Settings › Assistant › Hermes setup */
+.hermes-setup {
+	display: grid;
+	gap: 10px;
+	padding: 4px 18px 18px;
+	justify-items: start;
+}
+.hermes-snippet {
+	width: 100%;
+	margin: 0;
+	padding: 12px 14px;
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	background: rgba(0, 0, 0, 0.25);
+	font: 12.5px/1.5 var(--mono);
+	white-space: pre-wrap;
+	word-break: break-all;
+	user-select: all;
+}

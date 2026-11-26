@@ -133,3 +133,31 @@ test('only the owner connects; a Hermes API server open to the network without a
 		await none.close()
 	}
 })
+
+test('Hermes on another computer or in the cloud: connect by address and key, then give it the snippet and token', async () => {
+	const t = await setup({env: null, config: null})
+	try {
+		await assert.rejects(() => t.run('hermes.connectRemote', {baseUrl: 'ftp://x', apiKey: 'k'.repeat(20)}), /http/)
+		await assert.rejects(() => t.run('hermes.connectRemote', {baseUrl: 'http://10.0.0.5:8642', apiKey: 'short'}), /API_SERVER_KEY/)
+		const st = await t.run('hermes.connectRemote', {baseUrl: 'http://10.0.0.5:8642', apiKey: 'k'.repeat(32)})
+		assert.equal(st.where, 'remote')
+		assert.equal(st.connected, true)
+		assert.equal(st.engine, 'hermes')
+		const key = await t.keys.resolveForUser('owner1')
+		assert.equal(key.baseUrl, 'http://10.0.0.5:8642/v1')
+		const s1 = await t.run('hermes.remoteSetup')
+		assert.match(s1.token, /^[0-9a-f]{64}$/)
+		assert.equal(s1.path, '/mcp')
+		// The token works for MCP; a new one replaces it.
+		assert.equal((await t.mcp({jsonrpc: '2.0', id: 1, method: 'tools/list'}, s1.token)).status, 200)
+		const s2 = await t.run('hermes.rotateToken')
+		assert.notEqual(s2.token, s1.token)
+		assert.equal((await t.mcp({jsonrpc: '2.0', id: 1, method: 'tools/list'}, s1.token)).status, 401)
+		assert.equal((await t.mcp({jsonrpc: '2.0', id: 1, method: 'tools/list'}, s2.token)).status, 200)
+		await t.run('hermes.disconnect')
+		assert.equal((await t.mcp({jsonrpc: '2.0', id: 1, method: 'tools/list'}, s2.token)).status, 401)
+		await assert.rejects(() => t.keys.resolveForUser('owner1'), /Add an API key/)
+	} finally {
+		await t.close()
+	}
+})
