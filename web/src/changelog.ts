@@ -9,6 +9,7 @@ export const CHANGELOG: Release[] = [
 		title: 'Safer restarts, and a terminal that behaves like the one on your computer',
 		added: [
 			'Terminal on a computer: Ctrl+V (and Ctrl+Shift+V) pastes, Ctrl+Shift+C copies, and Ctrl+C copies when text is selected (otherwise it stops the running program, as always). Right-click pastes straight away over https://; over http:// browsers don’t let a page read the clipboard, so the browser’s own menu opens with Paste.',
+			'Change permissions on a computer that already has the connector runs the update for you: when its connector is online and allows the terminal, Update now opens a terminal there and runs the command, so there’s nothing to copy and paste. Why: it’s the same command you’d paste, run in a shell you already have as that user, so it reaches no further than you could by typing. Without the terminal ability, or with the computer offline, you still get the command to run yourself.',
 		],
 		fixed: [
 			'Restart and Shut down first make sure this server will start again by itself, with nobody signed in at it. If it can’t switch that on, it tells you before going ahead, instead of leaving a server with no screen down until someone signs in at it.',

@@ -447,7 +447,7 @@ export function ConnectorControls({a, onTerminal, power = true}: {a: Agent; onTe
 				<Row icon="key" color="var(--accent)" label="Change permissions" sub="Update what this server may do here without losing its name or backups" onClick={() => setReauth(true)} />
 			</SheetGroup>
 			{plugins && <AgentPlugins a={a} onClose={() => setPlugins(false)} />}
-			{reauth && <ReauthorizeComputer a={a} onClose={() => setReauth(false)} />}
+			{reauth && <ReauthorizeComputer a={a} onTerminal={onTerminal} onClose={() => setReauth(false)} />}
 		</>
 	)
 }
@@ -1443,14 +1443,15 @@ function DesktopHelp({a, onTerminal}: {a: Agent; onTerminal: (input?: string) =>
 					Install screen sharing
 				</button>
 			) : null}
-			{reauth && <ReauthorizeComputer a={a} onClose={() => setReauth(false)} />}
+			{reauth && <ReauthorizeComputer a={a} onTerminal={onTerminal} onClose={() => setReauth(false)} />}
 		</div>
 	)
 }
 
-function ReauthorizeComputer({a, onClose}: {a: Agent; onClose: () => void}) {
+function ReauthorizeComputer({a, onClose, onTerminal}: {a: Agent; onClose: () => void; onTerminal?: (input?: string) => void}) {
 	const [allow, setAllow] = useState<Abilities>({...a.allowed})
 	const [before] = useState(() => JSON.stringify(a.allowed))
+	const list = (Object.keys(allow) as Ability[]).filter((k) => allow[k]).join(',')
 	const [pairing, setPairing] = useState<Pairing | null>(null)
 	const [host, setHost] = useState('')
 	const [copied, setCopied] = useState(false)
@@ -1458,13 +1459,26 @@ function ReauthorizeComputer({a, onClose}: {a: Agent; onClose: () => void}) {
 	const toast = useToast()
 	const swarm = useSwarm()
 	const liveAgent = swarm.data?.find((x) => x.id === a.id) ?? a
+	// Its connector is online with a terminal: run the update there instead of asking for a copy and paste.
+	// The terminal is already a shell as that user, so this reaches no further than the user could by typing.
+	const direct = Boolean(onTerminal && liveAgent.online && agentMay(liveAgent, 'terminal'))
+	const [ran, setRan] = useState(false)
 	const reauth = useMutation({
 		mutationFn: () => mutate<Pairing>('swarm.reauthorize', {id: a.id, ...allow}),
 		onSuccess: (p) => {
 			setPairing(p)
 			const here = location.hostname
 			const local = here === 'localhost' || here === '127.0.0.1' || here === '::1'
-			setHost(local ? (p.addresses[0]?.address ?? here) : here)
+			const h = local ? (p.addresses[0]?.address ?? here) : here
+			setHost(h)
+			if (direct && onTerminal) {
+				const server = `https://${h.includes(':') && !h.startsWith('[') ? `[${h}]` : h}:${p.port}`
+				const make = a.info?.osId === 'windows' ? connectorInstallCommandWindows : connectorInstallCommand
+				const cmd = make({source: p.source, server, ca: p.ca, token: p.token, allow: list}).command
+				setRan(true)
+				// Ctrl+U clears anything half-typed at a Unix prompt (PowerShell has no such key); Enter runs it.
+				onTerminal(`${a.info?.osId === 'windows' ? '' : '\x15'}${cmd}\r`)
+			}
 		},
 		onError: (e) => toast((e as Error).message, true),
 	})
@@ -1474,7 +1488,6 @@ function ReauthorizeComputer({a, onClose}: {a: Agent; onClose: () => void}) {
 		return () => clearInterval(t)
 	}, [pairing])
 	const left = pairing ? Math.max(0, Math.round((pairing.expiresAt - now) / 1000)) : 0
-	const list = (Object.keys(allow) as Ability[]).filter((k) => allow[k]).join(',')
 	const command = useMemo(() => {
 		if (!pairing) return ''
 		const server = `https://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${pairing.port}`
@@ -1500,7 +1513,9 @@ function ReauthorizeComputer({a, onClose}: {a: Agent; onClose: () => void}) {
 			{!pairing ? (
 				<>
 					<p className="muted" style={{fontSize: 14, margin: '0 4px 12px'}}>
-						Choose the abilities this server may use on {a.name}. Running the command on that computer updates its permissions in place and rotates its key.
+						{direct
+							? `Choose the abilities this server may use on ${a.name}. Its connector updates its permissions in place, rotates its key and reconnects; a terminal on ${a.name} opens to show it working.`
+							: `Choose the abilities this server may use on ${a.name}. Running the command on that computer updates its permissions in place and rotates its key.`}
 					</p>
 					<div className="glass group wrap-sub" style={{'--inset': '62px'} as CSSProperties}>
 						{(Object.keys(ABILITY) as Ability[]).map((k) => (
@@ -1508,7 +1523,7 @@ function ReauthorizeComputer({a, onClose}: {a: Agent; onClose: () => void}) {
 						))}
 					</div>
 					<button className="btn primary" style={{width: '100%', marginTop: 18}} disabled={reauth.isPending} onClick={() => reauth.mutate()}>
-						{reauth.isPending ? <span className="spinner" /> : <Icon name="key" size={18} />} Make the update command
+						{reauth.isPending ? <span className="spinner" /> : <Icon name="key" size={18} />} {direct ? `Update ${a.name} now` : 'Make the update command'}
 					</button>
 				</>
 			) : updated ? (
@@ -1520,6 +1535,15 @@ function ReauthorizeComputer({a, onClose}: {a: Agent; onClose: () => void}) {
 					<span>{a.name} kept its name and backups.</span>
 					<button className="btn primary small" onClick={onClose}>
 						Done
+					</button>
+				</div>
+			) : ran ? (
+				<div className="glass empty">
+					<span className="spinner" />
+					<b>Updating {a.name}</b>
+					<span>Its connector is running the update in the terminal that just opened. If it asks for a password, type it there. It reconnects by itself, and this changes to Permissions updated.</span>
+					<button className="btn small" onClick={() => setRan(false)}>
+						Show the command instead
 					</button>
 				</div>
 			) : (
