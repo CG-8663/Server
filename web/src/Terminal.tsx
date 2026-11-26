@@ -14,7 +14,7 @@ import {Icon} from './icons'
 import {overlayBackUsesHistory, popstateClosesOverlay} from './overlayHistory'
 import {terminalCloseOutcome} from './terminalClose'
 import {forwardTerminalInput, ignoreOpeningFocus} from './terminalInput'
-import {pasteInto, terminalPasteDecision} from './terminalPaste'
+import {isTerminalReply, pasteInto, terminalPasteDecision} from './terminalPaste'
 import {SEQ, applyTerminalModifiers} from './terminalKeys'
 import {AppIcon, haptic, useConfirm, usePortalRoot, useScreenLock, useToast} from './ui'
 
@@ -193,10 +193,18 @@ export function TerminalScreen({
 				term.focus()
 				return
 			}
-			// Paste: straight from the clipboard where the browser allows it (https://), otherwise the
-			// paste box, so right-click → Paste works on http:// too.
+			// Paste, like a terminal on the machine: straight from the clipboard where the browser
+			// allows reading it (https://). On http:// browsers never let a page read the clipboard, so
+			// their own menu opens with Paste (xterm puts its input under the pointer for that).
+			if (!window.isSecureContext || !navigator.clipboard?.readText) return
 			e.preventDefault()
-			pasteRef.current()
+			navigator.clipboard.readText().then(
+				(text) => {
+					if (text) term.paste(text)
+					term.focus()
+				},
+				() => pasteRef.current(),
+			)
 		}
 		el.addEventListener('contextmenu', onContextMenu)
 		// Take a clipboard paste once. Otherwise the browser also drops it into xterm's hidden
@@ -209,6 +217,23 @@ export function TerminalScreen({
 			if (decision.text) term.paste(decision.text)
 		}
 		el.addEventListener('paste', onPaste, true)
+		// Keyboard copy and paste as on a desktop: Ctrl+V and Ctrl+Shift+V paste (the browser's own
+		// paste, which works on http:// too), Ctrl+Shift+C copies, and Ctrl+C copies when text is
+		// selected (otherwise it interrupts, as always). Without this Ctrl+V sent ^V to the shell.
+		term.attachCustomKeyEventHandler((e) => {
+			if (e.type !== 'keydown' || !matchMedia('(any-pointer: fine)').matches || e.altKey || e.metaKey) return true
+			const k = e.key.toLowerCase()
+			if (e.ctrlKey && k === 'v') return false
+			if (e.ctrlKey && k === 'c' && (e.shiftKey || term.hasSelection())) {
+				const selected = term.getSelection()
+				if (!selected) return false
+				e.preventDefault()
+				copyText(selected).then(() => toast('Copied'), () => toast('Couldn’t copy', true))
+				term.clearSelection()
+				return false
+			}
+			return true
+		})
 		const onClip = (e: ClipboardEvent) => {
 			const selected = term.getSelection()
 			const target = e.target
@@ -284,12 +309,18 @@ export function TerminalScreen({
 			}
 		}
 
+		let replaying = 0
+		let replayNext = false
 		const send = (data: string) => {
 			const ws = wsRef.current
 			if (ws?.readyState === WebSocket.OPEN) ws.send(data)
 		}
 		term.onData((data) => {
 			if (!forwardTerminalInput(data, focusReportFromUser)) return
+			// The terminal's own answers to questions found in a replayed screen (what kind of terminal,
+			// its colours, where the cursor is) would reach the shell as stray text: the extra
+			// characters that appeared when a terminal was opened again.
+			if (replaying > 0 && isTerminalReply(data)) return
 			if (data === '\x1b[I' || data === '\x1b[O') focusReportFromUser = false
 			// Drop the composition the opening tap just dumped. The on-screen keys send on their own.
 			if (ignoreOpeningFocus(coarsePointer(), performance.now() - openedAt.current)) return
@@ -381,7 +412,15 @@ export function TerminalScreen({
 				}
 			}
 			ws.onmessage = (e) => {
-				if (typeof e.data !== 'string') return term.write(new Uint8Array(e.data))
+				if (typeof e.data !== 'string') {
+					if (!replayNext) return term.write(new Uint8Array(e.data))
+					replayNext = false
+					replaying++
+					return term.write(new Uint8Array(e.data), () => {
+						// Answers are emitted while parsing; give a late one a moment too.
+						setTimeout(() => (replaying = Math.max(0, replaying - 1)), 250)
+					})
+				}
 				// Text frames are about the session: resumed (what was on screen follows, drawn at the
 				// size it was), and the size it's now at. Resize in order with the output around it.
 				let m: {type?: string; resumed?: boolean; cols?: number; rows?: number}
@@ -390,7 +429,10 @@ export function TerminalScreen({
 				} catch {
 					return
 				}
-				if (m.type === 'session') setResumed(!!m.resumed)
+				if (m.type === 'session') {
+					setResumed(!!m.resumed)
+					replayNext = !!m.resumed
+				}
 				if ((m.type === 'session' || m.type === 'size') && m.cols && m.rows) {
 					// In order with the output around it: a resumed screen replays at the size it was
 					// drawn, then the shell takes this window's size.

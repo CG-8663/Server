@@ -4,6 +4,19 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.89',
+		date: '2026-11-26',
+		title: 'Safer restarts, and a terminal that behaves like the one on your computer',
+		added: [
+			'Terminal on a computer: Ctrl+V (and Ctrl+Shift+V) pastes, Ctrl+Shift+C copies, and Ctrl+C copies when text is selected (otherwise it stops the running program, as always). Right-click pastes straight away over https://; over http:// browsers don’t let a page read the clipboard, so the browser’s own menu opens with Paste.',
+		],
+		fixed: [
+			'Restart and Shut down first make sure this server will start again by itself, with nobody signed in at it. If it can’t switch that on, it tells you before going ahead, instead of leaving a server with no screen down until someone signs in at it.',
+			'Opening a terminal again no longer types stray characters into it. They were the terminal’s own answers to questions in the screen it was showing again.',
+			'The terminal no longer seems to freeze: Ctrl+S doesn’t pause it any more, and a stuck resize can’t hold back what you type.',
+		],
+	},
+	{
 		version: '0.9.88',
 		date: '2026-11-26',
 		title: 'Use Hermes Agent as your assistant',

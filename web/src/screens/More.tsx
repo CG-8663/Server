@@ -1,7 +1,8 @@
 import {useRef, useState, type CSSProperties} from 'react'
+import {serverPower} from '../power'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {logout, mutate, query, type Wallpaper} from '../api'
+import {logout, query, type Wallpaper} from '../api'
 import {resetAssistantTurn} from '../assistantTurn'
 import {resetDeskConfig} from '../desktop/config'
 import {queryClearsOnSignOut} from '../signOutQueries'
@@ -137,23 +138,7 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 	})
 
 	const power = async (kind: 'restart' | 'shutdown') => {
-		const ok = await confirm({
-			title: kind === 'restart' ? 'Restart your server?' : 'Shut down your server?',
-			body:
-				kind === 'restart'
-					? 'All apps and machines stop, then come back once this server has restarted. This takes a few minutes.'
-					: 'All apps and machines stop. You’ll need to turn the server back on yourself (for a VM, from its host).',
-			confirm: kind === 'restart' ? 'Restart' : 'Shut down',
-			danger: true,
-			icon: kind === 'restart' ? 'restart' : 'power',
-		})
-		if (!ok) return
-		try {
-			await mutate(`system.${kind}`)
-			toast(kind === 'restart' ? 'Your server is restarting' : 'Your server is shutting down')
-		} catch (e) {
-			toast((e as Error).message, true)
-		}
+		await serverPower(kind, confirm, toast)
 	}
 	const finishSignOut = async () => {
 		try {
