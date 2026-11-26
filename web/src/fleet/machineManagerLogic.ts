@@ -80,6 +80,20 @@ export function nextFilter(current: ManagerFilter, slot: FilterSlot): ManagerFil
 	return current === 'offline' ? 'online' : current === 'online' ? 'offline' : 'offline'
 }
 
+/** The filter buttons: five fixed choices, each meaning one thing (no button changes its meaning on a second press). */
+export const FILTER_CHOICES = ['all', 'physical', 'virtual', 'unhealthy', 'offline'] as const satisfies readonly ManagerFilter[]
+const CHOICE_LABEL: Record<(typeof FILTER_CHOICES)[number], string> = {all: 'All', physical: 'Physical', virtual: 'Virtual', unhealthy: 'Needs attention', offline: 'Offline'}
+
+/** Each choice with how many machines it would show for the current search. */
+export function filterChoices<T extends {kind: ManagerKind; name: string; offline?: boolean; online?: boolean; health?: ManagerHealth}>(rows: readonly T[], query: string): {id: (typeof FILTER_CHOICES)[number]; label: string; count: number}[] {
+	return FILTER_CHOICES.map((id) => ({id, label: CHOICE_LABEL[id], count: managerRows(rows, id, query).length}))
+}
+
+/** A saved filter from before the fixed choices (healthy, online) shows everything. */
+export function choiceOf(filter: ManagerFilter): (typeof FILTER_CHOICES)[number] {
+	return (FILTER_CHOICES as readonly string[]).includes(filter) ? (filter as (typeof FILTER_CHOICES)[number]) : 'all'
+}
+
 export function matchesName(name: string, query: string): boolean {
 	const q = query.trim().toLowerCase()
 	if (!q) return true

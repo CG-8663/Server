@@ -3,6 +3,8 @@ import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 
 import {
+	choiceOf,
+	filterChoices,
 	filterLabel,
 	filterSlot,
 	healthPill,
@@ -54,10 +56,8 @@ test('Machines uses the manager list on phone and desktop, and Manage opens the 
 	const ui = await read('../web/src/fleet/MachineManager.tsx')
 	assert.match(ui, /icon="vm"/)
 	assert.doesNotMatch(ui, /osLook/)
-	assert.match(ui, /filterLabel/)
-	assert.match(ui, /nextFilter/)
-	assert.match(ui, /omarchy-server:mm-filter-tip/)
-	assert.match(ui, /Tap again to switch/)
+	assert.match(ui, /filterChoices\(listed, queryText\)/)
+	assert.doesNotMatch(ui, /Tap again to switch/)
 	const logic = await read('../web/src/fleet/machineManagerLogic.ts')
 	for (const word of ['All', 'Physical', 'Virtual', 'Unhealthy', 'Healthy', 'Offline', 'Online']) assert.match(logic, new RegExp(word))
 	assert.match(ui, /mergeMotion/)
@@ -384,4 +384,20 @@ test('a joined computer’s manage page can create a virtual machine', async () 
 	assert.match(swarm, /Virtual machines/)
 	const machines = await read('../web/src/screens/Machines.tsx')
 	assert.match(machines, /LocalSwarm[\s\S]*onCreateVm=\{setCreateHost\}/)
+})
+
+test('filter buttons are five fixed choices with counts, and old saved filters show everything', () => {
+	const rows = [
+		{id: 's', kind: 'server', name: 'Server', online: true, health: 'healthy'},
+		{id: 'c', kind: 'computer', name: 'Laptop', offline: true, health: 'unknown'},
+		{id: 'g', kind: 'guest', name: 'Web VM', online: true, health: 'warning'},
+	]
+	assert.deepEqual(
+		filterChoices(rows, '').map((c) => [c.id, c.label, c.count]),
+		[['all', 'All', 3], ['physical', 'Physical', 2], ['virtual', 'Virtual', 1], ['unhealthy', 'Needs attention', 1], ['offline', 'Offline', 1]],
+	)
+	assert.equal(filterChoices(rows, 'web')[0].count, 1)
+	assert.equal(choiceOf('healthy'), 'all')
+	assert.equal(choiceOf('online'), 'all')
+	assert.equal(choiceOf('virtual'), 'virtual')
 })

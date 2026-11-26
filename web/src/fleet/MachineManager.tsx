@@ -13,12 +13,11 @@ import {Segmented, StatusPill, haptic, useConfirm} from '../ui'
 import {PinButton} from './PinButton'
 import {SERVER_FLEET_ID, type FleetMember} from './list'
 import {
-	filterLabel,
-	filterSlot,
+	choiceOf,
+	filterChoices,
 	healthPill,
 	isOffline,
 	isOnline,
-	nextFilter,
 	managerAccess,
 	managerBusy,
 	managerHealth,
@@ -28,7 +27,6 @@ import {
 	reachLabel,
 	seenFact,
 	worstAlert,
-	type FilterSlot,
 	type ManagerFilter,
 	type ManagerHealth,
 	type ManagerKind,
@@ -43,8 +41,6 @@ const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m
 
 type Alert = {agentId: string; severity: 'info' | 'warning' | 'critical'}
 
-const FILTER_SLOTS: FilterSlot[] = ['all', 'kind', 'health', 'reach']
-const FILTER_TIP_KEY = 'omarchy-server:mm-filter-tip'
 
 const MOTION_MS = 320
 
@@ -540,21 +536,6 @@ export function MachineManager({
 	const setQueryText = onQueryText ?? setOwnQuery
 	const filter = filterValue ?? ownFilter
 	const setFilter = onFilter ?? setOwnFilter
-	const [tip, setTip] = useState(() => {
-		try {
-			return localStorage.getItem(FILTER_TIP_KEY) !== '1'
-		} catch {
-			return true
-		}
-	})
-	const dismissTip = () => {
-		setTip(false)
-		try {
-			localStorage.setItem(FILTER_TIP_KEY, '1')
-		} catch {
-			/* private mode: hidden for this visit */
-		}
-	}
 	const [openId, setOpenId] = useState<string | null>(null)
 	const [addOpen, setAddOpen] = useState(false)
 	const [term, setTerm] = useState<{id: string; name: string} | null>(null)
@@ -705,21 +686,8 @@ export function MachineManager({
 						</button>
 					)}
 				</label>
-				<Segmented
-					value={filterSlot(filter)}
-					options={FILTER_SLOTS.map((slot) => ({id: slot, label: filterLabel(filter, slot)}))}
-					onChange={(slot) => setFilter(nextFilter(filter, slot))}
-					label="Which machines"
-				/>
+				<Segmented value={choiceOf(filter)} options={filterChoices(listed, queryText)} onChange={setFilter} label="Which machines" />
 			</div>
-			{tip && (
-				<div className="mm-tip" role="note">
-					<p>Tap again to switch. Physical becomes Virtual, Unhealthy becomes Healthy, and Offline becomes Online.</p>
-					<button type="button" aria-label="Dismiss" onClick={dismissTip}>
-						<Icon name="close" size={14} />
-					</button>
-				</div>
-			)}
 			{problem && (
 				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
