@@ -48,7 +48,7 @@ done
 
 # Raise this when a change needs the installer run again (packages, the storage helper, services,
 # firewall rules). While My Own Data Center is in beta, the app asks the owner to run it at their next sign-in.
-INSTALLER_REVISION=5
+INSTALLER_REVISION=6
 # Started from the app's "run the installer" prompt, in its own terminal: that terminal runs inside
 # omarchyd, so restarting omarchyd here would stop this script partway. Restart once it's done instead.
 FROM_APP="${OMARCHY_SERVER_FROM_APP:-0}"
@@ -412,6 +412,8 @@ cat >"$UNITS/omarchyd.service" <<EOF
 [Unit]
 Description=MODC backend (localhost only)
 After=network-online.target
+# Never stop retrying: on a server with no screen nobody is there to start it by hand after a boot.
+StartLimitIntervalSec=0
 
 [Service]
 $SOURCE_ENV
@@ -430,6 +432,7 @@ cat >"$UNITS/omarchy-server-web.service" <<EOF
 Description=MODC web app
 After=omarchyd.service
 Wants=omarchyd.service
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=$NODE $APP/server/cli.mjs --port $PORT --data $BASE/web --backend http://127.0.0.1:2021
@@ -482,10 +485,17 @@ if command -v ufw >/dev/null 2>&1; then
 	sudo ufw allow 7800:7899/tcp comment 'MODC app windows' >/dev/null
 fi
 
-# Keep the services running when you're not logged in (needs sudo once).
+# Start at boot and keep running when nobody is signed in ("linger"). A server with no screen depends
+# on this to come back after a restart or a power cut. Your own linger usually needs no sudo; ask for
+# sudo only if that's refused (and never wait on a password prompt during an in-app update).
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]; then
-	say "Letting this server run while you're logged out (sudo needed)"
-	sudo loginctl enable-linger "$USER" || say "Couldn't enable that; the server will run only while you're logged in."
+	say "Letting this server start at boot and run while you're logged out"
+	loginctl enable-linger "$USER" 2>/dev/null ||
+		{ if [ "$FROM_APP" = 1 ]; then sudo -n loginctl enable-linger "$USER" 2>/dev/null; else sudo loginctl enable-linger "$USER"; fi; } ||
+		true
+	if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]; then
+		say "Couldn't turn that on: after a restart this server stays off until you sign in. To fix it, run: sudo loginctl enable-linger $USER"
+	fi
 fi
 
 # Everything above succeeded (the script stops at the first error): note which installer ran, so the

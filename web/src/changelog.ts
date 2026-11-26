@@ -6,10 +6,11 @@ export const CHANGELOG: Release[] = [
 	{
 		version: '0.9.87',
 		date: '2026-11-25',
-		title: 'Remote desktop keeps going on a still screen',
+		title: 'Steadier remote desktop, and servers that start after a restart',
 		fixed: [
 			'Viewing a desktop no longer drops and reconnects over and over when nothing on it is moving (an empty desktop, an idle window). The desktop only redraws when something changes, and a still screen was mistaken for a lost one; now the last picture is kept and resent.',
 			'An app opened from desktop mode (Google Chrome, say) now shows up in its window even when it opens on the computer’s own screen, for example because it was already running. It’s brought over instead of the launch giving up after 15 seconds.',
+			'A server with no screen now comes back by itself after a restart or a power cut. It used to stay off until someone signed in on it when the installer couldn’t switch on start at boot. It now switches that on by itself where it can, Settings › Software update shows whether it’s on (with a Turn on button), and the services keep retrying at boot instead of giving up.',
 		],
 	},
 	{
