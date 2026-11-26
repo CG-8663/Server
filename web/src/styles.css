@@ -10432,6 +10432,7 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 }
 .mm-tools {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 6px;
 	margin: 0 0 10px;
@@ -10489,13 +10490,23 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 .mm-menu button:focus-visible {
 	background: var(--glass-2);
 }
-/* Name search and four filters share one shorter row. A pair's word sizes the slot, so Unhealthy is not clipped. */
+/* The name search and the five filters share a row when there's room. In a narrow list (the split, a
+   phone) the filters move under the search, and if they still don't fit they scroll inside their own
+   box, so they never spill over the machine page beside the list. */
+.mm-search {
+	min-width: 11rem;
+}
 .mm .segmented {
-	flex: 0 0 auto;
+	flex: 0 1 auto;
 	width: max-content;
-	min-width: max-content;
+	max-width: 100%;
 	margin: 0;
 	grid-auto-columns: max-content;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+.mm .segmented::-webkit-scrollbar {
+	display: none;
 }
 .mm .segmented .thumb {
 	display: none;
@@ -10506,10 +10517,7 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 	padding-inline: 6px;
 	white-space: nowrap;
 }
-/* Compact keeps the name field and All, Physical, Unhealthy, Offline on one line. */
-.mm.is-lines .mm-tools {
-	flex-wrap: nowrap;
-}
+
 .mm-slot,
 .mm-slot-in,
 .mm-line {
