@@ -53,6 +53,7 @@ function cssVar(name: string, fallback: string) {
 export function TerminalScreen({
 	app,
 	agent,
+	container,
 	onClose,
 	embedded,
 	input,
@@ -61,6 +62,8 @@ export function TerminalScreen({
 	app?: {id: string; name?: string; icon?: string}
 	// A computer in the local swarm (through its connector), instead of this server.
 	agent?: {id: string; name: string}
+	// A root shell inside one of this server's containers (Incus).
+	container?: {name: string}
 	onClose: () => void
 	embedded?: boolean
 	input?: string
@@ -69,7 +72,7 @@ export function TerminalScreen({
 }) {
 	const boot = useContext(BootstrapContext)
 	const serverName = boot?.server?.device || 'This server'
-	const machineName = machine ?? agent?.name ?? serverName
+	const machineName = machine ?? agent?.name ?? container?.name ?? serverName
 	const portalRoot = usePortalRoot()
 	const root = useRef<HTMLDivElement>(null)
 	const host = useRef<HTMLDivElement>(null)
@@ -389,7 +392,7 @@ export function TerminalScreen({
 			term.resize(s.cols, s.rows)
 			term.reset()
 			const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
-			const qs = new URLSearchParams({...(app ? {appId: app.id} : {}), ...(agent ? {agentId: agent.id} : {}), cols: String(s.cols), rows: String(s.rows), ...(fresh.current ? {fresh: '1'} : {})})
+			const qs = new URLSearchParams({...(app ? {appId: app.id} : {}), ...(agent ? {agentId: agent.id} : {}), ...(container ? {containerId: container.name} : {}), cols: String(s.cols), rows: String(s.rows), ...(fresh.current ? {fresh: '1'} : {})})
 			fresh.current = false
 			const ws = new WebSocket(`${scheme}//${location.host}/api/terminal?${qs}`)
 			ws.binaryType = 'arraybuffer'
@@ -573,7 +576,7 @@ export function TerminalScreen({
 			document.removeEventListener('cut', onClip)
 			term.dispose()
 		}
-	}, [app, agent?.id, attempt])
+	}, [app, agent?.id, container?.name, attempt])
 
 	// A clip pasted as text goes into the terminal used last, not into every open one.
 	const clipTarget = useRef({})
