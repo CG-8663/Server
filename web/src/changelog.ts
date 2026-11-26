@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.90',
+		date: '2026-11-26',
+		title: 'Says when a restart will wait for the disk password',
+		fixed: [
+			'Restart warns first when this computer’s disk is encrypted (Omarchy’s default) and doesn’t unlock by itself. Why: an encrypted disk asks for its password before anything on it runs, so after a restart the computer waits at that screen, and this server and remote access can’t start until someone types it at the computer. “Starts after a restart” only covers what happens once the disk is open. Settings now says so too, with how to have the disk unlock by itself.',
+		],
+	},
+	{
 		version: '0.9.89',
 		date: '2026-11-26',
 		title: 'Safer restarts, and a terminal that behaves like the one on your computer',

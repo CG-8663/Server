@@ -40,7 +40,7 @@ import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 import {viewerBackpressure} from './backpressure.mjs'
 
-export const OMARCHYD_VERSION = '0.9.89'
+export const OMARCHYD_VERSION = '0.9.90'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, viewerStallMs = undefined, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -309,7 +309,14 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 
 		// ---- system ---------------------------------------------------------------------------
 		// Starting after a restart with nobody signed in (headless servers): systemd's "linger".
-		'system.bootStart': {kind: 'query', run: async (_i, {auth}) => (ownerOnly(auth), {startsAtBoot: await bootStart.state()})},
+		'system.bootStart': {
+			kind: 'query',
+			run: async (_i, {auth}) => {
+				ownerOnly(auth)
+				const [startsAtBoot, diskLock] = await Promise.all([bootStart.state(), bootStart.diskLock().catch(() => null)])
+				return {startsAtBoot, diskLock}
+			},
+		},
 		'system.enableBootStart': {
 			kind: 'mutation',
 			run: async (_i, {auth}) => {
@@ -797,12 +804,35 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			await sh('loginctl', ['enable-linger', os.userInfo().username], 15_000)
 			return (await bootStart.state()) === true
 		},
+		// Linger only matters once the system has booted. An encrypted system disk (Omarchy's default)
+		// asks for its password before anything on it runs, this server included, so after a restart the
+		// computer waits at that screen. It boots by itself only when the disk unlocks itself (a TPM,
+		// a FIDO key, a Tang server through Clevis).
+		async diskLock() {
+			if (machineOptions.diskLock !== undefined) return machineOptions.diskLock
+			const src = await sh('findmnt', ['-no', 'SOURCE', '/'], 5_000)
+			if (!src.ok) return null
+			const dev = src.out.trim().split('[')[0]
+			if (!dev.startsWith('/dev/')) return {encrypted: false, unlocksItself: false}
+			const stack = await sh('lsblk', ['-s', '-no', 'TYPE', dev], 5_000)
+			if (!stack.ok) return null
+			if (!stack.out.split(/\s+/).includes('crypt')) return {encrypted: false, unlocksItself: false}
+			const text = (await Promise.all(['/proc/cmdline', '/etc/crypttab.initramfs', '/etc/crypttab'].map((f) => readFile(f, 'utf8').catch(() => '')))).join('\n')
+			const clevis = await stat('/usr/lib/initcpio/install/clevis').then(() => true, () => false)
+			return {encrypted: true, unlocksItself: clevis || /tpm2-device|fido2-device/.test(text)}
+		},
 	}
 	// Before a restart or shutdown: if this server wouldn't come back by itself (no linger), turn that
 	// on first; if that isn't possible, refuse unless they chose to go ahead anyway. A restart from a
 	// phone used to leave a server with no screen down until someone went and signed in at it.
 	async function bootGuard(input, what) {
 		if (appOptions.run || machineOptions.run) return
+		const lock = await bootStart.diskLock().catch(() => null)
+		if (what === 'restart' && lock?.encrypted && !lock.unlocksItself && input?.evenIfDiskLocked !== true)
+			throw new RpcError(
+				'PRECONDITION_FAILED',
+				'DISK_LOCKED: This computer’s disk is encrypted, so after restarting it waits at its disk password screen. Nothing on it can start until someone types that password at the computer: not this server, and not remote access.',
+			)
 		if ((await bootStart.state()) !== false) return
 		if (await bootStart.enable()) return
 		if (input?.evenIfNoBootStart === true) return
