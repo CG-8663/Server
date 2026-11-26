@@ -42,7 +42,7 @@ import {viewerBackpressure} from './backpressure.mjs'
 
 export const OMARCHYD_VERSION = '0.9.89'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, viewerStallMs = undefined, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
 	const storeDir = localGitDir('OMARCHY_SERVER_APP_STORE', process.env.OMARCHY_SERVER_APP_STORE)
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
@@ -1347,10 +1347,15 @@ WantedBy=graphical-session.target
 					}
 					// A big burst (the whole screen after signing in) pauses the screen's source until the
 					// viewer catches up; only a viewer that reads nothing for a long time is let go.
-					const behind = viewerBackpressure(ws, vnc, () => {
-						ws.close(1011, 'The viewer fell behind')
-						vnc.destroy()
-					})
+					const behind = viewerBackpressure(
+						ws,
+						vnc,
+						() => {
+							ws.close(1011, 'The viewer fell behind')
+							vnc.destroy()
+						},
+						viewerStallMs ? {stallMs: viewerStallMs} : {},
+					)
 					vnc.on('data', (d) => {
 						if (ws.readyState !== ws.OPEN) return
 						ws.send(d, {binary: true})
