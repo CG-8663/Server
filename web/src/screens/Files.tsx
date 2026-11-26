@@ -33,6 +33,7 @@ import { Icon, type IconName } from "../icons";
 import { Card, CardHead, Sheet, SheetHeader, bytes, haptic, scrollPhoneToTop, useConfirm, usePortalRoot, useToast } from "../ui";
 import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
+import { canQuickTransfer, QuickTransferSheet, type TransferTarget } from "./QuickTransfer";
 import { openTerminalWith } from "../terminalEvent";
 import { safeLocal, safeSession } from "../safeStorage";
 import { MachineTrees, TreeChildren, type TreeActions, type TreeMachine } from "../fleet/FileTree";
@@ -530,6 +531,10 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   } | null>(null);
   // The folder whose network sharing is open (share it, or see and change how it's shared).
   const [shareFor, setShareFor] = useState<{ path: string; name: string } | null>(null);
+  // Quick transfer (desktop layout): a QR code for a phone, and the right-click menu on empty space.
+  const deskMode = !!useDesktop();
+  const [transfer, setTransfer] = useState<TransferTarget | null>(null);
+  const [blankMenu, setBlankMenu] = useState<{ x: number; y: number } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const photoInput = useRef<HTMLInputElement>(null);
@@ -1204,7 +1209,20 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
   };
 
   return (
-    <div className={`stagger files-root nu${scope ? " nu-embedded" : ""}`} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+    <div
+      className={`stagger files-root nu${scope ? " nu-embedded" : ""}`}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      onContextMenu={(e) => {
+        // A row's own right-click has already been handled; this is empty space in the folder.
+        if (e.defaultPrevented || !deskMode || inTrash || !path || !canQuickTransfer(path)) return;
+        if ((e.target as HTMLElement).closest("input, textarea, [contenteditable=true]")) return;
+        e.preventDefault();
+        setBlankMenu({ x: e.clientX, y: e.clientY });
+      }}
+    >
       <input
         ref={fileInput}
         type="file"
@@ -1682,6 +1700,9 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
           onFavorite={() => toggleFavorite(open.path)}
           onShare={() => toggleShare(open)}
           onShareInfo={(s) => (setOpen(null), setShareFor({ path: s.path, name: s.name }))}
+          quickTransfer={deskMode && canQuickTransfer(open.path)}
+          onQrShare={() => (setOpen(null), setTransfer({ kind: "download", path: open.path, name: open.name, size: open.size }))}
+          onQrUpload={() => (setOpen(null), setTransfer({ kind: "upload", path: open.path, name: open.name }))}
           onTrash={() => trashItems([open.path])}
           onRestore={() => restore([open.path])}
           onDelete={() => deleteForever([open.path])}
@@ -1759,6 +1780,24 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
         />
       )}
 
+      {transfer && <QuickTransferSheet target={transfer} onClose={() => setTransfer(null)} />}
+      {blankMenu && (
+        <>
+          <div className="qt-menu-scrim" onPointerDown={() => setBlankMenu(null)} onContextMenu={(e) => (e.preventDefault(), setBlankMenu(null))} />
+          <div className="qt-menu glass" role="menu" style={{ left: Math.min(blankMenu.x, window.innerWidth - 240), top: Math.min(blankMenu.y, window.innerHeight - 60) }}>
+            <button
+              role="menuitem"
+              onClick={() => {
+                setBlankMenu(null);
+                if (path) setTransfer({ kind: "upload", path, name: path.split("/").pop() || "Home" });
+              }}
+            >
+              <Icon name="upload" size={18} />
+              Upload here from a phone (QR code)
+            </button>
+          </div>
+        </>
+      )}
       {shareFor && (
         <ShareSheet
           path={shareFor.path}
@@ -2005,6 +2044,9 @@ function ItemSheet(p: {
   onTrash: () => void;
   onRestore: () => void;
   onDelete: () => void;
+  quickTransfer?: boolean;
+  onQrShare?: () => void;
+  onQrUpload?: () => void;
 }) {
   const desk = useDesktop();
   const { f } = p;
@@ -2081,6 +2123,20 @@ function ItemSheet(p: {
           icon: "download",
           onClick: p.onDownload,
           show: offersFile(f),
+        },
+        {
+          id: "qr-share",
+          label: "Share via QR code",
+          icon: "share",
+          onClick: () => p.onQrShare?.(),
+          show: !!p.quickTransfer && !isDir(f) && offersFile(f),
+        },
+        {
+          id: "qr-upload",
+          label: "Upload from phone",
+          icon: "upload",
+          onClick: () => p.onQrUpload?.(),
+          show: !!p.quickTransfer && isDir(f) && can("writable"),
         },
         {
           id: "clip",

@@ -38,7 +38,7 @@ import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.85'
+export const OMARCHYD_VERSION = '0.9.86'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -1268,6 +1268,8 @@ WantedBy=graphical-session.target
 				return wss.handleUpgrade(req, socket, head, (ws) => ws.close(1011, message))
 			}
 			if (!target) return refuse('409 Conflict')
+			// Apps opened from the shared screen should open on it (not on the headless display).
+			if (machineId === 'desktop') Promise.resolve().then(() => hyprland.focusSharedScreen?.()).catch(() => {})
 			if (typeof target === 'object' && target.agentId) return wss.handleUpgrade(req, socket, head, (ws) => connector.openChannel(target.agentId, 'vnc', ws, {guest: target.guest}))
 			const vnc = net.connect(typeof target === 'string' ? {path: target} : target)
 			vnc.once('error', () => refuse('502 Bad Gateway'))

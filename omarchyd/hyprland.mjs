@@ -486,6 +486,7 @@ export function createHyprland({
 				reserved: Array.isArray(m.reserved) && m.reserved.length === 4 ? m.reserved.map((n) => Number(n) || 0) : [0, 0, 0, 0],
 				locked: Array.isArray(m.solitaryBlockedBy) && m.solitaryBlockedBy.includes('LOCK'),
 				hasLockInfo: Array.isArray(m.solitaryBlockedBy),
+				focused: m.focused === true,
 			}))
 		} catch {
 			return []
@@ -555,6 +556,20 @@ export function createHyprland({
 			return null
 		}
 		return rail
+	}
+
+	// The screen-share view (wayvnc) shows the real display, not the headless RAIL-1 that desktop-mode
+	// app windows use. Launching an app from desktop mode leaves focus on RAIL-1, so an app opened later
+	// from the screen-share view (Super+Space, say) would open there, out of sight. When the shared
+	// screen is opened, put focus back on the real display's workspace. Nothing moves; windows already
+	// on RAIL-1 stay where they are.
+	async function focusSharedScreen() {
+		const mons = await monitorsInfo()
+		const rail = mons.find((m) => m.name === RAIL_OUTPUT)
+		const shown = mons.find((m) => m.name !== RAIL_OUTPUT && Number.isInteger(m.activeWorkspace) && m.activeWorkspace >= 1)
+		if (!rail?.focused || !shown) return false
+		await hyprDispatch(`hl.dispatch(hl.dsp.focus({workspace = ${shown.activeWorkspace}}))`, ['dispatch', 'workspace', String(shown.activeWorkspace)])
+		return true
 	}
 
 	// Size & position a floating window strictly inside RAIL-1's usable rect.
@@ -2961,6 +2976,7 @@ export function createHyprland({
 
 	return {
 		attachStream,
+		focusSharedScreen,
 		readAppIcon,
 		subscribeEvents,
 		waitForEventSocketReady,

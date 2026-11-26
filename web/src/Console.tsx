@@ -200,6 +200,11 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 	const [mode, setModeState] = useState<Mode>(readMode)
 	const [zoomLabel, setZoomLabel] = useState(100)
 	const [keyboardOpen, setKeyboardOpen] = useState(false)
+	// Phones: once the keyboard is opened with the keyboard button it stays up until that button
+	// puts it away. Tapping or dragging on the screen used to close it (the tap took focus).
+	const keyboardStays = useRef(false)
+	const touchLostKeyboard = useRef(false)
+	const touching = useRef(false)
 	const view = useRef<View>({z: 1, x: 0, y: 0})
 	const cursor = useRef<Pt>({x: -1, y: -1}) // framebuffer coordinates
 	const mask = useRef(0)
@@ -1189,6 +1194,34 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		return bindConsoleWheel(el, (e) => onWheelRef.current(e))
 	}, [deskUi])
 
+	// Touches on the screen keep the on-screen keyboard: the browser's own focus change on a tap is
+	// cancelled, and if the keyboard still went away during a touch, the end of that touch (a user
+	// gesture, so phones allow it) brings it back. Buttons and fields keep their normal behaviour.
+	useEffect(() => {
+		const root = rootRef.current
+		if (!root) return
+		const isControl = (t: EventTarget | null) => t instanceof Element && !!t.closest('button, a, input, textarea, select, [role="button"], [contenteditable="true"]')
+		const start = (e: TouchEvent) => {
+			touching.current = true
+			touchLostKeyboard.current = false
+			if (keyboardStays.current && document.activeElement === input.current && !isControl(e.target)) e.preventDefault()
+		}
+		const end = (e: TouchEvent) => {
+			if (e.touches.length) return
+			touching.current = false
+			if (keyboardStays.current && touchLostKeyboard.current && !isControl(e.target)) input.current?.focus({preventScroll: true})
+			touchLostKeyboard.current = false
+		}
+		root.addEventListener('touchstart', start, {passive: false})
+		root.addEventListener('touchend', end)
+		root.addEventListener('touchcancel', end)
+		return () => {
+			root.removeEventListener('touchstart', start)
+			root.removeEventListener('touchend', end)
+			root.removeEventListener('touchcancel', end)
+		}
+	}, [directGpu, state])
+
 	// ---- keyboard ----------------------------------------------------------------
 	const tapKey = (keysym: number) => {
 		const rfb = rfbRef.current
@@ -1256,8 +1289,13 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		haptic(8)
 		const el = input.current
 		if (!el) return
-		if (document.activeElement === el) el.blur()
-		else el.focus({preventScroll: true})
+		if (document.activeElement === el) {
+			keyboardStays.current = false
+			el.blur()
+		} else {
+			keyboardStays.current = true
+			el.focus({preventScroll: true})
+		}
 	}
 
 	const keys: {label: string; sym?: number; mod?: keyof typeof mods}[] = [
@@ -1633,7 +1671,10 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				onCompositionEnd={onCompositionEnd}
 				onKeyDown={onKeyDown}
 				onFocus={() => setKeyboardOpen(true)}
-				onBlur={() => setKeyboardOpen(false)}
+				onBlur={() => {
+					if (touching.current && keyboardStays.current) touchLostKeyboard.current = true
+					setKeyboardOpen(false)
+				}}
 			/>}
 		</div>,
 		portalRoot,

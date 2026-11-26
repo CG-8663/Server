@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.86',
+		date: '2026-11-25',
+		title: 'QR code file transfers, and a steadier phone remote desktop',
+		added: [
+			'Files (desktop layout): right-click a file and choose Share via QR code. A phone that scans it gets a small download page in your app’s colours and background, without signing in. Handy for passing a file to someone in the house.',
+			'Right-click a folder, or empty space inside one, to upload from a phone: scan the code and pick photos or files to send straight into that folder.',
+			'Each code lasts 10 minutes and covers only that one file or folder. Stop sharing ends it at once, and so does signing out. Uploads never replace a file that’s already there.',
+		],
+		fixed: [
+			'Remote desktop on a phone: the keyboard you open with the keyboard button now stays up while you tap and drag on the screen, until you put it away with that button. Every tap used to close it.',
+			'Apps you open from this server’s desktop view now open on the screen you’re looking at. After using desktop mode, they could open on its hidden display instead, so they seemed to disappear.',
+		],
+	},
+	{
 		version: '0.9.85',
 		date: '2026-11-25',
 		title: 'Paste in the terminal, and a tidier Appearance page',

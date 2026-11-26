@@ -21,8 +21,9 @@ import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {linkProxy} from '../omarchyd/proxy-link.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
+import {createQuickTransfer, cleanUploadName, PORTAL_JS, portalHtml} from './quick-transfer.mjs'
 
-export const VERSION = '0.9.85'
+export const VERSION = '0.9.86'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -510,6 +511,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		res.set('cache-control', 'no-store').redirect(308, `https://${host}${req.originalUrl.startsWith('/') && !req.originalUrl.startsWith('//') ? req.originalUrl : '/'}`)
 	})
 
+	const transfers = createQuickTransfer()
 	let client = null
 	const getClient = () => {
 		const {backendUrl} = store.getConfig()
@@ -1487,17 +1489,22 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		}
 	}
 	const PASS_HEADERS = ['content-type', 'content-length', 'content-disposition', 'content-range', 'accept-ranges', 'last-modified', 'etag']
-	const fileGet = (kind) => async (req, res) => {
+	// scope(req): {sid, paths} for a quick-transfer link (acting as the person who made it); by
+	// default the signed-in browser and the paths it asked for.
+	const fileGet = (kind, scope = null) => async (req, res) => {
 		try {
-			if (!store.getSession(req.sid)) return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Signed out'}})
-			const auth = await browserAuth(req.sid)
-			const token = await fileUrlToken(req.sid)
+			const scoped = scope ? scope(req) : null
+			if (scope && !scoped) return res.status(404).json({error: {code: 'NOT_FOUND', message: 'This link has ended'}})
+			const sid = scoped ? scoped.sid : req.sid
+			if (!store.getSession(sid)) return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Signed out'}})
+			const auth = await browserAuth(sid)
+			const token = await fileUrlToken(sid)
 			const url = new URL(`${getClient().baseUrl}/api/files/${kind}`)
 			if (kind === 'thumbnail') {
 				if (!/^[\w.-]{1,200}$/.test(req.params.name)) return res.status(404).end()
 				url.pathname += `/${req.params.name}`
 			}
-			for (const p of [req.query.path].flat()) if (typeof p === 'string') url.searchParams.append('path', p)
+			for (const p of scoped ? scoped.paths : [req.query.path].flat()) if (typeof p === 'string') url.searchParams.append('path', p)
 			url.searchParams.set('token', token)
 			const upstream = await fetchImpl(url, {
 				headers: {
@@ -1509,9 +1516,9 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				signal: AbortSignal.timeout(6 * 60 * 60 * 1000),
 			})
 			if (upstream.status === 401) {
-				forgetUrlToken(req.sid)
+				forgetUrlToken(sid)
 				await upstream.body?.cancel?.().catch(() => {})
-				await store.updateSession(req.sid, {console: null})
+				await store.updateSession(sid, {console: null})
 				return res.status(409).json({error: {code: 'CONSOLE_SESSION_REQUIRED', message: 'Sign out and back in to use this'}})
 			}
 			res.status(upstream.status)
@@ -1544,13 +1551,18 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	api.get('/files/thumbnail/:name', fileGet('thumbnail'))
 
 	// Whole files, and big ones in pieces (upload-chunk: see omarchyd/files.mjs uploadChunk).
-	const relayUpload = (kind) => async (req, res) => {
+	const relayUpload = (kind, scope = null) => async (req, res) => {
 		try {
-			if (!store.getSession(req.sid)) return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Signed out'}})
-			const path = req.query.path
+			const scoped = scope ? scope(req) : null
+			if (scope && !scoped) return res.status(404).json({error: {code: 'NOT_FOUND', message: 'This link has ended'}})
+			if (scoped?.error) return res.status(400).json({error: {code: 'BAD_REQUEST', message: scoped.error}})
+			const sid = scoped ? scoped.sid : req.sid
+			if (!store.getSession(sid)) return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Signed out'}})
+			const path = scoped ? scoped.path : req.query.path
 			if (typeof path !== 'string' || !path.startsWith('/')) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'path is required'}})
-			const collision = ['error', 'keep-both', 'replace'].includes(req.query.collision) ? req.query.collision : 'keep-both'
-			const auth = await browserAuth(req.sid)
+			// A quick-transfer upload never replaces anything: a name already there gets a new one.
+			const collision = scoped ? 'keep-both' : ['error', 'keep-both', 'replace'].includes(req.query.collision) ? req.query.collision : 'keep-both'
+			const auth = await browserAuth(sid)
 			const url = new URL(`${getClient().baseUrl}/api/files/${kind}`)
 			url.searchParams.set('path', path)
 			url.searchParams.set('collision', collision)
@@ -1583,7 +1595,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				body = {}
 			}
 			if (upstream.status === 401) {
-				await store.updateSession(req.sid, {console: null})
+				await store.updateSession(sid, {console: null})
 				return res.status(409).json({error: {code: 'CONSOLE_SESSION_REQUIRED', message: 'Sign out and back in to use this'}})
 			}
 			if (!upstream.ok) {
@@ -1599,6 +1611,30 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		}
 	}
 	api.post('/files/upload', relayUpload('upload'))
+
+	// Quick transfer (Files › right-click › Share with a QR code / Upload from a phone).
+	api.post('/transfer', catchSave(async (req, res) => {
+		const session = requireSession(req, res)
+		if (!session) return
+		const {kind, path, name, size, theme, background} = req.body ?? {}
+		if ((kind !== 'download' && kind !== 'upload') || typeof path !== 'string' || !path.startsWith('/') || path.length > 4096 || path.includes('\0'))
+			return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Choose a file or a folder'}})
+		// This server's own files only (Home and its drives), never the Trash or another computer.
+		if (!/^\/(Home|External)(\/|$)/.test(path) || /(^|\/)\.\.?(\/|$)/.test(path)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Only files on this server can be shared this way'}})
+		if (kind === 'upload') {
+			// The folder must exist and take new files, as this person.
+			const listing = await authedCall(req, 'files.list', 'query', {path, limit: 1}).catch(() => null)
+			if (!listing || listing.type !== 'directory' || !listing.operations?.includes('writable'))
+				return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Files can’t be added to this folder'}})
+		}
+		const shown = typeof name === 'string' && name.trim() ? name.trim().slice(0, 240) : path.split('/').pop() || 'File'
+		const t = transfers.create({kind, path, name: shown, size: kind === 'download' ? Number(size) : null, sid: req.sid, accountId: session.accountId, theme, bg: background})
+		res.json({path: `/t/${t.token}`, token: t.token, expiresAt: t.expiresAt})
+	}))
+	api.delete('/transfer/:token', (req, res) => {
+		if (!requireSession(req, res)) return
+		res.json({ok: transfers.revoke(req.params.token, req.sid)})
+	})
 	api.post('/files/upload-chunk', relayUpload('upload-chunk'))
 
 	// Clip book bytes. Text and screenshots are larger than the JSON body limit, so they travel as
@@ -2834,6 +2870,56 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		if (status >= 400 && status < 500) return res.status(status).json({error: {code: 'BAD_REQUEST', message: error.type === 'entity.parse.failed' ? 'Malformed JSON' : error.type === 'entity.too.large' ? (req.path === '/assistant/stream' ? 'That message is too long (the limit is about 100 KB)' : 'Request too large') : 'Bad request'}})
 		console.error('[omarchy-server] api', error?.message ?? error)
 		res.status(500).json({error: {code: 'INTERNAL_SERVER_ERROR', message: 'Something went wrong on the server'}})
+	})
+	// Quick transfer portal: no sign-in; the link is the permission (see quick-transfer.mjs).
+	const transferOf = (req) => transfers.get(req.params.token, {sessionAlive: (sid) => !!store.getSession(sid)})
+	const transferHeaders = (res) => res.set({'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex', 'X-Content-Type-Options': 'nosniff'})
+	app.get('/transfer-portal.js', (_req, res) => res.set({'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache'}).send(PORTAL_JS))
+	app.get('/t/:token', (req, res) => {
+		transferHeaders(res)
+		res.status(transferOf(req) ? 200 : 404).type('html').send(portalHtml())
+	})
+	app.get('/t/:token/info', (req, res) => {
+		transferHeaders(res)
+		const s = transferOf(req)
+		if (!s) return res.status(404).json({error: {code: 'NOT_FOUND', message: 'This link has ended'}})
+		res.json({kind: s.kind, name: s.name, size: s.size, remainingMs: Math.max(0, s.expiresAt - Date.now()), theme: s.theme, background: !!s.bg && s.bg.kind !== 'color'})
+	})
+	const transferFile = fileGet('download', (req) => {
+		const s = transferOf(req)
+		return s && s.kind === 'download' ? {sid: s.sid, paths: [s.path]} : null
+	})
+	app.get('/t/:token/file', (req, res) => (transferHeaders(res), transferFile(req, res)))
+	app.get('/t/:token/background', async (req, res) => {
+		transferHeaders(res)
+		const s = transferOf(req)
+		const backend = getClient()
+		if (!s?.bg || !backend) return res.status(404).end()
+		try {
+			if (s.bg.kind === 'photo') return res.type('image/jpeg').send(await readFile(backgroundFile(s.accountId)))
+			const tries = s.bg.kind === 'wallpaper' ? [`/assets/wallpapers/generated-avif/medium/${s.bg.id}.avif`, `/assets/wallpapers/${s.bg.id}.jpg`] : [`/omarchy/background/${s.bg.id}`]
+			for (const path of tries) {
+				const r = await fetchImpl(`${backend.baseUrl}${path}`, {signal: AbortSignal.timeout(15_000)}).catch(() => null)
+				const type = r?.headers.get('content-type') ?? ''
+				if (r?.ok && type.startsWith('image/')) return res.type(type).send(Buffer.from(await r.arrayBuffer()))
+			}
+		} catch {
+			/* no background */
+		}
+		res.status(404).end()
+	})
+	const transferUpload = relayUpload('upload', (req) => {
+		const s = transferOf(req)
+		if (!s || s.kind !== 'upload') return null
+		const name = cleanUploadName(req.query.name)
+		if (!name) return {sid: s.sid, error: 'That file name can’t be used'}
+		return {sid: s.sid, path: `${s.path.replace(/\/+$/, '')}/${name}`}
+	})
+	app.post('/t/:token/upload', (req, res) => {
+		transferHeaders(res)
+		// Only the portal's own script sends this header; another site would need a CORS preflight, which is refused.
+		if (req.headers['x-modc-transfer'] !== '1') return res.status(403).json({error: {code: 'FORBIDDEN', message: 'Refused'}})
+		transferUpload(req, res)
 	})
 	app.use('/api', api)
 
