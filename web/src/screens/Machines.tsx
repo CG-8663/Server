@@ -25,6 +25,7 @@ import {guestAgent, isGuestAgent} from '../swarm/guestLink'
 import {LocalSwarm, useSwarm} from '../swarm/Swarm'
 import {StoragePanel} from './Storage'
 import {applyPrefsUpdate} from '../photoPrefs'
+import {dismissTutorial, type TutorialId} from '../tutorials'
 import {SheetHeader, StatusPill, Switch, haptic, machineStatus, type Prefs} from '../ui'
 import {MachineManager} from '../fleet/MachineManager'
 
@@ -346,6 +347,11 @@ export function Machines({onOpenApp, onTerminal, windowId, prefs, setPrefs}: {on
 			}}
 			onAddComputer={() => setAdding(true)}
 			onCreateVm={() => setCreateHost({id: SERVER_FLEET_ID, name: serverName})}
+			dismissedTutorials={prefs?.dismissedTutorials}
+			onDismissTutorial={(id: TutorialId) => {
+				if (!setPrefs) return
+				applyPrefsUpdate(setPrefs, (latest) => ({...latest, dismissedTutorials: dismissTutorial(latest.dismissedTutorials, id)}))
+			}}
 		/>
 	)
 	return (

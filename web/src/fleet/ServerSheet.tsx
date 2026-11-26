@@ -21,6 +21,7 @@ import {useNode} from '../machines/api'
 import {DetailFrame, type DetailSection} from '../machines/detailFrame'
 import {BackupsPage} from '../backups'
 import {ServerLogs, ServerNetwork} from '../screens/machineHost'
+import {ContainersPanel} from '../containers/Containers'
 
 const MachineFiles = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
 
@@ -98,6 +99,7 @@ export function ServerSheet({
 				</>
 			),
 		},
+		...(owner ? [{id: 'containers', label: 'Containers', body: <ContainersPanel serverName={name} />}] : []),
 		...(owner
 			? [
 					{id: 'network', label: 'Network', body: <ServerNetwork />},
@@ -142,6 +144,7 @@ export function ServerSheet({
 					]
 				: []),
 			{id: 'machines', label: 'Virtual machines', icon: 'machine'},
+			...(owner ? [{id: 'containers', label: 'Containers', icon: 'category' as const}] : []),
 			...(owner
 				? [
 						{id: 'network', label: 'Network', icon: 'networking' as const},

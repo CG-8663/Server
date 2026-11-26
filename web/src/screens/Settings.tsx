@@ -238,6 +238,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				<div className="section-head" style={{marginTop: 18}} />
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					<Row icon="palette" color="var(--pink, #ec4899)" label="Appearance" onClick={() => openPage('appearance')} />
+					<Row icon="info" color="var(--blue)" label="Restore tutorials" sub="Show the notes you have dismissed" onClick={() => setPrefs({...prefs, dismissedTutorials: []})} />
 					{owner && <Row icon="disk" color="var(--teal)" label="Storage" sub="Drives, pools, drive health and sleep" onClick={() => openPage('storage')} />}
 					{owner && <Row icon="move" color="var(--orange, #f59e0b)" label="Move from Unraid" onClick={() => openPage('unraid')} />}
 				</div>

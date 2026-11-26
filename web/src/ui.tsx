@@ -14,6 +14,7 @@ import {solidOf, useDeskConfig} from './desktop/config'
 import {wallpaperBlocked} from './desktop/wallpaperGate'
 import {resolvePrefsUpdate} from './photoPrefs'
 import {createPrefsSync, SYNCED_PREF_KEYS} from './prefsSync'
+import {cleanTutorials, type TutorialId} from './tutorials'
 import {darkenForTextOn, darkenHslForWhite, hslToRgb, legibleMuted, parseRgbColor, pickOnAccent, resolveCssColor} from './theme/contrast'
 import {cleanThemeSlots, isLightTheme, type DarkThemeId, type LightThemeId, type PictureThemeId} from './theme/themeMode'
 import {reachLabel} from './fleet/machineManagerLogic'
@@ -801,6 +802,8 @@ export type Prefs = {
 	tempPicks?: {on: string[]; off: string[]} | null
 	/** Fahrenheit when `f`. Null means Celsius. */
 	tempUnit?: 'f' | null
+	/** Notes this account has dismissed. The same id stays dismissed on every device. */
+	dismissedTutorials?: TutorialId[]
 }
 // New installs start on the Omarchy theme (the Omarchy desktop's own colours and background). Anyone
 // who already chose a theme keeps it: their choice is saved on the server and wins over this default.
@@ -837,7 +840,8 @@ function clean(p: Partial<Prefs> | null | undefined): Prefs {
 	const machinesCompact = typeof p?.machinesCompact === 'boolean' ? p.machinesCompact : null
 	const tempPicks = cleanTempPicks(p?.tempPicks)
 	const tempUnit = p?.tempUnit === 'f' ? 'f' : null
-	return {theme, ...slots, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null, statView, machinesCompact, tempPicks, tempUnit}
+	const dismissedTutorials = cleanTutorials(p?.dismissedTutorials)
+	return {theme, ...slots, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null, statView, machinesCompact, tempPicks, tempUnit, dismissedTutorials}
 }
 export function readPrefs(): Prefs {
 	try {

@@ -90,6 +90,15 @@ export function managerRows<T extends {kind: ManagerKind; name: string; offline?
 	return rows.filter((row) => passesFilter(row.kind, filter, row) && matchesName(row.name, query))
 }
 
+/** The list count beside the fleet count. Hidden when it would repeat the fleet, or when nothing is listed. */
+export function fleetStatus(input: {shown: number; total: number; online: number; filter: ManagerFilter}): {shown: string | null; online: string} {
+	const onlineText = `${input.online} of ${input.total} online`
+	const wholeFleet = input.shown === input.total
+	const onlineFilter = input.filter === 'online' && input.shown === input.online
+	if (input.shown === 0 || wholeFleet || onlineFilter) return {shown: null, online: onlineText}
+	return {shown: `${input.shown} of ${input.total} shown`, online: onlineText}
+}
+
 /** The Offline pill only. Paused, hibernated, error, and a busy word are not offline. */
 export function isOffline(kind: ManagerKind, online: boolean, state?: string): boolean {
 	return reachLabel(kind, online, state).label === 'Offline'

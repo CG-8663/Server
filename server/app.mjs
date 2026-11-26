@@ -111,6 +111,20 @@ export const ALLOWED = {
 	'appStore.app': 'query',
 	'appStore.repositories': 'query',
 	'machines.list': 'query',
+	'containers.status': 'query',
+	'containers.list': 'query',
+	'containers.images': 'query',
+	'containers.create': 'mutation',
+	'containers.start': 'mutation',
+	'containers.stop': 'mutation',
+	'containers.restart': 'mutation',
+	'containers.forceStop': 'mutation',
+	'containers.delete': 'mutation',
+	'containers.snapshot': 'mutation',
+	'containers.restoreSnapshot': 'mutation',
+	'containers.deleteSnapshot': 'mutation',
+	'containers.addPort': 'mutation',
+	'containers.removePort': 'mutation',
 	'usb.list': 'query',
 	'usb.attach': 'mutation',
 	'usb.detach': 'mutation',
@@ -383,7 +397,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-export const SLOW = new Set(['hyprland.launch', 'hermes.connect', 'hermes.connectRemote', 'hermes.disconnect', 'hyprland.profileRun', 'unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'oidc.setConfig', 'apps.setOidc', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'backups.gdrive.authFinish', 'backups.gdrive.configure', 'backups.gdrive.test', 'backups.gdrive.connectExisting', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'apps.start', 'apps.stop', 'apps.restart', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.installConnector', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.start', 'machines.hibernate', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
+export const SLOW = new Set(['containers.images', 'containers.stop', 'containers.restart', 'containers.delete', 'containers.snapshot', 'containers.restoreSnapshot', 'hyprland.launch', 'hermes.connect', 'hermes.connectRemote', 'hermes.disconnect', 'hyprland.profileRun', 'unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'oidc.setConfig', 'apps.setOidc', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'backups.gdrive.authFinish', 'backups.gdrive.configure', 'backups.gdrive.test', 'backups.gdrive.connectExisting', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'apps.start', 'apps.stop', 'apps.restart', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.installConnector', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.start', 'machines.hibernate', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
 export const timeoutFor = (path) => (SLOW.has(path) ? 30 * 60 * 1000 : 20_000)
 
 // An IPv6 address in a URL needs brackets; req.hostname and URL.hostname may already have them.
@@ -1213,7 +1227,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	api.post('/prefs', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		const {theme, darkTheme, lightTheme, pictureTheme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView, machinesCompact, tempPicks, tempUnit} = req.body ?? {}
+		const {theme, darkTheme, lightTheme, pictureTheme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView, machinesCompact, tempPicks, tempUnit, dismissedTutorials} = req.body ?? {}
 		const patch = {}
 		// How the assistant looks for this account (character, name, motion). Appearance only: it never
 		// reaches the assistant itself. Checked field by field; anything else is dropped.
@@ -1265,6 +1279,14 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		if (machinesCompact !== undefined) {
 			if (typeof machinesCompact !== 'boolean') return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad compact setting'}})
 			patch.machinesCompact = machinesCompact
+		}
+		// Notes this account has closed. One id is one note, on every device.
+		if (dismissedTutorials !== undefined) {
+			const allowed = ['machines-filters']
+			if (!Array.isArray(dismissedTutorials) || dismissedTutorials.some((id) => typeof id !== 'string' || !allowed.includes(id))) {
+				return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown tutorial'}})
+			}
+			patch.dismissedTutorials = [...new Set(dismissedTutorials)]
 		}
 		// Celsius, or Fahrenheit. Null and "c" both mean Celsius.
 		if (tempUnit !== undefined) {
