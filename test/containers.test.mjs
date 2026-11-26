@@ -23,13 +23,14 @@ test('the library keeps the listed systems for this architecture, newest first, 
 			img('Alpine', 'edge', 'alpine/edge'),
 			img('Alpine', '3.21', 'alpine/3.21'),
 			img('Gentoo', 'current', 'gentoo/current'),
+			img('Slackware', '15.0', 'slackware/15.0'),
 		],
 		'x86_64',
 	)
 	assert.deepEqual(
 		lib.map((d) => d.os),
-		['debian', 'alpine'],
-		'Gentoo is not offered; the Ubuntu entry was a VM image',
+		['debian', 'alpine', 'gentoo'],
+		'Slackware is not offered; the Ubuntu entry was a VM image',
 	)
 	assert.deepEqual(
 		lib[0].releases.map((r) => r.alias),
@@ -168,5 +169,151 @@ test('omarchyd: containers are owner-only, and the web app passes them through',
 	} finally {
 		await d.close()
 		await rm(root, {recursive: true, force: true})
+	}
+})
+
+// A fake incus that keeps state, for the newer actions.
+function statefulIncus() {
+	const calls = []
+	const cts = new Map([['web', {name: 'web', type: 'container', status: 'Running', config: {'limits.cpu': '1'}, devices: {}, expanded_devices: {root: {size: '8GiB'}}, state: {cpu: {usage: 0}, network: {eth0: {counters: {bytes_received: 0, bytes_sent: 0}}}}}]])
+	const images = []
+	const run = async (args, opts = {}) => {
+		calls.push({args, input: opts.input === undefined ? undefined : String(opts.input)})
+		const [cmd, ...rest] = args
+		if (cmd === 'list') return JSON.stringify([...cts.values()])
+		if (cmd === 'image' && rest[0] === 'list') return JSON.stringify(rest[1] === 'images:' ? [img('Debian', '12', 'debian/12')] : images)
+		if (cmd === 'launch') cts.set(rest[1], {name: rest[1], type: 'container', status: 'Running', config: {}})
+		if (cmd === 'copy') cts.set(rest[1], {...cts.get(rest[0]), name: rest[1]})
+		if (cmd === 'import') cts.set(rest[1], {name: rest[1], type: 'container', status: 'Stopped'})
+		if (cmd === 'publish') images.push({type: 'container', aliases: [{name: rest[2]}], properties: {os: 'debian', release: '12'}})
+		if (cmd === 'export') {
+			const {writeFile} = await import('node:fs/promises')
+			await writeFile(rest[1], 'backup')
+		}
+		if (cmd === 'config' && rest[0] === 'set') for (const kv of rest.slice(2)) cts.get(rest[1]).config[kv.split('=')[0]] = kv.slice(kv.indexOf('=') + 1)
+		if (cmd === 'exec' && rest.some((a) => a.includes('cd "$1"'))) return 'd\t0\tetc\nf\t12\thello.txt\n'
+		if (cmd === 'file' && rest[0] === 'pull') return Buffer.from('hello')
+		return ''
+	}
+	return {run, calls, cts}
+}
+const settle = () => new Promise((r) => setTimeout(r, 20))
+
+test('start with the server, order, protection, notes and tags are Incus settings; protection stops delete', async () => {
+	const f = statefulIncus()
+	const p = createContainers({run: f.run}).procedures
+	await p['containers.setOptions'].run({name: 'web', autostart: true, bootOrder: 10, bootDelay: 5, protected: true, notes: 'Pi-hole for the house', tags: ['dns', 'Home']})
+	const c = (await p['containers.list'].run())[0]
+	assert.equal(c.autostart, true)
+	assert.equal(c.bootOrder, 10)
+	assert.equal(c.bootDelay, 5)
+	assert.equal(c.protected, true)
+	assert.equal(c.notes, 'Pi-hole for the house')
+	assert.deepEqual(c.tags, ['dns', 'home'])
+	await assert.rejects(p['containers.delete'].run({name: 'web'}), /protected/)
+	await assert.rejects(p['containers.setOptions'].run({name: 'web', tags: ['not a tag!']}), /Tags/)
+})
+
+test('resources change live, and the disk only grows', async () => {
+	const f = statefulIncus()
+	const p = createContainers({run: f.run}).procedures
+	await p['containers.setResources'].run({name: 'web', cpus: 1, cpuAllowance: 50, cpuPriority: 3, memoryMiB: 512, swap: false, diskGiB: 16})
+	assert.deepEqual(f.calls.find((c) => c.args[1] === 'set').args, ['config', 'set', 'web', 'limits.cpu=1', 'limits.cpu.allowance=50%', 'limits.cpu.priority=3', 'limits.memory=512MiB', 'limits.memory.swap=false'])
+	assert.deepEqual(f.calls.at(-1).args, ['config', 'device', 'set', 'web', 'root', 'size=16GiB'])
+	await assert.rejects(p['containers.setResources'].run({name: 'web', diskGiB: 4}), /grow but not shrink/)
+})
+
+test('a root password and SSH key go in on stdin after the container starts, never in the arguments', async () => {
+	const f = statefulIncus()
+	const p = createContainers({run: f.run}).procedures
+	await assert.rejects(p['containers.create'].run({name: 'db', image: 'debian/12', rootPassword: 'short'}), /8 to 128/)
+	await assert.rejects(p['containers.create'].run({name: 'db', image: 'debian/12', sshKey: 'not a key'}), /SSH public key/)
+	const key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq chris@laptop'
+	await p['containers.create'].run({name: 'db', image: 'debian/12', rootPassword: 'correct horse battery', sshKey: key, autostart: true})
+	await settle()
+	const launch = f.calls.find((c) => c.args[0] === 'launch').args
+	assert.ok(launch.includes('boot.autostart=true'))
+	assert.ok(!f.calls.some((c) => c.args.join(' ').includes('correct horse')), 'the password never appears in a command line')
+	assert.equal(f.calls.find((c) => c.args.includes('chpasswd')).input, 'root:correct horse battery\n')
+	assert.equal(f.calls.find((c) => c.args.some((a) => a.includes('authorized_keys'))).input, `${key}\n`)
+})
+
+test('clone, save as a template, and create from the template', async () => {
+	const f = statefulIncus()
+	const p = createContainers({run: f.run}).procedures
+	await p['containers.clone'].run({name: 'web', as: 'web-2'})
+	await settle()
+	assert.ok((await p['containers.list'].run()).some((c) => c.name === 'web-2'))
+	await assert.rejects(p['containers.clone'].run({name: 'web', as: 'web-2'}), /already/)
+	await p['containers.saveTemplate'].run({name: 'web', template: 'base'})
+	await settle()
+	const publish = f.calls.find((c) => c.args[0] === 'publish').args
+	assert.match(publish[1], /^web\/modc-template-\d+$/, 'published from a snapshot, so it can stay running')
+	assert.ok(f.calls.some((c) => c.args[0] === 'snapshot' && c.args[1] === 'delete'), 'the temporary snapshot is removed')
+	assert.deepEqual((await p['containers.templates'].run()).map((t) => t.name), ['base'])
+	await p['containers.create'].run({name: 'web-3', image: 'template:modc/base'})
+	await settle()
+	assert.equal(f.calls.findLast((c) => c.args[0] === 'launch').args[1], 'modc/base')
+	await assert.rejects(p['containers.create'].run({name: 'web-4', image: 'template:modc/nope'}), /template isn’t on this server/)
+})
+
+test('backups: export to the backups folder, list, restore under a new name, delete', async () => {
+	const {mkdtemp, rm, readdir} = await import('node:fs/promises')
+	const os = await import('node:os')
+	const {join} = await import('node:path')
+	const dir = await mkdtemp(join(os.tmpdir(), 'ct-backups-'))
+	try {
+		const f = statefulIncus()
+		const p = createContainers({run: f.run, backupsDir: dir, now: () => Date.UTC(2026, 10, 26, 18, 0, 0)}).procedures
+		const {file} = await p['containers.backup'].run({name: 'web'})
+		assert.equal(file, 'web--20261126T180000Z.tar.gz')
+		await settle()
+		assert.deepEqual(f.calls.find((c) => c.args[0] === 'export').args, ['export', 'web', join(dir, file), '--instance-only'])
+		assert.deepEqual((await p['containers.backups'].run({name: 'web'})).map((b) => [b.file, b.createdAt]), [[file, '2026-11-26T18:00:00Z']])
+		await assert.rejects(p['containers.restoreBackup'].run({file}), /already a container named web/)
+		await p['containers.restoreBackup'].run({file, as: 'web-old'})
+		await settle()
+		assert.ok((await p['containers.list'].run()).some((c) => c.name === 'web-old'))
+		await assert.rejects(p['containers.restoreBackup'].run({file: '../../etc/passwd'}), /No such backup/)
+		await p['containers.deleteBackup'].run({file})
+		assert.deepEqual(await readdir(dir), [])
+	} finally {
+		await rm(dir, {recursive: true, force: true})
+	}
+})
+
+test('live graphs: CPU share and network speed between samples', async () => {
+	const f = statefulIncus()
+	let t = 0
+	const ct = createContainers({run: f.run, now: () => t})
+	const p = ct.procedures
+	await p['containers.stats'].run()
+	t = 5000
+	const web = f.cts.get('web')
+	web.state = {cpu: {usage: 2.5e9}, network: {eth0: {counters: {bytes_received: 512 * 1024 * 5, bytes_sent: 0}}}}
+	const s = await p['containers.stats'].run()
+	assert.deepEqual(s.web, {cpu: [50], rxKBs: [512], txKBs: [0]})
+})
+
+test('files: list a folder, copy a file to the server, and refuse paths that climb out', async () => {
+	const {mkdtemp, rm, readFile, mkdir} = await import('node:fs/promises')
+	const os = await import('node:os')
+	const {join} = await import('node:path')
+	const home = await mkdtemp(join(os.tmpdir(), 'ct-files-'))
+	try {
+		await mkdir(join(home, 'Downloads'))
+		const f = statefulIncus()
+		const files = {resolve: async (v) => ({real: join(home, v.replace(/^\/Home/, ''))})}
+		const p = createContainers({run: f.run, files}).procedures
+		const dir = await p['containers.files'].run({name: 'web', path: '/root'})
+		assert.deepEqual(dir.entries, [{name: 'etc', type: 'folder', size: null}, {name: 'hello.txt', type: 'file', size: 12}])
+		assert.deepEqual(f.calls.at(-1).args.slice(-2), ['sh', '/root'], 'the path is an argument, not part of the script')
+		await assert.rejects(p['containers.files'].run({name: 'web', path: '/root/../etc'}), /full path/)
+		const res = await p['containers.copyToServer'].run({name: 'web', path: '/root/hello.txt'})
+		assert.equal(res.path, '/Home/Downloads/hello.txt')
+		assert.equal(await readFile(join(home, 'Downloads/hello.txt'), 'utf8'), 'hello')
+		await assert.rejects(p['containers.copyToServer'].run({name: 'web', path: '/root/hello.txt'}), /already in/)
+	} finally {
+		await rm(home, {recursive: true, force: true})
 	}
 })

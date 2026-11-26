@@ -1,12 +1,13 @@
-// Containers (LXC, run by Incus in its per-user mode) on this server: the library of Linux systems,
-// and each container's power, terminal, ports and snapshots. Owner-only, like the server's terminal.
-import {Suspense, lazy, useState, type CSSProperties} from 'react'
+// Containers (LXC, run by Incus in its per-user mode) on this server: the library of Linux systems
+// and your own templates, and each container's power, terminal, resources, start-with-server,
+// ports, snapshots, backups, files, notes and protection. Owner-only, like the server's terminal.
+import {Suspense, lazy, useEffect, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from '../api'
 import {Icon} from '../icons'
 import {openTerminalWith} from '../terminalEvent'
-import {Group, Row, StatusPill, haptic, useConfirm, useToast} from '../ui'
+import {Group, Row, Sheet, Spark, StatusPill, Switch, haptic, useConfirm, useToast} from '../ui'
 
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 
@@ -18,43 +19,70 @@ export type Container = {
 	release: string
 	description: string
 	cpus: number | null
+	cpuAllowance: number | null
+	cpuPriority: number | null
 	memory: string | null
+	swap: boolean
 	disk: string | null
 	memoryUsedGiB: number | null
 	addresses: {family: string; address: string}[]
 	ports: {protocol: 'tcp' | 'udp'; hostPort: number; containerPort: number | null}[]
 	snapshots: {name: string; createdAt: string | null}[]
-	error?: string | null
+	autostart: boolean
+	bootOrder: number
+	bootDelay: number
+	protected: boolean
+	notes: string
+	tags: string[]
+	job: string | null
+	error: string | null
+	from?: string | null
 }
 type Distro = {os: string; name: string; releases: {alias: string; release: string; description: string}[]}
+type Template = {alias: string; name: string; os: string; release: string; size: number; from: string}
+type Backup = {file: string; name: string; createdAt: string; size: number}
+type Stats = Record<string, {cpu: number[]; rxKBs: number[]; txKBs: number[]}>
+type Entry = {name: string; type: 'folder' | 'file' | 'link'; size: number | null}
 
-const OS_LOOK: Record<string, {bg: string}> = {
-	debian: {bg: 'linear-gradient(140deg,#d70a53,#a80030)'},
-	ubuntu: {bg: 'linear-gradient(140deg,#f47421,#c34113)'},
-	alpine: {bg: 'linear-gradient(140deg,#2d6ab3,#0d597f)'},
-	archlinux: {bg: 'linear-gradient(140deg,#1793d1,#0f5f8a)'},
-	fedora: {bg: 'linear-gradient(140deg,#3c6eb4,#294172)'},
-	rockylinux: {bg: 'linear-gradient(140deg,#10b981,#047857)'},
-	almalinux: {bg: 'linear-gradient(140deg,#0f4266,#082d47)'},
-	opensuse: {bg: 'linear-gradient(140deg,#73ba25,#35b9ab)'},
+const OS_COLOR: Record<string, string> = {
+	debian: '#d70a53',
+	ubuntu: '#e95420',
+	alpine: '#0d597f',
+	archlinux: '#1793d1',
+	fedora: '#3c6eb4',
+	rockylinux: '#10b981',
+	almalinux: '#0f4266',
+	centos: '#a14f8c',
+	opensuse: '#73ba25',
+	devuan: '#5c5c7a',
+	gentoo: '#54487a',
 }
-const look = (os: string) => OS_LOOK[os] ?? {bg: 'linear-gradient(140deg,#4b5563,#1f2937)'}
+const osColor = (os: string) => OS_COLOR[os] ?? '#4b5563'
+const OS_NAME: Record<string, string> = {archlinux: 'Arch Linux', rockylinux: 'Rocky Linux', almalinux: 'AlmaLinux', centos: 'CentOS Stream', opensuse: 'openSUSE'}
+const osLabel = (c: {os: string; release: string}) => [OS_NAME[c.os] ?? (c.os ? c.os[0].toUpperCase() + c.os.slice(1) : ''), c.release].filter(Boolean).join(' ')
+const bytes = (n: number) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : n >= 1024 ** 2 ? `${Math.round(n / 1024 ** 2)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`)
+const plain = (e: Error) => e.message.replace(/^[A-Z_]+: /, '')
 
 /** What the list shows for a container's state. */
-export function containerPill(status: string): {kind: 'running' | 'stopped' | 'busy' | 'error'; label: string} {
-	if (status === 'running') return {kind: 'running', label: 'running'}
-	if (status === 'stopped') return {kind: 'stopped', label: 'stopped'}
-	if (status === 'creating' || status === 'starting' || status === 'stopping') return {kind: 'busy', label: status}
-	if (status === 'frozen') return {kind: 'stopped', label: 'paused'}
-	return {kind: 'error', label: status === 'error' ? 'failed' : status}
+export function containerPill(c: Pick<Container, 'status' | 'job'>): {kind: 'running' | 'stopped' | 'busy' | 'error'; label: string} {
+	if (c.job) return {kind: 'busy', label: c.job}
+	const s = c.status
+	if (s === 'running') return {kind: 'running', label: 'running'}
+	if (s === 'stopped') return {kind: 'stopped', label: 'stopped'}
+	if (['creating', 'cloning', 'restoring', 'starting', 'stopping'].includes(s)) return {kind: 'busy', label: s}
+	if (s === 'frozen') return {kind: 'stopped', label: 'paused'}
+	return {kind: 'error', label: s === 'error' ? 'failed' : s}
 }
 
-function useContainers(enabled: boolean) {
+export function useContainerStatus(enabled = true) {
+	return useQuery({queryKey: ['containers.status'], queryFn: () => query<ContainerStatus>('containers.status'), retry: false, enabled, staleTime: 60_000})
+}
+export function useContainers(enabled: boolean) {
 	return useQuery({
 		queryKey: ['containers.list'],
 		queryFn: () => query<Container[]>('containers.list'),
 		enabled,
-		refetchInterval: (q) => ((q.state.data ?? []).some((c) => containerPill(c.status).kind === 'busy') ? 2000 : 8000),
+		refetchInterval: (q) => ((q.state.data ?? []).some((c) => containerPill(c).kind === 'busy') ? 2000 : 8000),
 	})
 }
 
@@ -64,13 +92,31 @@ function useContainerAction() {
 	return useMutation({
 		mutationFn: (a: {path: string; input: unknown; done?: string}) => mutate(a.path, a.input),
 		onSuccess: (_r, a) => a.done && toast(a.done),
-		onError: (e: Error) => toast(e.message.replace(/^[A-Z_]+: /, ''), true),
-		onSettled: () => qc.invalidateQueries({queryKey: ['containers.list']}),
+		onError: (e: Error) => !/STOP_TIMED_OUT/.test(e.message) && toast(plain(e), true),
+		onSettled: (_r, _e, a) => {
+			qc.invalidateQueries({queryKey: ['containers.list']})
+			if (/Template/.test(a.path) || a.path === 'containers.create') qc.invalidateQueries({queryKey: ['containers.templates']})
+			if (/ackup/.test(a.path)) qc.invalidateQueries({queryKey: ['containers.backups']})
+		},
 	})
 }
 
+function ContainerRow({c, onOpen}: {c: Container; onOpen: () => void}) {
+	const pill = containerPill(c)
+	return (
+		<Row
+			icon="category"
+			color={osColor(c.os)}
+			label={c.name}
+			sub={[osLabel(c) || (c.from ? `from ${c.from}` : ''), c.addresses.find((a) => a.family === 'IPv4')?.address, c.tags.join(', ')].filter(Boolean).join(' · ') || 'Container'}
+			trailing={<StatusPill {...pill} />}
+			onClick={() => (haptic(6), onOpen())}
+		/>
+	)
+}
+
 export function ContainersPanel({serverName}: {serverName: string}) {
-	const status = useQuery({queryKey: ['containers.status'], queryFn: () => query<ContainerStatus>('containers.status'), retry: false})
+	const status = useContainerStatus()
 	const ready = status.data?.available === true
 	const list = useContainers(ready)
 	const [open, setOpen] = useState<string | null>(null)
@@ -82,8 +128,8 @@ export function ContainersPanel({serverName}: {serverName: string}) {
 
 	const rows = list.data ?? []
 	const current = open ? rows.find((c) => c.name === open) : null
-	if (open && current) return <ContainerDetail c={current} onBack={() => setOpen(null)} />
-	if (creating) return <CreateContainer onDone={(name) => (setCreating(false), name && setOpen(null))} existing={rows.map((c) => c.name)} />
+	if (open && current) return <ContainerDetail c={current} all={rows} onBack={() => setOpen(null)} onOpen={setOpen} />
+	if (creating) return <CreateContainer onDone={() => setCreating(false)} existing={rows.map((c) => c.name)} />
 	return (
 		<>
 			{list.isLoading ? (
@@ -91,24 +137,38 @@ export function ContainersPanel({serverName}: {serverName: string}) {
 			) : rows.length === 0 ? (
 				<p className="quiet">No containers on {serverName}. A container is a lightweight Linux system that shares this server’s kernel: it starts in seconds and uses far less memory than a virtual machine.</p>
 			) : (
-				rows.map((c) => {
-					const pill = containerPill(c.status)
-					return (
-						<Row
-							key={c.name}
-							icon="category"
-							color={pill.kind === 'running' ? 'var(--green)' : pill.kind === 'error' ? 'var(--red)' : 'var(--muted)'}
-							label={c.name}
-							sub={[c.os && `${c.os} ${c.release}`.trim(), c.addresses.find((a) => a.family === 'IPv4')?.address].filter(Boolean).join(' · ') || 'Container'}
-							trailing={<StatusPill {...pill} />}
-							onClick={() => (haptic(6), setOpen(c.name))}
-						/>
-					)
-				})
+				rows.map((c) => <ContainerRow key={c.name} c={c} onOpen={() => setOpen(c.name)} />)
 			)}
 			<button type="button" className="btn small" style={{margin: '8px 12px 12px'}} onClick={() => (haptic(6), setCreating(true))}>
 				<Icon name="plus" size={15} /> New container
 			</button>
+		</>
+	)
+}
+
+/** Containers as their own entries in the Machines list; each opens in a sheet. */
+export function ContainersInList({owner, filterText}: {owner: boolean; filterText?: string}) {
+	const status = useContainerStatus(owner)
+	const list = useContainers(owner && status.data?.available === true)
+	const [open, setOpen] = useState<string | null>(null)
+	const q = (filterText ?? '').trim().toLowerCase()
+	const rows = (list.data ?? []).filter((c) => !q || c.name.includes(q) || c.tags.some((t) => t.includes(q)) || c.os.includes(q))
+	if (!owner || !rows.length) return null
+	const current = open ? (list.data ?? []).find((c) => c.name === open) : null
+	return (
+		<>
+			<Group title="Containers">
+				{rows.map((c) => (
+					<ContainerRow key={c.name} c={c} onOpen={() => setOpen(c.name)} />
+				))}
+			</Group>
+			{current && (
+				<Sheet open onClose={() => setOpen(null)} label={current.name} tall>
+					<div style={{padding: '4px 16px 24px'}}>
+						<ContainerDetail c={current} all={list.data ?? []} onBack={() => setOpen(null)} onOpen={setOpen} backLabel="Close" />
+					</div>
+				</Sheet>
+			)}
 		</>
 	)
 }
@@ -152,64 +212,108 @@ function SetUp({status, onCheck, checking}: {status: Extract<ContainerStatus, {a
 }
 
 const NAME = /^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/
+const nameProblemOf = (name: string, existing: string[]) => (!name ? 'Give it a name' : !NAME.test(name) ? 'Lowercase letters, numbers and dashes, starting with a letter' : existing.includes(name) ? 'That name is taken' : null)
 
-function CreateContainer({onDone, existing}: {onDone: (name?: string) => void; existing: string[]}) {
+function TextField({id, label, value, onChange, hint, placeholder, numeric, type, area}: {id: string; label: string; value: string; onChange: (v: string) => void; hint?: ReactNode; placeholder?: string; numeric?: boolean; type?: string; area?: boolean}) {
+	return (
+		<div className="field">
+			<label htmlFor={id}>{label}</label>
+			{area ? (
+				<textarea id={id} value={value} placeholder={placeholder} rows={3} onChange={(e) => onChange(e.target.value)} />
+			) : (
+				<input
+					id={id}
+					type={type}
+					value={value}
+					placeholder={placeholder}
+					inputMode={numeric ? 'numeric' : undefined}
+					autoCapitalize="none"
+					autoCorrect="off"
+					spellCheck={false}
+					onChange={(e) => onChange(numeric ? e.target.value.replace(/\D/g, '') : e.target.value)}
+				/>
+			)}
+			{hint ? <span className="hint">{hint}</span> : null}
+		</div>
+	)
+}
+
+function SwitchRow({label, sub, on, onChange, disabled}: {label: string; sub?: ReactNode; on: boolean; onChange: (v: boolean) => void; disabled?: boolean}) {
+	return (
+		<div className="row static">
+			<span className="main">
+				<b style={{fontWeight: 550}}>{label}</b>
+				{sub ? <span>{sub}</span> : null}
+			</span>
+			<Switch on={on} onChange={onChange} label={label} disabled={disabled} />
+		</div>
+	)
+}
+
+function CreateContainer({onDone, existing}: {onDone: () => void; existing: string[]}) {
 	const library = useQuery({queryKey: ['containers.images'], queryFn: () => query<Distro[]>('containers.images'), staleTime: 30 * 60_000, retry: false})
+	const mine = useQuery({queryKey: ['containers.templates'], queryFn: () => query<Template[]>('containers.templates'), retry: false})
 	const action = useContainerAction()
-	const [alias, setAlias] = useState<string | null>(null)
+	const [image, setImage] = useState<{id: string; label: string; os: string} | null>(null)
 	const [name, setName] = useState('')
 	const [cpus, setCpus] = useState('1')
 	const [memory, setMemory] = useState('1024')
 	const [disk, setDisk] = useState('8')
-	const picked = library.data?.flatMap((d) => d.releases.map((r) => ({...r, distro: d}))).find((r) => r.alias === alias)
-	const nameProblem = !name ? 'Give it a name' : !NAME.test(name) ? 'Lowercase letters, numbers and dashes, starting with a letter' : existing.includes(name) ? 'That name is taken' : null
+	const [autostart, setAutostart] = useState(true)
+	const [password, setPassword] = useState('')
+	const [sshKey, setSshKey] = useState('')
+	const nameProblem = nameProblemOf(name, existing)
+	const pick = (id: string, label: string, os: string, suggested: string) => (haptic(6), setImage({id, label, os}), setName(name || suggested))
 	const create = () =>
 		action.mutate(
-			{path: 'containers.create', input: {name, image: alias, cpus: Number(cpus), memoryMiB: Number(memory), diskGiB: Number(disk)}, done: `Creating ${name}. The first container of a system takes a minute to download.`},
-			{onSuccess: () => onDone(name)},
+			{
+				path: 'containers.create',
+				input: {name, image: image!.id, cpus: Number(cpus), memoryMiB: Number(memory), diskGiB: Number(disk), autostart, rootPassword: password || undefined, sshKey: sshKey.trim() || undefined},
+				done: `Creating ${name}. The first container of a system takes a minute to download.`,
+			},
+			{onSuccess: onDone},
 		)
 	return (
 		<div style={{display: 'grid', gap: 12}}>
 			<div style={{display: 'flex', alignItems: 'center', gap: 8}}>
-				<button type="button" className="btn small" onClick={() => onDone()}>
+				<button type="button" className="btn small" onClick={onDone}>
 					<Icon name="back" size={15} /> Containers
 				</button>
 				<b>New container</b>
 			</div>
-			{!picked ? (
-				library.isLoading ? (
-					<div className="skeleton" style={{height: 200, borderRadius: 16}} />
-				) : library.isError ? (
-					<p className="quiet">{(library.error as Error).message}</p>
-				) : (
-					(library.data ?? []).map((d) => (
-						<Group key={d.os} title={d.name}>
-							{d.releases.map((r) => (
-								<Row key={r.alias} icon="category" color={look(d.os).bg.match(/#[0-9a-f]{6}/i)?.[0]} label={`${d.name} ${r.release}`} sub={r.alias} onClick={() => (haptic(6), setAlias(r.alias), setName(name || `${d.os === 'archlinux' ? 'arch' : d.os}-1`))} />
+			{!image ? (
+				<>
+					{!!mine.data?.length && (
+						<Group title="Your templates">
+							{mine.data.map((t) => (
+								<Row key={t.alias} icon="save" color={osColor(t.os)} label={t.name} sub={[osLabel(t), t.from && `from ${t.from}`, t.size ? bytes(t.size) : ''].filter(Boolean).join(' · ')} onClick={() => pick(`template:${t.alias}`, t.name, t.os, `${t.name}-1`)} />
 							))}
 						</Group>
-					))
-				)
+					)}
+					{library.isLoading ? (
+						<div className="skeleton" style={{height: 200, borderRadius: 16}} />
+					) : library.isError ? (
+						<p className="quiet">{(library.error as Error).message}</p>
+					) : (
+						(library.data ?? []).map((d) => (
+							<Group key={d.os} title={d.name}>
+								{d.releases.map((r) => (
+									<Row key={r.alias} icon="category" color={osColor(d.os)} label={`${d.name} ${r.release}`} sub={r.alias} onClick={() => pick(r.alias, `${d.name} ${r.release}`, d.os, `${d.os === 'archlinux' ? 'arch' : d.os}-1`)} />
+								))}
+							</Group>
+						))
+					)}
+				</>
 			) : (
 				<div className="glass group" style={{padding: '12px 14px'}}>
-					<Row icon="category" color={look(picked.distro.os).bg.match(/#[0-9a-f]{6}/i)?.[0]} label={`${picked.distro.name} ${picked.release}`} sub="Change" onClick={() => setAlias(null)} />
-					<div className="field">
-						<label htmlFor="ct-name">Name</label>
-						<input id="ct-name" value={name} maxLength={63} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(e) => setName(e.target.value.toLowerCase())} />
-						{name && nameProblem && <span className="hint">{nameProblem}</span>}
-					</div>
-					<div className="field">
-						<label htmlFor="ct-cpu">CPUs</label>
-						<input id="ct-cpu" inputMode="numeric" value={cpus} onChange={(e) => setCpus(e.target.value.replace(/\D/g, ''))} />
-					</div>
-					<div className="field">
-						<label htmlFor="ct-mem">Memory (MB)</label>
-						<input id="ct-mem" inputMode="numeric" value={memory} onChange={(e) => setMemory(e.target.value.replace(/\D/g, ''))} />
-					</div>
-					<div className="field">
-						<label htmlFor="ct-disk">Disk (GB)</label>
-						<input id="ct-disk" inputMode="numeric" value={disk} onChange={(e) => setDisk(e.target.value.replace(/\D/g, ''))} />
-					</div>
+					<Row icon="category" color={osColor(image.os)} label={image.label} sub="Change" onClick={() => setImage(null)} />
+					<TextField id="ct-name" label="Name" value={name} onChange={(v) => setName(v.toLowerCase())} hint={name && nameProblem} />
+					<TextField id="ct-cpu" label="CPUs" value={cpus} onChange={setCpus} numeric />
+					<TextField id="ct-mem" label="Memory (MB)" value={memory} onChange={setMemory} numeric />
+					<TextField id="ct-disk" label="Disk (GB)" value={disk} onChange={setDisk} numeric />
+					<SwitchRow label="Start with the server" sub="Starts by itself after the server restarts." on={autostart} onChange={setAutostart} />
+					<TextField id="ct-pw" label="Root password (optional)" type="password" value={password} onChange={setPassword} hint="For signing in from the container’s own console or over SSH. The terminal here doesn’t need it. It isn’t stored by My Own Data Center." />
+					<TextField id="ct-key" label="SSH public key (optional)" value={sshKey} onChange={setSshKey} placeholder="ssh-ed25519 AAAA… you@laptop" area hint="Added for root. Install an SSH server inside to use it." />
 					<button type="button" className="btn block" style={{marginTop: 8}} disabled={!!nameProblem || action.isPending} onClick={create}>
 						{action.isPending ? <span className="spinner" /> : <Icon name="plus" size={18} />} Create container
 					</button>
@@ -219,15 +323,268 @@ function CreateContainer({onDone, existing}: {onDone: (name?: string) => void; e
 	)
 }
 
-function ContainerDetail({c, onBack}: {c: Container; onBack: () => void}) {
+function Graphs({c}: {c: Container}) {
+	const stats = useQuery({queryKey: ['containers.stats'], queryFn: () => query<Stats>('containers.stats'), refetchInterval: 5000, enabled: c.status === 'running'})
+	const s = stats.data?.[c.name]
+	if (c.status !== 'running') return null
+	const card = (label: string, value: string, series: number[], color: string, max?: number) => (
+		<div className="glass" style={{padding: '10px 12px', display: 'grid', gap: 4, minWidth: 0}}>
+			<span className="muted" style={{fontSize: 12}}>{label}</span>
+			<b>{value}</b>
+			<Spark series={series} color={color} label={`${label} over the last few minutes`} max={max} />
+		</div>
+	)
+	const net = s ? s.rxKBs.map((r, i) => r + (s.txKBs[i] ?? 0)) : []
+	return (
+		<div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10}}>
+			{card('CPU', s?.cpu.length ? `${s.cpu.at(-1)}%` : '…', s?.cpu ?? [], 'var(--blue)', 100)}
+			{card('Network', net.length ? `↓ ${s!.rxKBs.at(-1)} · ↑ ${s!.txKBs.at(-1)} KB/s` : '…', net, 'var(--green)', Math.max(64, ...net))}
+		</div>
+	)
+}
+
+function Resources({c, busy, run}: {c: Container; busy: boolean; run: (path: string, done?: string, extra?: Record<string, unknown>) => void}) {
+	const [edit, setEdit] = useState(false)
+	const diskNow = /^(\d+)GiB$/.exec(c.disk ?? '')?.[1] ?? ''
+	const memNow = /^(\d+)MiB$/.exec(c.memory ?? '')?.[1] ?? ''
+	const [f, setF] = useState({cpus: String(c.cpus ?? 1), share: String(c.cpuAllowance ?? ''), priority: String(c.cpuPriority ?? 5), memory: memNow, swap: c.swap, disk: diskNow})
+	if (!edit)
+		return (
+			<Group title="Resources">
+				<Row icon="cpu" label="CPUs" value={[c.cpus ?? 'Any', c.cpuAllowance ? `capped at ${c.cpuAllowance}%` : null].filter(Boolean).join(', ')} />
+				<Row icon="memory" label="Memory" value={[c.memoryUsedGiB !== null ? `${c.memoryUsedGiB} GB used` : null, c.memory ? `of ${c.memory.replace('MiB', ' MB')}` : null, c.swap ? null : 'no swap'].filter(Boolean).join(' ') || '—'} />
+				<Row icon="disk" label="Disk" value={c.disk?.replace('GiB', ' GB') ?? '—'} />
+				<Row icon="network" label="Address" value={c.addresses.map((a) => a.address).join(', ') || (c.status === 'running' ? 'Waiting for an address…' : '—')} />
+				<Row icon="pencil" label="Change resources" onClick={() => setEdit(true)} />
+			</Group>
+		)
+	return (
+		<Group title="Resources" footer="CPU and memory change straight away, even while it runs. A disk can grow but not shrink.">
+			<div style={{padding: '4px 12px 12px'}}>
+				<TextField id="r-cpu" label="CPUs" value={f.cpus} onChange={(v) => setF({...f, cpus: v})} numeric />
+				<TextField id="r-share" label="CPU cap (%)" value={f.share} onChange={(v) => setF({...f, share: v})} numeric placeholder="No cap" hint="The most of its CPUs it may use, like 50 for half." />
+				<TextField id="r-prio" label="CPU priority (0–10)" value={f.priority} onChange={(v) => setF({...f, priority: v})} numeric hint="When the server is busy, higher numbers get CPU first." />
+				<TextField id="r-mem" label="Memory (MB)" value={f.memory} onChange={(v) => setF({...f, memory: v})} numeric />
+				<SwitchRow label="Allow swap" on={f.swap} onChange={(swap) => setF({...f, swap})} />
+				<TextField id="r-disk" label="Disk (GB)" value={f.disk} onChange={(v) => setF({...f, disk: v})} numeric />
+				<div style={{display: 'flex', gap: 8, marginTop: 8}}>
+					<button type="button" className="btn small" onClick={() => setEdit(false)}>
+						Cancel
+					</button>
+					<button
+						type="button"
+						className="btn small"
+						disabled={busy}
+						onClick={() => {
+							run('containers.setResources', 'Resources changed', {
+								cpus: Number(f.cpus),
+								cpuAllowance: f.share ? Number(f.share) : c.cpuAllowance ? null : undefined,
+								cpuPriority: Number(f.priority),
+								...(f.memory ? {memoryMiB: Number(f.memory)} : {}),
+								swap: f.swap,
+								...(f.disk && f.disk !== diskNow ? {diskGiB: Number(f.disk)} : {}),
+							})
+							setEdit(false)
+						}}
+					>
+						<Icon name="check" size={14} /> Save
+					</button>
+				</div>
+			</div>
+		</Group>
+	)
+}
+
+function Boot({c, busy, run}: {c: Container; busy: boolean; run: (path: string, done?: string, extra?: Record<string, unknown>) => void}) {
+	const [order, setOrder] = useState(String(c.bootOrder))
+	const [delay, setDelay] = useState(String(c.bootDelay))
+	return (
+		<Group title="Start with the server" footer="Higher numbers start first and shut down last. The delay waits after starting this one, before the next.">
+			<SwitchRow label="Start when the server starts" on={c.autostart} disabled={busy} onChange={(autostart) => run('containers.setOptions', autostart ? `${c.name} starts with the server` : `${c.name} stays off after a restart`, {autostart})} />
+			{c.autostart && (
+				<div style={{display: 'flex', gap: 8, padding: '4px 12px 12px', alignItems: 'end'}}>
+					<div style={{flex: 1}}>
+						<TextField id="b-order" label="Start order" value={order} onChange={setOrder} numeric />
+					</div>
+					<div style={{flex: 1}}>
+						<TextField id="b-delay" label="Delay (s)" value={delay} onChange={setDelay} numeric />
+					</div>
+					<button type="button" className="btn small" disabled={busy || (order === String(c.bootOrder) && delay === String(c.bootDelay))} onClick={() => run('containers.setOptions', 'Saved', {bootOrder: Number(order || 0), bootDelay: Number(delay || 0)})}>
+						Save
+					</button>
+				</div>
+			)}
+		</Group>
+	)
+}
+
+function Backups({c, busy, all}: {c: Container; busy: boolean; all: Container[]}) {
+	const list = useQuery({queryKey: ['containers.backups', c.name], queryFn: () => query<Backup[]>('containers.backups', {name: c.name}), refetchInterval: c.job === 'backing up' ? 3000 : false})
+	const action = useContainerAction()
+	const confirm = useConfirm()
+	const [restoreAs, setRestoreAs] = useState<string | null>(null)
+	const [as, setAs] = useState('')
+	const taken = all.map((x) => x.name)
+	return (
+		<Group title="Backups" footer="A backup is a single file with the whole container (without its snapshots), kept in My Own Data Center’s data folder on this server.">
+			{(list.data ?? []).map((b) => (
+				<div key={b.file}>
+					<Row
+						icon="restore"
+						label={new Date(b.createdAt).toLocaleString()}
+						sub={bytes(b.size)}
+						trailing={
+							<span style={{display: 'inline-flex', gap: 6}}>
+								<button type="button" className="btn small" disabled={busy} onClick={() => (setRestoreAs(b.file), setAs(`${c.name}-restored`))}>
+									Restore
+								</button>
+								<button type="button" className="btn small" aria-label="Delete backup" disabled={busy} onClick={async () => (await confirm({title: 'Delete this backup?', body: 'This can’t be undone.', confirm: 'Delete', danger: true, icon: 'alert'})) && action.mutate({path: 'containers.deleteBackup', input: {file: b.file}, done: 'Backup deleted'})}>
+									<Icon name="trash" size={14} />
+								</button>
+							</span>
+						}
+					/>
+					{restoreAs === b.file && (
+						<div style={{display: 'flex', gap: 8, padding: '4px 12px 12px', alignItems: 'end'}}>
+							<div style={{flex: 1}}>
+								<TextField id="bk-as" label="Restore as a new container named" value={as} onChange={(v) => setAs(v.toLowerCase())} hint={nameProblemOf(as, taken)} />
+							</div>
+							<button type="button" className="btn small" disabled={!!nameProblemOf(as, taken) || action.isPending} onClick={() => action.mutate({path: 'containers.restoreBackup', input: {file: b.file, as}, done: `Restoring as ${as}`}, {onSuccess: () => setRestoreAs(null)})}>
+								Restore
+							</button>
+						</div>
+					)}
+				</div>
+			))}
+			{!list.isLoading && !list.data?.length && <p className="quiet" style={{padding: '4px 12px'}}>No backups yet.</p>}
+			<Row icon="download" label={c.job === 'backing up' ? 'Backing up…' : 'Back up now'} disabled={busy} onClick={() => action.mutate({path: 'containers.backup', input: {name: c.name}, done: `Backing up ${c.name}`})} />
+		</Group>
+	)
+}
+
+function Files({c}: {c: Container}) {
+	const [path, setPath] = useState('/root')
+	const [show, setShow] = useState(false)
+	const toast = useToast()
+	const qc = useQueryClient()
+	const input = useRef<HTMLInputElement>(null)
+	const [uploading, setUploading] = useState(false)
+	const dir = useQuery({queryKey: ['containers.files', c.name, path], queryFn: () => query<{path: string; entries: Entry[]}>('containers.files', {name: c.name, path}), enabled: show && c.status === 'running', retry: false})
+	const join = (name: string) => `${path === '/' ? '' : path}/${name}`
+	const up = () => setPath(path.split('/').slice(0, -1).join('/') || '/')
+	if (c.status !== 'running')
+		return (
+			<Group title="Files">
+				<p className="quiet" style={{padding: '4px 12px'}}>Start {c.name} to browse its files.</p>
+			</Group>
+		)
+	if (!show)
+		return (
+			<Group title="Files">
+				<Row icon="folder" label="Browse files" sub="Download from it, upload to it, or copy into the server’s Downloads" onClick={() => setShow(true)} />
+			</Group>
+		)
+	const upload = async (file: File) => {
+		setUploading(true)
+		try {
+			const r = await fetch(`/api/containers/files/upload?${new URLSearchParams({name: c.name, path: join(file.name)})}`, {method: 'POST', credentials: 'same-origin', headers: {'content-type': 'application/octet-stream'}, body: file})
+			if (!r.ok) {
+				const err = await r.json().catch(() => null)
+				throw new Error(err?.error?.message || err?.error || `Upload failed (${r.status})`)
+			}
+			toast(`Uploaded ${file.name}`)
+			qc.invalidateQueries({queryKey: ['containers.files', c.name, path]})
+		} catch (e) {
+			toast((e as Error).message, true)
+		} finally {
+			setUploading(false)
+		}
+	}
+	const toServer = async (name: string) => {
+		try {
+			const res = await mutate<{path: string}>('containers.copyToServer', {name: c.name, path: join(name)})
+			toast(`Copied to ${res.path.replace(/^\/Home\//, '')}`)
+		} catch (e) {
+			toast(plain(e as Error), true)
+		}
+	}
+	return (
+		<Group title={`Files · ${path}`}>
+			{path !== '/' && <Row icon="back" label="Up a folder" onClick={up} />}
+			{dir.isLoading && <div className="skeleton" style={{height: 60, margin: 12, borderRadius: 12}} />}
+			{dir.isError && <p className="quiet" style={{padding: '4px 12px'}}>{plain(dir.error as Error)}</p>}
+			{(dir.data?.entries ?? []).slice(0, 300).map((e) =>
+				e.type === 'folder' ? (
+					<Row key={e.name} icon="folder" label={e.name} onClick={() => setPath(join(e.name))} />
+				) : (
+					<Row
+						key={e.name}
+						icon="file"
+						label={e.name}
+						sub={e.size !== null ? bytes(e.size) : e.type}
+						trailing={
+							<span style={{display: 'inline-flex', gap: 6}}>
+								<a className="btn small" aria-label={`Download ${e.name}`} href={`/api/containers/files/download?${new URLSearchParams({name: c.name, path: join(e.name)})}`} download={e.name}>
+									<Icon name="download" size={14} />
+								</a>
+								<button type="button" className="btn small" aria-label={`Copy ${e.name} to the server’s Downloads`} onClick={() => toServer(e.name)}>
+									<Icon name="copy" size={14} />
+								</button>
+							</span>
+						}
+					/>
+				),
+			)}
+			<input ref={input} type="file" hidden onChange={(e) => (e.target.files?.[0] && upload(e.target.files[0]), (e.target.value = ''))} />
+			<Row icon="upload" label={uploading ? 'Uploading…' : `Upload into ${path}`} disabled={uploading} onClick={() => input.current?.click()} />
+		</Group>
+	)
+}
+
+function NotesAndTags({c, busy, run}: {c: Container; busy: boolean; run: (path: string, done?: string, extra?: Record<string, unknown>) => void}) {
+	const [notes, setNotes] = useState(c.notes)
+	const [tags, setTags] = useState(c.tags.join(', '))
+	useEffect(() => setNotes(c.notes), [c.notes])
+	useEffect(() => setTags(c.tags.join(', ')), [c.tags.join(',')])
+	const changed = notes !== c.notes || tags !== c.tags.join(', ')
+	return (
+		<Group title="Notes and tags">
+			<div style={{padding: '4px 12px 12px'}}>
+				<TextField id="n-notes" label="Notes" value={notes} onChange={setNotes} area placeholder="What it’s for, how to reach it…" />
+				<TextField id="n-tags" label="Tags" value={tags} onChange={setTags} placeholder="dns, home" hint="Short words, separated by commas. The Machines search finds them." />
+				<button
+					type="button"
+					className="btn small"
+					disabled={busy || !changed}
+					onClick={() =>
+						run('containers.setOptions', 'Saved', {
+							notes,
+							tags: tags
+								.split(',')
+								.map((t) => t.trim())
+								.filter(Boolean),
+						})
+					}
+				>
+					<Icon name="check" size={14} /> Save
+				</button>
+			</div>
+		</Group>
+	)
+}
+
+function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers'}: {c: Container; all: Container[]; onBack: () => void; onOpen: (name: string) => void; backLabel?: string}) {
 	const action = useContainerAction()
 	const confirm = useConfirm()
 	const [term, setTerm] = useState(false)
 	const [snap, setSnap] = useState('')
 	const [port, setPort] = useState({host: '', inner: '', protocol: 'tcp' as 'tcp' | 'udp'})
-	const pill = containerPill(c.status)
+	const [copy, setCopy] = useState<null | 'clone' | 'template'>(null)
+	const [copyName, setCopyName] = useState('')
+	const pill = containerPill(c)
 	const busy = action.isPending || pill.kind === 'busy'
 	const run = (path: string, done?: string, extra: Record<string, unknown> = {}) => action.mutate({path, input: {name: c.name, ...extra}, done})
+	const taken = all.map((x) => x.name)
 
 	if (term)
 		return (
@@ -248,22 +605,30 @@ function ContainerDetail({c, onBack}: {c: Container; onBack: () => void}) {
 			},
 		)
 
+	const placeholder = ['creating', 'cloning', 'restoring', 'error'].includes(c.status) && !c.os && !c.disk
 	return (
 		<div style={{display: 'grid', gap: 12}}>
 			<div style={{display: 'flex', alignItems: 'center', gap: 10}}>
 				<button type="button" className="btn small" onClick={onBack}>
-					<Icon name="back" size={15} /> Containers
+					<Icon name={backLabel === 'Close' ? 'close' : 'back'} size={15} /> {backLabel}
 				</button>
 			</div>
 			<div style={{display: 'flex', alignItems: 'center', gap: 12}}>
-				<span className="vm-os" style={{width: 52, height: 52, borderRadius: 16, background: look(c.os).bg, display: 'grid', placeItems: 'center'} as CSSProperties}>
+				<span style={{width: 52, height: 52, borderRadius: 16, background: osColor(c.os), color: '#fff', display: 'grid', placeItems: 'center'} as CSSProperties}>
 					<Icon name="category" size={26} />
 				</span>
 				<div style={{display: 'grid', gap: 4}}>
-					<b style={{fontSize: 18}}>{c.name}</b>
-					<span style={{display: 'inline-flex', gap: 8, alignItems: 'center'}}>
+					<b style={{fontSize: 18}}>
+						{c.name} {c.protected && <Icon name="shield" size={14} />}
+					</b>
+					<span style={{display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap'}}>
 						<StatusPill {...pill} />
-						<span className="muted">{[c.os, c.release].filter(Boolean).join(' ')}</span>
+						<span className="muted">{osLabel(c) || (c.from ? `from ${c.from}` : '')}</span>
+						{c.tags.map((t) => (
+							<span key={t} className="pill" style={{'--c': 'var(--muted)'} as CSSProperties}>
+								{t}
+							</span>
+						))}
 					</span>
 				</div>
 			</div>
@@ -273,126 +638,168 @@ function ContainerDetail({c, onBack}: {c: Container; onBack: () => void}) {
 					{c.error}
 				</div>
 			)}
-			<div className="actions mx-power">
-				{c.status !== 'running' ? (
-					<button className="action" disabled={busy || c.status === 'error'} onClick={() => run('containers.start', `${c.name} is starting`)}>
-						{busy ? <span className="spinner" /> : <Icon name="play" size={22} />}
-						Start
+			{placeholder ? (
+				c.status === 'error' ? (
+					<button className="btn block" onClick={() => action.mutate({path: 'containers.delete', input: {name: c.name}}, {onSuccess: onBack})}>
+						<Icon name="close" size={18} /> Dismiss
 					</button>
 				) : (
-					<button className="action" disabled={busy} onClick={() => setTerm(true)}>
-						<Icon name="terminal" size={22} />
-						Terminal
-					</button>
-				)}
-				<button className="action" disabled={busy || c.status !== 'running'} onClick={() => run('containers.restart', `${c.name} is restarting`)}>
-					<Icon name="restart" size={22} />
-					Restart
-				</button>
-				<button className="action" disabled={busy || c.status !== 'running'} onClick={stop}>
-					<Icon name="power" size={22} />
-					Shut down
-				</button>
-				<button
-					className="action"
-					disabled={busy || c.status !== 'running'}
-					onClick={async () => (await confirm({title: `Force stop ${c.name}?`, body: 'Turns it off straight away, like pulling the plug: unsaved work inside it is lost.', confirm: 'Force stop', danger: true, icon: 'alert'})) && run('containers.forceStop', `${c.name} is off`)}
-				>
-					<Icon name="stop" size={22} />
-					Force stop
-				</button>
-			</div>
-
-			<Group title="Details">
-				<Row icon="cpu" label="CPUs" value={c.cpus ?? 'Any'} />
-				<Row icon="memory" label="Memory" value={[c.memoryUsedGiB !== null ? `${c.memoryUsedGiB} GB used` : null, c.memory ? `of ${c.memory}` : null].filter(Boolean).join(' ') || '—'} />
-				<Row icon="disk" label="Disk" value={c.disk ?? '—'} />
-				<Row icon="network" label="Address" value={c.addresses.map((a) => a.address).join(', ') || (c.status === 'running' ? 'Waiting for an address…' : '—')} />
-			</Group>
-
-			<Group title="Open ports" footer="Opens a port on this server to your home network and passes it to the container. Only the ports listed here are reachable from outside the server.">
-				{c.ports.map((p) => (
-					<Row
-						key={`${p.protocol}-${p.hostPort}`}
-						icon="link"
-						label={`${p.hostPort} → ${p.containerPort ?? '?'}`}
-						sub={p.protocol.toUpperCase()}
-						trailing={
-							<button type="button" className="btn small" disabled={busy} aria-label={`Close port ${p.hostPort}`} onClick={() => run('containers.removePort', `Closed port ${p.hostPort}`, {protocol: p.protocol, hostPort: p.hostPort})}>
-								<Icon name="trash" size={14} />
+					<p className="quiet">This takes a minute or two. You can leave this page.</p>
+				)
+			) : (
+				<>
+					<div className="actions mx-power">
+						{c.status !== 'running' ? (
+							<button className="action" disabled={busy} onClick={() => run('containers.start', `${c.name} is starting`)}>
+								{busy ? <span className="spinner" /> : <Icon name="play" size={22} />}
+								Start
 							</button>
-						}
-					/>
-				))}
-				<div style={{display: 'flex', gap: 8, padding: '10px 12px', alignItems: 'end', flexWrap: 'wrap'}}>
-					<div className="field" style={{flex: '1 1 90px', margin: 0}}>
-						<label htmlFor="ct-hp">Server port</label>
-						<input id="ct-hp" inputMode="numeric" placeholder="8080" value={port.host} onChange={(e) => setPort({...port, host: e.target.value.replace(/\D/g, '')})} />
+						) : (
+							<button className="action" disabled={busy} onClick={() => setTerm(true)}>
+								<Icon name="terminal" size={22} />
+								Terminal
+							</button>
+						)}
+						<button className="action" disabled={busy || c.status !== 'running'} onClick={() => run('containers.restart', `${c.name} is restarting`)}>
+							<Icon name="restart" size={22} />
+							Restart
+						</button>
+						<button className="action" disabled={busy || c.status !== 'running'} onClick={stop}>
+							<Icon name="power" size={22} />
+							Shut down
+						</button>
+						<button
+							className="action"
+							disabled={busy || c.status !== 'running'}
+							onClick={async () => (await confirm({title: `Force stop ${c.name}?`, body: 'Turns it off straight away, like pulling the plug: unsaved work inside it is lost.', confirm: 'Force stop', danger: true, icon: 'alert'})) && run('containers.forceStop', `${c.name} is off`)}
+						>
+							<Icon name="stop" size={22} />
+							Force stop
+						</button>
 					</div>
-					<div className="field" style={{flex: '1 1 90px', margin: 0}}>
-						<label htmlFor="ct-cp">Container port</label>
-						<input id="ct-cp" inputMode="numeric" placeholder="80" value={port.inner} onChange={(e) => setPort({...port, inner: e.target.value.replace(/\D/g, '')})} />
-					</div>
-					<button type="button" className="btn small" onClick={() => setPort({...port, protocol: port.protocol === 'tcp' ? 'udp' : 'tcp'})}>
-						{port.protocol.toUpperCase()}
-					</button>
-					<button
-						type="button"
-						className="btn small"
-						disabled={busy || !port.host || !port.inner}
-						onClick={() => action.mutate({path: 'containers.addPort', input: {name: c.name, protocol: port.protocol, hostPort: Number(port.host), containerPort: Number(port.inner)}, done: `Port ${port.host} is open`}, {onSuccess: () => setPort({host: '', inner: '', protocol: port.protocol})})}
-					>
-						<Icon name="plus" size={14} /> Open
-					</button>
-				</div>
-			</Group>
 
-			<Group title="Snapshots">
-				{c.snapshots.length === 0 && <p className="quiet" style={{padding: '4px 12px'}}>No snapshots yet.</p>}
-				{c.snapshots.map((s) => (
-					<Row
-						key={s.name}
-						icon="history"
-						label={s.name}
-						sub={s.createdAt ? new Date(s.createdAt).toLocaleString() : undefined}
-						trailing={
-							<span style={{display: 'inline-flex', gap: 6}}>
+					<Graphs c={c} />
+					<Resources key={`${c.cpus}-${c.memory}-${c.disk}-${c.cpuAllowance}-${c.cpuPriority}-${c.swap}`} c={c} busy={busy} run={run} />
+					<Boot key={`${c.bootOrder}-${c.bootDelay}`} c={c} busy={busy} run={run} />
+
+					<Group title="Open ports" footer="Opens a port on this server to your home network and passes it to the container. Only the ports listed here are reachable from outside the server.">
+						{c.ports.map((p) => (
+							<Row
+								key={`${p.protocol}-${p.hostPort}`}
+								icon="link"
+								label={`${p.hostPort} → ${p.containerPort ?? '?'}`}
+								sub={p.protocol.toUpperCase()}
+								trailing={
+									<button type="button" className="btn small" disabled={busy} aria-label={`Close port ${p.hostPort}`} onClick={() => run('containers.removePort', `Closed port ${p.hostPort}`, {protocol: p.protocol, hostPort: p.hostPort})}>
+										<Icon name="trash" size={14} />
+									</button>
+								}
+							/>
+						))}
+						<div style={{display: 'flex', gap: 8, padding: '10px 12px', alignItems: 'end', flexWrap: 'wrap'}}>
+							<div style={{flex: '1 1 90px'}}>
+								<TextField id="ct-hp" label="Server port" value={port.host} onChange={(v) => setPort({...port, host: v})} numeric placeholder="8080" />
+							</div>
+							<div style={{flex: '1 1 90px'}}>
+								<TextField id="ct-cp" label="Container port" value={port.inner} onChange={(v) => setPort({...port, inner: v})} numeric placeholder="80" />
+							</div>
+							<button type="button" className="btn small" onClick={() => setPort({...port, protocol: port.protocol === 'tcp' ? 'udp' : 'tcp'})}>
+								{port.protocol.toUpperCase()}
+							</button>
+							<button
+								type="button"
+								className="btn small"
+								disabled={busy || !port.host || !port.inner}
+								onClick={() => action.mutate({path: 'containers.addPort', input: {name: c.name, protocol: port.protocol, hostPort: Number(port.host), containerPort: Number(port.inner)}, done: `Port ${port.host} is open`}, {onSuccess: () => setPort({host: '', inner: '', protocol: port.protocol})})}
+							>
+								<Icon name="plus" size={14} /> Open
+							</button>
+						</div>
+					</Group>
+
+					<Group title="Snapshots">
+						{c.snapshots.length === 0 && <p className="quiet" style={{padding: '4px 12px'}}>No snapshots yet.</p>}
+						{c.snapshots.map((s) => (
+							<Row
+								key={s.name}
+								icon="history"
+								label={s.name}
+								sub={s.createdAt ? new Date(s.createdAt).toLocaleString() : undefined}
+								trailing={
+									<span style={{display: 'inline-flex', gap: 6}}>
+										<button
+											type="button"
+											className="btn small"
+											disabled={busy}
+											onClick={async () => (await confirm({title: `Go back to ${s.name}?`, body: `${c.name} returns to how it was when this snapshot was taken. Changes since then are lost.`, confirm: 'Restore', danger: true, icon: 'restart'})) && run('containers.restoreSnapshot', `${c.name} is back at ${s.name}`, {snapshot: s.name})}
+										>
+											Restore
+										</button>
+										<button type="button" className="btn small" disabled={busy} aria-label={`Delete snapshot ${s.name}`} onClick={async () => (await confirm({title: `Delete snapshot ${s.name}?`, body: 'This can’t be undone.', confirm: 'Delete', danger: true, icon: 'alert'})) && run('containers.deleteSnapshot', 'Snapshot deleted', {snapshot: s.name})}>
+											<Icon name="trash" size={14} />
+										</button>
+									</span>
+								}
+							/>
+						))}
+						<div style={{display: 'flex', gap: 8, padding: '10px 12px', alignItems: 'end'}}>
+							<div style={{flex: 1}}>
+								<TextField id="ct-snap" label="New snapshot" value={snap} onChange={(v) => setSnap(v.replace(/[^A-Za-z0-9._-]/g, ''))} placeholder="before-update" />
+							</div>
+							<button type="button" className="btn small" disabled={busy || !snap} onClick={() => action.mutate({path: 'containers.snapshot', input: {name: c.name, snapshot: snap}, done: `Snapshot ${snap} taken`}, {onSuccess: () => setSnap('')})}>
+								<Icon name="camera" size={14} /> Take
+							</button>
+						</div>
+					</Group>
+
+					<Backups c={c} busy={busy} all={all} />
+					<Files c={c} />
+					<NotesAndTags c={c} busy={busy} run={run} />
+
+					<Group title="Copies">
+						<Row icon="copy" label="Clone" sub="A new container that starts as an exact copy" disabled={busy} onClick={() => (setCopy('clone'), setCopyName(`${c.name}-2`))} />
+						<Row icon="save" label="Save as a template" sub="Appears under Your templates when you make a new container" disabled={busy} onClick={() => (setCopy('template'), setCopyName(c.name))} />
+						{copy && (
+							<div style={{display: 'flex', gap: 8, padding: '4px 12px 12px', alignItems: 'end'}}>
+								<div style={{flex: 1}}>
+									<TextField id="cp-name" label={copy === 'clone' ? 'Name of the copy' : 'Template name'} value={copyName} onChange={(v) => setCopyName(v.toLowerCase())} hint={copy === 'clone' ? nameProblemOf(copyName, taken) : nameProblemOf(copyName, [])} />
+								</div>
 								<button
 									type="button"
 									className="btn small"
-									disabled={busy}
-									onClick={async () => (await confirm({title: `Go back to ${s.name}?`, body: `${c.name} returns to how it was when this snapshot was taken. Changes since then are lost.`, confirm: 'Restore', danger: true, icon: 'restart'})) && run('containers.restoreSnapshot', `${c.name} is back at ${s.name}`, {snapshot: s.name})}
+									disabled={action.isPending || !!(copy === 'clone' ? nameProblemOf(copyName, taken) : nameProblemOf(copyName, []))}
+									onClick={() =>
+										action.mutate(
+											copy === 'clone'
+												? {path: 'containers.clone', input: {name: c.name, as: copyName}, done: `Cloning ${c.name} as ${copyName}`}
+												: {path: 'containers.saveTemplate', input: {name: c.name, template: copyName}, done: `Saving ${c.name} as the template ${copyName}`},
+											{onSuccess: () => (copy === 'clone' && onOpen(copyName), setCopy(null))},
+										)
+									}
 								>
-									Restore
+									{copy === 'clone' ? 'Clone' : 'Save'}
 								</button>
-								<button type="button" className="btn small" disabled={busy} aria-label={`Delete snapshot ${s.name}`} onClick={async () => (await confirm({title: `Delete snapshot ${s.name}?`, body: 'This can’t be undone.', confirm: 'Delete', danger: true, icon: 'alert'})) && run('containers.deleteSnapshot', 'Snapshot deleted', {snapshot: s.name})}>
-									<Icon name="trash" size={14} />
-								</button>
-							</span>
-						}
-					/>
-				))}
-				<div style={{display: 'flex', gap: 8, padding: '10px 12px', alignItems: 'end'}}>
-					<div className="field" style={{flex: 1, margin: 0}}>
-						<label htmlFor="ct-snap">New snapshot</label>
-						<input id="ct-snap" placeholder="before-update" value={snap} onChange={(e) => setSnap(e.target.value.replace(/[^A-Za-z0-9._-]/g, ''))} />
-					</div>
-					<button type="button" className="btn small" disabled={busy || !snap} onClick={() => action.mutate({path: 'containers.snapshot', input: {name: c.name, snapshot: snap}, done: `Snapshot ${snap} taken`}, {onSuccess: () => setSnap('')})}>
-						<Icon name="camera" size={14} /> Take
-					</button>
-				</div>
-			</Group>
+							</div>
+						)}
+					</Group>
 
-			<button
-				className="btn danger block"
-				disabled={action.isPending}
-				onClick={async () => {
-					if (!(await confirm({title: `Delete ${c.name}?`, body: `The container, its files and its snapshots are deleted. This can’t be undone.`, confirm: 'Delete container', danger: true, icon: 'alert'}))) return
-					action.mutate({path: 'containers.delete', input: {name: c.name}, done: `${c.name} deleted`}, {onSuccess: onBack})
-				}}
-			>
-				<Icon name="trash" size={18} /> Delete container
-			</button>
+					<Group title="Protection">
+						<SwitchRow label="Protect from deleting" sub="While on, this container can’t be deleted, here or with Incus." on={c.protected} disabled={busy} onChange={(on) => run('containers.setOptions', on ? `${c.name} is protected` : `${c.name} can be deleted again`, {protected: on})} />
+					</Group>
+
+					<button
+						className="btn danger block"
+						disabled={action.isPending || c.protected || !!c.job}
+						onClick={async () => {
+							if (!(await confirm({title: `Delete ${c.name}?`, body: 'The container, its files and its snapshots are deleted. Backups stay. This can’t be undone.', confirm: 'Delete container', danger: true, icon: 'alert'}))) return
+							action.mutate({path: 'containers.delete', input: {name: c.name}, done: `${c.name} deleted`}, {onSuccess: onBack})
+						}}
+					>
+						<Icon name="trash" size={18} /> {c.protected ? 'Protected from deleting' : 'Delete container'}
+					</button>
+				</>
+			)}
 		</div>
 	)
 }
+

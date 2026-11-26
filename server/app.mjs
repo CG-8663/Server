@@ -125,6 +125,19 @@ export const ALLOWED = {
 	'containers.deleteSnapshot': 'mutation',
 	'containers.addPort': 'mutation',
 	'containers.removePort': 'mutation',
+	'containers.templates': 'query',
+	'containers.stats': 'query',
+	'containers.backups': 'query',
+	'containers.files': 'query',
+	'containers.setResources': 'mutation',
+	'containers.setOptions': 'mutation',
+	'containers.clone': 'mutation',
+	'containers.saveTemplate': 'mutation',
+	'containers.deleteTemplate': 'mutation',
+	'containers.backup': 'mutation',
+	'containers.restoreBackup': 'mutation',
+	'containers.deleteBackup': 'mutation',
+	'containers.copyToServer': 'mutation',
 	'usb.list': 'query',
 	'usb.attach': 'mutation',
 	'usb.detach': 'mutation',
@@ -397,7 +410,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-export const SLOW = new Set(['containers.images', 'containers.stop', 'containers.restart', 'containers.delete', 'containers.snapshot', 'containers.restoreSnapshot', 'hyprland.launch', 'hermes.connect', 'hermes.connectRemote', 'hermes.disconnect', 'hyprland.profileRun', 'unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'oidc.setConfig', 'apps.setOidc', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'backups.gdrive.authFinish', 'backups.gdrive.configure', 'backups.gdrive.test', 'backups.gdrive.connectExisting', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'apps.start', 'apps.stop', 'apps.restart', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.installConnector', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.start', 'machines.hibernate', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
+export const SLOW = new Set(['containers.images', 'containers.files', 'containers.copyToServer', 'containers.setResources', 'containers.clone', 'containers.saveTemplate', 'containers.backup', 'containers.restoreBackup', 'containers.stop', 'containers.restart', 'containers.delete', 'containers.snapshot', 'containers.restoreSnapshot', 'hyprland.launch', 'hermes.connect', 'hermes.connectRemote', 'hermes.disconnect', 'hyprland.profileRun', 'unraid.connect', 'unraid.scan', 'unraid.preflight', 'unraid.resync', 'tailscale.login', 'tailscale.ping', 'oidc.setConfig', 'apps.setOidc', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'backups.gdrive.authFinish', 'backups.gdrive.configure', 'backups.gdrive.test', 'backups.gdrive.connectExisting', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'swarm.files.list', 'swarm.files.recents', 'files.transfer', 'files.fleetRecents', 'apps.install', 'apps.update', 'apps.uninstall', 'apps.start', 'apps.stop', 'apps.restart', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.installConnector', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.start', 'machines.hibernate', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList', 'swarm.updateConnector', 'swarm.updateAllConnectors', 'swarm.services.list', 'swarm.services.logs', 'swarm.services.control', 'swarm.files.copyToServer', 'swarm.files.copyFromServer'])
 export const timeoutFor = (path) => (SLOW.has(path) ? 30 * 60 * 1000 : 20_000)
 
 // An IPv6 address in a URL needs brackets; req.hostname and URL.hostname may already have them.
@@ -1031,6 +1044,57 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			res.end(buf)
 		} catch {
 			res.status(502).json({error: {code: 'UNAVAILABLE', message: 'Couldn’t download file from that computer'}})
+		}
+	})
+	// Owner-only file download/upload for this server's containers (proxied to omarchyd, which checks the owner).
+	const CONTAINER_NAME = /^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/
+	api.get('/containers/files/download', async (req, res) => {
+		const session = requireSession(req, res)
+		if (!session) return
+		const backend = getClient()
+		const name = String(req.query.name ?? '')
+		const path = String(req.query.path ?? '')
+		if (!CONTAINER_NAME.test(name) || !path.startsWith('/')) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Missing file parameters'}})
+		try {
+			const r = await fetchImpl(`${backend.baseUrl}/api/containers/files/download?${new URLSearchParams({name, path})}`, {
+				headers: {authorization: `Bearer ${await accessTokenFor(req.sid, session)}`},
+				signal: AbortSignal.timeout(180_000),
+			})
+			const buf = Buffer.from(await r.arrayBuffer())
+			res.status(r.status)
+			for (const h of ['content-type', 'content-disposition', 'cache-control']) {
+				const v = r.headers.get(h)
+				if (v) res.set(h, v)
+			}
+			res.end(buf)
+		} catch {
+			res.status(502).json({error: {code: 'UNAVAILABLE', message: 'Couldn’t download the file from that container'}})
+		}
+	})
+	api.post('/containers/files/upload', async (req, res) => {
+		const session = requireSession(req, res)
+		if (!session) return
+		const backend = getClient()
+		const name = String(req.query.name ?? '')
+		const path = String(req.query.path ?? '')
+		if (!CONTAINER_NAME.test(name) || !path.startsWith('/')) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Missing file parameters'}})
+		try {
+			let size = 0
+			const chunks = []
+			for await (const c of req) {
+				size += c.length
+				if (size > 100 * 1024 * 1024) return res.status(413).json({error: {code: 'BAD_REQUEST', message: 'Files larger than 100 MB can’t be uploaded this way'}})
+				chunks.push(c)
+			}
+			const r = await fetchImpl(`${backend.baseUrl}/api/containers/files/upload?${new URLSearchParams({name, path})}`, {
+				method: 'POST',
+				headers: {authorization: `Bearer ${await accessTokenFor(req.sid, session)}`, 'content-type': 'application/octet-stream'},
+				body: Buffer.concat(chunks),
+				signal: AbortSignal.timeout(180_000),
+			})
+			res.status(r.status).json(await r.json().catch(() => ({})))
+		} catch {
+			res.status(502).json({error: {code: 'UNAVAILABLE', message: 'Couldn’t upload the file to that container'}})
 		}
 	})
 	api.post('/swarm/files/upload', async (req, res) => {
