@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# machines-add-lxc: set this server up to run containers (LXC) from My Own Data Center's Machines page.
+#
+# Run it once, as yourself (not with sudo); it asks for your password where it needs to. It's safe to
+# run again: each step is skipped when it's already done.
+#
+# What it sets up, and why:
+#   - Incus, the manager that runs the containers and downloads its library of Linux systems.
+#   - An ID range for root in /etc/subuid and /etc/subgid, so containers run unprivileged (their root
+#     is an ordinary user on this server).
+#   - Incus's services, started now and at every boot, so containers set to start with the server do.
+#   - A storage pool and default profile, if there isn't one yet.
+#   - Your account in the `incus` group: Incus's per-user mode, which gives you your own walled-off
+#     space for containers. Never `incus-admin`, which would be the same as root.
+set -euo pipefail
+
+say() { printf '\033[1m%s\033[0m\n' "$*"; }
+ok() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+
+if [ "$(id -u)" -eq 0 ]; then
+	echo "Run machines-add-lxc as yourself, not with sudo. It asks for your password when it needs it." >&2
+	exit 1
+fi
+if ! command -v pacman >/dev/null; then
+	echo "machines-add-lxc sets up Arch-based servers (like Omarchy). Install Incus with your system's packages instead." >&2
+	exit 1
+fi
+USER_NAME=$(id -un)
+
+say "Setting up containers for $USER_NAME"
+sudo -v
+
+if pacman -Qi incus >/dev/null 2>&1; then
+	ok "Incus is installed"
+else
+	sudo pacman -S --needed --noconfirm incus
+	ok "Installed Incus"
+fi
+
+for f in /etc/subuid /etc/subgid; do
+	if grep -q '^root:' "$f" 2>/dev/null; then
+		ok "$f has an ID range for root"
+	else
+		echo 'root:1000000:1000000000' | sudo tee -a "$f" >/dev/null
+		ok "Added an ID range for root to $f"
+	fi
+done
+
+# incus.service starts Incus at boot (and the containers set to start with the server);
+# incus-user.socket is the per-user door into it.
+sudo systemctl enable --now incus.socket incus.service incus-user.socket
+ok "Incus starts now and at every boot"
+
+if sudo incus storage show default >/dev/null 2>&1; then
+	ok "Storage is ready"
+else
+	sudo incus admin init --minimal
+	ok "Created storage and the default profile"
+fi
+
+if id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx incus || getent group incus | cut -d: -f4 | tr ',' '\n' | grep -qx "$USER_NAME"; then
+	ok "$USER_NAME can use containers"
+else
+	sudo usermod -aG incus "$USER_NAME"
+	ok "Added $USER_NAME to the incus group"
+fi
+
+# Omarchy turns on its firewall (ufw). Containers need it to let them reach this server for an
+# address (DHCP) and DNS, and out to the internet.
+if command -v ufw >/dev/null && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+	# Incus's per-user networks are named incusbr-<your user id>; the default one incusbr0.
+	for br in "incusbr-$(id -u)" incusbr0; do
+		sudo ufw allow in on "$br" >/dev/null
+		sudo ufw route allow in on "$br" >/dev/null
+		sudo ufw route allow out on "$br" >/dev/null
+	done
+	ok "The firewall lets containers get an address and reach the internet"
+fi
+
+say "Done. Open Machines → this server → Containers in My Own Data Center."

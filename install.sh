@@ -337,6 +337,7 @@ mkdir -p "$HOME/Pools"
 mkdir -p "$HOME/.local/bin" "${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 chmod +x "$APP/bin/omarchy-server"
 ln -sf "$APP/bin/omarchy-server" "$HOME/.local/bin/omarchy-server"
+ln -sf "$APP/bin/machines-add-lxc" "$HOME/.local/bin/machines-add-lxc"
 APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 cat >"$APPS/omarchy-server.desktop" <<EOF
 [Desktop Entry]
