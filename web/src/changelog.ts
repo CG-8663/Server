@@ -4,6 +4,19 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.90',
+		date: '2026-11-26',
+		title: 'Containers, Linen and Sky, and a restart that says when it will wait',
+		added: [
+			'This server’s Machines page can run a container: a Linux system that shares the server’s kernel. Choose Debian, Ubuntu, Alpine, Arch Linux, Fedora, Rocky Linux, AlmaLinux, or openSUSE. Start it, shut it down, open its terminal, open a port, or take a snapshot. It stays on this server’s page.',
+			'Appearance adds Linen and Sky. Sun and Moon use the light or dark palette you marked. Off returns to Horizon, Your photo, or Omarchy.',
+			'The Machines list says how many are shown when a filter or a search is hiding some, beside how many are online. Dismissing the filter note keeps it dismissed on this account, on every device.',
+		],
+		fixed: [
+			'Restart warns first when this computer’s disk is encrypted (Omarchy’s default) and doesn’t unlock by itself. Why: an encrypted disk asks for its password before anything on it runs, so after a restart the computer waits at that screen, and this server and remote access can’t start until someone types it at the computer. “Starts after a restart” only covers what happens once the disk is open. Settings now says so too, with how to have the disk unlock by itself.',
+		],
+	},
+	{
 		version: '0.9.89',
 		date: '2026-11-26',
 		title: 'Safer restarts, and a terminal that behaves like the one on your computer',

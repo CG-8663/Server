@@ -26,3 +26,23 @@ test('linger is turned on without sudo when allowed, never waits on a password i
 	assert.match(block, /sudo -n loginctl enable-linger/)
 	assert.match(block, /stays off until you sign in/)
 })
+
+test('an encrypted system disk is reported, so Settings and Restart can say it waits for the disk password', async () => {
+	const {mkdtemp, rm} = await import('node:fs/promises')
+	const os = await import('node:os')
+	const {join} = await import('node:path')
+	const {openAccounts} = await import('../omarchyd/accounts.mjs')
+	const {startOmarchyd} = await import('../omarchyd/server.mjs')
+	const root = await mkdtemp(join(os.tmpdir(), 'omarchy-lock-'))
+	const accounts = await openAccounts(join(root, 'd'))
+	await accounts.createOwner({name: 'Chris', password: 'correct horse'})
+	const d = await startOmarchyd({port: 0, dataDir: join(root, 'd'), home: root, machineOptions: {diskLock: {encrypted: true, unlocksItself: false}}})
+	try {
+		const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 's'}})})).json()
+		const res = await (await fetch(`${d.url}/trpc/system.bootStart`, {headers: {authorization: `Bearer ${login.result.data.accessToken}`}})).json()
+		assert.deepEqual(res.result.data.diskLock, {encrypted: true, unlocksItself: false})
+	} finally {
+		await d.close()
+		await rm(root, {recursive: true, force: true})
+	}
+})
