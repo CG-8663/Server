@@ -364,7 +364,7 @@ test('appearance_list names where to change glass and lists the theme cards', ()
 	assert.match(cat.appearance.where, /Settings → Appearance/)
 	assert.equal(cat.themes.find((t) => t.id === 'omarchy').name, 'Omarchy')
 	assert.match(cat.themes.find((t) => t.id === 'omarchy').look, /colour|color|Omarchy/i)
-	for (const id of ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte']) {
+	for (const id of ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte', 'linen', 'sky']) {
 		assert.match(cat.themes.find((t) => t.id === id).look, /palette|colour|color|wallpaper|photo/i, id)
 	}
 	assert.equal(cat.themes.find((t) => t.id === 'custom').name, 'Your photo')

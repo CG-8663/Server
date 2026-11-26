@@ -183,7 +183,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				<OmarchyThemes
 					owner={owner}
 					onSwitched={() => {
-						setPrefs({...prefs, theme: 'omarchy', solidColor: null})
+						setPrefs({...prefs, theme: 'omarchy', pictureTheme: 'omarchy', solidColor: null})
 						patchDeskConfig({preset: null, wallpaper: 'omarchy'})
 					}}
 				/>

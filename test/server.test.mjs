@@ -390,6 +390,14 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		r = await touch.req('POST', '/api/prefs', {dismissedTutorials: []})
 		assert.deepEqual(r.body.prefs.dismissedTutorials, [])
 		assert.equal((await touch.req('POST', '/api/prefs', {theme: '<script>'})).status, 400)
+		r = await touch.req('POST', '/api/prefs', {theme: 'linen', lightTheme: 'sky', darkTheme: 'gruvbox', pictureTheme: 'horizon'})
+		assert.equal(r.status, 200)
+		assert.deepEqual([r.body.prefs.theme, r.body.prefs.lightTheme, r.body.prefs.darkTheme, r.body.prefs.pictureTheme], ['linen', 'sky', 'gruvbox', 'horizon'])
+		assert.equal((await touch.req('POST', '/api/prefs', {theme: 'sky'})).status, 200)
+		assert.equal((await touch.req('POST', '/api/prefs', {lightTheme: 'mocha'})).status, 400)
+		assert.equal((await touch.req('POST', '/api/prefs', {darkTheme: 'latte'})).status, 400)
+		assert.equal((await touch.req('POST', '/api/prefs', {pictureTheme: 'linen'})).status, 400)
+		assert.equal((await touch.req('GET', '/api/prefs')).body.prefs.theme, 'sky')
 		assert.equal((await touch.req('POST', '/api/prefs', {customBrandHsl: 'red; x'})).status, 400)
 		// Only plain strings are stored: an array or object is a 400, not a stored array or a 500.
 		for (const bad of [['24 90% 50%'], {toString: 1}, 5]) {

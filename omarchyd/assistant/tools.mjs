@@ -182,6 +182,8 @@ export function appearanceCatalog() {
 			{id: 'tokyo', name: 'Neon', look: 'Dark palette'},
 			{id: 'gruvbox', name: 'Ember', look: 'Warm palette'},
 			{id: 'latte', name: 'Daylight', look: 'Light palette'},
+			{id: 'linen', name: 'Linen', look: 'Warm off-white palette'},
+			{id: 'sky', name: 'Sky', look: 'Pale blue palette'},
 			{id: 'omarchy', name: 'Omarchy', look: 'This server’s Omarchy colours'},
 		],
 		panelStyle: {

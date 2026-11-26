@@ -8,17 +8,16 @@ import {resetDeskConfig} from '../desktop/config'
 import {queryClearsOnSignOut} from '../signOutQueries'
 import {useBootstrap, useUser} from '../data'
 import {Icon} from '../icons'
-import {applyPrefsUpdate, prefsAfterPhotoUpload, prefsChoosingYourPhoto} from '../photoPrefs'
+import {applyPrefsUpdate, prefsAfterPhotoUpload} from '../photoPrefs'
 import {RADIO_SELECTOR, rovingKeyDown, rovingTabIndex} from '../roving'
-import {ACCENTS, Card, KV, Row, THEMES, VersionTag, customBackgroundUrl, haptic, omarchyBackgroundUrl, preparePhoto, useConfirm, useOmarchyThemes, useToast, type Prefs, type ThemeId} from '../ui'
+import {ThemeChooser} from '../ThemeChooser'
+import {ACCENTS, Card, KV, Row, VersionTag, customBackgroundUrl, haptic, preparePhoto, useConfirm, useToast, type Prefs, type ThemeId} from '../ui'
 import {FactoryReset} from './machineHost'
 
 export function Appearance({prefs, setPrefs, wallpaper, onTheme}: {prefs: Prefs; setPrefs: (p: Prefs) => void; wallpaper?: Wallpaper | null; onTheme?: (id: ThemeId) => void}) {
 	const toast = useToast()
 	const fileRef = useRef<HTMLInputElement>(null)
 	const [uploading, setUploading] = useState(false)
-	const desktopBg = useOmarchyThemes().data?.current
-	const wp = omarchyBackgroundUrl(prefs.omarchyBackground, desktopBg)
 	const photo = customBackgroundUrl(prefs.backgroundVersion)
 	const brand = wallpaper?.brandColorHsl ? `hsl(${wallpaper.brandColorHsl})` : 'hsl(24 90% 50%)'
 	const photoBrand = prefs.customBrandHsl ? `hsl(${prefs.customBrandHsl})` : brand
@@ -32,7 +31,7 @@ export function Appearance({prefs, setPrefs, wallpaper, onTheme}: {prefs: Prefs;
 			const res = await fetch('/api/background', {method: 'POST', credentials: 'same-origin', headers: {'content-type': 'image/jpeg', 'x-omarchy-server': '1'}, body: blob})
 			const body = await res.json().catch(() => null)
 			if (!res.ok) throw new Error(body?.error?.message ?? 'Upload failed')
-			applyPrefsUpdate(setPrefs, (latest) => prefsAfterPhotoUpload(latest, {hsl, backgroundVersion: body.prefs.backgroundVersion ?? null}, {setThemeCustom: true}))
+			applyPrefsUpdate(setPrefs, (latest) => ({...prefsAfterPhotoUpload(latest, {hsl, backgroundVersion: body.prefs.backgroundVersion ?? null}, {setThemeCustom: true}), pictureTheme: 'custom' as const}))
 			onTheme?.('custom')
 			toast('Background saved')
 		} catch (e) {
@@ -45,58 +44,15 @@ export function Appearance({prefs, setPrefs, wallpaper, onTheme}: {prefs: Prefs;
 	return (
 		<Card>
 			<input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => upload(e.target.files?.[0])} />
-			<div className="themes" role="radiogroup" aria-label="Theme" onKeyDown={(e) => rovingKeyDown(e, RADIO_SELECTOR)}>
-				{THEMES.filter((t) => t.id !== 'omarchy').map((t, ti) => {
-					const on = prefs.theme === t.id
-					const isWall = t.id === 'horizon'
-					const isPhoto = t.id === 'custom'
-					const bg = isWall && wp ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${wp}) center/cover` : isPhoto && photo ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${photo}) center/cover` : isPhoto ? 'linear-gradient(140deg, #2a2a33, #15151a)' : t.bg
-					return (
-						<button
-							key={t.id}
-							role="radio"
-							aria-checked={on}
-							tabIndex={rovingTabIndex(on, ti, THEMES.some((x) => x.id !== 'omarchy' && x.id === prefs.theme))}
-							className={`theme-card${on ? ' on' : ''}`}
-							style={{background: bg, color: t.fg, minHeight: isWall || isPhoto ? 104 : undefined}}
-							onClick={() => {
-								haptic(6)
-								if (isPhoto && !photo) return fileRef.current?.click()
-								if (isPhoto) {
-									applyPrefsUpdate(setPrefs, (latest) => prefsChoosingYourPhoto(latest))
-									onTheme?.('custom')
-									return
-								}
-								setPrefs({...prefs, theme: t.id})
-								onTheme?.(t.id)
-							}}
-						>
-							<span className="label">{t.name}</span>
-							<span className="dots">
-								{isWall ? (
-									[brand, '#ffffff'].map((d) => <i key={d} style={{background: d}} />)
-								) : isPhoto ? (
-									photo ? (
-										[photoBrand, '#ffffff'].map((d) => <i key={d} style={{background: d}} />)
-									) : (
-										<span style={{display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 600, opacity: 0.85}}>
-											{uploading ? <span className="spinner" style={{width: 14, height: 14}} /> : <Icon name="photo-up" size={16} />}
-											{uploading ? 'Uploading…' : 'Upload'}
-										</span>
-									)
-								) : (
-									t.dots.map((d) => <i key={d} style={{background: d}} />)
-								)}
-							</span>
-							{on && (
-								<span className="tick">
-									<Icon name="check" size={14} stroke={3} />
-								</span>
-							)}
-						</button>
-					)
-				})}
-			</div>
+			<ThemeChooser
+				prefs={prefs}
+				setPrefs={setPrefs}
+				wallpaperBrand={brand}
+				photo={photo}
+				uploading={uploading}
+				onPickPhoto={() => fileRef.current?.click()}
+				onTheme={onTheme}
+			/>
 			<div className="section-head" style={{margin: '18px 0 6px'}}>
 				<h2>Accent</h2>
 			</div>
