@@ -1209,7 +1209,14 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			if (!r?._sock || !w || !h) return
 			const key = `${w}x${h}`
 			if (!force && key === last) return
+			const resized = last !== '' && key !== last
 			last = key
+			// The remote screen changed size: fit the new picture to this screen again (a phone kept
+			// the old fit, which showed part of the picture and black beside it).
+			if (resized || force) {
+				r._updateScale?.()
+				if (!deskUi) requestAnimationFrame(() => applyView(view.current))
+			}
 			try {
 				;(RFB as any).messages.fbUpdateRequest(r._sock, false, 0, 0, w, h)
 			} catch {

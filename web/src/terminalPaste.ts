@@ -26,8 +26,12 @@ const REPLY = [
 	/^\x1b\[\d*n$/,
 	/^\x1b\[\?[\d;]*\$y$/,
 	/^\x1bP[!>]\|[^\x1b]*\x1b\\$/,
-	/^\x1b\](?:4;\d+|1[0-2]);rgb:[0-9a-f/]+(?:\x07|\x1b\\)$/i,
+	/^\x1b\](?:4;\d+|1[0-2]);rgb:[0-9a-fA-F/]+(?:\x07|\x1b\\)$/,
 ]
+const ANY_REPLY = new RegExp(`(?:${REPLY.map((r) => r.source.replace(/^\^|\$$/g, '')).join('|')})`, 'g')
+// One answer, or several arriving together (the terminal can answer a burst of questions at once).
 export function isTerminalReply(data: string): boolean {
-	return REPLY.some((r) => r.test(data))
+	if (!data || data[0] !== '\x1b') return false
+	if (REPLY.some((r) => r.test(data))) return true
+	return data.replace(ANY_REPLY, '') === ''
 }

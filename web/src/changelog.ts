@@ -12,7 +12,8 @@ export const CHANGELOG: Release[] = [
 		],
 		fixed: [
 			'Restart and Shut down first make sure this server will start again by itself, with nobody signed in at it. If it can’t switch that on, it tells you before going ahead, instead of leaving a server with no screen down until someone signs in at it.',
-			'Opening a terminal again no longer types stray characters into it. They were the terminal’s own answers to questions in the screen it was showing again.',
+			'Opening a terminal again no longer types stray characters into it (like 1;2c0;276;0c2026;0$y). They were the terminal’s own answers to questions in the screen it was showing again.',
+			'Remote desktop on a phone fits the picture again when the remote screen changes size, instead of keeping the old fit.',
 			'The terminal no longer seems to freeze: Ctrl+S doesn’t pause it any more, and a stuck resize can’t hold back what you type.',
 		],
 	},
