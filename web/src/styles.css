@@ -10804,7 +10804,21 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 	min-width: 0;
 	margin: 0 0 10px;
 }
-.mm-search {
+.mm-tools > .filter-bar {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+}
+/* Name search and the chips share one shorter row. A pair's word sizes the slot, so Unhealthy is not clipped. */
+.filter-bar {
+	display: flex;
+	flex-wrap: nowrap;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	margin: 0 0 10px;
+}
+.filter-bar-search {
 	flex: 1 1 0;
 	min-width: 5.5rem;
 	height: 36px;
@@ -10813,10 +10827,10 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 	gap: 6px;
 	border-radius: 12px;
 }
-.mm-search input {
+.filter-bar-search input {
 	font-size: 14px;
 }
-.mm-search .clear {
+.filter-bar-search .clear {
 	width: 20px;
 	height: 20px;
 }
@@ -10910,14 +10924,13 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 	place-items: center;
 	height: 160px;
 }
-/* Name search and four filters share one shorter row. A pair's word sizes the slot, so Unhealthy is not clipped. */
-.mm-filters {
+.filter-bar-slots {
 	position: relative;
 	flex: 0 1 auto;
 	min-width: 0;
 	max-width: 100%;
 }
-.mm .segmented {
+.filter-bar .segmented {
 	flex: 0 1 auto;
 	width: max-content;
 	min-width: 0;
@@ -10927,65 +10940,22 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 	overflow-x: auto;
 	scrollbar-width: none;
 }
-.mm .segmented::-webkit-scrollbar {
+.filter-bar .segmented::-webkit-scrollbar {
 	display: none;
 }
-.mm .segmented .thumb {
-	display: none;
-}
-.mm .segmented button {
+.filter-bar .segmented button {
 	height: 28px;
 	font-size: 11px;
 	padding-inline: 6px;
 	white-space: nowrap;
 }
-/* Compact keeps the name field and All, Physical, Unhealthy, Offline on one line. */
-.mm.is-lines .mm-tools {
-	flex-wrap: nowrap;
-}
-/* Clip book: search and All | kind | status stay on one line. The buttons scroll if the row is tight. */
-.clip-tools {
-	display: flex;
-	align-items: center;
-	flex-wrap: nowrap;
-	gap: 8px;
-	margin: 0 0 12px;
-	min-width: 0;
-}
-.clip-tools .search {
-	flex: 1 1 auto;
-	min-width: 7.5rem;
-	margin: 0;
-}
-.clip-filters {
-	display: flex;
-	flex: 0 1 auto;
-	flex-wrap: nowrap;
-	gap: 6px;
-	min-width: 0;
-	overflow-x: auto;
-	scrollbar-width: none;
-}
-.clip-filters::-webkit-scrollbar {
-	display: none;
-}
-.clip-filters button {
-	flex: none;
-	height: 44px;
-	padding: 0 14px;
-	border-radius: 12px;
-	border: 1px solid var(--line);
-	background: transparent;
-	color: inherit;
-	font: inherit;
-	font-size: 15px;
-	font-weight: 600;
-	white-space: nowrap;
-	cursor: pointer;
-}
-.clip-filters button[aria-pressed='true'] {
-	background: color-mix(in srgb, var(--accent) 18%, transparent);
-	border-color: transparent;
+.filter-bar .segmented button[aria-pressed='true'] {
+	border-radius: 10px;
+	background: var(--glass-2);
+	box-shadow:
+		0 2px 8px rgba(0, 0, 0, 0.18),
+		inset 0 0 0 1px var(--line);
+	color: var(--fg);
 }
 .clip-row {
 	gap: 4px;
@@ -11206,14 +11176,7 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 .mm-line .pill {
 	flex: none;
 }
-.mm .segmented button[aria-selected='true'] {
-	border-radius: 10px;
-	background: var(--glass-2);
-	box-shadow:
-		0 2px 8px rgba(0, 0, 0, 0.18),
-		inset 0 0 0 1px var(--line);
-}
-:is([data-theme='latte'], [data-theme='linen'], [data-theme='sky']) .mm .segmented button[aria-selected='true'] {
+:is([data-theme='latte'], [data-theme='linen'], [data-theme='sky']) .filter-bar .segmented button[aria-pressed='true'] {
 	background: #fff;
 }
 .mm-tip {

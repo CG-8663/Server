@@ -8,6 +8,7 @@ import {clipItemUrl} from '../clips'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {type Agent} from '../swarm/Swarm'
+import {FilterBar} from '../FilterBar'
 import {Field, Group, InWindow, Row, Sheet, SheetHeader, haptic, useConfirm, usePortalRoot, useToast} from '../ui'
 import {
 	batchPlan,
@@ -468,28 +469,27 @@ export function ClipBook({onBack, here, readings}: {onBack?: () => void; here?: 
 					})}
 				</section>
 			)}
-			<div className="clip-tools">
-				<label className="search glass">
-					<Icon name="search" size={16} />
-					<input value={text} placeholder="Name, words, or machine" aria-label="Find a clip" onChange={(e) => setText(e.target.value)} />
-					{text && (
-						<button type="button" className="clear" aria-label="Clear search" onClick={() => setText('')}>
-							<Icon name="close" size={12} />
-						</button>
-					)}
-				</label>
-				<div className="clip-filters" role="group" aria-label="Which clips">
-					<button type="button" aria-pressed={type == null && status == null} onClick={() => (setType(null), setStatus(null))}>
-						All
-					</button>
-					<button type="button" aria-pressed={type != null} onClick={() => setType(nextType(type))}>
-						{typeLabel(type)}
-					</button>
-					<button type="button" aria-pressed={status != null} onClick={() => setStatus(nextStatus(status))}>
-						{statusLabel(status)}
-					</button>
-				</div>
-			</div>
+			<FilterBar
+				query={text}
+				onQuery={setText}
+				queryLabel="Find a clip"
+				placeholder="Name, words, or machine"
+				slotsLabel="Which clips"
+				slots={[
+					{id: 'all', label: 'All', pressed: type == null && status == null},
+					{id: 'type', label: typeLabel(type), pressed: type != null},
+					{id: 'status', label: statusLabel(status), pressed: status != null},
+				]}
+				onSlot={(id) => {
+					if (id === 'all') {
+						setType(null)
+						setStatus(null)
+						return
+					}
+					if (id === 'type') setType(nextType(type))
+					else setStatus(nextStatus(status))
+				}}
+			/>
 			{readings && here && !book.data?.damaged && (
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					<Row icon="activity" color="var(--peach)" label="Clip the readings" sub="A snapshot of this machine, kept in the book." onClick={() => (haptic(6), clipReadings())} />

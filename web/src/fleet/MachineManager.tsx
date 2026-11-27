@@ -9,7 +9,8 @@ import {usePowerActions} from '../machines/panels'
 import {guestAgent, hostGuestMetrics, isGuestAgent} from '../swarm/guestLink'
 import {swarmGaugeItems, type SwarmMetrics} from '../swarm/gauges'
 import {agentMay, useSwarmAction, type Agent} from '../swarm/Swarm'
-import {Segmented, StatusPill, haptic, useConfirm} from '../ui'
+import {FilterBar} from '../FilterBar'
+import {StatusPill, haptic, useConfirm} from '../ui'
 import {MACHINES_FILTER_TIP, type TutorialId} from '../tutorials'
 import {PinButton} from './PinButton'
 import {SERVER_FLEET_ID, type FleetMember} from './list'
@@ -714,33 +715,24 @@ export function MachineManager({
 					{statusLine}
 				</>
 			)}
-			<div className="mm-tools">
-				<label className="search glass mm-search">
-					<Icon name="search" size={16} />
-					<input value={queryText} placeholder="Name" aria-label="Find a machine" onChange={(e) => setQueryText(e.target.value)} />
-					{queryText && (
-						<button type="button" className="clear" aria-label="Clear search" onClick={() => setQueryText('')}>
-							<Icon name="close" size={12} />
+			<FilterBar
+				query={queryText}
+				onQuery={setQueryText}
+				queryLabel="Find a machine"
+				placeholder="Name"
+				slotsLabel="Which machines"
+				slots={FILTER_SLOTS.map((slot) => ({id: slot, label: filterLabel(filter, slot), pressed: filterSlot(filter) === slot}))}
+				onSlot={(slot) => setFilter(nextFilter(filter, slot))}
+			>
+				{tip && (
+					<div className="mm-tip" role="note">
+						<p>Tap again to switch. Physical becomes Virtual, Unhealthy becomes Healthy, and Offline becomes Online.</p>
+						<button type="button" aria-label="Dismiss" onClick={() => onDismissTutorial?.(MACHINES_FILTER_TIP)}>
+							<Icon name="close" size={14} />
 						</button>
-					)}
-				</label>
-				<div className="mm-filters">
-					<Segmented
-						value={filterSlot(filter)}
-						options={FILTER_SLOTS.map((slot) => ({id: slot, label: filterLabel(filter, slot)}))}
-						onChange={(slot) => setFilter(nextFilter(filter, slot))}
-						label="Which machines"
-					/>
-					{tip && (
-						<div className="mm-tip" role="note">
-							<p>Tap again to switch. Physical becomes Virtual, Unhealthy becomes Healthy, and Offline becomes Online.</p>
-							<button type="button" aria-label="Dismiss" onClick={() => onDismissTutorial?.(MACHINES_FILTER_TIP)}>
-								<Icon name="close" size={14} />
-							</button>
-						</div>
-					)}
-				</div>
-			</div>
+					</div>
+				)}
+			</FilterBar>
 			{problem && (
 				<div className="error" role="alert">
 					<Icon name="alert" size={18} />

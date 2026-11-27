@@ -10,7 +10,8 @@ import {Icon, type IconName} from '../icons'
 import {guestAgent, isGuestAgent} from '../swarm/guestLink'
 import {swarmGaugeItems, type SwarmMetrics} from '../swarm/gauges'
 import {agentMay, useSwarm, type Agent} from '../swarm/Swarm'
-import {Segmented, StatusPill, haptic} from '../ui'
+import {FilterBar} from '../FilterBar'
+import {StatusPill, haptic} from '../ui'
 import {fleetList, guestFleetInput} from './list'
 import {Ease, MOTION_MS, MotionSlot, useListMotion} from './MachineManager'
 import {
@@ -228,25 +229,15 @@ export function Terminals() {
 						For-Each Mode: {counts.done} of {counts.total} machines complete
 					</p>
 				) : (
-					<>
-						<label className="search glass mm-search">
-							<Icon name="search" size={16} />
-							<input value={queryText} placeholder="Name" aria-label="Find a machine" onChange={(e) => setQueryText(e.target.value)} />
-							{queryText && (
-								<button type="button" className="clear" aria-label="Clear search" onClick={() => setQueryText('')}>
-									<Icon name="close" size={12} />
-								</button>
-							)}
-						</label>
-						<div className="mm-filters">
-							<Segmented
-								value={filterSlot(filter)}
-								options={FILTER_SLOTS.map((slot) => ({id: slot, label: filterLabel(filter, slot)}))}
-								onChange={(slot) => setFilter((cur) => nextFilter(cur, slot))}
-								label="Which machines"
-							/>
-						</div>
-					</>
+					<FilterBar
+						query={queryText}
+						onQuery={setQueryText}
+						queryLabel="Find a machine"
+						placeholder="Name"
+						slotsLabel="Which machines"
+						slots={FILTER_SLOTS.map((slot) => ({id: slot, label: filterLabel(filter, slot), pressed: filterSlot(filter) === slot}))}
+						onSlot={(slot) => setFilter((cur) => nextFilter(cur, slot))}
+					/>
 				)}
 			</div>
 			{problem && (

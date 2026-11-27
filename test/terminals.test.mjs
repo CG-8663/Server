@@ -63,7 +63,7 @@ test('the terminals page is an owner screen on the phone and the desktop, and op
 	assert.match(page, /Mark \$\{row\.name\} complete/)
 	assert.match(page, /screen-list/)
 	assert.match(page, /fleetStatus/)
-	assert.match(page, /mm-filters/)
+	assert.match(page, /FilterBar/)
 	assert.match(page, /mm-add/)
 	assert.doesNotMatch(page, /name="plus"/)
 	assert.doesNotMatch(page, /tm-open/)
