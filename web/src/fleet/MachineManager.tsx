@@ -819,7 +819,7 @@ export function MachineManager({
 				})}
 			</div>
 			{!loading && rows.length === 0 && <p className="quiet mm-empty">No machines match.</p>}
-			<ContainersInList owner={owner} filterText={queryText} />
+			<ContainersInList owner={owner} filterText={queryText} Frame={RowFrame} />
 			{term && (
 				<Suspense fallback={null}>
 					<TerminalScreen agent={term} onClose={() => setTerm(null)} />

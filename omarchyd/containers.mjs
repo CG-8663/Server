@@ -789,11 +789,19 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 					`  os: ${JSON.stringify(osName)}`,
 					`  release: ${JSON.stringify(release)}`,
 					`  user.modc.from: ${JSON.stringify(basename(path))}`,
+					// The container's own name as its host name (a root filesystem copied from somewhere
+					// else otherwise keeps that machine's).
+					'templates:',
+					'  /etc/hostname:',
+					'    when: [create, copy]',
+					'    template: hostname.tpl',
 					'',
 				].join('\n')
 				await writeFs(join(work, 'metadata.yaml'), yaml)
+				await mkdir(join(work, 'templates'))
+				await writeFs(join(work, 'templates', 'hostname.tpl'), '{{ instance.name }}\n')
 				await new Promise((res, rej) => {
-					const c = spawn('tar', ['-czf', join(work, 'meta.tar.gz'), '-C', work, 'metadata.yaml'], {stdio: 'ignore'})
+					const c = spawn('tar', ['-czf', join(work, 'meta.tar.gz'), '-C', work, 'metadata.yaml', 'templates'], {stdio: 'ignore'})
 					c.on('close', (code) => (code === 0 ? res() : rej(new Error('Couldn’t prepare the template'))))
 					c.on('error', rej)
 				})

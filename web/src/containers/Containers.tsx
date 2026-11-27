@@ -1,14 +1,15 @@
 // Containers (LXC, run by Incus in its per-user mode) on this server: the library of Linux systems
 // and your own templates, and each container's power, terminal, resources, start-with-server,
 // ports, snapshots, backups, files, notes and protection. Owner-only, like the server's terminal.
-import {Suspense, lazy, useEffect, useRef, useState, type CSSProperties, type ReactNode} from 'react'
+import {Suspense, lazy, useEffect, useRef, useState, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from '../api'
 import {Icon} from '../icons'
 import {openTerminalWith} from '../terminalEvent'
 import {AddFile, type Download} from '../AddFile'
-import {Group, PortalRoot, Row, Sheet, Spark, StatusPill, Switch, haptic, useConfirm, useToast} from '../ui'
+import {MachineTabs} from '../fleet/MachineTabs'
+import {Group, PortalRoot, Row, Sheet, SheetHeader, Spark, StatusPill, Switch, haptic, useConfirm, useToast} from '../ui'
 
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 
@@ -142,7 +143,6 @@ export function ContainersPanel({serverName}: {serverName: string}) {
 
 	const rows = list.data ?? []
 	const current = open ? rows.find((c) => c.name === open) : null
-	if (open && current) return <ContainerDetail c={current} all={rows} onBack={() => setOpen(null)} onOpen={setOpen} />
 	if (creating) return <CreateContainer onDone={() => setCreating(false)} existing={rows.map((c) => c.name)} />
 	return (
 		<>
@@ -153,6 +153,7 @@ export function ContainersPanel({serverName}: {serverName: string}) {
 			) : (
 				rows.map((c) => <ContainerRow key={c.name} c={c} onOpen={() => setOpen(c.name)} />)
 			)}
+			{open && current && <LxcPage c={current} all={rows} onClose={() => setOpen(null)} onOpen={setOpen} />}
 			<button type="button" className="btn small" style={{margin: '8px 12px 12px'}} onClick={() => (haptic(6), setCreating(true))}>
 				<Icon name="plus" size={15} /> New LXC container
 			</button>
@@ -190,28 +191,88 @@ export function NewContainerSheet({onClose}: {onClose: () => void}) {
 }
 
 /** Containers as their own entries in the Machines list; each opens in a sheet. */
-export function ContainersInList({owner, filterText}: {owner: boolean; filterText?: string}) {
+/** An LXC container's page: like a virtual machine's (header, its screen, then its sections). */
+function LxcPage({c, all, onClose, onOpen}: {c: Container; all: Container[]; onClose: () => void; onOpen: (name: string) => void}) {
+	return (
+		<Sheet open onClose={onClose} label={c.name} tall>
+			<ContainerDetail c={c} all={all} onBack={onClose} onOpen={onOpen} />
+		</Sheet>
+	)
+}
+
+type RowFrameProps = {
+	open: boolean
+	name: string
+	icon: 'category'
+	iconBg: string
+	reach: {kind: 'running' | 'stopped' | 'busy' | 'error' | 'update'; label: string}
+	health: {kind: 'running' | 'stopped' | 'busy' | 'error' | 'update'; label: string}
+	onToggle: () => void
+	children: ReactNode
+}
+
+/** One LXC container in the Machines list, like a virtual machine's row: open it for a summary,
+ * power, and Manage, which opens its page with its console. */
+function LxcRow({c, open, onToggle, onManage, Frame}: {c: Container; open: boolean; onToggle: () => void; onManage: () => void; Frame: (p: RowFrameProps) => ReactNode}) {
+	const action = useContainerAction()
+	const pill = containerPill(c)
+	const busy = action.isPending || pill.kind === 'busy'
+	const run = (path: string, done: string) => action.mutate({path, input: {name: c.name}, done})
+	return (
+		<Frame open={open} name={c.name} icon="category" iconBg={osColor(c.os)} reach={pill} health={{kind: 'stopped', label: 'LXC'}} onToggle={onToggle}>
+			<div className="mm-panel">
+				<p className="quiet" style={{margin: 0, overflowWrap: 'anywhere'}}>
+					{c.progress || [osLabel(c) || (c.from ? `from ${c.from}` : ''), c.addresses.find((a) => a.family === 'IPv4')?.address, c.memoryUsedGiB !== null ? `${c.memoryUsedGiB} GB memory in use` : null].filter(Boolean).join(' · ') || 'LXC container'}
+				</p>
+				{!c.pending && (
+					<div style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
+						{c.status !== 'running' ? (
+							<button type="button" className="btn small" disabled={busy} onClick={() => run('containers.start', `${c.name} is starting`)}>
+								<Icon name="play" size={14} /> Start
+							</button>
+						) : (
+							<>
+								<button type="button" className="btn small" disabled={busy} onClick={() => run('containers.restart', `${c.name} is restarting`)}>
+									<Icon name="restart" size={14} /> Restart
+								</button>
+								<button type="button" className="btn small" disabled={busy} onClick={() => run('containers.stop', `${c.name} is shut down`)}>
+									<Icon name="power" size={14} /> Shut down
+								</button>
+							</>
+						)}
+					</div>
+				)}
+				<div className="mm-foot">
+					<span />
+					<button type="button" className="btn small" onClick={() => (haptic(6), onManage())}>
+						Manage
+					</button>
+				</div>
+			</div>
+		</Frame>
+	)
+}
+
+/** LXC containers in the Machines list, in the same spot as before. Each row is like a virtual
+ * machine's; Manage opens its page. */
+export function ContainersInList({owner, filterText, Frame}: {owner: boolean; filterText?: string; Frame: (p: RowFrameProps) => ReactNode}) {
 	const status = useContainerStatus(owner)
 	const list = useContainers(owner && status.data?.available === true)
 	const [open, setOpen] = useState<string | null>(null)
+	const [expanded, setExpanded] = useState<string | null>(null)
 	const q = (filterText ?? '').trim().toLowerCase()
-	const rows = (list.data ?? []).filter((c) => !q || c.name.includes(q) || c.tags.some((t) => t.includes(q)) || c.os.includes(q))
+	const rows = (list.data ?? []).filter((c) => !q || c.name.includes(q) || c.tags.some((t) => t.includes(q)) || c.os.includes(q) || 'lxc'.includes(q))
 	if (!owner || !rows.length) return null
 	const current = open ? (list.data ?? []).find((c) => c.name === open) : null
 	return (
 		<>
-			<Group title="LXC containers">
-				{rows.map((c) => (
-					<ContainerRow key={c.name} c={c} onOpen={() => setOpen(c.name)} />
-				))}
-			</Group>
-			{current && (
-				<Sheet open onClose={() => setOpen(null)} label={current.name} tall>
-					<div style={{padding: '4px 16px 24px', minWidth: 0}}>
-						<ContainerDetail c={current} all={list.data ?? []} onBack={() => setOpen(null)} onOpen={setOpen} backLabel="Close" />
-					</div>
-				</Sheet>
-			)}
+			<div className="section-head" style={{marginTop: 18}}>
+				<h2>LXC containers</h2>
+			</div>
+			{rows.map((c) => (
+				<LxcRow key={c.name} c={c} Frame={Frame} open={expanded === c.name} onToggle={() => setExpanded(expanded === c.name ? null : c.name)} onManage={() => setOpen(c.name)} />
+			))}
+			{current && <LxcPage c={current} all={list.data ?? []} onClose={() => setOpen(null)} onOpen={setOpen} />}
 		</>
 	)
 }
@@ -424,7 +485,7 @@ function CreateContainer({onDone, existing, backLabel = 'LXC containers'}: {onDo
 }
 
 /** The container's console inside its page, the way a VM's screen sits in its page. */
-function EmbeddedConsole({name, onFull, onShell}: {name: string; onFull: () => void; onShell: () => void}) {
+function EmbeddedConsole({name, onFull}: {name: string; onFull: () => void}) {
 	const [el, setEl] = useState<HTMLDivElement | null>(null)
 	const [on, setOn] = useState(true)
 	return (
@@ -452,9 +513,6 @@ function EmbeddedConsole({name, onFull, onShell}: {name: string; onFull: () => v
 			<div style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
 				<button type="button" className="btn small" onClick={onFull}>
 					<Icon name="fullscreen" size={15} /> Full screen
-				</button>
-				<button type="button" className="btn small" onClick={onShell}>
-					<Icon name="terminal" size={15} /> Root shell
 				</button>
 			</div>
 		</div>
@@ -711,10 +769,11 @@ function NotesAndTags({c, busy, run}: {c: Container; busy: boolean; run: (path: 
 	)
 }
 
-export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'LXC containers'}: {c: Container; all: Container[]; onBack: () => void; onOpen: (name: string) => void; backLabel?: string}) {
+export function ContainerDetail({c, all, onBack, onOpen}: {c: Container; all: Container[]; onBack: () => void; onOpen: (name: string) => void}) {
 	const action = useContainerAction()
 	const confirm = useConfirm()
-	const [term, setTerm] = useState<null | 'console' | 'shell'>(null)
+	const [term, setTerm] = useState<null | 'console'>(null)
+	const [tab, setTab] = useState('summary')
 	const [pw, setPw] = useState('')
 	const [snap, setSnap] = useState('')
 	const [port, setPort] = useState({host: '', inner: '', protocol: 'tcp' as 'tcp' | 'udp'})
@@ -729,7 +788,7 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'LXC contai
 	const terminal = term ? (
 		<Suspense fallback={null}>
 			{/* The console starts at the container's login prompt; Enter brings the prompt up. */}
-			<TerminalScreen container={{name: c.name, mode: term}} overSheet input={term === 'console' ? '\r' : undefined} onClose={() => setTerm(null)} />
+			<TerminalScreen container={{name: c.name, mode: 'console'}} overSheet input={'\r'} onClose={() => setTerm(null)} />
 		</Suspense>
 	) : null
 
@@ -750,30 +809,23 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'LXC contai
 	return (
 		<div className="ct-col" style={{display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12, minWidth: 0}}>
 			{terminal}
-			<div style={{display: 'flex', alignItems: 'center', gap: 10}}>
-				<button type="button" className="btn small" onClick={onBack}>
-					<Icon name={backLabel === 'Close' ? 'close' : 'back'} size={15} /> {backLabel}
-				</button>
-			</div>
-			<div style={{display: 'flex', alignItems: 'center', gap: 12}}>
-				<span style={{width: 52, height: 52, borderRadius: 16, background: osColor(c.os), color: '#fff', display: 'grid', placeItems: 'center'} as CSSProperties}>
-					<Icon name="category" size={26} />
-				</span>
-				<div style={{display: 'grid', gap: 4, minWidth: 0}}>
-					<b style={{fontSize: 18}}>
-						{c.name} {c.protected && <Icon name="shield" size={14} />}
-					</b>
+			{/* The same header as a virtual machine's page. */}
+			<SheetHeader
+				icon={
+					<span className="vm-os" style={{width: 64, height: 64, borderRadius: 19, background: osColor(c.os), color: '#fff'}}>
+						<Icon name="category" size={32} />
+					</span>
+				}
+				title={c.name}
+				subtitle={
 					<span style={{display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap'}}>
 						<StatusPill {...pill} />
-						<span className="muted">{osLabel(c) || (c.from ? `from ${c.from}` : '')}</span>
-						{c.tags.map((t) => (
-							<span key={t} className="pill" style={{'--c': 'var(--muted)'} as CSSProperties}>
-								{t}
-							</span>
-						))}
+						<span className="muted">LXC · {osLabel(c) || (c.from ? `from ${c.from}` : 'Linux')}</span>
+						{c.protected && <Icon name="shield" size={14} />}
 					</span>
-				</div>
-			</div>
+				}
+				onClose={onBack}
+			/>
 			{c.error && (
 				<div className="error" role="alert">
 					<Icon name="alert" size={18} />
@@ -822,21 +874,23 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'LXC contai
 						</button>
 					</div>
 
-					{c.status === 'running' && <EmbeddedConsole name={c.name} onFull={() => setTerm('console')} onShell={() => setTerm('shell')} />}
-					<Graphs c={c} />
-					<Group title="Signing in" footer="Console is the container’s own screen: its login prompt, like Proxmox’s console. Sign in as root with the password set here. Root shell opens straight into it without one. In the console, press Ctrl+A then Q to let go of it.">
-						<div style={{display: 'flex', flexWrap: 'wrap', gap: 8, padding: '10px 12px', alignItems: 'end'}}>
-							<div style={{flex: '1 1 160px', minWidth: 0}}>
-								<TextField id="ct-pw2" label="Root password" type="password" value={pw} onChange={setPw} placeholder="8 characters or more" />
-							</div>
-							<button type="button" className="btn small" disabled={busy || c.status !== 'running' || pw.length < 8} onClick={() => action.mutate({path: 'containers.setRootPassword', input: {name: c.name, password: pw}, done: 'Root password set'}, {onSuccess: () => setPw('')})}>
-								<Icon name="key" size={14} /> Set
-							</button>
+					{c.status === 'running' ? (
+						<EmbeddedConsole name={c.name} onFull={() => setTerm('console')} />
+					) : (
+						<div className="glass" style={{padding: 16, minWidth: 0}}>
+							<span className="quiet">Start {c.name} to see its console.</span>
 						</div>
-					</Group>
+					)}
+					<MachineTabs
+						label={`${c.name} sections`}
+						tab={tab}
+						onTab={setTab}
+						tabs={[
+							{id: 'summary', label: 'Summary', body: (<div className="ct-col" style={{display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12, minWidth: 0}}>
+								<Graphs c={c} />
 					<Resources key={`${c.cpus}-${c.memory}-${c.disk}-${c.cpuAllowance}-${c.cpuPriority}-${c.swap}`} c={c} busy={busy} run={run} />
-					<Boot key={`${c.bootOrder}-${c.bootDelay}`} c={c} busy={busy} run={run} />
-
+							</div>)},
+							{id: 'network', label: 'Network', body: (
 					<Group title="Open ports" footer="Opens a port on this server to your home network and passes it to the container. Only the ports listed here are reachable from outside the server.">
 						{c.ports.map((p) => (
 							<Row
@@ -872,6 +926,8 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'LXC contai
 						</div>
 					</Group>
 
+							)},
+							{id: 'snapshots', label: 'Snapshots', body: (
 					<Group title="Snapshots">
 						{c.snapshots.length === 0 && <p className="quiet" style={{padding: '4px 12px'}}>No snapshots yet.</p>}
 						{c.snapshots.map((s) => (
@@ -907,10 +963,26 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'LXC contai
 						</div>
 					</Group>
 
+							)},
+							{id: 'backup', label: 'Backup', body: (
 					<Backups c={c} busy={busy} all={all} />
+							)},
+							{id: 'files', label: 'Files', body: (
 					<Files c={c} />
+							)},
+							{id: 'options', label: 'Options', body: (<div className="ct-col" style={{display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12, minWidth: 0}}>
+					<Boot key={`${c.bootOrder}-${c.bootDelay}`} c={c} busy={busy} run={run} />
+					<Group title="Signing in" footer="The console is the container’s own screen, like Proxmox’s: sign in there as root with the password set here.">
+						<div style={{display: 'flex', flexWrap: 'wrap', gap: 8, padding: '10px 12px', alignItems: 'end'}}>
+							<div style={{flex: '1 1 160px', minWidth: 0}}>
+								<TextField id="ct-pw2" label="Root password" type="password" value={pw} onChange={setPw} placeholder="8 characters or more" />
+							</div>
+							<button type="button" className="btn small" disabled={busy || c.status !== 'running' || pw.length < 8} onClick={() => action.mutate({path: 'containers.setRootPassword', input: {name: c.name, password: pw}, done: 'Root password set'}, {onSuccess: () => setPw('')})}>
+								<Icon name="key" size={14} /> Set
+							</button>
+						</div>
+					</Group>
 					<NotesAndTags c={c} busy={busy} run={run} />
-
 					<Group title="Copies">
 						<Row icon="copy" label="Clone" sub="A new container that starts as an exact copy" disabled={busy} onClick={() => (setCopy('clone'), setCopyName(`${c.name}-2`))} />
 						<Row icon="save" label="Save as a template" sub="Appears under Your templates when you make a new container" disabled={busy} onClick={() => (setCopy('template'), setCopyName(c.name))} />
@@ -941,7 +1013,6 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'LXC contai
 					<Group title="Protection">
 						<SwitchRow label="Protect from deleting" sub="While on, this container can’t be deleted, here or with Incus." on={c.protected} disabled={busy} onChange={(on) => run('containers.setOptions', on ? `${c.name} is protected` : `${c.name} can be deleted again`, {protected: on})} />
 					</Group>
-
 					<button
 						className="btn danger block"
 						disabled={action.isPending || c.protected || !!c.job}
@@ -952,6 +1023,9 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'LXC contai
 					>
 						<Icon name="trash" size={18} /> {c.protected ? 'Protected from deleting' : 'Delete container'}
 					</button>
+							</div>)},
+						]}
+					/>
 				</>
 			)}
 		</div>

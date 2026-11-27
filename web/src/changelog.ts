@@ -4,6 +4,19 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.101',
+		date: '2026-11-27',
+		title: 'LXC containers work like virtual machines',
+		added: [
+			'An LXC container opens like a virtual machine: in Machines, open its row for a summary and power, then Manage opens its page with its console in it, like Proxmox, and its sections (Summary, Network, Snapshots, Backup, Files, Options) under it. Why: an LXC container is a guest like a VM, so it should look and work the same.',
+		],
+		fixed: [
+			'Sun, Moon, and Off are gone from the top bar again; Appearance in Settings is where you choose them. Horizon, Your photo, and Omarchy go back to their earlier sizes.',
+			'The Root shell button is gone from LXC containers: the console is the way in, as in Proxmox.',
+			'A container made from a template file gets its own name as its host name.',
+		],
+	},
+	{
 		version: '0.9.100',
 		date: '2026-11-27',
 		title: 'LXC containers, with their console in the page',
