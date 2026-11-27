@@ -70,7 +70,7 @@ function fakeIncus({list = [], images = [img('Debian', '12', 'debian/12')], fail
 		if (fail && fail(args)) throw Object.assign(new Error('Command failed'), {stderr: 'Error: Not allowed by project restrictions'})
 		if (args[0] === 'list') return JSON.stringify(list)
 		if (args[0] === 'image') return JSON.stringify(images)
-		if (args[0] === 'info') return JSON.stringify({environment: {server_version: '6.8', project: 'user-1000'}})
+		if (args[0] === 'query' && args[1] === '/1.0') return JSON.stringify({environment: {server_version: '6.8', project: 'user-1000'}})
 		return ''
 	}
 	return {run, calls}
@@ -336,4 +336,13 @@ test('Machines → Add offers Container beside Machine and Virtual Machine, and 
 	for (const item of ['Machine', 'Virtual Machine', 'Container']) assert.match(menu, new RegExp(`>\\s*${item}\\s*<`), item)
 	const ui = await readFile(new URL('../web/src/containers/Containers.tsx', import.meta.url), 'utf8')
 	assert.match(ui, /export function NewContainerSheet[\s\S]*<SetUp [\s\S]*<CreateContainer /)
+})
+
+test('status asks Incus for /1.0 (incus info has no --format), and clearing the CPU cap unsets it', async () => {
+	const f = statefulIncus()
+	const p = createContainers({run: f.run}).procedures
+	await p['containers.status'].run()
+	assert.deepEqual(f.calls[0].args, ['query', '/1.0'])
+	await p['containers.setResources'].run({name: 'web', cpuAllowance: null})
+	assert.ok(f.calls.some((c) => c.args.join(' ') === 'config unset web limits.cpu.allowance'))
 })
