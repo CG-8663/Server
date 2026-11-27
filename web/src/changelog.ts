@@ -4,13 +4,24 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
-		version: '0.9.99',
-		date: '2026-11-26',
+		version: '0.9.100',
+		date: '2026-11-27',
 		title: 'LXC containers, with their console in the page',
 		added: [
 			'An LXC container’s console sits in its page, the way a virtual machine’s screen does, with Full screen and Root shell under it. Why: an LXC container is a guest like a VM, so its screen belongs with it rather than over everything.',
 		],
 		fixed: ['Containers are called LXC containers everywhere: on the server’s page, in Machines → Add, and in their own pages.'],
+	},
+	{
+		version: '0.9.99',
+		date: '2026-11-27',
+		title: 'Sun, Moon, and Off in the top bar',
+		added: [
+			'Sun, Moon, and Off sit in the desktop top bar and next to Settings on the phone. Sun and Moon use the palettes marked in Appearance. Off returns to Horizon, Your photo, and Omarchy.',
+		],
+		fixed: [
+			'Horizon, Your photo, and Omarchy are the same size.',
+		],
 	},
 	{
 		version: '0.9.98',
