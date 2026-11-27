@@ -129,10 +129,26 @@ export function Apps({onOpenApp, onStore}: {onOpenApp: (app: UserApp) => void; o
 			) : shown.length === 0 ? (
 				<div className="glass empty">
 					<span className="big">
-						<Icon name={q ? 'search' : 'check'} size={30} />
+						<Icon name={needle ? 'search' : filter === 'updates' ? 'check' : 'store'} size={30} />
 					</span>
-					<b>{needle ? 'No matches' : filter === 'updates' ? 'All up to date' : 'Nothing here'}</b>
+					<b>{needle ? 'No matches' : filter === 'updates' ? 'All up to date' : list.length === 0 ? 'No apps yet' : 'Nothing here'}</b>
 					{needle && <span>No apps match “{q.trim()}”.</span>}
+					{!needle && filter === 'all' && list.length === 0 && onStore && (
+						<>
+							<span>Find something to run on your machines.</span>
+							<button
+								type="button"
+								className="btn primary"
+								style={{marginTop: 12}}
+								onClick={() => {
+									haptic(6)
+									onStore()
+								}}
+							>
+								Find apps
+							</button>
+						</>
+					)}
 				</div>
 			) : (
 				<div className="glass group screen-list" style={{'--inset': '74px'} as CSSProperties}>
@@ -159,7 +175,7 @@ export function Apps({onOpenApp, onStore}: {onOpenApp: (app: UserApp) => void; o
 										<b>
 											{app.name ?? app.id}
 											{count && (
-												<span className="muted" style={{marginLeft: 6, fontSize: 12, fontWeight: 650}} aria-label={`On ${count} machines`}>
+												<span className="count-machines" style={{marginLeft: 6, fontSize: 12}} aria-label={`On ${count} machines`}>
 													{count}
 												</span>
 											)}

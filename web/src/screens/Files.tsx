@@ -24,6 +24,7 @@ import {
   diskAll,
 } from "../api";
 import { useBootstrap, useDisk, useMachines, useUser } from "../data";
+import { isOwner } from "../isOwner";
 import { ComputerFolder } from "../fleet/ComputerFolder";
 import { FittingCrumbs } from "../fleet/FittingCrumbs";
 import { computerPlacePath, filePlaces, filesParent, parseComputerPlace, parseGuestPlace, scopeRoot, SERVER_FILES, withinScope, type FilesScope } from "../fleet/filePlaces";
@@ -592,7 +593,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     path && (path === "/Home" || path === "/Trash" || path.startsWith("/Home/") || path.startsWith("/Trash/"))
       ? path
       : "/Home";
-  const owner = user.data != null && user.data.role !== "member";
+  const owner = isOwner(user.data);
   const recents = useQuery({
     queryKey: ["files.recents"],
     queryFn: () => query<FileEntry[]>("files.recents"),

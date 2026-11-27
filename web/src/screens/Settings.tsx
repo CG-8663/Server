@@ -6,6 +6,7 @@ import {mutate, query, type ActiveSession, type AssistantApi, type AssistantChec
 import {patchDeskConfig} from '../desktop/config'
 import {useBootstrap, useUser} from '../data'
 import {checkLiveText} from '../focus'
+import {isOwner} from '../isOwner'
 import {Icon, type IconName} from '../icons'
 import {Card, Field, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, useConfirm, useToast, type Prefs} from '../ui'
 import {agoText} from '../plural'
@@ -85,7 +86,20 @@ function describeSession(s: ActiveSession) {
 
 type SheetId = null | 'name' | 'password' | '2fa' | 'oidc'
 
-export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; setPrefs: (p: Prefs) => void; onBack: () => void; onSignedOut: () => void}) {
+export function Settings({
+	prefs,
+	setPrefs,
+	onBack,
+	onSignedOut,
+	onOpenAppearance,
+}: {
+	prefs: Prefs
+	setPrefs: (p: Prefs) => void
+	onBack: () => void
+	onSignedOut: () => void
+	/** Desktop: open Appearance in its own window instead of nesting it in Settings. */
+	onOpenAppearance?: () => void
+}) {
 	const boot = useBootstrap()
 	const user = useUser()
 	const confirm = useConfirm()
@@ -105,7 +119,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 		scrollPhoneToTop()
 	}
 	const close = () => setSheet(null)
-	const owner = user.data?.role !== 'member'
+	const owner = isOwner(user.data)
 
 	const twoFactor = useQ<boolean>('user.is2faEnabled')
 	const oidc = useQ<{clientCount: number}>('oidc.status', undefined, {enabled: owner})
@@ -238,7 +252,19 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 			<div>
 				<div className="section-head" style={{marginTop: 18}} />
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
-					<Row icon="palette" color="var(--pink, #ec4899)" label="Appearance" onClick={() => openPage('appearance')} />
+					<Row
+						icon="palette"
+						color="var(--pink, #ec4899)"
+						label="Appearance"
+						onClick={() => {
+							// Desktop: open Appearance as its own window so Settings stays and the gear can refocus it.
+							if (onOpenAppearance) {
+								onOpenAppearance()
+								return
+							}
+							openPage('appearance')
+						}}
+					/>
 					<Row icon="info" color="var(--blue)" label="Restore tutorials" sub="Show the notes you have dismissed" onClick={() => setPrefs({...prefs, dismissedTutorials: []})} />
 					{owner && <Row icon="disk" color="var(--teal)" label="Storage" sub="Drives, pools, drive health and sleep" onClick={() => openPage('storage')} />}
 					{owner && <Row icon="move" color="var(--orange, #f59e0b)" label="Move from Unraid" onClick={() => openPage('unraid')} />}
@@ -761,7 +787,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 	const user = useUser()
 	const confirm = useConfirm()
 	const save = useSave()
-	const owner = user.data?.role !== 'member'
+	const owner = isOwner(user.data)
 	const self = user.data?.userId
 	const keys = useQ<AssistantKey[]>('assistant.keys')
 	const [add, setAdd] = useState(false)
@@ -919,8 +945,8 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 
 			<AssistantAppearanceSettings />
 
-			<AddKeySheet open={add} owner={user.data?.role === 'owner'} onClose={() => setAdd(false)} />
-			<EditKeySheet open={!!edit} keyRow={edit} owner={user.data?.role === 'owner'} onClose={() => setEdit(null)} />
+			<AddKeySheet open={add} owner={isOwner(user.data)} onClose={() => setAdd(false)} />
+			<EditKeySheet open={!!edit} keyRow={edit} owner={isOwner(user.data)} onClose={() => setEdit(null)} />
 			{signIn && <ChatGptSignInSheet keyId={signIn.keyId} onClose={() => setSignIn(null)} />}
 			{modelFor && <ChatGptModelSheet keyRow={modelFor} onClose={() => setModelFor(null)} />}
 			<ShareKeySheet open={!!share} keyRow={share} accounts={boot.accounts} self={self} onClose={() => setShare(null)} />

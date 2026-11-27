@@ -2,6 +2,7 @@ import {useState, type FormEvent} from 'react'
 
 import {ApiError, login, setup, type Bootstrap} from '../api'
 import {connectSubmitMode} from '../connection'
+import {entrypointHost} from '../entrypointHost'
 import {CREATE_OWNER_COMMAND, needsFirstAccount} from './firstAccount'
 import {Icon} from '../icons'
 import {Field, VersionTag, haptic} from '../ui'
@@ -200,7 +201,7 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 				<div style={{flex: 1, minWidth: 0}}>
 					<div style={{fontWeight: 600, fontSize: 14}}>{boot.server?.device ?? 'server'}</div>
 					<div className="muted" style={{fontSize: 12.5, marginTop: 2}}>
-						{boot.server?.host} ·{' '}
+						{entrypointHost(boot.server)} ·{' '}
 						<VersionTag
 							version={boot.server?.name ?? (boot.server?.version ? `MODC ${boot.server.version}` : undefined)}
 							info={boot.server}

@@ -12,7 +12,7 @@ import {isClipTarget, markClipTarget, unmarkClipTarget} from './clipPasteTarget'
 import {BootstrapContext} from './data'
 import {Icon} from './icons'
 import {overlayBackUsesHistory, popstateClosesOverlay} from './overlayHistory'
-import {terminalCloseOutcome} from './terminalClose'
+import {terminalCloseOutcome, terminalStatusLabel} from './terminalClose'
 import {forwardTerminalInput, ignoreOpeningFocus} from './terminalInput'
 import {isTerminalReply, pasteInto, terminalPasteDecision} from './terminalPaste'
 import {SEQ, applyTerminalModifiers} from './terminalKeys'
@@ -667,6 +667,9 @@ export function TerminalScreen({
 		window.setTimeout(() => termRef.current?.focus(), 50)
 	}
 	const live = state === 'connected'
+	const status = terminalStatusLabel(state, {attempt})
+	const where =
+		app ? ' · App shell' : agent ? ' · Shell through its connector' : container ? (container.mode === 'console' ? ' · Container login' : ' · Root shell') : ''
 	// End the shell that's running (and whatever is running in it) and start a new one.
 	const newSession = async () => {
 		haptic(6)
@@ -720,7 +723,7 @@ export function TerminalScreen({
 					<b>{title}</b>
 					<span>
 						<i className={`dot ${live ? 'live' : state === 'connecting' ? '' : 'down'}`} />
-						{live ? `On ${machineName}${app ? ' · App shell' : agent ? ' · Shell through its connector' : container ? (container.mode === 'console' ? ' · Console' : ' · Root shell') : ''}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? `On ${machineName} · Connecting…` : `On ${machineName} · Disconnected`}
+						{live ? `${status}${where}${resumed ? ' · resumed' : ''} · ${machineName}` : `${status} · ${machineName}`}
 					</span>
 				</div>
 				<button className="round-btn" aria-label="New session" title="New session" onClick={newSession} disabled={!live}>
@@ -742,14 +745,24 @@ export function TerminalScreen({
 				}}
 			>
 				<div ref={host} className="term-host" />
-				{state !== 'connected' && state !== 'connecting' && (
+				{state !== 'connected' && (
 					<div className="console-overlay">
-						<Icon name={state === 'closed' ? 'logs' : state === 'lost' ? 'wifi' : 'alert'} size={34} />
-						<b>{state === 'closed' ? 'Session ended' : state === 'lost' ? 'Disconnected' : 'Terminal unavailable'}</b>
-						<span>{message}</span>
-						<button className="btn primary small" onClick={() => setAttempt((a) => a + 1)}>
-							{state === 'closed' ? 'New session' : state === 'lost' ? 'Reconnect' : 'Try again'}
-						</button>
+						{state === 'connecting' ? (
+							<>
+								<span className="spinner" />
+								<b>{status}</b>
+								<span>Opening a shell on {machineName}…</span>
+							</>
+						) : (
+							<>
+								<Icon name={state === 'closed' ? 'logs' : state === 'lost' ? 'wifi' : 'alert'} size={34} />
+								<b>{status}</b>
+								<span>{message}</span>
+								<button className="btn primary small" onClick={() => setAttempt((a) => a + 1)}>
+									{state === 'closed' ? 'New session' : state === 'lost' ? 'Reconnect' : 'Try again'}
+								</button>
+							</>
+						)}
 					</div>
 				)}
 			</div>

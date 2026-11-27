@@ -6,6 +6,7 @@ import {useState} from 'react'
 import {mutate, query} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useUser} from '../data'
+import {isOwner} from '../isOwner'
 import {CategoryChips} from '../CategoryChips'
 import {Icon} from '../icons'
 import {haptic, useConfirm, useToast} from '../ui'
@@ -33,7 +34,7 @@ export function PluginBrowser({q}: {q: string}) {
 	const qc = useQueryClient()
 	const toast = useToast()
 	const confirm = useConfirm()
-	const owner = useUser().data?.role !== 'member'
+	const owner = isOwner(useUser().data)
 	const [category, setCategory] = useState('')
 	const [sort, setSort] = useState<'stars' | 'new'>('stars')
 	const filterKey = `${q}\0${category}\0${sort}`

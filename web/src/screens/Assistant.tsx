@@ -8,6 +8,7 @@ import {installNeedsReview, type ReviewInstallInput} from '../installReview'
 import {cardAction, markReopenAssistant, streamAssistant, threadItems, type AssistantConversation, type AssistantConversationSummary, type AssistantItem, type AssistantStreamBody} from '../assistant'
 import {useUser} from '../data'
 import {Icon} from '../icons'
+import {isOwner} from '../isOwner'
 import {AppIcon, Sheet, SheetHeader} from '../ui'
 import {useDesktop} from '../desktop/Desktop'
 import {setAssistantActivity, useAssistantAnimationState} from '../assistantActivity'
@@ -217,7 +218,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 	const focused = useRef(false)
 	const user = useUser()
 	const qc = useQueryClient()
-	const member = user.data?.role === 'member'
+	const member = !isOwner(user.data)
 	const keys = useQuery({queryKey: ['assistant.keys', undefined], queryFn: () => query<AssistantKey[]>('assistant.keys'), retry: false, staleTime: 15_000})
 	const hasKeys = (keys.data?.length ?? 0) > 0
 	const convs = useQuery({

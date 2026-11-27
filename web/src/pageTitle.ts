@@ -10,7 +10,7 @@ const SCREEN_NAMES: Record<string, string> = {
 	more: 'System',
 	settings: 'Settings',
 	store: 'App Store',
-	clips: 'Clips',
+	clips: 'Clip book',
 }
 
 /** "Files - My Own Data Center" for a known screen, and the plain app name for anything else. */

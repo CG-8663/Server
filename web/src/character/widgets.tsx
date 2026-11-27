@@ -32,6 +32,8 @@ export function usePauseWhenHidden() {
 type Kind = 'phone' | 'desktop'
 const layoutKind = (): Kind => (document.documentElement.classList.contains('desk-mode') ? 'desktop' : 'phone')
 const EDGE = 8
+// Keep Open/Get and other row trailing actions tappable: the default spot stays clear of that column.
+const ACTION_SAFE = 76
 // The area it may sit in: the whole screen, minus the phone's dock (and a little room at the edges).
 function area(kind: Kind, size: number) {
 	const vw = window.innerWidth
@@ -39,15 +41,17 @@ function area(kind: Kind, size: number) {
 	const dock = kind === 'phone' ? document.querySelector('nav.dock')?.getBoundingClientRect() : null
 	const top = kind === 'desktop' ? 40 : EDGE + 4
 	const bottom = (dock && dock.top > vh / 2 ? dock.top : vh) - EDGE
-	return {minX: EDGE, maxX: Math.max(EDGE, vw - size - EDGE), minY: top, maxY: Math.max(top, bottom - size), vw, vh}
+	const end = EDGE + (kind === 'phone' ? ACTION_SAFE : 0)
+	return {minX: EDGE, maxX: Math.max(EDGE, vw - size - end), minY: top, maxY: Math.max(top, bottom - size), vw, vh}
 }
 // Its corner when you haven't moved it: bottom right, above the dock (and above a page's own button).
+// area() already keeps maxX clear of the Open/Get column on phone.
 function homeSpot(kind: Kind, size: number) {
 	const a = area(kind, size)
 	if (kind === 'desktop') return {x: a.maxX - 14, y: a.maxY - 88}
 	const right = Math.max(16, a.vw / 2 - 240 + 6)
 	const busy = document.querySelector('.fab, .select-bar, .upload-panel') ? 70 : 0
-	return {x: a.vw - size - right, y: a.maxY - 14 - busy}
+	return {x: Math.min(a.maxX, a.vw - size - right), y: a.maxY - 14 - busy}
 }
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 

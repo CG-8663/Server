@@ -12,6 +12,8 @@ import {OPEN_FLEET} from './fleet/openMember'
 import {OPEN_STORE, type StoreBinding} from './fleet/openStore'
 import {BootstrapContext, useAction, useApps, useNotifications, useUpdates, useUser} from './data'
 import {Icon, type IconName} from './icons'
+import {entrypointHost} from './entrypointHost'
+import {isOwner} from './isOwner'
 import {APP_TITLE, pageTitle} from './pageTitle'
 import {Apps} from './screens/Apps'
 import {Connect, Login} from './screens/Auth'
@@ -20,6 +22,7 @@ import {Desktop} from './desktop/Desktop'
 import {resetDeskConfig} from './desktop/config'
 import {OPEN_SETTINGS} from './desktop/settingsPage'
 import {safeSession} from './safeStorage'
+import {phoneSettingsGearAction} from './settingsChrome'
 import {ScreenErrorBoundary} from './screenBoundary'
 import {inAppBackTarget, markInAppHistory, readInAppHistoryFlag} from './inAppHistory'
 import {ThemeModeButton} from './theme/ThemeModeButton'
@@ -60,13 +63,9 @@ const TABS: {id: Tab; label: string; icon: IconName; active: IconName; tone: str
 	{id: 'machines', label: 'Machines', icon: 'machine', active: 'machine-filled', tone: 'var(--teal)'},
 	{id: 'more', label: 'System', icon: 'activity', active: 'activity-filled', tone: 'var(--peach)'},
 ]
-const TERMINALS_TAB: (typeof TABS)[number] = {id: 'terminals', label: 'Terminals', icon: 'terminal', active: 'terminal', tone: 'var(--green)'}
-function dockTabs(owner: boolean) {
-	if (!owner) return TABS
-	const next = [...TABS]
-	const at = next.findIndex((t) => t.id === 'more')
-	next.splice(at < 0 ? next.length : at, 0, TERMINALS_TAB)
-	return next
+function dockTabs(_owner: boolean) {
+	// Phone dock stays Home / Apps / Files / Machines / System. Terminals stays on #/terminals and System for owners; desktop may still pin it.
+	return TABS
 }
 const tabFromHash = (allowTerminals: boolean): Tab => {
 	const h = location.hash.replace('#/', '') as Tab
@@ -181,20 +180,24 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 		return () => window.removeEventListener(VIEW_APP, onView)
 	}, [])
 	const [bellOpen, setBellOpen] = useState(false)
+	// Remount Settings when the chrome gear resets a nested page to main.
+	const [settingsEpoch, setSettingsEpoch] = useState(0)
 	const [terminal, setTerminal] = useState<{app?: {id: string; name?: string; icon?: string}; input?: string} | null>(null)
 	const [assistantOpen, setAssistantOpen] = useState(() => !!reopenAssistant)
 	const turn = useAssistantTurn()
 	const keepAssistant = assistantOpen || turn.streaming
 	const user = useUser()
 	// Every terminal socket is owner-only. Hide the tab until that is known.
-	const owner = user.data?.role === 'owner'
+	const owner = isOwner(user.data)
 	const tabs = dockTabs(owner)
 	// omarchyd only gives the owner a shell.
-	const openTerminal = user.data?.role === 'member' ? undefined : (app?: {id: string; name?: string; icon?: string}, input?: string) => {
-		haptic(8)
-		setAppId(null)
-		setTerminal({app, input})
-	}
+	const openTerminal = !owner
+		? undefined
+		: (app?: {id: string; name?: string; icon?: string}, input?: string) => {
+				haptic(8)
+				setAppId(null)
+				setTerminal({app, input})
+			}
 	// "Open Terminal" buttons elsewhere (e.g. a one-time fix for network shares).
 	useEffect(() => {
 		const onOpen = (e: Event) => openTerminal?.(undefined, (e as CustomEvent<string>).detail)
@@ -242,10 +245,17 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	}, [])
 	useEffect(() => {
 		const onOpen = (e: Event) => {
-			safeSession.set('omarchy-server:settings-page', String((e as CustomEvent<string>).detail || 'main'))
-			setTab('settings')
-			markInAppHistory((key, value) => sessionStorage.setItem(key, value))
-			history.pushState(null, '', '#/settings')
+			const page = String((e as CustomEvent<string>).detail || 'main')
+			if (page === 'main') safeSession.remove('omarchy-server:settings-page')
+			else safeSession.set('omarchy-server:settings-page', page)
+			setTab((cur) => {
+				if (cur === 'settings') setSettingsEpoch((n) => n + 1)
+				else {
+					markInAppHistory((key, value) => sessionStorage.setItem(key, value))
+					history.pushState(null, '', '#/settings')
+				}
+				return 'settings'
+			})
 			scrollPhoneToTop()
 		}
 		window.addEventListener(OPEN_SETTINGS, onOpen)
@@ -274,6 +284,17 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 			scrollPhoneToTop()
 		}
 	}
+	// Chrome gear: open Settings from elsewhere; if already in Settings (including Appearance), return to main.
+	const openSettingsFromChrome = () => {
+		if (phoneSettingsGearAction(tab) === 'reset-main') {
+			haptic(5)
+			safeSession.remove('omarchy-server:settings-page')
+			setSettingsEpoch((n) => n + 1)
+			scrollPhoneToTop()
+			return
+		}
+		go('settings')
+	}
 	// A direct open of #/settings (or store, or clips) has no in-app entry to pop.
 	const backInApp = () => {
 		const flag = readInAppHistoryFlag((key) => sessionStorage.getItem(key))
@@ -297,13 +318,13 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 					<span className="device">
 						<span className={`dot ${online ? 'live' : 'down'}`} />
 						{boot.server?.device ?? 'server'}
-						<span className="mono">{boot.server?.host}</span>
+						<span className="mono">{entrypointHost(boot.server)}</span>
 					</span>
 					<span className="spacer-x" />
 					<button
 						className="round-btn"
 						aria-label="Settings"
-						onClick={() => go('settings')}
+						onClick={openSettingsFromChrome}
 					>
 						<Icon name="settings" size={20} />
 					</button>
@@ -347,9 +368,9 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						{tab === 'store' && <Store bound={storeBound} onOpenInstalled={(a) => setAppId(a.id)} onBack={backInApp} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
 						{tab === 'machines' && <Machines prefs={prefs} setPrefs={setPrefs} onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} />}
 						{tab === 'terminals' && owner && <Terminals />}
-						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} onClips={() => go('clips')} />}
+						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} onClips={() => go('clips')} onTerminals={owner ? () => go('terminals') : undefined} />}
 						{tab === 'clips' && <Clips onBack={backInApp} />}
-						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={backInApp} />}
+						{tab === 'settings' && <Settings key={settingsEpoch} prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={backInApp} />}
 					</main>
 				</Suspense>
 				</ScreenErrorBoundary>
@@ -364,7 +385,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 					}} style={{'--tone': t.tone} as CSSProperties}>
 						<Icon name={tab === t.id ? t.active : t.icon} size={23} stroke={tab === t.id ? 2 : 1.75} />
 						{t.label}
-						{t.id === 'apps' && updateCount > 0 && <span className="count">{updateCount}</span>}
+						{t.id === 'apps' && updateCount > 0 && <span className="badge-update" aria-label={plural(updateCount, 'update')}>{updateCount}</span>}
 					</button>
 				))}
 			</nav>

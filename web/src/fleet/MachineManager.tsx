@@ -651,7 +651,7 @@ export function MachineManager({
 			<button
 				type="button"
 				className="btn primary small mm-add-btn"
-				aria-label={owner ? 'Add a machine' : 'New virtual machine'}
+				aria-label={owner ? 'Add a computer, virtual machine, or container' : 'Create a virtual machine'}
 				aria-haspopup={owner ? 'menu' : undefined}
 				aria-expanded={owner ? addOpen : undefined}
 				onClick={() => {
@@ -672,7 +672,7 @@ export function MachineManager({
 							onAddComputer()
 						}}
 					>
-						Machine
+						Add a computer
 					</button>
 					<button
 						type="button"
@@ -682,7 +682,7 @@ export function MachineManager({
 							onCreateVm()
 						}}
 					>
-						Virtual Machine
+						Create a virtual machine
 					</button>
 					<button
 						type="button"
@@ -692,7 +692,7 @@ export function MachineManager({
 							setNewContainer(true)
 						}}
 					>
-						LXC container
+						Add a container
 					</button>
 				</div>
 			)}

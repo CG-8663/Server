@@ -6,6 +6,7 @@ import {lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties
 
 import {mutate, query, type Machine, type UserApp} from '../api'
 import {useUser} from '../data'
+import {isOwner} from '../isOwner'
 import {ClipBook} from '../clips/ClipBook'
 import {computerHere} from '../clips/view'
 import {hostedVms} from '../fleet/hostedVms'
@@ -482,7 +483,7 @@ function AgentSheet({
 	const act = useSwarmAction()
 	const confirm = useConfirm()
 	const user = useUser()
-	const owner = user.data?.role === 'owner'
+	const owner = isOwner(user.data)
 	const [name, setName] = useState(a.name)
 	const [backups, setBackups] = useState(false)
 	const [storage, setStorage] = useState(false)
@@ -1034,6 +1035,9 @@ export function AddComputer({before, onClose, onJoined, guest}: {before: string[
 						)}
 						<li>
 							<b>Paste this and press Enter</b>
+							<p className="muted" style={{fontSize: 13, margin: '8px 0 10px', lineHeight: 1.45}}>
+								It checks this server’s fingerprint before it pairs. The one-time code lasts about 15 minutes and works once. It can only do what you granted above. Fetching the installer may skip the TLS check; the installer then verifies the fingerprint before it trusts anything else.
+							</p>
 							<code className="swarm-cmd mono">{left ? command : 'This command has expired.'}</code>
 							{left ? (
 								<span style={{display: 'flex', alignItems: 'center', gap: 10, marginTop: 8}}>
@@ -1223,7 +1227,7 @@ function AgentServices({a, onClose}: {a: Agent; onClose: () => void}) {
 							sub={`${c.image}${c.status ? ` · ${c.status}` : ''}`}
 							trailing={
 								<span style={{display: 'flex', gap: 6, alignItems: 'center'}}>
-									<StatusPill kind={c.state === 'running' ? 'running' : 'stopped'} label={c.state || 'stopped'} />
+									<StatusPill kind={c.state === 'running' ? 'running' : 'stopped'} label={c.state === 'running' ? 'Running' : 'Stopped'} />
 									<button type="button" className="btn small" disabled={ctrl.isPending} onClick={() => ctrl.mutate({kind: 'container', name: c.name, action: c.state === 'running' ? 'restart' : 'start'})}>
 										{c.state === 'running' ? 'Restart' : 'Start'}
 									</button>

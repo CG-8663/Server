@@ -372,6 +372,8 @@ export type RegistryApp = {
 	releaseNotes?: string
 	installSize?: number
 	oidc?: {supported: boolean; mode: 'auto' | 'assisted'; note?: string}
+	/** Extra access ids from the listing or compose (detail fetch). Empty/absent on the compact list. */
+	permissions?: string[]
 }
 export type Registry = {url?: string; meta: {id: string; name: string}; apps: RegistryApp[]}[]
 

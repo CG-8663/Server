@@ -13,6 +13,8 @@ import {AppSheet} from '../AppSheet'
 import {askApp, explainProbe} from '../openApp'
 import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory, useNotifications, useUpdates, useUser} from '../data'
 import {useServerReachable} from '../connection'
+import {entrypointHost} from '../entrypointHost'
+import {isOwner} from '../isOwner'
 import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
 import {OPEN_STORE, type StoreBinding} from '../fleet/openStore'
@@ -212,8 +214,7 @@ export function useItems() {
 	const apps = useApps()
 	const machines = useMachines()
 	const user = useUser()
-	const owner = user.data?.role !== 'member'
-	const strictOwner = user.data?.role === 'owner'
+	const owner = isOwner(user.data)
 	const canRail = owner && supportsWebCodecs()
 	const hyprStatus = useQuery({
 		queryKey: ['hyprland.status'],
@@ -244,7 +245,7 @@ export function useItems() {
 	const railWindows = useMemo(() => railWinsQ.data ?? [], [railWinsQ.data])
 	const info = useCallback(
 		(key: string): ItemInfo => {
-			if (isSys(key)) return {key, label: SYS[key].title, icon: (s) => <SysIcon kind={key} size={s} />, missing: (key === 'terminal' && !owner) || (key === 'terminals' && !strictOwner)}
+			if (isSys(key)) return {key, label: SYS[key].title, icon: (s) => <SysIcon kind={key} size={s} />, missing: (key === 'terminal' || key === 'terminals') && !owner}
 			if (key.startsWith('app:')) {
 				const a = appList.find((x) => x.id === key.slice(4))
 				const up = !!a && (a.state === 'ready' || a.state === 'running')
@@ -296,9 +297,9 @@ export function useItems() {
 			}
 			return {key, label: key, icon: (s) => <SysIcon kind="window" size={s} />, missing: true}
 		},
-		[appList, machineList, railApps, railWindows, owner, strictOwner, apps.isSuccess, machines.isSuccess, railAppsQ.isSuccess],
+		[appList, machineList, railApps, railWindows, owner, apps.isSuccess, machines.isSuccess, railAppsQ.isSuccess],
 	)
-	return {info, appList, machineList, railApps, railWindows, railReady, owner, strictOwner}
+	return {info, appList, machineList, railApps, railWindows, railReady, owner}
 }
 
 // ---- can an app be shown inside a window? --------------------------------------------------------
@@ -395,7 +396,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	useViewport()
 	const user = useUser()
 	const [cfg, setCfg] = useDeskConfig()
-	const {info, appList, machineList, railApps, railWindows, railReady, owner, strictOwner} = useItems()
+	const {info, appList, machineList, railApps, railWindows, railReady, owner} = useItems()
 	const [wins, setWins] = useState<Win[]>(() => restoreWindows<Win>(load<unknown>(STORE_KEY, [])))
 	const [overview, setOverview] = useState<null | 'windows' | 'apps'>(null)
 	const [topMenu, setTopMenu] = useState<null | 'clock' | 'system'>(null)
@@ -1060,7 +1061,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	// -- dock --
 	const pinned = cfg.dock.items.filter((k) => !info(k).missing)
 	const runningKeys = [...new Set(wins.map(itemOfWin))]
-	const dockKeys = withTerminals([...pinned, ...(cfg.dock.showRunning ? runningKeys.filter((k) => !pinned.includes(k)) : [])], strictOwner)
+	const dockKeys = withTerminals([...pinned, ...(cfg.dock.showRunning ? runningKeys.filter((k) => !pinned.includes(k)) : [])], owner)
 	const winsOf = (key: string) => wins.filter((w) => itemOfWin(w) === key)
 	const dockClick = (key: string) => {
 		setMenu(null)
@@ -1255,13 +1256,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			})
 			return {...c, icons: sorted.map((i, n) => ({...i, col: Math.floor(n / rows), row: n % rows}))}
 		})
+	// Appearance is its own window on the desktop so Settings can be focused without closing it.
 	const openAppearance = (tab?: string) => {
 		try {
 			if (tab) rememberAppearanceFocus(sessionStorage, tab)
 		} catch {
 			/* private */
 		}
-		open('settings', {page: 'appearance'})
+		open('personalize', tab ? {tab} : undefined)
 	}
 	const desktopMenu = (x: number, y: number, opener?: HTMLElement | null) =>
 		setMenu({
@@ -1343,7 +1345,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			} catch {
 				/* private */
 			}
-			open('settings', {page: 'appearance'})
+			open('personalize')
 		}
 	}, [open])
 	useEffect(() => {
@@ -1678,7 +1680,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						railWindows={railWindows}
 						railReady={railReady}
 						owner={owner}
-						showTerminals={strictOwner}
+						showTerminals={owner}
 						hasWindows={visible.length > 0}
 						windows={overviewWindows}
 						onPickWindow={(id) => {
@@ -2524,7 +2526,7 @@ function TopBar(p: {
 						<span className={`dot ${online ? 'live' : 'down'}`} />
 						<span>
 							<b>{p.boot.server?.device ?? 'server'}</b>
-							<span className="mono muted">{p.boot.server?.host}</span>
+							<span className="mono muted">{entrypointHost(p.boot.server)}</span>
 							<span className="muted">
 								<VersionTag prefix="MODC " version={p.boot.touch.version} info={p.boot.server} />
 							</span>
@@ -3603,7 +3605,16 @@ const WindowContent = memo(
 				case 'system':
 					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} onClips={() => desk.open('clips')} />
 				case 'settings':
-					return <Settings key={settingsRemountKey(win.payload)} prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={close} />
+					return (
+						<Settings
+							key={settingsRemountKey(win.payload)}
+							prefs={prefs}
+							setPrefs={setPrefs}
+							onSignedOut={onSignedOut}
+							onBack={close}
+							onOpenAppearance={() => desk.open('personalize')}
+						/>
+					)
 				case 'personalize':
 					return <Personalize tab={win.payload?.tab} prefs={prefs} setPrefs={setPrefs} onOpenThemes={() => desk.open('settings', {page: 'omarchy-themes'})} />
 				case 'assistant':

@@ -7,6 +7,7 @@ import {query, type Machine} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useBootstrap, useMachines, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
+import {isOwner} from '../isOwner'
 import {guestAgent, isGuestAgent} from '../swarm/guestLink'
 import {swarmGaugeItems, type SwarmMetrics} from '../swarm/gauges'
 import {agentMay, useSwarm, type Agent} from '../swarm/Swarm'
@@ -70,7 +71,7 @@ export function Terminals() {
 	const browserOnline = useBrowserOnline()
 	const problem = queryProblem(machines, browserOnline)
 	const swarmProblem = queryProblem(swarm, browserOnline)
-	const serverShell = useUser().data?.role === 'owner'
+	const serverShell = isOwner(useUser().data)
 	const serverName = boot.server?.device || 'This server'
 	const list = machines.data ?? []
 	const agents = swarm.data ?? []

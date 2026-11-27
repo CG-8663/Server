@@ -4,6 +4,7 @@ import {useQuery} from '@tanstack/react-query'
 import {query, type UsbList} from './api'
 import {useAction, useUser} from './data'
 import {Icon} from './icons'
+import {isOwner} from './isOwner'
 import {errorText} from './queryNotice'
 import {haptic, useToast} from './ui'
 import {showUnplugged} from './usbPresent'
@@ -11,7 +12,7 @@ import {showUnplugged} from './usbPresent'
 export function DevicesPanel({guest}: {guest: {kind: 'machine' | 'app'; id: string; name: string}}) {
 	const action = useAction()
 	const toast = useToast()
-	const owner = useUser().data?.role !== 'member'
+	const owner = isOwner(useUser().data)
 	const list = useQuery({queryKey: ['usb.list'], queryFn: () => query<UsbList>('usb.list'), refetchInterval: 5000})
 	const installer = useQuery({queryKey: ['system.installerStatus'], queryFn: () => query<{needed: boolean}>('system.installerStatus'), staleTime: 60_000, retry: false})
 	const devices = list.data?.devices ?? []
