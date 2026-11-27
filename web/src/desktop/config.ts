@@ -44,6 +44,15 @@ export type DeskConfig = {
 const PREVIOUS_SYSTEM_DOCK = ['files', 'apps', 'store', 'terminal', 'machines', 'system', 'settings'] as const
 export const SYSTEM_DOCK = ['home', ...PREVIOUS_SYSTEM_DOCK] as const
 
+/** Terminals sits after Machines on the phone dock and in a desktop window. It is not part of the saved default dock. */
+export function withTerminals(keys: readonly string[], show: boolean): string[] {
+	if (!show || keys.includes('terminals')) return [...keys]
+	const next = [...keys]
+	const at = next.indexOf('machines')
+	next.splice(at < 0 ? next.length : at + 1, 0, 'terminals')
+	return next
+}
+
 const KEY = 'omarchy-server:desktop-config'
 export const DEFAULT_CONFIG: DeskConfig = {
 	v: 1,

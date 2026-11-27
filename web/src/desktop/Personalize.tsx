@@ -9,7 +9,7 @@ import {applyPrefsUpdate, prefsAfterPhotoUpload} from '../photoPrefs'
 import {Appearance} from '../screens/More'
 import {Row, Segmented, Sheet, SheetHeader, SolidColors, Switch, customBackgroundUrl, haptic, preparePhoto, setLayoutPref, useLayout, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {takeAppearanceFocus} from './settingsPage'
-import {solidOf, SYSTEM_DOCK, useDeskConfig, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
+import {solidOf, SYSTEM_DOCK, useDeskConfig, withTerminals, type DeskConfig, type DeskShell, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
 import {DesktopStyleCards, ScreenLayoutCards} from '../LayoutPicker'
 import {CAPTURE_KEY, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
 import {SnippetBlock} from './hyprland/Snippet'
@@ -279,7 +279,7 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 }
 
 function DockSettings({cfg, setCfg}: P) {
-	const {info, appList, machineList, owner} = useItems()
+	const {info, appList, machineList, owner, strictOwner} = useItems()
 	const d = cfg.dock
 	const set = (patch: Partial<DeskConfig['dock']>) => setCfg((c) => ({...c, dock: {...c.dock, ...patch}}))
 	const move = (k: string, dir: -1 | 1) => {
@@ -290,7 +290,7 @@ function DockSettings({cfg, setCfg}: P) {
 		;[items[i], items[j]] = [items[j], items[i]]
 		set({items})
 	}
-	const candidates = placeableKeys(appList, machineList, owner).filter((k) => !d.items.includes(k))
+	const candidates = withTerminals(placeableKeys(appList, machineList, owner), strictOwner).filter((k) => !withTerminals(d.items, strictOwner).includes(k))
 	return (
 		<>
 			<Section title="Position">
@@ -381,9 +381,11 @@ function DockSettings({cfg, setCfg}: P) {
 								<button className="icon-btn" aria-label={`Move ${it.label} down`} disabled={i === d.items.length - 1} onClick={() => move(k, 1)}>
 									<Icon name="chevron-down" size={16} />
 								</button>
-								<button className="icon-btn danger-x" aria-label={`Remove ${it.label} from the dock`} onClick={() => set({items: d.items.filter((x) => x !== k)})}>
-									<Icon name="close" size={15} stroke={2.4} />
-								</button>
+								{k !== 'terminals' && (
+									<button className="icon-btn danger-x" aria-label={`Remove ${it.label} from the dock`} onClick={() => set({items: d.items.filter((x) => x !== k)})}>
+										<Icon name="close" size={15} stroke={2.4} />
+									</button>
+								)}
 							</div>
 						)
 					})}
@@ -405,7 +407,7 @@ function DockSettings({cfg, setCfg}: P) {
 
 function DesktopSettings({cfg, setCfg}: P) {
 	const desk = useDesktop()
-	const {info, appList, machineList, owner} = useItems()
+	const {info, appList, machineList, owner, strictOwner} = useItems()
 	const onDesk = new Set(cfg.icons.map((i) => i.key))
 	const running = [
 		...appList.filter((a) => a.state === 'ready' || a.state === 'running').map((a) => `app:${a.id}`),
@@ -448,7 +450,7 @@ function DesktopSettings({cfg, setCfg}: P) {
 			</Section>
 			<Section title="Choose icons" note="Double-click an icon to open it. Drag icons to arrange them, drag across the desktop to select several, and press Delete to remove the selected icons (only the shortcut is removed). A stopped machine starts when you open it.">
 				<ItemPicker
-					keys={placeableKeys(appList, machineList, owner, true)}
+					keys={withTerminals(placeableKeys(appList, machineList, owner, true), strictOwner)}
 					info={info}
 					selected={onDesk}
 					onPick={(k) => (onDesk.has(k) ? desk?.removeIcon(k) : desk?.addIcon(k))}

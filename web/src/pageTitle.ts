@@ -6,6 +6,7 @@ const SCREEN_NAMES: Record<string, string> = {
 	apps: 'Apps',
 	files: 'Files',
 	machines: 'Machines',
+	terminals: 'Terminals',
 	more: 'System',
 	settings: 'Settings',
 	store: 'App Store',
