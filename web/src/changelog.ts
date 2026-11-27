@@ -4,6 +4,22 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.103',
+		date: '2026-11-27',
+		title: 'Terminals, a clip book, and a way back in',
+		added: [
+			'Terminals lists every shell the owner can open: this server, and a joined computer or a virtual machine whose connector granted a terminal, including one that is offline. Open a row and that terminal sits in the list. Why: the shells you can use should be in one place.',
+			'Clip book keeps what you copied. It is a section on the machine page and a row on System. Copy puts the clip on this device. A send keeps going after the browser closes, and a toast tells you when it finishes or when it needs you. Why: a copy should still be there when you come back, and closing the page should not drop a send.',
+			'Sun, Moon, and Off are in the top bar again. Which readings a machine shows is saved on the account, and another account keeps its own choice.',
+			'The assistant can read a machine’s notes, and it can say what system this server is running and whether Omarchy updates are waiting. Asking does not install anything.',
+		],
+		fixed: [
+			'A forgotten sign-in password can be set again from this server’s own terminal with omarchy-server reset-password. Every account is signed out of every device and browser. Two-factor stays on. Why: the person at the machine should be able to get back in without the old password.',
+			'Virtio disks on a virtual machine share an I/O thread, so disk work is less likely to stall the machine. It applies the next time the machine is fully started.',
+			'A damaged list of apps on a joined computer is left as it is, and the problem is written once, instead of the list being replaced.',
+		],
+	},
+	{
 		version: '0.9.102',
 		date: '2026-11-27',
 		title: 'An LXC container’s console is the container’s',
