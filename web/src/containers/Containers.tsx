@@ -121,7 +121,7 @@ function ContainerRow({c, onOpen}: {c: Container; onOpen: () => void}) {
 			icon="category"
 			color={osColor(c.os)}
 			label={c.name}
-			sub={(c.pending && c.progress) || [osLabel(c) || (c.from ? `from ${c.from}` : ''), c.addresses.find((a) => a.family === 'IPv4')?.address, c.tags.join(', ')].filter(Boolean).join(' · ') || 'Container'}
+			sub={c.progress || [osLabel(c) || (c.from ? `from ${c.from}` : ''), c.addresses.find((a) => a.family === 'IPv4')?.address, c.tags.join(', ')].filter(Boolean).join(' · ') || 'Container'}
 			trailing={<StatusPill {...pill} />}
 			onClick={() => (haptic(6), onOpen())}
 		/>
@@ -630,12 +630,12 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers
 	const run = (path: string, done?: string, extra: Record<string, unknown> = {}) => action.mutate({path, input: {name: c.name, ...extra}, done})
 	const taken = all.map((x) => x.name)
 
-	if (term)
-		return (
-			<Suspense fallback={<div className="skeleton" style={{height: 180, borderRadius: 16}} />}>
-				<TerminalScreen container={{name: c.name}} onClose={() => setTerm(false)} />
-			</Suspense>
-		)
+	// Container pages live in sheets, which sit above the usual terminal layer: open it above them.
+	const terminal = term ? (
+		<Suspense fallback={null}>
+			<TerminalScreen container={{name: c.name}} overSheet onClose={() => setTerm(false)} />
+		</Suspense>
+	) : null
 
 	const stop = () =>
 		action.mutate(
@@ -650,9 +650,10 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers
 		)
 
 	// Not in Incus yet (still being created, cloned or restored, or that failed).
-	const placeholder = !!c.pending
+	const placeholder = !!c.pending || c.job === 'creating'
 	return (
 		<div className="ct-col" style={{display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12, minWidth: 0}}>
+			{terminal}
 			<div style={{display: 'flex', alignItems: 'center', gap: 10}}>
 				<button type="button" className="btn small" onClick={onBack}>
 					<Icon name={backLabel === 'Close' ? 'close' : 'back'} size={15} /> {backLabel}

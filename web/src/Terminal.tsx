@@ -54,6 +54,7 @@ export function TerminalScreen({
 	app,
 	agent,
 	container,
+	overSheet = false,
 	onClose,
 	embedded,
 	input,
@@ -64,6 +65,8 @@ export function TerminalScreen({
 	agent?: {id: string; name: string}
 	// A root shell inside one of this server's containers (Incus).
 	container?: {name: string}
+	// Opened from a sheet (a container's page): sit above the sheet instead of behind it.
+	overSheet?: boolean
 	onClose: () => void
 	embedded?: boolean
 	input?: string
@@ -692,7 +695,7 @@ export function TerminalScreen({
 	]
 
 	return createPortal(
-		<div ref={root} className={`console terminal${embedded ? ' embedded' : ''}`} role="dialog" aria-modal={!embedded} aria-label={`${title} terminal, on ${machineName}`}>
+		<div ref={root} className={`console terminal${embedded ? ' embedded' : ''}${overSheet ? ' over-sheet' : ''}`} role="dialog" aria-modal={!embedded} aria-label={`${title} terminal, on ${machineName}`}>
 			<header className="console-bar">
 				<button className="round-btn" aria-label="Close terminal" onClick={back}>
 					<Icon name="back" size={20} />

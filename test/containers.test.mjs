@@ -397,3 +397,24 @@ test('a container still being created shows Incus’s progress and is marked pen
 	assert.equal(row.progress, 'Downloading rootfs: 45% (12.3MB/s)')
 	progress()
 })
+
+test('a new container Incus already lists stays “creating” until launch finishes, so Start can’t race it', async () => {
+	let done
+	const f = statefulIncus()
+	const run = async (args, opts) => {
+		if (args[0] === 'launch') {
+			// Incus has created it (stopped) and is about to start it.
+			f.cts.set('fresh', {name: 'fresh', type: 'container', status: 'Stopped', config: {'image.os': 'Ubuntu'}})
+			return new Promise((r) => (done = r))
+		}
+		return f.run(args, opts)
+	}
+	const p = createContainers({run}).procedures
+	await p['containers.create'].run({name: 'fresh', image: 'debian/12'})
+	await new Promise((r) => setTimeout(r, 10))
+	const row = (await p['containers.list'].run()).find((c) => c.name === 'fresh')
+	assert.equal(row.job, 'creating')
+	done()
+	await new Promise((r) => setTimeout(r, 10))
+	assert.equal((await p['containers.list'].run()).find((c) => c.name === 'fresh').job, null)
+})
