@@ -1,6 +1,6 @@
 {
   "name": "omarchy-server",
-  "version": "0.9.99",
+  "version": "0.9.100",
   "description": "Your Omarchy machine as a home server you open in a browser.",
   "private": true,
   "type": "module",

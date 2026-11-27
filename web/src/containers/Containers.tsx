@@ -8,7 +8,7 @@ import {mutate, query} from '../api'
 import {Icon} from '../icons'
 import {openTerminalWith} from '../terminalEvent'
 import {AddFile, type Download} from '../AddFile'
-import {Group, Row, Sheet, Spark, StatusPill, Switch, haptic, useConfirm, useToast} from '../ui'
+import {Group, PortalRoot, Row, Sheet, Spark, StatusPill, Switch, haptic, useConfirm, useToast} from '../ui'
 
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 
@@ -149,12 +149,12 @@ export function ContainersPanel({serverName}: {serverName: string}) {
 			{list.isLoading ? (
 				<div className="skeleton" style={{height: 80, borderRadius: 16}} />
 			) : rows.length === 0 ? (
-				<p className="quiet">No containers on {serverName}. A container is a lightweight Linux system that shares this server’s kernel: it starts in seconds and uses far less memory than a virtual machine.</p>
+				<p className="quiet">No LXC containers on {serverName}. An LXC container is a lightweight Linux system that shares this server’s kernel: it starts in seconds and uses far less memory than a virtual machine.</p>
 			) : (
 				rows.map((c) => <ContainerRow key={c.name} c={c} onOpen={() => setOpen(c.name)} />)
 			)}
 			<button type="button" className="btn small" style={{margin: '8px 12px 12px'}} onClick={() => (haptic(6), setCreating(true))}>
-				<Icon name="plus" size={15} /> New container
+				<Icon name="plus" size={15} /> New LXC container
 			</button>
 		</>
 	)
@@ -165,7 +165,7 @@ export function NewContainerSheet({onClose}: {onClose: () => void}) {
 	const status = useContainerStatus()
 	const list = useContainers(status.data?.available === true)
 	return (
-		<Sheet open onClose={onClose} label="New container" tall>
+		<Sheet open onClose={onClose} label="New LXC container" tall>
 			<div style={{padding: '4px 16px 24px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12, minWidth: 0}}>
 				{status.isLoading ? (
 					<div className="skeleton" style={{height: 160, borderRadius: 16}} />
@@ -175,7 +175,7 @@ export function NewContainerSheet({onClose}: {onClose: () => void}) {
 							<button type="button" className="btn small" onClick={onClose}>
 								<Icon name="close" size={15} /> Close
 							</button>
-							<b>New container</b>
+							<b>New LXC container</b>
 						</div>
 						<SetUp status={status.data} onCheck={() => status.refetch()} checking={status.isFetching} />
 					</>
@@ -200,7 +200,7 @@ export function ContainersInList({owner, filterText}: {owner: boolean; filterTex
 	const current = open ? (list.data ?? []).find((c) => c.name === open) : null
 	return (
 		<>
-			<Group title="Containers">
+			<Group title="LXC containers">
 				{rows.map((c) => (
 					<ContainerRow key={c.name} c={c} onOpen={() => setOpen(c.name)} />
 				))}
@@ -220,7 +220,7 @@ function SetUp({status, onCheck, checking}: {status: Extract<ContainerStatus, {a
 	const toast = useToast()
 	return (
 		<div className="glass" style={{padding: 16, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12, minWidth: 0}}>
-			<b>Set up containers</b>
+			<b>Set up LXC containers</b>
 			<span className="quiet">{status.reason}</span>
 			<span className="quiet">
 				Run this one command in a terminal on this server. It asks for your password, sets up Incus in its per-user mode (your own walled-off space for containers; nothing is opened to the network until you add a port), and is safe to run again:
@@ -293,7 +293,7 @@ function SwitchRow({label, sub, on, onChange, disabled}: {label: string; sub?: R
 	)
 }
 
-function CreateContainer({onDone, existing, backLabel = 'Containers'}: {onDone: () => void; existing: string[]; backLabel?: string}) {
+function CreateContainer({onDone, existing, backLabel = 'LXC containers'}: {onDone: () => void; existing: string[]; backLabel?: string}) {
 	const [everything, setEverything] = useState(false)
 	const library = useQuery({queryKey: ['containers.images', everything], queryFn: () => query<Distro[]>('containers.images', {all: everything}), staleTime: 30 * 60_000, retry: false})
 	const mine = useQuery({queryKey: ['containers.templates'], queryFn: () => query<Template[]>('containers.templates'), retry: false})
@@ -347,7 +347,7 @@ function CreateContainer({onDone, existing, backLabel = 'Containers'}: {onDone: 
 				<button type="button" className="btn small" onClick={onDone}>
 					<Icon name={backLabel === 'Close' ? 'close' : 'back'} size={15} /> {backLabel}
 				</button>
-				<b>New container</b>
+				<b>New LXC container</b>
 			</div>
 			{!image ? (
 				<>
@@ -419,6 +419,44 @@ function CreateContainer({onDone, existing, backLabel = 'Containers'}: {onDone: 
 					</button>
 				</div>
 			)}
+		</div>
+	)
+}
+
+/** The container's console inside its page, the way a VM's screen sits in its page. */
+function EmbeddedConsole({name, onFull, onShell}: {name: string; onFull: () => void; onShell: () => void}) {
+	const [el, setEl] = useState<HTMLDivElement | null>(null)
+	const [on, setOn] = useState(true)
+	return (
+		<div style={{display: 'grid', gap: 8, minWidth: 0}}>
+			<div
+				ref={setEl}
+				className="ct-console"
+				style={{position: 'relative', height: 340, borderRadius: 16, overflow: 'hidden', transform: 'translateZ(0)', background: '#000'}}
+				aria-label={`${name}’s console`}
+			>
+				{el && on && (
+					<PortalRoot.Provider value={el}>
+						<Suspense fallback={null}>
+							{/* Enter brings up the login prompt. */}
+							<TerminalScreen embedded container={{name, mode: 'console'}} input={'\r'} onClose={() => setOn(false)} />
+						</Suspense>
+					</PortalRoot.Provider>
+				)}
+				{!on && (
+					<button type="button" className="btn small" style={{position: 'absolute', inset: 0, margin: 'auto', width: 'fit-content', height: 'fit-content'}} onClick={() => setOn(true)}>
+						<Icon name="window" size={15} /> Show the console
+					</button>
+				)}
+			</div>
+			<div style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
+				<button type="button" className="btn small" onClick={onFull}>
+					<Icon name="fullscreen" size={15} /> Full screen
+				</button>
+				<button type="button" className="btn small" onClick={onShell}>
+					<Icon name="terminal" size={15} /> Root shell
+				</button>
+			</div>
 		</div>
 	)
 }
@@ -673,7 +711,7 @@ function NotesAndTags({c, busy, run}: {c: Container; busy: boolean; run: (path: 
 	)
 }
 
-export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers'}: {c: Container; all: Container[]; onBack: () => void; onOpen: (name: string) => void; backLabel?: string}) {
+export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'LXC containers'}: {c: Container; all: Container[]; onBack: () => void; onOpen: (name: string) => void; backLabel?: string}) {
 	const action = useContainerAction()
 	const confirm = useConfirm()
 	const [term, setTerm] = useState<null | 'console' | 'shell'>(null)
@@ -765,16 +803,7 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers
 								{busy ? <span className="spinner" /> : <Icon name="play" size={22} />}
 								Start
 							</button>
-						) : (
-							<button className="action" disabled={busy} onClick={() => setTerm('console')}>
-								<Icon name="window" size={22} />
-								Console
-							</button>
-						)}
-						<button className="action" disabled={busy || c.status !== 'running'} onClick={() => setTerm('shell')}>
-							<Icon name="terminal" size={22} />
-							Root shell
-						</button>
+						) : null}
 						<button className="action" disabled={busy || c.status !== 'running'} onClick={() => run('containers.restart', `${c.name} is restarting`)}>
 							<Icon name="restart" size={22} />
 							Restart
@@ -793,6 +822,7 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers
 						</button>
 					</div>
 
+					{c.status === 'running' && <EmbeddedConsole name={c.name} onFull={() => setTerm('console')} onShell={() => setTerm('shell')} />}
 					<Graphs c={c} />
 					<Group title="Signing in" footer="Console is the container’s own screen: its login prompt, like Proxmox’s console. Sign in as root with the password set here. Root shell opens straight into it without one. In the console, press Ctrl+A then Q to let go of it.">
 						<div style={{display: 'flex', flexWrap: 'wrap', gap: 8, padding: '10px 12px', alignItems: 'end'}}>
