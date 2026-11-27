@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.93B',
+		date: '2026-11-26',
+		title: 'Containers past the setup card',
+		fixed: [
+			'Containers stopped at “unknown flag: --format” after setting up. Why: My Own Data Center asked Incus for its details in a form Incus doesn’t offer. It now asks the way Incus does. Every other Incus command it uses was checked against the real Incus client.',
+			'Clearing a container’s CPU cap no longer says “Use a CPU share of 5 to 100%”.',
+		],
+	},
+	{
 		version: '0.9.93A',
 		date: '2026-11-26',
 		title: 'Add a container from Machines',

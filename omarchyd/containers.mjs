@@ -233,7 +233,7 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 	async function status() {
 		let out
 		try {
-			out = await run(['info', '--format', 'json'], {timeout: 10_000})
+			out = await run(['query', '/1.0'], {timeout: 10_000})
 		} catch (error) {
 			const text = String(error?.stderr || error?.message || '')
 			const reason =
@@ -280,7 +280,8 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 
 	async function images({refresh = false} = {}) {
 		if (!refresh && library && now() - library.at < 6 * 3600_000) return library.value
-		const out = await incus(['image', 'list', 'images:', 'type=container', `architecture=${ARCH}`, '--format', 'json'], {timeout: 90_000})
+		// Filtered here (containers, this architecture), not on the command line.
+		const out = await incus(['image', 'list', 'images:', '--format', 'json'], {timeout: 90_000})
 		let all = []
 		try {
 			all = JSON.parse(String(out))
@@ -319,7 +320,7 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 		const cores = os.cpus().length
 		const out = []
 		if (input.cpus !== undefined) out.push(`limits.cpu=${intIn(input.cpus, 1, cores, `Use 1 to ${cores} CPUs`)}`)
-		if (input.cpuAllowance !== undefined) out.push(`limits.cpu.allowance=${intIn(input.cpuAllowance, 5, 100, 'Use a CPU share of 5 to 100%')}%`)
+		if (input.cpuAllowance !== undefined && input.cpuAllowance !== null) out.push(`limits.cpu.allowance=${intIn(input.cpuAllowance, 5, 100, 'Use a CPU share of 5 to 100%')}%`)
 		if (input.cpuPriority !== undefined) out.push(`limits.cpu.priority=${intIn(input.cpuPriority, 0, 10, 'Use a CPU priority of 0 to 10')}`)
 		if (input.memoryMiB !== undefined) out.push(`limits.memory=${intIn(input.memoryMiB, 128, Math.floor(os.totalmem() / 1024 ** 2), 'That’s more memory than this server has')}MiB`)
 		if (input.swap !== undefined) out.push(`limits.memory.swap=${input.swap ? 'true' : 'false'}`)
