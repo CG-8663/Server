@@ -62,6 +62,17 @@ describe('launcher keyboard ownership when a context menu is open', () => {
 })
 
 describe('visible focus rings', () => {
+	test('buttons draw the focus ring inside the control', () => {
+		assert.match(CSS, /button:focus-visible,\n\[role="button"\]:focus-visible,\n\.btn:focus-visible \{\n\toutline-offset: -2px;/)
+		assert.match(CSS, /\.mm-line:focus-visible \{[^}]*outline-offset:\s*-2px/)
+		assert.match(CSS, /\.lp-card:focus-visible \{[^}]*outline-offset:\s*-2px/)
+		assert.match(CSS, /\.switch:focus-visible \{[^}]*outline-offset:\s*-2px/)
+		assert.match(CSS, /\.stat-region:focus-visible \{\s*outline:\s*none;\s*\}/)
+		assert.match(CSS, /\.stat-region:focus-visible::after \{[^}]*border:\s*2px solid var\(--accent-text\)/)
+		assert.match(CSS, /\.stat-pencil \{[^}]*right:\s*4px;[^}]*bottom:\s*4px/)
+		assert.doesNotMatch(CSS, /\.stat-hold\.stat-gauges \.stat-pencil/)
+	})
+
 	test('search, overview search, overview apps, dock items, and launcher input expose focus indicators', () => {
 		assert.match(CSS, /\.search:focus-within \{[^}]*box-shadow:/)
 		assert.match(CSS, /\.ov-search:focus-within \{[^}]*box-shadow:/)

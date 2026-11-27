@@ -18,6 +18,7 @@ import {cleanTutorials, type TutorialId} from './tutorials'
 import {darkenForTextOn, darkenHslForWhite, hslToRgb, legibleMuted, parseRgbColor, pickOnAccent, resolveCssColor} from './theme/contrast'
 import {cleanThemeSlots, isLightTheme, type DarkThemeId, type LightThemeId, type PictureThemeId} from './theme/themeMode'
 import {reachLabel} from './fleet/machineManagerLogic'
+import {cleanStatPicks} from './fleet/statView'
 import {cleanTempPicks} from './fleet/temperatures'
 import {initials as nameInitials} from './initials'
 import {paddingBottomPlus} from './scrollPad'
@@ -773,12 +774,12 @@ export function Providers({children}: {children: ReactNode}) {
 export const THEMES = [
 	{id: 'horizon', name: 'Horizon', bg: '#111', fg: '#fff', dots: [] as string[]},
 	{id: 'custom', name: 'Your photo', bg: '#111', fg: '#fff', dots: [] as string[]},
-	{id: 'mocha', name: 'Midnight', bg: '#1e1e2e', fg: '#cdd6f4', dots: ['#89b4fa', '#a6e3a1', '#f9e2af', '#f38ba8']},
-	{id: 'tokyo', name: 'Neon', bg: '#1a1b26', fg: '#c0caf5', dots: ['#7aa2f7', '#9ece6a', '#e0af68', '#f7768e']},
+	{id: 'mocha', name: 'Midnight', bg: '#282238', fg: '#ddd4f6', dots: ['#89b4fa', '#a6e3a1', '#f9e2af', '#f38ba8']},
+	{id: 'tokyo', name: 'Neon', bg: '#101820', fg: '#c8e7f8', dots: ['#7aa2f7', '#9ece6a', '#e0af68', '#f7768e']},
 	{id: 'gruvbox', name: 'Ember', bg: '#282828', fg: '#ebdbb2', dots: ['#83a598', '#b8bb26', '#fabd2f', '#fb4934']},
-	{id: 'latte', name: 'Daylight', bg: '#eff1f5', fg: '#4c4f69', dots: ['#1e66f5', '#40a02b', '#df8e1d', '#d20f39']},
+	{id: 'latte', name: 'Daylight', bg: '#f2f2ef', fg: '#4c4f69', dots: ['#1e66f5', '#40a02b', '#df8e1d', '#d20f39']},
 	{id: 'linen', name: 'Linen', bg: '#f6f1e7', fg: '#4a4338', dots: ['#3d6fbf', '#3d8c3a', '#b8860b', '#c44536']},
-	{id: 'sky', name: 'Sky', bg: '#e7eef6', fg: '#2c3d52', dots: ['#3a6fbf', '#2f8f6b', '#c4922a', '#d04555']},
+	{id: 'sky', name: 'Sky', bg: '#d5e3f6', fg: '#2c3d52', dots: ['#3a6fbf', '#2f8f6b', '#c4922a', '#d04555']},
 	{id: 'omarchy', name: 'Omarchy', bg: '#1a1b26', fg: '#a9b1d6', dots: ['#7aa2f7', '#9ece6a', '#e0af68', '#f7768e']},
 ] as const
 export const ACCENTS = ['wallpaper', 'blue', 'mauve', 'teal', 'peach', 'green', 'pink'] as const
@@ -804,6 +805,8 @@ export type Prefs = {
 	statView?: 'line' | 'blocks' | 'gauges' | null
 	/** Desktop Machines compact list. Null means off. Saved per account. */
 	machinesCompact?: boolean | null
+	/** Which readings this account shows, apart from temperatures. Null means all of them stay shown. */
+	statPicks?: {on: string[]; off: string[]} | null
 	/** Which temperature sensors this account shows. Null means each sensor's own default. */
 	tempPicks?: {on: string[]; off: string[]} | null
 	/** Fahrenheit when `f`. Null means Celsius. */
@@ -844,10 +847,11 @@ function clean(p: Partial<Prefs> | null | undefined): Prefs {
 	const omarchyBackground = typeof p?.omarchyBackground === 'string' && /^[0-9a-f]{16}$/.test(p.omarchyBackground) ? p.omarchyBackground : null
 	const statView = p?.statView === 'line' || p?.statView === 'blocks' || p?.statView === 'gauges' ? p.statView : null
 	const machinesCompact = typeof p?.machinesCompact === 'boolean' ? p.machinesCompact : null
+	const statPicks = cleanStatPicks(p?.statPicks)
 	const tempPicks = cleanTempPicks(p?.tempPicks)
 	const tempUnit = p?.tempUnit === 'f' ? 'f' : null
 	const dismissedTutorials = cleanTutorials(p?.dismissedTutorials)
-	return {theme, ...slots, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null, statView, machinesCompact, tempPicks, tempUnit, dismissedTutorials}
+	return {theme, ...slots, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null, statView, machinesCompact, statPicks, tempPicks, tempUnit, dismissedTutorials}
 }
 export function readPrefs(): Prefs {
 	try {

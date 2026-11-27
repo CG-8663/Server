@@ -58,3 +58,9 @@ export function withThemeMode<T extends ThemeSlots>(prefs: T, mode: ThemeMode): 
 	if (mode === 'moon') return {...prefs, theme: prefs.darkTheme}
 	return {...prefs, theme: prefs.pictureTheme}
 }
+
+const NEXT_MODE: Record<ThemeMode, ThemeMode> = {sun: 'moon', moon: 'off', off: 'sun'}
+
+export function nextThemeMode(mode: ThemeMode): ThemeMode {
+	return NEXT_MODE[mode]
+}

@@ -23,6 +23,7 @@ import {AssistantCharacterWidget} from '../character/widgets'
 import {hasOpenDialog, pickFocusTarget, useDialogFocus, useInert, useMenuFocus} from '../focus'
 import {ScreenErrorBoundary} from '../screenBoundary'
 import {queryClearsOnSignOut} from '../signOutQueries'
+import {ThemeModeButton} from '../theme/ThemeModeButton'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {resetDeskConfig, solidOf, useDeskConfig, type DeskConfig, type DeskIcon} from './config'
 import {placeableKeys} from './places'
@@ -1490,6 +1491,8 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				{!overview && !wins.some((w) => w.kind === 'assistant' && !w.min) && <AssistantCharacterWidget onOpen={() => open('assistant')} />}
 				<TopBar
 					boot={boot}
+					prefs={prefs}
+					setPrefs={setPrefs}
 					activeTitle={active ? winTitle(active, appList, machineList) : null}
 					overview={!!overview}
 					menu={topMenu}
@@ -2357,6 +2360,8 @@ const noteText = (n: string) => NOTIFICATION_TEXT[n] ?? n.replace(/[-_]/g, ' ').
 
 function TopBar(p: {
 	boot: Bootstrap
+	prefs: Prefs
+	setPrefs: (p: Prefs) => void
 	activeTitle: string | null
 	overview: boolean
 	menu: 'clock' | 'system' | null
@@ -2436,6 +2441,7 @@ function TopBar(p: {
 						{memPct}%
 					</StatChip>
 				)}
+				<ThemeModeButton prefs={p.prefs} setPrefs={p.setPrefs} className="top-mode" size={16} />
 				{(() => {
 					const count = notes.length + (updates.length > 0 ? 1 : 0)
 					const serverUpdate = notes.includes('update-available')

@@ -45,6 +45,48 @@ export type StatReading = {
 
 export type StatGauge = {k: string; icon: string; p: number; ready: boolean; key?: string; sub?: string; color?: string}
 
+/** Which readings this account shows, apart from temperatures. Null means every reading stays shown. */
+export type StatPicks = {on: string[]; off: string[]} | null
+
+const STAT_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,79}$/
+
+export function cleanStatPicks(value: unknown): StatPicks {
+	if (value == null || typeof value !== 'object' || Array.isArray(value)) return null
+	const body = value as {on?: unknown; off?: unknown}
+	const on = cleanStatIds(body.on)
+	const off = cleanStatIds(body.off).filter((id) => !on.includes(id))
+	if (!on.length && !off.length) return null
+	return {on, off}
+}
+
+function cleanStatIds(value: unknown): string[] {
+	if (!Array.isArray(value)) return []
+	const out: string[] = []
+	for (const id of value) {
+		if (typeof id !== 'string' || !STAT_ID.test(id) || out.includes(id)) continue
+		out.push(id)
+		if (out.length >= 40) break
+	}
+	return out
+}
+
+/** A reading stays shown until this account turns it off. */
+export function statIsShown(id: string, picks: StatPicks): boolean {
+	if (picks?.on.includes(id)) return true
+	if (picks?.off.includes(id)) return false
+	return true
+}
+
+/** Check or uncheck one reading. Readings this account has not touched stay shown. */
+export function toggleStatPick(picks: StatPicks, id: string, on: boolean): StatPicks {
+	const prev = picks ?? {on: [], off: []}
+	const nextOn = prev.on.filter((item) => item !== id)
+	const nextOff = prev.off.filter((item) => item !== id)
+	if (!on) nextOff.push(id)
+	if (!nextOn.length && !nextOff.length) return null
+	return {on: nextOn, off: nextOff}
+}
+
 /** A percent ring, or the value alone. A missing percent is not drawn as an empty arc. */
 export function readingFace(reading: StatReading): 'arc' | 'value' {
 	return reading.percent == null ? 'value' : 'arc'
@@ -131,23 +173,26 @@ function temperatureReading(sensor: TempSensor, unit: TempUnit): StatReading {
  * `diskSizeGb` is used only when no storage gauge is present.
  * Pass `temps` for the machine's sensors. A lone `temp` number is the processor.
  */
-export function statReadings(input: {gauges: readonly StatGauge[]; temp: number | null; diskSizeGb: number | null; posture?: PostureSummary; temps?: readonly TempSensor[]; tempPicks?: TempPicks; tempUnit?: TempUnit}): StatReading[] {
+export function statReadings(input: {gauges: readonly StatGauge[]; temp: number | null; diskSizeGb: number | null; posture?: PostureSummary; temps?: readonly TempSensor[]; tempPicks?: TempPicks; tempUnit?: TempUnit; statPicks?: StatPicks}): StatReading[] {
 	const stats = managerStats({gauges: input.gauges, temp: null, diskSizeGb: input.diskSizeGb})
 	const extra = new Map(input.gauges.map((g) => [g.key ?? g.k, g]))
-	const base: StatReading[] = stats.map((s) => {
-		const g = extra.get(s.id)
-		return {
-			id: s.id,
-			label: s.label,
-			icon: s.icon,
-			text: s.text,
-			percent: s.percent,
-			sub: g?.sub && g.sub !== '–' ? g.sub : s.text,
-			color: g?.color,
-		}
-	})
+	const picks = input.statPicks ?? null
+	const base: StatReading[] = stats
+		.map((s) => {
+			const g = extra.get(s.id)
+			return {
+				id: s.id,
+				label: s.label,
+				icon: s.icon,
+				text: s.text,
+				percent: s.percent,
+				sub: g?.sub && g.sub !== '–' ? g.sub : s.text,
+				color: g?.color,
+			}
+		})
+		.filter((reading) => statIsShown(reading.id, picks))
 	const sensors = input.temps ?? (input.temp != null && Number.isFinite(input.temp) ? [{id: 'processor', label: 'Processor', kind: 'processor' as const, celsius: input.temp, stuck: false, defaultOn: true}] : [])
 	const unit = input.tempUnit === 'f' ? 'f' : 'c'
 	const temperatures = sensors.filter((sensor) => tempIsShown(sensor, input.tempPicks ?? null)).map((sensor) => temperatureReading(sensor, unit))
-	return [...base, ...temperatures, ...postureReadings(input.posture)]
+	return [...base, ...temperatures, ...postureReadings(input.posture).filter((reading) => statIsShown(reading.id, picks))]
 }
