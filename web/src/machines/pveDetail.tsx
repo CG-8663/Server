@@ -17,6 +17,7 @@ import {PortForwarding} from './PortForwarding'
 import {DevicesPanel} from '../usb'
 import {BackupsPanel, CloudInitPanel, HardwarePanel, HistoryPanel, MonitorPanel, OptionsPanel, PANELS, SnapshotsPanel, SummaryPanel, usePowerActions, type PanelId} from './panels'
 import {DetailFrame} from './detailFrame'
+import {GuestClips} from '../clips/GuestClips'
 
 export function VmView({m, physicalName, hostname, panel, setPanel, onGone, onBack, backLabel}: {m: Machine; physicalName: string; hostname?: string | null; panel: PanelId; setPanel: (p: PanelId) => void; onGone: () => void; onBack?: () => void; backLabel?: string}) {
 	const details = useMachineDetails(m.id)
@@ -142,6 +143,8 @@ export function VmView({m, physicalName, hostname, panel, setPanel, onGone, onBa
 						<div className="mx-panel">
 							<DevicesPanel guest={{kind: 'machine', id: m.id, name: m.name}} />
 						</div>
+					) : panel === 'clips' ? (
+						<GuestClips machine={m} />
 					) : panel === 'snapshots' ? (
 						<SnapshotsPanel d={d} />
 					) : panel === 'backups' ? (

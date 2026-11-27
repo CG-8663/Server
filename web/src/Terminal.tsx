@@ -237,7 +237,13 @@ export function TerminalScreen({
 				const selected = term.getSelection()
 				if (!selected) return false
 				e.preventDefault()
-				copyText(selected).then(() => toast('Copied'), () => toast('Couldn’t copy', true))
+				copyText(selected).then(
+					() => {
+						toast('Copied')
+						clipText(selected, 'terminal').catch((err: Error) => toast(err.message, true))
+					},
+					() => toast('Couldn’t copy', true),
+				)
 				term.clearSelection()
 				return false
 			}

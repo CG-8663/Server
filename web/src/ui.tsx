@@ -23,6 +23,7 @@ import {cleanTempPicks} from './fleet/temperatures'
 import {initials as nameInitials} from './initials'
 import {paddingBottomPlus} from './scrollPad'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
+import {AccountToastProvider, AccountToastStack} from './toasts/account'
 
 // ---- portals --------------------------------------------------------------------------
 // Sheets, the terminal and the console portal out of their screen. On the phone that's <body>;
@@ -432,6 +433,16 @@ export function Sheet({open, onClose, label, children, tall}: {open: boolean; on
 		if (!open) return
 		return lockPageScroll()
 	}, [open])
+	useEffect(() => {
+		if (!open) return
+		const root = document.documentElement
+		root.dataset.sheets = String(Number(root.dataset.sheets || 0) + 1)
+		return () => {
+			const left = Number(root.dataset.sheets || 1) - 1
+			if (left <= 0) delete root.dataset.sheets
+			else root.dataset.sheets = String(left)
+		}
+	}, [open])
 	if (!open) return null
 	// Drag the handle or the header down to dismiss, and only when the page is already at the top.
 	// A drag that starts on the page itself scrolls that page. The close button is the accessible path.
@@ -716,6 +727,7 @@ export function Providers({children}: {children: ReactNode}) {
 	const live = liveRegionText(announced)
 
 	return (
+		<AccountToastProvider>
 		<ToastContext.Provider value={show}>
 			<ConfirmContext.Provider value={confirm}>
 				{children}
@@ -750,16 +762,10 @@ export function Providers({children}: {children: ReactNode}) {
 				<div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">
 					{live.alert}
 				</div>
-				{toast && (
-					<div key={toast.id} className={`toast${toast.error ? ' error' : ''}`} aria-hidden="true">
-						<span className="ico">
-							<Icon name={toast.error ? 'alert' : 'check'} size={15} stroke={2.6} />
-						</span>
-						{toast.text}
-					</div>
-				)}
+				<AccountToastStack local={toast} />
 			</ConfirmContext.Provider>
 		</ToastContext.Provider>
+		</AccountToastProvider>
 	)
 }
 

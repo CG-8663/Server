@@ -292,7 +292,10 @@ test('liveRegionText and checkLiveText route status vs alert text and keep persi
 	const ui = readFileSync(join(rootDir, 'web/src/ui.tsx'), 'utf8')
 	assert.match(ui, /<div className="sr-only" role="status" aria-live="polite" aria-atomic="true">\s*\{live\.status\}\s*<\/div>/)
 	assert.match(ui, /<div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">\s*\{live\.alert\}\s*<\/div>/)
-	assert.match(ui, /className=\{`toast\$\{toast\.error \? ' error' : ''\}`\} aria-hidden="true"/)
+	// A short Copied or error toast is visual only. Those live regions speak it.
+	const toasts = readFileSync(join(rootDir, 'web/src/toasts/account.tsx'), 'utf8')
+	assert.match(toasts, /className=\{`toast\$\{local\.error \? ' error' : ''\}`\} aria-hidden="true"/)
+	assert.match(toasts, /className="sr-only" role=\{spoken\?\.level === 'problem' \? 'alert' : 'status'\}/)
 
 	const settings = readFileSync(join(rootDir, 'web/src/screens/Settings.tsx'), 'utf8')
 	assert.match(settings, /<div role="status" aria-live="polite" aria-atomic="true">/)

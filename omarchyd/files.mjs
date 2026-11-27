@@ -843,6 +843,14 @@ export function createFiles({home, dataDir, io, drivesDir = join('/run/media', o
 		if (!st.isFile()) throw new RpcError('BAD_REQUEST', 'Choose a file')
 		return {name: basename(virtual), path: virtual, size: st.size, mtimeMs: Math.trunc(st.mtimeMs)}
 	}
+	// A file or a folder. A directory’s size is not its contents, so callers compare mtime.
+	async function inspect(virtual) {
+		const {real} = await resolve(virtual)
+		const st = await stat(real)
+		const dir = st.isDirectory()
+		if (!dir && !st.isFile()) throw new RpcError('BAD_REQUEST', 'Choose a file')
+		return {name: basename(virtual), path: virtual, size: dir ? 0 : st.size, mtimeMs: Math.trunc(st.mtimeMs), dir}
+	}
 	async function openRead(virtual) {
 		const info = await describe(virtual)
 		const {real} = await resolve(virtual)
@@ -870,10 +878,13 @@ export function createFiles({home, dataDir, io, drivesDir = join('/run/media', o
 
 	return {
 		describe,
+		inspect,
 		openRead,
 		saveNew,
 		resolve,
 		copy: (input) => moveOrCopy(input, true),
+		move: (input) => moveOrCopy(input, false),
+		trash,
 		procedures: {
 			'files.list': {kind: 'query', run: guard((i) => list(i))},
 			'files.search': {kind: 'query', run: guard((i) => search(i ?? {}))},

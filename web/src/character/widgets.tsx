@@ -1,12 +1,14 @@
 // The character in the app: the floating launcher, the picker and live preview in Settings, and the
-// small icon used where the assistant appears (Home, the desktop). Opening the assistant is the only
-// thing any of them do.
+// small icon used where the assistant appears (Home, the desktop). The launcher opens the assistant.
+// Its speech bubble is an account toast, and it does not open the chat.
 import {useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties} from 'react'
 
 import {useAssistantActivity, useAssistantAnimationState, type CharacterState} from '../assistantActivity'
 import {assistantIconBadge} from '../assistantLive'
 import {useAssistantTurn} from '../assistantTurn'
 import {Icon} from '../icons'
+import {useAccountToasts} from '../toasts/account'
+import {toastSurface} from '../toasts/view'
 import {Row, Segmented, Switch, haptic} from '../ui'
 import {AssistantCharacter, DEFAULT_LOOK, lookName, NAME_MAX, useAssistantLook, type AssistantLook} from './AssistantCharacter'
 import {CHARACTERS, characterById} from './registry'
@@ -49,6 +51,19 @@ function homeSpot(kind: Kind, size: number) {
 }
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
+// A phone sheet sits above the character. On the desktop the character stays in front of a sheet.
+function useCharacterCovered() {
+	const [covered, setCovered] = useState(false)
+	useEffect(() => {
+		const read = () => setCovered(!document.documentElement.classList.contains('desk-mode') && Number(document.documentElement.dataset.sheets || 0) > 0)
+		read()
+		const watch = new MutationObserver(read)
+		watch.observe(document.documentElement, {attributes: true, attributeFilter: ['class', 'data-sheets']})
+		return () => watch.disconnect()
+	}, [])
+	return covered
+}
+
 // The floating character: tap to open the assistant; press and drag to put it anywhere. It follows on
 // a spring (leaning and stretching as it moves), settles with a soft bounce, and stays where you put
 // it, per layout, on every device. Arrow keys move it too. Hidden: the assistant opens from Home.
@@ -58,9 +73,10 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 	const unread = useAssistantTurn().unread
 	const [hover, setHover] = useState(false)
 	const [dragging, setDragging] = useState(false)
+	const [sayLeft, setSayLeft] = useState(true)
 	const state = useAssistantAnimationState({hover: hover || dragging, reactions: look.reactions})
 	usePauseWhenHidden()
-	const ref = useRef<HTMLButtonElement>(null)
+	const ref = useRef<HTMLDivElement>(null)
 	const size = SIZES[look.size]
 	const sim = useRef({x: 0, y: 0, vx: 0, vy: 0, tx: 0, ty: 0, raf: 0, ready: false, drag: false})
 	const press = useRef<{px: number; py: number; x: number; y: number; moved: boolean} | null>(null)
@@ -105,6 +121,7 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 			const target = spot ? {x: a.minX + spot.x * (a.maxX - a.minX), y: a.minY + spot.y * (a.maxY - a.minY)} : homeSpot(kind, size)
 			s.tx = clamp(target.x, a.minX, a.maxX)
 			s.ty = clamp(target.y, a.minY, a.maxY)
+			setSayLeft(s.tx > window.innerWidth / 2)
 			if (!glide || !s.ready || reduce) {
 				Object.assign(s, {x: s.tx, y: s.ty, vx: 0, vy: 0, ready: true})
 				paint()
@@ -133,6 +150,14 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 		setLook({...look, position: {...look.position, [kind]: {x: clamp(fx, 0, 1), y: clamp(fy, 0, 1)}}})
 	}
 	const keySave = useRef(0)
+	const account = useAccountToasts()
+	const covered = useCharacterCovered()
+	const spoken = account.spoken
+	const showBubble = look.floating && !!spoken && toastSurface({floating: true, covered}) === 'bubble'
+	useLayoutEffect(() => {
+		account.claimBubble(showBubble)
+		return () => account.claimBubble(false)
+	}, [showBubble, account.claimBubble])
 
 	if (!look.floating) return null
 	const name = lookName(look)
@@ -147,13 +172,12 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 				: ''
 	const label = `${name}${extra}. Opens the assistant; drag or use the arrow keys to move it.`
 	return (
+		<div ref={ref} className={`ac-widget${dragging ? ' dragging' : ''}`} style={{width: size, height: size} as CSSProperties}>
 		<button
-			ref={ref}
 			type="button"
-			className={`ac-widget${dragging ? ' dragging' : ''}`}
+			className="ac-hit"
 			aria-label={label}
 			title={name}
-			style={{width: size, height: size} as CSSProperties}
 			onPointerEnter={(e) => e.pointerType === 'mouse' && setHover(true)}
 			onPointerLeave={() => setHover(false)}
 			onFocus={() => setHover(true)}
@@ -234,6 +258,21 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 				</span>
 			) : null}
 		</button>
+		{showBubble && spoken && (
+			<div className={`ac-say${sayLeft ? '' : ' on-right'}${spoken.level === 'problem' ? ' problem' : ''}`}>
+				{spoken.href ? (
+					<button type="button" className="ac-say-open" onClick={() => account.open(spoken)}>
+						{spoken.text}
+					</button>
+				) : (
+					<p>{spoken.text}</p>
+				)}
+				<button type="button" className="ac-say-x" aria-label="Dismiss" onClick={() => account.dismiss(spoken.id)}>
+					<Icon name="close" size={14} />
+				</button>
+			</div>
+		)}
+		</div>
 	)
 }
 

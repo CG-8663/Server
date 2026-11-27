@@ -413,6 +413,14 @@ export const ALLOWED = {
 	'clips.remove': 'mutation',
 	'clips.paste': 'mutation',
 	'clips.fleetList': 'query',
+	'toasts.list': 'query',
+	'toasts.add': 'mutation',
+	'toasts.dismiss': 'mutation',
+	'transfers.list': 'query',
+	'transfers.start': 'mutation',
+	'transfers.resume': 'mutation',
+	'transfers.cancel': 'mutation',
+	'transfers.dismiss': 'mutation',
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.

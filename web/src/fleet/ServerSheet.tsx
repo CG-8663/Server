@@ -22,6 +22,8 @@ import {DetailFrame, type DetailSection} from '../machines/detailFrame'
 import {BackupsPage} from '../backups'
 import {ServerLogs, ServerNetwork} from '../screens/machineHost'
 import {ContainersPanel} from '../containers/Containers'
+import {ClipBook} from '../clips/ClipBook'
+import {serverHere} from '../clips/view'
 
 const MachineFiles = lazy(() => import('../screens/Files').then((m) => ({default: m.Files})))
 
@@ -75,6 +77,11 @@ export function ServerSheet({
 					<MachineFiles scope={{kind: 'server' as const}} windowId="machine:server" />
 				</Suspense>
 			),
+		},
+		{
+			id: 'clips',
+			label: 'Clip book',
+			body: <ClipBook here={serverHere(name)} readings />,
 		},
 		{
 			id: 'apps',
@@ -136,6 +143,7 @@ export function ServerSheet({
 		const sections: DetailSection[] = [
 			{id: 'summary', label: 'Summary', icon: 'activity'},
 			{id: 'files', label: 'Files', icon: 'folder'},
+			{id: 'clips', label: 'Clip book', icon: 'clipboard'},
 			{id: 'apps', label: 'Apps', icon: 'store'},
 			...(owner
 				? [

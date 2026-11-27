@@ -25,7 +25,9 @@ import {ScreenErrorBoundary} from '../screenBoundary'
 import {queryClearsOnSignOut} from '../signOutQueries'
 import {ThemeModeButton} from '../theme/ThemeModeButton'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
-import {SYSTEM_DOCK, resetDeskConfig, solidOf, useDeskConfig, withTerminals, type DeskConfig, type DeskIcon} from './config'
+import {resetDeskConfig, solidOf, useDeskConfig, withTerminals, type DeskConfig, type DeskIcon} from './config'
+import {placeableKeys} from './places'
+import {OPEN_TOAST_PLACE, toastDeskKind} from '../toasts/open'
 import {desktopIconKeyOpens, desktopIconKeysApply, iconSelectionClearsOnFocus} from './iconKeys'
 import {iconsInView} from './iconsInView'
 import {desktopMachineStatus, machineOpenAction} from './machineOpen'
@@ -708,6 +710,15 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 		},
 		[focus, update, cfg.shell, captureWindowOpener],
 	)
+
+	useEffect(() => {
+		const onPlace = (event: Event) => {
+			const kind = toastDeskKind(String((event as CustomEvent<string>).detail ?? ''))
+			if (kind && isSys(kind)) open(kind)
+		}
+		window.addEventListener(OPEN_TOAST_PLACE, onPlace)
+		return () => window.removeEventListener(OPEN_TOAST_PLACE, onPlace)
+	}, [open])
 
 	const didReopenAssistant = useRef(false)
 	useEffect(() => {
@@ -2671,17 +2682,7 @@ function Overview({
 	const layerRef = useRef<HTMLDivElement>(null)
 	useDialogFocus(true, layerRef, () => setMode(null), {initialFocus: ref})
 	const showApps = mode === 'apps' || q.trim() !== '' || !hasWindows
-	const webKeys = withTerminals(
-		[
-			...SYSTEM_DOCK.filter((k) => k !== 'terminal' || owner),
-			'assistant',
-			'personalize',
-			...[...appList].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)).map((a) => `app:${a.id}`),
-			...(owner ? [DESKTOP_KEY] : []),
-			...machineList.map((m) => `machine:${m.id}`),
-		],
-		showTerminals,
-	)
+	const webKeys = withTerminals(placeableKeys(appList, machineList, owner), showTerminals)
 	const linuxKeys = railReady ? railApps.filter((a) => !a.terminal).map((a) => `rail-app:${a.id}`) : []
 	const keys = tab === 'web' ? webKeys : tab === 'linux' ? linuxKeys : [...webKeys, ...linuxKeys]
 	const items = keys.map(info).filter((x) => !q.trim() || x.label.toLowerCase().includes(q.trim().toLowerCase()))
