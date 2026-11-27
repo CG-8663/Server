@@ -22,6 +22,7 @@ import {Desktop} from './desktop/Desktop'
 import {resetDeskConfig} from './desktop/config'
 import {OPEN_SETTINGS} from './desktop/settingsPage'
 import {safeSession} from './safeStorage'
+import {phoneSettingsGearAction} from './settingsChrome'
 import {ScreenErrorBoundary} from './screenBoundary'
 import {inAppBackTarget, markInAppHistory, readInAppHistoryFlag} from './inAppHistory'
 import {ThemeModeButton} from './theme/ThemeModeButton'
@@ -179,6 +180,8 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 		return () => window.removeEventListener(VIEW_APP, onView)
 	}, [])
 	const [bellOpen, setBellOpen] = useState(false)
+	// Remount Settings when the chrome gear resets a nested page to main.
+	const [settingsEpoch, setSettingsEpoch] = useState(0)
 	const [terminal, setTerminal] = useState<{app?: {id: string; name?: string; icon?: string}; input?: string} | null>(null)
 	const [assistantOpen, setAssistantOpen] = useState(() => !!reopenAssistant)
 	const turn = useAssistantTurn()
@@ -242,10 +245,17 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	}, [])
 	useEffect(() => {
 		const onOpen = (e: Event) => {
-			safeSession.set('omarchy-server:settings-page', String((e as CustomEvent<string>).detail || 'main'))
-			setTab('settings')
-			markInAppHistory((key, value) => sessionStorage.setItem(key, value))
-			history.pushState(null, '', '#/settings')
+			const page = String((e as CustomEvent<string>).detail || 'main')
+			if (page === 'main') safeSession.remove('omarchy-server:settings-page')
+			else safeSession.set('omarchy-server:settings-page', page)
+			setTab((cur) => {
+				if (cur === 'settings') setSettingsEpoch((n) => n + 1)
+				else {
+					markInAppHistory((key, value) => sessionStorage.setItem(key, value))
+					history.pushState(null, '', '#/settings')
+				}
+				return 'settings'
+			})
 			scrollPhoneToTop()
 		}
 		window.addEventListener(OPEN_SETTINGS, onOpen)
@@ -273,6 +283,17 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 			setTab(t)
 			scrollPhoneToTop()
 		}
+	}
+	// Chrome gear: open Settings from elsewhere; if already in Settings (including Appearance), return to main.
+	const openSettingsFromChrome = () => {
+		if (phoneSettingsGearAction(tab) === 'reset-main') {
+			haptic(5)
+			safeSession.remove('omarchy-server:settings-page')
+			setSettingsEpoch((n) => n + 1)
+			scrollPhoneToTop()
+			return
+		}
+		go('settings')
 	}
 	// A direct open of #/settings (or store, or clips) has no in-app entry to pop.
 	const backInApp = () => {
@@ -303,7 +324,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 					<button
 						className="round-btn"
 						aria-label="Settings"
-						onClick={() => go('settings')}
+						onClick={openSettingsFromChrome}
 					>
 						<Icon name="settings" size={20} />
 					</button>
@@ -349,7 +370,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						{tab === 'terminals' && owner && <Terminals />}
 						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} onClips={() => go('clips')} onTerminals={owner ? () => go('terminals') : undefined} />}
 						{tab === 'clips' && <Clips onBack={backInApp} />}
-						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={backInApp} />}
+						{tab === 'settings' && <Settings key={settingsEpoch} prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={backInApp} />}
 					</main>
 				</Suspense>
 				</ScreenErrorBoundary>

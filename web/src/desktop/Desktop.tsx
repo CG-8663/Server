@@ -1256,13 +1256,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			})
 			return {...c, icons: sorted.map((i, n) => ({...i, col: Math.floor(n / rows), row: n % rows}))}
 		})
+	// Appearance is its own window on the desktop so Settings can be focused without closing it.
 	const openAppearance = (tab?: string) => {
 		try {
 			if (tab) rememberAppearanceFocus(sessionStorage, tab)
 		} catch {
 			/* private */
 		}
-		open('settings', {page: 'appearance'})
+		open('personalize', tab ? {tab} : undefined)
 	}
 	const desktopMenu = (x: number, y: number, opener?: HTMLElement | null) =>
 		setMenu({
@@ -1344,7 +1345,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			} catch {
 				/* private */
 			}
-			open('settings', {page: 'appearance'})
+			open('personalize')
 		}
 	}, [open])
 	useEffect(() => {
@@ -3604,7 +3605,16 @@ const WindowContent = memo(
 				case 'system':
 					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} onClips={() => desk.open('clips')} />
 				case 'settings':
-					return <Settings key={settingsRemountKey(win.payload)} prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={close} />
+					return (
+						<Settings
+							key={settingsRemountKey(win.payload)}
+							prefs={prefs}
+							setPrefs={setPrefs}
+							onSignedOut={onSignedOut}
+							onBack={close}
+							onOpenAppearance={() => desk.open('personalize')}
+						/>
+					)
 				case 'personalize':
 					return <Personalize tab={win.payload?.tab} prefs={prefs} setPrefs={setPrefs} onOpenThemes={() => desk.open('settings', {page: 'omarchy-themes'})} />
 				case 'assistant':
