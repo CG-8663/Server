@@ -833,8 +833,12 @@ errors: 3 data errors, use '-v' for a list
         kw = dict(run=fake.run, user=self.kw["user"], files=files)
         self.assertEqual(self.handle("sleep", ["/dev/sdb", "20"], **kw), "ok")
         text = files[UDEV_SLEEP]
-        self.assertNotIn("/usr/bin/hdparm", text)
-        self.assertIn(hdparm_path(), text)
+        resolved = hdparm_path()
+        self.assertIn(resolved, text)
+        # Arch links /usr/sbin to /usr/bin, so the resolved path can be /usr/bin/hdparm.
+        for stale in ("/usr/bin/hdparm", "/usr/sbin/hdparm", "/sbin/hdparm"):
+            if stale != resolved:
+                self.assertNotIn(stale, text)
         self.assertIn('ENV{ID_SERIAL_SHORT}=="WD-A"', text)
         self.assertIn('ENV{ID_SERIAL_SHORT}=="WD-B"', text)
 
