@@ -669,7 +669,7 @@ export function TerminalScreen({
 	const live = state === 'connected'
 	const status = terminalStatusLabel(state, {attempt})
 	const where =
-		app ? ' · App shell' : agent ? ' · Shell through its connector' : container ? (container.mode === 'console' ? ' · Console' : ' · Root shell') : ''
+		app ? ' · App shell' : agent ? ' · Shell through its connector' : container ? (container.mode === 'console' ? ' · Container login' : ' · Root shell') : ''
 	// End the shell that's running (and whatever is running in it) and start a new one.
 	const newSession = async () => {
 		haptic(6)

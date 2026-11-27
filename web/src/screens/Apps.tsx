@@ -138,7 +138,7 @@ export function Apps({onOpenApp, onStore}: {onOpenApp: (app: UserApp) => void; o
 							<span>Find something to run on your machines.</span>
 							<button
 								type="button"
-								className="btn primary small"
+								className="btn primary"
 								style={{marginTop: 12}}
 								onClick={() => {
 									haptic(6)
