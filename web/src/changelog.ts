@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.97',
+		date: '2026-11-26',
+		title: 'A container’s terminal opens',
+		fixed: [
+			'A container’s Terminal opened behind its page, so you saw an empty panel. Why: container pages are sheets, which sit above the layer terminals open on. It now opens above the sheet.',
+			'A new container no longer offers Start while it’s still being created. Why: Incus lists it (stopped) a moment before it starts it, and pressing Start then failed. It shows as creating until it’s running.',
+		],
+	},
+	{
 		version: '0.9.96',
 		date: '2026-11-26',
 		title: 'New containers finish being created',

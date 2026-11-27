@@ -279,6 +279,10 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 		const rows = (await raw()).map((c) => {
 			const row = containerFrom(c)
 			const j = jobs.get(row.name)
+			// Incus lists a new container (stopped) before `launch` has started it. Until launch
+			// finishes it's still being created: no Start button to race it.
+			const p = pending.get(row.name)
+			if (p && !p.error) return {...row, job: p.what, error: null, progress: p.progress ?? null, startedAt: p.startedAt ?? null}
 			return {...row, job: j && !j.error ? j.what : null, error: j?.error ?? null}
 		})
 		for (const [n, p] of pending)

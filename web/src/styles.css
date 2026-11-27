@@ -11593,3 +11593,8 @@ input.temp-unit-box.fallback:checked {
 	min-width: 0;
 	box-sizing: border-box;
 }
+
+/* A terminal opened from a sheet (a container's page) goes above the sheet (51/52), not behind it. */
+.console.terminal.over-sheet {
+	z-index: 53;
+}
