@@ -11,6 +11,27 @@ const img = (os, release, alias, {arch = 'x86_64', type = 'container', variant =
 	properties: {os, release, variant, architecture: arch, description: `${os} ${release}`},
 })
 
+test('the library reads images as the image server lists them (architecture x86_64, properties amd64)', () => {
+	// Shaped like `incus image list images: --format json` for Debian 12.
+	const real = [
+		{
+			type: 'container',
+			architecture: 'x86_64',
+			size: 98765432,
+			aliases: [{name: 'debian/12/default/amd64'}, {name: 'debian/bookworm/default/amd64'}, {name: 'debian/12/amd64'}, {name: 'debian/bookworm'}, {name: 'debian/12/default'}, {name: 'debian/12'}],
+			properties: {architecture: 'amd64', description: 'Debian bookworm amd64 (20261126_05:24)', os: 'Debian', release: 'bookworm', serial: '20261126_05:24', type: 'squashfs', variant: 'default'},
+		},
+		{type: 'virtual-machine', architecture: 'x86_64', aliases: [{name: 'debian/12'}], properties: {architecture: 'amd64', os: 'Debian', release: 'bookworm', variant: 'default'}},
+		{type: 'container', architecture: 'aarch64', aliases: [{name: 'debian/12/arm64'}], properties: {architecture: 'arm64', os: 'Debian', release: 'bookworm', variant: 'default'}},
+	]
+	const lib = libraryFrom(real, 'x86_64')
+	assert.deepEqual(lib.map((d) => d.os), ['debian'])
+	assert.deepEqual(lib[0].releases.map((r) => r.alias), ['debian/12'])
+	assert.deepEqual(libraryFrom(real, 'aarch64'), [], 'an arm64 image with only an arch-specific alias is skipped')
+	// Old rule (properties.architecture === 'x86_64') found nothing here: the library was empty.
+	assert.equal(real.filter((i) => i.properties.architecture === 'x86_64').length, 0)
+})
+
 test('the library keeps the listed systems for this architecture, newest first, containers only', () => {
 	const lib = libraryFrom(
 		[

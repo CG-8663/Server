@@ -45,6 +45,7 @@ export const DISTROS = [
 ]
 
 const ARCH = {x64: 'x86_64', arm64: 'aarch64'}[process.arch] ?? process.arch
+const DEB_ARCH = {amd64: 'x86_64', arm64: 'aarch64', armhf: 'armv7l', i386: 'i686', riscv64: 'riscv64', ppc64el: 'ppc64le', s390x: 's390x'}
 
 /** The one command that sets up containers (bin/machines-add-lxc, linked into ~/.local/bin). It
  * needs sudo, so the owner runs it; MODC never asks for the password. */
@@ -64,7 +65,10 @@ export function libraryFrom(images, arch = ARCH) {
 	const byOs = new Map()
 	for (const img of Array.isArray(images) ? images : []) {
 		const p = img?.properties ?? {}
-		if (img?.type !== 'container' || p.architecture !== arch || (p.variant && p.variant !== 'default')) continue
+		// The image's own architecture is Incus's name (x86_64, aarch64); its properties use the
+		// distribution's name (amd64, arm64), so either is accepted.
+		const imgArch = String(img?.architecture ?? '') || (DEB_ARCH[p.architecture] ?? String(p.architecture ?? ''))
+		if (img?.type !== 'container' || imgArch !== arch || (p.variant && p.variant !== 'default')) continue
 		const distro = DISTROS.find((d) => d.os === String(p.os ?? '').toLowerCase())
 		if (!distro) continue
 		const alias = (img.aliases ?? [])

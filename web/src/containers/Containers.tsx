@@ -332,6 +332,8 @@ function CreateContainer({onDone, existing, backLabel = 'Containers'}: {onDone: 
 						<div className="skeleton" style={{height: 200, borderRadius: 16}} />
 					) : library.isError ? (
 						<p className="quiet">{(library.error as Error).message}</p>
+					) : !library.data?.length ? (
+						<p className="quiet">The library came back empty. Check that this server can reach images.linuxcontainers.org, then come back.</p>
 					) : (
 						(library.data ?? []).map((d) => (
 							<Group key={d.os} title={d.name}>
