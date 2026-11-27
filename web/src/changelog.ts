@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.98',
+		date: '2026-11-27',
+		title: 'Sun, Moon, and Off in the top bar',
+		added: [
+			'Sun, Moon, and Off sit in the desktop top bar and next to Settings on the phone. Sun and Moon use the palettes marked in Appearance. Off returns to Horizon, Your photo, and Omarchy.',
+		],
+		fixed: [
+			'Horizon, Your photo, and Omarchy are the same size.',
+		],
+	},
+	{
 		version: '0.9.97',
 		date: '2026-11-26',
 		title: 'A container’s terminal opens',
