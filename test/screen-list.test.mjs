@@ -26,6 +26,7 @@ test('a selection border is not clipped by the card or crossed by the row above'
 test('the screen body lists use screen-list', () => {
 	const files = [
 		'../web/src/fleet/MachineManager.tsx',
+		'../web/src/fleet/Terminals.tsx',
 		'../web/src/fleet/NuEntries.tsx',
 		'../web/src/screens/Apps.tsx',
 		'../web/src/screens/Files.tsx',
