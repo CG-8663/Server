@@ -1,6 +1,7 @@
-import {useMemo, useState} from 'react'
-import {useQuery} from '@tanstack/react-query'
+import {useEffect, useMemo, useRef, useState} from 'react'
+import {useQuery, useQueryClient} from '@tanstack/react-query'
 
+import {AddFile, type Download} from './AddFile'
 import {query, type MachineCapabilities, type MemoryUsage, type OsImage} from './api'
 import {useAction, useCpu, useMachines, useMemory, useUser} from './data'
 import {defaultCores, defaultMemoryGb, diskRange, hostMaxMemoryGb, machineUsernameHint, machineUsernameOk, nextDiskGb} from './machineForm'
@@ -86,6 +87,23 @@ function LocalCreateMachine({open, onClose, host}: {open: boolean; onClose: () =
 		refetchInterval: (q) => ((q.state.data ?? []).some((i) => i.state === 'downloading') ? 2000 : false),
 	})
 	const ownIsos = useQuery({queryKey: ['machines.localIsos'], queryFn: () => query<OsImage[]>('machines.localIsos'), enabled: open && !remote, staleTime: 15_000})
+	// Adding ISOs to the server is the owner's.
+	const isOwnerHere = useUser().data?.role !== 'member'
+	const isoDownloads = useQuery({
+		queryKey: ['machines.isoDownloads'],
+		queryFn: () => query<Download[]>('machines.isoDownloads'),
+		enabled: open && !remote && isOwnerHere,
+		retry: false,
+		refetchInterval: (q) => ((q.state.data ?? []).some((d) => !d.error) ? 2000 : false),
+	})
+	const qcIso = useQueryClient()
+	const downloadingIsos = (isoDownloads.data ?? []).filter((d) => !d.error).length
+	const wasDownloading = useRef(0)
+	useEffect(() => {
+		// A download finished: look for ISOs again.
+		if (downloadingIsos < wasDownloading.current) qcIso.invalidateQueries({queryKey: ['machines.localIsos']})
+		wasDownloading.current = downloadingIsos
+	}, [downloadingIsos, qcIso])
 	const [picked, setPicked] = useState<OsImage | null>(null)
 	const close = () => {
 		setPicked(null)
@@ -193,6 +211,16 @@ function LocalCreateMachine({open, onClose, host}: {open: boolean; onClose: () =
 									<div className="glass group" style={{borderRadius: 18, '--inset': '74px'} as React.CSSProperties}>
 										{ownIsos.data!.map(renderRow)}
 									</div>
+								)}
+								{isOwnerHere && (
+									<AddFile
+										what="an ISO"
+										accept=".iso"
+										linkProcedure="machines.downloadIso"
+										linkPlaceholder="https://…/installer.iso"
+										downloads={isoDownloads.data ?? []}
+										onAdded={() => (qcIso.invalidateQueries({queryKey: ['machines.isoDownloads']}), qcIso.invalidateQueries({queryKey: ['machines.localIsos']}))}
+									/>
 								)}
 								<p className="footer-note" style={{textAlign: 'left'}}>
 									{(ownIsos.data ?? []).length ? 'ISOs found in your Home folder. ' : 'Put an .iso file anywhere in Files (Downloads is fine) and it shows up here. '}
