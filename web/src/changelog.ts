@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.94',
+		date: '2026-11-26',
+		title: 'Updates see lettered versions',
+		fixed: [
+			'0.9.93B was never offered as an update to 0.9.93A. Why: updates compared only the numbers in a version, so 0.9.93A and 0.9.93B looked the same. Letters now count (0.9.93 < 0.9.93A < 0.9.93B < 0.9.94). This release carries 0.9.93B’s container fix: containers no longer stop at “unknown flag: --format” after setting up, and clearing a container’s CPU cap works.',
+		],
+	},
+	{
 		version: '0.9.93B',
 		date: '2026-11-26',
 		title: 'Containers past the setup card',
@@ -1311,11 +1319,21 @@ export const CHANGELOG: Release[] = [
 	},
 ]
 
-const parse = (v: string) => v.split('.').map((n) => parseInt(n, 10) || 0)
+// A number with an optional letter after it: 0.9.93 < 0.9.93A < 0.9.93B < 0.9.94.
+const parse = (v: string) =>
+	v.split('.').map((part) => {
+		const m = /^(\d*)([A-Za-z]*)/.exec(part) ?? []
+		return [parseInt(m[1] ?? '', 10) || 0, (m[2] ?? '').toUpperCase()] as const
+	})
 export function newer(a: string, b: string) {
 	const x = parse(a)
 	const y = parse(b)
-	for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0)
+	for (let i = 0; i < Math.max(x.length, y.length); i++) {
+		const [na, la] = x[i] ?? [0, '']
+		const [nb, lb] = y[i] ?? [0, '']
+		if (na !== nb) return na > nb
+		if (la !== lb) return la.length !== lb.length ? la.length > lb.length : la > lb
+	}
 	return false
 }
 // Releases a device hasn't seen yet. With no record (first run of this feature), just the newest one.
