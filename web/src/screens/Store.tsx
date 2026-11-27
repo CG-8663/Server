@@ -201,6 +201,7 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 				: browsing
 				? categories.slice(0, 8).map((c) => {
 						const items = all.filter((a) => categoryOf(a.category) === c).slice(0, 9)
+						if (items.length === 0) return null
 						return (
 							<section key={c}>
 								<div className="section-head">
@@ -209,7 +210,7 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 										See all
 									</button>
 								</div>
-								<div className="shelf">
+								<div className="shelf screen-list glass">
 									{items.map((app) => (
 										<StoreItem key={app.id} app={app} installed={installed.get(app.id)} count={installsOf(app.id, installPlaces)} onPick={pick} onOpenInstalled={onOpenInstalled} />
 									))}
@@ -218,23 +219,24 @@ export function Store({onOpenInstalled, onBack, onTerminal, bound = null}: {onOp
 						)
 					})
 				: !registry.isLoading && !(problem && !registry.data) && (
-						<div className="list-store" style={{marginTop: 4}}>
+						shown.length === 0 ? (
+							<div className="glass empty">
+								<span className="big">
+									<Icon name="search" size={30} />
+								</span>
+								<b>No apps found</b>
+								<span>Try a different search, or submit the app you’re looking for.</span>
+								<a className="btn small" href={SUBMIT_APP_URL} target="_blank" rel="noopener noreferrer" style={{marginTop: 10}}>
+									Submit an app
+								</a>
+							</div>
+						) : (
+						<div className="list-store screen-list glass" style={{marginTop: 4}}>
 							{shown.map((app) => (
 								<StoreItem key={app.id} app={app} installed={installed.get(app.id)} count={installsOf(app.id, installPlaces)} onPick={pick} onOpenInstalled={onOpenInstalled} />
 							))}
-							{shown.length === 0 && (
-								<div className="glass empty">
-									<span className="big">
-										<Icon name="search" size={30} />
-									</span>
-									<b>No apps found</b>
-									<span>Try a different search, or submit the app you’re looking for.</span>
-									<a className="btn small" href={SUBMIT_APP_URL} target="_blank" rel="noopener noreferrer" style={{marginTop: 10}}>
-										Submit an app
-									</a>
-								</div>
-							)}
 						</div>
+						)
 					)}
 
 			{browsing && !registry.isLoading && <SubmitApp compact />}

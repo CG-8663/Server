@@ -88,3 +88,63 @@ test('applyPrefs uses the darkened accent text in Daylight', () => {
 	const ui = readFileSync(new URL('../web/src/ui.tsx', import.meta.url), 'utf8')
 	assert.equal(ui.match(/light && darkenForTextOn\(/g)?.length, 2)
 })
+
+function rgbaToken(css, name) {
+	const m = css.match(new RegExp(`${name}: rgba\\(\\s*([\\d.]+)\\s*,\\s*([\\d.]+)\\s*,\\s*([\\d.]+)\\s*,\\s*([\\d.]+)\\s*\\)`))
+	assert.ok(m, `${name} rgba not found`)
+	return {rgb: [Number(m[1]), Number(m[2]), Number(m[3])], a: Number(m[4])}
+}
+
+function over(fg, bg, alpha) {
+	return mixRgb(fg, bg, alpha * 100)
+}
+
+test('Midnight, Neon, and Ember muted text is at least 4.5:1 on the page and the card', () => {
+	for (const id of ['mocha', 'tokyo', 'gruvbox']) {
+		const css = block(`[data-theme='${id}']`)
+		const muted = token(css, '--muted')
+		for (const bg of [token(css, '--bg'), token(css, '--card')]) {
+			assert.ok(ratio(muted, bg) >= 4.5, `${id} ${muted} on ${bg} is ${ratio(muted, bg).toFixed(2)}`)
+		}
+	}
+})
+
+test('Horizon secondary text is at least 4.5:1 on the frost card over a white picture', () => {
+	const start = CSS.indexOf("[data-theme='horizon']")
+	const css = CSS.slice(CSS.indexOf('{', start), CSS.indexOf('\n}', CSS.indexOf('{', start)))
+	const card = rgbaToken(css, '--card')
+	const muted = rgbaToken(css, '--muted')
+	const onWhite = over(card.rgb, [255, 255, 255], card.a)
+	const text = over(muted.rgb, onWhite, muted.a)
+	const got = contrastRatio(text, onWhite)
+	assert.ok(got >= 4.5, `horizon muted on the card over white is ${got.toFixed(2)}`)
+})
+
+test('Linen and Sky muted text is at least 4.5:1 on the card over the page', () => {
+	for (const id of ['latte', 'linen', 'sky']) {
+		const css = block(`[data-theme='${id}']`)
+		const glass = rgbaToken(css, '--glass')
+		const page = rgb(token(css, '--bg'))
+		const card = over(glass.rgb, page, glass.a)
+		const got = contrastRatio(rgb(token(css, '--muted')), card)
+		assert.ok(got >= 4.5, `${id} muted on the card is ${got.toFixed(2)}`)
+	}
+})
+
+test('a danger button is white text on a deep red, at least 4.5:1 in every theme', () => {
+	const start = CSS.indexOf('.btn.danger {')
+	const rule = CSS.slice(start, CSS.indexOf('\n}', start))
+	assert.match(rule, /color:\s*#fff/)
+	const mix = rule.match(/color-mix\(in srgb, var\(--red\)\s+([\d.]+)%,\s*(#[0-9a-fA-F]{6})\)/)
+	assert.ok(mix, 'danger fill is a mix of --red')
+	const pct = Number(mix[1])
+	const anchor = rgb(mix[2])
+	const ids = ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte', 'linen', 'sky', 'omarchy']
+	for (const id of ids) {
+		const css = id === 'horizon' ? CSS.slice(CSS.indexOf('{', CSS.indexOf("[data-theme='horizon']")), CSS.indexOf('\n}', CSS.indexOf("[data-theme='horizon']"))) : block(`[data-theme='${id}']`)
+		const red = rgb(token(css, '--red'))
+		const fill = mixRgb(red, anchor, pct)
+		const got = contrastRatio([255, 255, 255], fill)
+		assert.ok(got >= 4.5, `${id} white on danger is ${got.toFixed(2)}`)
+	}
+})

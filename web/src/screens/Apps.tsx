@@ -110,7 +110,7 @@ export function Apps({onOpenApp, onStore}: {onOpenApp: (app: UserApp) => void; o
 				</button>
 			)}
 			{apps.isLoading ? (
-				<div className="glass group">
+				<div className="glass group screen-list">
 					{Array.from({length: 6}, (_, i) => (
 						<div key={i} className="row static">
 							<div className="skeleton" style={{width: 46, height: 46, borderRadius: 12}} />
@@ -135,7 +135,7 @@ export function Apps({onOpenApp, onStore}: {onOpenApp: (app: UserApp) => void; o
 					{needle && <span>No apps match “{q.trim()}”.</span>}
 				</div>
 			) : (
-				<div className="glass group" style={{'--inset': '74px'} as CSSProperties}>
+				<div className="glass group screen-list" style={{'--inset': '74px'} as CSSProperties}>
 					{groups.map((group) => {
 						const app = list.find((a) => a.id === group.appId)
 						if (!app) return null

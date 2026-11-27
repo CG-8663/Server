@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
-import {gaugeCaption, nextStatView, readingFace, statReadings, statViewOf} from '../web/src/fleet/statView.ts'
+import {cleanStatPicks, gaugeCaption, nextStatView, readingFace, statReadings, statViewOf, toggleStatPick} from '../web/src/fleet/statView.ts'
 
 test('stat view cycles one line, three lines, then gauges', () => {
 	assert.equal(statViewOf(undefined), 'line')
@@ -51,6 +51,33 @@ test('every view is given the same readings, including temperature and a size-on
 	assert.equal(hot.percent, temp.percent)
 	assert.equal(gaugeCaption(temp), null)
 	assert.equal(readings.find((r) => r.id === 'Battery').color, 'var(--green)')
+})
+
+test('hiding a stat keeps the rest, and a temperature choice stays separate', () => {
+	const gauges = [
+		{k: 'CPU', icon: 'cpu', p: 12, ready: true, sub: '12%'},
+		{k: 'Memory', icon: 'memory', p: 40, ready: true, sub: '1 GB of 4 GB'},
+		{k: 'Storage', icon: 'disk', p: 50, ready: true, sub: '1 GB of 2 GB'},
+	]
+	const hidden = toggleStatPick(null, 'CPU', false)
+	assert.deepEqual(hidden, {on: [], off: ['CPU']})
+	const readings = statReadings({gauges, temp: 40, diskSizeGb: null, statPicks: hidden})
+	assert.deepEqual(
+		readings.map((r) => r.id),
+		['Memory', 'Storage', 'temp:processor'],
+	)
+	assert.equal(toggleStatPick(hidden, 'CPU', true), null)
+	assert.deepEqual(cleanStatPicks({on: [], off: ['CPU', 'CPU', 'nope id']}), {on: [], off: ['CPU']})
+	assert.equal(cleanStatPicks({on: [], off: []}), null)
+	const ports = statReadings({
+		gauges,
+		temp: null,
+		diskSizeGb: null,
+		posture: {listeningPorts: [{port: 22, proto: 'tcp', addr: '0.0.0.0'}]},
+		statPicks: {on: [], off: ['ports']},
+	})
+	assert.equal(ports.some((r) => r.id === 'ports'), false)
+	assert.equal(ports.some((r) => r.id === 'CPU'), true)
 })
 
 test('a storage gauge already covers the disk, so the size-only reading is not added', () => {
