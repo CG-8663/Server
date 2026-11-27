@@ -12,10 +12,11 @@
 // owner's own templates (a container saved as an image). Small app recipes are the App Store's job.
 
 import {spawn} from 'node:child_process'
-import {mkdir, readdir, rm, stat} from 'node:fs/promises'
+import {mkdir, mkdtemp, readdir, rm, stat, writeFile as writeFs} from 'node:fs/promises'
 import os from 'node:os'
-import {join} from 'node:path'
+import {basename, join} from 'node:path'
 
+import {checkLink, fileNameFor, listDownloads, startDownload} from './download.mjs'
 import {RpcError} from './rpc.mjs'
 
 const NAME = /^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/
@@ -61,16 +62,20 @@ export function setupCommand() {
 
 /** Group a `incus image list images: --format json` listing into the library: per system, its
  * current releases for this server's architecture, newest first. */
-export function libraryFrom(images, arch = ARCH) {
+export function libraryFrom(images, arch = ARCH, {all = false} = {}) {
 	const byOs = new Map()
+	const seen = new Map()
 	for (const img of Array.isArray(images) ? images : []) {
 		const p = img?.properties ?? {}
 		// The image's own architecture is Incus's name (x86_64, aarch64); its properties use the
 		// distribution's name (amd64, arm64), so either is accepted.
 		const imgArch = String(img?.architecture ?? '') || (DEB_ARCH[p.architecture] ?? String(p.architecture ?? ''))
 		if (img?.type !== 'container' || imgArch !== arch || (p.variant && p.variant !== 'default')) continue
-		const distro = DISTROS.find((d) => d.os === String(p.os ?? '').toLowerCase())
+		const osId = String(p.os ?? '').toLowerCase()
+		// Every system Incus offers, when asked; otherwise the short, maintained list.
+		const distro = DISTROS.find((d) => d.os === osId) ?? (all && /^[a-z0-9][a-z0-9._-]*$/.test(osId) ? {os: osId, name: String(p.os)} : null)
 		if (!distro) continue
+		if (!seen.has(distro.os)) seen.set(distro.os, distro)
 		const alias = (img.aliases ?? [])
 			.map((a) => a?.name)
 			.filter((n) => typeof n === 'string' && ALIAS.test(n) && n.split('/').length === 2 && !n.endsWith('/default'))
@@ -89,7 +94,8 @@ export function libraryFrom(images, arch = ARCH) {
 		for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (y[i] ?? 0) - (x[i] ?? 0)
 		return 0
 	}
-	return DISTROS.filter((d) => byOs.has(d.os)).map((d) => ({
+	const order = [...DISTROS.filter((d) => byOs.has(d.os)), ...[...seen.values()].filter((d) => !DISTROS.includes(d)).sort((a, b) => a.name.localeCompare(b.name))]
+	return order.map((d) => ({
 		os: d.os,
 		name: d.name,
 		// Numbered releases first (newest), then rolling ones; at most four.
@@ -291,8 +297,8 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 		return rows.sort((a, b) => a.name.localeCompare(b.name))
 	}
 
-	async function images({refresh = false} = {}) {
-		if (!refresh && library && now() - library.at < 6 * 3600_000) return library.value
+	async function images({refresh = false, all: everything = false} = {}) {
+		if (!refresh && library && now() - library.at < 6 * 3600_000) return libraryFrom(library.value, ARCH, {all: !!everything})
 		// Filtered here (containers, this architecture), not on the command line.
 		const out = await incus(['image', 'list', 'images:', '--format', 'json'], {timeout: 90_000})
 		let all = []
@@ -301,8 +307,8 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 		} catch {
 			throw new RpcError('INTERNAL_SERVER_ERROR', 'The container library couldn’t be read')
 		}
-		library = {at: now(), value: libraryFrom(all)}
-		return library.value
+		library = {at: now(), value: all}
+		return libraryFrom(all, ARCH, {all: !!everything})
 	}
 
 	/** The owner's own templates: containers saved as images, aliased modc/<name>. */
@@ -378,7 +384,7 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 			meta = {from: alias.slice(5)}
 		} else {
 			if (!ALIAS.test(image)) throw new RpcError('BAD_REQUEST', 'Pick a system from the library')
-			const lib = await images()
+			const lib = await images({all: true})
 			if (!lib.some((d) => d.releases.some((r) => r.alias === image))) throw new RpcError('BAD_REQUEST', 'That system isn’t in the library')
 			source = `images:${image}`
 			meta = {os: image.split('/')[0], release: image.split('/')[1]}
@@ -704,12 +710,130 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 		return {path: `${dir}/${safe}`}
 	}
 
+	// ---- your own templates from a file -----------------------------------------------------------
+	// Container templates in your Home folder: an Incus/LXD image (it has a metadata.yaml), or a plain
+	// root filesystem tarball such as a Proxmox CT template. Both become one of Your templates.
+	const TEMPLATE_FILE = /\.(tar\.(gz|xz|zst|bz2)|tgz|txz|tzst)$/i
+	const downloads = new Map()
+	const imports = new Map() // template name -> {file, error?, startedAt}
+	async function templateFiles() {
+		const found = []
+		if (files?.resolve) {
+			const {real: home} = await files.resolve('/Home', {mustExist: true})
+			const walk = async (dir, depth) => {
+				if (depth > 4 || found.length >= 100) return
+				for (const e of await readdir(dir, {withFileTypes: true}).catch(() => [])) {
+					if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'Pools') continue
+					const full = join(dir, e.name)
+					if (e.isDirectory()) await walk(full, depth + 1)
+					else if (e.isFile() && TEMPLATE_FILE.test(e.name)) {
+						const st = await stat(full).catch(() => null)
+						// Anything this small isn't a system.
+						if (st && st.size > 2 * 1024 * 1024) found.push({path: `/Home${full.slice(home.length)}`, name: e.name, size: st.size})
+					}
+				}
+			}
+			await walk(home, 0)
+		}
+		for (const [k, v] of imports) if (v.error && now() - Date.parse(v.startedAt) > 10 * 60_000) imports.delete(k)
+		return {
+			files: found.sort((a, b) => a.name.localeCompare(b.name)),
+			downloads: listDownloads(downloads, now),
+			imports: [...imports].map(([template, v]) => ({template, file: v.file, error: v.error ?? null})),
+		}
+	}
+	const tarEntries = (file) =>
+		new Promise((resolve) => {
+			// The first entries are enough: an Incus image starts with metadata.yaml.
+			const child = spawn('tar', ['-tf', file], {stdio: ['ignore', 'pipe', 'ignore']})
+			let buf = ''
+			const lines = []
+			const done = () => (child.kill('SIGKILL'), resolve(lines))
+			child.stdout.on('data', (d) => {
+				buf += d
+				const parts = buf.split('\n')
+				buf = parts.pop()
+				lines.push(...parts)
+				if (lines.length >= 50) done()
+			})
+			child.on('close', () => resolve(lines))
+			child.on('error', () => resolve(lines))
+			setTimeout(done, 60_000).unref?.()
+		})
+	async function importTemplate(input = {}) {
+		if (!files?.resolve) throw new RpcError('PRECONDITION_FAILED', 'Server file storage isn’t available')
+		const path = String(input.path ?? '')
+		if (!path.startsWith('/Home/') || path.split('/').includes('..') || !TEMPLATE_FILE.test(path)) throw new RpcError('BAD_REQUEST', 'Pick a .tar.gz, .tar.xz or .tar.zst template file in your Home folder')
+		const {real} = await files.resolve(path, {mustExist: true})
+		const t = name(input.template ?? basename(path).toLowerCase().replace(TEMPLATE_FILE, '').replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63))
+		if ((await templates()).some((x) => x.name === t) || (imports.has(t) && !imports.get(t).error)) throw new RpcError('CONFLICT', `There’s already a template named ${t}`)
+		imports.set(t, {file: basename(path), startedAt: new Date(now()).toISOString()})
+		;(async () => {
+			const entries = await tarEntries(real)
+			if (!entries.length) throw new Error('That file isn’t a tar archive this server can read')
+			if (entries.some((e) => e.replace(/^\.\//, '') === 'metadata.yaml')) {
+				await incus(['image', 'import', real, '--alias', `modc/${t}`], {timeout: 60 * 60_000})
+				return
+			}
+			// A plain root filesystem: give Incus the small description it needs alongside it.
+			const lower = basename(path).toLowerCase()
+			const osName = ['debian', 'ubuntu', 'alpine', 'archlinux', 'fedora', 'rockylinux', 'almalinux', 'centos', 'opensuse', 'devuan', 'gentoo'].find((d) => lower.includes(d === 'archlinux' ? 'arch' : d)) ?? 'linux'
+			const release = /[-_](\d+(?:\.\d+)?)/.exec(lower)?.[1] ?? ''
+			const work = await mkdtemp(join(os.tmpdir(), 'modc-template-'))
+			try {
+				const yaml = [
+					`architecture: ${ARCH}`,
+					`creation_date: ${Math.floor(now() / 1000)}`,
+					'properties:',
+					`  description: ${JSON.stringify(`${t} (from ${basename(path)})`)}`,
+					`  os: ${JSON.stringify(osName)}`,
+					`  release: ${JSON.stringify(release)}`,
+					`  user.modc.from: ${JSON.stringify(basename(path))}`,
+					'',
+				].join('\n')
+				await writeFs(join(work, 'metadata.yaml'), yaml)
+				await new Promise((res, rej) => {
+					const c = spawn('tar', ['-czf', join(work, 'meta.tar.gz'), '-C', work, 'metadata.yaml'], {stdio: 'ignore'})
+					c.on('close', (code) => (code === 0 ? res() : rej(new Error('Couldn’t prepare the template'))))
+					c.on('error', rej)
+				})
+				await incus(['image', 'import', join(work, 'meta.tar.gz'), real, '--alias', `modc/${t}`], {timeout: 60 * 60_000})
+			} finally {
+				await rm(work, {recursive: true, force: true}).catch(() => {})
+			}
+		})().then(
+			() => imports.delete(t),
+			(e) => imports.set(t, {file: basename(path), startedAt: new Date(now()).toISOString(), error: e?.message ?? String(e)}),
+		)
+		return {template: t}
+	}
+	async function downloadTemplate(input = {}) {
+		if (!files?.resolve) throw new RpcError('PRECONDITION_FAILED', 'Server file storage isn’t available')
+		const url = await checkLink(input.url)
+		const fileName = fileNameFor(url, TEMPLATE_FILE)
+		if (!fileName) throw new RpcError('BAD_REQUEST', 'The link has to end in a template file: .tar.gz, .tar.xz or .tar.zst')
+		const {real: dir} = await files.resolve('/Home/Downloads', {mustExist: false})
+		await mkdir(dir, {recursive: true})
+		return startDownload({url, dir, name: fileName, jobs: downloads, now})
+	}
+
 	/** A root shell inside a running container, for the terminal. */
-	async function shellFor(n) {
+	/** The container's own console (its login prompt, like Proxmox's), or a root shell inside it. */
+	async function shellFor(n, mode = 'shell') {
 		const c = (await list()).find((x) => x.name === name(n))
 		if (!c) throw new RpcError('NOT_FOUND', 'No such container')
 		if (c.status !== 'running') throw new RpcError('PRECONDITION_FAILED', `${c.name} isn’t running`)
+		if (mode === 'console') return {command: ['incus', 'console', c.name]}
 		return {command: ['incus', 'exec', c.name, '--env', 'TERM=xterm-256color', '--', 'su', '-l']}
+	}
+
+	/** Set (or change) root's password, for signing in at the console or over SSH. */
+	async function setRootPassword(input = {}) {
+		const n = name(input.name)
+		const {password} = secrets({rootPassword: input.password})
+		if (!password) throw new RpcError('BAD_REQUEST', 'Type a password of 8 to 128 characters')
+		await firstSetup(n, {password, key: null}).catch((e) => Promise.reject(new RpcError('INTERNAL_SERVER_ERROR', e.message)))
+		return {ok: true}
 	}
 
 	return {
@@ -744,6 +868,10 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 			'containers.restoreBackup': {kind: 'mutation', run: restoreBackup},
 			'containers.deleteBackup': {kind: 'mutation', run: deleteBackup},
 			'containers.copyToServer': {kind: 'mutation', run: copyToServer},
+			'containers.setRootPassword': {kind: 'mutation', run: setRootPassword},
+			'containers.templateFiles': {kind: 'query', run: templateFiles},
+			'containers.importTemplate': {kind: 'mutation', run: importTemplate},
+			'containers.downloadTemplate': {kind: 'mutation', run: downloadTemplate},
 		},
 	}
 }

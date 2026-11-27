@@ -7,6 +7,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {mutate, query} from '../api'
 import {Icon} from '../icons'
 import {openTerminalWith} from '../terminalEvent'
+import {AddFile, type Download} from '../AddFile'
 import {Group, Row, Sheet, Spark, StatusPill, Switch, haptic, useConfirm, useToast} from '../ui'
 
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
@@ -293,8 +294,33 @@ function SwitchRow({label, sub, on, onChange, disabled}: {label: string; sub?: R
 }
 
 function CreateContainer({onDone, existing, backLabel = 'Containers'}: {onDone: () => void; existing: string[]; backLabel?: string}) {
-	const library = useQuery({queryKey: ['containers.images'], queryFn: () => query<Distro[]>('containers.images'), staleTime: 30 * 60_000, retry: false})
+	const [everything, setEverything] = useState(false)
+	const library = useQuery({queryKey: ['containers.images', everything], queryFn: () => query<Distro[]>('containers.images', {all: everything}), staleTime: 30 * 60_000, retry: false})
 	const mine = useQuery({queryKey: ['containers.templates'], queryFn: () => query<Template[]>('containers.templates'), retry: false})
+	const tplFiles = useQuery({
+		queryKey: ['containers.templateFiles'],
+		queryFn: () => query<{files: {path: string; name: string; size: number}[]; downloads: Download[]; imports: {template: string; file: string; error: string | null}[]}>('containers.templateFiles'),
+		retry: false,
+		refetchInterval: (q) => (q.state.data && (q.state.data.downloads.some((d) => !d.error) || q.state.data.imports.some((i) => !i.error)) ? 2000 : false),
+	})
+	const qc = useQueryClient()
+	const toast = useToast()
+	const importing = tplFiles.data?.imports ?? []
+	const wasImporting = useRef(0)
+	useEffect(() => {
+		const now = importing.filter((i) => !i.error).length
+		if (now < wasImporting.current) qc.invalidateQueries({queryKey: ['containers.templates']})
+		wasImporting.current = now
+	}, [importing, qc])
+	const importFile = async (path: string) => {
+		try {
+			const r = await mutate<{template: string}>('containers.importTemplate', {path})
+			toast(`Importing as the template ${r.template}`)
+			qc.invalidateQueries({queryKey: ['containers.templateFiles']})
+		} catch (e) {
+			toast(plain(e as Error), true)
+		}
+	}
 	const action = useContainerAction()
 	const [image, setImage] = useState<{id: string; label: string; os: string} | null>(null)
 	const [name, setName] = useState('')
@@ -332,6 +358,36 @@ function CreateContainer({onDone, existing, backLabel = 'Containers'}: {onDone: 
 							))}
 						</Group>
 					)}
+					<Group title="Template files on this server" footer="Container templates in your Home folder, like a Proxmox CT template (.tar.zst, .tar.xz, .tar.gz) or an Incus image. Importing one adds it to Your templates. Images made for Incus or LXD work best; a Proxmox template may need its network set up inside.">
+						{importing.map((i) => (
+							<Row key={i.template} icon="save" label={i.error ? `${i.template}: couldn’t import` : `Importing ${i.template}…`} sub={i.error ?? i.file} />
+						))}
+						{(tplFiles.data?.files ?? []).map((f) => (
+							<Row
+								key={f.path}
+								icon="zip"
+								label={f.name}
+								sub={`${bytes(f.size)} · ${f.path.replace(/^\/Home\//, '')}`}
+								trailing={
+									<button type="button" className="btn small" onClick={() => importFile(f.path)}>
+										Import
+									</button>
+								}
+							/>
+						))}
+						{!tplFiles.isLoading && !tplFiles.data?.files.length && !importing.length && <p className="quiet" style={{padding: '4px 12px'}}>None yet.</p>}
+					</Group>
+					<AddFile
+						what="a template"
+						accept=".gz,.xz,.zst,.bz2,.tgz,.txz"
+						linkProcedure="containers.downloadTemplate"
+						linkPlaceholder="https://…/debian-12-standard_amd64.tar.zst"
+						downloads={tplFiles.data?.downloads ?? []}
+						onAdded={() => qc.invalidateQueries({queryKey: ['containers.templateFiles']})}
+					/>
+					<div className="glass group" style={{padding: '2px 0'}}>
+						<SwitchRow label="Show every system" sub="All of Incus’s library, not only the main ones." on={everything} onChange={setEverything} />
+					</div>
 					{library.isLoading ? (
 						<div className="skeleton" style={{height: 200, borderRadius: 16}} />
 					) : library.isError ? (
@@ -620,7 +676,8 @@ function NotesAndTags({c, busy, run}: {c: Container; busy: boolean; run: (path: 
 export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers'}: {c: Container; all: Container[]; onBack: () => void; onOpen: (name: string) => void; backLabel?: string}) {
 	const action = useContainerAction()
 	const confirm = useConfirm()
-	const [term, setTerm] = useState(false)
+	const [term, setTerm] = useState<null | 'console' | 'shell'>(null)
+	const [pw, setPw] = useState('')
 	const [snap, setSnap] = useState('')
 	const [port, setPort] = useState({host: '', inner: '', protocol: 'tcp' as 'tcp' | 'udp'})
 	const [copy, setCopy] = useState<null | 'clone' | 'template'>(null)
@@ -633,7 +690,8 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers
 	// Container pages live in sheets, which sit above the usual terminal layer: open it above them.
 	const terminal = term ? (
 		<Suspense fallback={null}>
-			<TerminalScreen container={{name: c.name}} overSheet onClose={() => setTerm(false)} />
+			{/* The console starts at the container's login prompt; Enter brings the prompt up. */}
+			<TerminalScreen container={{name: c.name, mode: term}} overSheet input={term === 'console' ? '\r' : undefined} onClose={() => setTerm(null)} />
 		</Suspense>
 	) : null
 
@@ -708,11 +766,15 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers
 								Start
 							</button>
 						) : (
-							<button className="action" disabled={busy} onClick={() => setTerm(true)}>
-								<Icon name="terminal" size={22} />
-								Terminal
+							<button className="action" disabled={busy} onClick={() => setTerm('console')}>
+								<Icon name="window" size={22} />
+								Console
 							</button>
 						)}
+						<button className="action" disabled={busy || c.status !== 'running'} onClick={() => setTerm('shell')}>
+							<Icon name="terminal" size={22} />
+							Root shell
+						</button>
 						<button className="action" disabled={busy || c.status !== 'running'} onClick={() => run('containers.restart', `${c.name} is restarting`)}>
 							<Icon name="restart" size={22} />
 							Restart
@@ -732,6 +794,16 @@ export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers
 					</div>
 
 					<Graphs c={c} />
+					<Group title="Signing in" footer="Console is the container’s own screen: its login prompt, like Proxmox’s console. Sign in as root with the password set here. Root shell opens straight into it without one. In the console, press Ctrl+A then Q to let go of it.">
+						<div style={{display: 'flex', flexWrap: 'wrap', gap: 8, padding: '10px 12px', alignItems: 'end'}}>
+							<div style={{flex: '1 1 160px', minWidth: 0}}>
+								<TextField id="ct-pw2" label="Root password" type="password" value={pw} onChange={setPw} placeholder="8 characters or more" />
+							</div>
+							<button type="button" className="btn small" disabled={busy || c.status !== 'running' || pw.length < 8} onClick={() => action.mutate({path: 'containers.setRootPassword', input: {name: c.name, password: pw}, done: 'Root password set'}, {onSuccess: () => setPw('')})}>
+								<Icon name="key" size={14} /> Set
+							</button>
+						</div>
+					</Group>
 					<Resources key={`${c.cpus}-${c.memory}-${c.disk}-${c.cpuAllowance}-${c.cpuPriority}-${c.swap}`} c={c} busy={busy} run={run} />
 					<Boot key={`${c.bootOrder}-${c.bootDelay}`} c={c} busy={busy} run={run} />
 

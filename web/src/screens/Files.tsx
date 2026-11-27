@@ -368,7 +368,7 @@ async function uploadInPieces(file: File, target: string, onProgress: (loaded: n
   }
 }
 
-function uploadOne(
+export function uploadOne(
   item: UploadItem,
   dir: string,
   onProgress: (loaded: number) => void,

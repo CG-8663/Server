@@ -30,6 +30,7 @@ import {remoteGuestAgentRun} from './remote-guest-agent.mjs'
 import {RpcError} from './rpc.mjs'
 import {hostdevXml, parseUsbLive} from './usb.mjs'
 import {stoppedMessage} from './exec-error.mjs'
+import {checkLink, fileNameFor, listDownloads, startDownload} from './download.mjs'
 
 export const CATALOG_URL = 'https://raw.githubusercontent.com/MyOwnDataCenter/app-store/main/machines/catalog.json'
 const BUNDLED_CATALOG = fileURLToPath(new URL('./machine-catalog.json', import.meta.url))
@@ -593,6 +594,18 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const host = hostnameFor(m.name, m.id)
 		const hash = await hashPassword(password)
 		await mediaIso(m, 'seed', 'cidata', {'user-data': cloudUserData({host, username, hash, cloudInit: connectorCloudInit({...img, username, cloudInit: {adminGroup: img.adminGroup, ...img.cloudInit}})}), 'meta-data': cloudMetaData(host)})
+	}
+
+	// Add an ISO from a link: it's saved in Downloads (as .part until complete), where Your ISOs finds it.
+	const isoDownloads = new Map()
+	async function downloadIso(input = {}) {
+		if (!files) throw new RpcError('PRECONDITION_FAILED', 'Server file storage isn’t available')
+		const url = await checkLink(input?.url)
+		const name = fileNameFor(url, /\.iso$/i)
+		if (!name) throw new RpcError('BAD_REQUEST', 'The link has to end in .iso')
+		const {real: dir} = await files.resolve('/Home/Downloads', {mustExist: false})
+		await mkdir(dir, {recursive: true})
+		return startDownload({url, dir, name, jobs: isoDownloads, fetchImpl})
 	}
 
 	// Your own ISOs: anything ending in .iso in Home (a few folders deep), with its volume label.
@@ -2819,6 +2832,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			'machines.capabilities': {kind: 'query', run: capabilities},
 			'machines.osImages': {kind: 'query', run: osImages},
 			'machines.localIsos': {kind: 'query', run: localIsos},
+			'machines.isoDownloads': {kind: 'query', run: async () => listDownloads(isoDownloads)},
+			'machines.downloadIso': {kind: 'mutation', run: downloadIso},
 			'machines.list': {kind: 'query', run: list},
 			'machines.create': {kind: 'mutation', run: create},
 			'machines.start': {kind: 'mutation', run: lifecycle((d) => ['start', d], 'starting')},

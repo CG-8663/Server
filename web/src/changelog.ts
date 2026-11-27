@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.98',
+		date: '2026-11-26',
+		title: 'Container console, and your own ISOs and templates',
+		added: [
+			'Containers have a Console: the container’s own screen with its login prompt, like Proxmox’s console. Root shell still opens straight into it. Set root’s password from the container’s page to sign in at the console. Why: a container is a small system of its own, and its console is where it shows itself.',
+			'Add an ISO for virtual machines from a link or from this device, right in New virtual machine. It’s saved in Downloads and shows under Your own ISO when it’s complete.',
+			'Add container templates: download one from a link, upload one, or import any template file already on the server (a Proxmox CT template or an Incus image). Imported templates appear under Your templates. New container can also show Incus’s whole library, not only the main systems.',
+		],
+	},
+	{
 		version: '0.9.97',
 		date: '2026-11-26',
 		title: 'A container’s terminal opens',
