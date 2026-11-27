@@ -124,7 +124,12 @@ export function createTransfers({dataDir, paste, stat = async () => null, toasts
 			if (step.kind === 'idle') return
 			if (step.kind === 'continue') continue
 			if (step.kind === 'toast') {
-				await writeToast(step.auth, step.toast, step.name)
+				// The job is already saved. A toast that cannot be written must not reject the worker.
+				try {
+					await writeToast(step.auth, step.toast, step.name)
+				} catch (error) {
+					console.error('[omarchyd] transfer toast:', error instanceof Error ? error.message : error)
+				}
 				continue
 			}
 			if (step.kind === 'check') {
@@ -183,9 +188,13 @@ export function createTransfers({dataDir, paste, stat = async () => null, toasts
 				return false
 			})
 			if (pause) {
-				const book = await load(userId)
-				const job = book.jobs?.find((row) => row.id === step.id)
-				if (job) await writeToast(job.auth, 'problem', job.name)
+				try {
+					const book = await load(userId)
+					const job = book.jobs?.find((row) => row.id === step.id)
+					if (job) await writeToast(job.auth, 'problem', job.name)
+				} catch (error) {
+					console.error('[omarchyd] transfer toast:', error instanceof Error ? error.message : error)
+				}
 			}
 		}
 	}

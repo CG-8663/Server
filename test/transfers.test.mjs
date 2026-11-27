@@ -337,3 +337,22 @@ test('the saved book is readable', async () => {
 		await rm(b.root, {recursive: true, force: true})
 	}
 })
+
+test('a toast that cannot be saved does not stop the transfer', async () => {
+	const b = await boot(async () => ({path: '/Home/a', size: 1}))
+	b.toasts.procedures['toasts.add'].run = async () => {
+		throw new Error('disk full')
+	}
+	const errors = []
+	const onError = (error) => errors.push(error)
+	process.on('unhandledRejection', onError)
+	try {
+		await b.transfers.procedures['transfers.start'].run(startInput([clip('a', 'Notes')]), b.ctx)
+		assert.equal(await until(async () => ((await jobsOf(b))[0]?.state === 'done' ? true : null)), true)
+		await new Promise((resolve) => setTimeout(resolve, 40))
+		assert.deepEqual(errors, [])
+	} finally {
+		process.off('unhandledRejection', onError)
+		await rm(b.root, {recursive: true, force: true})
+	}
+})
