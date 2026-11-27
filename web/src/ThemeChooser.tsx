@@ -1,3 +1,5 @@
+import type {CSSProperties} from 'react'
+
 import {Icon} from './icons'
 import {applyPrefsUpdate, prefsChoosingYourPhoto} from './photoPrefs'
 import {RADIO_SELECTOR, rovingKeyDown, rovingTabIndex} from './roving'
@@ -136,7 +138,7 @@ function ThemeCard({
 	const face = background ?? {background: theme.bg, color: theme.fg, dots: [...theme.dots]}
 	return (
 		<div className={`theme-card-wrap${onPrefer ? ' has-prefer' : ''}`} style={{color: face.color}}>
-			<button type="button" className={`theme-card${on ? ' on' : ''}`} aria-pressed={on} style={{background: face.background, color: face.color}} onClick={onApply}>
+			<button type="button" className={`theme-card${on ? ' on' : ''}`} aria-pressed={on} style={{background: face.background, color: face.color, minHeight: id === 'horizon' || id === 'custom' ? 104 : undefined} as CSSProperties} onClick={onApply}>
 				<span className="label">{theme.name}</span>
 				<span className="dots">
 					{id === 'custom' && !face.dots.length ? (

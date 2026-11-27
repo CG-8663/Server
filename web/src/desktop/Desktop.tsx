@@ -33,7 +33,6 @@ import {dockLabel} from './dockLabel'
 import {extraWindowAction} from './extraWindow'
 import {ignoreRepeatedDesktopShortcut} from './shortcutRepeat'
 import {nextStarting, type StartingWatch} from './startingWatch'
-import {ThemeModeSwitch} from '../ThemeModeSwitch'
 import {LockChip, WorkspacePills} from './hyprland/Bar'
 import {Cheatsheet} from './hyprland/Cheatsheet'
 import {injectConsoleKey, keysymFromEvent, lastMinimizedOn, releaseConsoleSuper, topVisibleWindow} from './hyprland/consoleBridge'
@@ -1495,12 +1494,6 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 					onSettings={() => open('settings')}
 					onSystem={() => open('system')}
 					onPersonalize={() => openAppearance()}
-					prefs={prefs}
-					setPrefs={setPrefs}
-					onTheme={(id) => {
-						if (id === 'custom') setCfg((c) => ({...c, preset: null, wallpaper: 'photo'}))
-						if (id === 'omarchy') setCfg((c) => ({...c, preset: null, wallpaper: 'omarchy'}))
-					}}
 					left={
 						hypr ? (
 							<WorkspacePills
@@ -2363,9 +2356,6 @@ function TopBar(p: {
 	onSettings: () => void
 	onSystem: () => void
 	onPersonalize: () => void
-	prefs: Prefs
-	setPrefs: (p: Prefs) => void
-	onTheme?: (id: Prefs['theme']) => void
 	left?: ReactNode
 	lockChip?: ReactNode
 	winControls?: ReactNode
@@ -2424,7 +2414,6 @@ function TopBar(p: {
 				{notes.length + updates.length > 0 && <span className="note-dot" />}
 			</button>
 			<div className="top-right">
-				<ThemeModeSwitch prefs={p.prefs} setPrefs={p.setPrefs} onTheme={p.onTheme} />
 				{p.lockChip}
 				{cpuPct !== null && (
 					<StatChip icon="cpu" label={online ? 'CPU' : 'CPU (last reading — server unreachable)'} className={`top-stat${online ? '' : ' stale'}`} size={15}>
