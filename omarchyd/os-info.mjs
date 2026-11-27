@@ -20,9 +20,11 @@ const execRun = (cmd, args, {env, timeout = CHECK_TIMEOUT_MS} = {}) =>
 const exists = (p) => access(p).then(() => true, () => false)
 const lines = (text) => text.split('\n').map((l) => l.trim()).filter(Boolean)
 
-export function createOsInfo({release, home = os.homedir(), env = process.env, run = execRun, now = Date.now, kernel = os.release()} = {}) {
+export function createOsInfo({release, home = os.homedir(), env = process.env, run = execRun, now = Date.now, kernel = os.release(), dirs} = {}) {
 	const omarchyPath = env.OMARCHY_PATH || '/usr/share/omarchy'
-	const bins = [...new Set([join(omarchyPath, 'bin'), '/usr/share/omarchy/bin', join(home, '.local', 'share', 'omarchy', 'bin')])]
+	// dirs lets a test describe a machine with no Omarchy install. The default still looks at
+	// the usual places, including this computer's /usr/share/omarchy.
+	const bins = dirs ?? [...new Set([join(omarchyPath, 'bin'), '/usr/share/omarchy/bin', join(home, '.local', 'share', 'omarchy', 'bin')])]
 	let cache = null
 	let pending = null
 
