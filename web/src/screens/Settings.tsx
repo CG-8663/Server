@@ -6,6 +6,7 @@ import {mutate, query, type ActiveSession, type AssistantApi, type AssistantChec
 import {patchDeskConfig} from '../desktop/config'
 import {useBootstrap, useUser} from '../data'
 import {checkLiveText} from '../focus'
+import {isOwner} from '../isOwner'
 import {Icon, type IconName} from '../icons'
 import {Card, Field, Group, InWindow, Row, Segmented, Sheet, SheetHeader, Switch, VersionTag, haptic, initials, scrollPhoneToTop, useConfirm, useToast, type Prefs} from '../ui'
 import {agoText} from '../plural'
@@ -105,7 +106,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 		scrollPhoneToTop()
 	}
 	const close = () => setSheet(null)
-	const owner = user.data?.role !== 'member'
+	const owner = isOwner(user.data)
 
 	const twoFactor = useQ<boolean>('user.is2faEnabled')
 	const oidc = useQ<{clientCount: number}>('oidc.status', undefined, {enabled: owner})
@@ -761,7 +762,7 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 	const user = useUser()
 	const confirm = useConfirm()
 	const save = useSave()
-	const owner = user.data?.role !== 'member'
+	const owner = isOwner(user.data)
 	const self = user.data?.userId
 	const keys = useQ<AssistantKey[]>('assistant.keys')
 	const [add, setAdd] = useState(false)
@@ -919,8 +920,8 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 
 			<AssistantAppearanceSettings />
 
-			<AddKeySheet open={add} owner={user.data?.role === 'owner'} onClose={() => setAdd(false)} />
-			<EditKeySheet open={!!edit} keyRow={edit} owner={user.data?.role === 'owner'} onClose={() => setEdit(null)} />
+			<AddKeySheet open={add} owner={isOwner(user.data)} onClose={() => setAdd(false)} />
+			<EditKeySheet open={!!edit} keyRow={edit} owner={isOwner(user.data)} onClose={() => setEdit(null)} />
 			{signIn && <ChatGptSignInSheet keyId={signIn.keyId} onClose={() => setSignIn(null)} />}
 			{modelFor && <ChatGptModelSheet keyRow={modelFor} onClose={() => setModelFor(null)} />}
 			<ShareKeySheet open={!!share} keyRow={share} accounts={boot.accounts} self={self} onClose={() => setShare(null)} />

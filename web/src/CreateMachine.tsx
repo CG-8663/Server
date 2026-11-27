@@ -4,6 +4,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {AddFile, type Download} from './AddFile'
 import {query, type MachineCapabilities, type MemoryUsage, type OsImage} from './api'
 import {useAction, useCpu, useMachines, useMemory, useUser} from './data'
+import {isOwner} from './isOwner'
 import {defaultCores, defaultMemoryGb, diskRange, hostMaxMemoryGb, machineUsernameHint, machineUsernameOk, nextDiskGb} from './machineForm'
 import {Icon} from './icons'
 import {osLook} from './osLook'
@@ -88,7 +89,7 @@ function LocalCreateMachine({open, onClose, host}: {open: boolean; onClose: () =
 	})
 	const ownIsos = useQuery({queryKey: ['machines.localIsos'], queryFn: () => query<OsImage[]>('machines.localIsos'), enabled: open && !remote, staleTime: 15_000})
 	// Adding ISOs to the server is the owner's.
-	const isOwnerHere = useUser().data?.role !== 'member'
+	const isOwnerHere = isOwner(useUser().data)
 	const isoDownloads = useQuery({
 		queryKey: ['machines.isoDownloads'],
 		queryFn: () => query<Download[]>('machines.isoDownloads'),

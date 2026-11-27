@@ -5,6 +5,7 @@ import {SERVER_DESKTOP, type Machine, type UserApp} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useDesktop} from '../desktop/Desktop'
 import {useBootstrap, useMachines, useUser} from '../data'
+import {isOwner} from '../isOwner'
 import {useMachineDetails} from '../machines/api'
 import {PortForwarding} from '../machines/PortForwarding'
 import {VmView} from '../machines/pveDetail'
@@ -179,7 +180,7 @@ export function Machines({onOpenApp, onTerminal, windowId, prefs, setPrefs}: {on
 	const browserOnline = useBrowserOnline()
 	const problem = queryProblem(machines, browserOnline)
 	const swarmProblem = queryProblem(swarm, browserOnline)
-	const owner = useUser().data?.role !== 'member'
+	const owner = isOwner(useUser().data)
 	const [selectedId, setSelectedId] = useState<string | null>(null)
 	const [computerId, setComputerId] = useState<string | null>(null)
 	const [serverOpen, setServerOpen] = useState(false)

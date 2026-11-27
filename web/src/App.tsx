@@ -12,6 +12,8 @@ import {OPEN_FLEET} from './fleet/openMember'
 import {OPEN_STORE, type StoreBinding} from './fleet/openStore'
 import {BootstrapContext, useAction, useApps, useNotifications, useUpdates, useUser} from './data'
 import {Icon, type IconName} from './icons'
+import {entrypointHost} from './entrypointHost'
+import {isOwner} from './isOwner'
 import {APP_TITLE, pageTitle} from './pageTitle'
 import {Apps} from './screens/Apps'
 import {Connect, Login} from './screens/Auth'
@@ -60,13 +62,9 @@ const TABS: {id: Tab; label: string; icon: IconName; active: IconName; tone: str
 	{id: 'machines', label: 'Machines', icon: 'machine', active: 'machine-filled', tone: 'var(--teal)'},
 	{id: 'more', label: 'System', icon: 'activity', active: 'activity-filled', tone: 'var(--peach)'},
 ]
-const TERMINALS_TAB: (typeof TABS)[number] = {id: 'terminals', label: 'Terminals', icon: 'terminal', active: 'terminal', tone: 'var(--green)'}
-function dockTabs(owner: boolean) {
-	if (!owner) return TABS
-	const next = [...TABS]
-	const at = next.findIndex((t) => t.id === 'more')
-	next.splice(at < 0 ? next.length : at, 0, TERMINALS_TAB)
-	return next
+function dockTabs(_owner: boolean) {
+	// Phone dock stays Home / Apps / Files / Machines / System. Terminals stays on #/terminals and System for owners; desktop may still pin it.
+	return TABS
 }
 const tabFromHash = (allowTerminals: boolean): Tab => {
 	const h = location.hash.replace('#/', '') as Tab
@@ -187,14 +185,16 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	const keepAssistant = assistantOpen || turn.streaming
 	const user = useUser()
 	// Every terminal socket is owner-only. Hide the tab until that is known.
-	const owner = user.data?.role === 'owner'
+	const owner = isOwner(user.data)
 	const tabs = dockTabs(owner)
 	// omarchyd only gives the owner a shell.
-	const openTerminal = user.data?.role === 'member' ? undefined : (app?: {id: string; name?: string; icon?: string}, input?: string) => {
-		haptic(8)
-		setAppId(null)
-		setTerminal({app, input})
-	}
+	const openTerminal = !owner
+		? undefined
+		: (app?: {id: string; name?: string; icon?: string}, input?: string) => {
+				haptic(8)
+				setAppId(null)
+				setTerminal({app, input})
+			}
 	// "Open Terminal" buttons elsewhere (e.g. a one-time fix for network shares).
 	useEffect(() => {
 		const onOpen = (e: Event) => openTerminal?.(undefined, (e as CustomEvent<string>).detail)
@@ -297,7 +297,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 					<span className="device">
 						<span className={`dot ${online ? 'live' : 'down'}`} />
 						{boot.server?.device ?? 'server'}
-						<span className="mono">{boot.server?.host}</span>
+						<span className="mono">{entrypointHost(boot.server)}</span>
 					</span>
 					<span className="spacer-x" />
 					<button
@@ -347,7 +347,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						{tab === 'store' && <Store bound={storeBound} onOpenInstalled={(a) => setAppId(a.id)} onBack={backInApp} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
 						{tab === 'machines' && <Machines prefs={prefs} setPrefs={setPrefs} onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} />}
 						{tab === 'terminals' && owner && <Terminals />}
-						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} onClips={() => go('clips')} />}
+						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} onClips={() => go('clips')} onTerminals={owner ? () => go('terminals') : undefined} />}
 						{tab === 'clips' && <Clips onBack={backInApp} />}
 						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={backInApp} />}
 					</main>
@@ -364,7 +364,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 					}} style={{'--tone': t.tone} as CSSProperties}>
 						<Icon name={tab === t.id ? t.active : t.icon} size={23} stroke={tab === t.id ? 2 : 1.75} />
 						{t.label}
-						{t.id === 'apps' && updateCount > 0 && <span className="count">{updateCount}</span>}
+						{t.id === 'apps' && updateCount > 0 && <span className="badge-update" aria-label={plural(updateCount, 'update')}>{updateCount}</span>}
 					</button>
 				))}
 			</nav>

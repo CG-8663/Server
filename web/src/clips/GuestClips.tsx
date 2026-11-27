@@ -1,5 +1,6 @@
 // The same clip book, on a virtual machine. Send is offered only when its connector can take a file.
 import {useUser} from '../data'
+import {isOwner} from '../isOwner'
 import {guestAgent} from '../swarm/guestLink'
 import {useSwarm} from '../swarm/Swarm'
 import {ClipBook} from './ClipBook'
@@ -15,5 +16,5 @@ export function GuestClips({machine}: {machine: {id: string; name: string}}) {
 			? {id: agent.id, name: agent.name, online: agent.online, allowed: agent.allowed, on: agent.on}
 			: null,
 	)
-	return <ClipBook here={here} readings={user.data?.role === 'owner' && !!agent?.online} />
+	return <ClipBook here={here} readings={isOwner(user.data) && !!agent?.online} />
 }

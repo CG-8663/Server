@@ -6,6 +6,7 @@ import {askApp, explainProbe, openApp, webStatus} from './openApp'
 import {mutate, query, type UserApp} from './api'
 import {appUrl, useAction, useBootstrap, useUser} from './data'
 import {useDesktop} from './desktop/Desktop'
+import {isOwner} from './isOwner'
 import {Icon, type IconName} from './icons'
 import {rovingKeyDown, TAB_SELECTOR} from './roving'
 import {AppIcon, Group, KV, Row, Sheet, SheetHeader, StatusPill, Switch, appStatus, haptic, isAppBusy, useConfirm, useToast} from './ui'
@@ -36,7 +37,7 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	const confirm = useConfirm()
 	const toast = useToast()
 	const appTab = useAppTab()
-	const owner = user.data?.role === 'owner'
+	const owner = isOwner(user.data)
 	const [logsOpen, setLogsOpen] = useState(false)
 	const [tab, setTab] = useState<'overview' | 'usb'>('overview')
 	const [waiting, setWaiting] = useState<number | null>(null)
@@ -292,7 +293,21 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 									on={oidcStatus.data.enabled}
 									disabled={busy || setOidc.isPending}
 									label="Sign in with My Own Data Center"
-									onChange={(on) => setOidc.mutate(on)}
+									onChange={(on) => {
+										void (async () => {
+											if (on) {
+												const ok = await confirm({
+													title: `Let ${name} use your accounts?`,
+													body: 'People will sign into this app with accounts on this server, including two-factor. Only turn this on for an app you trust with those sign-ins.',
+													confirm: 'Share sign-in',
+													danger: true,
+													icon: 'key',
+												})
+												if (!ok) return
+											}
+											setOidc.mutate(on)
+										})()
+									}}
 								/>
 							}
 						/>

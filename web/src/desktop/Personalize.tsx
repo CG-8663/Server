@@ -279,7 +279,7 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 }
 
 function DockSettings({cfg, setCfg}: P) {
-	const {info, appList, machineList, owner, strictOwner} = useItems()
+	const {info, appList, machineList, owner} = useItems()
 	const d = cfg.dock
 	const set = (patch: Partial<DeskConfig['dock']>) => setCfg((c) => ({...c, dock: {...c.dock, ...patch}}))
 	const move = (k: string, dir: -1 | 1) => {
@@ -290,7 +290,7 @@ function DockSettings({cfg, setCfg}: P) {
 		;[items[i], items[j]] = [items[j], items[i]]
 		set({items})
 	}
-	const candidates = withTerminals(placeableKeys(appList, machineList, owner), strictOwner).filter((k) => !withTerminals(d.items, strictOwner).includes(k))
+	const candidates = withTerminals(placeableKeys(appList, machineList, owner), owner).filter((k) => !withTerminals(d.items, owner).includes(k))
 	return (
 		<>
 			<Section title="Position">
@@ -407,7 +407,7 @@ function DockSettings({cfg, setCfg}: P) {
 
 function DesktopSettings({cfg, setCfg}: P) {
 	const desk = useDesktop()
-	const {info, appList, machineList, owner, strictOwner} = useItems()
+	const {info, appList, machineList, owner} = useItems()
 	const onDesk = new Set(cfg.icons.map((i) => i.key))
 	const running = [
 		...appList.filter((a) => a.state === 'ready' || a.state === 'running').map((a) => `app:${a.id}`),
@@ -450,7 +450,7 @@ function DesktopSettings({cfg, setCfg}: P) {
 			</Section>
 			<Section title="Choose icons" note="Double-click an icon to open it. Drag icons to arrange them, drag across the desktop to select several, and press Delete to remove the selected icons (only the shortcut is removed). A stopped machine starts when you open it.">
 				<ItemPicker
-					keys={withTerminals(placeableKeys(appList, machineList, owner, true), strictOwner)}
+					keys={withTerminals(placeableKeys(appList, machineList, owner, true), owner)}
 					info={info}
 					selected={onDesk}
 					onPick={(k) => (onDesk.has(k) ? desk?.removeIcon(k) : desk?.addIcon(k))}

@@ -2,7 +2,7 @@ import {useEffect, useState, type CSSProperties} from 'react'
 
 import {useInstallReview} from './data'
 import {Icon} from './icons'
-import {AppIcon, Field, Switch, bytes, haptic, useToast} from './ui'
+import {AppIcon, Field, Switch, bytes, haptic, useConfirm, useToast} from './ui'
 import {folderKey, folderPathOk, reviewInstallInput, type ReviewInstallInput} from './installReview'
 
 // The store's "Before you install" body. The store sheet and the assistant both use this,
@@ -31,14 +31,27 @@ export function BeforeInstall({
 }) {
 	const review = useInstallReview(appId)
 	const toast = useToast()
+	const confirm = useConfirm()
 	const [allowed, setAllowed] = useState(false)
 	const [placed, setPlaced] = useState<Record<string, string | null>>({})
 	const [enableOidc, setEnableOidc] = useState(false)
+	const setOidcWithConfirm = async (on: boolean) => {
+		if (on) {
+			const ok = await confirm({
+				title: `Let ${appName} use your accounts?`,
+				body: 'People will sign into this app with accounts on this server, including two-factor. Only turn this on for an app you trust with those sign-ins.',
+				confirm: 'Share sign-in',
+				danger: true,
+				icon: 'key',
+			})
+			if (!ok) return
+		}
+		setEnableOidc(on)
+	}
 	useEffect(() => setAllowed(false), [appId])
 	useEffect(() => setPlaced({}), [appId])
-	useEffect(() => {
-		setEnableOidc(Boolean(review.data?.oidc?.defaultOn))
-	}, [appId, review.data?.oidc?.defaultOn])
+	// Never auto-enable OIDC from defaultOn — sharing accounts needs the same confirm as flipping the switch.
+	useEffect(() => setEnableOidc(false), [appId])
 	const data = review.data
 	const access = data?.permissions ?? []
 	const setup = data?.setup ?? []
@@ -228,9 +241,10 @@ export function BeforeInstall({
 								{data.oidc.mode === 'auto'
 									? 'Automatically configures OIDC SSO using your My Own Data Center accounts + 2FA.'
 									: 'Pre-registers an OIDC client so you can paste credentials after install.'}
+								{data.oidc.defaultOn && !enableOidc ? ' This app recommends sharing sign-in; turn it on only if you trust it.' : ''}
 							</small>
 						</span>
-						<Switch on={enableOidc} label="Sign in with My Own Data Center" onChange={setEnableOidc} />
+						<Switch on={enableOidc} label="Sign in with My Own Data Center" onChange={(on) => void setOidcWithConfirm(on)} />
 					</div>
 					{enableOidc && data.oidc.note && (
 						<p className="prose" style={{margin: '10px 0 0', fontSize: 13.5}}>

@@ -9,6 +9,7 @@ import {createPortal} from 'react-dom'
 import {openSettingsPage} from './desktop/settingsPage'
 import {useUser} from './data'
 import {useDialogFocus} from './focus'
+import {isOwner} from './isOwner'
 import {Icon, type IconName} from './icons'
 import {ScreenLayoutCards} from './LayoutPicker'
 import {ThemeChooser} from './ThemeChooser'
@@ -173,5 +174,5 @@ export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; 
 /** The welcome setup for whoever is signed in (inside the signed-in app, where the account is known). */
 export function WelcomeForUser(props: {prefs: Prefs; setPrefs: (p: Prefs) => void; onDone: () => void}) {
 	const user = useUser()
-	return <Welcome name={user.data?.name} owner={user.data?.role !== 'member'} {...props} />
+	return <Welcome name={user.data?.name} owner={isOwner(user.data)} {...props} />
 }

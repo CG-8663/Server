@@ -44,7 +44,7 @@ export type DeskConfig = {
 const PREVIOUS_SYSTEM_DOCK = ['files', 'apps', 'store', 'terminal', 'machines', 'system', 'settings'] as const
 export const SYSTEM_DOCK = ['home', ...PREVIOUS_SYSTEM_DOCK] as const
 
-/** Terminals sits after Machines on the phone dock and in a desktop window. It is not part of the saved default dock. */
+/** Terminals can be pinned on the desktop dock/rail. On the phone it opens from System, not the dock. */
 export function withTerminals(keys: readonly string[], show: boolean): string[] {
 	if (!show || keys.includes('terminals')) return [...keys]
 	const next = [...keys]

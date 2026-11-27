@@ -69,15 +69,15 @@ const osLabel = (c: {os: string; release: string}) => [OS_NAME[c.os] ?? (c.os ? 
 const bytes = (n: number) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : n >= 1024 ** 2 ? `${Math.round(n / 1024 ** 2)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`)
 const plain = (e: Error) => e.message.replace(/^[A-Z_]+: /, '')
 
-/** What the list shows for a container's state. */
+/** What the list shows for a container's state (Running/Stopped — not machine Online/Offline). */
 export function containerPill(c: Pick<Container, 'status' | 'job'>): {kind: 'running' | 'stopped' | 'busy' | 'error'; label: string} {
 	if (c.job) return {kind: 'busy', label: c.job}
 	const s = c.status
-	if (s === 'running') return {kind: 'running', label: 'running'}
-	if (s === 'stopped') return {kind: 'stopped', label: 'stopped'}
-	if (['creating', 'cloning', 'restoring', 'starting', 'stopping'].includes(s)) return {kind: 'busy', label: s}
-	if (s === 'frozen') return {kind: 'stopped', label: 'paused'}
-	return {kind: 'error', label: s === 'error' ? 'failed' : s}
+	if (s === 'running') return {kind: 'running', label: 'Running'}
+	if (s === 'stopped') return {kind: 'stopped', label: 'Stopped'}
+	if (['creating', 'cloning', 'restoring', 'starting', 'stopping'].includes(s)) return {kind: 'busy', label: s.charAt(0).toUpperCase() + s.slice(1)}
+	if (s === 'frozen') return {kind: 'stopped', label: 'Paused'}
+	return {kind: 'error', label: s === 'error' ? 'Failed' : s}
 }
 
 export function useContainerStatus(enabled = true) {

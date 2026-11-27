@@ -7,6 +7,7 @@ import {mutate, query, type Machine} from '../api'
 import {clipItemUrl} from '../clips'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
+import {isOwner} from '../isOwner'
 import {type Agent} from '../swarm/Swarm'
 import {FilterBar} from '../FilterBar'
 import {Field, InWindow, Row, Sheet, SheetHeader, haptic, useConfirm, usePortalRoot, useToast} from '../ui'
@@ -165,7 +166,7 @@ export function ClipBook({onBack, here, readings}: {onBack?: () => void; here?: 
 	const user = useUser()
 	const boot = useBootstrap()
 	const serverName = boot.server?.device || 'This server'
-	const owner = user.data?.role === 'owner'
+	const owner = isOwner(user.data)
 	const inWindow = useContext(InWindow)
 	const book = useQuery({queryKey: ['clips.list'], queryFn: () => query<Book>('clips.list')})
 	const jobs = useQuery({queryKey: ['transfers.list'], queryFn: () => query<TransferJob[]>('transfers.list'), enabled: !here, refetchInterval: here ? false : 2000})
@@ -532,7 +533,7 @@ export function ClipBook({onBack, here, readings}: {onBack?: () => void; here?: 
 			)}
 			<section className="clip-list">
 				<div className="section-head">
-					<h2>{filtering && shown.length > 0 && shown.length !== clips.length ? `${shown.length} of ${clips.length} shown` : 'Clips'}</h2>
+					<h2>{filtering && shown.length > 0 && shown.length !== clips.length ? `${shown.length} of ${clips.length} shown` : 'Clip book'}</h2>
 				</div>
 				{selected.size > 0 && (
 					<div className="clip-select-pin">

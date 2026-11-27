@@ -8,6 +8,8 @@ import {resetDeskConfig} from '../desktop/config'
 import {queryClearsOnSignOut} from '../signOutQueries'
 import {useBootstrap, useUser} from '../data'
 import {Icon} from '../icons'
+import {entrypointHost} from '../entrypointHost'
+import {isOwner} from '../isOwner'
 import {applyPrefsUpdate, prefsAfterPhotoUpload} from '../photoPrefs'
 import {RADIO_SELECTOR, rovingKeyDown, rovingTabIndex} from '../roving'
 import {ThemeChooser} from '../ThemeChooser'
@@ -79,13 +81,13 @@ export function Appearance({prefs, setPrefs, wallpaper, onTheme}: {prefs: Prefs;
 	)
 }
 
-export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; onSettings: () => void; onClips?: () => void}) {
+export function More({prefs, setPrefs, onSignedOut, onSettings, onClips, onTerminals}: {prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; onSettings: () => void; onClips?: () => void; onTerminals?: () => void}) {
 	const boot = useBootstrap()
 	const user = useUser()
 	const confirm = useConfirm()
 	const toast = useToast()
 	const qc = useQueryClient()
-	const owner = user.data?.role !== 'member'
+	const owner = isOwner(user.data)
 	const update = useQuery({
 		queryKey: ['system.checkUpdate'],
 		queryFn: () => query<{available: boolean; name: string; version: string}>('system.checkUpdate'),
@@ -118,9 +120,7 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 		<div className="stagger">
 			<div>
 				<h1 className="title">System</h1>
-				<p className="subtitle">
-					{boot.server?.device ?? 'server'} · <VersionTag version={boot.server?.name ?? boot.server?.version} info={boot.server} />
-				</p>
+				<p className="subtitle">{boot.server?.device ?? 'server'}</p>
 			</div>
 			<section>
 				<div className="section-head">
@@ -129,16 +129,26 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 				<KV
 					rows={[
 						['Device', boot.server?.device ?? '–'],
-						['Address', boot.server?.host ?? '–'],
+						['Address', entrypointHost(boot.server) || boot.server?.host || '–'],
 						['MODC', <VersionTag version={boot.server?.version} info={boot.server} />],
 						['Software update', update.data ? (update.data.available ? `${update.data.name} available` : 'Up to date') : '–'],
 						['Signed in as', `${user.data?.name ?? '–'}${user.data?.role ? ` (${user.data.role})` : ''}`],
 					]}
 				/>
+				<div className="section-head" style={{marginTop: 18}}>
+					<h2>This device</h2>
+				</div>
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					{onClips && <Row icon="clipboard" color="var(--teal)" label="Clip book" onClick={onClips} />}
+					{onTerminals && <Row icon="terminal" color="var(--green)" label="Terminals" onClick={onTerminals} />}
 					<Row icon="settings" color="#8e8e93" label="Settings" onClick={onSettings} />
 					<Row icon="open" color="var(--blue)" label="Open this server" href={boot.server?.url} />
+					<Row icon="signout" color="#8e8e93" label="Sign out of this device" onClick={signOut} />
+				</div>
+				<div className="section-head" style={{marginTop: 18}}>
+					<h2>Server power</h2>
+				</div>
+				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					<Row icon="restart" color="var(--peach)" label="Restart server" onClick={() => power('restart')} />
 					<Row icon="power" color="var(--red)" label="Shut down server" onClick={() => power('shutdown')} />
 					{owner && (
@@ -153,12 +163,8 @@ export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs
 							}}
 						/>
 					)}
-					<Row icon="signout" color="#8e8e93" label="Sign out of this device" onClick={signOut} />
 				</div>
 			</section>
-			<p className="footer-note">
-				<VersionTag prefix="MODC " version={boot.touch.version} info={boot.server} />
-			</p>
 		</div>
 	)
 }
