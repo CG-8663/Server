@@ -99,7 +99,7 @@ export function ServerSheet({
 				</>
 			),
 		},
-		...(owner ? [{id: 'containers', label: 'Containers', body: <ContainersPanel serverName={name} />}] : []),
+		...(owner ? [{id: 'containers', label: 'LXC containers', body: <ContainersPanel serverName={name} />}] : []),
 		...(owner
 			? [
 					{id: 'network', label: 'Network', body: <ServerNetwork />},
@@ -144,7 +144,7 @@ export function ServerSheet({
 					]
 				: []),
 			{id: 'machines', label: 'Virtual machines', icon: 'machine'},
-			...(owner ? [{id: 'containers', label: 'Containers', icon: 'category' as const}] : []),
+			...(owner ? [{id: 'containers', label: 'LXC containers', icon: 'category' as const}] : []),
 			...(owner
 				? [
 						{id: 'network', label: 'Network', icon: 'networking' as const},

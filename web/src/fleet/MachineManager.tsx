@@ -691,7 +691,7 @@ export function MachineManager({
 							setNewContainer(true)
 						}}
 					>
-						Container
+						LXC container
 					</button>
 				</div>
 			)}
