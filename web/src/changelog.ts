@@ -4,6 +4,23 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.105',
+		date: '2026-11-27',
+		title: 'The store names the machine before you install',
+		added: [
+			'Before Get, the store shows Install on. It offers this server, a computer that is online, or a virtual machine that is running with its connector online. An offline machine is left out. Why: an app should go only where it can actually be installed.',
+			'Sharing sign-in with an app asks first, and it starts off. Why: accounts on this server, including two-factor, should not be shared unless you say so.',
+			'Discarding edits in a file asks first.',
+			'System keeps this device apart from server power. Clip book, Terminals, Settings, and sign out sit with this device. Restart and shut down sit with server power. The page shows one version of My Own Data Center.',
+			'Terminals is no longer a phone tab. Open it from System. A container’s login is labeled Container login.',
+			'When no apps are installed, Apps offers Find apps.',
+		],
+		fixed: [
+			'The Settings gear returns to the main Settings page. On the desktop, Appearance stays open.',
+			'Owner controls stay hidden until the signed-in account is the owner.',
+		],
+	},
+	{
 		version: '0.9.104',
 		date: '2026-11-27',
 		title: 'Lists that match, and clips you can clear together',
