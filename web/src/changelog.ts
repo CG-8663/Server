@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.102',
+		date: '2026-11-27',
+		title: 'An LXC container’s console is the container’s',
+		fixed: [
+			'An LXC container’s console opened the server’s own shell. Why: the web server passes only the settings it knows on to the terminal, and it didn’t know the container’s name, so the request arrived as an ordinary terminal. It now passes the container and its console along (and refuses a name that isn’t one), and a test checks it.',
+		],
+	},
+	{
 		version: '0.9.101',
 		date: '2026-11-27',
 		title: 'LXC containers work like virtual machines',
