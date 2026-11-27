@@ -212,7 +212,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.101', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.102', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -589,6 +589,10 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(fake.terminals.at(-1).fresh, undefined)
 		assert.equal((await open('appId=../x&cols=80&rows=24')).status, 400)
 		assert.equal((await open('cols=5000&rows=24')).status, 400)
+		// An LXC container's console reaches omarchyd as that container's, not as the server's own shell.
+		assert.ok((await open('containerId=ubuntu-1&containerMode=console&cols=80&rows=24')).ok)
+		assert.deepEqual(fake.terminals.at(-1), {appId: null, cols: 80, rows: 24, containerId: 'ubuntu-1', containerMode: 'console'})
+		assert.equal((await open('containerId=../x&cols=80&rows=24')).status, 400)
 	})
 
 	test('a member cannot open the host terminal or a swarm computer through the web server', async () => {

@@ -24,7 +24,7 @@ import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 import {createQuickTransfer, cleanUploadName, PORTAL_JS, portalHtml} from './quick-transfer.mjs'
 
-export const VERSION = '0.9.101'
+export const VERSION = '0.9.102'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -2504,11 +2504,16 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 					const rows = Number(url.searchParams.get('rows'))
 					if (appId && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(appId)) return refuse('400 Bad Request')
 					if (agentId && !/^[0-9a-f]{12}$/.test(agentId)) return refuse('400 Bad Request')
+					// One of this server's LXC containers: its console or a shell in it. Without this the
+					// request reached omarchyd as a plain terminal and opened the server's own shell.
+					const containerId = url.searchParams.get('containerId') ?? ''
+					const containerMode = url.searchParams.get('containerMode') === 'shell' ? 'shell' : 'console'
+					if (containerId && !/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(containerId)) return refuse('400 Bad Request')
 					if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || cols > 500 || rows < 4 || rows > 300) return refuse('400 Bad Request')
 					target.pathname = '/terminal'
 					const session = url.searchParams.get('session') ?? ''
 					if (session && !/^[A-Za-z0-9._-]{1,40}$/.test(session)) return refuse('400 Bad Request')
-					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), ...(session ? {session} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
+					params = {...(appId ? {appId} : {}), ...(agentId ? {agentId} : {}), ...(containerId ? {containerId, containerMode} : {}), ...(session ? {session} : {}), cols: String(cols), rows: String(rows), ...(url.searchParams.get('fresh') === '1' ? {fresh: '1'} : {})}
 				}
 				const needsOwner = route === 'terminal' || route === 'hyprland' || params.machineId === 'desktop' || /^agent-[0-9a-f]{12}$/.test(params.machineId ?? '')
 				if (needsOwner) {

@@ -972,7 +972,7 @@ export async function startFakeserverd({
 				socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
 				return socket.destroy()
 			}
-			terminals.push({appId: url.searchParams.get('appId'), cols: Number(url.searchParams.get('cols')), rows: Number(url.searchParams.get('rows')), ...(url.searchParams.get('fresh') ? {fresh: url.searchParams.get('fresh')} : {})})
+			terminals.push({appId: url.searchParams.get('appId'), cols: Number(url.searchParams.get('cols')), rows: Number(url.searchParams.get('rows')), ...(url.searchParams.get('fresh') ? {fresh: url.searchParams.get('fresh')} : {}), ...(url.searchParams.get('containerId') ? {containerId: url.searchParams.get('containerId'), containerMode: url.searchParams.get('containerMode')} : {})})
 			return wss.handleUpgrade(req, socket, head, (ws) => shellServer(ws, url.searchParams.get('appId'), keys))
 		}
 		if (url.pathname !== '/machines/console' || !ticket?.startsWith('machines:') || !tickets.delete(ticket) || !held || !url.searchParams.get('machineId') || !url.searchParams.get('sessionId')) {
