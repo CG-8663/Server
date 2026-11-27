@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.96',
+		date: '2026-11-26',
+		title: 'New containers finish being created',
+		fixed: [
+			'A new container stayed at “creating” for good. Why: Incus reads a container’s settings from its input whenever it isn’t typing at a screen, and My Own Data Center left that input open and empty, so Incus waited for it forever before even downloading. Incus now gets a closed input unless there’s something to send. While a container is being made you see Incus’s own progress (downloading, unpacking) and how long it’s been.',
+			'Container pages fit a phone screen. Fields beside a button, the power buttons and long lines no longer push the page past the right edge.',
+		],
+	},
+	{
 		version: '0.9.95',
 		date: '2026-11-26',
 		title: 'The container library fills in',
