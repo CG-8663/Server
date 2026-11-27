@@ -11149,19 +11149,33 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 	flex: none;
 	gap: 6px;
 }
-.clip-book.has-selection {
-	padding-bottom: 150px;
-}
-.clip-book.stagger > .clip-select {
+/* The group clips its rows, so the bar stays outside it. The bar's range is the list. */
+.clip-book.stagger > .clip-list {
 	animation: none;
 }
+.clip-select-pin {
+	position: sticky;
+	top: 0;
+	z-index: 4;
+	margin: 0 0 10px;
+	display: flow-root;
+	container-type: scroll-state;
+	container-name: clip-select;
+}
+/* The page scroller pads its top. A zero inset would leave a strip of the list above the bar. */
+.shell .clip-select-pin {
+	top: calc((var(--safe-t, 0px) + 12px) * -1);
+}
+.pve-panel .clip-select-pin {
+	top: -14px;
+}
+.shell:has(.clip-select),
+.win-scroll:has(.clip-select),
+.pve-panel:has(.clip-select),
+.sheet-scroll:has(.clip-select) {
+	scroll-padding-top: 7.5rem;
+}
 .clip-select {
-	position: fixed;
-	left: 50%;
-	transform: translateX(-50%);
-	bottom: calc(var(--dock-h) + var(--safe-b) + 12px);
-	z-index: 25;
-	width: min(calc(100% - 24px), 520px);
 	padding: 12px;
 	border-radius: 20px;
 	background: var(--dock);
@@ -11169,6 +11183,11 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 	-webkit-backdrop-filter: blur(30px) saturate(1.8);
 	border: 1px solid var(--line-2);
 	box-shadow: var(--shadow);
+}
+@container clip-select scroll-state(stuck: top) {
+	.clip-select {
+		box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+	}
 }
 .clip-select-count {
 	margin: 0;
@@ -11187,12 +11206,10 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 	margin-top: 10px;
 }
 .clip-select-actions .btn {
-	flex: 1;
+	flex: 1 1 0;
+	min-width: 0;
 	min-height: 44px;
-}
-.sheet .clip-select,
-.win-body .clip-select {
-	bottom: calc(var(--safe-b) + 16px);
+	padding-inline: 8px;
 }
 .mm-slot,
 .mm-slot-in,
