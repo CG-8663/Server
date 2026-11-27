@@ -63,8 +63,8 @@ export function TerminalScreen({
 	app?: {id: string; name?: string; icon?: string}
 	// A computer in the local swarm (through its connector), instead of this server.
 	agent?: {id: string; name: string}
-	// A root shell inside one of this server's containers (Incus).
-	container?: {name: string}
+	// One of this server's containers (Incus): its console (login prompt) or a root shell in it.
+	container?: {name: string; mode?: 'console' | 'shell'}
 	// Opened from a sheet (a container's page): sit above the sheet instead of behind it.
 	overSheet?: boolean
 	onClose: () => void
@@ -395,7 +395,7 @@ export function TerminalScreen({
 			term.resize(s.cols, s.rows)
 			term.reset()
 			const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
-			const qs = new URLSearchParams({...(app ? {appId: app.id} : {}), ...(agent ? {agentId: agent.id} : {}), ...(container ? {containerId: container.name} : {}), cols: String(s.cols), rows: String(s.rows), ...(fresh.current ? {fresh: '1'} : {})})
+			const qs = new URLSearchParams({...(app ? {appId: app.id} : {}), ...(agent ? {agentId: agent.id} : {}), ...(container ? {containerId: container.name, containerMode: container.mode ?? 'shell'} : {}), cols: String(s.cols), rows: String(s.rows), ...(fresh.current ? {fresh: '1'} : {})})
 			fresh.current = false
 			const ws = new WebSocket(`${scheme}//${location.host}/api/terminal?${qs}`)
 			ws.binaryType = 'arraybuffer'
@@ -579,7 +579,7 @@ export function TerminalScreen({
 			document.removeEventListener('cut', onClip)
 			term.dispose()
 		}
-	}, [app, agent?.id, container?.name, attempt])
+	}, [app, agent?.id, container?.name, container?.mode, attempt])
 
 	// A clip pasted as text goes into the terminal used last, not into every open one.
 	const clipTarget = useRef({})
@@ -711,7 +711,7 @@ export function TerminalScreen({
 					<b>{title}</b>
 					<span>
 						<i className={`dot ${live ? 'live' : state === 'connecting' ? '' : 'down'}`} />
-						{live ? `On ${machineName}${app ? ' · App shell' : agent ? ' · Shell through its connector' : ''}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? `On ${machineName} · Connecting…` : `On ${machineName} · Disconnected`}
+						{live ? `On ${machineName}${app ? ' · App shell' : agent ? ' · Shell through its connector' : container ? (container.mode === 'console' ? ' · Console' : ' · Root shell') : ''}${resumed ? ' · resumed' : ''}` : state === 'connecting' ? `On ${machineName} · Connecting…` : `On ${machineName} · Disconnected`}
 					</span>
 				</div>
 				<button className="round-btn" aria-label="New session" title="New session" onClick={newSession} disabled={!live}>

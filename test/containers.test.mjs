@@ -418,3 +418,60 @@ test('a new container Incus already lists stays “creating” until launch fini
 	await new Promise((r) => setTimeout(r, 10))
 	assert.equal((await p['containers.list'].run()).find((c) => c.name === 'fresh').job, null)
 })
+
+test('Console opens the container’s own console; Root shell opens a shell; a root password goes in on stdin', async () => {
+	const f = statefulIncus()
+	const ct = createContainers({run: f.run})
+	assert.deepEqual((await ct.shellFor('web', 'console')).command, ['incus', 'console', 'web'])
+	assert.deepEqual((await ct.shellFor('web')).command, ['incus', 'exec', 'web', '--env', 'TERM=xterm-256color', '--', 'su', '-l'])
+	await assert.rejects(ct.procedures['containers.setRootPassword'].run({name: 'web', password: 'short'}), /8 to 128/)
+	await ct.procedures['containers.setRootPassword'].run({name: 'web', password: 'correct horse'})
+	const call = f.calls.find((c) => c.args.includes('chpasswd'))
+	assert.equal(call.input, 'root:correct horse\n')
+	assert.ok(!f.calls.some((c) => c.args.join(' ').includes('correct horse')))
+})
+
+test('Show every system lists Incus’s whole library; creating accepts any of them', async () => {
+	const {libraryFrom} = await import('../omarchyd/containers.mjs')
+	const imgs = [img('Debian', '12', 'debian/12'), img('Kali', 'current', 'kali/current'), img('Slackware', '15.0', 'slackware/15.0')]
+	assert.deepEqual(libraryFrom(imgs, 'x86_64').map((d) => d.os), ['debian'])
+	assert.deepEqual(libraryFrom(imgs, 'x86_64', {all: true}).map((d) => d.os), ['debian', 'kali', 'slackware'])
+})
+
+test('template files: an Incus image imports as is; a plain root filesystem (a Proxmox template) gets a description first', async () => {
+	const {mkdtemp, rm, mkdir, writeFile} = await import('node:fs/promises')
+	const os = await import('node:os')
+	const {join} = await import('node:path')
+	const {execFileSync} = await import('node:child_process')
+	const home = await mkdtemp(join(os.tmpdir(), 'ct-tpl-'))
+	try {
+		await mkdir(join(home, 'Downloads'))
+		const big = (await import('node:crypto')).randomBytes(3 * 1024 * 1024)
+		// An Incus image (metadata.yaml at the top) and a root filesystem (no metadata).
+		await writeFile(join(home, 'metadata.yaml'), 'architecture: x86_64\n')
+		await writeFile(join(home, 'filler'), big)
+		execFileSync('tar', ['-czf', join(home, 'Downloads', 'my-image.tar.gz'), '-C', home, 'metadata.yaml', 'filler'])
+		await mkdir(join(home, 'root', 'etc'), {recursive: true})
+		await writeFile(join(home, 'root', 'etc', 'hostname'), 'x')
+		await writeFile(join(home, 'root', 'filler'), big)
+		execFileSync('tar', ['-cJf', join(home, 'Downloads', 'debian-12-standard_12.7-1_amd64.tar.xz'), '-C', join(home, 'root'), '.'])
+		const f = statefulIncus()
+		const files = {resolve: async (v) => ({real: join(home, v.replace(/^\/Home\/?/, ''))})}
+		const p = createContainers({run: f.run, files}).procedures
+		const list = await p['containers.templateFiles'].run()
+		assert.deepEqual(list.files.map((x) => x.name), ['debian-12-standard_12.7-1_amd64.tar.xz', 'my-image.tar.gz'])
+		await p['containers.importTemplate'].run({path: '/Home/Downloads/my-image.tar.gz'})
+		await p['containers.importTemplate'].run({path: '/Home/Downloads/debian-12-standard_12.7-1_amd64.tar.xz'})
+		await new Promise((r) => setTimeout(r, 1500))
+		const imports = f.calls.filter((c) => c.args[0] === 'image' && c.args[1] === 'import').map((c) => c.args)
+		assert.deepEqual(imports.find((a) => a.includes('modc/my-image')), ['image', 'import', join(home, 'Downloads', 'my-image.tar.gz'), '--alias', 'modc/my-image'])
+		const rootfs = imports.find((a) => a.at(-1) === 'modc/debian-12-standard-12-7-1-amd64')
+		assert.ok(rootfs, JSON.stringify(imports))
+		assert.match(rootfs[2], /meta\.tar\.gz$/, 'a generated metadata tarball goes first')
+		assert.equal(rootfs[3], join(home, 'Downloads', 'debian-12-standard_12.7-1_amd64.tar.xz'))
+		await assert.rejects(p['containers.importTemplate'].run({path: '/Home/../etc/passwd.tar.gz'}), /Home|template file|No such/)
+		await assert.rejects(p['containers.importTemplate'].run({path: '/Home/Downloads/notes.txt'}), /template file/)
+	} finally {
+		await rm(home, {recursive: true, force: true})
+	}
+})

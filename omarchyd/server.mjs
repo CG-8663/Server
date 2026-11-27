@@ -41,7 +41,7 @@ import {createSampler} from './stats.mjs'
 import {WebSocketServer} from 'ws'
 import {viewerBackpressure} from './backpressure.mjs'
 
-export const OMARCHYD_VERSION = '0.9.98'
+export const OMARCHYD_VERSION = '0.9.99'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, containerOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, viewerStallMs = undefined, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
@@ -545,7 +545,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 			Object.entries(machines.procedures).map(([name, p]) =>
 				name === 'machines.installConnector'
 					? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'install a guest connector'), p.run(input))}]
-					: [name, p],
+					: name === 'machines.downloadIso' || name === 'machines.isoDownloads'
+						? [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'download ISOs to this server'), p.run(input))}]
+						: [name, p],
 			),
 		),
 		...Object.fromEntries(
@@ -1383,11 +1385,12 @@ WantedBy=graphical-session.target
 				// A root shell inside one of this server's containers (Incus).
 				const containerId = url.searchParams.get('containerId')
 				if (containerId) {
-					const inContainer = await containers.shellFor(containerId).catch(() => null)
+					const mode = url.searchParams.get('containerMode') === 'console' ? 'console' : 'shell'
+					const inContainer = await containers.shellFor(containerId, mode).catch(() => null)
 					if (!inContainer) return refuse('409 Conflict')
 					const fresh = url.searchParams.get('fresh') === '1'
 					return wss.handleUpgrade(req, socket, head, (ws) =>
-						terminals.attach(ws, {userId: t.userId, appId: `container:${containerId}`, cols, rows, fresh, shell: {home, cwd: home, ...inContainer}}).catch(() => ws.close(1011, 'Couldn’t start a shell')),
+						terminals.attach(ws, {userId: t.userId, appId: `container:${containerId}:${mode}`, cols, rows, fresh, shell: {home, cwd: home, ...inContainer}}).catch(() => ws.close(1011, 'Couldn’t start a shell')),
 					)
 				}
 				const appId = url.searchParams.get('appId')
