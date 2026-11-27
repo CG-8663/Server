@@ -25,7 +25,7 @@ import {ScreenErrorBoundary} from '../screenBoundary'
 import {queryClearsOnSignOut} from '../signOutQueries'
 import {ThemeModeButton} from '../theme/ThemeModeButton'
 import {AppIcon, AssistantIcon, InWindow, PortalRoot, StatChip, StoreIcon, TerminalIcon, VersionTag, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
-import {SYSTEM_DOCK, resetDeskConfig, solidOf, useDeskConfig, type DeskConfig, type DeskIcon} from './config'
+import {SYSTEM_DOCK, resetDeskConfig, solidOf, useDeskConfig, withTerminals, type DeskConfig, type DeskIcon} from './config'
 import {desktopIconKeyOpens, desktopIconKeysApply, iconSelectionClearsOnFocus} from './iconKeys'
 import {iconsInView} from './iconsInView'
 import {desktopMachineStatus, machineOpenAction} from './machineOpen'
@@ -59,6 +59,7 @@ const Files = lazy(() => import('../screens/Files').then((m) => ({default: m.Fil
 const ShareSheet = lazy(() => import('../screens/Files').then((m) => ({default: m.ShareSheet})))
 const Store = lazy(() => import('../screens/Store').then((m) => ({default: m.Store})))
 const Machines = lazy(() => import('../screens/Machines').then((m) => ({default: m.Machines})))
+const Terminals = lazy(() => import('../fleet/Terminals').then((m) => ({default: m.Terminals})))
 const Home = lazy(() => import('../screens/Home').then((m) => ({default: m.Home})))
 const Clips = lazy(() => import('../screens/Clips').then((m) => ({default: m.Clips})))
 const More = lazy(() => import('../screens/More').then((m) => ({default: m.More})))
@@ -78,7 +79,7 @@ function WinFallback() {
 
 // ---- model ---------------------------------------------------------------------------------
 type RailPayload = {address: string; title: string; appId?: string; class?: string; hasIcon?: boolean}
-type Kind = 'home' | 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app' | 'rail'
+type Kind = 'home' | 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'terminals' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app' | 'rail'
 type Payload = {appId?: string; machineId?: string; name?: string; rail?: RailPayload; path?: string; tab?: string; page?: string; pageNonce?: number; term?: {id: string; name?: string; icon?: string}; input?: string; store?: StoreBinding}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
@@ -100,6 +101,7 @@ export const SYS: Record<SysKind, {title: string; icon?: IconName; bg?: string; 
 	store: {title: 'App Store', w: 1040, h: 720},
 	terminal: {title: 'Terminal', w: 860, h: 540},
 	machines: {title: 'Machines', icon: 'machine-filled', bg: 'linear-gradient(150deg,#5eead4,#0f766e 70%)', tone: 'var(--teal)', w: 1180, h: 760},
+	terminals: {title: 'Terminals', icon: 'terminal', bg: 'linear-gradient(150deg,#86efac,#15803d 70%)', tone: 'var(--green)', w: 980, h: 760},
 	system: {title: 'System', icon: 'activity-filled', bg: 'linear-gradient(150deg,#fdba74,#c2410c 70%)', tone: 'var(--peach)', w: 820, h: 720},
 	settings: {title: 'Settings', icon: 'settings', bg: 'linear-gradient(150deg,#cbd5e1,#475569 70%)', tone: 'var(--fg)', w: 760, h: 720},
 	personalize: {title: 'Appearance', icon: 'palette', bg: 'linear-gradient(150deg,#f9a8d4,#be185d 70%)', tone: 'var(--pink)', w: 880, h: 720},
@@ -209,6 +211,7 @@ export function useItems() {
 	const machines = useMachines()
 	const user = useUser()
 	const owner = user.data?.role !== 'member'
+	const strictOwner = user.data?.role === 'owner'
 	const canRail = owner && supportsWebCodecs()
 	const hyprStatus = useQuery({
 		queryKey: ['hyprland.status'],
@@ -239,7 +242,7 @@ export function useItems() {
 	const railWindows = useMemo(() => railWinsQ.data ?? [], [railWinsQ.data])
 	const info = useCallback(
 		(key: string): ItemInfo => {
-			if (isSys(key)) return {key, label: SYS[key].title, icon: (s) => <SysIcon kind={key} size={s} />, missing: key === 'terminal' && !owner}
+			if (isSys(key)) return {key, label: SYS[key].title, icon: (s) => <SysIcon kind={key} size={s} />, missing: (key === 'terminal' && !owner) || (key === 'terminals' && !strictOwner)}
 			if (key.startsWith('app:')) {
 				const a = appList.find((x) => x.id === key.slice(4))
 				const up = !!a && (a.state === 'ready' || a.state === 'running')
@@ -291,9 +294,9 @@ export function useItems() {
 			}
 			return {key, label: key, icon: (s) => <SysIcon kind="window" size={s} />, missing: true}
 		},
-		[appList, machineList, railApps, railWindows, owner, apps.isSuccess, machines.isSuccess, railAppsQ.isSuccess],
+		[appList, machineList, railApps, railWindows, owner, strictOwner, apps.isSuccess, machines.isSuccess, railAppsQ.isSuccess],
 	)
-	return {info, appList, machineList, railApps, railWindows, railReady, owner}
+	return {info, appList, machineList, railApps, railWindows, railReady, owner, strictOwner}
 }
 
 // ---- can an app be shown inside a window? --------------------------------------------------------
@@ -390,7 +393,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	useViewport()
 	const user = useUser()
 	const [cfg, setCfg] = useDeskConfig()
-	const {info, appList, machineList, railApps, railWindows, railReady, owner} = useItems()
+	const {info, appList, machineList, railApps, railWindows, railReady, owner, strictOwner} = useItems()
 	const [wins, setWins] = useState<Win[]>(() => restoreWindows<Win>(load<unknown>(STORE_KEY, [])))
 	const [overview, setOverview] = useState<null | 'windows' | 'apps'>(null)
 	const [topMenu, setTopMenu] = useState<null | 'clock' | 'system'>(null)
@@ -1046,7 +1049,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 	// -- dock --
 	const pinned = cfg.dock.items.filter((k) => !info(k).missing)
 	const runningKeys = [...new Set(wins.map(itemOfWin))]
-	const dockKeys = [...pinned, ...(cfg.dock.showRunning ? runningKeys.filter((k) => !pinned.includes(k)) : [])]
+	const dockKeys = withTerminals([...pinned, ...(cfg.dock.showRunning ? runningKeys.filter((k) => !pinned.includes(k)) : [])], strictOwner)
 	const winsOf = (key: string) => wins.filter((w) => itemOfWin(w) === key)
 	const dockClick = (key: string) => {
 		setMenu(null)
@@ -1152,7 +1155,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				},
 			})
 		items.push('sep')
-		items.push(cfg.dock.items.includes(key) ? {label: 'Remove from dock', icon: 'close', onClick: () => api.unpin(key)} : {label: 'Pin to dock', icon: 'star', onClick: () => api.pin(key)})
+		if (key !== 'terminals') items.push(cfg.dock.items.includes(key) ? {label: 'Remove from dock', icon: 'close', onClick: () => api.unpin(key)} : {label: 'Pin to dock', icon: 'star', onClick: () => api.pin(key)})
 		items.push(cfg.icons.some((i) => i.key === key) ? {label: 'Remove from desktop', icon: 'close', onClick: () => api.removeIcon(key)} : {label: 'Add to desktop', icon: 'plus', onClick: () => api.addIcon(key)})
 		if (key.startsWith('rail-app:')) {
 			// Scope bulk close strictly to explicitly associated RAIL browser wrappers for this app (never sweeping unmatched physical windows by class).
@@ -1664,6 +1667,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						railWindows={railWindows}
 						railReady={railReady}
 						owner={owner}
+						showTerminals={strictOwner}
 						hasWindows={visible.length > 0}
 						windows={overviewWindows}
 						onPickWindow={(id) => {
@@ -1690,21 +1694,24 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 						onClose={() => setLauncher(false)}
 						onOpen={(key) => api.openItem(key)}
 						onMenu={(k, x, y, opener) => itemMenu(k, x, y, 'overview', opener)}
-						items={[
-							'files',
-							'apps',
-							'store',
-							'terminal',
-							'machines',
-							'system',
-							'settings',
-							'assistant',
-							'personalize',
-							...appList.map((a) => `app:${a.id}`),
-							...(railReady ? railApps.map((a) => `rail-app:${a.id}`) : []),
-							...(railReady ? railWindows.map((w) => `rail-win:${w.address}`) : []),
-							...machineList.map((m) => `machine:${m.id}`),
-						]
+						items={withTerminals(
+							[
+								'files',
+								'apps',
+								'store',
+								'terminal',
+								'machines',
+								'system',
+								'settings',
+								'assistant',
+								'personalize',
+								...appList.map((a) => `app:${a.id}`),
+								...(railReady ? railApps.map((a) => `rail-app:${a.id}`) : []),
+								...(railReady ? railWindows.map((w) => `rail-win:${w.address}`) : []),
+								...machineList.map((m) => `machine:${m.id}`),
+							],
+							true,
+						)
 							.map((key) => info(key))
 							.filter((it) => !it.missing)}
 					/>
@@ -2631,6 +2638,7 @@ function Overview({
 	railWindows,
 	railReady,
 	owner,
+	showTerminals,
 	hasWindows,
 	windows,
 	onPickWindow,
@@ -2648,6 +2656,7 @@ function Overview({
 	railWindows: HyprlandWindow[]
 	railReady: boolean
 	owner: boolean
+	showTerminals: boolean
 	hasWindows: boolean
 	windows: {id: string; title: string; rect: {left: number; top: number; width: number; height: number}}[]
 	onPickWindow: (id: string) => void
@@ -2662,14 +2671,17 @@ function Overview({
 	const layerRef = useRef<HTMLDivElement>(null)
 	useDialogFocus(true, layerRef, () => setMode(null), {initialFocus: ref})
 	const showApps = mode === 'apps' || q.trim() !== '' || !hasWindows
-	const webKeys = [
-		...SYSTEM_DOCK.filter((k) => k !== 'terminal' || owner),
-		'assistant',
-		'personalize',
-		...[...appList].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)).map((a) => `app:${a.id}`),
-		...(owner ? [DESKTOP_KEY] : []),
-		...machineList.map((m) => `machine:${m.id}`),
-	]
+	const webKeys = withTerminals(
+		[
+			...SYSTEM_DOCK.filter((k) => k !== 'terminal' || owner),
+			'assistant',
+			'personalize',
+			...[...appList].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)).map((a) => `app:${a.id}`),
+			...(owner ? [DESKTOP_KEY] : []),
+			...machineList.map((m) => `machine:${m.id}`),
+		],
+		showTerminals,
+	)
 	const linuxKeys = railReady ? railApps.filter((a) => !a.terminal).map((a) => `rail-app:${a.id}`) : []
 	const keys = tab === 'web' ? webKeys : tab === 'linux' ? linuxKeys : [...webKeys, ...linuxKeys]
 	const items = keys.map(info).filter((x) => !q.trim() || x.label.toLowerCase().includes(q.trim().toLowerCase()))
@@ -3585,6 +3597,8 @@ const WindowContent = memo(
 					return <Store bound={win.payload?.store ?? null} onOpenInstalled={(a) => desk.launch(a)} />
 				case 'machines':
 					return <Machines windowId={win.id} prefs={prefs} setPrefs={setPrefs} onOpenApp={(a) => desk.launch(a)} onTerminal={() => desk.openTerminal()} />
+				case 'terminals':
+					return owner ? <Terminals /> : <div className="win-empty">Only the server’s owner can open a terminal.</div>
 				case 'system':
 					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} onClips={() => desk.open('clips')} />
 				case 'settings':
