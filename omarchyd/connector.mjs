@@ -20,8 +20,9 @@ import {basename, join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {WebSocketServer} from 'ws'
 
-import {writeAtomic} from './atomic.mjs'
+import {readJsonState, writeAtomic} from './atomic.mjs'
 import {GUEST_PAIR_TTL} from './guest-install.mjs'
+import {createKeyedLock} from './locks.mjs'
 import {updateNics} from './nics.mjs'
 import {RpcError} from './rpc.mjs'
 import {parseResize} from './terminal.mjs'
@@ -1247,27 +1248,31 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 	}
 	const remoteFile = join(dataDir, 'remote-apps.json')
 	const APP_INSTALL_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,64}$/
+	const validRemote = (value) => value !== null && typeof value === 'object' && Array.isArray(value.apps)
+	let remoteDamagedLogged = false
+	// A damaged file is not an empty list: it is reported once and never overwritten.
 	async function readRemote() {
-		try {
-			const data = JSON.parse(await readFile(remoteFile, 'utf8'))
-			return Array.isArray(data?.apps) ? data.apps : []
-		} catch {
-			return []
-		}
+		const res = await readJsonState(remoteFile, remoteDamagedLogged ? {validate: validRemote, log: null} : {validate: validRemote})
+		remoteDamagedLogged = res.damaged
+		return {apps: res.status === 'ok' ? res.value.apps : [], damaged: res.damaged}
 	}
 	async function writeRemote(apps) {
 		await writeAtomic(remoteFile, JSON.stringify({apps}), {mode: 0o600})
 	}
+	// Installs and removals read, change and write the same file: one at a time, so none is lost.
+	const remoteLock = createKeyedLock()
+	const updateRemote = (change) =>
+		remoteLock('remote-apps', async () => {
+			const {apps, damaged} = await readRemote()
+			if (!damaged) await writeRemote(change(apps))
+		})
 	async function forgetRemote(computerId) {
-		const apps = (await readRemote()).filter((a) => a.computerId !== computerId)
-		await writeRemote(apps)
+		await updateRemote((apps) => apps.filter((a) => a.computerId !== computerId))
 	}
 	async function rememberRemote(agent, apps) {
-		const current = await readRemote()
 		const ids = new Set(apps.map((a) => a.appId))
-		const kept = current.filter((a) => !(a.computerId === agent.id && ids.has(a.id)))
-		const next = [
-			...kept,
+		await updateRemote((current) => [
+			...current.filter((a) => !(a.computerId === agent.id && ids.has(a.id))),
 			...apps.map((a) => ({
 				id: a.appId,
 				name: clip(a.name || a.appId, 80),
@@ -1278,13 +1283,12 @@ export function createConnector({dataDir, tlsDir, connectorDir = fileURLToPath(n
 				state: 'running',
 				installedAt: Date.now(),
 			})),
-		]
-		await writeRemote(next)
+		])
 	}
 	async function remoteApps() {
 		await loaded
 		const names = new Map(state.agents.map((a) => [a.id, a.name]))
-		return (await readRemote())
+		return (await readRemote()).apps
 			.filter((a) => a && names.has(a.computerId) && typeof a.id === 'string')
 			.map((a) => ({
 				id: a.id,

@@ -1,5 +1,3 @@
-import type {CSSProperties} from 'react'
-
 import {Icon} from './icons'
 import {applyPrefsUpdate, prefsChoosingYourPhoto} from './photoPrefs'
 import {RADIO_SELECTOR, rovingKeyDown, rovingTabIndex} from './roving'
@@ -16,6 +14,7 @@ export function ThemeChooser({
 	uploading,
 	onPickPhoto,
 	onTheme,
+	modeSwitch = false,
 }: {
 	prefs: Prefs
 	setPrefs: (p: Prefs) => void
@@ -24,6 +23,8 @@ export function ThemeChooser({
 	uploading?: boolean
 	onPickPhoto?: () => void
 	onTheme?: (id: ThemeId) => void
+	/** First-run setup only. The top bar owns this switch everywhere else. */
+	modeSwitch?: boolean
 }) {
 	const desktop = useOmarchyThemes().data
 	const wp = omarchyBackgroundUrl(prefs.omarchyBackground, desktop?.current)
@@ -57,16 +58,18 @@ export function ThemeChooser({
 
 	return (
 		<div className="theme-chooser">
-			<Segmented
-				label="Light, dark, or off"
-				value={mode}
-				onChange={setMode}
-				options={[
-					{id: 'sun', label: 'Sun'},
-					{id: 'moon', label: 'Moon'},
-					{id: 'off', label: 'Off'},
-				]}
-			/>
+			{modeSwitch && (
+				<Segmented
+					label="Light, dark, or off"
+					value={mode}
+					onChange={setMode}
+					options={[
+						{id: 'sun', label: 'Sun'},
+						{id: 'moon', label: 'Moon'},
+						{id: 'off', label: 'Off'},
+					]}
+				/>
+			)}
 			<p className="footer-note theme-mode-note">Sun and Moon use the palette marked in each column. Off uses the last of Horizon, Your photo, and Omarchy.</p>
 			<div className="theme-board">
 				<div className="theme-picture">
@@ -138,7 +141,7 @@ function ThemeCard({
 	const face = background ?? {background: theme.bg, color: theme.fg, dots: [...theme.dots]}
 	return (
 		<div className={`theme-card-wrap${onPrefer ? ' has-prefer' : ''}`} style={{color: face.color}}>
-			<button type="button" className={`theme-card${on ? ' on' : ''}`} aria-pressed={on} style={{background: face.background, color: face.color, minHeight: id === 'horizon' || id === 'custom' ? 104 : undefined} as CSSProperties} onClick={onApply}>
+			<button type="button" className={`theme-card${on ? ' on' : ''}`} aria-pressed={on} style={{background: face.background, color: face.color}} onClick={onApply}>
 				<span className="label">{theme.name}</span>
 				<span className="dots">
 					{id === 'custom' && !face.dots.length ? (

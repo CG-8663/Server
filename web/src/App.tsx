@@ -22,6 +22,7 @@ import {OPEN_SETTINGS} from './desktop/settingsPage'
 import {safeSession} from './safeStorage'
 import {ScreenErrorBoundary} from './screenBoundary'
 import {inAppBackTarget, markInAppHistory, readInAppHistoryFlag} from './inAppHistory'
+import {ThemeModeButton} from './theme/ThemeModeButton'
 import {Backdrop, Sheet, SheetHeader, haptic, layoutAsked, scrollPhoneToTop, useLayout, usePrefs, type Prefs} from './ui'
 import {WhatsNewOnUpdate} from './WhatsNew'
 import {WelcomeForUser} from './Welcome'
@@ -306,6 +307,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 					>
 						<Icon name="settings" size={20} />
 					</button>
+					<ThemeModeButton prefs={prefs} setPrefs={setPrefs} className="round-btn theme-mode" size={20} />
 					<button
 						className={`round-btn bell${notes.length ? ' lit' : ''}${notes.includes('update-available') ? ' ringing' : ''}`}
 						aria-label={notes.length ? plural(notes.length, 'notification') : 'Notifications'}

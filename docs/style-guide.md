@@ -16,13 +16,25 @@ Theme changes colours. Layout is phone, desktop, or automatic. Shape is Round or
 
 A window frame belongs to the shell. The screen inside the frame is the same component the phone uses.
 
+## Materials
+
+A sentence the person reads sits on a card. The card is the class `glass` and the colour `--card`. Buttons, chips, fields, and hovers use `--glass`. The picture behind the page is the backdrop. It is not a card. Hiding the picture is not a way to make text readable.
+
+On the phone, a list that is the body of a screen is one card. That list takes `screen-list` as well as `glass`. In a desktop window the same list is flat, because the window already has a fill. A section inside a page stays a `Group` in both layouts.
+
+A setting uses `Row`. A machine uses the machine list. A file uses the file list. A store app uses the store list. Those are the rows for those jobs. A new list class for the same job is a defect.
+
+Round and Square change `--r-lg` and `--r-md`. A circle stays a circle in both shapes: a status dot, a spinner, an avatar, a badge. A new control uses those tokens.
+
+Secondary text, placeholders, and hints are at least 4.5:1 on the page, the solid page colour, and the card. Danger text meets the same on its own fill. Accent text on a light theme is darkened for that page. A primary action is at least 44px, or a smaller control whose hit area reaches 44px. `btn small` is for a repeated compact action, not the only way to do the thing. A button draws the shared focus ring inside its own box: 2px, the accent text colour, offset -2px. When the drawing fills the button, that ring is painted on top of the drawing so every side stays visible. The ring stays on the button. A sheet, a card, or a sticky header is not given extra padding so a ring can hang outside the button. A button with no box keeps the ring outside, because there is no fill to draw it in: a name that is only underlined text, and the assistant character. A field uses the field shadow.
+
 ## Reuse components
 
 Prefer the existing piece over a new one with the same job.
 
 - A machine uses the machine page. A virtual machine uses that page.
 - A file list uses the file manager. A shorter list still has the path bar, favorites, and recent files.
-- A measure on Home uses the gauge. On a machine, the account's saved drawing shows the same readings as one line, three lines, or gauges. A shell uses the terminal. A yes-or-no uses the confirm sheet. A short form uses a sheet.
+- A measure on Home uses the gauge. On a machine, the account's saved drawing shows the same readings as one line, three lines, or gauges. That account chooses which readings are shown. Temperatures keep their own defaults. Another account is unchanged. A shell uses the terminal. A yes-or-no uses the confirm sheet. A short form uses a sheet.
 - An application uses the app row and the app page.
 
 Give the same action the same name everywhere. Terminal is the command prompt by itself. Desktop is the machine's screen. Storage is the machine's drives. Backups is the machine's backups. A second label for the same action is a defect.
@@ -206,8 +218,14 @@ Reduced motion is respected. A transition does not hide a change of state. After
 - A virtual machine differs only where the host, the guest operating system, or the connector makes a real difference.
 - An application is presented as a container on a machine.
 - The screen works by touch on a phone and in a window on the desktop, in both the floating shell and the tiled shell.
+- Body text is on a card. The picture is still the page background.
+- The phone list and the desktop window are the same component. The list is a card only on the phone.
+- New colours are tokens. Secondary text and danger text pass 4.5:1 on the card in every theme.
+- The screen uses `Group`, `Row`, `Sheet`, `Field`, and `btn`, or a list this guide already names.
+- A button's focus ring is inside the button. A sheet, a card, or a sticky header is not padded to make room for that ring.
 - A new component was added because the behavior is different, and an existing one could not carry it.
 - Readings, files, and permissions match what that machine reported.
+- Which readings are shown is saved on the account. Temperatures keep their own defaults.
 
 ## Who may change this
 

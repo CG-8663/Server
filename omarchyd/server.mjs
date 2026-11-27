@@ -38,6 +38,7 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import {createHermes} from './hermes.mjs'
 import * as system from './system.mjs'
 import {createSampler} from './stats.mjs'
+import {createOsInfo} from './os-info.mjs'
 import {WebSocketServer} from 'ws'
 import {viewerBackpressure} from './backpressure.mjs'
 
@@ -203,6 +204,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		hyprSseBySession.clear()
 	}
 	const release = await system.osRelease()
+	const osInfo = createOsInfo({release})
 	const settings = {hostname: os.hostname()}
 
 	// Live gauges: hardware is sampled on its own interval while a screen is reading.
@@ -339,6 +341,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		'system.getHostname': {kind: 'query', run: () => settings.hostname},
 		'system.getIpAddresses': {kind: 'query', run: () => system.ipAddresses()},
 		'system.device': {kind: 'query', run: async () => ({device: await system.deviceName(), os: release.pretty})},
+		'system.osInfo': {kind: 'query', run: () => osInfo.get()},
 
 		// ---- Settings: power, logs, device name, two-factor, sessions, reset ----------------------
 		'system.restart': {kind: 'mutation', run: async (input, {auth}) => (ownerOnly(auth, 'restart the server'), await bootGuard(input, 'restart'), power('reboot'))},
