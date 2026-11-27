@@ -491,10 +491,13 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				const cache = d.cache && d.cache !== 'default' ? ` cache='${d.cache}'` : ''
 				const discard = !cdrom && d.discard !== false ? " discard='unmap'" : ''
 				const source = d.file ? `<source ${cdrom ? "startupPolicy='optional' " : ''}file='${xml(d.file)}'/>` : ''
-				return `<disk type='file' device='${d.device}'><driver name='qemu' type='${d.format}'${cache}${discard}/>${source}<target dev='${names.get(d.id)}' bus='${busOf(d)}'/>${order(d.id)}${cdrom ? '<readonly/>' : ''}</disk>`
+				// A virtio disk does its I/O on its own thread instead of the main QEMU loop, which also runs the display and the network.
+				const iothread = !cdrom && busOf(d) === 'virtio' ? " iothread='1'" : ''
+				return `<disk type='file' device='${d.device}'><driver name='qemu' type='${d.format}'${cache}${discard}${iothread}/>${source}<target dev='${names.get(d.id)}' bus='${busOf(d)}'/>${order(d.id)}${cdrom ? '<readonly/>' : ''}</disk>`
 			})
 			.join('\n    ')
-		const scsi = layout.disks.some((d) => busOf(d) === 'scsi') ? "\n    <controller type='scsi' model='virtio-scsi'/>" : ''
+		const scsi = layout.disks.some((d) => busOf(d) === 'scsi') ? "\n    <controller type='scsi' model='virtio-scsi'><driver iothread='1'/></controller>" : ''
+		const iothreads = /iothread='1'/.test(disks + scsi) ? "\n  <iothreads>1</iothreads>" : ''
 		const machine = arm ? 'virt' : layout.machineType === 'pc' ? 'pc' : 'q35'
 		const cpuArch = arm ? 'aarch64' : 'x86_64'
 		const bootmenu = o.bootMenu ? "<bootmenu enable='yes' timeout='3000'/>" : ''
@@ -522,7 +525,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
   <name>${domain(m.id)}</name>${uuid ? `\n  <uuid>${uuid}</uuid>` : ''}
   <title>${xml(m.name)}</title>${o.notes ? `\n  <description>${xml(o.notes)}</description>` : ''}
   <memory unit='MiB'>${memoryMb}</memory>
-  <vcpu>${sockets * m.cores}</vcpu>
+  <vcpu>${sockets * m.cores}</vcpu>${iothreads}
   ${os}
   <features>${o.acpi === false ? '' : '<acpi/>'}${arm ? '' : '<apic/>'}</features>
   ${cpu}

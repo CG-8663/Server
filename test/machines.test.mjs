@@ -440,7 +440,7 @@ describe('omarchyd machines', () => {
 	test('drives: add a SCSI disk, grow it live, CD/DVD media, boot order; removing needs a shut-down machine', async () => {
 		const {diskId} = await call('machines.addDisk', {id, sizeGb: 8, bus: 'scsi', cache: 'writeback'})
 		assert.equal(diskId, 'disk1')
-		assert.match(seen.xml, /<controller type='scsi' model='virtio-scsi'\/>/)
+		assert.match(seen.xml, /<controller type='scsi' model='virtio-scsi'><driver iothread='1'\/><\/controller>/)
 		assert.match(seen.xml, /cache='writeback' discard='unmap'\/><source file='[^']+disk1\.qcow2'\/><target dev='sdb' bus='scsi'\/>/)
 		await assert.rejects(call('machines.resizeDisk', {id, diskId, sizeGb: 4}), /only grow/)
 		await call('machines.resizeDisk', {id, diskId, sizeGb: 16})
@@ -1677,7 +1677,11 @@ test('on an ARM server (Omarchy on Apple Silicon) a machine is an aarch64 "virt"
 		assert.doesNotMatch(xml, /x86_64|q35|<apic\/>|bus='sata'|bus='ide'/)
 		assert.match(xml, /disk\.qcow2'\/><target dev='vda' bus='virtio'\/>/)
 		assert.match(xml, /seed\.iso'\/><target dev='sda' bus='scsi'\/>/)
-		assert.match(xml, /<controller type='scsi' model='virtio-scsi'\/>/)
+		// Disk I/O runs on its own thread, not QEMU's main loop: the virtio disk and the SCSI controller use it, the CD drive does not.
+		assert.match(xml, /<vcpu>2<\/vcpu>\n  <iothreads>1<\/iothreads>/)
+		assert.match(xml, /<driver name='qemu' type='qcow2' discard='unmap' iothread='1'\/><source file='[^']*disk\.qcow2'\/>/)
+		assert.match(xml, /<controller type='scsi' model='virtio-scsi'><driver iothread='1'\/><\/controller>/)
+		assert.match(xml, /device='cdrom'><driver name='qemu' type='raw'\/>/)
 		assert.match(xml, /<video><model type='virtio'\/><\/video>/)
 		// The catalog query keeps both architectures. The form filters to the host.
 		const images = await machines.procedures['machines.osImages'].run()
