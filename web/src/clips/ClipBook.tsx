@@ -9,7 +9,7 @@ import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
 import {type Agent} from '../swarm/Swarm'
 import {FilterBar} from '../FilterBar'
-import {Field, Group, InWindow, Row, Sheet, SheetHeader, haptic, useConfirm, usePortalRoot, useToast} from '../ui'
+import {Field, InWindow, Row, Sheet, SheetHeader, haptic, useConfirm, usePortalRoot, useToast} from '../ui'
 import {
 	batchPlan,
 	clipIsFolder,
@@ -180,6 +180,7 @@ export function ClipBook({onBack, here, readings}: {onBack?: () => void; here?: 
 	const [ask, setAsk] = useState<AskAnchor | null>(null)
 	const [busy, setBusy] = useState(false)
 	const busyRef = useRef(false)
+	const confirming = useRef(false)
 
 	const refresh = () => qc.invalidateQueries({queryKey: ['clips.list']})
 	const run = async (work: () => Promise<void>) => {
@@ -372,6 +373,40 @@ export function ClipBook({onBack, here, readings}: {onBack?: () => void; here?: 
 		})()
 	}
 
+	const removeSelected = async () => {
+		if (confirming.current || busyRef.current) return
+		const ids = chosen.map((clip) => clip.id)
+		const n = ids.length
+		if (!n) return
+		confirming.current = true
+		try {
+			const ok = await confirm({
+				title: n === 1 ? 'Delete 1 selected item?' : `Delete ${n} selected items?`,
+				body: n === 1 ? 'It’s taken out of your clip book. The original file is left where it is.' : 'They’re taken out of your clip book. The original files are left where they are.',
+				confirm: 'Delete',
+				danger: true,
+				icon: 'trash',
+			})
+			if (!ok) return
+			await run(async () => {
+				let removed = 0
+				try {
+					for (const id of ids) {
+						await mutate('clips.remove', {id})
+						removed += 1
+					}
+				} finally {
+					if (removed > 0) refresh()
+				}
+				if (open && ids.includes(open.id)) setOpen(null)
+				setSelected(new Set())
+				toast(n === 1 ? 'Deleted' : `Deleted ${n}`)
+			})
+		} finally {
+			confirming.current = false
+		}
+	}
+
 	const clipReadings = () =>
 		run(async () => {
 			if (!here) return
@@ -403,7 +438,7 @@ export function ClipBook({onBack, here, readings}: {onBack?: () => void; here?: 
 	const sendLabel = here ? `Send to ${here.name}` : 'Send to…'
 
 	return (
-		<div className={`stagger clip-book${selected.size > 0 ? ' has-selection' : ''}`}>
+		<div className="stagger clip-book">
 			{!here && (
 				<div style={{display: 'flex', alignItems: 'center', gap: 10}}>
 					{onBack && !inWindow && (
@@ -495,7 +530,30 @@ export function ClipBook({onBack, here, readings}: {onBack?: () => void; here?: 
 					<Row icon="activity" color="var(--peach)" label="Clip the readings" sub="A snapshot of this machine, kept in the book." onClick={() => (haptic(6), clipReadings())} />
 				</div>
 			)}
-			<Group title={filtering && shown.length > 0 && shown.length !== clips.length ? `${shown.length} of ${clips.length} shown` : 'Clips'}>
+			<section className="clip-list">
+				<div className="section-head">
+					<h2>{filtering && shown.length > 0 && shown.length !== clips.length ? `${shown.length} of ${clips.length} shown` : 'Clips'}</h2>
+				</div>
+				{selected.size > 0 && (
+					<div className="clip-select-pin">
+						<div className="clip-select" role="region" aria-label="Selected clips">
+							<p className="clip-select-count">{selected.size === 1 ? '1 selected' : `${selected.size} selected`}</p>
+							{selection.problem && <p className="clip-select-note">{selection.problem}</p>}
+							<div className="clip-select-actions">
+								<button type="button" className="btn" onClick={() => setSelected(new Set())}>
+									Clear
+								</button>
+								<button type="button" className="btn danger" disabled={busy} onClick={() => void removeSelected()}>
+									Delete
+								</button>
+								<button type="button" className="btn primary" disabled={busy || !!selection.problem || selection.targets.length === 0} onClick={() => beginSend(chosen)}>
+									{sendLabel}
+								</button>
+							</div>
+						</div>
+					</div>
+				)}
+				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 				{book.isPending && <p className="footer-note">Loading…</p>}
 				{!book.isPending && clips.length === 0 && <p className="footer-note">Nothing clipped yet.</p>}
 				{!book.isPending && clips.length > 0 && visible.length === 0 && <p className="footer-note">No clips match.</p>}
@@ -554,21 +612,8 @@ export function ClipBook({onBack, here, readings}: {onBack?: () => void; here?: 
 						</div>
 					)
 				})}
-			</Group>
-			{selected.size > 0 && (
-				<div className="clip-select" role="region" aria-label="Selected clips">
-					<p className="clip-select-count">{selected.size === 1 ? '1 selected' : `${selected.size} selected`}</p>
-					{selection.problem && <p className="clip-select-note">{selection.problem}</p>}
-					<div className="clip-select-actions">
-						<button type="button" className="btn" onClick={() => setSelected(new Set())}>
-							Clear
-						</button>
-						<button type="button" className="btn primary" disabled={busy || !!selection.problem || selection.targets.length === 0} onClick={() => beginSend(chosen)}>
-							{sendLabel}
-						</button>
-					</div>
 				</div>
-			)}
+			</section>
 			{asked && ask && <DeleteFlyout anchor={ask} busy={busy} onClose={() => setAsk(null)} onDelete={() => removeNow(asked)} />}
 			<Sheet open={!!openClip} onClose={() => setOpen(null)} label={openClip?.label ?? 'Clip'} tall>
 				{openClip && openRow && (
