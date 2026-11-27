@@ -31,7 +31,7 @@ import {backupListView} from './backupList'
 import {formatServerDiskGb} from './formatServerDisk'
 import {cpuStatusText, memoryStatusText, pointsInLastHour} from './statsWindow'
 
-export type PanelId = 'summary' | 'hardware' | 'cloudinit' | 'options' | 'network' | 'usb' | 'snapshots' | 'backups' | 'history' | 'monitor'
+export type PanelId = 'summary' | 'hardware' | 'cloudinit' | 'options' | 'network' | 'usb' | 'clips' | 'snapshots' | 'backups' | 'history' | 'monitor'
 export const PANELS: {id: PanelId; label: string; icon: IconName}[] = [
 	{id: 'summary', label: 'Summary', icon: 'activity'},
 	{id: 'hardware', label: 'Hardware', icon: 'cpu'},
@@ -39,6 +39,7 @@ export const PANELS: {id: PanelId; label: string; icon: IconName}[] = [
 	{id: 'options', label: 'Options', icon: 'settings'},
 	{id: 'network', label: 'Port forwarding', icon: 'networking'},
 	{id: 'usb', label: 'Devices', icon: 'usb'},
+	{id: 'clips', label: 'Clip book', icon: 'clipboard'},
 	{id: 'snapshots', label: 'Snapshots', icon: 'history'},
 	{id: 'backups', label: 'Backup', icon: 'save'},
 	{id: 'history', label: 'Task History', icon: 'list'},

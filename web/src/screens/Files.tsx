@@ -27,6 +27,7 @@ import { useBootstrap, useDisk, useMachines, useUser } from "../data";
 import { ComputerFolder } from "../fleet/ComputerFolder";
 import { FittingCrumbs } from "../fleet/FittingCrumbs";
 import { computerPlacePath, filePlaces, filesParent, parseComputerPlace, parseGuestPlace, scopeRoot, SERVER_FILES, withinScope, type FilesScope } from "../fleet/filePlaces";
+import { fileClipInput } from "../clips/view";
 import { NuEntries, type NuItem } from "../fleet/NuEntries";
 import { queryProblem, useBrowserOnline } from "../connection";
 import { Icon, type IconName } from "../icons";
@@ -1207,10 +1208,38 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
     const batch = await droppedItems(e.dataTransfer).catch((): UploadBatch => ({ files: [], dirs: [] }));
     if (batch.files.length || batch.dirs.length) upload(batch, uploadDir);
   };
+  // Ordinary Copy fills the book. The destination picker still opens from the Copy action.
+  // A keyboard copy only fills the book. Success stays quiet; a refusal is the toast.
+  const rememberClip = (paths: string[], cut = false) => {
+    const places = paths.map((item) => parseComputerPlace(item));
+    const head = places[0];
+    const sameComputer = !!head && places.every((item) => item && item.rel && item.id === head.id);
+    const input = sameComputer
+      ? fileClipInput("swarm", head.id, places.map((item) => item!.rel), cut)
+      : places.some(Boolean)
+        ? null
+        : fileClipInput("server", undefined, paths, cut);
+    if (!input) return false;
+    mutate("clips.addFile", input)
+      .then(() => qc.invalidateQueries({ queryKey: ["clips.list"] }))
+      .catch((err: Error) => toast(err.message, true));
+    return true;
+  };
+  const onClipKey = (e: React.KeyboardEvent) => {
+    if (e.altKey || e.repeat || !(e.ctrlKey || e.metaKey)) return;
+    const key = e.key.toLowerCase();
+    if (key !== "c" && key !== "x") return;
+    const target = e.target;
+    if (target instanceof HTMLElement && target.closest("input, textarea, [contenteditable=true]")) return;
+    const paths = selected.size ? [...selected] : open ? [open.path] : [];
+    if (!paths.length || !rememberClip(paths, key === "x")) return;
+    e.preventDefault();
+  };
 
   return (
     <div
       className={`stagger files-root nu${scope ? " nu-embedded" : ""}`}
+      onKeyDown={onClipKey}
       onDragEnter={onDragEnter}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
@@ -1463,14 +1492,11 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
           onCopy={(rel) => {
             const next = computerPlacePath(computerHere.id, rel);
             if (next) setPicker({mode: "copy", paths: [next]});
-          }}
-          onClip={(rel) => {
-            mutate("clips.addFile", {scope: "swarm", id: computerHere.id, path: rel})
-              .then(() => {
-                toast("Saved to the clip book");
-                qc.invalidateQueries({queryKey: ["clips.list"]});
-              })
-              .catch((e: Error) => toast(e.message, true));
+            const input = fileClipInput("swarm", computerHere.id, [rel]);
+            if (!input) return;
+            mutate("clips.addFile", input)
+              .then(() => qc.invalidateQueries({ queryKey: ["clips.list"] }))
+              .catch((err: Error) => toast(err.message, true));
           }}
         />
       )}
@@ -1586,7 +1612,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
 
           {/* Selection bar */}
           {selecting && (
-            <div className="select-bar">
+            <div className="select-bar" onKeyDown={onClipKey}>
               <button
                 className="sb-cancel"
                 aria-label={`Cancel selection, ${selected.size} selected`}
@@ -1631,9 +1657,11 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
                     Move
                   </button>
                   <button
-                    onClick={() =>
-                      setPicker({ mode: "copy", paths: [...selected] })
-                    }
+                    onClick={() => {
+                      const paths = [...selected];
+                      setPicker({ mode: "copy", paths });
+                      rememberClip(paths);
+                    }}
                   >
                     <Icon name="copy" size={21} />
                     Copy
@@ -1696,7 +1724,10 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
           onDownload={() => download([open.path])}
           onRename={() => setPrompt({ kind: "rename", entry: open })}
           onMove={() => setPicker({ mode: "move", paths: [open.path] })}
-          onCopy={() => setPicker({ mode: "copy", paths: [open.path] })}
+          onCopy={() => {
+            setPicker({ mode: "copy", paths: [open.path] });
+            rememberClip([open.path]);
+          }}
           onFavorite={() => toggleFavorite(open.path)}
           onShare={() => toggleShare(open)}
           onShareInfo={(s) => (setOpen(null), setShareFor({ path: s.path, name: s.name }))}
@@ -2051,7 +2082,6 @@ function ItemSheet(p: {
   const desk = useDesktop();
   const { f } = p;
   const toast = useToast();
-  const qc = useQueryClient();
   const k = kindOf(f);
   const can = (op: FileEntry["operations"][number]) =>
     f.operations.includes(op);
@@ -2137,20 +2167,6 @@ function ItemSheet(p: {
           icon: "upload",
           onClick: () => p.onQrUpload?.(),
           show: !!p.quickTransfer && isDir(f) && can("writable"),
-        },
-        {
-          id: "clip",
-          label: "Clip book",
-          icon: "clipboard",
-          onClick: () => {
-            mutate("clips.addFile", { scope: "server", path: f.path })
-              .then(() => {
-                toast("Saved to the clip book");
-                qc.invalidateQueries({ queryKey: ["clips.list"] });
-              })
-              .catch((e: Error) => toast(e.message, true));
-          },
-          show: offersFile(f) && !f.path.startsWith("/Trash/"),
         },
         {
           id: "select",

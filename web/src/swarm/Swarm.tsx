@@ -5,6 +5,9 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {mutate, query, type Machine, type UserApp} from '../api'
+import {useUser} from '../data'
+import {ClipBook} from '../clips/ClipBook'
+import {computerHere} from '../clips/view'
 import {hostedVms} from '../fleet/hostedVms'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {errorText} from '../queryNotice'
@@ -478,6 +481,8 @@ function AgentSheet({
 	const os = look(a)
 	const act = useSwarmAction()
 	const confirm = useConfirm()
+	const user = useUser()
+	const owner = user.data?.role === 'owner'
 	const [name, setName] = useState(a.name)
 	const [backups, setBackups] = useState(false)
 	const [storage, setStorage] = useState(false)
@@ -506,6 +511,11 @@ function AgentSheet({
 					},
 				]
 			: []),
+		{
+			id: 'clips',
+			label: 'Clip book',
+			body: <ClipBook here={computerHere({id: a.id, name: a.name, online: a.online, allowed: a.allowed, on: a.on})} readings={owner && a.online} />,
+		},
 		...(a.online
 			? [
 					{
@@ -804,6 +814,7 @@ function ComputerDetail({
 
 function sectionIcon(id: string): IconName {
 	if (id === 'files') return 'folder'
+	if (id === 'clips') return 'clipboard'
 	if (id === 'apps') return 'store'
 	if (id === 'services') return 'server'
 	if (id === 'storage') return 'disk'

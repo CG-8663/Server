@@ -14,6 +14,7 @@ import {DesktopStyleCards, ScreenLayoutCards} from '../LayoutPicker'
 import {CAPTURE_KEY, canUseKeyboardLock, coerceMode, keyboardLockApi, type CaptureMode} from './hyprland/grab'
 import {SnippetBlock} from './hyprland/Snippet'
 import {DESKTOP_KEY, useDesktop, useItems, type ItemInfo} from './Desktop'
+import {placeableKeys} from './places'
 
 const FOCUS: Record<string, string> = {layout: 'appearance-layout', dock: 'appearance-dock', desktop: 'appearance-desktop', themes: 'appearance-themes', background: 'appearance-background'}
 
@@ -289,7 +290,7 @@ function DockSettings({cfg, setCfg}: P) {
 		;[items[i], items[j]] = [items[j], items[i]]
 		set({items})
 	}
-	const candidates = allKeys(appList, machineList, owner).filter((k) => !d.items.includes(k))
+	const candidates = placeableKeys(appList, machineList, owner).filter((k) => !d.items.includes(k))
 	return (
 		<>
 			<Section title="Position">
@@ -447,7 +448,7 @@ function DesktopSettings({cfg, setCfg}: P) {
 			</Section>
 			<Section title="Choose icons" note="Double-click an icon to open it. Drag icons to arrange them, drag across the desktop to select several, and press Delete to remove the selected icons (only the shortcut is removed). A stopped machine starts when you open it.">
 				<ItemPicker
-					keys={allKeys(appList, machineList, owner, true)}
+					keys={placeableKeys(appList, machineList, owner, true)}
 					info={info}
 					selected={onDesk}
 					onPick={(k) => (onDesk.has(k) ? desk?.removeIcon(k) : desk?.addIcon(k))}
@@ -455,18 +456,6 @@ function DesktopSettings({cfg, setCfg}: P) {
 			</Section>
 		</>
 	)
-}
-
-function allKeys(appList: {id: string; name?: string}[], machineList: {id: string}[], owner: boolean, folders = false) {
-	return [
-		...(folders ? ['folder:/Home', 'folder:/Trash'] : []),
-		...SYSTEM_DOCK.filter((k) => k !== 'terminal' || owner),
-		'assistant',
-		'personalize',
-		...[...appList].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)).map((a) => `app:${a.id}`),
-		...(owner ? [DESKTOP_KEY] : []),
-		...machineList.map((m) => `machine:${m.id}`),
-	]
 }
 
 function ItemPicker({keys, info, selected, onPick, actionLabel}: {keys: string[]; info: (k: string) => ItemInfo; selected?: Set<string>; onPick: (k: string) => void; actionLabel?: string}) {

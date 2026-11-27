@@ -28,6 +28,7 @@ import {applyPrefsUpdate} from '../photoPrefs'
 import {dismissTutorial, type TutorialId} from '../tutorials'
 import {SheetHeader, StatusPill, Switch, haptic, machineStatus, type Prefs} from '../ui'
 import {MachineManager} from '../fleet/MachineManager'
+import {GuestClips} from '../clips/GuestClips'
 
 const COMPACT_KEY = 'omarchy-server:machines-compact'
 const LIST_WIDTH_KEY = 'omarchy-server:machines-list-width'
@@ -482,6 +483,7 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 		if (id === 'options') return <OptionsPanel d={d} />
 		if (id === 'network') return <PortForwarding machine={m} />
 		if (id === 'usb') return <DevicesPanel guest={{kind: 'machine', id: m.id, name: m.name}} />
+		if (id === 'clips') return <GuestClips machine={m} />
 		if (id === 'snapshots') return <SnapshotsPanel d={d} />
 		if (id === 'history') return <HistoryPanel d={d} />
 		return <MonitorPanel d={d} />

@@ -24,6 +24,8 @@ import {createContainers} from './containers.mjs'
 import {createOmarchyTheme} from './omarchy-theme.mjs'
 import {createOmarchyPlugins} from './omarchy-plugins.mjs'
 import {createClips} from './clips.mjs'
+import {createToasts} from './toasts.mjs'
+import {createTransfers} from './transfers.mjs'
 import {closeReason, createConnector} from './connector.mjs'
 import {createStorage} from './storage.mjs'
 import {createUsb, listHostUsb} from './usb.mjs'
@@ -230,6 +232,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 
 	// Assigned after the connector exists. Factory reset closes over this binding.
 	let clips
+	let toasts
+	let transfers
 	const ownerOnly = (auth, what = 'change the desktop’s theme') => {
 		if (accounts.getUser(auth.userId)?.role === 'member') throw new RpcError('FORBIDDEN', `Only the server’s owner can ${what}`)
 	}
@@ -401,6 +405,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 						await assistant.conversations.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
 						// A clip can be a password or a key. Drop every book even when an app or a machine stays.
 						await clips?.resetAll().catch((e) => console.error('[omarchyd] reset clips', e.message))
+						await toasts?.resetAll().catch((e) => console.error('[omarchyd] reset toasts', e.message))
+						await transfers?.resetAll().catch((e) => console.error('[omarchyd] reset transfers', e.message))
 						const agents = await connector.procedures['swarm.list'].run().catch((e) => {
 							console.error('[omarchyd] reset swarm', e.message)
 							return []
@@ -656,11 +662,17 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const omarchyPlugins = createOmarchyPlugins({home, theme: omarchyTheme, ...pluginOptions})
 	// Local swarm: other Linux computers joined through the connector (see connector.mjs).
 	connector = createConnector({dataDir, tlsDir, connectorDir: join(appDir, 'connector'), plugins: omarchyPlugins, files, source: () => updater.source(), webPort, onOnline: (id) => machines.bootRemote(id)})
+	const clipboardWrite = {
+		async run(text) {
+			throw new RpcError('PRECONDITION_FAILED', 'This server can’t take clipboard text right now')
+		},
+	}
 	clips = createClips({
 		dataDir,
 		files,
 		fleet: connector.files,
 		readers: {
+			writeClipboard: (text) => clipboardWrite.run(text),
 			server: () => sampler.get(),
 			machine: async (id) => {
 				try {
@@ -689,6 +701,24 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		urlUser: (token, req) => accounts.checkUrlToken(token, req),
 	})
 	Object.assign(procedures, clips.procedures)
+	toasts = createToasts({dataDir})
+	Object.assign(procedures, toasts.procedures)
+	transfers = createTransfers({
+		dataDir,
+		toasts,
+		paste: (auth, clipId, dest) => clips.procedures['clips.paste'].run({id: clipId, dest}, {auth}),
+		stat: async (path) => {
+			try {
+				const info = await files.inspect(path)
+				if (!info || info.dir) return null
+				return {size: info.size}
+			} catch {
+				return null
+			}
+		},
+	})
+	Object.assign(procedures, transfers.procedures)
+	void transfers.kick()
 	forwardInstall = (target, payload) => connector.forwardAppInstall(target, payload)
 	remoteApps = () => connector.remoteApps()
 	const transfer = createFileTransfer({files, fleet: connector.files})
@@ -743,6 +773,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		onRemoteUnlock: markRemoteSignIn,
 		...hyprlandOptions,
 	})
+	clipboardWrite.run = (text) => hyprland.procedures['hyprland.clipboardWrite'].run({text})
 	Object.assign(
 		procedures,
 		Object.fromEntries(

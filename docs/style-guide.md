@@ -103,7 +103,7 @@ Every physical machine, with a host's virtual machines available from that host.
 
 ### Machine page
 
-The machine's own place. How it is doing, what it is doing now, its files, its applications, its terminal, its desktop, its storage, its backups, and its power. This server, a joined computer, and a virtual machine share this shape. How it is doing is one line, three lines, or gauges. A tap cycles those drawings. The choice is saved with the account and is the same on every machine. Home does not follow it. The numbers stay the same in each drawing. A gauge with no percent shows the value and no arc. The lower sections are a tab strip. Host-only controls sit in that same strip, in their own tabs. A joined computer does not get a virtual-machines tab.
+The machine's own place. How it is doing, what it is doing now, its files, its applications, its terminal, its desktop, its storage, its backups, and its power. This server, a joined computer, and a virtual machine share this shape. How it is doing is one line, three lines, or gauges. A tap cycles those drawings. The choice is saved with the account and is the same on every machine. Home does not follow it. The numbers stay the same in each drawing. A gauge with no percent shows the value and no arc. The lower sections are a tab strip. Host-only controls sit in that same strip, in their own tabs. A joined computer does not get a virtual-machines tab. Clip book is one of those sections, and it is the same book on every machine. Send to this machine is there only when that machine can take the clip.
 
 ### Apps
 
@@ -137,7 +137,7 @@ The product: appearance, account, sign-in, and the application's update. Appeara
 
 ### System
 
-This server as the host of the product: what it is, and power for the whole server. Live graphs and disk detail stay on the machine page.
+This server as the host of the product: what it is, and power for the whole server. Live graphs and disk detail stay on the machine page. Clip book is a row on this screen. It is not a phone tab, and it is not on the default desktop dock.
 
 ### Sign-in
 
@@ -149,7 +149,7 @@ Help on this server. It can look something up, and it can propose a change the p
 
 ### Notifications and clips
 
-A notification leads to the machine or the application it is about. A clip names the machine it was copied from. Both stay small.
+A notification leads to the machine or the application it is about. A clip names the machine it was copied from. The book is newest first. One row filters it: All, then text, picture, file, or folder, then missing, offline, or available. Copy puts the clip on this device. Send to this machine is offered only when that machine can take the clip. Both stay small. Several clips can be checked and sent together. Text is joined onto one clipboard. Files, pictures, and folders go into one folder. A whole folder from another computer stays where it is. Text and files are not sent together. A row can send or delete without opening the clip. Delete asks in a small confirm. A file transfer is watched on the global Clip book. The bell is for the whole server, such as a software update. An account toast belongs to the person who is signed in. It stays until they dismiss it, or until the time it was given. A short Copied or error toast stays on this browser. The assistant speaks an account toast when the character is visible. When the character is hidden or covered, that same toast sits at the top of the page. Clip book can be pinned to the dock or placed on the desktop.
 
 ## Pages, panels, sheets, windows, and pop-ups
 

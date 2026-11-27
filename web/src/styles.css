@@ -2900,6 +2900,60 @@ h1.title {
 html.desk-mode .toast {
 	top: calc(var(--top-h, 34px) + 12px);
 }
+.toast-stack {
+	position: fixed;
+	z-index: 60;
+	left: 50%;
+	top: calc(var(--safe-t) + 12px);
+	transform: translateX(-50%);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	width: max-content;
+	max-width: calc(100% - 32px);
+	pointer-events: none;
+}
+html.desk-mode .toast-stack {
+	top: calc(var(--top-h, 34px) + 12px);
+}
+.toast-stack .toast,
+html.desk-mode .toast-stack .toast {
+	position: relative;
+	left: auto;
+	top: auto;
+	transform: none;
+	pointer-events: auto;
+	animation: toast-in 0.45s var(--spring);
+}
+.toast-open,
+.toast-text {
+	flex: 1;
+	min-width: 0;
+	text-align: left;
+}
+.toast-open,
+.toast-x {
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	padding: 0;
+}
+.toast-x {
+	width: 44px;
+	height: 44px;
+	margin: -12px -8px -12px 0;
+	display: grid;
+	place-items: center;
+	flex: none;
+}
+@keyframes toast-in {
+	from {
+		opacity: 0;
+		transform: translateY(-12px) scale(0.98);
+	}
+}
 .toast .ico {
 	width: 24px;
 	height: 24px;
@@ -9544,13 +9598,80 @@ html.ac-paused .ac :is(.ac-body, .ac-shadow) { animation-play-state: paused !imp
 	user-select: none;
 	will-change: transform;
 }
-.ac-widget > .ac { transition: transform 0.28s cubic-bezier(0.3, 1.5, 0.5, 1), filter 0.28s ease; }
-.ac-widget:active > .ac { transform: scale(0.94); }
+.ac-hit {
+	width: 100%;
+	height: 100%;
+	padding: 0;
+	border: 0;
+	border-radius: 28px;
+	background: none;
+	color: inherit;
+	display: grid;
+	place-items: center;
+	cursor: inherit;
+	touch-action: none;
+}
+.ac-widget .ac { transition: transform 0.28s cubic-bezier(0.3, 1.5, 0.5, 1), filter 0.28s ease; }
+.ac-hit:active > .ac { transform: scale(0.94); }
 .ac-widget.dragging { cursor: grabbing; }
 /* picked up: lifted a little, with a deeper shadow */
-.ac-widget.dragging > .ac { transform: scale(1.1) translateY(-6%); filter: drop-shadow(0 14px 16px rgba(0, 0, 0, 0.35)); }
+.ac-widget.dragging .ac { transform: scale(1.1) translateY(-6%); filter: drop-shadow(0 14px 16px rgba(0, 0, 0, 0.35)); }
 .ac-widget.dragging .ac-shadow { opacity: 0.35; transform: scale(0.8) translateY(30%); }
-.ac-widget:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.ac-hit:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.ac-say {
+	position: absolute;
+	right: calc(100% - 6px);
+	bottom: 8px;
+	z-index: 1;
+	display: flex;
+	align-items: flex-start;
+	gap: 4px;
+	width: max-content;
+	max-width: min(260px, 68vw);
+	padding: 10px 4px 10px 14px;
+	border-radius: 18px 18px 6px 18px;
+	background: var(--sheet);
+	border: 1px solid var(--line-2);
+	box-shadow: var(--shadow);
+	color: inherit;
+	text-align: left;
+	pointer-events: auto;
+}
+.ac-say.on-right {
+	right: auto;
+	left: calc(100% - 6px);
+	border-radius: 18px 18px 18px 6px;
+}
+.ac-say-open,
+.ac-say p {
+	margin: 0;
+	flex: 1;
+	min-width: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	font-size: 14px;
+	font-weight: 560;
+	line-height: 1.35;
+	text-align: left;
+	padding: 4px 0;
+}
+.ac-say-x {
+	width: 44px;
+	height: 44px;
+	margin: -6px 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	display: grid;
+	place-items: center;
+	flex: none;
+}
+.ac-say.problem .ac-say-open,
+.ac-say.problem p {
+	color: var(--red);
+}
 .ac-widget .ac-dot {
 	position: absolute;
 	top: 4%;
@@ -10645,6 +10766,226 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 /* Compact keeps the name field and All, Physical, Unhealthy, Offline on one line. */
 .mm.is-lines .mm-tools {
 	flex-wrap: nowrap;
+}
+/* Clip book: search and All | kind | status stay on one line. The buttons scroll if the row is tight. */
+.clip-tools {
+	display: flex;
+	align-items: center;
+	flex-wrap: nowrap;
+	gap: 8px;
+	margin: 0 0 12px;
+	min-width: 0;
+}
+.clip-tools .search {
+	flex: 1 1 auto;
+	min-width: 7.5rem;
+	margin: 0;
+}
+.clip-filters {
+	display: flex;
+	flex: 0 1 auto;
+	flex-wrap: nowrap;
+	gap: 6px;
+	min-width: 0;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+.clip-filters::-webkit-scrollbar {
+	display: none;
+}
+.clip-filters button {
+	flex: none;
+	height: 44px;
+	padding: 0 14px;
+	border-radius: 12px;
+	border: 1px solid var(--line);
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 15px;
+	font-weight: 600;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.clip-filters button[aria-pressed='true'] {
+	background: color-mix(in srgb, var(--accent) 18%, transparent);
+	border-color: transparent;
+}
+.clip-row {
+	gap: 4px;
+	padding-left: 4px;
+	padding-right: 8px;
+}
+.clip-row.on {
+	background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.clip-check {
+	width: 44px;
+	height: 44px;
+	flex: none;
+	border: 0;
+	background: transparent;
+	color: var(--muted);
+	display: grid;
+	place-items: center;
+	cursor: pointer;
+}
+.clip-row.on .clip-check {
+	color: var(--accent);
+}
+.clip-open {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 13px;
+	border: 0;
+	padding: 6px 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+.clip-actions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex: none;
+}
+.clip-actions .icon-btn {
+	width: 44px;
+	height: 44px;
+	align-self: center;
+}
+.clip-actions .icon-btn::before {
+	inset: 0;
+}
+.clip-delete {
+	color: var(--red);
+}
+.clip-mark {
+	flex: none;
+	font-size: 12px;
+	font-weight: 700;
+	color: var(--muted);
+}
+.clip-fly {
+	position: fixed;
+	z-index: 60;
+	width: min(280px, calc(100vw - 16px));
+	padding: 14px;
+	border-radius: 16px;
+	background: var(--sheet);
+	border: 1px solid var(--line);
+	box-shadow: var(--shadow);
+}
+.clip-fly b {
+	display: block;
+	margin: 0 0 6px;
+	font-size: 16px;
+	font-weight: 680;
+}
+.clip-fly p {
+	margin: 0 0 12px;
+	font-size: 14px;
+	line-height: 1.4;
+	color: var(--muted);
+}
+.clip-fly-actions {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.clip-fly-actions .btn {
+	width: 100%;
+	min-height: 44px;
+}
+.clip-jobs {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin: 4px 0 12px;
+}
+.clip-jobs h2 {
+	margin: 0;
+	font-size: 13px;
+	font-weight: 650;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+.clip-job {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	border-radius: 16px;
+	background: var(--glass);
+	border: 1px solid var(--line);
+}
+.clip-job-copy {
+	flex: 1;
+	min-width: 0;
+}
+.clip-job b {
+	display: block;
+	font-size: 15px;
+}
+.clip-job p {
+	margin: 2px 0 0;
+	color: var(--muted);
+	font-size: 13px;
+}
+.clip-job-actions {
+	display: flex;
+	flex: none;
+	gap: 6px;
+}
+.clip-book.has-selection {
+	padding-bottom: 150px;
+}
+.clip-book.stagger > .clip-select {
+	animation: none;
+}
+.clip-select {
+	position: fixed;
+	left: 50%;
+	transform: translateX(-50%);
+	bottom: calc(var(--dock-h) + var(--safe-b) + 12px);
+	z-index: 25;
+	width: min(calc(100% - 24px), 520px);
+	padding: 12px;
+	border-radius: 20px;
+	background: var(--dock);
+	backdrop-filter: blur(30px) saturate(1.8);
+	-webkit-backdrop-filter: blur(30px) saturate(1.8);
+	border: 1px solid var(--line-2);
+	box-shadow: var(--shadow);
+}
+.clip-select-count {
+	margin: 0;
+	font-size: 14px;
+	font-weight: 680;
+}
+.clip-select-note {
+	margin: 8px 0 0;
+	font-size: 13.5px;
+	line-height: 1.4;
+	color: var(--fg);
+}
+.clip-select-actions {
+	display: flex;
+	gap: 8px;
+	margin-top: 10px;
+}
+.clip-select-actions .btn {
+	flex: 1;
+	min-height: 44px;
+}
+.sheet .clip-select,
+.win-body .clip-select {
+	bottom: calc(var(--safe-b) + 16px);
 }
 .mm-slot,
 .mm-slot-in,
