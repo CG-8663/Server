@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.104',
+		date: '2026-11-27',
+		title: 'Lists that match, and clips you can clear together',
+		added: [
+			'Terminals uses the same list as Machines. On the phone the list is one card. More sits on the title line. Why: a shell you can open should look like the other lists.',
+			'Machines, Terminals, and Clip book share one filter row: a name field, then the chips.',
+			'When several clips are checked, Clear, Delete, and Send stay at the top of the list while it scrolls. Delete asks first. The files you copied stay where they are.',
+		],
+	},
+	{
 		version: '0.9.103',
 		date: '2026-11-27',
 		title: 'Terminals, a clip book, and a way back in',
