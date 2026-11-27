@@ -48,9 +48,9 @@ type Alert = {agentId: string; severity: 'info' | 'warning' | 'critical'}
 
 const FILTER_SLOTS: FilterSlot[] = ['all', 'kind', 'health', 'reach']
 
-const MOTION_MS = 320
+export const MOTION_MS = 320
 
-function useListMotion(nextIds: readonly string[]) {
+export function useListMotion(nextIds: readonly string[]) {
 	const key = nextIds.join('\0')
 	const nextRef = useRef(nextIds)
 	nextRef.current = nextIds
@@ -99,7 +99,7 @@ function useListMotion(nextIds: readonly string[]) {
 	return slots
 }
 
-function MotionSlot({phase, children}: {phase: MotionPhase; children: ReactNode}) {
+export function MotionSlot({phase, children}: {phase: MotionPhase; children: ReactNode}) {
 	const ref = useRef<HTMLDivElement>(null)
 	const [shown, setShown] = useState(phase !== 'enter')
 	useLayoutEffect(() => {
@@ -129,7 +129,7 @@ function MotionSlot({phase, children}: {phase: MotionPhase; children: ReactNode}
 	)
 }
 
-function Ease({open, children}: {open: boolean; children: ReactNode}) {
+export function Ease({open, children}: {open: boolean; children: ReactNode}) {
 	const ref = useRef<HTMLDivElement>(null)
 	useEffect(() => {
 		// Keeps the collapsed controls out of tab order. The React 18 types do not know `inert` yet.

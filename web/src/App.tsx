@@ -35,6 +35,7 @@ import {AssistantCharacterWidget} from './character/widgets'
 const Clips = lazy(() => import('./screens/Clips').then((m) => ({default: m.Clips})))
 const Files = lazy(() => import('./screens/Files').then((m) => ({default: m.Files})))
 const Machines = lazy(() => import('./screens/Machines').then((m) => ({default: m.Machines})))
+const Terminals = lazy(() => import('./fleet/Terminals').then((m) => ({default: m.Terminals})))
 const More = lazy(() => import('./screens/More').then((m) => ({default: m.More})))
 const Settings = lazy(() => import('./screens/Settings').then((m) => ({default: m.Settings})))
 const Store = lazy(() => import('./screens/Store').then((m) => ({default: m.Store})))
@@ -49,7 +50,7 @@ function ScreenFallback() {
 	)
 }
 
-type Tab = 'home' | 'apps' | 'files' | 'machines' | 'more' | 'settings' | 'store' | 'clips'
+type Tab = 'home' | 'apps' | 'files' | 'machines' | 'terminals' | 'more' | 'settings' | 'store' | 'clips'
 // `tone`: the palette colour each tab's icon takes in the themed looks (the same as on the desktop).
 const TABS: {id: Tab; label: string; icon: IconName; active: IconName; tone: string}[] = [
 	{id: 'home', label: 'Home', icon: 'home', active: 'home-filled', tone: 'var(--accent)'},
@@ -58,8 +59,17 @@ const TABS: {id: Tab; label: string; icon: IconName; active: IconName; tone: str
 	{id: 'machines', label: 'Machines', icon: 'machine', active: 'machine-filled', tone: 'var(--teal)'},
 	{id: 'more', label: 'System', icon: 'activity', active: 'activity-filled', tone: 'var(--peach)'},
 ]
-const tabFromHash = (): Tab => {
+const TERMINALS_TAB: (typeof TABS)[number] = {id: 'terminals', label: 'Terminals', icon: 'terminal', active: 'terminal', tone: 'var(--green)'}
+function dockTabs(owner: boolean) {
+	if (!owner) return TABS
+	const next = [...TABS]
+	const at = next.findIndex((t) => t.id === 'more')
+	next.splice(at < 0 ? next.length : at, 0, TERMINALS_TAB)
+	return next
+}
+const tabFromHash = (allowTerminals: boolean): Tab => {
 	const h = location.hash.replace('#/', '') as Tab
+	if (h === 'terminals') return allowTerminals ? 'terminals' : 'home'
 	return h === 'settings' || h === 'store' || h === 'clips' || TABS.some((t) => t.id === h) ? h : 'home'
 }
 
@@ -159,7 +169,7 @@ export function App() {
 }
 
 function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Bootstrap; prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; reopenAssistant?: boolean}) {
-	const [tab, setTab] = useState<Tab>(tabFromHash)
+	const [tab, setTab] = useState<Tab>(() => tabFromHash(false))
 	const [storeBound, setStoreBound] = useState<StoreBinding | null>(null)
 	const [appId, setAppId] = useState<string | null>(null)
 	// An app open inside My Own Data Center (full screen, back button returns here).
@@ -175,6 +185,9 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	const turn = useAssistantTurn()
 	const keepAssistant = assistantOpen || turn.streaming
 	const user = useUser()
+	// Every terminal socket is owner-only. Hide the tab until that is known.
+	const owner = user.data?.role === 'owner'
+	const tabs = dockTabs(owner)
 	// omarchyd only gives the owner a shell.
 	const openTerminal = user.data?.role === 'member' ? undefined : (app?: {id: string; name?: string; icon?: string}, input?: string) => {
 		haptic(8)
@@ -199,10 +212,22 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 		}
 	}, [tab])
 	useEffect(() => {
-		const onHash = () => setTab(tabFromHash())
+		const onHash = () => setTab(tabFromHash(owner))
 		window.addEventListener('hashchange', onHash)
 		return () => window.removeEventListener('hashchange', onHash)
-	}, [])
+	}, [owner])
+	useEffect(() => {
+		if (!user.isSuccess) return
+		const hash = location.hash.replace('#/', '')
+		if (owner) {
+			if (hash === 'terminals') setTab('terminals')
+			return
+		}
+		if (hash === 'terminals' || tab === 'terminals') {
+			history.replaceState(null, '', '#/home')
+			setTab('home')
+		}
+	}, [user.isSuccess, owner, tab])
 	useEffect(() => {
 		const onOpen = (e: Event) => {
 			setStoreBound((e as CustomEvent<StoreBinding>).detail ?? null)
@@ -261,7 +286,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 	const online = conn.reachable
 	const updateCount = updates.data?.length ?? 0
 	const notes = notifications.data ?? []
-	const index = TABS.findIndex((t) => t.id === tab)
+	const index = tabs.findIndex((t) => t.id === tab)
 
 	return (
 		<>
@@ -319,6 +344,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						{tab === 'files' && <Files />}
 						{tab === 'store' && <Store bound={storeBound} onOpenInstalled={(a) => setAppId(a.id)} onBack={backInApp} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
 						{tab === 'machines' && <Machines prefs={prefs} setPrefs={setPrefs} onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} />}
+						{tab === 'terminals' && owner && <Terminals />}
 						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} onClips={() => go('clips')} />}
 						{tab === 'clips' && <Clips onBack={backInApp} />}
 						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={backInApp} />}
@@ -327,9 +353,9 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 				</ScreenErrorBoundary>
 				</div>
 			</div>
-			<nav className="dock" aria-label="Main">
+			<nav className="dock" aria-label="Main" data-tabs={tabs.length} style={{'--dock-tabs': tabs.length} as CSSProperties}>
 				<span className="indicator" style={{transform: `translateX(${Math.max(index, 0) * 100}%)`, opacity: index < 0 ? 0 : 1}} aria-hidden="true" />
-				{TABS.map((t) => (
+				{tabs.map((t) => (
 					<button key={t.id} aria-current={tab === t.id ? 'page' : undefined} onClick={() => {
 						if (t.id === 'store') setStoreBound(null)
 						go(t.id)

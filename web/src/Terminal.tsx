@@ -57,6 +57,7 @@ export function TerminalScreen({
 	overSheet = false,
 	onClose,
 	embedded,
+	inline,
 	input,
 	machine,
 }: {
@@ -69,6 +70,8 @@ export function TerminalScreen({
 	overSheet?: boolean
 	onClose: () => void
 	embedded?: boolean
+	/** Draw inside the open row. No full-screen portal, history entry, or screen lock. */
+	inline?: boolean
 	input?: string
 	/** The computer this shell is on. Defaults to this server, or the swarm computer when `agent` is set. */
 	machine?: string
@@ -114,14 +117,14 @@ export function TerminalScreen({
 	const openedAt = useRef(performance.now())
 	mods.current = {ctrl, alt}
 	const toast = useToast()
-	useVisualViewport(root, !embedded)
-	useScreenLock(root, true, !embedded)
-	// Phone layout only. An embedded desktop window must not push its own history entry.
+	useVisualViewport(root, !embedded && !inline)
+	useScreenLock(root, true, !embedded && !inline)
+	// Phone layout only. An embedded desktop window, or a row on the Terminals page, must not push its own history entry.
 	const onCloseRef = useRef(onClose)
 	onCloseRef.current = onClose
 	const overlayClosed = useRef(false)
 	useEffect(() => {
-		if (embedded) return
+		if (embedded || inline) return
 		overlayClosed.current = false
 		const id = 'terminal'
 		history.pushState({omarchyOverlay: id}, '', location.href)
@@ -132,9 +135,9 @@ export function TerminalScreen({
 		}
 		window.addEventListener('popstate', onPop)
 		return () => window.removeEventListener('popstate', onPop)
-	}, [embedded])
+	}, [embedded, inline])
 	const back = () => {
-		if (embedded) {
+		if (embedded || inline) {
 			onClose()
 			return
 		}
@@ -694,8 +697,8 @@ export function TerminalScreen({
 		{label: 'end', onClick: () => sendSeq(SEQ.end)},
 	]
 
-	return createPortal(
-		<div ref={root} className={`console terminal${embedded ? ' embedded' : ''}${overSheet ? ' over-sheet' : ''}`} role="dialog" aria-modal={!embedded} aria-label={`${title} terminal, on ${machineName}`}>
+	const screen = (
+		<div ref={root} className={`console terminal${inline ? ' inline' : embedded ? ' embedded' : ''}${overSheet ? ' over-sheet' : ''}`} role={inline ? 'region' : 'dialog'} aria-modal={inline ? undefined : !embedded} aria-label={`${title} terminal, on ${machineName}`}>
 			<header className="console-bar">
 				<button className="round-btn" aria-label="Close terminal" onClick={back}>
 					<Icon name="back" size={20} />
@@ -807,7 +810,7 @@ export function TerminalScreen({
 					))}
 				</div>
 			</div>
-		</div>,
-		portalRoot,
+		</div>
 	)
+	return inline ? screen : createPortal(screen, portalRoot)
 }
