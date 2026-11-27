@@ -52,28 +52,11 @@ export function setupCommand() {
 	return 'machines-add-lxc'
 }
 
-// Just after machines-add-lxc adds this account to the `incus` group, the server's own processes
-// don't have the group yet (that needs a new login). Until they do, `incus` is run through
-// `sg incus`, which works without a password for a member of the group, so no restart is needed.
-let groupCheck = {at: 0, sg: false}
-async function needsSg() {
-	if (Date.now() - groupCheck.at < 30_000) return groupCheck.sg
-	let sg = false
-	try {
-		const {readFile} = await import('node:fs/promises')
-		const line = (await readFile('/etc/group', 'utf8')).split('\n').find((l) => l.startsWith('incus:'))
-		if (line) {
-			const [, , gid, members] = line.split(':')
-			const mine = process.getgroups?.() ?? []
-			sg = !mine.includes(Number(gid)) && members.split(',').includes(os.userInfo().username)
-		}
-	} catch {
-		sg = false
-	}
-	groupCheck = {at: Date.now(), sg}
-	return sg
-}
-const shellQuote = (a) => `'${String(a).replace(/'/g, `'\\''`)}'`
+// Access to Incus's per-user door (/var/lib/incus/unix.socket.user) normally comes with the
+// `incus` group, which this server's processes only pick up after the next sign-in or restart.
+// machines-add-lxc also gives this account its own permission on that socket, so it works straight
+// away; `incus` is always run directly. (An earlier version went through `sg incus`, but Arch
+// doesn't ship `sg`, so it failed as if Incus weren't installed.)
 
 /** Group a `incus image list images: --format json` listing into the library: per system, its
  * current releases for this server's architecture, newest first. */
@@ -163,8 +146,7 @@ export function containerFrom(c) {
 	}
 }
 
-async function defaultRun(args, opts = {}) {
-	if (await needsSg()) return execIncus('sg', ['incus', '-c', ['exec', 'incus', ...args.map(shellQuote)].join(' ')], opts)
+function defaultRun(args, opts = {}) {
 	return execIncus('incus', args, opts)
 }
 
@@ -258,7 +240,7 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 				error?.code === 'ENOENT'
 					? 'Incus isn’t installed on this server yet.'
 					: /permission denied/i.test(text)
-						? 'This account can’t reach Incus yet. Run the setup below; it adds your account to Incus’s group.'
+						? 'This account can’t reach Incus yet. Run the setup below again; it gives your account access without a restart.'
 						: /no such file|connection refused|unix\.socket/i.test(text)
 							? 'Incus is installed but its per-user service isn’t running.'
 							: message(error)

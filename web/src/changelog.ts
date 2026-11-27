@@ -4,6 +4,19 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.93A',
+		date: '2026-11-26',
+		title: 'Add a container from Machines',
+		added: [
+			'Machines → Add (+) offers Container beside Machine and Virtual Machine. It shows the setup if containers aren’t set up yet, then the library.',
+		],
+		fixed: [
+			'machines-add-lxc no longer hangs after installing Incus. It starts Incus without waiting on systemd, then gives it two minutes; if Incus doesn’t come up, it prints why (its status and recent log) and stops, instead of sitting there. Every step now says what it’s doing.',
+			'The container setup card checks again every few seconds, so it moves on by itself once machines-add-lxc finishes.',
+			'Containers said “Incus isn’t installed” right after setting it up. Why: to work without a restart, My Own Data Center went through a command (sg) that Arch doesn’t have. machines-add-lxc now gives your account its own permission on Incus’s per-user door, which is exactly what Incus’s group grants, so it works straight away. Run machines-add-lxc again on a server that set up containers before.',
+		],
+	},
+	{
 		version: '0.9.92',
 		date: '2026-11-26',
 		title: 'Containers set up with one command',
