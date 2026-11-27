@@ -428,6 +428,7 @@ describe('omarchyd machines', () => {
 	test('options: notes, protection, guest agent, boot menu', async () => {
 		await call('machines.updateOptions', {id, notes: 'Web <server>', protection: true, agent: true, bootMenu: true, onBoot: true, startupOrder: 2, startupDelay: 10})
 		assert.match(seen.xml, /<description>Web &lt;server&gt;<\/description>/)
+		assert.equal((await q('machines.list')).find((x) => x.id === id).notes, 'Web <server>', 'the list carries the notes, so the assistant can search them (#1110)')
 		assert.match(seen.xml, /org\.qemu\.guest_agent\.0/)
 		assert.match(seen.xml, /<bootmenu enable='yes'/)
 		await assert.rejects(call('machines.uninstall', {id}), /protected/)
@@ -435,6 +436,7 @@ describe('omarchyd machines', () => {
 		assert.equal((await q('machines.details', {id})).name, 'Box', 'a rejected request does not rename the machine')
 		await call('machines.updateOptions', {id, protection: false, agent: false, bootMenu: false, onBoot: false, notes: ''})
 		assert.ok(!seen.xml.includes('guest_agent'))
+		assert.equal('notes' in (await q('machines.list')).find((x) => x.id === id), false, 'no notes, no field')
 	})
 
 	test('drives: add a SCSI disk, grow it live, CD/DVD media, boot order; removing needs a shut-down machine', async () => {

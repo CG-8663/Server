@@ -467,6 +467,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return out
 	}
 	const CPU_TYPES = ['host', 'host-model', 'max', 'qemu64']
+	// The list carries the start of each machine's notes, so they can be searched; the full text is in its details.
+	const LIST_NOTES_MAX = 500
 	const NICS = ['virtio', 'e1000e', 'e1000', 'rtl8139']
 	const CACHES = ['default', 'none', 'writeback', 'writethrough', 'directsync', 'unsafe']
 	const BUSES = ['virtio', 'sata', 'scsi', 'ide']
@@ -696,6 +698,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				memoryGb: m.memoryGb,
 				memoryMb: m.memoryMb,
 				diskSizeGb: m.diskSizeGb,
+				...(m.options?.notes ? {notes: m.options.notes.slice(0, LIST_NOTES_MAX)} : {}),
 				state: host === 'server' && state === 'stopped' && m.hibernated ? 'hibernated' : state,
 				...(m.pending && state === 'running' ? {pending: true} : {}),
 				...(m.options?.protection ? {protected: true} : {}),
