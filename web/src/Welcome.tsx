@@ -91,7 +91,7 @@ export function Welcome({name, owner, prefs, setPrefs, onDone}: {name?: string; 
 					<>
 						<h2 id="welcome-title">Choose a theme</h2>
 						<p>Colours for My Own Data Center. You can also use your own photo later.</p>
-						<ThemeChooser prefs={prefs} setPrefs={setPrefs} />
+						<ThemeChooser prefs={prefs} setPrefs={setPrefs} modeSwitch />
 					</>
 				)}
 

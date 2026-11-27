@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
 
-import {cleanThemeSlots, themeModeOf, withThemeChoice, withThemeMode, withThemePreference} from '../web/src/theme/themeMode.ts'
+import {cleanThemeSlots, nextThemeMode, themeModeOf, withThemeChoice, withThemeMode, withThemePreference} from '../web/src/theme/themeMode.ts'
 
 const base = {theme: 'omarchy', darkTheme: 'mocha', lightTheme: 'latte', pictureTheme: 'omarchy'}
 
@@ -42,6 +42,12 @@ test('the radio remembers a palette and leaves the screen alone', () => {
 	assert.deepEqual(withThemePreference(onSky, 'linen'), {...onSky, lightTheme: 'linen'})
 	assert.deepEqual(withThemePreference(onSky, 'gruvbox'), {...onSky, darkTheme: 'gruvbox'})
 	assert.equal(withThemePreference(onSky, 'horizon').theme, 'sky')
+})
+
+test('the top-bar icon steps sun, moon, then off', () => {
+	assert.equal(nextThemeMode('sun'), 'moon')
+	assert.equal(nextThemeMode('moon'), 'off')
+	assert.equal(nextThemeMode('off'), 'sun')
 })
 
 test('sun, moon, and off apply the remembered palette', () => {

@@ -33,6 +33,7 @@
 	--glass: rgba(255, 255, 255, 0.075);
 	--glass-2: rgba(255, 255, 255, 0.12);
 	--glass-press: rgba(255, 255, 255, 0.16);
+	--card: rgba(12, 12, 16, 0.78);
 	--line: rgba(255, 255, 255, 0.1);
 	--line-2: rgba(255, 255, 255, 0.16);
 	--sheet: rgba(24, 24, 30, 0.9);
@@ -51,18 +52,19 @@
 	color-scheme: dark;
 }
 [data-theme='mocha'] {
-	--bg: #1e1e2e;
-	--bg-solid: #181825;
-	--fg: #cdd6f4;
-	--fg-2: #bac2de;
+	--bg: #282238;
+	--bg-solid: #1e182c;
+	--fg: #ddd4f6;
+	--fg-2: #c8bddf;
 	--muted: #9399b2;
-	--glass: rgba(205, 214, 244, 0.06);
-	--glass-2: rgba(205, 214, 244, 0.1);
-	--glass-press: rgba(205, 214, 244, 0.14);
-	--line: rgba(205, 214, 244, 0.09);
-	--line-2: rgba(205, 214, 244, 0.15);
-	--sheet: rgba(24, 24, 37, 0.92);
-	--dock: rgba(24, 24, 37, 0.78);
+	--glass: rgba(220, 205, 244, 0.06);
+	--glass-2: rgba(220, 205, 244, 0.1);
+	--glass-press: rgba(220, 205, 244, 0.14);
+	--card: #342c48;
+	--line: rgba(220, 205, 244, 0.09);
+	--line-2: rgba(220, 205, 244, 0.15);
+	--sheet: rgba(30, 24, 44, 0.92);
+	--dock: rgba(30, 24, 44, 0.78);
 	--green: #a6e3a1;
 	--yellow: #f9e2af;
 	--red: #f38ba8;
@@ -74,18 +76,19 @@
 	--text-shadow: none;
 }
 [data-theme='tokyo'] {
-	--bg: #1a1b26;
-	--bg-solid: #16161e;
-	--fg: #c0caf5;
-	--fg-2: #a9b1d6;
+	--bg: #101820;
+	--bg-solid: #0c141c;
+	--fg: #c8e7f8;
+	--fg-2: #a9cfe2;
 	--muted: #8b93bf;
-	--glass: rgba(192, 202, 245, 0.06);
-	--glass-2: rgba(192, 202, 245, 0.1);
-	--glass-press: rgba(192, 202, 245, 0.14);
-	--line: rgba(192, 202, 245, 0.09);
-	--line-2: rgba(192, 202, 245, 0.15);
-	--sheet: rgba(22, 22, 30, 0.92);
-	--dock: rgba(22, 22, 30, 0.78);
+	--glass: rgba(180, 220, 245, 0.06);
+	--glass-2: rgba(180, 220, 245, 0.1);
+	--glass-press: rgba(180, 220, 245, 0.14);
+	--card: #1a2832;
+	--line: rgba(180, 220, 245, 0.09);
+	--line-2: rgba(180, 220, 245, 0.15);
+	--sheet: rgba(12, 20, 28, 0.92);
+	--dock: rgba(12, 20, 28, 0.78);
 	--green: #9ece6a;
 	--yellow: #e0af68;
 	--red: #f7768e;
@@ -105,6 +108,7 @@
 	--glass: rgba(235, 219, 178, 0.06);
 	--glass-2: rgba(235, 219, 178, 0.1);
 	--glass-press: rgba(235, 219, 178, 0.14);
+	--card: #32302f;
 	--line: rgba(235, 219, 178, 0.1);
 	--line-2: rgba(235, 219, 178, 0.16);
 	--sheet: rgba(29, 32, 33, 0.94);
@@ -120,18 +124,19 @@
 	--text-shadow: none;
 }
 [data-theme='latte'] {
-	--bg: #eff1f5;
-	--bg-solid: #e6e9ef;
+	--bg: #f2f2ef;
+	--bg-solid: #e7e7e2;
 	--fg: #4c4f69;
 	--fg-2: #5c5f77;
 	--muted: #5f6277;
 	--glass: rgba(255, 255, 255, 0.62);
 	--glass-2: rgba(255, 255, 255, 0.8);
-	--glass-press: rgba(220, 224, 232, 0.9);
+	--glass-press: rgba(226, 226, 220, 0.9);
+	--card: var(--glass);
 	--line: rgba(76, 79, 105, 0.1);
 	--line-2: rgba(76, 79, 105, 0.16);
-	--sheet: rgba(239, 241, 245, 0.94);
-	--dock: rgba(239, 241, 245, 0.8);
+	--sheet: rgba(242, 242, 239, 0.94);
+	--dock: rgba(242, 242, 239, 0.8);
 	--green: #40a02b;
 	--yellow: #df8e1d;
 	--red: #d20f39;
@@ -154,6 +159,7 @@
 	--glass: rgba(255, 252, 246, 0.72);
 	--glass-2: rgba(255, 252, 246, 0.88);
 	--glass-press: rgba(236, 228, 214, 0.92);
+	--card: var(--glass);
 	--line: rgba(74, 67, 56, 0.12);
 	--line-2: rgba(74, 67, 56, 0.18);
 	--sheet: rgba(246, 241, 231, 0.94);
@@ -172,18 +178,19 @@
 	color-scheme: light;
 }
 [data-theme='sky'] {
-	--bg: #e7eef6;
-	--bg-solid: #dce6f1;
+	--bg: #d5e3f6;
+	--bg-solid: #c5d6ee;
 	--fg: #2c3d52;
 	--fg-2: #3d5168;
 	--muted: #3e5166;
 	--glass: rgba(255, 255, 255, 0.66);
 	--glass-2: rgba(255, 255, 255, 0.84);
-	--glass-press: rgba(214, 226, 238, 0.92);
+	--glass-press: rgba(196, 216, 238, 0.92);
+	--card: var(--glass);
 	--line: rgba(44, 61, 82, 0.12);
 	--line-2: rgba(44, 61, 82, 0.18);
-	--sheet: rgba(231, 238, 246, 0.94);
-	--dock: rgba(231, 238, 246, 0.82);
+	--sheet: rgba(213, 227, 246, 0.94);
+	--dock: rgba(213, 227, 246, 0.82);
 	--green: #2f8f6b;
 	--yellow: #c4922a;
 	--red: #d04555;
@@ -558,10 +565,13 @@ h1.title {
 	text-shadow: var(--text-shadow);
 }
 
-/* ---- Glass -------------------------------------------------------------- */
+/* ---- Card --------------------------------------------------------------- */
+/* .glass is the content card. Its fill is --card, set by the theme.
+   --glass / --glass-2 / --glass-press stay the wash on controls (rest, raised, pressed).
+   The picture behind the page is not a card. */
 .glass {
 	position: relative;
-	background: var(--glass);
+	background: var(--card);
 	border: 1px solid var(--line);
 	border-radius: var(--r-lg);
 	backdrop-filter: blur(28px) saturate(1.7);
@@ -2779,6 +2789,13 @@ h1.title {
 	display: grid;
 	grid-template-columns: repeat(3, minmax(0, 1fr));
 	gap: 10px;
+}
+.theme-picture .theme-card-wrap {
+	display: flex;
+}
+.theme-picture .theme-card {
+	flex: 1;
+	min-height: 104px;
 }
 .theme-rule {
 	height: 1px;
@@ -7107,6 +7124,7 @@ html:not(.desk-mode) .upload-panel {
 	--glass: rgba(26, 27, 38, 0.94);
 	--glass-2: #24283b;
 	--glass-press: #2f3549;
+	--card: var(--glass);
 	--line: #32344a;
 	--line-2: #414868;
 	--sheet: #1a1b26;
@@ -8653,6 +8671,16 @@ html.machines-vt::view-transition-new(root) {
 	padding-top: 10px;
 }
 
+/* Desktop top bar: Sun, Moon, or Off. Same size as the bell beside it. */
+.desk-top .top-mode {
+	display: inline-grid;
+	place-items: center;
+	width: 30px;
+	height: 26px;
+	padding: 0;
+	border-radius: 13px;
+	cursor: pointer;
+}
 /* Desktop top bar: the notification bell (rings while a My Own Data Center update is ready). */
 .desk-top .top-bell {
 	position: relative;
@@ -10750,6 +10778,26 @@ html[data-shape='square'] .lp-art-round .lp-dock { border-radius: 6px !important
 	display: flex;
 	flex-direction: column;
 	margin-top: 6px;
+}
+html:not(.desk-mode) .mm-list {
+	padding: 4px;
+}
+.mm-list:empty {
+	display: none;
+}
+html:not(.desk-mode) .mm-list > .mm-slot:last-child .mm-row,
+html:not(.desk-mode) .mm-list > .mm-slot:last-child .mm-line {
+	border-bottom-color: transparent;
+}
+/* Phone: this list is a card. Desktop: the window already is. */
+html.desk-mode .mm-list.glass {
+	position: static;
+	background: none;
+	border: 0;
+	border-radius: 0;
+	backdrop-filter: none;
+	-webkit-backdrop-filter: none;
+	box-shadow: none;
 }
 /* A leaving row fades into the page and collapses. A new row fades in from the page.
    Height stays in the flow, so the other rows glide. */

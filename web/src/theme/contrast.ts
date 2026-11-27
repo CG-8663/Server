@@ -101,7 +101,7 @@ export function darkenHslForWhite(h: number, s: number, l: number, minRatio = 4.
 }
 
 /** The Daylight page colour (--bg of the latte theme in styles.css); a test keeps the two in step. */
-export const DAYLIGHT_BG: Rgb = [239, 241, 245]
+export const DAYLIGHT_BG: Rgb = [242, 242, 239]
 
 /** An accent as text on a light page: mixed toward black only as far as needed to reach 4.5:1 on `bg`. */
 export function darkenForTextOn(fillCss: string | null | undefined, bg: Rgb = DAYLIGHT_BG, minRatio = 4.5): string | null {
