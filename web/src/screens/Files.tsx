@@ -1494,7 +1494,7 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
             </div>
           )}
           {loading ? (
-            <div className="glass group">
+            <div className="glass group screen-list">
               {Array.from({ length: 6 }, (_, i) => (
                 <div key={i} className="row static">
                   <div
@@ -1546,12 +1546,12 @@ export function Files({ initialPath, windowId, scope }: { initialPath?: string; 
               {uploadHint && <span>{uploadHint}</span>}
             </div>
           ) : items.length === 0 ? null : grid && !searching ? (
-            <div className="file-grid">
+            <div className="file-grid screen-list glass">
               {items.map((f) => renderRow(f))}
             </div>
           ) : (
             <div
-              className="glass group"
+              className="glass group screen-list"
               style={
                 { "--inset": selecting ? "110px" : "74px" } as CSSProperties
               }

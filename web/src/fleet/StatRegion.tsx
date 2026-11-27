@@ -5,11 +5,13 @@ import {Icon} from '../icons'
 import {swarmGaugeItems, type SwarmMetrics} from '../swarm/gauges'
 import {Ring, StatChip, haptic, levelColor, type Prefs} from '../ui'
 import {formatTemp, machineTemperatures, sortTemps, tempIsShown, tempUnitOf, toggleTempPick, type TempProbe, type TempSensor, type TempUnit} from './temperatures'
-import {STAT_VIEW_NAME, gaugeCaption, nextStatView, readingFace, statReadings, statViewOf, type PostureSummary, type StatReading, type StatView} from './statView'
+import {STAT_VIEW_NAME, gaugeCaption, nextStatView, readingFace, statIsShown, statReadings, statViewOf, toggleStatPick, type PostureSummary, type StatReading, type StatView} from './statView'
 
 type StatViewApi = {
 	view: StatView
 	cycle: () => void
+	statPicks: Prefs['statPicks']
+	setStatPicks: (next: Prefs['statPicks']) => void
 	tempPicks: Prefs['tempPicks']
 	setTempPicks: (next: Prefs['tempPicks']) => void
 	tempUnit: TempUnit
@@ -31,6 +33,9 @@ export function StatViewProvider({prefs, setPrefs, children}: {prefs: Prefs; set
 		})
 		setNote(name ? `Stats shown as ${name}` : '')
 	}
+	const setStatPicks = (next: Prefs['statPicks']) => {
+		setPrefs((current) => ({...current, statPicks: next ?? null}))
+	}
 	const setTempPicks = (next: Prefs['tempPicks']) => {
 		setPrefs((current) => ({...current, tempPicks: next ?? null}))
 	}
@@ -38,7 +43,7 @@ export function StatViewProvider({prefs, setPrefs, children}: {prefs: Prefs; set
 		setPrefs((current) => ({...current, tempUnit: unit === 'f' ? 'f' : null}))
 	}
 	return (
-		<StatViewContext.Provider value={{view, cycle, tempPicks: prefs.tempPicks ?? null, setTempPicks, tempUnit: tempUnitOf(prefs.tempUnit), setTempUnit}}>
+		<StatViewContext.Provider value={{view, cycle, statPicks: prefs.statPicks ?? null, setStatPicks, tempPicks: prefs.tempPicks ?? null, setTempPicks, tempUnit: tempUnitOf(prefs.tempUnit), setTempUnit}}>
 			{children}
 			<div className="sr-only" role="status" aria-live="polite">
 				{note}
@@ -70,11 +75,13 @@ export function LiveStats({
 	machineName?: string
 	empty?: ReactNode
 }) {
-	const {tempPicks, tempUnit} = useStatView()
+	const {statPicks, tempPicks, tempUnit} = useStatView()
 	const temps = machineTemperatures({temp, sensors, gpus: metrics?.gpus})
-	const readings = statReadings({gauges: swarmGaugeItems(metrics), temp: null, diskSizeGb, posture, temps, tempPicks, tempUnit})
-	if (!readings.length && !temps.length) return <>{empty}</>
-	return <StatRegion readings={readings} temps={temps} machineName={machineName} />
+	const gauges = swarmGaugeItems(metrics)
+	const choices = statReadings({gauges, temp: null, diskSizeGb, posture})
+	const readings = statReadings({gauges, temp: null, diskSizeGb, posture, temps, tempPicks, tempUnit, statPicks})
+	if (!choices.length && !temps.length) return <>{empty}</>
+	return <StatRegion readings={readings} choices={choices} temps={temps} machineName={machineName} />
 }
 
 function ValueFace({text, color}: {text: string; color?: string}) {
@@ -154,15 +161,16 @@ function TempUnitSwitch({fahrenheit, onChange}: {fahrenheit: boolean; onChange: 
 }
 
 /** One button for the whole region. Its name is the readings, so each machine stays distinct. */
-export function StatRegion({readings, temps = [], machineName}: {readings: readonly StatReading[]; temps?: readonly TempSensor[]; machineName?: string}) {
-	const {view, cycle, tempPicks, setTempPicks, tempUnit, setTempUnit} = useStatView()
+export function StatRegion({readings, choices = readings, temps = [], machineName}: {readings: readonly StatReading[]; choices?: readonly StatReading[]; temps?: readonly TempSensor[]; machineName?: string}) {
+	const {view, cycle, statPicks, setStatPicks, tempPicks, setTempPicks, tempUnit, setTempUnit} = useStatView()
 	const dialogRef = useRef<HTMLDialogElement>(null)
 	const titleId = useId()
-	useDialogDismiss(dialogRef, temps.length > 0)
-	if (!readings.length && !temps.length) return null
-	const summary = `${readings.map((r) => `${r.label} ${r.text}`).join(', ')}. Shown as ${STAT_VIEW_NAME[view]}.`
 	const listed = sortTemps(temps)
-	const openTemps = () => {
+	const choosing = choices.length > 0 || listed.length > 0
+	useDialogDismiss(dialogRef, choosing)
+	if (!readings.length && !choosing) return null
+	const summary = readings.length ? `${readings.map((r) => `${r.label} ${r.text}`).join(', ')}. Shown as ${STAT_VIEW_NAME[view]}.` : `No stats shown. Shown as ${STAT_VIEW_NAME[view]}.`
+	const openStats = () => {
 		const dialog = dialogRef.current
 		if (!dialog || dialog.open) return
 		// The list stays mounted while the dialog is closed, so the checkbox has to
@@ -181,7 +189,8 @@ export function StatRegion({readings, temps = [], machineName}: {readings: reado
 				}}
 			>
 				<span className="sr-only">{summary}</span>
-				{view === 'line' && (
+				{readings.length === 0 && <span className="stat-none">No stats shown</span>}
+				{readings.length > 0 && view === 'line' && (
 					<span className="specs" aria-hidden="true">
 						{readings.map((r) => (
 							<StatChip key={r.id} icon={r.icon} label={r.label}>
@@ -190,7 +199,7 @@ export function StatRegion({readings, temps = [], machineName}: {readings: reado
 						))}
 					</span>
 				)}
-				{view === 'blocks' && (
+				{readings.length > 0 && view === 'blocks' && (
 					<span className="mm-squares" aria-hidden="true">
 						{readings.map((r) => (
 							<span className="mm-square" key={r.id}>
@@ -201,7 +210,7 @@ export function StatRegion({readings, temps = [], machineName}: {readings: reado
 						))}
 					</span>
 				)}
-				{view === 'gauges' && (
+				{readings.length > 0 && view === 'gauges' && (
 					<span className="glass gauges" data-n={readings.length} aria-hidden="true">
 						{readings.map((r) => {
 							const caption = gaugeCaption(r)
@@ -225,15 +234,15 @@ export function StatRegion({readings, temps = [], machineName}: {readings: reado
 					</span>
 				)}
 			</button>
-			{listed.length > 0 && (
-				<button type="button" className="stat-pencil" aria-label="Choose temperatures" onClick={openTemps}>
+			{choosing && (
+				<button type="button" className="stat-pencil" aria-label="Choose stats" onClick={openStats}>
 					<Icon name="pencil" size={15} />
 				</button>
 			)}
-			{listed.length > 0 && (
+			{choosing && (
 				<dialog ref={dialogRef} className="temp-dialog" aria-labelledby={titleId}>
 					<div className="temp-dialog-head">
-						<h1 id={titleId}>Temperatures</h1>
+						<h1 id={titleId}>Stats</h1>
 						<form method="dialog">
 							<button className="icon-btn" aria-label="Close">
 								<Icon name="close" size={18} />
@@ -241,8 +250,21 @@ export function StatRegion({readings, temps = [], machineName}: {readings: reado
 						</form>
 					</div>
 					<p className="temp-dialog-where">{machineName ? `On ${machineName}.` : 'On this machine.'} These are the readings right now.</p>
-					<TempUnitSwitch fahrenheit={tempUnit === 'f'} onChange={(on) => setTempUnit(on ? 'f' : 'c')} />
 					<div className="temp-picks">
+						{choices.map((reading) => (
+							<label className="temp-pick" key={reading.id}>
+								<input
+									type="checkbox"
+									className="temp-pick-box"
+									checked={statIsShown(reading.id, statPicks ?? null)}
+									onChange={(event) => setStatPicks(toggleStatPick(statPicks ?? null, reading.id, event.target.checked))}
+								/>
+								<span className="temp-pick-name">{reading.label}</span>
+								<b>{reading.text}</b>
+							</label>
+						))}
+						{listed.length > 0 && choices.length > 0 && <h2 className="temp-dialog-sub">Temperatures</h2>}
+						{listed.length > 0 && <TempUnitSwitch fahrenheit={tempUnit === 'f'} onChange={(on) => setTempUnit(on ? 'f' : 'c')} />}
 						{listed.map((sensor) => (
 							<label className="temp-pick" key={sensor.id}>
 								<input

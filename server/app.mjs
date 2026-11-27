@@ -1250,25 +1250,28 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	const accountKey = (accountId) => hashId(`account:${accountId}`).slice(0, 32)
 	const backgroundFile = (accountId) => join(store.dataDir, 'backgrounds', `${accountKey(accountId)}.jpg`)
 	const TEMP_ID = /^[a-z0-9][a-z0-9:_-]{0,63}$/
-	const cleanTempIdList = (value) => {
+	const STAT_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,79}$/
+	const cleanIdList = (value, pattern) => {
 		if (value == null) return []
 		if (!Array.isArray(value)) return null
 		const out = []
 		for (const id of value) {
-			if (typeof id !== 'string' || !TEMP_ID.test(id) || out.includes(id)) return null
+			if (typeof id !== 'string' || !pattern.test(id) || out.includes(id)) return null
 			out.push(id)
 			if (out.length > 40) return null
 		}
 		return out
 	}
-	const cleanTempPicks = (value) => {
+	const cleanPicks = (value, pattern) => {
 		if (value == null || typeof value !== 'object' || Array.isArray(value)) return {ok: false}
-		const on = cleanTempIdList(value.on)
-		const off = cleanTempIdList(value.off)
+		const on = cleanIdList(value.on, pattern)
+		const off = cleanIdList(value.off, pattern)
 		if (!on || !off) return {ok: false}
 		const hidden = off.filter((id) => !on.includes(id))
 		return {ok: true, value: on.length || hidden.length ? {on, off: hidden} : null}
 	}
+	const cleanTempPicks = (value) => cleanPicks(value, TEMP_ID)
+	const cleanStatPicks = (value) => cleanPicks(value, STAT_ID)
 	const prefsOf = (accountId) => store.getConfig().prefs?.[accountKey(accountId)] ?? null
 	const savePrefs = async (accountId, patch) => {
 		const key = accountKey(accountId)
@@ -1297,7 +1300,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	api.post('/prefs', catchSave(async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		const {theme, darkTheme, lightTheme, pictureTheme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView, machinesCompact, tempPicks, tempUnit, dismissedTutorials} = req.body ?? {}
+		const {theme, darkTheme, lightTheme, pictureTheme, accent, customBrandHsl, omarchyBackground, solidColor, assistantLook, statView, machinesCompact, statPicks, tempPicks, tempUnit, dismissedTutorials} = req.body ?? {}
 		const patch = {}
 		// How the assistant looks for this account (character, name, motion). Appearance only: it never
 		// reaches the assistant itself. Checked field by field; anything else is dropped.
@@ -1363,6 +1366,16 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			if (tempUnit === null || tempUnit === 'c') patch.tempUnit = null
 			else if (tempUnit === 'f') patch.tempUnit = 'f'
 			else return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad temperature unit'}})
+		}
+		// Which readings this account shows. Temperatures stay in tempPicks. Null clears the choice.
+		// A reading that was never chosen stays shown. Another account is unchanged.
+		if (statPicks !== undefined) {
+			if (statPicks === null) patch.statPicks = null
+			else {
+				const picks = cleanStatPicks(statPicks)
+				if (!picks.ok) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Bad stat choice'}})
+				patch.statPicks = picks.value
+			}
 		}
 		// Which temperature sensors this account shows. Null clears the choice.
 		if (tempPicks !== undefined) {

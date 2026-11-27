@@ -754,7 +754,7 @@ export function MachineManager({
 				</div>
 			)}
 			{loading && <div className="skeleton" style={{height: 64, borderRadius: 16, marginTop: 12}} />}
-			<div className="mm-list glass" role={lines ? 'list' : undefined} aria-label={lines ? 'Machines' : undefined}>
+			<div className="mm-list screen-list glass" role={lines ? 'list' : undefined} aria-label={lines ? 'Machines' : undefined}>
 				{slots.map((slot) => {
 					const member = byId.get(slot.id)
 					if (!member) return null

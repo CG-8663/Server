@@ -18,6 +18,7 @@ import {cleanTutorials, type TutorialId} from './tutorials'
 import {darkenForTextOn, darkenHslForWhite, hslToRgb, legibleMuted, parseRgbColor, pickOnAccent, resolveCssColor} from './theme/contrast'
 import {cleanThemeSlots, isLightTheme, type DarkThemeId, type LightThemeId, type PictureThemeId} from './theme/themeMode'
 import {reachLabel} from './fleet/machineManagerLogic'
+import {cleanStatPicks} from './fleet/statView'
 import {cleanTempPicks} from './fleet/temperatures'
 import {initials as nameInitials} from './initials'
 import {paddingBottomPlus} from './scrollPad'
@@ -798,6 +799,8 @@ export type Prefs = {
 	statView?: 'line' | 'blocks' | 'gauges' | null
 	/** Desktop Machines compact list. Null means off. Saved per account. */
 	machinesCompact?: boolean | null
+	/** Which readings this account shows, apart from temperatures. Null means all of them stay shown. */
+	statPicks?: {on: string[]; off: string[]} | null
 	/** Which temperature sensors this account shows. Null means each sensor's own default. */
 	tempPicks?: {on: string[]; off: string[]} | null
 	/** Fahrenheit when `f`. Null means Celsius. */
@@ -838,10 +841,11 @@ function clean(p: Partial<Prefs> | null | undefined): Prefs {
 	const omarchyBackground = typeof p?.omarchyBackground === 'string' && /^[0-9a-f]{16}$/.test(p.omarchyBackground) ? p.omarchyBackground : null
 	const statView = p?.statView === 'line' || p?.statView === 'blocks' || p?.statView === 'gauges' ? p.statView : null
 	const machinesCompact = typeof p?.machinesCompact === 'boolean' ? p.machinesCompact : null
+	const statPicks = cleanStatPicks(p?.statPicks)
 	const tempPicks = cleanTempPicks(p?.tempPicks)
 	const tempUnit = p?.tempUnit === 'f' ? 'f' : null
 	const dismissedTutorials = cleanTutorials(p?.dismissedTutorials)
-	return {theme, ...slots, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null, statView, machinesCompact, tempPicks, tempUnit, dismissedTutorials}
+	return {theme, ...slots, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground, solidColor: isSolidColor(p?.solidColor) ? p.solidColor.toLowerCase() : null, assistantLook: p?.assistantLook ? cleanLook(p.assistantLook) : null, statView, machinesCompact, statPicks, tempPicks, tempUnit, dismissedTutorials}
 }
 export function readPrefs(): Prefs {
 	try {
