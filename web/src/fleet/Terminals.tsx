@@ -17,6 +17,7 @@ import {Ease, MOTION_MS, MotionSlot, useListMotion} from './MachineManager'
 import {
 	filterLabel,
 	filterSlot,
+	fleetStatus,
 	healthPill,
 	isOffline,
 	isOnline,
@@ -112,6 +113,7 @@ export function Terminals() {
 	const byId = new Map(capable.map((row) => [row.id, row]))
 	const counts = pass ? forEachCounts(pass) : null
 	const online = capable.filter((row) => row.online).length
+	const status = fleetStatus({shown: filtered.length, total: capable.length, online, filter})
 
 	useEffect(() => {
 		setOpenId(null)
@@ -176,33 +178,16 @@ export function Terminals() {
 		<div className="mm tm">
 			<div className="mm-top">
 				<h1 className="title">Terminals</h1>
-			</div>
-			<p className="subtitle">{machines.isLoading ? 'Loading…' : problem ? 'Can’t reach your server' : `${online} of ${capable.length} online`}</p>
-			<div className="mm-tools">
-				{pass && counts ? (
-					<div className="tm-pass" role="status">
-						<p>
-							For-Each Mode: {counts.done} of {counts.total} machines complete
-						</p>
-						<button ref={endBtn} type="button" className="tm-end" aria-label="End for-each mode" onClick={end}>
-							<Icon name="close" size={16} />
+				<div className="mm-add" ref={menuRef}>
+					{pass ? (
+						<button ref={endBtn} type="button" className="btn small mm-add-btn" aria-label="End for-each mode" onClick={end}>
+							<Icon name="close" size={18} />
 						</button>
-					</div>
-				) : (
-					<>
-						<FilterBar
-							query={queryText}
-							onQuery={setQueryText}
-							queryLabel="Find a machine"
-							placeholder="Name"
-							slotsLabel="Which machines"
-							slots={FILTER_SLOTS.map((slot) => ({id: slot, label: filterLabel(filter, slot), pressed: filterSlot(filter) === slot}))}
-							onSlot={(slot) => setFilter((cur) => nextFilter(cur, slot))}
-						/>
-						<div className="tm-more" ref={menuRef}>
+					) : (
+						<>
 							<button
 								type="button"
-								className="tm-more-btn"
+								className="btn small mm-add-btn"
 								aria-label="More"
 								aria-haspopup="menu"
 								aria-expanded={menuOpen}
@@ -221,8 +206,38 @@ export function Terminals() {
 									</button>
 								</div>
 							)}
-						</div>
+						</>
+					)}
+				</div>
+			</div>
+			<p className="subtitle">
+				{machines.isLoading ? (
+					'Loading…'
+				) : problem ? (
+					'Can’t reach your server'
+				) : (
+					<>
+						{status.shown && <span>{status.shown}</span>}
+						{status.shown && <span className="mm-status-gap"> · </span>}
+						<span>{status.online}</span>
 					</>
+				)}
+			</p>
+			<div className="mm-tools">
+				{pass && counts ? (
+					<p className="tm-pass" role="status">
+						For-Each Mode: {counts.done} of {counts.total} machines complete
+					</p>
+				) : (
+					<FilterBar
+						query={queryText}
+						onQuery={setQueryText}
+						queryLabel="Find a machine"
+						placeholder="Name"
+						slotsLabel="Which machines"
+						slots={FILTER_SLOTS.map((slot) => ({id: slot, label: filterLabel(filter, slot), pressed: filterSlot(filter) === slot}))}
+						onSlot={(slot) => setFilter((cur) => nextFilter(cur, slot))}
+					/>
 				)}
 			</div>
 			{problem && (
@@ -238,7 +253,7 @@ export function Terminals() {
 				</div>
 			)}
 			{machines.isLoading && <div className="skeleton" style={{height: 64, borderRadius: 16, marginTop: 12}} />}
-			<div className="mm-list">
+			<div className="mm-list screen-list glass">
 				{slots.map((slot) => {
 					const row = byId.get(slot.id)
 					if (!row) return null
