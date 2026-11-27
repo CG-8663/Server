@@ -835,10 +835,11 @@ errors: 3 data errors, use '-v' for a list
         text = files[UDEV_SLEEP]
         resolved = hdparm_path()
         self.assertIn(resolved, text)
-        # Arch links /usr/sbin to /usr/bin, so the resolved path can be /usr/bin/hdparm.
+        # /sbin/hdparm is text inside /usr/sbin/hdparm, and on Arch /usr/sbin and /usr/bin
+        # are the same directory, so the resolved path can be any one of these.
+        rest = text.replace(resolved, "RESOLVED")
         for stale in ("/usr/bin/hdparm", "/usr/sbin/hdparm", "/sbin/hdparm"):
-            if stale != resolved:
-                self.assertNotIn(stale, text)
+            self.assertNotIn(stale, rest)
         self.assertIn('ENV{ID_SERIAL_SHORT}=="WD-A"', text)
         self.assertIn('ENV{ID_SERIAL_SHORT}=="WD-B"', text)
 
