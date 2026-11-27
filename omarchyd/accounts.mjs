@@ -283,6 +283,19 @@ export async function openAccounts(dataDir, {create = true} = {}) {
 			}))
 			access.clear()
 		},
+		// A forgotten password, set from a terminal on the server (`omarchyd reset-password`), so no old
+		// password is asked. Every session is signed out. Two-factor stays as it is.
+		async resetPassword({name, newPassword} = {}) {
+			adoptOwnerFromDisk()
+			const wanted = name === undefined ? null : String(name).trim().toLowerCase()
+			const user = wanted === null ? state.users.find((u) => u.role === 'owner') : state.users.find((u) => u.name.toLowerCase() === wanted)
+			if (!user) throw new Error(wanted === null ? 'There is no owner account yet. Create one with create-owner.' : `There is no account named “${name}”.`)
+			if (typeof newPassword !== 'string' || newPassword.length < 8) throw new Error('Use a password of at least 8 characters')
+			const hashed = await hashPassword(newPassword)
+			await commit((s) => ({...s, users: s.users.map((u) => (u.userId === user.userId ? {...u, ...hashed} : u)), devices: {}, browsers: {}}))
+			access.clear()
+			return {name: user.name, twoFactor: !!user.totp}
+		},
 		// Asked again before sensitive actions (signing in the desktop).
 		confirmPassword: async (userId, password) => (await verify({userId, password}, {twoFactor: false}), true),
 		// Username plus password, and the authenticator code when it is on. An unknown name does not fall back to the owner.
