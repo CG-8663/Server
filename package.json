@@ -16,7 +16,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit -p web",
     "start": "node server/cli.mjs",
-    "test": "node --experimental-strip-types --test --test-concurrency=1 test/*.test.mjs"
+    "test": "node --experimental-strip-types --import ./test/retry-rm.mjs --test --test-concurrency=1 test/*.test.mjs"
   },
   "dependencies": {
     "express": "^4.21.2",

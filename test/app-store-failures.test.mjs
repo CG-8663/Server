@@ -10,6 +10,7 @@ import {join} from 'node:path'
 import {test} from 'node:test'
 
 import {appPermissions, createApps, missingVars, parseDotEnv} from '../omarchyd/apps.mjs'
+import {freePort} from './free-port.mjs'
 import {createSystemApps} from '../omarchyd/system-apps.mjs'
 
 const git = (cwd, ...args) => execFileSync('git', gitArgv(['-c', 'user.name=t', '-c', 'user.email=t@t', ...args]), {cwd, stdio: 'pipe'}).toString()
@@ -151,7 +152,7 @@ async function withApps(t, files, {systemApps = null, run} = {}) {
 
 test('a private loopback port skips another app’s public port', async (t) => {
 	const fooPort = loopback('foo')
-	const pub = 35120 + (fooPort % 50)
+	const pub = await freePort()
 	assert.equal(await portFree(fooPort), true, `loopback ${fooPort} is already taken on this host`)
 	assert.equal(await portFree(pub), true, `public port ${pub} is already taken on this host`)
 	const {apps} = await withApps(t, {
@@ -176,7 +177,7 @@ test('a private loopback port skips another app’s public port', async (t) => {
 test('a private loopback port skips a port something else is listening on', async (t) => {
 	const id = 'zed'
 	const taken = loopback(id)
-	const pub = 35440 + (taken % 30)
+	const pub = await freePort()
 	assert.equal(await portFree(taken), true, `loopback ${taken} is already taken on this host`)
 	assert.equal(await portFree(pub), true, `public port ${pub} is already taken on this host`)
 	const held = await listen(taken)
@@ -195,7 +196,7 @@ test('a private loopback port skips a port something else is listening on', asyn
 })
 
 test('named volumes and tmpfs are not created as app folders', async (t) => {
-	const port = 36000 + Math.floor(Math.random() * 500)
+	const port = await freePort()
 	const {apps, calls} = await withApps(t, {
 		boss: {
 			yml: `manifestVersion: 1\nid: boss\nname: Boss\nversion: "1"\nport: ${port}\nweb:\n  service: boss\n  port: 80\n`,
@@ -338,7 +339,7 @@ test('the hourly store check going offline keeps the catalog that is already dow
 test('Tailscale’s private port skips another app’s public port', async (t) => {
 	const target = loopback('tailscale')
 	assert.equal(await portFree(target), true, `tailscale loopback ${target} is already taken on this host`)
-	const pub = 35200 + (target % 40)
+	const pub = await freePort()
 	const kills = []
 	const {apps, root} = await withApps(
 		t,

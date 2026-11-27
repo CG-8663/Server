@@ -66,7 +66,7 @@ test('up to date: Omarchy says so with exit 1, checkupdates with exit 2', async 
 test('a server without Omarchy or checkupdates reports what it knows, not a guess', async () => {
 	const root = await mkdtemp(join(os.tmpdir(), 'omarchyd-osinfo-none-'))
 	try {
-		const info = await createOsInfo({release: {pretty: 'Debian GNU/Linux 13 (trixie)'}, home: root, env: {PATH: '/usr/bin', OMARCHY_PATH: join(root, 'none')}, run: fakeRun({checkupdates: {code: 1, stdout: ''}})}).get()
+		const info = await createOsInfo({release: {pretty: 'Debian GNU/Linux 13 (trixie)'}, home: root, env: {PATH: '/usr/bin', OMARCHY_PATH: join(root, 'none')}, dirs: [join(root, 'none', 'bin')], run: fakeRun({checkupdates: {code: 1, stdout: ''}})}).get()
 		assert.equal(info.os, 'Debian GNU/Linux 13 (trixie)')
 		assert.equal(info.omarchy, null)
 		assert.equal(info.packages, null, 'a failed check is unknown, not "nothing waiting"')
