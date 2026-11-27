@@ -12,6 +12,7 @@ import {OPEN_FLEET} from './fleet/openMember'
 import {OPEN_STORE, type StoreBinding} from './fleet/openStore'
 import {BootstrapContext, useAction, useApps, useNotifications, useUpdates, useUser} from './data'
 import {Icon, type IconName} from './icons'
+import {ThemeModeSwitch} from './ThemeModeSwitch'
 import {APP_TITLE, pageTitle} from './pageTitle'
 import {Apps} from './screens/Apps'
 import {Connect, Login} from './screens/Auth'
@@ -274,6 +275,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						<span className="mono">{boot.server?.host}</span>
 					</span>
 					<span className="spacer-x" />
+					<ThemeModeSwitch prefs={prefs} setPrefs={setPrefs} />
 					<button
 						className="round-btn"
 						aria-label="Settings"
