@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.95',
+		date: '2026-11-26',
+		title: 'The container library fills in',
+		fixed: [
+			'New container showed no systems to pick. Why: the image server names an image’s architecture two ways (x86_64, and amd64 in its details), and My Own Data Center only looked for x86_64 in the details, so every image was skipped. It now reads both. If the library ever does come back empty, it says so and what to check.',
+		],
+	},
+	{
 		version: '0.9.94',
 		date: '2026-11-26',
 		title: 'Updates see lettered versions',
