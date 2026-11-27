@@ -11584,3 +11584,12 @@ input.temp-unit-box.fallback:checked {
 	word-break: break-all;
 	user-select: all;
 }
+
+/* Containers: fields fill their space and can shrink, so a field beside a button never pushes the
+   page wider than a phone. */
+.ct-col .field input,
+.ct-col .field textarea {
+	width: 100%;
+	min-width: 0;
+	box-sizing: border-box;
+}

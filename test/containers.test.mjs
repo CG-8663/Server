@@ -367,3 +367,33 @@ test('status asks Incus for /1.0 (incus info has no --format), and clearing the 
 	await p['containers.setResources'].run({name: 'web', cpuAllowance: null})
 	assert.ok(f.calls.some((c) => c.args.join(' ') === 'config unset web limits.cpu.allowance'))
 })
+
+test('incus gets a closed stdin unless something is sent: incus launch reads a config from an open stdin and waited forever', async () => {
+	const {execIncus} = await import('../omarchyd/containers.mjs')
+	// `cat` stands in for incus launch reading stdin: with stdin closed it ends straight away.
+	const out = await execIncus('sh', ['-c', 'cat; echo done'], {timeout: 3000})
+	assert.equal(out.trim(), 'done')
+	assert.equal((await execIncus('sh', ['-c', 'cat'], {input: 'secret\n', timeout: 3000})).trim(), 'secret')
+	const seen = []
+	await execIncus('sh', ['-c', 'printf "Retrieving image: rootfs: 45%% (12MB/s)\\r"; echo ok'], {timeout: 3000, onOutput: (t) => seen.push(t)})
+	assert.match(seen.join(''), /45%/)
+})
+
+test('a container still being created shows Incus’s progress and is marked pending', async () => {
+	let progress
+	const f = statefulIncus()
+	const run = async (args, opts) => {
+		if (args[0] === 'launch') {
+			opts.onOutput('Retrieving image: rootfs: 45% (12.3MB/s)\r')
+			return new Promise((r) => (progress = r))
+		}
+		return f.run(args, opts)
+	}
+	const p = createContainers({run}).procedures
+	await p['containers.create'].run({name: 'db', image: 'debian/12'})
+	const row = (await p['containers.list'].run()).find((c) => c.name === 'db')
+	assert.equal(row.pending, true)
+	assert.equal(row.status, 'creating')
+	assert.equal(row.progress, 'Downloading rootfs: 45% (12.3MB/s)')
+	progress()
+})

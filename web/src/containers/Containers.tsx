@@ -37,6 +37,10 @@ export type Container = {
 	job: string | null
 	error: string | null
 	from?: string | null
+	// Not in Incus yet: being created, cloned or restored (or that failed).
+	pending?: boolean
+	progress?: string | null
+	startedAt?: string | null
 }
 type Distro = {os: string; name: string; releases: {alias: string; release: string; description: string}[]}
 type Template = {alias: string; name: string; os: string; release: string; size: number; from: string}
@@ -117,7 +121,7 @@ function ContainerRow({c, onOpen}: {c: Container; onOpen: () => void}) {
 			icon="category"
 			color={osColor(c.os)}
 			label={c.name}
-			sub={[osLabel(c) || (c.from ? `from ${c.from}` : ''), c.addresses.find((a) => a.family === 'IPv4')?.address, c.tags.join(', ')].filter(Boolean).join(' · ') || 'Container'}
+			sub={(c.pending && c.progress) || [osLabel(c) || (c.from ? `from ${c.from}` : ''), c.addresses.find((a) => a.family === 'IPv4')?.address, c.tags.join(', ')].filter(Boolean).join(' · ') || 'Container'}
 			trailing={<StatusPill {...pill} />}
 			onClick={() => (haptic(6), onOpen())}
 		/>
@@ -161,7 +165,7 @@ export function NewContainerSheet({onClose}: {onClose: () => void}) {
 	const list = useContainers(status.data?.available === true)
 	return (
 		<Sheet open onClose={onClose} label="New container" tall>
-			<div style={{padding: '4px 16px 24px', display: 'grid', gap: 12}}>
+			<div style={{padding: '4px 16px 24px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12, minWidth: 0}}>
 				{status.isLoading ? (
 					<div className="skeleton" style={{height: 160, borderRadius: 16}} />
 				) : status.data && !status.data.available ? (
@@ -202,7 +206,7 @@ export function ContainersInList({owner, filterText}: {owner: boolean; filterTex
 			</Group>
 			{current && (
 				<Sheet open onClose={() => setOpen(null)} label={current.name} tall>
-					<div style={{padding: '4px 16px 24px'}}>
+					<div style={{padding: '4px 16px 24px', minWidth: 0}}>
 						<ContainerDetail c={current} all={list.data ?? []} onBack={() => setOpen(null)} onOpen={setOpen} backLabel="Close" />
 					</div>
 				</Sheet>
@@ -214,7 +218,7 @@ export function ContainersInList({owner, filterText}: {owner: boolean; filterTex
 function SetUp({status, onCheck, checking}: {status: Extract<ContainerStatus, {available: false}>; onCheck: () => void; checking: boolean}) {
 	const toast = useToast()
 	return (
-		<div className="glass" style={{padding: 16, display: 'grid', gap: 12}}>
+		<div className="glass" style={{padding: 16, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12, minWidth: 0}}>
 			<b>Set up containers</b>
 			<span className="quiet">{status.reason}</span>
 			<span className="quiet">
@@ -312,7 +316,7 @@ function CreateContainer({onDone, existing, backLabel = 'Containers'}: {onDone: 
 			{onSuccess: onDone},
 		)
 	return (
-		<div style={{display: 'grid', gap: 12}}>
+		<div className="ct-col" style={{display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12, minWidth: 0}}>
 			<div style={{display: 'flex', alignItems: 'center', gap: 8}}>
 				<button type="button" className="btn small" onClick={onDone}>
 					<Icon name={backLabel === 'Close' ? 'close' : 'back'} size={15} /> {backLabel}
@@ -442,11 +446,11 @@ function Boot({c, busy, run}: {c: Container; busy: boolean; run: (path: string, 
 		<Group title="Start with the server" footer="Higher numbers start first and shut down last. The delay waits after starting this one, before the next.">
 			<SwitchRow label="Start when the server starts" on={c.autostart} disabled={busy} onChange={(autostart) => run('containers.setOptions', autostart ? `${c.name} starts with the server` : `${c.name} stays off after a restart`, {autostart})} />
 			{c.autostart && (
-				<div style={{display: 'flex', gap: 8, padding: '4px 12px 12px', alignItems: 'end'}}>
-					<div style={{flex: 1}}>
+				<div style={{display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 12px 12px', alignItems: 'end'}}>
+					<div style={{flex: '1 1 120px', minWidth: 0}}>
 						<TextField id="b-order" label="Start order" value={order} onChange={setOrder} numeric />
 					</div>
-					<div style={{flex: 1}}>
+					<div style={{flex: '1 1 120px', minWidth: 0}}>
 						<TextField id="b-delay" label="Delay (s)" value={delay} onChange={setDelay} numeric />
 					</div>
 					<button type="button" className="btn small" disabled={busy || (order === String(c.bootOrder) && delay === String(c.bootDelay))} onClick={() => run('containers.setOptions', 'Saved', {bootOrder: Number(order || 0), bootDelay: Number(delay || 0)})}>
@@ -485,8 +489,8 @@ function Backups({c, busy, all}: {c: Container; busy: boolean; all: Container[]}
 						}
 					/>
 					{restoreAs === b.file && (
-						<div style={{display: 'flex', gap: 8, padding: '4px 12px 12px', alignItems: 'end'}}>
-							<div style={{flex: 1}}>
+						<div style={{display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 12px 12px', alignItems: 'end'}}>
+							<div style={{flex: '1 1 120px', minWidth: 0}}>
 								<TextField id="bk-as" label="Restore as a new container named" value={as} onChange={(v) => setAs(v.toLowerCase())} hint={nameProblemOf(as, taken)} />
 							</div>
 							<button type="button" className="btn small" disabled={!!nameProblemOf(as, taken) || action.isPending} onClick={() => action.mutate({path: 'containers.restoreBackup', input: {file: b.file, as}, done: `Restoring as ${as}`}, {onSuccess: () => setRestoreAs(null)})}>
@@ -613,7 +617,7 @@ function NotesAndTags({c, busy, run}: {c: Container; busy: boolean; run: (path: 
 	)
 }
 
-function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers'}: {c: Container; all: Container[]; onBack: () => void; onOpen: (name: string) => void; backLabel?: string}) {
+export function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers'}: {c: Container; all: Container[]; onBack: () => void; onOpen: (name: string) => void; backLabel?: string}) {
 	const action = useContainerAction()
 	const confirm = useConfirm()
 	const [term, setTerm] = useState(false)
@@ -645,9 +649,10 @@ function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers'}: {c:
 			},
 		)
 
-	const placeholder = ['creating', 'cloning', 'restoring', 'error'].includes(c.status) && !c.os && !c.disk
+	// Not in Incus yet (still being created, cloned or restored, or that failed).
+	const placeholder = !!c.pending
 	return (
-		<div style={{display: 'grid', gap: 12}}>
+		<div className="ct-col" style={{display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12, minWidth: 0}}>
 			<div style={{display: 'flex', alignItems: 'center', gap: 10}}>
 				<button type="button" className="btn small" onClick={onBack}>
 					<Icon name={backLabel === 'Close' ? 'close' : 'back'} size={15} /> {backLabel}
@@ -657,7 +662,7 @@ function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers'}: {c:
 				<span style={{width: 52, height: 52, borderRadius: 16, background: osColor(c.os), color: '#fff', display: 'grid', placeItems: 'center'} as CSSProperties}>
 					<Icon name="category" size={26} />
 				</span>
-				<div style={{display: 'grid', gap: 4}}>
+				<div style={{display: 'grid', gap: 4, minWidth: 0}}>
 					<b style={{fontSize: 18}}>
 						{c.name} {c.protected && <Icon name="shield" size={14} />}
 					</b>
@@ -684,7 +689,14 @@ function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers'}: {c:
 						<Icon name="close" size={18} /> Dismiss
 					</button>
 				) : (
-					<p className="quiet">This takes a minute or two. You can leave this page.</p>
+					<div className="glass" style={{padding: 16, display: 'grid', gap: 8, minWidth: 0}}>
+						<span style={{display: 'inline-flex', gap: 8, alignItems: 'center'}}>
+							<span className="spinner" /> <b>{c.progress || 'Starting…'}</b>
+						</span>
+						<span className="quiet">
+							{c.startedAt ? `Started ${Math.max(0, Math.round((Date.now() - Date.parse(c.startedAt)) / 60_000))} min ago. ` : ''}The first container of a system downloads it (about 100 MB), then it starts by itself. You can leave this page.
+						</span>
+					</div>
 				)
 			) : (
 				<>
@@ -737,10 +749,10 @@ function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers'}: {c:
 							/>
 						))}
 						<div style={{display: 'flex', gap: 8, padding: '10px 12px', alignItems: 'end', flexWrap: 'wrap'}}>
-							<div style={{flex: '1 1 90px'}}>
+							<div style={{flex: '1 1 90px', minWidth: 0}}>
 								<TextField id="ct-hp" label="Server port" value={port.host} onChange={(v) => setPort({...port, host: v})} numeric placeholder="8080" />
 							</div>
-							<div style={{flex: '1 1 90px'}}>
+							<div style={{flex: '1 1 90px', minWidth: 0}}>
 								<TextField id="ct-cp" label="Container port" value={port.inner} onChange={(v) => setPort({...port, inner: v})} numeric placeholder="80" />
 							</div>
 							<button type="button" className="btn small" onClick={() => setPort({...port, protocol: port.protocol === 'tcp' ? 'udp' : 'tcp'})}>
@@ -782,8 +794,8 @@ function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers'}: {c:
 								}
 							/>
 						))}
-						<div style={{display: 'flex', gap: 8, padding: '10px 12px', alignItems: 'end'}}>
-							<div style={{flex: 1}}>
+						<div style={{display: 'flex', flexWrap: 'wrap', gap: 8, padding: '10px 12px', alignItems: 'end'}}>
+							<div style={{flex: '1 1 120px', minWidth: 0}}>
 								<TextField id="ct-snap" label="New snapshot" value={snap} onChange={(v) => setSnap(v.replace(/[^A-Za-z0-9._-]/g, ''))} placeholder="before-update" />
 							</div>
 							<button type="button" className="btn small" disabled={busy || !snap} onClick={() => action.mutate({path: 'containers.snapshot', input: {name: c.name, snapshot: snap}, done: `Snapshot ${snap} taken`}, {onSuccess: () => setSnap('')})}>
@@ -800,8 +812,8 @@ function ContainerDetail({c, all, onBack, onOpen, backLabel = 'Containers'}: {c:
 						<Row icon="copy" label="Clone" sub="A new container that starts as an exact copy" disabled={busy} onClick={() => (setCopy('clone'), setCopyName(`${c.name}-2`))} />
 						<Row icon="save" label="Save as a template" sub="Appears under Your templates when you make a new container" disabled={busy} onClick={() => (setCopy('template'), setCopyName(c.name))} />
 						{copy && (
-							<div style={{display: 'flex', gap: 8, padding: '4px 12px 12px', alignItems: 'end'}}>
-								<div style={{flex: 1}}>
+							<div style={{display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 12px 12px', alignItems: 'end'}}>
+								<div style={{flex: '1 1 120px', minWidth: 0}}>
 									<TextField id="cp-name" label={copy === 'clone' ? 'Name of the copy' : 'Template name'} value={copyName} onChange={(v) => setCopyName(v.toLowerCase())} hint={copy === 'clone' ? nameProblemOf(copyName, taken) : nameProblemOf(copyName, [])} />
 								</div>
 								<button

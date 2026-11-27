@@ -11,7 +11,7 @@
 // The library is the Linux systems Incus already offers (images.linuxcontainers.org), plus the
 // owner's own templates (a container saved as an image). Small app recipes are the App Store's job.
 
-import {execFile, spawn} from 'node:child_process'
+import {spawn} from 'node:child_process'
 import {mkdir, readdir, rm, stat} from 'node:fs/promises'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -154,33 +154,38 @@ function defaultRun(args, opts = {}) {
 	return execIncus('incus', args, opts)
 }
 
-function execIncus(bin, args, {timeout = 60_000, input, binary = false} = {}) {
+export function execIncus(bin, args, {timeout = 60_000, input, binary = false, onOutput} = {}) {
 	return new Promise((resolve, reject) => {
-		if (input === undefined) {
-			execFile(bin, args, {timeout, maxBuffer: FILE_LIMIT + 1024 * 1024, encoding: binary ? 'buffer' : 'utf8', env: {...process.env, LC_ALL: 'C'}}, (error, stdout, stderr) => {
-				if (error) {
-					error.stderr = String(stderr ?? '')
-					return reject(error)
-				}
-				resolve(binary ? stdout : String(stdout))
-			})
-			return
-		}
-		// Secrets (a root password) and uploads go in on stdin, never in the arguments.
-		const child = spawn(bin, args, {env: {...process.env, LC_ALL: 'C'}, stdio: ['pipe', 'pipe', 'pipe']})
+		// stdin is closed unless there's something to send. `incus launch` reads a config from stdin
+		// whenever stdin isn't a terminal, so an open, empty pipe left it waiting forever: a new
+		// container sat at "creating". Secrets (a root password) and uploads go in on stdin, never in
+		// the arguments.
+		const child = spawn(bin, args, {env: {...process.env, LC_ALL: 'C'}, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe']})
 		const out = []
+		let size = 0
 		let err = ''
-		const timer = setTimeout(() => child.kill('SIGKILL'), timeout)
-		child.stdout.on('data', (d) => out.push(d))
-		child.stderr.on('data', (d) => (err += d))
+		let killed = false
+		const timer = setTimeout(() => ((killed = true), child.kill('SIGKILL')), timeout)
+		child.stdout.on('data', (d) => {
+			size += d.length
+			if (size > FILE_LIMIT + 1024 * 1024) return child.kill('SIGKILL')
+			out.push(d)
+			if (onOutput) onOutput(String(d))
+		})
+		child.stderr.on('data', (d) => {
+			err = (err + d).slice(-64 * 1024)
+			if (onOutput) onOutput(String(d))
+		})
 		child.on('error', (e) => (clearTimeout(timer), reject(e)))
 		child.on('close', (code) => {
 			clearTimeout(timer)
 			if (code === 0) return resolve(binary ? Buffer.concat(out) : Buffer.concat(out).toString())
-			reject(Object.assign(new Error(`incus exited ${code}`), {stderr: err}))
+			reject(Object.assign(new Error(killed ? `incus ${args[0]} took longer than ${Math.round(timeout / 60_000)} minutes` : `incus exited ${code}`), {code, stderr: killed ? '' : err}))
 		})
-		child.stdin.on('error', () => {})
-		child.stdin.end(input)
+		if (child.stdin) {
+			child.stdin.on('error', () => {})
+			child.stdin.end(input)
+		}
 	})
 }
 
@@ -222,7 +227,7 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 	}
 	/** Run slow work in the background; the list shows it until it's done. */
 	const background = (map, key, what, work, extra = {}) => {
-		map.set(key, {what, at: now(), ...extra})
+		map.set(key, {what, at: now(), startedAt: new Date(now()).toISOString(), ...extra})
 		work().then(
 			() => map.delete(key),
 			(error) => map.set(key, {what, at: now(), ...extra, error: error?.message ?? String(error)}),
@@ -278,7 +283,7 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 		})
 		for (const [n, p] of pending)
 			if (!rows.some((r) => r.name === n))
-				rows.push({...containerFrom({name: n, status: p.error ? 'error' : p.what}), os: p.os ?? '', release: p.release ?? '', job: null, error: p.error ?? null, from: p.from ?? null})
+				rows.push({...containerFrom({name: n, status: p.error ? 'error' : p.what}), os: p.os ?? '', release: p.release ?? '', job: null, error: p.error ?? null, from: p.from ?? null, pending: true, progress: p.error ? null : (p.progress ?? null), startedAt: p.startedAt ?? null})
 		return rows.sort((a, b) => a.name.localeCompare(b.name))
 	}
 
@@ -386,7 +391,13 @@ export function createContainers({run = defaultRun, reservedPorts = [], user = o
 			n,
 			'creating',
 			async () => {
-				await incus(['launch', source, n, ...config.flatMap((c) => ['--config', c]), '--device', `root,size=${diskGiB}GiB`], {timeout: 15 * 60_000})
+				// Incus prints its progress ("Retrieving image: rootfs: 45% (12.3MB/s)"); the list shows the latest.
+				const onOutput = (text) => {
+					const line = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean).pop()
+					const p = pending.get(n)
+					if (line && p && !p.error) p.progress = line.replace(/^Retrieving image:\s*/i, 'Downloading ').slice(0, 120)
+				}
+				await incus(['launch', source, n, ...config.flatMap((c) => ['--config', c]), '--device', `root,size=${diskGiB}GiB`], {timeout: 20 * 60_000, onOutput})
 				if (cred.password || cred.key) background(jobs, n, 'setting up', () => firstSetup(n, cred))
 			},
 			meta,
