@@ -18,6 +18,7 @@
 	--muted: #8d96a3;
 	--faint: rgba(231, 234, 238, 0.06);
 	--glass: #1a1f26;
+	--card: var(--glass);
 	--glass-2: #222833;
 	--glass-press: #2a313d;
 	--line: #262c35;
@@ -64,6 +65,7 @@
 	--muted: #5f6875;
 	--faint: rgba(22, 26, 32, 0.05);
 	--glass: #ffffff;
+	--card: var(--glass);
 	--glass-2: #f1f3f6;
 	--glass-press: #e6e9ee;
 	--line: #dde1e7;
