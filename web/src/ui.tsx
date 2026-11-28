@@ -6,7 +6,7 @@ import type {AppState, Wallpaper} from './api'
 import {AssistantAvatar, cleanLook, type AssistantLook} from './character/AssistantCharacter'
 import {detectDesktop, LAYOUT_POINTER} from './layout'
 export {detectDesktop}
-import {fieldAria, liveRegionText, useDialogFocus} from './focus'
+import {fieldAria, useDialogFocus} from './focus'
 import {RADIO_SELECTOR, rovingKeyDown, rovingTabIndex, TAB_SELECTOR} from './roving'
 import {Icon, type IconName} from './icons'
 import {versionTagProps, type VersionInfo} from './runningSince'
@@ -23,7 +23,7 @@ import {cleanTempPicks} from './fleet/temperatures'
 import {initials as nameInitials} from './initials'
 import {paddingBottomPlus} from './scrollPad'
 import {SPARK_HEIGHT, SPARK_WIDTH, sparkPath} from './spark'
-import {AccountToastProvider, AccountToastStack} from './toasts/account'
+import {AccountToastProvider, AccountToastStack, useAccountToasts} from './toasts/account'
 
 // ---- portals --------------------------------------------------------------------------
 // Sheets, the terminal and the console portal out of their screen. On the phone that's <body>;
@@ -672,48 +672,23 @@ type ConfirmOptions = {title: string; body: ReactNode; confirm: string; danger?:
 const ConfirmContext = createContext<(o: ConfirmOptions) => Promise<boolean>>(async () => false)
 export const useConfirm = () => useContext(ConfirmContext)
 
-type Toast = {id: number; text: string; error?: boolean}
 const ToastContext = createContext<(text: string, error?: boolean) => void>(() => {})
 export const useToast = () => useContext(ToastContext)
 
 export function Providers({children}: {children: ReactNode}) {
-	const [, setToast] = useState<Toast | null>(null)
-	const [announced, setAnnounced] = useState<Toast | null>(null)
-	const announcedRef = useRef<Toast | null>(null)
-	announcedRef.current = announced
-	const timer = useRef<number>()
-	const rafRef = useRef<number>()
-	useEffect(() => {
-		return () => {
-			window.clearTimeout(timer.current)
-			if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current)
-		}
-	}, [])
+	return (
+		<AccountToastProvider>
+			<ProvidersInner>{children}</ProvidersInner>
+		</AccountToastProvider>
+	)
+}
+
+function ProvidersInner({children}: {children: ReactNode}) {
+	const account = useAccountToasts()
 	const show = useCallback((text: string, error = false) => {
 		haptic(error ? [20, 40, 20] : 10)
-		const next: Toast = {id: Date.now(), text, error}
-		setToast(next)
-		if (rafRef.current !== undefined) {
-			cancelAnimationFrame(rafRef.current)
-			rafRef.current = undefined
-		}
-		const prev = announcedRef.current
-		if (prev && prev.text === text && !!prev.error === error) {
-			// Clear and restore on the next frame so repeating the same toast re-announces it.
-			setAnnounced(null)
-			rafRef.current = requestAnimationFrame(() => {
-				rafRef.current = undefined
-				setAnnounced(next)
-			})
-		} else {
-			setAnnounced(next)
-		}
-		window.clearTimeout(timer.current)
-		timer.current = window.setTimeout(() => {
-			setToast(null)
-			setAnnounced(null)
-		}, error ? 4500 : 2600)
-	}, [])
+		account.push(text, error)
+	}, [account])
 
 	const [pending, setPending] = useState<(ConfirmOptions & {resolve: (v: boolean) => void}) | null>(null)
 	const confirm = useCallback((o: ConfirmOptions) => {
@@ -724,10 +699,8 @@ export function Providers({children}: {children: ReactNode}) {
 		pending?.resolve(v)
 		setPending(null)
 	}
-	const live = liveRegionText(announced)
 
 	return (
-		<AccountToastProvider>
 		<ToastContext.Provider value={show}>
 			<ConfirmContext.Provider value={confirm}>
 				{children}
@@ -756,16 +729,9 @@ export function Providers({children}: {children: ReactNode}) {
 						</div>
 					)}
 				</Sheet>
-				<div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-					{live.status}
-				</div>
-				<div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">
-					{live.alert}
-				</div>
 				<AccountToastStack />
 			</ConfirmContext.Provider>
 		</ToastContext.Provider>
-		</AccountToastProvider>
 	)
 }
 
