@@ -1,4 +1,4 @@
-// Rules for account toasts. The screen renders these. It does not decide them.
+// Rules for toasts. The screen renders these. It does not decide them.
 
 export type ToastLevel = 'note' | 'problem'
 
@@ -21,14 +21,16 @@ export function liveToasts(rows: readonly ToastRecord[], now: number): ToastReco
 		})
 }
 
-export function spokenToast(rows: readonly ToastRecord[], now: number): ToastRecord | null {
-	return liveToasts(rows, now)[0] ?? null
-}
-
 export function toastSurface(input: {floating: boolean; covered: boolean}): 'bubble' | 'box' {
 	return input.floating && !input.covered ? 'bubble' : 'box'
 }
 
-export function staysLocal(input: {href: string | null; untilDismiss: boolean}): boolean {
-	return !input.href && !input.untilDismiss
+export function toastRemaining(row: {at: number; expireAt: number | null}, now: number): number | null {
+	if (row.expireAt == null) return null
+	const span = row.expireAt - row.at
+	if (!(span > 0)) return null
+	const left = row.expireAt - now
+	if (left <= 0) return 0
+	if (left >= span) return 1
+	return left / span
 }

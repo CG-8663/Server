@@ -73,6 +73,8 @@ Snapshots, changes, and the record of what happened open from the machine they d
 
 Sign-in, devices, appearance, and updating My Own Data Center belong to the product. They are not a substitute for a machine's own disks, backups, or gauges.
 
+Notifications are server-wide and show in the bell. Toasts are feedback for the signed-in person and show above the floating assistant when that character is visible, or at the top of the page when it is not. The style guide names those channels.
+
 ### Alerts
 
 When a measure crosses a warning or a danger, Home shows it on the gauge. Opening it names the machines. The interface does not hide a full disk, a hot CPU, or a low battery behind a separate tool. Home's gauges stay aggregates. On a machine, a tap cycles the same readings through one line, three lines, and gauges. That choice belongs to the account. A machine does not say "Tap for details".
