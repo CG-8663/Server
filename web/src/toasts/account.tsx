@@ -3,6 +3,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {createContext, useCallback, useContext, useEffect, useMemo, useState, type CSSProperties, type ReactNode} from 'react'
 
 import {mutate, query} from '../api'
+import {liveRegionText} from '../focus'
 import {Icon} from '../icons'
 import {openToastPlace} from './open'
 import {liveToasts, toastRemaining, type ToastRecord} from './view'
@@ -196,12 +197,15 @@ export function AccountToastProvider({children}: {children: ReactNode}) {
 		setAnnouncedId(head.id)
 	}, [head, announcedId])
 	const announced = head && head.id === announcedId ? head : null
-	const heard = announced?.level === 'problem' ? 'assertive' : 'polite'
+	const live = liveRegionText(announced ? {text: announced.text, error: announced.level === 'problem'} : null)
 	return (
 		<Ctx.Provider value={value}>
 			{children}
-			<div className="sr-only" role={announced?.level === 'problem' ? 'alert' : 'status'} aria-live={heard} aria-atomic="true">
-				{announced?.text ?? ''}
+			<div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+				{live.status}
+			</div>
+			<div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">
+				{live.alert}
 			</div>
 		</Ctx.Provider>
 	)
