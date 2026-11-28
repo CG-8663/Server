@@ -3096,6 +3096,24 @@ html:not(.desk-mode) .shelf.screen-list.glass {
 	font-size: 14px;
 	font-weight: 560;
 	animation: drop 0.5s var(--spring);
+	overflow: hidden;
+}
+.toast-ttl {
+	position: absolute;
+	left: 10px;
+	right: 10px;
+	bottom: 0;
+	height: 2px;
+	border-radius: 1px;
+	background: color-mix(in oklab, var(--fg) 25%, transparent);
+	transform-origin: left center;
+	transform: scaleX(var(--toast-ttl, 0));
+	pointer-events: none;
+}
+.toast.problem .toast-ttl,
+.toast.error .toast-ttl,
+.ac-say-row.problem .toast-ttl {
+	background: color-mix(in oklab, var(--red) 55%, transparent);
 }
 html.desk-mode .toast {
 	top: calc(var(--top-h, 34px) + 12px);
@@ -3125,6 +3143,7 @@ html.desk-mode .toast-stack .toast {
 	transform: none;
 	pointer-events: auto;
 	animation: toast-in 0.45s var(--spring);
+	overflow: hidden;
 }
 .toast-open,
 .toast-text {
@@ -9880,11 +9899,11 @@ html.ac-paused .ac :is(.ac-body, .ac-shadow) { animation-play-state: paused !imp
 	bottom: 8px;
 	z-index: 1;
 	display: flex;
-	align-items: flex-start;
-	gap: 4px;
+	flex-direction: column;
+	align-items: stretch;
 	width: max-content;
 	max-width: min(260px, 68vw);
-	padding: 10px 4px 10px 14px;
+	padding: 8px 4px 8px 10px;
 	border-radius: 18px 18px 6px 18px;
 	background: var(--sheet);
 	border: 1px solid var(--line-2);
@@ -9898,7 +9917,23 @@ html.ac-paused .ac :is(.ac-body, .ac-shadow) { animation-play-state: paused !imp
 	left: calc(100% - 6px);
 	border-radius: 18px 18px 18px 6px;
 }
+.ac-say-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	max-height: min(40vh, 280px);
+	overflow-y: auto;
+}
+.ac-say-row {
+	position: relative;
+	display: flex;
+	align-items: flex-start;
+	gap: 4px;
+	overflow: hidden;
+	padding-bottom: 2px;
+}
 .ac-say-open,
+.ac-say-text,
 .ac-say p {
 	margin: 0;
 	flex: 1;
@@ -9924,8 +9959,12 @@ html.ac-paused .ac :is(.ac-body, .ac-shadow) { animation-play-state: paused !imp
 	place-items: center;
 	flex: none;
 }
-.ac-say.problem .ac-say-open,
-.ac-say.problem p {
+.ac-say-row .toast-ttl {
+	left: 14px;
+	right: 48px;
+}
+.ac-say-row.problem .ac-say-open,
+.ac-say-row.problem .ac-say-text {
 	color: var(--red);
 }
 .ac-widget .ac-dot {

@@ -1,13 +1,13 @@
 // The character in the app: the floating launcher, the picker and live preview in Settings, and the
 // small icon used where the assistant appears (Home, the desktop). The launcher opens the assistant.
-// Its speech bubble is an account toast, and it does not open the chat.
+// Its speech bubble shows toasts, and it does not open the chat.
 import {useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties} from 'react'
 
 import {useAssistantActivity, useAssistantAnimationState, type CharacterState} from '../assistantActivity'
 import {assistantIconBadge} from '../assistantLive'
 import {useAssistantTurn} from '../assistantTurn'
 import {Icon} from '../icons'
-import {useAccountToasts} from '../toasts/account'
+import {ToastRow, useAccountToasts, useToastClock} from '../toasts/account'
 import {toastSurface} from '../toasts/view'
 import {Row, Segmented, Switch, haptic} from '../ui'
 import {AssistantCharacter, DEFAULT_LOOK, lookName, NAME_MAX, useAssistantLook, type AssistantLook} from './AssistantCharacter'
@@ -154,14 +154,14 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 		setLook({...look, position: {...look.position, [kind]: {x: clamp(fx, 0, 1), y: clamp(fy, 0, 1)}}})
 	}
 	const keySave = useRef(0)
-	const account = useAccountToasts()
+	const {rows, claimBubble, dismiss, open} = useAccountToasts()
+	const now = useToastClock(rows)
 	const covered = useCharacterCovered()
-	const spoken = account.spoken
-	const showBubble = look.floating && !!spoken && toastSurface({floating: true, covered}) === 'bubble'
+	const showBubble = look.floating && rows.length > 0 && toastSurface({floating: true, covered}) === 'bubble'
 	useLayoutEffect(() => {
-		account.claimBubble(showBubble)
-		return () => account.claimBubble(false)
-	}, [showBubble, account.claimBubble])
+		claimBubble(showBubble)
+		return () => claimBubble(false)
+	}, [showBubble, claimBubble])
 
 	if (!look.floating) return null
 	const name = lookName(look)
@@ -262,18 +262,13 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 				</span>
 			) : null}
 		</button>
-		{showBubble && spoken && (
-			<div className={`ac-say${sayLeft ? '' : ' on-right'}${spoken.level === 'problem' ? ' problem' : ''}`}>
-				{spoken.href ? (
-					<button type="button" className="ac-say-open" onClick={() => account.open(spoken)}>
-						{spoken.text}
-					</button>
-				) : (
-					<p>{spoken.text}</p>
-				)}
-				<button type="button" className="ac-say-x" aria-label="Dismiss" onClick={() => account.dismiss(spoken.id)}>
-					<Icon name="close" size={14} />
-				</button>
+		{showBubble && (
+			<div className={`ac-say${sayLeft ? '' : ' on-right'}`}>
+				<div className="ac-say-list">
+					{rows.map((row) => (
+						<ToastRow key={row.id} row={row} now={now} onOpen={open} onDismiss={dismiss} variant="bubble" />
+					))}
+				</div>
 			</div>
 		)}
 		</div>
