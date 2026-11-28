@@ -66,6 +66,27 @@ test('a custom endpoint’s new address is checked with its saved key; only the 
 	}
 })
 
+test('another account does not hear the address when an offered provider cannot be reached', async () => {
+	const dataDir = await mkdtemp(join(os.tmpdir(), 'aep-'))
+	const fetchImpl = async () => {
+		throw new Error('connect ECONNREFUSED 10.1.2.3:8443')
+	}
+	try {
+		const asst = createAssistant({dataDir, accounts: fakeAccounts(), now: () => 5, fetchImpl})
+		const k = await asst.keys.add(OWNER, {name: 'Personal', provider: 'openai-compatible', apiKey: 'local-key', model: 'm', baseUrl: 'http://10.1.2.3:8443/v1'})
+		await asst.keys.update(OWNER, {id: k.id, systemDefault: true})
+		const seen = await asst.procedures['assistant.verifyKey'].run({id: k.id}, {auth: {userId: 'sam'}})
+		assert.equal(seen.ok, false)
+		assert.equal(seen.message, 'That provider did not answer.')
+		assert.equal(JSON.stringify(seen).includes('10.1.2.3'), false)
+		assert.equal(JSON.stringify(seen).includes('8443'), false)
+		const own = await asst.procedures['assistant.verifyKey'].run({id: k.id}, {auth: {userId: 'owner'}})
+		assert.match(own.message, /10\.1\.2\.3/)
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
 test('saving an edit changes the name, key and address together and clears the old check', async () => {
 	const {dataDir, asst} = await setup()
 	try {

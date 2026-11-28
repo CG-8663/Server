@@ -31,6 +31,22 @@ export function shouldTryNextProvider(failure, produced) {
 	if (status >= 500 && status <= 599) return true
 	return !status
 }
+const SERVICE_LABEL = {
+	spacexai: 'Grok',
+	openai: 'OpenAI',
+	anthropic: 'Anthropic',
+	'openai-compatible': 'Custom',
+	chatgpt: 'ChatGPT',
+	hermes: 'Hermes',
+}
+// A provider someone else added keeps that person's private name off this account.
+export function visibleProviderName(userId, key) {
+	if (key?.ownerUserId === userId) {
+		const name = typeof key.name === 'string' ? key.name.trim() : ''
+		if (name) return name
+	}
+	return SERVICE_LABEL[key?.provider] || 'The next provider'
+}
 const textOf = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
 const toolOutcome = (content, state) => ({content: capToolResult(content), state})
 // OpenAI and Anthropic reject a tool list when any name is longer than this.
@@ -800,7 +816,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			const speak = () => {
 				if (spoke) return
 				spoke = true
-				say('speaker', {name: key.name, provider: key.provider})
+				say('speaker', {name: visibleProviderName(userId, key), provider: key.provider})
 			}
 			const tryNext = async (failure, produced) => {
 				if (!shouldTryNextProvider(failure, produced) || candidateIndex + 1 >= candidates.length) return false
@@ -809,7 +825,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				key = candidates[candidateIndex]
 				streamRetries = 0
 				if (row?.id && row.keyId !== key.id) row = await conversations.setKey(userId, row.id, key.id)
-				say('notice', {message: `${previous.name} did not answer. This chat is using ${key.name}.`})
+				say('notice', {message: `${visibleProviderName(userId, previous)} did not answer. This chat is using ${visibleProviderName(userId, key)}.`})
 				return true
 			}
 			for (;;) {
@@ -874,7 +890,7 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 					await stopped(text)
 					if (signal?.aborted || e?.name === 'AbortError') return finish(row.id)
 					if (await tryNext(e, !!text || toolCalls.length > 0)) continue
-					say('error', {message: describeReachFailure(key.baseUrl, e)})
+					say('error', {message: key.ownerUserId === userId ? describeReachFailure(key.baseUrl, e) : 'Couldn’t reach that provider.'})
 					return finish(row.id)
 				}
 				if (signal?.aborted) {
@@ -893,7 +909,10 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 					await stopped(text)
 					if (providerError.status === 401 && key.provider !== 'chatgpt') await keys.recordCheck?.(key.id, {ok: false, status: 'rejected', message: 'The provider rejected this key'}, {updatedAt: key.updatedAt, apiKey: key.apiKey, model: key.model, baseUrl: key.baseUrl}).catch(() => {})
 					if (await tryNext(providerError, !!text || toolCalls.length > 0)) continue
-					say('error', {message: providerError.status === 401 ? (key.provider === 'chatgpt' ? CHATGPT_REJECTED : KEY_REJECTED) : (providerError.message || 'The assistant did not answer')})
+					const own = key.ownerUserId === userId
+					const rejected = key.provider === 'chatgpt' ? CHATGPT_REJECTED : KEY_REJECTED
+					const detail = own ? providerError.message || 'The assistant did not answer' : 'That provider did not answer.'
+					say('error', {message: providerError.status === 401 ? rejected : detail})
 					return finish(row.id)
 				}
 				if (!toolCalls.length) {

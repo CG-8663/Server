@@ -300,7 +300,7 @@ test('liveRegionText and checkLiveText route status vs alert text and keep persi
 	const settings = readFileSync(join(rootDir, 'web/src/screens/Settings.tsx'), 'utf8')
 	assert.match(settings, /<div role="status" aria-live="polite" aria-atomic="true">/)
 	assert.match(settings, /<div role="alert" aria-live="assertive" aria-atomic="true">/)
-	assert.match(settings, /<CheckLine check=\{k\.check \?\? null\} \/>/)
+	assert.match(settings, /<CheckLine check=\{k\.check \?\? null\}/)
 })
 
 test('fieldAria wires aria-describedby and aria-invalid and shared Field replaces duplicates', () => {

@@ -8,6 +8,9 @@ import {ANTHROPIC} from './anthropic.mjs'
 
 const SPACEXAI = 'https://api.x.ai/v1'
 const OPENAI = 'https://api.openai.com/v1'
+// The one address a person who is not the owner may add. Any other address can reach the network, so it stays with the owner.
+const LOCAL_MODEL = 'http://127.0.0.1:11434/v1'
+export const customBasePermitted = (role, baseUrl) => role === 'owner' || normalizeBaseUrl(baseUrl) === LOCAL_MODEL
 // Fixed addresses of the named providers; a custom endpoint brings its own.
 export const presetBaseUrl = (provider) => ({spacexai: SPACEXAI, openai: OPENAI, anthropic: ANTHROPIC})[provider] ?? null
 // Which API the assistant streams from. OpenAI recommends Responses; the others default to Chat
@@ -230,8 +233,10 @@ export function createKeyStore({dataDir, now = () => Date.now()}) {
 			const provider = ['openai-compatible', 'spacexai', 'openai', 'anthropic'].includes(input?.provider) ? input.provider : null
 			if (!provider) throw new RpcError('BAD_REQUEST', 'Choose Grok, OpenAI, Anthropic or an OpenAI-compatible endpoint')
 			// A custom endpoint makes omarchyd send requests to any address it can reach (your network
-			// included), so only the server's owner can add one.
-			if (provider === 'openai-compatible' && actor.role !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can add a custom endpoint')
+			// included), so only the server's owner can add one. The loopback model address is the exception.
+			if (provider === 'openai-compatible' && !customBasePermitted(actor.role, input?.baseUrl)) {
+				throw new RpcError('FORBIDDEN', 'Only the server’s owner can add a custom endpoint')
+			}
 			const apiKey = String(input?.apiKey ?? '').trim()
 			if (apiKey.length > 512) throw new RpcError('BAD_REQUEST', 'Enter an API key')
 			if (provider !== 'openai-compatible' && apiKey.length < 4) throw new RpcError('BAD_REQUEST', 'Enter an API key')

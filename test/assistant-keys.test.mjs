@@ -101,6 +101,19 @@ test('a member cannot use or list a key another person added', async () => {
 	}
 })
 
+test('a person who is not the owner can add only the loopback model address', async () => {
+	const dataDir = await tmp()
+	try {
+		const keys = createKeyStore({dataDir})
+		await assert.rejects(() => keys.add({userId: 'sam', role: 'member'}, {name: 'b', provider: 'openai-compatible', apiKey: '', model: 'llama', baseUrl: 'http://127.0.0.1:2021/v1'}), /Only the server’s owner can add a custom endpoint/)
+		const here = await keys.add({userId: 'sam', role: 'member'}, {name: 'Here', provider: 'openai-compatible', apiKey: '', model: 'llama', baseUrl: 'http://127.0.0.1:11434/v1'})
+		assert.equal(here.baseUrl, 'http://127.0.0.1:11434/v1')
+		assert.equal((await keys.listPublic('owner')).some((k) => k.id === here.id), false)
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
 test('only the server owner can set systemDefault, and only on a key they own', async () => {
 	const dataDir = await tmp()
 	try {

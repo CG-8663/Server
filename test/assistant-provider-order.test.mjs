@@ -5,6 +5,7 @@ import {join} from 'node:path'
 import {test} from 'node:test'
 
 import {createKeyStore} from '../omarchyd/assistant/keys.mjs'
+import {visibleProviderName} from '../omarchyd/assistant/loop.mjs'
 
 const tmp = async () => mkdtemp(join(os.tmpdir(), 'apo-'))
 const owner = {userId: 'owner', role: 'owner'}
@@ -24,6 +25,13 @@ async function store() {
 		},
 	}
 }
+
+test('another account does not hear the private name of a provider someone else added', () => {
+	const key = {ownerUserId: 'owner', name: 'Personal Grok', provider: 'spacexai'}
+	assert.equal(visibleProviderName('owner', key), 'Personal Grok')
+	assert.equal(visibleProviderName('sam', key), 'Grok')
+	assert.equal(visibleProviderName('sam', {ownerUserId: 'owner', name: 'Ollama', provider: 'openai-compatible'}), 'Custom')
+})
 
 test('a new provider is added at the bottom and reorder is the order chat tries', async () => {
 	const box = await store()

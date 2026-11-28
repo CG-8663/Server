@@ -659,7 +659,7 @@ export function Assistant({onClose, onSettings, prefs, setPrefs, active = true}:
 						<b>Add a provider to talk to the assistant.</b>
 						<span>ChatGPT, Grok, OpenAI, Anthropic, or a model on this server.</span>
 						{member && <span>If the owner offered a provider, it is listed in Settings. You can refuse it there.</span>}
-						<button type="button" className="btn primary small" onClick={() => (haptic(6), onSettings())}>
+						<button type="button" className="btn primary" onClick={() => (haptic(6), onSettings())}>
 							Settings → Assistant
 						</button>
 					</div>

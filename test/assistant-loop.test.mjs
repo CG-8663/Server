@@ -1736,6 +1736,33 @@ test('a provider fetch failure names the base URL the same way the key check doe
 	}
 })
 
+test('another account does not hear the address or private name when an offered provider cannot be reached', async () => {
+	const dataDir = await mkdtemp(join(os.tmpdir(), 'al-offer-'))
+	const base = 'http://10.9.8.7:8443/v1'
+	try {
+		const asst = createAssistant({
+			dataDir,
+			accounts: fakeAccounts(),
+			now: () => 6,
+			runProcedure: async () => null,
+			fetchImpl: async () => {
+				throw Object.assign(new TypeError('fetch failed'), {cause: {code: 'ECONNREFUSED'}})
+			},
+		})
+		const k = await asst.keys.add({userId: 'owner', role: 'owner'}, {name: 'Personal', provider: 'openai-compatible', apiKey: 'local-key', model: 'llama3', baseUrl: base})
+		await asst.keys.update({userId: 'owner', role: 'owner'}, {id: k.id, systemDefault: true})
+		const events = []
+		await asst.runTurn({userId: 'sam', role: 'member', message: 'hi', emit: (e) => events.push(e)})
+		const text = JSON.stringify(events)
+		assert.equal(text.includes('10.9.8.7'), false)
+		assert.equal(text.includes('8443'), false)
+		assert.equal(text.includes('Personal'), false)
+		assert.equal(events.find((e) => e.event === 'error')?.data.message, 'Couldn’t reach that provider.')
+	} finally {
+		await rm(dataDir, {recursive: true, force: true})
+	}
+})
+
 test('a built-in tool result is stored already cut at 20000 characters', async () => {
 	const big = 'x'.repeat(25000)
 	const exact = 'y'.repeat(20000)
