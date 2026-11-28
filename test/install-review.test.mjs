@@ -109,7 +109,7 @@ test('a bound store names its machine, and the confirmation waits for a choice',
 	const review = await readFile(new URL('../web/src/beforeInstall.tsx', import.meta.url), 'utf8')
 	const desk = await readFile(new URL('../web/src/desktop/Desktop.tsx', import.meta.url), 'utf8')
 	assert.match(store, /bound \? `App Store for \$\{bound\.name\}` : 'App Store'/)
-	assert.match(store, /const machineName = bound\?\.name \|\| chosen\?\.name \|\| ''/)
+	assert.match(store, /const machineName = bound\?\.name \|\| chosen\?\.name \|\| preferredTarget\?\.name \|\| ''/)
 	assert.match(store, /machineName !== ''/)
 	assert.match(store, /machineName=\{machineName\}/)
 	assert.match(review, /will be installed on \{machineName \|\| 'your server'\}/)

@@ -350,11 +350,11 @@ test('files: list a folder, copy a file to the server, and refuse paths that cli
 	}
 })
 
-test('Machines → Add offers LXC container beside Machine and Virtual Machine, and it opens setup or the library', async () => {
+test('Machines → Add offers a computer, a virtual machine, and an LXC container, and the container item opens setup or the library', async () => {
 	const {readFile} = await import('node:fs/promises')
 	const manager = await readFile(new URL('../web/src/fleet/MachineManager.tsx', import.meta.url), 'utf8')
 	const menu = manager.slice(manager.indexOf('role="menu"'), manager.indexOf('{newContainer && <NewContainerSheet'))
-	for (const item of ['Machine', 'Virtual Machine', 'LXC container']) assert.match(menu, new RegExp(`>\\s*${item}\\s*<`), item)
+	for (const item of ['Add a computer', 'Create a virtual machine', 'Add a container']) assert.match(menu, new RegExp(`>\\s*${item}\\s*<`), item)
 	const ui = await readFile(new URL('../web/src/containers/Containers.tsx', import.meta.url), 'utf8')
 	assert.match(ui, /export function NewContainerSheet[\s\S]*<SetUp [\s\S]*<CreateContainer /)
 })

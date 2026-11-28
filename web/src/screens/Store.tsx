@@ -331,7 +331,7 @@ const SUGGESTED_STORES = [
 	},
 	{
 		url: MODC_URL,
-		name: 'Modc community',
+		name: 'MODC community',
 		blurb: 'Apps submitted by the community, checked automatically and reviewed before they’re added.',
 	},
 ]
