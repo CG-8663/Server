@@ -493,7 +493,7 @@ test('a member tool list omits swarm_list and swarm is not loaded', async () => 
 	const {seen, fetchImpl} = scripted([textSse('hello')])
 	const box = await withAssistant({runProcedure, fetchImpl})
 	try {
-		await box.asst.keys.update({userId: 'owner', role: 'owner'}, {id: box.key.id, sharedWith: ['sam']})
+		await box.asst.keys.update({userId: 'owner', role: 'owner'}, {id: box.key.id, systemDefault: true})
 		const events = []
 		await box.asst.runTurn({userId: 'sam', role: 'member', message: 'hi', keyId: box.key.id, emit: (e) => events.push(e)})
 		assert.equal(toolsFor('member').some((t) => t.name === 'swarm_list'), false)
@@ -505,6 +505,51 @@ test('a member tool list omits swarm_list and swarm is not loaded', async () => 
 		assert.equal(seen[0].body.messages[0].content.includes('nas'), false)
 		assert.match(seen[0].body.messages[0].content, /Role: member/)
 		assert.equal(events.some((e) => e.event === 'done'), true)
+	} finally {
+		await box.close()
+	}
+})
+
+const rejectedKey = () => ({
+	ok: false,
+	status: 401,
+	text: async () => JSON.stringify({error: {message: 'Incorrect API key'}}),
+	body: (async function* () {})(),
+})
+
+test('a rejected provider is skipped before any text, and the chat names the one that answers', async () => {
+	const {runProcedure} = factsProcedure()
+	const {seen, fetchImpl} = scripted([rejectedKey(), textSse('from the backup')])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		const backup = await box.asst.keys.add({userId: 'owner', role: 'owner'}, {name: 'Backup', provider: 'openai', api: 'chat', apiKey: 'sk-backup-2222', model: 'gpt-5'})
+		const out = await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'hello', emit: (e) => events.push(e)})
+		assert.equal(seen.length, 2)
+		assert.equal(events.find((e) => e.event === 'notice')?.data.message, 'k did not answer. This chat is using Backup.')
+		assert.deepEqual(events.find((e) => e.event === 'speaker')?.data, {name: 'Backup', provider: 'openai'})
+		assert.equal(events.find((e) => e.event === 'text')?.data.text, 'from the backup')
+		assert.equal(events.some((e) => e.event === 'done'), true)
+		assert.equal((await box.asst.conversations.get('owner', out.conversationId)).keyId, backup.id)
+	} finally {
+		await box.close()
+	}
+})
+
+test('Hermes does not fall through to the provider under it', async () => {
+	const {runProcedure} = factsProcedure()
+	const {seen, fetchImpl} = scripted([rejectedKey(), textSse('should not run')])
+	const box = await withAssistant({runProcedure, fetchImpl})
+	const events = []
+	try {
+		await box.asst.keys.upsertHermes({userId: 'owner', role: 'owner'}, {baseUrl: 'http://127.0.0.1:8642/v1', apiKey: 'hermes-key-1', model: 'hermes-agent'})
+		const hermes = (await box.asst.keys.listPublic('owner')).find((k) => k.provider === 'hermes')
+		await box.asst.keys.reorder({userId: 'owner', role: 'owner'}, [hermes.id, box.key.id])
+		await box.asst.runTurn({userId: 'owner', role: 'owner', message: 'hello', emit: (e) => events.push(e)})
+		assert.equal(seen.length, 1)
+		assert.equal(events.some((e) => e.event === 'notice'), false)
+		assert.equal(events.some((e) => e.event === 'text'), false)
+		assert.equal(events.some((e) => e.event === 'error'), true)
 	} finally {
 		await box.close()
 	}

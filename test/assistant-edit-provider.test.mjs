@@ -54,12 +54,12 @@ test('a custom endpoint’s new address is checked with its saved key; only the 
 		assert.equal(seen.at(-1).url, 'http://127.0.0.1:8000/v1/models')
 		assert.equal(seen.at(-1).auth, 'Bearer local-key')
 		await assert.rejects(() => verify({id: k.id, baseUrl: 'ftp://x'}), /base URL/)
-		await asst.keys.update(OWNER, {id: k.id, sharedWith: ['sam']})
+		await asst.keys.update(OWNER, {id: k.id, systemDefault: true})
 		const before = seen.length
 		await assert.rejects(() => verify({id: k.id, apiKey: 'sam-key'}, 'sam'), /Only the person who added/)
 		await assert.rejects(() => verify({id: k.id, baseUrl: 'http://10.0.0.5'}, 'sam'), /Only the person who added/)
 		assert.equal(seen.length, before)
-		// Sam can still check the shared key as it is.
+		// Sam can still check the offered key as it is.
 		assert.equal((await verify({id: k.id}, 'sam')).ok, true)
 	} finally {
 		await rm(dataDir, {recursive: true, force: true})

@@ -409,10 +409,10 @@ test('readOnly MCP tools auto-run; others become pending', async () => {
 		assert.equal(mcp.seen.some((m) => m.method === 'tools/call' && m.params?.name === 'rename'), false)
 		const toolMsg = seen[1].body.messages.find((m) => m.role === 'tool' && m.tool_call_id === 'call_status')
 		assert.match(toolMsg.content, /ok-status/)
-		assert.deepEqual(events.map((e) => e.event), ['tool', 'action', 'done'])
-		assert.equal(events[0].data.name, 'app__demo__status')
-		assert.equal(events[0].data.state, 'done')
-		const action = events[1].data
+		assert.deepEqual(events.map((e) => e.event), ['speaker', 'tool', 'action', 'done'])
+		assert.equal(events[1].data.name, 'app__demo__status')
+		assert.equal(events[1].data.state, 'done')
+		const action = events[2].data
 		assert.equal(action.kind, 'mcp')
 		assert.equal(action.status, 'pending')
 		assert.equal(action.toolName, 'app__demo__rename')

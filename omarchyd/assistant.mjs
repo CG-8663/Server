@@ -390,6 +390,9 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			'assistant.keys': {kind: 'query', run: (_i, {auth}) => keys.listPublic(auth.userId)},
 			'assistant.addKey': {kind: 'mutation', run: (input, {auth}) => keys.add(actor(auth), input)},
 			'assistant.updateKey': {kind: 'mutation', run: (input, {auth}) => keys.update(actor(auth), input)},
+			'assistant.reorderKeys': {kind: 'mutation', run: (input, {auth}) => keys.reorder(actor(auth), input?.ids)},
+			'assistant.clearDefault': {kind: 'mutation', run: (_i, {auth}) => keys.clearDefault(actor(auth))},
+			'assistant.useServerDefault': {kind: 'mutation', run: (input, {auth}) => keys.useServerDefault(actor(auth), input?.use !== false)},
 			'assistant.verifyKey': {kind: 'mutation', run: verify},
 			'assistant.removeKey': {
 				kind: 'mutation',
