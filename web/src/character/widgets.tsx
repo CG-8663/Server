@@ -1,6 +1,6 @@
 // The character in the app: the floating launcher, the picker and live preview in Settings, and the
 // small icon used where the assistant appears (Home, the desktop). The launcher opens the assistant.
-// Its speech bubble is an account toast, and it does not open the chat.
+// Its speech bubble shows toasts, and it does not open the chat.
 import {useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties} from 'react'
 
 import {useAssistantActivity, useAssistantAnimationState, type CharacterState} from '../assistantActivity'
@@ -154,14 +154,14 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 		setLook({...look, position: {...look.position, [kind]: {x: clamp(fx, 0, 1), y: clamp(fy, 0, 1)}}})
 	}
 	const keySave = useRef(0)
-	const account = useAccountToasts()
+	const {rows, claimBubble, dismiss, open} = useAccountToasts()
 	const covered = useCharacterCovered()
-	const spoken = account.spoken
-	const showBubble = look.floating && !!spoken && toastSurface({floating: true, covered}) === 'bubble'
+	const showBubble = look.floating && rows.length > 0 && toastSurface({floating: true, covered}) === 'bubble'
 	useLayoutEffect(() => {
-		account.claimBubble(showBubble)
-		return () => account.claimBubble(false)
-	}, [showBubble, account.claimBubble])
+		claimBubble(showBubble)
+		return () => claimBubble(false)
+	}, [showBubble, claimBubble])
+	const spoken = rows[0] ?? null
 
 	if (!look.floating) return null
 	const name = lookName(look)
@@ -265,13 +265,13 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 		{showBubble && spoken && (
 			<div className={`ac-say${sayLeft ? '' : ' on-right'}${spoken.level === 'problem' ? ' problem' : ''}`}>
 				{spoken.href ? (
-					<button type="button" className="ac-say-open" onClick={() => account.open(spoken)}>
+					<button type="button" className="ac-say-open" onClick={() => open(spoken)}>
 						{spoken.text}
 					</button>
 				) : (
 					<p>{spoken.text}</p>
 				)}
-				<button type="button" className="ac-say-x" aria-label="Dismiss" onClick={() => account.dismiss(spoken.id)}>
+				<button type="button" className="ac-say-x" aria-label="Dismiss" onClick={() => dismiss(spoken.id)}>
 					<Icon name="close" size={14} />
 				</button>
 			</div>

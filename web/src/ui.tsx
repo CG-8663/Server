@@ -677,7 +677,7 @@ const ToastContext = createContext<(text: string, error?: boolean) => void>(() =
 export const useToast = () => useContext(ToastContext)
 
 export function Providers({children}: {children: ReactNode}) {
-	const [toast, setToast] = useState<Toast | null>(null)
+	const [, setToast] = useState<Toast | null>(null)
 	const [announced, setAnnounced] = useState<Toast | null>(null)
 	const announcedRef = useRef<Toast | null>(null)
 	announcedRef.current = announced
@@ -762,7 +762,7 @@ export function Providers({children}: {children: ReactNode}) {
 				<div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">
 					{live.alert}
 				</div>
-				<AccountToastStack local={toast} />
+				<AccountToastStack />
 			</ConfirmContext.Provider>
 		</ToastContext.Provider>
 		</AccountToastProvider>
