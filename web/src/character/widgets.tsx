@@ -7,7 +7,7 @@ import {useAssistantActivity, useAssistantAnimationState, type CharacterState} f
 import {assistantIconBadge} from '../assistantLive'
 import {useAssistantTurn} from '../assistantTurn'
 import {Icon} from '../icons'
-import {useAccountToasts} from '../toasts/account'
+import {ToastRow, useAccountToasts, useToastClock} from '../toasts/account'
 import {toastSurface} from '../toasts/view'
 import {Row, Segmented, Switch, haptic} from '../ui'
 import {AssistantCharacter, DEFAULT_LOOK, lookName, NAME_MAX, useAssistantLook, type AssistantLook} from './AssistantCharacter'
@@ -155,13 +155,13 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 	}
 	const keySave = useRef(0)
 	const {rows, claimBubble, dismiss, open} = useAccountToasts()
+	const now = useToastClock(rows)
 	const covered = useCharacterCovered()
 	const showBubble = look.floating && rows.length > 0 && toastSurface({floating: true, covered}) === 'bubble'
 	useLayoutEffect(() => {
 		claimBubble(showBubble)
 		return () => claimBubble(false)
 	}, [showBubble, claimBubble])
-	const spoken = rows[0] ?? null
 
 	if (!look.floating) return null
 	const name = lookName(look)
@@ -262,18 +262,13 @@ export function AssistantCharacterWidget({onOpen}: {onOpen: () => void}) {
 				</span>
 			) : null}
 		</button>
-		{showBubble && spoken && (
-			<div className={`ac-say${sayLeft ? '' : ' on-right'}${spoken.level === 'problem' ? ' problem' : ''}`}>
-				{spoken.href ? (
-					<button type="button" className="ac-say-open" onClick={() => open(spoken)}>
-						{spoken.text}
-					</button>
-				) : (
-					<p>{spoken.text}</p>
-				)}
-				<button type="button" className="ac-say-x" aria-label="Dismiss" onClick={() => dismiss(spoken.id)}>
-					<Icon name="close" size={14} />
-				</button>
+		{showBubble && (
+			<div className={`ac-say${sayLeft ? '' : ' on-right'}`}>
+				<div className="ac-say-list">
+					{rows.map((row) => (
+						<ToastRow key={row.id} row={row} now={now} onOpen={open} onDismiss={dismiss} variant="bubble" />
+					))}
+				</div>
 			</div>
 		)}
 		</div>
