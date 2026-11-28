@@ -21,6 +21,32 @@ const STREAM_RETRIES = 2
 // After a summary fails, wait for this many more messages before trying again.
 const SUMMARY_RETRY_AFTER = 10
 
+// A provider "answers" once any of the reply has been shown. Before that, a dead connection,
+// a rejected key, a missing model, a timeout, a rate limit, or a server error tries the next one.
+export function shouldTryNextProvider(failure, produced) {
+	if (produced) return false
+	if (!failure) return false
+	const status = Number(failure.status) || 0
+	if (status === 401 || status === 403 || status === 404 || status === 408 || status === 429) return true
+	if (status >= 500 && status <= 599) return true
+	return !status
+}
+const SERVICE_LABEL = {
+	spacexai: 'Grok',
+	openai: 'OpenAI',
+	anthropic: 'Anthropic',
+	'openai-compatible': 'Custom',
+	chatgpt: 'ChatGPT',
+	hermes: 'Hermes',
+}
+// A provider someone else added keeps that person's private name off this account.
+export function visibleProviderName(userId, key) {
+	if (key?.ownerUserId === userId) {
+		const name = typeof key.name === 'string' ? key.name.trim() : ''
+		if (name) return name
+	}
+	return SERVICE_LABEL[key?.provider] || 'The next provider'
+}
 const textOf = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
 const toolOutcome = (content, state) => ({content: capToolResult(content), state})
 // OpenAI and Anthropic reject a tool list when any name is longer than this.
@@ -720,23 +746,22 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 		const finish = (conversationIdOut) => ({conversationId: conversationIdOut ?? null})
 		try {
 			if (conversationId) row = await conversations.get(userId, conversationId)
-			let key
+			let candidates
 			try {
-				if (keyId) {
-					key = await keys.resolveForUser(userId, keyId)
-				} else if (row?.keyId) {
-					// If the chat's remembered key was deleted or unshared, switch to another key they can use.
-					key = await keys.resolveForUser(userId, row.keyId).catch((e) => {
-						if (e?.code !== 'NOT_FOUND') throw e
-						return keys.resolveForUser(userId)
-					})
-				} else {
-					key = await keys.resolveForUser(userId)
+				// An explicit key that is gone is an error. A remembered key that is gone starts the chain over.
+				if (keyId) await keys.resolveForUser(userId, keyId)
+				candidates = await keys.candidatesForUser(userId, keyId || row?.keyId)
+				if (!candidates.length) {
+					const err = new Error('Add an API key in Settings → Assistant')
+					err.code = 'PRECONDITION_FAILED'
+					throw err
 				}
 			} catch (e) {
-				say('error', {message: e?.message || 'Add an API key in Settings → Assistant, or ask the owner to share one'})
+				say('error', {message: e?.message || 'Add an API key in Settings → Assistant'})
 				return finish(row?.id)
 			}
+			let candidateIndex = 0
+			let key = candidates[0]
 			if (resume && !row) {
 				say('error', {message: 'That chat isn’t here'})
 				return finish(null)
@@ -787,6 +812,22 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 			// only: it is valid to send back within this run, never after the history changes.
 			const thinkingByCall = new Map()
 			let streamRetries = 0
+			let spoke = false
+			const speak = () => {
+				if (spoke) return
+				spoke = true
+				say('speaker', {name: visibleProviderName(userId, key), provider: key.provider})
+			}
+			const tryNext = async (failure, produced) => {
+				if (!shouldTryNextProvider(failure, produced) || candidateIndex + 1 >= candidates.length) return false
+				const previous = key
+				candidateIndex++
+				key = candidates[candidateIndex]
+				streamRetries = 0
+				if (row?.id && row.keyId !== key.id) row = await conversations.setKey(userId, row.id, key.id)
+				say('notice', {message: `${visibleProviderName(userId, previous)} did not answer. This chat is using ${visibleProviderName(userId, key)}.`})
+				return true
+			}
 			for (;;) {
 				if (signal?.aborted) return finish(row.id)
 				const history = providerHistory(unsummarized(row), row.actions)
@@ -811,7 +852,8 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 							accessToken = await chatgpt.accessToken(key.id)
 						} catch (e) {
 							if (signal?.aborted || e?.name === 'AbortError') return finish(row.id)
-							// The sign-in itself failed, and its own message says what to do. No request went out.
+							// The sign-in itself failed before a request went out. Try the next provider, if there is one.
+							if (await tryNext(e, false)) continue
 							say('error', {message: e?.message || 'Sign in with ChatGPT again in Settings → Assistant'})
 							return finish(row.id)
 						}
@@ -832,8 +874,12 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 						if (signal?.aborted) break
 						if (ev.type === 'text') {
 							text += ev.text
+							speak()
 							say('text', {text: ev.text})
-						} else if (ev.type === 'tool') toolCalls.push(ev)
+						} else if (ev.type === 'tool') {
+							speak()
+							toolCalls.push(ev)
+						}
 						else if (ev.type === 'thinking') thinking.push(ev.block)
 						else if (ev.type === 'error') {
 							providerError = ev
@@ -843,7 +889,8 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				} catch (e) {
 					await stopped(text)
 					if (signal?.aborted || e?.name === 'AbortError') return finish(row.id)
-					say('error', {message: describeReachFailure(key.baseUrl, e)})
+					if (await tryNext(e, !!text || toolCalls.length > 0)) continue
+					say('error', {message: key.ownerUserId === userId ? describeReachFailure(key.baseUrl, e) : 'Couldn’t reach that provider.'})
 					return finish(row.id)
 				}
 				if (signal?.aborted) {
@@ -861,7 +908,11 @@ export function createLoop({keys, conversations, runProcedure, fetchImpl, mcpTar
 				if (providerError) {
 					await stopped(text)
 					if (providerError.status === 401 && key.provider !== 'chatgpt') await keys.recordCheck?.(key.id, {ok: false, status: 'rejected', message: 'The provider rejected this key'}, {updatedAt: key.updatedAt, apiKey: key.apiKey, model: key.model, baseUrl: key.baseUrl}).catch(() => {})
-					say('error', {message: providerError.status === 401 ? (key.provider === 'chatgpt' ? CHATGPT_REJECTED : KEY_REJECTED) : (providerError.message || 'The assistant did not answer')})
+					if (await tryNext(providerError, !!text || toolCalls.length > 0)) continue
+					const own = key.ownerUserId === userId
+					const rejected = key.provider === 'chatgpt' ? CHATGPT_REJECTED : KEY_REJECTED
+					const detail = own ? providerError.message || 'The assistant did not answer' : 'That provider did not answer.'
+					say('error', {message: providerError.status === 401 ? rejected : detail})
 					return finish(row.id)
 				}
 				if (!toolCalls.length) {

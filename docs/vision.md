@@ -75,6 +75,10 @@ Sign-in, devices, appearance, and updating My Own Data Center belong to the prod
 
 Notifications are server-wide and show in the bell. Toasts are feedback for the signed-in person and show above the floating assistant when that character is visible, or at the top of the page when it is not. The style guide names those channels.
 
+### Help
+
+The assistant looks things up on this server and can propose a change. The person approves that change. They choose which providers to try, and in which order. The owner may offer one provider to other accounts, and those accounts may refuse it. A provider someone else added is not shown, apart from that offer. When the person puts Hermes first, Hermes can act on this server itself. Hermes is not a backup for the other providers.
+
 ### Alerts
 
 When a measure crosses a warning or a danger, Home shows it on the gauge. Opening it names the machines. The interface does not hide a full disk, a hot CPU, or a low battery behind a separate tool. Home's gauges stay aggregates. On a machine, a tap cycles the same readings through one line, three lines, and gauges. That choice belongs to the account. A machine does not say "Tap for details".

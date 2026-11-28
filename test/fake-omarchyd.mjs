@@ -252,7 +252,7 @@ export async function startFakeserverd({
 		systemDefault: !!k.systemDefault,
 		mine: k.ownerUserId === userId,
 	})
-	const assistantCanUse = (k, userId) => k.ownerUserId === userId || k.sharedWith.includes(userId) || k.systemDefault
+	const assistantCanUse = (k, userId) => k.ownerUserId === userId || (!!k.systemDefault && k.provider !== 'chatgpt' && k.provider !== 'hermes')
 	const assistantOwned = (id, userId) => assistantChats.find((c) => c.id === String(id ?? '') && c.userId === userId)
 	const assistantStep = (actionId, userId) => {
 		const id = String(actionId ?? '').trim()

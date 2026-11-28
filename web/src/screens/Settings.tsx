@@ -612,25 +612,6 @@ function AssistantEngine({owner}: {owner: boolean}) {
 	}
 	return (
 		<>
-			<Group title="Assistant">
-				<div className="row static" style={{minHeight: 62}}>
-					<span className="main">
-						<b style={{fontWeight: 550}}>Who answers in chat</b>
-						<span>{h.engine === 'hermes' ? 'Hermes, with its own model, memory and skills' : 'The built-in assistant, with the provider below'}</span>
-					</span>
-				</div>
-				<div className="row static">
-					<Segmented<'builtin' | 'hermes'>
-						label="Assistant"
-						value={h.engine}
-						options={[
-							{id: 'builtin', label: 'Built-in'},
-							{id: 'hermes', label: 'Hermes'},
-						]}
-						onChange={(v) => !busy && pick(v)}
-					/>
-				</div>
-			</Group>
 			{(
 				<Group
 					title="Hermes"
@@ -782,20 +763,43 @@ function HermesSetup({onClose}: {onClose: () => void}) {
 	)
 }
 
+type AddChoice = 'pick' | 'spacexai' | 'openai' | 'anthropic' | 'local' | 'custom'
+
+function providerLine(k: AssistantKey): string {
+	const service = PROVIDER_LABEL[k.provider] ?? k.provider
+	if (k.provider === 'chatgpt') {
+		if (k.signedIn === false) return `${service} · Signed out`
+		const bits = [k.account, k.model].filter(Boolean)
+		return bits.length ? `${service} · ${bits.join(' · ')}` : service
+	}
+	return [service, k.model, k.last4 ? `…${k.last4}` : ''].filter(Boolean).join(' · ')
+}
+
+function ProviderEase({open, children}: {open: boolean; children: ReactNode}) {
+	const ref = useRef<HTMLDivElement>(null)
+	useEffect(() => {
+		ref.current?.toggleAttribute('inert', !open)
+	}, [open])
+	return (
+		<div ref={ref} className={open ? 'mm-ease is-open' : 'mm-ease'}>
+			<div className="mm-ease-in">{children}</div>
+		</div>
+	)
+}
+
 function AssistantPage({onBack}: {onBack: () => void}) {
-	const boot = useBootstrap()
 	const user = useUser()
 	const confirm = useConfirm()
 	const save = useSave()
 	const owner = isOwner(user.data)
-	const self = user.data?.userId
 	const keys = useQ<AssistantKey[]>('assistant.keys')
-	const [add, setAdd] = useState(false)
-	const [share, setShare] = useState<AssistantKey | null>(null)
+	const [add, setAdd] = useState<AddChoice | null>(null)
 	const [edit, setEdit] = useState<AssistantKey | null>(null)
 	const [signIn, setSignIn] = useState<{keyId?: string} | null>(null)
 	const [modelFor, setModelFor] = useState<AssistantKey | null>(null)
 	const [checking, setChecking] = useState<string | null>(null)
+	const [hermesOpen, setHermesOpen] = useState(false)
+	const [openId, setOpenId] = useState<string | null>(null)
 	const qc = useQueryClient()
 	const toast = useToast()
 	const check = async (k: AssistantKey) => {
@@ -815,13 +819,47 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 		const chat = k.provider === 'chatgpt'
 		const ok = await confirm({
 			title: chat ? 'Sign out of ChatGPT?' : `Delete ${k.name}?`,
-			body: chat ? 'The assistant stops using your ChatGPT plan, and access to it is revoked.' : 'The assistant won’t use this key. Anyone you shared it with loses access.',
+			body: chat ? 'The assistant stops using your ChatGPT plan, and access to it is revoked.' : 'The assistant won’t use this key.',
 			confirm: chat ? 'Sign out' : 'Delete',
 			danger: true,
 			icon: 'trash',
 		})
 		if (ok) save.mutate({path: 'assistant.removeKey', input: {id: k.id}, done: `${k.name} deleted`, refresh: ['assistant.keys']})
 	}
+	const mine = list.filter((k) => !k.offered)
+	const offer = list.find((k) => k.offered)
+	const offerable = (k: AssistantKey) => k.provider !== 'chatgpt' && k.provider !== 'hermes'
+	const move = (index: number, dir: -1 | 1) => {
+		const ids = mine.map((k) => k.id)
+		const next = index + dir
+		if (next < 0 || next >= ids.length || save.isPending) return
+		const order = [...ids]
+		const [row] = order.splice(index, 1)
+		order.splice(next, 0, row)
+		save.mutate({path: 'assistant.reorderKeys', input: {ids: order}, done: 'Order saved', refresh: ['assistant.keys']})
+	}
+	const pickAdd = (id: string) => {
+		haptic(6)
+		if (id === 'chatgpt') {
+			setAdd(null)
+			setSignIn({})
+			return
+		}
+		if (id === 'hermes') {
+			setAdd(null)
+			setHermesOpen(true)
+			return
+		}
+		setAdd(id as AddChoice)
+	}
+	const choices = [
+		{id: 'chatgpt', label: 'ChatGPT', sub: 'Your Plus or Pro plan. No API key.'},
+		{id: 'spacexai', label: 'Grok', sub: 'A SpaceXAI API key.'},
+		{id: 'openai', label: 'OpenAI', sub: 'An OpenAI API key, separate from a ChatGPT plan.'},
+		{id: 'anthropic', label: 'Anthropic', sub: 'An Anthropic API key.'},
+		{id: 'local', label: 'On this server', sub: 'A model on this server, such as Ollama. No key.'},
+		...(owner ? [{id: 'custom', label: 'Another address', sub: 'Any OpenAI-compatible address.'}, {id: 'hermes', label: 'Hermes', sub: 'Hermes Agent, on this server or somewhere else.'}] : []),
+	]
 	return (
 		<div className="stagger">
 			<div className="page-head" style={{margin: '6px 0 14px'}}>
@@ -831,13 +869,11 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 				<h1 className="title" style={{flex: 1}}>
 					Assistant
 				</h1>
-				<button className="btn small" onClick={() => (haptic(6), setAdd(true))}>
+				<button className="btn small" style={{minHeight: 44}} onClick={() => (haptic(6), setAdd('pick'))}>
 					<Icon name="plus" size={16} stroke={2.4} />
 					Add
 				</button>
 			</div>
-
-			<AssistantEngine owner={owner} />
 
 			{keys.isLoading && (
 				<div className="glass group">
@@ -852,109 +888,177 @@ function AssistantPage({onBack}: {onBack: () => void}) {
 					{(keys.error as Error).message}
 				</div>
 			)}
-			{keys.isSuccess && list.length === 0 && (
-				<div className="glass empty">
-					<span className="big">
-						<Icon name="sparkle" size={30} />
-					</span>
-					<b>Sign in with ChatGPT, or add an API key, to talk to the assistant.</b>
-					<button className="btn primary small" onClick={() => setAdd(true)}>
-						Add
-					</button>
-				</div>
-			)}
-			{keys.isSuccess && !list.some((k) => k.provider === 'chatgpt' && k.mine) && (
-				<div className="glass group" style={{'--inset': '62px', marginBottom: 14} as CSSProperties}>
-					<Row icon="sparkle" color="var(--green)" label="Sign in with ChatGPT" sub="Use your ChatGPT Plus or Pro plan. No API key." onClick={() => (haptic(6), setSignIn({}))} />
-				</div>
-			)}
-			{list.map((k) => (
-				<Group
-					key={k.id}
-					title={k.name}
-					footer={k.provider === 'chatgpt' ? (k.signedIn === false ? 'Signed out' : 'Only for you') : k.systemDefault ? 'System default' : k.mine ? undefined : 'Shared with you'}
-				>
-					<div className="row static" style={{minHeight: 62}}>
-						<span className="row-ico" style={{'--c': 'var(--accent)'} as CSSProperties}>
-							<Icon name="sparkle" size={19} />
-						</span>
-						<span className="main">
-							<b style={{fontWeight: 550}}>{PROVIDER_LABEL[k.provider] ?? k.provider}</b>
-							<span>
-								{k.provider === 'chatgpt' ? [k.account, k.model].filter(Boolean).join(' · ') || 'ChatGPT plan' : k.model}
-								{k.provider !== 'chatgpt' && k.api === 'responses' ? ' · Responses' : ''}
-								{k.provider !== 'chatgpt' && k.effort ? ` · ${k.effort} reasoning` : ''}
-								{k.last4 ? ` · …${k.last4}` : ''}
-							</span>
-						</span>
+			{keys.isSuccess && (
+				<section>
+					<div className="section-head">
+						<h2>My providers</h2>
 					</div>
-					{k.provider !== 'chatgpt' && <CheckLine check={k.check ?? null} />}
-					{k.provider !== 'chatgpt' && (
-						<Row
-							icon="check"
-							color="var(--green)"
-							label={checking === k.id ? 'Checking…' : 'Check connection'}
-							trailing={checking === k.id ? <span className="spinner" /> : undefined}
-							onClick={() => checking || check(k)}
-						/>
-					)}
-					{k.provider === 'chatgpt' && k.mine && k.signedIn === false && (
-						<Row icon="alert" color="var(--red)" label="Signed out of ChatGPT" sub="Sign in again to keep using your plan" onClick={() => setSignIn({keyId: k.id})} />
-					)}
-					{k.provider === 'chatgpt' && k.mine && k.signedIn !== false && <Row icon="sparkle" color="var(--accent)" label="Model" value={k.model || 'Choose'} onClick={() => setModelFor(k)} />}
-					{k.mine && k.provider !== 'chatgpt' && <Row icon="pencil" color="var(--accent)" label="Edit" value="Name, key, model" onClick={() => setEdit(k)} />}
-					{k.mine && k.provider !== 'chatgpt' && (
-						<Row
-							icon="share"
-							color="var(--blue)"
-							label="Share"
-							value={k.sharedWith.length ? String(k.sharedWith.length) : undefined}
-							onClick={() => setShare(k)}
-						/>
-					)}
-					{owner && k.mine && k.provider !== 'chatgpt' && (
-						<Row
-							icon="star"
-							color="var(--peach)"
-							label="Use as system default"
-							trailing={
-								<Switch
-									on={k.systemDefault}
-									label="Use as system default"
-									disabled={save.isPending}
-									onChange={(v) =>
-										save.mutate({
-											path: 'assistant.updateKey',
-											input: {id: k.id, systemDefault: v},
-											done: v ? 'This key is the system default' : 'No longer the system default',
-											refresh: ['assistant.keys'],
-										})
-									}
-								/>
-							}
-						/>
-					)}
-					{k.mine && <Row icon="trash" color="var(--red)" label={k.provider === 'chatgpt' ? 'Sign out of ChatGPT' : 'Delete'} onClick={() => remove(k)} />}
-				</Group>
-			))}
-			{!owner && list.length === 0 && keys.isSuccess && (
-				<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
-					Sign in with your own ChatGPT, add your own key, or ask the owner to share one.
-				</p>
+					<div className="mm-list screen-list glass">
+						{mine.map((k, index) => {
+							const open = openId === k.id
+							const canCheck = k.provider !== 'chatgpt' && k.provider !== 'hermes'
+							const toggle = () => (haptic(6), setOpenId(open ? null : k.id))
+							return (
+								<article key={k.id} className={open ? 'mm-row is-open' : 'mm-row'}>
+									<div className="ap-line">
+										{owner && offerable(k) && (
+											<button
+												type="button"
+												className="icon-btn"
+												role="radio"
+												aria-checked={!!k.systemDefault}
+												aria-label={`Offer ${k.name} to everyone else`}
+												onClick={() => {
+													if (k.systemDefault || save.isPending) return
+													haptic(6)
+													save.mutate({path: 'assistant.updateKey', input: {id: k.id, systemDefault: true}, done: 'Offered to everyone else', refresh: ['assistant.keys']})
+												}}
+											>
+												<Icon name={k.systemDefault ? 'checked' : 'unchecked'} size={22} />
+											</button>
+										)}
+										<button type="button" className="ap-open" aria-expanded={open} onClick={toggle}>
+											<b>{k.name}</b>
+											<span>{providerLine(k)}</span>
+										</button>
+										{canCheck && (
+											<button
+												type="button"
+												className="icon-btn"
+												aria-label={checking === k.id ? `Checking ${k.name}` : `Check connection for ${k.name}`}
+												disabled={!!checking}
+												style={{color: k.check?.ok ? 'var(--green)' : k.check && !k.check.ok ? 'var(--red)' : undefined}}
+												onClick={() => checking || check(k)}
+											>
+												{checking === k.id ? <span className="spinner" /> : <Icon name={k.check && !k.check.ok ? 'alert' : 'check'} size={18} />}
+											</button>
+										)}
+										<button type="button" className="icon-btn clip-delete" aria-label={k.provider === 'chatgpt' ? `Sign out of ${k.name}` : `Delete ${k.name}`} onClick={() => remove(k)}>
+											<Icon name={k.provider === 'chatgpt' ? 'signout' : 'trash'} size={18} />
+										</button>
+										<button type="button" className="icon-btn" aria-expanded={open} aria-label={open ? `Close ${k.name}` : `Open ${k.name}`} onClick={toggle}>
+											<Icon name={open ? 'chevron-down' : 'chevron'} size={18} className="mm-chev" />
+										</button>
+									</div>
+									<ProviderEase open={open}>
+										<div className="mm-panel">
+											<div className="ap-order">
+												<button type="button" className="btn" disabled={index === 0 || save.isPending} aria-label={`Move ${k.name} up`} onClick={() => move(index, -1)}>
+													Up
+												</button>
+												<button type="button" className="btn" disabled={index === mine.length - 1 || save.isPending} aria-label={`Move ${k.name} down`} onClick={() => move(index, 1)}>
+													Down
+												</button>
+											</div>
+											{k.provider === 'hermes' && <p className="footer-note" style={{textAlign: 'left', margin: 0}}>Hermes answers only when it is first. It is not a backup. Providers under it wait until it is moved down.</p>}
+											{canCheck && <CheckLine check={k.check ?? null} busy={checking === k.id} />}
+											{k.provider === 'chatgpt' && k.signedIn === false && <Row icon="alert" color="var(--red)" label="Signed out of ChatGPT" sub="Sign in again to keep using your plan" onClick={() => setSignIn({keyId: k.id})} />}
+											{k.provider === 'chatgpt' && k.signedIn !== false && <Row icon="sparkle" color="var(--accent)" label="Model" value={k.model || 'Choose'} onClick={() => setModelFor(k)} />}
+											{k.provider === 'hermes' && <Row icon="sparkle" color="var(--mauve)" label="Hermes setup" sub="Connect, what it can change, or disconnect" onClick={() => setHermesOpen(true)} />}
+											{k.provider !== 'chatgpt' && k.provider !== 'hermes' && <Row icon="pencil" color="var(--accent)" label="Edit" value="Name, key, model" onClick={() => setEdit(k)} />}
+											{owner && offerable(k) && <p className="footer-note" style={{textAlign: 'left', margin: 0}}>Their questions go to this provider when their own do not answer.</p>}
+											{(k.provider === 'chatgpt' || k.provider === 'hermes') && owner && <p className="footer-note" style={{textAlign: 'left', margin: 0}}>{k.provider === 'hermes' ? 'Hermes acts with your rights, so it can’t be offered.' : 'A ChatGPT plan stays with you, so it can’t be offered.'}</p>}
+										</div>
+									</ProviderEase>
+								</article>
+							)
+						})}
+						<article className="mm-row">
+							<div className="ap-line">
+								{owner ? (
+									<>
+										<button
+											type="button"
+											className="icon-btn"
+											role="radio"
+											aria-checked={!mine.some((k) => k.systemDefault)}
+											aria-label="If none of these answer, stop"
+											onClick={() => {
+												if (!mine.some((k) => k.systemDefault) || save.isPending) return
+												save.mutate({path: 'assistant.clearDefault', input: {}, done: 'Nothing is offered to everyone else', refresh: ['assistant.keys']})
+											}}
+										>
+											<Icon name={mine.some((k) => k.systemDefault) ? 'unchecked' : 'checked'} size={22} />
+										</button>
+										<button
+											type="button"
+											className="ap-open"
+											onClick={() => {
+												if (!mine.some((k) => k.systemDefault) || save.isPending) return
+												save.mutate({path: 'assistant.clearDefault', input: {}, done: 'Nothing is offered to everyone else', refresh: ['assistant.keys']})
+											}}
+										>
+											<b>If none of these answer, stop.</b>
+											<span>This row stays at the bottom. Other people are offered nothing while it is selected.</span>
+										</button>
+									</>
+								) : offer && !offer.declined ? (
+									<>
+										<div className="ap-label">
+											<b>Server default</b>
+											<span>
+												{PROVIDER_LABEL[offer.provider] ?? offer.provider}
+												{offer.model ? ` · ${offer.model}` : ''}. When your providers do not answer, your question goes to this one.
+											</span>
+										</div>
+										<button type="button" className="btn" onClick={() => save.mutate({path: 'assistant.useServerDefault', input: {use: false}, done: 'The server default will not be used', refresh: ['assistant.keys']})}>
+											Don’t use this
+										</button>
+									</>
+								) : (
+									<>
+										<div className="ap-label">
+											<b>If none of these answer, stop.</b>
+											<span>This row stays at the bottom.</span>
+										</div>
+										{offer?.declined && (
+											<button type="button" className="btn" onClick={() => save.mutate({path: 'assistant.useServerDefault', input: {use: true}, done: 'The server default will be used', refresh: ['assistant.keys']})}>
+												Use the server default
+											</button>
+										)}
+									</>
+								)}
+							</div>
+						</article>
+					</div>
+					<p className="footer-note" style={{textAlign: 'left'}}>
+						Chat tries from the top and uses the first one that answers. Open a provider to move it. A new provider is added at the bottom.
+					</p>
+				</section>
 			)}
 
 			<AssistantAppearanceSettings />
 
-			<AddKeySheet open={add} owner={isOwner(user.data)} onClose={() => setAdd(false)} />
-			<EditKeySheet open={!!edit} keyRow={edit} owner={isOwner(user.data)} onClose={() => setEdit(null)} />
+			{add === 'pick' && (
+				<Sheet open onClose={() => setAdd(null)} label="Add a provider">
+					<SheetHeader title="Add a provider" subtitle="It is added at the bottom of your list." onClose={() => setAdd(null)} />
+					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+						{choices.map((c) => (
+							<Row key={c.id} icon="sparkle" color="var(--accent)" label={c.label} sub={c.sub} onClick={() => pickAdd(c.id)} />
+						))}
+					</div>
+				</Sheet>
+			)}
+			<AddKeySheet
+				open={add === 'spacexai' || add === 'openai' || add === 'anthropic' || add === 'local' || add === 'custom'}
+				owner={owner}
+				preset={add === 'spacexai' || add === 'openai' || add === 'anthropic' || add === 'local' || add === 'custom' ? add : null}
+				onClose={() => setAdd(null)}
+			/>
+			<EditKeySheet open={!!edit} keyRow={edit} owner={owner} onClose={() => setEdit(null)} />
 			{signIn && <ChatGptSignInSheet keyId={signIn.keyId} onClose={() => setSignIn(null)} />}
 			{modelFor && <ChatGptModelSheet keyRow={modelFor} onClose={() => setModelFor(null)} />}
-			<ShareKeySheet open={!!share} keyRow={share} accounts={boot.accounts} self={self} onClose={() => setShare(null)} />
+			{hermesOpen && owner && (
+				<Sheet open onClose={() => setHermesOpen(false)} label="Hermes">
+					<SheetHeader title="Hermes" subtitle="Hermes answers only when its row is first." onClose={() => setHermesOpen(false)} />
+					<AssistantEngine owner={owner} />
+				</Sheet>
+			)}
 		</div>
 	)
 }
 
-function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onClose: () => void}) {
+function AddKeySheet({open, owner, preset, onClose}: {open: boolean; owner: boolean; preset: 'spacexai' | 'openai' | 'anthropic' | 'local' | 'custom' | null; onClose: () => void}) {
 	const save = useSave()
 	const [provider, setProvider] = useState<AssistantProvider>('spacexai')
 	const [name, setName] = useState('')
@@ -962,12 +1066,13 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 	const [apiKey, setApiKey] = useState('')
 	const [baseUrl, setBaseUrl] = useState('')
 	useEffect(() => {
-		setProvider('spacexai')
+		const next: AssistantProvider = preset === 'openai' || preset === 'anthropic' || preset === 'spacexai' ? preset : preset === 'local' || preset === 'custom' ? 'openai-compatible' : 'spacexai'
+		setProvider(next)
 		setName('')
 		setModel('')
 		setApiKey('')
-		setBaseUrl('')
-	}, [open])
+		setBaseUrl(preset === 'local' || preset === 'custom' ? 'http://127.0.0.1:11434/v1' : '')
+	}, [open, preset])
 	const qc = useQueryClient()
 	const [api, setApi] = useState<AssistantApi>('chat')
 	useEffect(() => setApi(defaultApi(provider)), [provider, open])
@@ -988,7 +1093,7 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 	return (
 		<FormSheet
 			open={open}
-			title="Add provider"
+			title={preset === 'local' ? 'On this server' : preset === 'custom' ? 'Another address' : preset === 'openai' ? 'Add OpenAI' : preset === 'anthropic' ? 'Add Anthropic' : 'Add Grok'}
 			onClose={onClose}
 			submit="Add"
 			busy={save.isPending}
@@ -1019,26 +1124,28 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 				)
 			}
 		>
-			<Segmented
-				label="Provider"
-				value={provider}
-				onChange={(v) => {
-					setProvider(v)
-					setModel('')
-					// A key belongs to one provider; don't carry it over to another.
-					setApiKey('')
-					if (v === 'openai-compatible' && !baseUrl.trim()) setBaseUrl('http://127.0.0.1:11434/v1')
-				}}
-				options={[
-					{id: 'spacexai', label: 'Grok'},
-					{id: 'openai', label: 'OpenAI'},
-					{id: 'anthropic', label: 'Anthropic'},
-					// A custom address makes the server send requests anywhere it can reach: owner only.
-					...(owner ? [{id: 'openai-compatible' as const, label: 'Custom'}] : []),
-				]}
-			/>
+			{!preset && (
+				<Segmented
+					label="Provider"
+					value={provider}
+					onChange={(v) => {
+						setProvider(v)
+						setModel('')
+						// A key belongs to one provider; don't carry it over to another.
+						setApiKey('')
+						if (v === 'openai-compatible' && !baseUrl.trim()) setBaseUrl('http://127.0.0.1:11434/v1')
+					}}
+					options={[
+						{id: 'spacexai', label: 'Grok'},
+						{id: 'openai', label: 'OpenAI'},
+						{id: 'anthropic', label: 'Anthropic'},
+						// A custom address makes the server send requests anywhere it can reach: owner only.
+						...(owner ? [{id: 'openai-compatible' as const, label: 'Custom'}] : []),
+					]}
+				/>
+			)}
 			<Field id="ask-name" label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-			{custom && (
+			{preset === 'custom' && (
 				<Field
 					id="ask-url"
 					label="Base URL"
@@ -1051,16 +1158,18 @@ function AddKeySheet({open, owner, onClose}: {open: boolean; owner: boolean; onC
 					spellCheck={false}
 				/>
 			)}
-			<Field
-				id="ask-key"
-				label="API key"
-				type="password"
-				autoComplete="off"
-				value={apiKey}
-				onChange={(e) => setApiKey(e.target.value)}
-				onBlur={() => setKeyEntered(true)}
-				hint={custom ? 'Leave blank for local Ollama.' : 'Checked with the provider when you move on from this field.'}
-			/>
+			{preset !== 'local' && (
+				<Field
+					id="ask-key"
+					label="API key"
+					type="password"
+					autoComplete="off"
+					value={apiKey}
+					onChange={(e) => setApiKey(e.target.value)}
+					onBlur={() => setKeyEntered(true)}
+					hint={custom ? 'Leave blank for a server that does not need a key.' : 'Checked with the provider when you move on from this field.'}
+				/>
+			)}
 			<CheckLine check={live.check} busy={live.busy} />
 			<ModelField id="ask-model" value={model} onChange={setModel} models={live.models} provider={provider} />
 			{pickApi(provider) && <Segmented label="API" value={api} onChange={setApi} options={API_OPTIONS} />}
@@ -1165,62 +1274,6 @@ function EditKeySheet({open, keyRow, owner, onClose}: {open: boolean; keyRow: As
 			<p className="footer-note" style={{textAlign: 'left', margin: '2px 6px 0'}}>
 				How hard a reasoning model thinks before answering. Default leaves it to the model; models that don’t reason may refuse a level.
 			</p>
-		</FormSheet>
-	)
-}
-
-function ShareKeySheet({
-	open,
-	keyRow,
-	accounts,
-	self,
-	onClose,
-}: {
-	open: boolean
-	keyRow: AssistantKey | null
-	accounts: {userId: string; name: string}[]
-	self?: string
-	onClose: () => void
-}) {
-	const save = useSave()
-	const others = accounts.filter((a) => a.userId !== self)
-	const [picked, setPicked] = useState<string[]>([])
-	useEffect(() => setPicked(keyRow ? [...keyRow.sharedWith] : []), [keyRow, open])
-	const toggle = (id: string) => setPicked((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]))
-	return (
-		<FormSheet
-			open={open}
-			title="Share"
-			subtitle={keyRow?.name}
-			onClose={onClose}
-			submit="Save"
-			busy={save.isPending}
-			onSubmit={() =>
-				save.mutate(
-					{path: 'assistant.updateKey', input: {id: keyRow?.id, sharedWith: picked}, done: 'Sharing updated', refresh: ['assistant.keys']},
-					{onSuccess: onClose},
-				)
-			}
-		>
-			{others.length === 0 ? (
-				<p className="prose" style={{margin: '0 0 8px'}}>
-					No other accounts on this server.
-				</p>
-			) : (
-				<div className="glass group" style={{borderRadius: 18, marginBottom: 12, '--inset': '62px'} as CSSProperties}>
-					{others.map((a) => (
-						<button type="button" key={a.userId} className="row" style={{minHeight: 56}} role="checkbox" aria-checked={picked.includes(a.userId)} onClick={() => toggle(a.userId)}>
-							<span className="row-ico" style={{'--c': 'var(--blue)'} as CSSProperties}>
-								<Icon name="user" size={19} />
-							</span>
-							<span className="main">
-								<b style={{fontWeight: 550}}>{a.name}</b>
-							</span>
-							<Icon name={picked.includes(a.userId) ? 'checked' : 'unchecked'} size={22} />
-						</button>
-					))}
-				</div>
-			)}
 		</FormSheet>
 	)
 }

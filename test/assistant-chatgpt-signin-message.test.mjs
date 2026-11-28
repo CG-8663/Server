@@ -13,7 +13,8 @@ async function failWith(message, code) {
 	const dataDir = await mkdtemp(join(os.tmpdir(), 'acm-'))
 	try {
 		const conversations = createConversations({dataDir})
-		const keys = {resolveForUser: async () => ({id: 'k_1', provider: 'chatgpt', baseUrl: 'https://api.openai.com/v1', model: 'gpt-plan', ownerUserId: 'owner', updatedAt: 1})}
+		const key = {id: 'k_1', name: 'ChatGPT', provider: 'chatgpt', baseUrl: 'https://api.openai.com/v1', model: 'gpt-plan', ownerUserId: 'owner', updatedAt: 1}
+		const keys = {resolveForUser: async () => key, candidatesForUser: async () => [key]}
 		const chatgpt = {
 			accessToken: async () => {
 				throw Object.assign(new Error(message), {code})

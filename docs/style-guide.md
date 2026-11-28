@@ -159,6 +159,8 @@ The door. It uses the same theme and the same touch targets as the rest of the p
 
 Help on this server. It can look something up, and it can propose a change the person approves. It uses the screens that already perform that change. It does not grow a parallel set of machine controls.
 
+Settings lists the providers that person added, from the top, with Add at the top of the page. Each provider is one row, the same shape as a machine row: the name, the offer control when that provider can be offered, Check connection, Delete, and a disclosure triangle. The triangle opens that provider as a card. Up and down are on the card. The last row stays put: stop, or the one provider the owner offers to other accounts. A person can refuse that offer. Chat names the provider that answered. Hermes acts on this server itself when its row is first, and that is written on its card. ChatGPT and Hermes have no offer control.
+
 ### Notifications and clips
 
 A **notification** is news for the whole server, such as a software update. It shows in the bell. It is not a toast.

@@ -467,6 +467,9 @@ export type AssistantKey = {
 	sharedWith: string[]
 	systemDefault: boolean
 	mine: boolean
+	// The owner's one offered provider, shown to other accounts without their name, address, or key.
+	offered?: boolean
+	declined?: boolean
 	// Sign in with ChatGPT: the account, and whether the sign-in still has a refresh token.
 	account?: string | null
 	signedIn?: boolean
